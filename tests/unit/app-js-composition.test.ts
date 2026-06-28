@@ -41,8 +41,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // or auto-update-disabled build on the version chip, and re-polls availability on
 // a slow interval so a long-open window still notices a new version.
 // Recapture the length + hash on any intended change.
-const ORIGINAL_LENGTH = 790854;
-const ORIGINAL_SHA256 = '29604450efcbe2b40fdd7bdcffcfd46be25ca1f3ee3f864d517a1aee1126977d';
+// All three graphs (schema brain graph + per-object graph + folder graph) moved
+// to the live force-directed renderer that loads out of band from
+// /gui-assets/force-graph.mjs. The inline host now only fetches each model, maps
+// it to the renderer's generic node/edge shape, and hands it to createForceGraph;
+// the static builders + wiring + the hand-rolled forceLayout sim (~16 KB) were
+// removed. The ingest animation feeds the live handle instead of re-rendering.
+// 5.0 combines this with the surface-aware auto-update pill above, so the pinned
+// length + hash below are recomputed for the merged inline host.
+const ORIGINAL_LENGTH = 775780;
+const ORIGINAL_SHA256 = 'bbd659f4244c1943d33bc1571c693c47c6b57f9579d156f4161e5a05c30628a4';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -1039,10 +1039,72 @@ export const dashboardJs = `    // ───────────────
     // A zoom-in of the brain graph centered on ONE object: the object node in the
     // middle, its entity rows around it (bounded for egress safety), and its
     // related objects on the rim. Click an entity → open its tab; click a related
-    // → zoom into THAT object's graph. Reuses forceLayout + the graph CSS.
+    // → zoom into THAT object's graph. Rendered by the shared live force-graph.
     var FS_GRAPH_ROW_CAP = 50;
     var FS_GRAPH_ROW_MAX = 250; // hard ceiling for "Show more"
     var fsGraphCap = {}; // per-table cap override when the user clicks "Show more"
+    // The live force-graph handle for the focused object/folder graph (#fsg-mount).
+    var fsGraphHandle = null;
+    // Map an object/folder graph model to the renderer's generic node/edge shape.
+    // Routing fields (kind / entityId / name / path) ride along on each node — the
+    // renderer ignores them and hands the node back on click, where onNode routes.
+    function objectGraphData(model) {
+      var nodes = model.nodes.map(function (nd, i) {
+        var label = nd.label && nd.label.length > 22 ? nd.label.slice(0, 21) + '…' : nd.label;
+        return {
+          id: 'n' + i,
+          label: label,
+          icon: nd.icon,
+          radius: nd.r,
+          cls: 'ognode-' + nd.kind,
+          title: nd.label,
+          kind: nd.kind,
+          entityId: nd.id,
+          name: nd.name,
+          path: nd.path,
+        };
+      });
+      var edges = model.links.map(function (l) {
+        return { source: 'n' + l.si, target: 'n' + l.ti };
+      });
+      return { nodes: nodes, edges: edges };
+    }
+    // Mount the focused graph into #fsg-mount via the out-of-band live renderer.
+    // onReady(mount) runs after the graph is built (e.g. to append "Show more").
+    function mountObjectGraph(model, table, onReady) {
+      loadForceGraph()
+        .then(function (mod) {
+          var mount = document.getElementById('fsg-mount');
+          if (!mount) return; // navigated away while the renderer loaded
+          if (fsGraphHandle) {
+            fsGraphHandle.stop();
+            fsGraphHandle = null;
+          }
+          mount.innerHTML = '';
+          var data = objectGraphData(model);
+          fsGraphHandle = mod.createForceGraph(mount, {
+            nodes: data.nodes,
+            edges: data.edges,
+            reducedMotion: graphReducedMotion(),
+            onNode: function (node) {
+              if (node.kind === 'entity') {
+                location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(node.entityId);
+              } else if (node.kind === 'related') {
+                location.hash = '#/fs/' + encodeURIComponent(node.name);
+              } else if (node.kind === 'folder') {
+                location.hash = '#/folder/' + encodeURIComponent(node.path);
+              } else if (node.kind === 'file') {
+                openGraphFile({ id: node.entityId, path: node.path });
+              }
+            },
+          });
+          if (onReady) onReady(mount);
+        })
+        .catch(function (err) {
+          var m = document.getElementById('fsg-mount');
+          if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+        });
+    }
     function renderFsObjectGraph(content, table) {
       // Files are special: their object page is the on-disk FOLDER hierarchy
       // (roots + loose files, drillable), not a flat list of file rows.
@@ -1087,12 +1149,9 @@ export const dashboardJs = `    // ───────────────
                 '<a href="' + fsHref([table, 'new']) + '">Create the first ' + escapeHtml(d.label) + '</a>.</div>' +
               '</div></div>';
           } else {
-            forceLayout(model.nodes, model.links, 360);
             content.innerHTML = header +
-              '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
-            var mount = document.getElementById('fsg-mount');
-            if (mount) {
-              wireObjectGraph(mount, model, table);
+              '<div class="brain-graph object-graph"><div id="fsg-mount"></div></div>';
+            mountObjectGraph(model, table, function (mount) {
               var hidden = (total || rows.length) - rows.length;
               if (hidden > 0 && cap < FS_GRAPH_ROW_MAX) {
                 var more = document.createElement('button');
@@ -1105,7 +1164,7 @@ export const dashboardJs = `    // ───────────────
                 });
                 mount.appendChild(more);
               }
-            }
+            });
           }
           var lv = content.querySelector('#fsg-view-list');
           if (lv) lv.addEventListener('click', function () {
@@ -1147,105 +1206,6 @@ export const dashboardJs = `    // ───────────────
         links.push({ si: 0, ti: idx });
       });
       return { nodes: nodes, links: links };
-    }
-
-    function objectGraphSvg(model) {
-      var nodes = model.nodes, links = model.links;
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      nodes.forEach(function (nd) {
-        minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
-        maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
-      });
-      var pad = 50;
-      var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
-      var edgeSvg = links.map(function (l) {
-        var a = nodes[l.si], b = nodes[l.ti];
-        return '<line class="dm-edge" data-si="' + l.si + '" data-ti="' + l.ti + '" x1="' + a.x.toFixed(1) +
-          '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) +
-          '" stroke="#3b82f6" stroke-width="1.4" opacity="0.5"></line>';
-      }).join('');
-      var nodeSvg = nodes.map(function (nd, i) {
-        var label = nd.label.length > 22 ? nd.label.slice(0, 21) + '…' : nd.label;
-        var attr = nd.kind === 'entity' ? (' data-kind="entity" data-id="' + escapeHtml(String(nd.id)) + '"')
-          : nd.kind === 'related' ? (' data-kind="related" data-table="' + escapeHtml(nd.name) + '"')
-          : nd.kind === 'folder' ? (' data-kind="folder" data-path="' + escapeHtml(String(nd.path)) + '"')
-          : nd.kind === 'file' ? (' data-kind="file" data-path="' + escapeHtml(String(nd.path || '')) + '" data-id="' + escapeHtml(String(nd.id || '')) + '"')
-          : ' data-kind="object"';
-        var iconSvg = nd.icon
-          ? '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' + (nd.r * 0.9).toFixed(1) + '">' + nd.icon + '</text>'
-          : '';
-        return '<g class="gnode ognode-' + nd.kind + '" data-i="' + i + '"' + attr +
-          ' transform="translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
-          '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
-          '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
-          iconSvg +
-          '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' + escapeHtml(label) + '</text>' +
-          '<title>' + escapeHtml(nd.label) + '</title>' +
-          '</g>';
-      }).join('');
-      return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
-        '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>';
-    }
-
-    function wireObjectGraph(mount, model, table) {
-      var svg = mount.querySelector('svg.dm-graph'); if (!svg) return;
-      var nodeEls = {};
-      mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-i')] = g; });
-      var edgeEls = mount.querySelectorAll('line.dm-edge');
-      function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
-      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
-      var fitVb = vb();
-      syncGraphLabelScale(svg);
-      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
-      function toData(ev) {
-        var rect = svg.getBoundingClientRect(); var b = vb();
-        return { x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2], y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3] };
-      }
-      function updateNode(i) {
-        var nd = model.nodes[i]; var g = nodeEls[i]; if (!nd || !g) return;
-        g.setAttribute('transform', 'translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')');
-        edgeEls.forEach(function (ln) {
-          if (ln.getAttribute('data-si') === String(i)) { ln.setAttribute('x1', nd.x.toFixed(1)); ln.setAttribute('y1', nd.y.toFixed(1)); }
-          if (ln.getAttribute('data-ti') === String(i)) { ln.setAttribute('x2', nd.x.toFixed(1)); ln.setAttribute('y2', nd.y.toFixed(1)); }
-        });
-      }
-      svg.addEventListener('wheel', function (ev) {
-        ev.preventDefault();
-        var b = vb(); var pt = toData(ev);
-        var dd = Math.max(-50, Math.min(50, ev.deltaY));
-        var factor = Math.pow(1.0018, dd);
-        var nw = b[2] * factor, nh = b[3] * factor;
-        if (nw >= fitVb[2] || nh >= fitVb[3]) { setVb(fitVb.slice()); return; }
-        setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
-      }, { passive: false });
-      var drag = null;
-      svg.addEventListener('pointerdown', function (ev) {
-        var g = ev.target.closest && ev.target.closest('g.gnode');
-        if (g) drag = { kind: 'node', i: g.getAttribute('data-i'), moved: false };
-        else drag = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, vb: vb() };
-        svg.setPointerCapture(ev.pointerId);
-      });
-      svg.addEventListener('pointermove', function (ev) {
-        if (!drag) return;
-        if (drag.kind === 'node') {
-          var pt = toData(ev); var nd = model.nodes[Number(drag.i)];
-          if (nd) { nd.x = pt.x; nd.y = pt.y; updateNode(Number(drag.i)); drag.moved = true; }
-        } else {
-          var rect = svg.getBoundingClientRect(); var b = drag.vb;
-          setVb([b[0] - (ev.clientX - drag.sx) * (b[2] / rect.width), b[1] - (ev.clientY - drag.sy) * (b[3] / rect.height), b[2], b[3]]);
-        }
-      });
-      svg.addEventListener('pointerup', function (ev) {
-        if (drag && drag.kind === 'node' && !drag.moved) {
-          var nd = model.nodes[Number(drag.i)];
-          if (nd && nd.kind === 'entity') location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(nd.id);
-          else if (nd && nd.kind === 'related') location.hash = '#/fs/' + encodeURIComponent(nd.name);
-          else if (nd && nd.kind === 'folder') location.hash = '#/folder/' + encodeURIComponent(nd.path);
-          else if (nd && nd.kind === 'file') openGraphFile(nd);
-        }
-        drag = null;
-        try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
-      });
     }
 
     // ── Folder navigation (the Files object's on-disk hierarchy) ─────────────
@@ -1304,7 +1264,8 @@ export const dashboardJs = `    // ───────────────
       if (leafLabel) parts.push('<span class="fs-crumb-cur">' + escapeHtml(leafLabel) + '</span>');
       return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
     }
-    // center object + folder/file children → graph model (reuses objectGraphSvg).
+    // center object + folder/file children → graph model (rendered by the shared
+    // live force-graph via mountObjectGraph).
     function buildFolderGraphModel(centerLabel, entries, filesByPath) {
       var nodes = [{ kind: 'object', name: centerLabel, label: centerLabel, icon: '📂', r: 24, x: 0, y: 0, vx: 0, vy: 0 }];
       var links = [];
@@ -1327,11 +1288,9 @@ export const dashboardJs = `    // ───────────────
           emptyMsg + '</div></div></div>';
       } else {
         var model = buildFolderGraphModel(name, entries, filesByPath || {});
-        forceLayout(model.nodes, model.links, 360);
         content.innerHTML = header +
-          '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
-        var mount = document.getElementById('fsg-mount');
-        if (mount) wireObjectGraph(mount, model, 'files');
+          '<div class="brain-graph object-graph"><div id="fsg-mount"></div></div>';
+        mountObjectGraph(model, 'files', null);
       }
       if (listToggle) {
         var lv = content.querySelector('#fsg-view-list');
