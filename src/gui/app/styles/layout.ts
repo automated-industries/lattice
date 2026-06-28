@@ -33,11 +33,19 @@ export const layoutCss = `    /* ── Layout ───────────
       display: flex; align-items: center; gap: 6px; width: 100%;
       background: none; border: 0; cursor: pointer; text-align: left; font: inherit;
       color: var(--text-muted);
+      /* Caret at the gutter so the GROUP HEADER (caret + label) is the outermost
+         element; its child rows are indented under it via .section-body below.
+         Without this the caret + gap inset the header label past its own children,
+         inverting the tree hierarchy. */
+      padding-left: 0;
     }
     .section-toggle .section-caret {
       font-size: 9px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
     }
     .section-toggle:hover .section-label-text { color: var(--text); }
+    /* Indent each group's body so its rows sit inset under the group header
+       (must clear the header's caret + gap so the header label stays leftmost). */
+    .section-body { padding-left: 20px; }
     .section-body[hidden] { display: none; }
     nav ul { list-style: none; padding: 0; margin: 0; }
     nav li a {

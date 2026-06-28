@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { createConnector } from '../../src/connectors/registry.js';
 import {
@@ -210,5 +213,140 @@ describe('provenance graph (SQLite)', () => {
     const dataTableQueried = querySpy.mock.calls.some((c) => c[0] === 'jira_issues');
     expect(dataTableQueried).toBe(false);
     querySpy.mockRestore();
+  });
+});
+
+/**
+ * Regression: an object whose files are linked through the existing `*_files`
+ * junction must show those files as raw sources EVEN WHEN no `__lattice_lineage`
+ * row was ever recorded (pre-existing data, or a row created by a path that
+ * doesn't write lineage). Previously the builder read only the lineage table and
+ * reported "0 sources" for such objects.
+ */
+describe('provenance: raw file sources from existing junctions (no lineage row)', () => {
+  let db: Lattice | undefined;
+  const dirs: string[] = [];
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function writeJunctionConfig(): { configPath: string; outputDir: string } {
+    const root = mkdtempSync(join(tmpdir(), 'lattice-prov-'));
+    dirs.push(root);
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        'entities:',
+        '  contracts:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: contracts.md',
+        '  contract_files:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      contract_id: { type: uuid }',
+        '      file_id: { type: uuid }',
+        '    relations:',
+        '      contract: { type: belongsTo, table: contracts, foreignKey: contract_id }',
+        '      file: { type: belongsTo, table: files, foreignKey: file_id }',
+        '    outputFile: contract-files.md',
+        '',
+      ].join('\n'),
+    );
+    return { configPath, outputDir: join(root, 'context') };
+  }
+
+  async function setupDb(): Promise<Lattice> {
+    db = new Lattice(':memory:');
+    db.define('contracts', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'c.md',
+    });
+    db.define('files', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'f.md',
+    });
+    db.define('contract_files', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        contract_id: 'TEXT',
+        file_id: 'TEXT',
+        deleted_at: 'TEXT',
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'cf.md',
+    });
+    db.define('_lattice_gui_audit', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        ts: 'TEXT',
+        table_name: 'TEXT',
+        row_id: 'TEXT',
+        operation: 'TEXT',
+        source: 'TEXT',
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'a.md',
+    });
+    await db.init();
+    await ensureLineageTable(db.adapter);
+    return db;
+  }
+
+  it('row scope: a linked file appears as a raw source with NO lineage row', async () => {
+    const { configPath, outputDir } = writeJunctionConfig();
+    const d = await setupDb();
+    await d.insert('contracts', { id: 'c1', name: 'Brickell COI' });
+    await d.insert('files', { id: 'f1', name: 'BH Master- KW- COI.pdf' });
+    await d.insert('contract_files', { id: 'j1', contract_id: 'c1', file_id: 'f1' });
+    // Deliberately NO recordLineage — this is the pre-existing-data case.
+
+    const g = await buildProvenanceGraph(d, 'contracts', { rowId: 'c1', configPath, outputDir });
+
+    const fileNodes = g.nodes.filter((n) => n.type === 'raw' && n.kind === 'file');
+    expect(fileNodes.length).toBeGreaterThanOrEqual(1);
+    expect(fileNodes.some((n) => n.label.includes('BH Master- KW- COI.pdf'))).toBe(true);
+    expect(
+      g.edges.some((e) => e.relation === 'extracted_from' && e.target === 'obj:contracts:c1'),
+    ).toBe(true);
+  });
+
+  it('table scope: a grouped file source counts the links with NO lineage row', async () => {
+    const { configPath, outputDir } = writeJunctionConfig();
+    const d = await setupDb();
+    await d.insert('contracts', { id: 'c1', name: 'A' });
+    await d.insert('contracts', { id: 'c2', name: 'B' });
+    await d.insert('files', { id: 'f1', name: 'one.pdf' });
+    await d.insert('files', { id: 'f2', name: 'two.pdf' });
+    await d.insert('contract_files', { id: 'j1', contract_id: 'c1', file_id: 'f1' });
+    await d.insert('contract_files', { id: 'j2', contract_id: 'c2', file_id: 'f2' });
+
+    const g = await buildProvenanceGraph(d, 'contracts', { configPath, outputDir });
+
+    const grouped = g.nodes.find((n) => n.type === 'raw' && n.kind === 'file');
+    expect(grouped).toBeDefined();
+    expect(grouped?.count).toBe(2);
+  });
+
+  it('without configPath, no junction derivation runs (member fallback = lineage only)', async () => {
+    const d = await setupDb();
+    await d.insert('contracts', { id: 'c1', name: 'A' });
+    await d.insert('files', { id: 'f1', name: 'one.pdf' });
+    await d.insert('contract_files', { id: 'j1', contract_id: 'c1', file_id: 'f1' });
+
+    const g = await buildProvenanceGraph(d, 'contracts', { rowId: 'c1' });
+    // No config → the junction path is skipped; only the center object remains.
+    expect(g.nodes.filter((n) => n.kind === 'file')).toHaveLength(0);
   });
 });

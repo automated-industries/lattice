@@ -2,6 +2,7 @@ import type { Lattice } from '../lattice.js';
 import type { AggregateResult, Row } from '../types.js';
 import { allAsyncOrSync } from '../db/adapter.js';
 import { getConnector } from '../connectors/registry.js';
+import { tableJunctions } from './data.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 
 /**
@@ -15,6 +16,8 @@ import { LINEAGE_TABLE } from './lineage-store.js';
  *   1. connector-stamped rows (`_source_connector_id` — set by connectors/sync)
  *   2. the additive `__lattice_lineage` table (file-extraction / import edges)
  *   3. audit rows authored by the `ai` actor (`_lattice_gui_audit.source='ai'`)
+ *   4. existing `files` many-to-many junctions (raw file sources already linked,
+ *      even when no lineage row was ever recorded — e.g. pre-existing data)
  *
  * Bounded reads: no `SELECT *` over a data table on this path. Counts
  * are computed in the database via grouped `aggregate(...)`; the only row reads
@@ -60,6 +63,14 @@ export interface ProvenancePayload {
 export interface BuildProvenanceOptions {
   /** Scope to a single object row (bounded reads). Omit for the whole table. */
   rowId?: string;
+  /**
+   * Owner config paths. When provided, raw file sources are derived from the
+   * existing `*_files` junctions (so provenance reflects files already linked to
+   * an object, not only future import/extraction lineage). Omitted for a scoped
+   * cloud member, who has no relation config — they fall back to lineage only.
+   */
+  configPath?: string;
+  outputDir?: string;
 }
 
 // ── dedupe helpers (mirror src/gui/data.ts addNode/addEdge) ──────────────────
@@ -173,6 +184,89 @@ export async function buildProvenanceGraph(
       for (const g of groups) {
         const cid = asStr(g._source_connector_id);
         if (cid) await addConnectorNode(db, nodes, edges, objectId, cid, Number(g.n) || 0);
+      }
+    }
+  }
+
+  // ── RAW: existing file→object links (the `files` many-to-many junctions) ─────
+  // The lineage table only records NEW import/extraction edges; an object whose
+  // files were attached earlier (or by a path that doesn't write lineage) would
+  // otherwise report zero sources even though files clearly feed it. Derive the
+  // raw "file" tier directly from the existing `*_files` junctions so provenance
+  // reflects real file sources without a backfill. Node ids match a `file`
+  // lineage row's scheme, so the two dedupe rather than double-count.
+  if (options.configPath && options.outputDir) {
+    let fileJuncs: { junction: string; selfFk: string; otherFk: string }[] = [];
+    try {
+      fileJuncs = tableJunctions(table, options.configPath, options.outputDir).filter(
+        (j) => j.otherTable === 'files',
+      );
+    } catch {
+      fileJuncs = [];
+    }
+    for (const j of fileJuncs) {
+      if (rowId) {
+        // The file ids linked to THIS row (bounded by an explicit limit).
+        const links = await db.query(j.junction, {
+          projection: [j.otherFk],
+          filters: [{ col: j.selfFk, op: 'eq', val: rowId }],
+          limit: 200,
+        });
+        for (const link of links) {
+          const fileId = asStr(link[j.otherFk]);
+          if (!fileId) continue;
+          let name = fileId;
+          try {
+            const fpk = db.getPrimaryKey('files')[0] ?? 'id';
+            const frows = await db.query('files', {
+              projection: ['name'],
+              filters: [{ col: fpk, op: 'eq', val: fileId }],
+              limit: 1,
+            });
+            if (frows[0]) name = asStr(frows[0].name) || fileId;
+          } catch {
+            /* keep the id as the label */
+          }
+          const id = `src:file:files:${fileId}`;
+          addNode(nodes, {
+            id,
+            label: labelForSource('file', name),
+            type: 'raw',
+            kind: 'file',
+            table: 'files',
+            rowId: fileId,
+          });
+          addEdge(edges, {
+            source: id,
+            target: objectId,
+            relation: 'extracted_from',
+            label: name,
+          });
+        }
+      } else {
+        // Whole table: count the file links — a grouped COUNT, never the rows.
+        const counted = await db.aggregate(j.junction, {
+          aggregates: [{ fn: 'count', as: 'n' }],
+          filters: [{ col: j.otherFk, op: 'isNotNull' }],
+        });
+        const n = Number(counted[0]?.n) || 0;
+        if (n > 0) {
+          const id = `src:file:files`;
+          addNode(nodes, {
+            id,
+            label: labelForSource('file', 'files'),
+            type: 'raw',
+            kind: 'file',
+            table: 'files',
+            count: n,
+          });
+          addEdge(edges, {
+            source: id,
+            target: objectId,
+            relation: 'extracted_from',
+            label: 'files',
+          });
+        }
       }
     }
   }
