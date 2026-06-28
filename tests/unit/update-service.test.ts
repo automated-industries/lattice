@@ -16,6 +16,13 @@ const notInstallable: InstallContext = {
   packageRoot: '/x',
   reason: 'dev build',
 };
+const desktop: InstallContext = {
+  kind: 'desktop',
+  installable: false,
+  cwd: '/x',
+  packageRoot: null,
+  reason: 'desktop app',
+};
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 
@@ -28,16 +35,18 @@ describe('createUpdateService', () => {
       currentVersion: '1.0.0',
       context: installable,
       emit,
+      selfUpdate: true,
       check: () => Promise.resolve('2.0.0'),
       install,
       requestRestart,
       restartGraceMs: 0,
     });
-    await svc.checkNow(true);
+    const status = await svc.checkNow(true);
     await tick();
     expect(install).toHaveBeenCalledWith(installable, '2.0.0');
     expect(emit).toHaveBeenCalledWith('update-applied', { to: '2.0.0', from: '1.0.0' });
     expect(requestRestart).toHaveBeenCalledTimes(1);
+    expect(status.action).toBe('upgrade-in-place');
   });
 
   it('surfaces an install FAILURE loudly and does NOT relaunch', async () => {
@@ -48,6 +57,7 @@ describe('createUpdateService', () => {
       currentVersion: '1.0.0',
       context: installable,
       emit,
+      selfUpdate: true,
       check: () => Promise.resolve('2.0.0'),
       install: () => {
         throw new Error('npm exploded');
@@ -84,6 +94,47 @@ describe('createUpdateService', () => {
     expect(emit).not.toHaveBeenCalledWith('update-applied', expect.anything());
     expect(status.latest).toBe('2.0.0'); // still surfaced in status
     expect(status.installable).toBe(false);
+    expect(status.action).toBe('none'); // dev/linked build offers no apply action
+  });
+
+  it('reports restart-to-update for the desktop surface (latest surfaced, never installs)', async () => {
+    const emit = vi.fn();
+    const install = vi.fn(() => true);
+    const requestRestart = vi.fn();
+    const svc = createUpdateService({
+      currentVersion: '1.0.0',
+      context: desktop,
+      emit,
+      check: () => Promise.resolve('2.0.0'),
+      install,
+      requestRestart,
+    });
+    const status = await svc.checkNow(true);
+    expect(install).not.toHaveBeenCalled(); // desktop updates via its own updater, not npm
+    expect(requestRestart).not.toHaveBeenCalled();
+    expect(status.latest).toBe('2.0.0');
+    expect(status.action).toBe('restart-to-update');
+  });
+
+  it('autoUpdate:false never checks and reports action:none / autoUpdate:false', async () => {
+    const emit = vi.fn();
+    const check = vi.fn(() => Promise.resolve('2.0.0'));
+    const svc = createUpdateService({
+      currentVersion: '1.0.0',
+      context: installable,
+      emit,
+      autoUpdate: false,
+      selfUpdate: true,
+      check,
+      install: () => true,
+    });
+    svc.start();
+    const status = await svc.checkNow(true);
+    await tick();
+    expect(check).not.toHaveBeenCalled(); // master switch off — zero network activity
+    expect(status.autoUpdate).toBe(false);
+    expect(status.latest).toBeNull();
+    expect(status.action).toBe('none');
   });
 
   it('does nothing when already up to date', async () => {

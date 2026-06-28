@@ -56,6 +56,8 @@ interface ParsedArgs {
   cleanup: boolean;
   port: number;
   noOpen: boolean;
+  /** `false` when `--no-auto-update` (or env LATTICE_NO_AUTO_UPDATE=1) disables the GUI's auto-update. */
+  autoUpdate: boolean;
   host: string;
   /** --name <display> — workspace / user display name (workspace create, gui). */
   displayName?: string | undefined;
@@ -91,6 +93,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let cleanup = false;
   let port = 4317;
   let noOpen = false;
+  let autoUpdate = true;
   let host = '127.0.0.1';
   let subcommand: string | undefined;
   let displayName: string | undefined;
@@ -174,6 +177,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (!isNaN(parsed)) port = parsed;
     } else if (arg === '--no-open') {
       noOpen = true;
+    } else if (arg === '--no-auto-update') {
+      autoUpdate = false;
     } else if (arg === '--host' && i + 1 < argv.length) {
       i++;
       host = argv[i] ?? host;
@@ -219,6 +224,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     cleanup,
     port,
     noOpen,
+    // Env var is the inheritance channel: the supervisor re-spawns the child via
+    // argv, but the desktop shell and any wrapper set the env instead — honor both.
+    autoUpdate: autoUpdate && process.env.LATTICE_NO_AUTO_UPDATE !== '1',
     host,
     displayName,
     root,
@@ -293,6 +301,7 @@ function printHelp(): void {
       '  --output <dir>         Output directory for rendered context (default: ./context)',
       '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
       '  --no-open              Do not open the browser automatically',
+      '  --no-auto-update       Pin to the current version (disable the GUI auto-update)',
       '',
       'Options (init / workspace):',
       '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
@@ -773,7 +782,13 @@ async function runGui(args: ParsedArgs): Promise<void> {
   // self-updates with no manual refresh. The supervised child (and any
   // non-installable context — dev checkout, npx) falls through to run the server
   // directly. `LATTICE_GUI_SUPERVISED` prevents infinite re-supervision.
-  if (!process.env.LATTICE_GUI_SUPERVISED && detectInstallContext().installable) {
+  // `--no-auto-update` skips supervision entirely: run the server in place with
+  // no startup install and no background relaunch.
+  if (
+    args.autoUpdate &&
+    !process.env.LATTICE_GUI_SUPERVISED &&
+    detectInstallContext().installable
+  ) {
     try {
       await superviseGui({
         cliPath: process.argv[1] ?? '',
@@ -813,6 +828,8 @@ async function runGui(args: ParsedArgs): Promise<void> {
       autoRender: true,
       version: getVersion(),
       guiAssetsDir: getGuiAssetsDir(),
+      // Master switch: --no-auto-update (or LATTICE_NO_AUTO_UPDATE=1) pins the version.
+      autoUpdate: args.autoUpdate,
       // Only a supervised child polls + relaunches: exiting to apply an update is
       // safe solely when the supervisor is there to respawn it.
       selfUpdate: process.env.LATTICE_GUI_SUPERVISED === '1',
