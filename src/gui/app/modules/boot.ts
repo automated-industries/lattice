@@ -30,6 +30,11 @@ export const bootJs = `    // ────────────────�
       // the async workspace bootstrap. checkServerVersion() refreshes it later.
       wireUpdateLink();
       checkUpdateAvailable();
+      // Re-poll on a slow cadence so a window left open for hours/days still
+      // surfaces a newer version. checkServerVersion() also refreshes this on
+      // every socket reconnect, but a stable connection never reconnects, so a
+      // long-open desktop/web window would otherwise never re-check.
+      setInterval(checkUpdateAvailable, 30 * 60 * 1000);
       // Failsafe: never leave the overlay up forever if a fetch hangs without
       // rejecting, or a future early-return (e.g. the virgin-state screen)
       // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.
