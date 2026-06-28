@@ -11,7 +11,7 @@ import { buildProvenanceGraph, labelForSource, relFor } from '../../src/gui/prov
 /**
  * Data-provenance builder: traces an object's sources across the raw / computed
  * / observation tiers from connector lineage, the __lattice_lineage table, and
- * AI-authored audit rows — with bounded (bounded reads) reads.
+ * AI-authored audit rows — with bounded reads.
  */
 describe('provenance graph (SQLite)', () => {
   let db: Lattice | undefined;
@@ -188,7 +188,7 @@ describe('provenance graph (SQLite)', () => {
     }
   });
 
-  it('reads connected data via grouped aggregate, never an unbounded row query (bounded reads)', async () => {
+  it('reads connected data via grouped aggregate, never an unbounded row query', async () => {
     const d = await setup();
     const cid = await createConnector(d, {
       connector: 'jira',

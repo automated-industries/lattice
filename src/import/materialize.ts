@@ -216,7 +216,7 @@ export async function materializeImport(
       rowsByTable[entity.name] = n;
       // Provenance: record the import as a table-level (computed-tier) source.
       // objectId '*' is the table-level sentinel — per-row import lineage would
-      // require an unbounded re-read of the just-seeded rows (bounded reads).
+      // require an unbounded re-read of the just-seeded rows.
       await recordLineage(db.adapter, [
         {
           objectTable: entity.name,
