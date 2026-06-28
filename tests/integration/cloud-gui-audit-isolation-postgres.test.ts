@@ -59,6 +59,7 @@ function defineAudit(db: Lattice): void {
       before_json: 'TEXT',
       after_json: 'TEXT',
       session_id: 'TEXT',
+      source: 'TEXT',
     },
     render: () => '',
     outputFile: '_audit.md',

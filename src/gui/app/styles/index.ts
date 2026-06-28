@@ -11,6 +11,7 @@ import { dashboardCss } from './dashboard.js';
 import { tableViewCss } from './table-view.js';
 import { detailViewCss } from './detail-view.js';
 import { dataModelCss } from './data-model.js';
+import { provenanceCss } from './provenance.js';
 import { toastCss } from './toast.js';
 import { buttonsCss } from './buttons.js';
 import { renderedContextCss } from './rendered-context.js';
@@ -39,6 +40,7 @@ export const css = [
   tableViewCss,
   detailViewCss,
   dataModelCss,
+  provenanceCss,
   toastCss,
   buttonsCss,
   renderedContextCss,

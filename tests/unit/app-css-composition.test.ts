@@ -12,10 +12,10 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently: the 4.3 inline-HTML-file styles (a taller `.html-frame` for a
-// live HTML file plus its `.html-badge`) in the file-preview segment.
-const ORIGINAL_LENGTH = 92788;
-const ORIGINAL_SHA256 = 'f7915d6ed3642362ddce80f8f27908bda77c1aa02de4f8bf0e1f3404f133458e';
+// Most recently: the data-provenance styles (per-tier node colors, the source
+// table, the collapsed detail panel) plus the collapsible sidebar-group rules.
+const ORIGINAL_LENGTH = 96623;
+const ORIGINAL_SHA256 = '98bbad05ac38f00c43a220151680e86a3f687fff53702ba2b460c45caac79088';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
