@@ -21,6 +21,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   reports as stale. (Configurable distance metric is deferred to a follow-up — it
   changes scoring semantics across the scan + both backends and warrants its own
   per-metric recall validation.)
+- **Opt-in half-precision (`halfvec`) index storage** (pgvector ≥ 0.7) via
+  `embeddings.index.quantization = 'halfvec'`: stores the derived ANN index at
+  16-bit half precision — roughly halving its memory — while the embeddings store
+  stays full precision, so the scan fallback (and any later full-precision rebuild)
+  remains exact. Build, incremental maintenance, and query all cast to the index's
+  actual column type. Default `'none'` (full-precision `vector`) is unchanged.
+  Sharding / replication / a distributed index remain out of scope (see
+  `docs/retrieval.md` § Scale) — Lattice runs against a single Postgres/SQLite;
+  reach for a dedicated vector database when you outgrow that.
 - **Semantic + hybrid search now work for cloud members, confined to the rows
   they may see.** A scoped cloud member has no grant on the internal embeddings
   store or the native vector index, so `search()` / `hybridSearch()` previously

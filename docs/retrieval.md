@@ -122,6 +122,17 @@ registry; `lattice reindex <table>` rebuilds one table's index, and `lattice doc
 --fix` rebuilds any index it reports stale. An auto-rebuild after a bulk
 `refreshEmbeddings` reuses the recorded build params.
 
+**Scale.** For larger corpora, `embeddings.index.quantization = 'halfvec'` (pgvector
+≥ 0.7) stores the index at 16-bit half precision — roughly halving its memory at a
+small recall cost — while the embeddings store stays full precision, so the exact
+scan fallback and any later full-precision rebuild are unaffected. Lattice runs
+against a **single** Postgres or SQLite database: there is no sharding, no
+replication, and no distributed index, and `search()` / `hybridSearch()` keep the
+`topK ≤ 1000` bound (`SEARCH_TOPK_MAX`) so one query can't fan out into a
+whole-table read. These are deliberate boundaries — when you need billions of
+vectors, horizontal scale-out, or a managed vector service, run a dedicated vector
+database alongside Lattice and keep Lattice as the system of record.
+
 > **v4.2 — bounded retrieval reads.** `search()` / `hybridSearch()` clamp the
 > caller's `topK` (`clampTopK`, `SEARCH_TOPK_MAX = 1000`) **before** the indexed
 > arm over-fetches `topK * N` candidates, so a single large `topK` can't fan out
