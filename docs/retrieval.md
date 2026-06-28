@@ -92,6 +92,36 @@ Opt-in per-table approximate-nearest-neighbor index built from the stored vector
 `doctor` reports). Requires the extension server-side (pgvector) or loaded
 (sqlite-vec).
 
+Once built, the index is **kept in sync with writes** — you don't rebuild it by
+hand after every change. On Postgres each insert/update/delete mirrors the row
+into the index incrementally (on the same fire-and-forget path as the embedding
+write), and `refreshEmbeddings` reconciles the index after a bulk backfill. As a
+universal safety net across backends, `search()` **verifies the index is in sync
+with the stored vectors before trusting it** (a cheap count-parity check); if the
+index has drifted it transparently falls back to the exact in-process scan over
+the source-of-truth store, so a stale index is never silently served — it only
+ever costs a slower query, never a wrong result. (Incremental per-row maintenance
+is currently Postgres-only; a `sqlite-vec` index falls back to the scan after a
+write until it is rebuilt — correct either way.)
+
+**Cloud members.** In a multi-member cloud, a scoped member has no grant on the
+internal embeddings store or the native index, so its `search()` / `hybridSearch()`
+reach the vectors only through a `SECURITY DEFINER` function that returns just the
+chunks for rows the member may see (filtered by the same row-visibility rule that
+governs every other read, keyed on the member's role) and scores them in-process.
+The member scan is exact and has no over-fetch by which a member could infer hidden
+rows; result rows are re-checked by row-level security on the base relation. Owners
+and local (non-cloud) callers are unaffected — the routing is automatic.
+
+**Tuning & operations.** The HNSW index can be tuned at build time via
+`embeddings.index = { m, efConstruction }` and per query via `search(..., { efSearch })`
+(`hybridSearch` too); all default to pgvector's own values, so omitting them builds
+and queries exactly as before. `lattice index status` shows per-table index health
+(dimension, params, build time, staleness) from an internal `__lattice_vector_index`
+registry; `lattice reindex <table>` rebuilds one table's index, and `lattice doctor
+--fix` rebuilds any index it reports stale. An auto-rebuild after a bulk
+`refreshEmbeddings` reuses the recorded build params.
+
 > **v4.2 — bounded retrieval reads.** `search()` / `hybridSearch()` clamp the
 > caller's `topK` (`clampTopK`, `SEARCH_TOPK_MAX = 1000`) **before** the indexed
 > arm over-fetches `topK * N` candidates, so a single large `topK` can't fan out

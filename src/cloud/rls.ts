@@ -707,6 +707,40 @@ BEGIN
   END IF;
 END $fn$;
 GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${group};
+
+-- Member-safe semantic-search source. A member has NO grant on the internal
+-- embeddings store (\`_lattice_embeddings\`) or the per-table vector index, so it
+-- reads ONLY the chunk vectors for rows it may see, through these SECURITY DEFINER
+-- functions — filtered by lattice_row_visible (keyed on session_user, the member).
+-- Scoring happens in the app; these gate row visibility only. \`p_table\` is matched
+-- as a VALUE against the table_name column — no dynamic SQL / identifier
+-- interpolation. plpgsql (not sql) so they install even before \`_lattice_embeddings\`
+-- exists: the body binds the table at call time, by which point a searchable cloud
+-- has it. lattice_row_visible runs as this definer (owner) but still keys on the
+-- caller's session_user, so a member can never read another member's vectors.
+CREATE OR REPLACE FUNCTION lattice_visible_embeddings(p_table text)
+RETURNS TABLE(row_pk text, chunk_index int, content text, embedding text, vec_dim int)
+LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+BEGIN
+  RETURN QUERY
+    SELECT e."row_pk", e."chunk_index", e."content", e."embedding", e."vec_dim"
+      FROM "_lattice_embeddings" e
+     WHERE e."table_name" = p_table
+       AND lattice_row_visible(p_table, e."row_pk");
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_visible_embeddings(text) TO ${group};
+
+CREATE OR REPLACE FUNCTION lattice_visible_embedding_count(p_table text)
+RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+DECLARE v_n bigint;
+BEGIN
+  SELECT count(*)::bigint INTO v_n
+    FROM "_lattice_embeddings" e
+   WHERE e."table_name" = p_table
+     AND lattice_row_visible(p_table, e."row_pk");
+  RETURN v_n;
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_visible_embedding_count(text) TO ${group};
 `;
 }
 

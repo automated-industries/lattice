@@ -1,8 +1,19 @@
 import type { StorageAdapter } from '../db/adapter.js';
-import { runAsyncOrSync, allAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
+import {
+  runAsyncOrSync,
+  getAsyncOrSync,
+  allAsyncOrSync,
+  introspectColumnsAsyncOrSync,
+} from '../db/adapter.js';
 import type { Row, EmbeddingsConfig, SearchResult } from '../types.js';
 import { chunkText } from './chunking.js';
-import { vectorIndexAvailable, hasVectorIndex, searchVectorIndex } from './vector-index.js';
+import {
+  vectorIndexAvailable,
+  hasVectorIndex,
+  vectorIndexFresh,
+  searchVectorIndex,
+  syncIndexAfterBulk,
+} from './vector-index.js';
 import { clampTopK } from './limits.js';
 
 /** Internal table that stores one embedding vector per (table, row, chunk). */
@@ -264,16 +275,32 @@ export async function searchByEmbedding(
   topK: number,
   minScore: number,
   pkColumn = 'id',
+  isCloudMember = false,
+  efSearch?: number,
 ): Promise<SearchResult[]> {
   const queryVector = await config.embed(queryText);
   // Bound the candidate fan-out: the indexed arm over-fetches `k * 4` below, so
   // clamp before that multiply rather than trust a caller-supplied topK.
   const k = clampTopK(topK);
 
-  // Native-index fast path (pgvector). Returns ranked (pk, chunk_index, score).
   let ranked: RankedChunk[];
-  if ((await vectorIndexAvailable(adapter)) && (await hasVectorIndex(adapter, table))) {
-    const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore);
+  if (isCloudMember) {
+    // A cloud member has no grant on the internal embeddings store or the native
+    // index, so it can use neither the index nor a direct scan. Read only the
+    // chunks for rows it may see (via a SECURITY DEFINER function) and score them
+    // in-process — exact (no recall loss) and visibility-correct, with no
+    // over-fetch channel by which a member could infer rows hidden from it.
+    ranked = await scanVisibleChunks(adapter, table, queryVector, minScore, config.maxScanChunks);
+  } else if (
+    // Native-index fast path (pgvector). The index is used only when it exists AND
+    // is in sync with the stored vectors; a drifted index falls back to the exact
+    // in-process scan so search never serves results from a stale index (the scan
+    // reads the source-of-truth store directly).
+    (await vectorIndexAvailable(adapter)) &&
+    (await hasVectorIndex(adapter, table)) &&
+    (await vectorIndexFresh(adapter, table))
+  ) {
+    const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore, efSearch);
     ranked = hits.map((h) => ({
       pk: h.pk,
       score: h.score,
@@ -294,12 +321,14 @@ export async function searchByEmbedding(
   if (rankedRows.length === 0) return [];
 
   // Fetch the candidate rows, excluding soft-deleted ones, then assemble the
-  // top-K in ranked order from the live set.
+  // top-K in ranked order from the live set. (Row-level RLS on the base relation
+  // independently re-checks visibility for a member — defense in depth.)
   const live = await fetchLiveRows(
     adapter,
     table,
     rankedRows.map((r) => r.pk),
     pkColumn,
+    isCloudMember,
   );
   const results: SearchResult[] = [];
   for (const r of rankedRows) {
@@ -314,6 +343,32 @@ export async function searchByEmbedding(
     if (results.length >= k) break;
   }
   return results;
+}
+
+/** Cosine-score already-fetched chunk rows against the query, keeping those ≥ minScore. */
+function scoreStoredChunks(
+  table: string,
+  stored: Row[],
+  queryVector: number[],
+  minScore: number,
+): RankedChunk[] {
+  const out: RankedChunk[] = [];
+  for (const entry of stored) {
+    const vec = JSON.parse(entry.embedding as string) as number[];
+    if (vec.length !== queryVector.length) {
+      throw new EmbeddingDimensionMismatchError(table, queryVector.length, vec.length);
+    }
+    const score = cosineSimilarity(queryVector, vec);
+    if (score >= minScore) {
+      out.push({
+        pk: entry.row_pk as string,
+        score,
+        chunkIndex: Number(entry.chunk_index ?? 0),
+        content: (entry.content as string | null) ?? null,
+      });
+    }
+  }
+  return out;
 }
 
 /** In-process cosine scan over the stored chunk vectors for a table. */
@@ -341,44 +396,82 @@ async function scanChunks(
     `SELECT "row_pk", "chunk_index", "content", "embedding", "vec_dim" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
     [table],
   );
-  const out: RankedChunk[] = [];
-  for (const entry of stored) {
-    const vec = JSON.parse(entry.embedding as string) as number[];
-    if (vec.length !== queryVector.length) {
-      throw new EmbeddingDimensionMismatchError(table, queryVector.length, vec.length);
-    }
-    const score = cosineSimilarity(queryVector, vec);
-    if (score >= minScore) {
-      out.push({
-        pk: entry.row_pk as string,
-        score,
-        chunkIndex: Number(entry.chunk_index ?? 0),
-        content: (entry.content as string | null) ?? null,
-      });
-    }
-  }
-  return out;
+  return scoreStoredChunks(table, stored, queryVector, minScore);
 }
 
-/** Fetch the given pks that are not soft-deleted, keyed by pk. */
-async function fetchLiveRows(
+/**
+ * Member-scoped cosine scan. A cloud member has no grant on the internal
+ * embeddings store, so it reads only the chunk vectors for rows it may see via the
+ * `lattice_visible_embeddings` SECURITY DEFINER function (filtered by
+ * `lattice_row_visible`, keyed on the member's role) and scores them in-process.
+ * Identical scoring to {@link scanChunks}; the `maxScanChunks` bound counts the
+ * member-visible set (its `lattice_visible_embedding_count` companion).
+ */
+async function scanVisibleChunks(
+  adapter: StorageAdapter,
+  table: string,
+  queryVector: number[],
+  minScore: number,
+  maxScanChunks?: number,
+): Promise<RankedChunk[]> {
+  if (maxScanChunks !== undefined) {
+    const countRow = await getAsyncOrSync(
+      adapter,
+      `SELECT lattice_visible_embedding_count(?) AS n`,
+      [table],
+    );
+    const n = Number(countRow?.n ?? 0);
+    if (n > maxScanChunks) throw new EmbeddingScanTooLargeError(table, n, maxScanChunks);
+  }
+  const stored = await allAsyncOrSync(adapter, `SELECT * FROM lattice_visible_embeddings(?)`, [
+    table,
+  ]);
+  return scoreStoredChunks(table, stored, queryVector, minScore);
+}
+
+/**
+ * The relation a caller should read a table's rows FROM. Owners (and all local /
+ * non-cloud callers) read the base table. A cloud member reads the `<table>_v`
+ * audience view when one exists (masked tables revoke a member's base SELECT and
+ * expose the view instead); otherwise the base table, which carries the member's
+ * row-level RLS filter. Either way the read is visibility-filtered for the member.
+ */
+async function readRelation(
+  adapter: StorageAdapter,
+  table: string,
+  isCloudMember: boolean,
+): Promise<string> {
+  if (!isCloudMember || adapter.dialect !== 'postgres') return table;
+  const row = await getAsyncOrSync(adapter, `SELECT to_regclass(?) AS reg`, [`${table}_v`]);
+  return row && (row as { reg?: unknown }).reg != null ? `${table}_v` : table;
+}
+
+/**
+ * Fetch the given pks that are not soft-deleted, keyed by pk. Shared by semantic
+ * and hybrid search. For a cloud member the read goes through the member-readable
+ * relation (audience view or RLS-filtered base table), so row visibility is
+ * re-enforced here independently of how the candidate pks were produced.
+ */
+export async function fetchLiveRows(
   adapter: StorageAdapter,
   table: string,
   pks: string[],
   pkColumn: string,
+  isCloudMember = false,
 ): Promise<Map<string, Row>> {
   const out = new Map<string, Row>();
   if (pks.length === 0) return out;
+  const relation = await readRelation(adapter, table, isCloudMember);
   let cols: string[] = [];
   try {
-    cols = await introspectColumnsAsyncOrSync(adapter, table);
+    cols = await introspectColumnsAsyncOrSync(adapter, relation);
   } catch {
     cols = [];
   }
   const hasDeletedAt = cols.includes('deleted_at');
   const placeholders = pks.map(() => '?').join(', ');
   const where = `"${pkColumn}" IN (${placeholders})${hasDeletedAt ? ' AND "deleted_at" IS NULL' : ''}`;
-  const rows = await allAsyncOrSync(adapter, `SELECT * FROM "${table}" WHERE ${where}`, pks);
+  const rows = await allAsyncOrSync(adapter, `SELECT * FROM "${relation}" WHERE ${where}`, pks);
   for (const row of rows) {
     const key = pkToString(row[pkColumn]);
     if (key !== null) out.set(key, row);
@@ -500,6 +593,10 @@ export async function refreshEmbeddings(
       removed++;
     }
   }
+
+  // Keep an existing native index in step with the refreshed vectors so semantic
+  // search keeps using the index (not the scan fallback) after a bulk backfill.
+  await syncIndexAfterBulk(adapter, table);
 
   return { embedded, skipped, removed };
 }

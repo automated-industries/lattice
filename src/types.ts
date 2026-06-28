@@ -622,6 +622,18 @@ export interface FtsConfig {
 }
 
 /**
+ * Native ANN index build tuning (pgvector HNSW). Defaults match pgvector's own,
+ * so omitting this builds exactly as before. Has no effect on the in-process scan
+ * or on sqlite-vec.
+ */
+export interface VectorIndexOptions {
+  /** HNSW graph degree `m` (pgvector default 16). Higher → better recall, more memory + slower build. */
+  m?: number;
+  /** HNSW build candidate-list size `ef_construction` (pgvector default 64). Higher → better recall, slower build. */
+  efConstruction?: number;
+}
+
+/**
  * Configuration for embedding-based semantic search on a table.
  */
 export interface EmbeddingsConfig {
@@ -663,6 +675,12 @@ export interface EmbeddingsConfig {
    * so it fails loudly and tells you to add a pgvector index or raise the cap.
    */
   maxScanChunks?: number;
+  /**
+   * Optional native-index build tuning (pgvector HNSW `m` / `ef_construction`),
+   * applied by `buildVectorIndex`. Omit for pgvector's defaults. No effect on the
+   * in-process scan or sqlite-vec. Backward compatible — omitting it builds as before.
+   */
+  index?: VectorIndexOptions;
 }
 
 /**
@@ -690,6 +708,12 @@ export interface SearchOptions {
    * to `topK`. Defaults to `max(topK * 4, 20)`. Ignored when no reranker is set.
    */
   rerankPoolSize?: number;
+  /**
+   * Query-time HNSW search breadth (pgvector `hnsw.ef_search`) for the indexed
+   * vector arm. Higher trades latency for recall. Omit for pgvector's default. No
+   * effect without a native index (the in-process scan is already exact).
+   */
+  efSearch?: number;
 }
 
 /**
