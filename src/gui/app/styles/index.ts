@@ -25,7 +25,6 @@ import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
 import { statusIndicatorCss } from './status-indicator.js';
-import { graphIngestAnimationCss } from './graph-ingest-animation.js';
 import { fileDocCss } from './file-doc.js';
 
 export const css = [
@@ -53,6 +52,5 @@ export const css = [
   tabsCss,
   sourcesCss,
   statusIndicatorCss,
-  graphIngestAnimationCss,
   fileDocCss,
 ].join('');
