@@ -100,7 +100,11 @@ import {
   concatRowText,
 } from './search/embeddings.js';
 import type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
-import { buildVectorIndex } from './search/vector-index.js';
+import {
+  buildVectorIndex,
+  mirrorVectorIndexRow,
+  removeVectorIndexRow,
+} from './search/vector-index.js';
 import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
 import { hybridSearch } from './search/hybrid.js';
 import type { HybridSearchOptions, HybridSearchResult } from './search/hybrid.js';
@@ -3139,12 +3143,19 @@ export class Lattice {
       }
     };
 
+    // After the store write resolves, mirror the change into the native vector
+    // index (no-op when none exists) on the SAME fire-and-forget chain — so an
+    // existing index stays in lock-step with writes instead of silently drifting.
     if (op === 'delete') {
-      removeEmbedding(this._adapter, table, pk).catch(handle);
+      removeEmbedding(this._adapter, table, pk)
+        .then(() => removeVectorIndexRow(this._adapter, table, pk))
+        .catch(handle);
       return;
     }
 
-    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch(handle);
+    storeEmbedding(this._adapter, table, pk, row, def.embeddings)
+      .then(() => mirrorVectorIndexRow(this._adapter, table, pk))
+      .catch(handle);
   }
 
   // -------------------------------------------------------------------------
