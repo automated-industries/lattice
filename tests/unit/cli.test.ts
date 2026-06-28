@@ -41,6 +41,7 @@ function parseArgs(argv: string[]): {
   protected: string[];
   port: number;
   noOpen: boolean;
+  autoUpdate: boolean;
 } {
   let command: string | undefined;
   let config = './lattice.config.yml';
@@ -55,6 +56,7 @@ function parseArgs(argv: string[]): {
   const protectedFiles: string[] = [];
   let port = 4317;
   let noOpen = false;
+  let autoUpdate = true;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -95,6 +97,8 @@ function parseArgs(argv: string[]): {
       if (!isNaN(parsed)) port = parsed;
     } else if (arg === '--no-open') {
       noOpen = true;
+    } else if (arg === '--no-auto-update') {
+      autoUpdate = false;
     }
     i++;
   }
@@ -113,6 +117,7 @@ function parseArgs(argv: string[]): {
     protected: protectedFiles,
     port,
     noOpen,
+    autoUpdate: autoUpdate && process.env.LATTICE_NO_AUTO_UPDATE !== '1',
   };
 }
 
@@ -311,6 +316,16 @@ describe('parseArgs() — global flags', () => {
     const args = parseArgs(['render', '-c', './my.yml']);
     expect(args.config).toBe('./my.yml');
   });
+
+  it('auto-update defaults on', () => {
+    const args = parseArgs(['gui']);
+    expect(args.autoUpdate).toBe(true);
+  });
+
+  it('--no-auto-update disables auto-update', () => {
+    const args = parseArgs(['gui', '--no-auto-update']);
+    expect(args.autoUpdate).toBe(false);
+  });
 });
 
 describe('help text', () => {
@@ -354,5 +369,11 @@ describe('help text', () => {
     const cliPath = resolve(import.meta.dirname, '../../src/cli.ts');
     const src = readFileSync(cliPath, 'utf-8');
     expect(src).toContain('--dry-run');
+  });
+
+  it('includes --no-auto-update flag documentation', () => {
+    const cliPath = resolve(import.meta.dirname, '../../src/cli.ts');
+    const src = readFileSync(cliPath, 'utf-8');
+    expect(src).toContain('--no-auto-update');
   });
 });

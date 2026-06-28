@@ -14,8 +14,14 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { analyticsEnabled } from './framework/user-config.js';
 
-/** How the running copy of the package was installed. */
-export type InstallKind = 'global' | 'local' | 'npx' | 'linked-dev' | 'unknown';
+/**
+ * How the running copy of the package was installed. `desktop` is the bundled
+ * desktop app (a compiled binary, not an npm install): it is never
+ * `installable` via npm, but it CAN update itself through its own bundled
+ * updater, so the GUI surfaces a "restart to update" action for it rather than
+ * the npm "upgrade in place" action.
+ */
+export type InstallKind = 'global' | 'local' | 'npx' | 'linked-dev' | 'unknown' | 'desktop';
 
 export interface InstallContext {
   kind: InstallKind;

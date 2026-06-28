@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { isValidVersion } from './update-context.js';
 
 interface CachedCheck {
   latest: string;
@@ -9,7 +10,13 @@ interface CachedCheck {
 
 const ONE_DAY_MS = 86_400_000;
 
-function isNewer(latest: string, current: string): boolean {
+/**
+ * True when `latest` is a strictly higher version than `current`. Numeric,
+ * dot-segment compare — correct for plain `X.Y.Z` releases. Prerelease tags
+ * (`-beta.1`) are NOT ordered (a segment like `3-beta` parses to NaN and
+ * compares false), so callers that may see prereleases must guard accordingly.
+ */
+export function isNewer(latest: string, current: string): boolean {
   const a = latest.split('.').map(Number);
   const b = current.split('.').map(Number);
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -77,4 +84,43 @@ export async function checkForUpdate(
   }
 
   return isNewer(latest, currentVersion) ? latest : null;
+}
+
+/**
+ * Desktop update probe. Reads the release manifest the bundled binary updater
+ * pulls from (`<baseUrl>latest.json`, written by `gen-desktop-manifest.mjs` with
+ * a `version` field) and returns that version when it's newer than `current`,
+ * else null.
+ *
+ * Unlike the binary updater, this is a pure READ — it never downloads the
+ * installer or relaunches — so a long-running desktop window can surface an
+ * "update available" hint without disrupting the user; applying the update stays
+ * an explicit, user-triggered action. Best-effort: any network/parse/validation
+ * failure resolves to null (the hint simply doesn't appear; never a crash, never
+ * a false "up to date"). No on-disk cache: the manifest is small and the caller
+ * polls on a slow cadence.
+ */
+export async function checkManifestForUpdate(
+  baseUrl: string,
+  currentVersion: string,
+): Promise<string | null> {
+  let res: Response;
+  try {
+    res = await fetch(new URL('latest.json', baseUrl), {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    return null; // offline / DNS / timeout — retried on the next poll tick
+  }
+  if (!res.ok) return null;
+  let version: string;
+  try {
+    const data = (await res.json()) as { version?: unknown };
+    version = typeof data.version === 'string' ? data.version : '';
+  } catch {
+    return null; // malformed manifest
+  }
+  if (!isValidVersion(version)) return null; // missing/non-string/garbage version
+  return isNewer(version, currentVersion) ? version : null;
 }
