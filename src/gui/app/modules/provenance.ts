@@ -143,7 +143,7 @@ export const provenanceJs = `
         var count = ((payload && payload.nodes) ? payload.nodes : [])
           .filter(function (n) { return n.type !== 'object'; }).length;
         content.innerHTML =
-          '<a class="breadcrumb" href="#/objects/' + encodeURIComponent(table) + '">\\u2190 ' + escapeHtml(d.label) + '</a>' +
+          '<a class="breadcrumb" href="#/graph">\\u2190 Brain Graph</a>' +
           '<div class="view-header">' +
             '<span class="entity-icon">' + d.icon + '</span>' +
             '<h1>' + escapeHtml(d.label) + '</h1>' +
