@@ -631,6 +631,14 @@ export interface VectorIndexOptions {
   m?: number;
   /** HNSW build candidate-list size `ef_construction` (pgvector default 64). Higher → better recall, slower build. */
   efConstruction?: number;
+  /**
+   * Index storage precision. `'halfvec'` (pgvector ≥ 0.7) stores the derived index
+   * at 16-bit half precision — roughly halving its memory at a small recall cost —
+   * while the embeddings store stays full precision, so the scan fallback remains
+   * exact. Default `'none'` (full-precision `vector`). pgvector only; ignored on
+   * sqlite-vec.
+   */
+  quantization?: 'none' | 'halfvec';
 }
 
 /**
