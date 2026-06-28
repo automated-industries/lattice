@@ -11,7 +11,11 @@ import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Lattice } from '../../src/lattice.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../../src/db/adapter.js';
-import { vectorIndexAvailable, hasVectorIndex } from '../../src/search/vector-index.js';
+import {
+  vectorIndexAvailable,
+  hasVectorIndex,
+  vectorIndexFresh,
+} from '../../src/search/vector-index.js';
 import { semanticChunker } from '../../src/search/chunking.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -146,6 +150,37 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
     } else {
       expect(n).toBe(0);
     }
+  });
+
+  it('keeps the native index in sync with writes — no manual rebuild (pgvector only)', async () => {
+    if (!(await vectorIndexAvailable(db.adapter))) return; // the index path requires pgvector
+    // The index was built in the previous test; a brand-new row must become
+    // searchable through the index WITHOUT anyone calling buildVectorIndex again.
+    await db.insert(table, {
+      id: 'sync1',
+      title: 'logistics',
+      body: 'logistics sync payload about shipping lanes',
+    });
+    await waitForEmbedding('sync1');
+
+    // The index mirror runs on the same fire-and-forget chain just after the store
+    // write; poll until the index is back in lock-step with the store. That it
+    // converges proves incremental maintenance updated the index itself — not just
+    // that the freshness guard fell back to the scan.
+    const deadline = Date.now() + 5000;
+    while (!(await vectorIndexFresh(db.adapter, table))) {
+      if (Date.now() > deadline) throw new Error('index did not converge to fresh after insert');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(await vectorIndexFresh(db.adapter, table)).toBe(true);
+
+    const hits = await db.search(table, 'logistics sync payload shipping', { topK: 5 });
+    expect(hits.map((h) => h.row.id)).toContain('sync1');
+
+    // Deleting the row drops it from index-backed results too.
+    await db.delete(table, 'sync1');
+    const after = await db.search(table, 'logistics sync payload shipping', { topK: 5 });
+    expect(after.map((h) => h.row.id)).not.toContain('sync1');
   });
 });
 
