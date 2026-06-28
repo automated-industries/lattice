@@ -6,6 +6,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Tunable + observable native vector index.** New optional knobs (all default to
+  prior behavior): `embeddings.index = { m, efConstruction }` sets the pgvector HNSW
+  build parameters, and `search()` / `hybridSearch()` accept `efSearch` to set
+  query-time HNSW search breadth (`hnsw.ef_search`). A small internal registry
+  (`__lattice_vector_index`) records each built index's dimension, params, source
+  count, and build time; an auto-rebuild after a bulk refresh reuses the recorded
+  params. New CLI: `lattice reindex <table>` (rebuild) and `lattice index status`
+  (per-table index health), plus `lattice doctor --fix` to rebuild any index it
+  reports as stale. (Configurable distance metric is deferred to a follow-up — it
+  changes scoring semantics across the scan + both backends and warrants its own
+  per-metric recall validation.)
+- **Semantic + hybrid search now work for cloud members, confined to the rows
+  they may see.** A scoped cloud member has no grant on the internal embeddings
+  store or the native vector index, so `search()` / `hybridSearch()` previously
+  could not serve them. The vector arm now reaches the store only through a new
+  `SECURITY DEFINER` function (`lattice_visible_embeddings`) that returns just the
+  chunk vectors for rows the caller can see — filtered by `lattice_row_visible`,
+  keyed on the member's own role — and scores them in-process. The member scan is
+  exact (no recall loss) and has no over-fetch channel by which a member could
+  infer the existence of rows hidden from it; row materialization additionally
+  re-checks visibility via row-level security on the base relation (or the masked
+  audience view). The routing is automatic — owners and local/non-cloud callers
+  are unchanged.
+
+### Changed
+
+- **The native vector index now stays in sync with writes.** Previously
+  `buildVectorIndex` produced a point-in-time snapshot that silently went stale as
+  rows changed, so semantic search could return outdated results until the index
+  was manually rebuilt. Now, once an index exists:
+  - inserts / updates / deletes mirror the affected row into the index
+    incrementally on Postgres/pgvector (on the same background path as the
+    embedding write);
+  - `refreshEmbeddings` reconciles the index after a bulk backfill;
+  - `search()` verifies the index is in sync with the stored vectors before using
+    it (a cheap count-parity check), and otherwise falls back to the exact
+    in-process scan — so a drifted index is never silently served: at worst a
+    slower query, never a wrong result.
+
+  Backward compatible: tables without a native index are unaffected, the public
+  API is unchanged, and default behavior matches prior releases.
+
+### Fixed
+
+- **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
+  single transaction, so an interrupted build can no longer leave a half-filled
+  index that looks complete.
+
+---
+
 ## [4.3.8] — 2026-06-25
 
 Patch release. Finishes the job 4.3.7 started: makes the **entire class** of
