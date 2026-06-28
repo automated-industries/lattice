@@ -46,7 +46,9 @@ interface El {
   setPointerCapture(pointerId: number): void;
   releasePointerCapture(pointerId: number): void;
   readonly firstChild: El | null;
-  readonly style: Record<string, string>;
+  readonly style: Record<string, string> & {
+    setProperty(prop: string, value: string): void;
+  };
   textContent: string;
   clientWidth: number;
   clientHeight: number;
@@ -66,6 +68,9 @@ declare const document: {
 };
 declare function requestAnimationFrame(cb: () => void): number;
 declare function cancelAnimationFrame(handle: number): void;
+declare const ResizeObserver:
+  | (new (cb: () => void) => { observe(el: El): void; disconnect(): void })
+  | undefined;
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -183,6 +188,21 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   svg.appendChild(stage);
   mount.appendChild(svg);
 
+  // Re-fit once the mount first gets a real size — it can mount at 0×0 while a
+  // freshly-set innerHTML lays out, which would otherwise leave the graph framed
+  // against the 900/600 fallback (clustered in a corner).
+  if (typeof ResizeObserver !== 'undefined') {
+    let refit = false;
+    const ro = new ResizeObserver(() => {
+      if (!refit && mount.clientWidth && mount.clientHeight) {
+        refit = true;
+        fitAll();
+        ro.disconnect();
+      }
+    });
+    ro.observe(mount);
+  }
+
   const nodeMap = new Map<string, FNode>();
   const edges: FEdge[] = [];
   const view = { k: 1, x: 0, y: 0 };
@@ -200,6 +220,10 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       'transform',
       `translate(${fmt(view.x)},${fmt(view.y)}) scale(${fmt(view.k)})`,
     );
+    // Counter-scale node labels so they stay a constant ~13px on-screen (matching
+    // the sidebar/tab text) regardless of the stage zoom — the transform's scale()
+    // would otherwise magnify the glyphs back to the old oversized look.
+    svg.style.setProperty('--gnode-label-size', `${(13 / view.k).toFixed(2)}px`);
   }
 
   function paint(): void {
@@ -514,6 +538,20 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   }
   function fitTo(ns: FNode[]): void {
     if (!ns.length) return;
+    // Defer the fit until the mount actually has a layout box. A freshly-cleared
+    // mount (or a synchronous reduced-motion settle) can run here at 0×0, where
+    // W()/H() fall back to 900/600 and translate the cluster into a corner. Retry
+    // next frame; the ResizeObserver below also re-fits once the pane sizes up.
+    if (!mount.clientWidth || !mount.clientHeight) {
+      framed = false;
+      requestAnimationFrame(() => {
+        if (!framed) {
+          framed = true;
+          fitTo(ns);
+        }
+      });
+      return;
+    }
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;

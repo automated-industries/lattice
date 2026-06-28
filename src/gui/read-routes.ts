@@ -478,7 +478,13 @@ export async function handleReadRoutes(
       sendJson(res, { error: `Unknown table: ${table}` }, 400);
       return true;
     }
-    sendJson(res, await buildProvenanceGraph(active.db, table));
+    sendJson(
+      res,
+      await buildProvenanceGraph(active.db, table, {
+        configPath: active.configPath,
+        outputDir: active.outputDir,
+      }),
+    );
     return true;
   }
   // GET /api/provenance/row?table=<t>&id=<id> → row-scoped provenance.
@@ -498,7 +504,14 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'Row not found' }, 404);
       return true;
     }
-    sendJson(res, await buildProvenanceGraph(active.db, table, { rowId: id }));
+    sendJson(
+      res,
+      await buildProvenanceGraph(active.db, table, {
+        rowId: id,
+        configPath: active.configPath,
+        outputDir: active.outputDir,
+      }),
+    );
     return true;
   }
 
