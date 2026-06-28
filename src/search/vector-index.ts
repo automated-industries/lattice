@@ -31,6 +31,7 @@ import {
 } from '../db/adapter.js';
 import { EMBEDDINGS_TABLE } from './embeddings.js';
 import { assertSafeIdentifier } from '../schema/identifier.js';
+import type { VectorIndexOptions, Row } from '../types.js';
 
 const VEC_PREFIX = '_lattice_vec_';
 
@@ -147,6 +148,7 @@ export async function buildVectorIndex(
   table: string,
   dim: number,
   requireExtension = false,
+  opts: VectorIndexOptions = {},
 ): Promise<number> {
   // Postgres: pgvector's type/operators don't exist until the extension is
   // enabled in this database. Attempt it idempotently (a server that doesn't ship
@@ -198,10 +200,17 @@ export async function buildVectorIndex(
          FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
-    // HNSW index for approximate nearest neighbor on cosine distance.
+    // HNSW index for approximate nearest neighbor on cosine distance. Optional
+    // build tuning (m / ef_construction) when supplied; otherwise pgvector's own
+    // defaults — so an untuned build is byte-identical to before.
+    const withParams = [
+      hnswIntParam('m', opts.m),
+      hnswIntParam('ef_construction', opts.efConstruction),
+    ].filter((p): p is string => p !== null);
+    const withClause = withParams.length ? ` WITH (${withParams.join(', ')})` : '';
     await runAsyncOrSync(
       adapter,
-      `CREATE INDEX "${idx}_hnsw" ON "${idx}" USING hnsw (embedding vector_cosine_ops)`,
+      `CREATE INDEX "${idx}_hnsw" ON "${idx}" USING hnsw (embedding vector_cosine_ops)${withClause}`,
     );
   } else {
     // sqlite-vec vec0 virtual table.
@@ -237,14 +246,140 @@ export async function buildVectorIndex(
   }
 
   const count = await getAsyncOrSync(adapter, `SELECT count(*) AS n FROM "${idx}"`);
+  const n = Number(count?.n ?? 0);
   setIndexExistence(adapter, table, true);
-  return Number(count?.n ?? 0);
+  await writeVectorMeta(adapter, table, {
+    vecDim: d,
+    metric: 'cosine',
+    // m / ef_construction are pgvector HNSW build params; recorded only where they apply.
+    hnswM: adapter.dialect === 'postgres' ? opts.m : undefined,
+    hnswEfConstruction: adapter.dialect === 'postgres' ? opts.efConstruction : undefined,
+    sourceCount: n,
+    builtAt: new Date().toISOString(),
+  });
+  return n;
 }
 
-/** Drop a table's native vector index. */
+/** Drop a table's native vector index (and its registry row). */
 export async function dropVectorIndex(adapter: StorageAdapter, table: string): Promise<void> {
   await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${vectorIndexName(table)}"`);
   setIndexExistence(adapter, table, false);
+  await deleteVectorMeta(adapter, table);
+}
+
+/** Validate + format an HNSW integer build param for DDL interpolation, or null when unset. */
+function hnswIntParam(name: string, v: number | undefined): string | null {
+  if (v === undefined) return null;
+  const i = Math.trunc(v);
+  if (!Number.isFinite(i) || i <= 0) {
+    throw new Error(`buildVectorIndex: invalid HNSW ${name} ${JSON.stringify(v)}`);
+  }
+  return `${name} = ${String(i)}`;
+}
+
+// ── Index metadata registry ────────────────────────────────────────────────
+// A small bookkeeping table recording what was built per table (dim, metric,
+// HNSW params, source chunk count, build time) for `lattice index status` and
+// `doctor`. Internal (`__lattice_`-prefixed) — never granted to cloud members.
+
+/** Internal registry table of built native vector indexes. */
+export const VEC_META_TABLE = '__lattice_vector_index';
+
+export interface VectorIndexMeta {
+  table: string;
+  vecDim: number;
+  metric: string;
+  hnswM: number | null;
+  hnswEfConstruction: number | null;
+  sourceCount: number;
+  builtAt: string;
+}
+
+async function ensureVectorMetaTable(adapter: StorageAdapter): Promise<void> {
+  await runAsyncOrSync(
+    adapter,
+    `CREATE TABLE IF NOT EXISTS "${VEC_META_TABLE}" (
+       "table_name"           TEXT PRIMARY KEY,
+       "vec_dim"              INTEGER NOT NULL,
+       "metric"               TEXT NOT NULL DEFAULT 'cosine',
+       "hnsw_m"               INTEGER,
+       "hnsw_ef_construction" INTEGER,
+       "source_count"         INTEGER NOT NULL DEFAULT 0,
+       "built_at"             TEXT NOT NULL
+     )`,
+  );
+}
+
+async function writeVectorMeta(
+  adapter: StorageAdapter,
+  table: string,
+  meta: {
+    vecDim: number;
+    metric: string;
+    hnswM?: number | undefined;
+    hnswEfConstruction?: number | undefined;
+    sourceCount: number;
+    builtAt: string;
+  },
+): Promise<void> {
+  await ensureVectorMetaTable(adapter);
+  await runAsyncOrSync(
+    adapter,
+    `INSERT INTO "${VEC_META_TABLE}"
+       ("table_name","vec_dim","metric","hnsw_m","hnsw_ef_construction","source_count","built_at")
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT ("table_name") DO UPDATE SET
+       "vec_dim" = excluded."vec_dim",
+       "metric" = excluded."metric",
+       "hnsw_m" = excluded."hnsw_m",
+       "hnsw_ef_construction" = excluded."hnsw_ef_construction",
+       "source_count" = excluded."source_count",
+       "built_at" = excluded."built_at"`,
+    [
+      table,
+      meta.vecDim,
+      meta.metric,
+      meta.hnswM ?? null,
+      meta.hnswEfConstruction ?? null,
+      meta.sourceCount,
+      meta.builtAt,
+    ],
+  );
+}
+
+async function deleteVectorMeta(adapter: StorageAdapter, table: string): Promise<void> {
+  await ensureVectorMetaTable(adapter);
+  await runAsyncOrSync(adapter, `DELETE FROM "${VEC_META_TABLE}" WHERE "table_name" = ?`, [table]);
+}
+
+/** Read a table's vector-index metadata, or null when none has been recorded. */
+export async function getVectorIndexMeta(
+  adapter: StorageAdapter,
+  table: string,
+): Promise<VectorIndexMeta | null> {
+  // The registry table may not exist yet (no index ever built) — that's "no
+  // metadata", not a failure, so an absent-relation read returns null.
+  let row;
+  try {
+    row = await getAsyncOrSync(
+      adapter,
+      `SELECT "vec_dim","metric","hnsw_m","hnsw_ef_construction","source_count","built_at"
+         FROM "${VEC_META_TABLE}" WHERE "table_name" = ?`,
+      [table],
+    );
+  } catch {
+    return null;
+  }
+  if (!row) return null;
+  return {
+    table,
+    vecDim: Number(row.vec_dim ?? 0),
+    metric: typeof row.metric === 'string' ? row.metric : 'cosine',
+    hnswM: row.hnsw_m == null ? null : Number(row.hnsw_m),
+    hnswEfConstruction: row.hnsw_ef_construction == null ? null : Number(row.hnsw_ef_construction),
+    sourceCount: Number(row.source_count ?? 0),
+    builtAt: typeof row.built_at === 'string' ? row.built_at : '',
+  };
 }
 
 /**
@@ -333,7 +468,14 @@ export async function syncIndexAfterBulk(adapter: StorageAdapter, table: string)
     await dropVectorIndex(adapter, table);
     return;
   }
-  await buildVectorIndex(adapter, table, dim);
+  // Rebuild with the same tuning the index was originally built with (recorded in
+  // the registry), so an auto-rebuild after a bulk refresh preserves the operator's
+  // chosen HNSW params without the caller having to re-supply them.
+  const meta = await getVectorIndexMeta(adapter, table);
+  const rebuildOpts: VectorIndexOptions = {};
+  if (meta?.hnswM != null) rebuildOpts.m = meta.hnswM;
+  if (meta?.hnswEfConstruction != null) rebuildOpts.efConstruction = meta.hnswEfConstruction;
+  await buildVectorIndex(adapter, table, dim, false, rebuildOpts);
 }
 
 /**
@@ -346,28 +488,40 @@ export async function searchVectorIndex(
   queryVector: number[],
   limit: number,
   minScore: number,
+  efSearch?: number,
 ): Promise<VectorHit[]> {
   const idx = vectorIndexName(table);
   const qjson = JSON.stringify(queryVector);
 
   if (adapter.dialect === 'postgres') {
     // `<=>` is cosine distance in [0,2]; similarity = 1 − distance.
-    const rows = await allAsyncOrSync(
-      adapter,
-      `SELECT row_pk, chunk_index, content, 1 - (embedding <=> (?)::vector) AS score
+    const sql = `SELECT row_pk, chunk_index, content, 1 - (embedding <=> (?)::vector) AS score
          FROM "${idx}"
         ORDER BY embedding <=> (?)::vector
-        LIMIT ${String(limit)}`,
-      [qjson, qjson],
-    );
-    return rows
-      .map((r) => ({
-        pk: r.row_pk as string,
-        chunkIndex: Number(r.chunk_index ?? 0),
-        content: (r.content as string | null) ?? null,
-        score: Number(r.score ?? 0),
-      }))
-      .filter((h) => h.score >= minScore);
+        LIMIT ${String(limit)}`;
+    const toHits = (rows: Row[]): VectorHit[] =>
+      rows
+        .map((r) => ({
+          pk: r.row_pk as string,
+          chunkIndex: Number(r.chunk_index ?? 0),
+          content: (r.content as string | null) ?? null,
+          score: Number(r.score ?? 0),
+        }))
+        .filter((h) => h.score >= minScore);
+    // Query-time HNSW breadth: `hnsw.ef_search` is a GUC, so it must be SET on the
+    // same connection that runs the query — pin both in one transaction. Omitted →
+    // pgvector's default, identical to before.
+    if (efSearch !== undefined && adapter.withClient) {
+      const ef = Math.trunc(efSearch);
+      if (!Number.isFinite(ef) || ef <= 0) {
+        throw new Error(`searchVectorIndex: invalid efSearch ${JSON.stringify(efSearch)}`);
+      }
+      return adapter.withClient(async (tx) => {
+        await tx.run(`SET LOCAL hnsw.ef_search = ${String(ef)}`);
+        return toHits(await tx.all(sql, [qjson, qjson]));
+      });
+    }
+    return toHits(await allAsyncOrSync(adapter, sql, [qjson, qjson]));
   }
 
   // sqlite-vec: `distance` is L2 by default; vectors are L2-normalized for

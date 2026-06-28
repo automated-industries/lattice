@@ -69,6 +69,8 @@ interface ParsedArgs {
   topK?: number | undefined;
   /** --explain — print the hybrid-search score breakdown (`search`). */
   explain: boolean;
+  /** --fix — let `doctor` rebuild stale native vector indexes it finds. */
+  fix: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -98,6 +100,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let table: string | undefined;
   let topK: number | undefined;
   let explain = false;
+  let fix = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -117,6 +120,16 @@ function parseArgs(argv: string[]): ParsedArgs {
     // `lattice search <query>` — the next positional is the query text.
     if (command === 'search' && argv[1] !== undefined && !argv[1].startsWith('-')) {
       query = argv[1];
+      i = 2;
+    }
+    // `lattice reindex <table>` — the next positional is the table name.
+    if (command === 'reindex' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      table = argv[1];
+      i = 2;
+    }
+    // `lattice index <subcommand>` — e.g. `index status`.
+    if (command === 'index' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      subcommand = argv[1];
       i = 2;
     }
   }
@@ -174,6 +187,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       json = true;
     } else if (arg === '--explain') {
       explain = true;
+    } else if (arg === '--fix') {
+      fix = true;
     } else if (arg === '--table' && i + 1 < argv.length) {
       i++;
       table = argv[i];
@@ -212,6 +227,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     table,
     topK,
     explain,
+    fix,
   };
 }
 
@@ -236,8 +252,10 @@ function printHelp(): void {
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
-      '  doctor      Report retrieval health (FTS/embedding coverage, extensions)',
+      '  doctor      Report retrieval health (coverage, extensions; --fix rebuilds stale indexes)',
       '  search      Hybrid search a table (--table <t> [--explain] [--topk N])',
+      "  reindex     Rebuild a table's native vector index (reindex <table>)",
+      '  index       Vector index status (index status [--json])',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -440,7 +458,23 @@ async function runDoctor(args: ParsedArgs): Promise<void> {
   const db = new Lattice({ config: resolve(args.config) });
   try {
     await db.init();
-    const report = await db.diagnoseRetrieval();
+    let report = await db.diagnoseRetrieval();
+    if (args.fix) {
+      // Rebuild every index the report flagged stale, then re-diagnose so the
+      // printed report reflects the repaired state.
+      const stale = [
+        ...new Set(
+          [...report.issues, ...report.tables.flatMap((t) => t.issues)].flatMap((iss) =>
+            iss.kind === 'index_stale' && iss.table ? [iss.table] : [],
+          ),
+        ),
+      ];
+      for (const t of stale) {
+        process.stderr.write(`Rebuilding stale vector index for "${t}"…\n`);
+        await db.buildVectorIndex(t);
+      }
+      if (stale.length > 0) report = await db.diagnoseRetrieval();
+    }
     if (args.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
@@ -450,6 +484,93 @@ async function runDoctor(args: ParsedArgs): Promise<void> {
     // Exit non-zero when an error-severity issue exists, so `lattice doctor` can
     // gate CI / a deploy on retrieval health.
     if (!report.healthy) process.exitCode = 1;
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runReindex(args: ParsedArgs): Promise<void> {
+  if (!args.table) {
+    console.error('Usage: lattice reindex <table>');
+    process.exit(1);
+  }
+  const db = new Lattice({ config: resolve(args.config) });
+  try {
+    await db.init();
+    const n = await db.buildVectorIndex(args.table);
+    console.log(
+      n > 0
+        ? `Rebuilt native vector index for "${args.table}" (${String(n)} vectors).`
+        : `No native vector extension available — "${args.table}" uses the in-process scan.`,
+    );
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runIndex(args: ParsedArgs): Promise<void> {
+  const sub = args.subcommand ?? 'status';
+  if (sub !== 'status') {
+    console.error(`Unknown index subcommand: ${sub} (expected: status)`);
+    process.exit(1);
+  }
+  const db = new Lattice({ config: resolve(args.config) });
+  try {
+    await db.init();
+    const report = await db.diagnoseRetrieval();
+    const { getVectorIndexMeta } = await import('./search/vector-index.js');
+    const rows: {
+      table: string;
+      embeddings: number;
+      indexed: boolean;
+      builtAt: string | null;
+      vecDim: number | null;
+      hnswM: number | null;
+      hnswEfConstruction: number | null;
+      stale: boolean;
+    }[] = [];
+    for (const t of report.tables) {
+      const meta = await getVectorIndexMeta(db.adapter, t.table);
+      rows.push({
+        table: t.table,
+        embeddings: t.embeddingCount ?? 0,
+        indexed: meta !== null,
+        builtAt: meta?.builtAt ?? null,
+        vecDim: meta?.vecDim ?? null,
+        hnswM: meta?.hnswM ?? null,
+        hnswEfConstruction: meta?.hnswEfConstruction ?? null,
+        stale: t.issues.some((iss) => iss.kind === 'index_stale'),
+      });
+    }
+    if (args.json) {
+      console.log(
+        JSON.stringify(
+          { dialect: report.dialect, extensions: report.extensions, tables: rows },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(`Vector index status — ${report.dialect}`);
+      if (rows.length === 0) console.log('  (no embedding-enabled tables)');
+      for (const r of rows) {
+        const bits = [
+          `emb=${String(r.embeddings)}`,
+          r.indexed ? `indexed@${String(r.builtAt)}` : 'no-index',
+        ];
+        if (r.indexed && (r.hnswM !== null || r.hnswEfConstruction !== null)) {
+          bits.push(`hnsw(m=${String(r.hnswM)},ef_construction=${String(r.hnswEfConstruction)})`);
+        }
+        if (r.stale) bits.push('STALE — run `lattice reindex` or `doctor --fix`');
+        console.log(`  ${r.table}: ${bits.join(' ')}`);
+      }
+    }
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
@@ -862,6 +983,12 @@ function main(): void {
       break;
     case 'search':
       void runSearch(args);
+      break;
+    case 'reindex':
+      void runReindex(args);
+      break;
+    case 'index':
+      void runIndex(args);
       break;
     default:
       console.error(`Unknown command: ${args.command}`);

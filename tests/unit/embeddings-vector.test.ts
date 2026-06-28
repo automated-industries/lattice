@@ -15,6 +15,7 @@ import {
   hasVectorIndex,
   vectorIndexFresh,
   vectorIndexName,
+  getVectorIndexMeta,
 } from '../../src/search/vector-index.js';
 
 /**
@@ -363,6 +364,16 @@ describe('native vector index — detection + fallback (plain SQLite)', () => {
     db = makeDb();
     await db.init();
     await expect(db.buildVectorIndex('docs')).rejects.toThrow(/no embeddings stored/);
+  });
+
+  it('getVectorIndexMeta returns null when no index has been built', async () => {
+    db = makeDb();
+    await db.init();
+    await runAsyncOrSync(db.adapter, `INSERT INTO docs (id, body) VALUES ('d1','alpha')`);
+    await db.refreshEmbeddings('docs');
+    // No native extension here, so buildVectorIndex no-ops and nothing is recorded —
+    // the registry read returns null gracefully rather than throwing on the absent table.
+    expect(await getVectorIndexMeta(db.adapter, 'docs')).toBeNull();
   });
 });
 
