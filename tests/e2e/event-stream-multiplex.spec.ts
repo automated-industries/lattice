@@ -68,7 +68,12 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
     await expect(t.locator('nav.sidebar')).toBeVisible();
   }
 
-  // Slow every row fetch in the active tab to simulate a large/cloud workspace.
+  // Slow the object-page (provenance) + row fetches in the active tab to simulate
+  // a large/cloud workspace.
+  await page.route('**/api/provenance**', async (route) => {
+    await new Promise((r) => setTimeout(r, 600));
+    await route.continue();
+  });
   await page.route('**/api/tables/**/rows**', async (route) => {
     await new Promise((r) => setTimeout(r, 600));
     await route.continue();
@@ -96,7 +101,7 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
-  await expect(page.locator('.ognode-entity').first()).toBeVisible({
+  await expect(page.locator('#prov-mount')).toBeVisible({
     timeout: 5000,
   });
 

@@ -26,6 +26,19 @@ export const layoutCss = `    /* ── Layout ───────────
     /* Extra breathing room above the "SYSTEM" heading so it isn't cramped
        against the object list above it. */
     #system-section .section-label { margin-top: 20px; }
+    /* The section labels are collapse toggles (a <button> reusing the
+       .section-label type styling). Strip native button chrome; lay the caret +
+       label out in a row; the whole header is clickable. */
+    button.section-label.section-toggle {
+      display: flex; align-items: center; gap: 6px; width: 100%;
+      background: none; border: 0; cursor: pointer; text-align: left; font: inherit;
+      color: var(--text-muted);
+    }
+    .section-toggle .section-caret {
+      font-size: 9px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
+    }
+    .section-toggle:hover .section-label-text { color: var(--text); }
+    .section-body[hidden] { display: none; }
     nav ul { list-style: none; padding: 0; margin: 0; }
     nav li a {
       display: flex; align-items: center; gap: 10px;

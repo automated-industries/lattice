@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { bootGui, createRow, type BootedGui } from './helpers.js';
 
 /**
- * 4.3 — live brain-graph ingestion. While the graph is the visible view,
- * ingesting a file (which emits source:'ingest' feed events) makes the new object
- * appear on the graph LIVE — no reload — flying in from the center as the live
- * force engine reheats with the new node.
+ * Brain-graph ingestion behavior. A file is a SOURCE, not an object: ingesting
+ * one populates the `files` entity (visible in the Sources tree / Objects list)
+ * but must NOT add a node to the brain graph, which shows object↔object
+ * relationships only. This guards the "files is hidden from the graph"
+ * invariant (GRAPH_HIDDEN_TABLES) end-to-end, and that the graph keeps
+ * rendering real objects across an ingest.
  */
 
 let gui: BootedGui;
@@ -23,25 +25,39 @@ test.afterEach(async () => {
   rmSync(srcDir, { recursive: true, force: true });
 });
 
-test('a newly ingested object appears on the graph live (no reload)', async ({ page }) => {
-  // Seed one object so the graph is non-empty + the delta baseline is established.
+test('an ingested file does not appear as a brain-graph node (files is a source)', async ({
+  page,
+}) => {
+  // Seed one real object so the graph is non-empty.
   await createRow(gui.url, 'items', { name: 'seed' });
   await page.goto(gui.url + '#/graph');
   await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
-  // `files` has no rows yet → no node.
+  // No files yet → no files node (files is never a graph node regardless).
   await expect(page.locator('g.gnode[data-id="files"]')).toHaveCount(0);
 
-  // Ingest a file via the real API; the server emits source:'ingest' feed events
-  // over the stream the page is listening on.
+  // Ingest a real file via the API.
   const res = await page.request.post(gui.url + '/api/sources/roots', {
     data: { path: srcDir, kind: 'folder' },
   });
   expect(res.ok()).toBeTruthy();
 
-  // The files node appears LIVE — the live engine appended it and reheated the
-  // layout in place, with no page reload.
-  const filesNode = page.locator('g.gnode[data-id="files"]');
-  await expect(filesNode).toBeVisible({ timeout: 10000 });
-  // …and it is a fully rendered graph node (the engine drew its dot), not a stub.
-  await expect(filesNode.locator('.gnode-dot')).toBeVisible();
+  // The file really landed (a `files` row now exists server-side)…
+  await expect
+    .poll(
+      async () => {
+        const r = await page.request.get(gui.url + '/api/tables/files/rows');
+        if (!r.ok()) return 0;
+        const body = await r.json();
+        const rows = Array.isArray(body) ? body : (body.rows ?? []);
+        return rows.length;
+      },
+      { timeout: 10000 },
+    )
+    .toBeGreaterThan(0);
+
+  // …but reloading the graph shows NO files node (files is a source, not an
+  // object), while the real `items` object remains.
+  await page.reload();
+  await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('g.gnode[data-id="files"]')).toHaveCount(0);
 });
