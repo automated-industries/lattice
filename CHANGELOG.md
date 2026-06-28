@@ -8,6 +8,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Semantic + hybrid search now work for cloud members, confined to the rows
+  they may see.** A scoped cloud member has no grant on the internal embeddings
+  store or the native vector index, so `search()` / `hybridSearch()` previously
+  could not serve them. The vector arm now reaches the store only through a new
+  `SECURITY DEFINER` function (`lattice_visible_embeddings`) that returns just the
+  chunk vectors for rows the caller can see — filtered by `lattice_row_visible`,
+  keyed on the member's own role — and scores them in-process. The member scan is
+  exact (no recall loss) and has no over-fetch channel by which a member could
+  infer the existence of rows hidden from it; row materialization additionally
+  re-checks visibility via row-level security on the base relation (or the masked
+  audience view). The routing is automatic — owners and local/non-cloud callers
+  are unchanged.
+
 ### Changed
 
 - **The native vector index now stays in sync with writes.** Previously
