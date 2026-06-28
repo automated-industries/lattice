@@ -633,13 +633,16 @@ export const dashboardJs = `    // ───────────────
             lastEditedLineEl(tableName, id) +
             (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
             '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
-            '<div id="row-context"></div>';
+            '<div id="row-context"></div>' +
+            (editing ? '' : '<div id="row-provenance"></div>');
 
           // Seed "last edited by" for this table (cloud only; no-op locally).
           if (!editing) seedLastEdited(tableName);
           // Skip the context fetch while editing — the just-PATCHed row may
           // not have re-rendered yet, so we'd flash stale content.
           if (!editing) loadRowContext(tableName, id);
+          // Collapsed, lazy-loaded "Data provenance" panel for this row.
+          if (!editing) renderProvenancePanel(content.querySelector('#row-provenance'), tableName, id);
           if (!editing && tableName === 'files') renderFilePreview(row);
 
           // Per-row sharing controls (shared with the simple fs-item view).
@@ -966,11 +969,11 @@ export const dashboardJs = `    // ───────────────
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
-      // The top-level object page defaults to a focused graph (a zoom-in of the
-      // brain graph); "List view" switches to the tile grid. Nested relation
-      // paths always use the grid.
+      // The top-level object page defaults to the data-provenance view (graph or
+      // table — how this object's rows are sourced); "List view" switches to the
+      // row tile grid. Nested relation paths always use the grid.
       if (topLevel && fsObjectView[segs[0]] !== 'list' && tableByName(segs[0])) {
-        renderFsObjectGraph(content, segs[0]);
+        renderProvenance(content, segs[0], provenanceView[segs[0]] || 'graph');
         return;
       }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
@@ -993,15 +996,6 @@ export const dashboardJs = `    // ───────────────
           if (myGen !== renderGen) return; // superseded by a newer navigation
           var d = displayFor(table);
           var base = fsHref(segs);
-          // "New" tile (top-level collections only) — a folder box with a + that
-          // opens a create form. Related-row folders aren't a place to mint a
-          // brand-new object, so the tile is top-level only.
-          var createTile = topLevel
-            ? '<a class="fs-tile fs-tile-create" href="' + fsHref([table, 'new']) + '" title="Create a new ' + escapeHtml(d.label) + '">' +
-                '<div class="fs-tile-icon">➕</div>' +
-                '<div class="fs-tile-label">New ' + escapeHtml(d.label) + '</div>' +
-              '</a>'
-            : '';
           var rowTiles = rows.length
             ? rows.map(function (r) {
                 var icon = (table === 'files') ? fileEmoji(r) : '📁';
@@ -1021,9 +1015,14 @@ export const dashboardJs = `    // ───────────────
               '<span class="entity-icon">' + d.icon + '</span>' +
               '<h1>' + escapeHtml(d.label) + '</h1>' +
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
-              (topLevel ? '<div class="actions"><button class="btn" id="fsg-view-graph" type="button">Graph view</button></div>' : '') +
+              (topLevel
+                ? '<div class="actions">' +
+                    '<a class="btn primary" href="' + fsHref([table, 'new']) + '">New ' + escapeHtml(d.label) + '</a>' +
+                    '<button class="btn" id="fsg-view-graph" type="button">Provenance</button>' +
+                  '</div>'
+                : '') +
             '</div>' +
-            '<div class="fs-grid">' + createTile + rowTiles + '</div>';
+            '<div class="fs-grid">' + rowTiles + '</div>';
           var gv = content.querySelector('#fsg-view-graph');
           if (gv) gv.addEventListener('click', function () {
             fsObjectView[table] = 'graph';
@@ -1529,10 +1528,13 @@ export const dashboardJs = `    // ───────────────
             // data view; the raw fields follow underneath.
             '<div class="fs-context" id="fs-context" hidden></div>' +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
-            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
+            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '') +
+            '<div id="row-provenance"></div>';
           if (table === 'files') renderFilePreview(row);
           loadFsContext(table, id);
           wireFsEdit(content, table, id, t, row);
+          // Collapsed, lazy-loaded "Data provenance" panel for this row.
+          renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
           // Per-row sharing controls — same affordance as the advanced detail view.
           wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
           rels.forEach(function (rel) {
