@@ -128,6 +128,50 @@ describe('GUI server — SQLite read routes', () => {
   });
 });
 
+describe('GUI server — provenance routes', () => {
+  it('validates input, returns the tiered payload, and scopes to a row', async () => {
+    const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
+    const h = await boot(cfg);
+
+    // Missing / unknown table → 400.
+    expect((await api(h.url, '/api/provenance')).status).toBe(400);
+    const unknown = await api(h.url, '/api/provenance?table=does_not_exist');
+    expect(unknown.status).toBe(400);
+    expect(String(unknown.body.error)).toMatch(/Unknown table/);
+
+    // Valid table → 200 with the {nodes, edges} shape + the central object node.
+    const tbl = await api(h.url, '/api/provenance?table=items');
+    expect(tbl.status).toBe(200);
+    expect(Array.isArray(tbl.body.nodes)).toBe(true);
+    expect(Array.isArray(tbl.body.edges)).toBe(true);
+    const tblNodes = tbl.body.nodes as { id: string; type: string }[];
+    expect(tblNodes.some((n) => n.id === 'table:items' && n.type === 'object')).toBe(true);
+
+    // A native entity is allowlisted too.
+    expect((await api(h.url, '/api/provenance?table=files')).status).toBe(200);
+
+    // Row scope: 400 without id, 404 for a missing row, 200 (centered on the row)
+    // once it exists.
+    expect((await api(h.url, '/api/provenance/row?table=items')).status).toBe(400);
+    expect((await api(h.url, '/api/provenance/row?table=items&id=nope')).status).toBe(404);
+    const created = await api(h.url, '/api/tables/items/rows', {
+      method: 'POST',
+      body: { name: 'x' },
+    });
+    const id = created.body.id as string;
+    const rowProv = await api(h.url, `/api/provenance/row?table=items&id=${id}`);
+    expect(rowProv.status).toBe(200);
+    const rowNodes = rowProv.body.nodes as { id: string; type: string }[];
+    expect(rowNodes.some((n) => n.id === `obj:items:${id}` && n.type === 'object')).toBe(true);
+
+    // Every edge endpoint resolves to a node (prune invariant).
+    const ids = new Set(rowNodes.map((n) => n.id));
+    for (const e of rowProv.body.edges as { source: string; target: string }[]) {
+      expect(ids.has(e.source) && ids.has(e.target)).toBe(true);
+    }
+  });
+});
+
 describe('GUI server — row CRUD + audit history', () => {
   it('inserts, reads, patches, lists history, undoes, redoes, and deletes a row', async () => {
     const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');

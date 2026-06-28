@@ -246,7 +246,54 @@ export const sourcesJs = `
 
     // The add buttons live in the static shell, so wire them ONCE (renderSources
     // runs on every sidebar refresh).
+    // ── Collapsible top-level sidebar groups ──────────────────────────────
+    // Each top-level group header (Files, Built by Lattice, Connectors, plus
+    // Objects/System in advanced mode) collapses its body. State persists per
+    // group in localStorage (default expanded). The Objects/System collapse
+    // toggles the inner .section-body ONLY — the #objects-section/#system-section
+    // wrapper's hidden attribute stays owned by advanced-mode (renderSidebar), so
+    // the two never fight. Reuses the chevron/hidden idiom of toggleSourceFolder.
+    function sidebarGroupKey(group) { return 'lattice.sidebar.group.' + group; }
+    function sidebarGroupCollapsed(group) {
+      try { return window.localStorage.getItem(sidebarGroupKey(group)) === '0'; }
+      catch (e) { return false; } // default expanded when storage is unavailable
+    }
+    function setSidebarGroupCollapsed(group, collapsed) {
+      try { window.localStorage.setItem(sidebarGroupKey(group), collapsed ? '0' : '1'); }
+      catch (e) { /* private mode / quota — state just won't persist */ }
+    }
+    function applySidebarGroupState(group) {
+      var btn = document.querySelector('.section-toggle[data-group="' + group + '"]');
+      var body = document.querySelector('.section-body[data-group-body="' + group + '"]');
+      if (!btn || !body) return;
+      var collapsed = sidebarGroupCollapsed(group);
+      body.hidden = collapsed;
+      var caret = btn.querySelector('.section-caret');
+      if (caret) caret.textContent = collapsed ? '▸' : '▾';
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    function applySidebarGroupStates() {
+      ['files', 'artifacts', 'connectors', 'objects', 'system'].forEach(applySidebarGroupState);
+    }
+    function toggleSidebarGroup(group) {
+      setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
+      applySidebarGroupState(group);
+    }
+    function wireSidebarGroupToggles() {
+      var btns = document.querySelectorAll('.section-toggle[data-group]');
+      for (var i = 0; i < btns.length; i++) {
+        var btn = btns[i];
+        if (btn.__wired) continue;
+        btn.__wired = true;
+        (function (b) {
+          b.addEventListener('click', function () { toggleSidebarGroup(b.getAttribute('data-group')); });
+        })(btn);
+      }
+    }
+
     function wireSourcesButtons() {
+      wireSidebarGroupToggles();
+      applySidebarGroupStates();
       var addFolder = document.getElementById('src-add-folder');
       if (addFolder && !addFolder.__wired) {
         addFolder.__wired = true;
