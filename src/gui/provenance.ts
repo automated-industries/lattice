@@ -16,7 +16,7 @@ import { LINEAGE_TABLE } from './lineage-store.js';
  *   2. the additive `__lattice_lineage` table (file-extraction / import edges)
  *   3. audit rows authored by the `ai` actor (`_lattice_gui_audit.source='ai'`)
  *
- * bounded reads (bounded reads): no `SELECT *` over a data table on this path. Counts
+ * Bounded reads: no `SELECT *` over a data table on this path. Counts
  * are computed in the database via grouped `aggregate(...)`; the only row reads
  * are bounded by `limit` (the small lineage table) or a single-row PK lookup.
  *
@@ -161,7 +161,7 @@ export async function buildProvenanceGraph(
       const cid = rows[0] ? asStr(rows[0]._source_connector_id) : '';
       if (cid) await addConnectorNode(db, nodes, edges, objectId, cid, 1);
     } else {
-      // Grouped COUNT in SQL — only the grouped rows transfer (bounded reads).
+      // Grouped COUNT in SQL — only the grouped rows transfer (bounded read).
       const groups = await db.aggregate(table, {
         groupBy: ['_source_connector_id'],
         aggregates: [{ fn: 'count', as: 'n' }],
