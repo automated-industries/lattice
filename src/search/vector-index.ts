@@ -107,6 +107,32 @@ export async function hasVectorIndex(adapter: StorageAdapter, table: string): Pr
   }
 }
 
+// Per-(adapter, table) cache of native-index existence, consulted ONLY by the
+// write-path maintenance helpers below to avoid an information_schema / PRAGMA
+// probe on every embedded-row write. It is a hot-path optimization, NOT a
+// correctness mechanism: search independently verifies freshness
+// (`vectorIndexFresh`) before trusting the index, so a stale cache entry can at
+// worst skip an incremental update — which the freshness check then catches by
+// falling back to the exact in-process scan.
+const indexExistenceCache = new WeakMap<StorageAdapter, Map<string, boolean>>();
+
+function setIndexExistence(adapter: StorageAdapter, table: string, exists: boolean): void {
+  let m = indexExistenceCache.get(adapter);
+  if (!m) {
+    m = new Map<string, boolean>();
+    indexExistenceCache.set(adapter, m);
+  }
+  m.set(table, exists);
+}
+
+async function indexExistsCached(adapter: StorageAdapter, table: string): Promise<boolean> {
+  const cached = indexExistenceCache.get(adapter)?.get(table);
+  if (cached !== undefined) return cached;
+  const exists = await hasVectorIndex(adapter, table);
+  setIndexExistence(adapter, table, exists);
+  return exists;
+}
+
 /**
  * Build (or rebuild) the native vector index for `table` from the JSON store,
  * for vectors of dimension `dim`. No-op when no native extension is available.
@@ -141,6 +167,7 @@ export async function buildVectorIndex(
           `(install pgvector / load sqlite-vec). Pass requireExtension=false to no-op instead.`,
       );
     }
+    setIndexExistence(adapter, table, false);
     return 0;
   }
   const idx = vectorIndexName(table);
@@ -188,24 +215,125 @@ export async function buildVectorIndex(
       `SELECT "row_pk", "chunk_index", "embedding" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
-    for (const r of stored) {
-      // Unit-normalize so the vec0 L2 distance is cosine-equivalent at query time.
-      const vec = normalizeVector(JSON.parse(String(r.embedding)) as number[]);
-      await runAsyncOrSync(
-        adapter,
-        `INSERT INTO "${idx}" (row_pk, chunk_index, embedding) VALUES (?, ?, ?)`,
-        [r.row_pk, r.chunk_index, JSON.stringify(vec)],
-      );
+    // Unit-normalize so the vec0 L2 distance is cosine-equivalent at query time.
+    const rows = stored.map(
+      (r) =>
+        [
+          r.row_pk,
+          r.chunk_index,
+          JSON.stringify(normalizeVector(JSON.parse(String(r.embedding)) as number[])),
+        ] as const,
+    );
+    const insert = `INSERT INTO "${idx}" (row_pk, chunk_index, embedding) VALUES (?, ?, ?)`;
+    // Populate inside one transaction so an interrupted build can't leave a
+    // half-filled index that looks complete (no native txn → sequential inserts).
+    if (adapter.withClient) {
+      await adapter.withClient(async (tx) => {
+        for (const [rp, ci, v] of rows) await tx.run(insert, [rp, ci, v]);
+      });
+    } else {
+      for (const [rp, ci, v] of rows) await runAsyncOrSync(adapter, insert, [rp, ci, v]);
     }
   }
 
   const count = await getAsyncOrSync(adapter, `SELECT count(*) AS n FROM "${idx}"`);
+  setIndexExistence(adapter, table, true);
   return Number(count?.n ?? 0);
 }
 
 /** Drop a table's native vector index. */
 export async function dropVectorIndex(adapter: StorageAdapter, table: string): Promise<void> {
   await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${vectorIndexName(table)}"`);
+  setIndexExistence(adapter, table, false);
+}
+
+/**
+ * Whether the native index is in sync with the embeddings store for `table` —
+ * i.e. it holds exactly the chunk vectors currently stored. Search consults this
+ * before using the index so a drifted index is never silently served: on a
+ * mismatch the caller falls back to the in-process scan (which reads the store
+ * directly) until the index is rebuilt. Cheap — two COUNTs, negligible beside the
+ * per-query embed() call that search already makes.
+ *
+ * The Postgres write path keeps the index in lock-step incrementally (so this
+ * stays true after every write); backends without incremental maintenance rely
+ * on this check to degrade to a correct scan rather than serve stale hits.
+ */
+export async function vectorIndexFresh(adapter: StorageAdapter, table: string): Promise<boolean> {
+  const idxRow = await getAsyncOrSync(
+    adapter,
+    `SELECT count(*) AS n FROM "${vectorIndexName(table)}"`,
+  );
+  const srcRow = await getAsyncOrSync(
+    adapter,
+    `SELECT count(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+    [table],
+  );
+  // Distinct sentinels so a failed/absent read never reports a false "fresh".
+  return Number(idxRow?.n ?? -1) === Number(srcRow?.n ?? -2);
+}
+
+/**
+ * Keep the native index in lock-step with the store for ONE row, after that
+ * row's chunks have been (re)written to the store: replace the row's existing
+ * index rows with its current chunks. No-op when no native index exists.
+ *
+ * Incremental maintenance is implemented for Postgres/pgvector, where the index
+ * is a plain table whose HNSW index self-maintains on DML. Other backends are
+ * left to the search-time freshness check, which falls back to the exact scan
+ * when the derived index has drifted — so they stay correct without per-write
+ * index mutation (whose semantics differ across vec0 versions).
+ */
+export async function mirrorVectorIndexRow(
+  adapter: StorageAdapter,
+  table: string,
+  pk: string,
+): Promise<void> {
+  if (adapter.dialect !== 'postgres') return;
+  if (!(await indexExistsCached(adapter, table))) return;
+  const idx = vectorIndexName(table);
+  await runAsyncOrSync(adapter, `DELETE FROM "${idx}" WHERE "row_pk" = ?`, [pk]);
+  await runAsyncOrSync(
+    adapter,
+    `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding)
+       SELECT "row_pk", "chunk_index", "content", ("embedding")::vector
+       FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`,
+    [table, pk],
+  );
+}
+
+/** Remove ONE row's vectors from the native index (after the row's store chunks
+ * were removed). No-op when no native index exists. Postgres-incremental; other
+ * backends rely on the search-time freshness check (see {@link mirrorVectorIndexRow}). */
+export async function removeVectorIndexRow(
+  adapter: StorageAdapter,
+  table: string,
+  pk: string,
+): Promise<void> {
+  if (adapter.dialect !== 'postgres') return;
+  if (!(await indexExistsCached(adapter, table))) return;
+  await runAsyncOrSync(adapter, `DELETE FROM "${vectorIndexName(table)}" WHERE "row_pk" = ?`, [pk]);
+}
+
+/**
+ * Reconcile the native index after a bulk embedding change (refreshEmbeddings).
+ * No-op when no index exists; rebuilds it from the refreshed vectors, or drops it
+ * when the table has no stored vectors left. Keeps the index usable (and fresh)
+ * after a backfill without the caller having to remember to rebuild.
+ */
+export async function syncIndexAfterBulk(adapter: StorageAdapter, table: string): Promise<void> {
+  if (!(await indexExistsCached(adapter, table))) return;
+  const dimRow = await getAsyncOrSync(
+    adapter,
+    `SELECT "vec_dim" AS d FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
+    [table],
+  );
+  const dim = Number(dimRow?.d ?? 0);
+  if (dim <= 0) {
+    await dropVectorIndex(adapter, table);
+    return;
+  }
+  await buildVectorIndex(adapter, table, dim);
 }
 
 /**

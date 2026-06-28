@@ -6,6 +6,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **The native vector index now stays in sync with writes.** Previously
+  `buildVectorIndex` produced a point-in-time snapshot that silently went stale as
+  rows changed, so semantic search could return outdated results until the index
+  was manually rebuilt. Now, once an index exists:
+  - inserts / updates / deletes mirror the affected row into the index
+    incrementally on Postgres/pgvector (on the same background path as the
+    embedding write);
+  - `refreshEmbeddings` reconciles the index after a bulk backfill;
+  - `search()` verifies the index is in sync with the stored vectors before using
+    it (a cheap count-parity check), and otherwise falls back to the exact
+    in-process scan — so a drifted index is never silently served: at worst a
+    slower query, never a wrong result.
+
+  Backward compatible: tables without a native index are unaffected, the public
+  API is unchanged, and default behavior matches prior releases.
+
+### Fixed
+
+- **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
+  single transaction, so an interrupted build can no longer leave a half-filled
+  index that looks complete.
+
+---
+
 ## [4.3.8] — 2026-06-25
 
 Patch release. Finishes the job 4.3.7 started: makes the **entire class** of
