@@ -10,6 +10,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Tunable + observable native vector index.** New optional knobs (all default to
+  prior behavior): `embeddings.index = { m, efConstruction }` sets the pgvector HNSW
+  build parameters, and `search()` / `hybridSearch()` accept `efSearch` to set
+  query-time HNSW search breadth (`hnsw.ef_search`). A small internal registry
+  (`__lattice_vector_index`) records each built index's dimension, params, source
+  count, and build time; an auto-rebuild after a bulk refresh reuses the recorded
+  params. New CLI: `lattice reindex <table>` (rebuild) and `lattice index status`
+  (per-table index health), plus `lattice doctor --fix` to rebuild any index it
+  reports as stale. (Configurable distance metric is deferred to a follow-up — it
+  changes scoring semantics across the scan + both backends and warrants its own
+  per-metric recall validation.)
 - **Semantic + hybrid search now work for cloud members, confined to the rows
   they may see.** A scoped cloud member has no grant on the internal embeddings
   store or the native vector index, so `search()` / `hybridSearch()` previously

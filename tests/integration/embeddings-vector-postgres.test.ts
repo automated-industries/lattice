@@ -15,6 +15,8 @@ import {
   vectorIndexAvailable,
   hasVectorIndex,
   vectorIndexFresh,
+  buildVectorIndex,
+  getVectorIndexMeta,
 } from '../../src/search/vector-index.js';
 import { semanticChunker } from '../../src/search/chunking.js';
 
@@ -181,6 +183,25 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
     await db.delete(table, 'sync1');
     const after = await db.search(table, 'logistics sync payload shipping', { topK: 5 });
     expect(after.map((h) => h.row.id)).not.toContain('sync1');
+  });
+
+  it('records HNSW build params in the registry and honors efSearch (pgvector only)', async () => {
+    if (!(await vectorIndexAvailable(db.adapter))) return; // the index path requires pgvector
+    // Build with explicit HNSW tuning; the registry should record exactly what was built.
+    const n = await buildVectorIndex(db.adapter, table, 8, false, { m: 8, efConstruction: 32 });
+    expect(n).toBeGreaterThan(0);
+    const meta = await getVectorIndexMeta(db.adapter, table);
+    expect(meta).not.toBeNull();
+    expect(meta?.vecDim).toBe(8);
+    expect(meta?.hnswM).toBe(8);
+    expect(meta?.hnswEfConstruction).toBe(32);
+    expect(meta?.metric).toBe('cosine');
+    expect(meta?.builtAt).toBeTruthy();
+
+    // Query-time efSearch plumbs through (SET LOCAL hnsw.ef_search) without error
+    // and still returns indexed results.
+    const hits = await db.search(table, 'logistics', { topK: 1, efSearch: 64 });
+    expect(hits.length).toBeGreaterThan(0);
   });
 });
 
