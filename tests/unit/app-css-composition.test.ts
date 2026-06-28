@@ -18,8 +18,9 @@ import { css } from '../../src/gui/app/css.js';
 // animates the delta itself) AND the data-provenance styles (per-tier node
 // colors, the source table, the collapsed detail panel) plus the collapsible
 // sidebar-group rules. Pinned length + hash recomputed for the merged CSS.
-const ORIGINAL_LENGTH = 96506;
-const ORIGINAL_SHA256 = '1fa9edbee7c69a3f304773240533dc0f3af47207c3a4c1ffd055b342829c7871';
+// (Bump: collapsible sidebar-group indentation fix — header gutter + body indent.)
+const ORIGINAL_LENGTH = 97020;
+const ORIGINAL_SHA256 = '4f82e1dc1084a88ee2794c989a7da575589e6f9898095877f9fa5b0c56edb592';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
