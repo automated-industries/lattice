@@ -59,8 +59,10 @@ import { css } from '../../src/gui/app/css.js';
 // Tables-explorer relationship edges (svg.mt-edges + .mt-edge-fk/m2m), the tiers
 // positioning context, and the wiring affordances (.mt-wire.on / .mt-wire-hint /
 // .mt-wiring crosshair / .mt-wire-from highlight).
-const ORIGINAL_LENGTH = 115347;
-const ORIGINAL_SHA256 = 'de6e4d1be032c1d452189795f22a1bd10f7f8b0dfefbd4f39eda6cdc4c5fbca1';
+// Removed the dead object-graph CSS (#fsg-mount / .fsg-more / .ognode-*) that the
+// removed focused-object-graph subsystem used.
+const ORIGINAL_LENGTH = 114423;
+const ORIGINAL_SHA256 = '2e8a6de844e151ad32f1bc45b571aedc4209b9e6f872f07218d2e2ad7587cdbc';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

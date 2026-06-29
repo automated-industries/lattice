@@ -124,8 +124,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // closable-tab dismissal no-ops under the two-tab model + stranded the user), and
 // the Tables-explorer edge ResizeObserver is disconnected before re-creating (no
 // per-render observer accumulation).
-const ORIGINAL_LENGTH = 818154;
-const ORIGINAL_SHA256 = '98b9bb525d7163b62b392c6f250930ee22ff05dcac7b8dde7ab60b9692f6d6ff';
+// Dead-code removal: the unreachable focused-object-graph subsystem
+// (renderFsObjectGraph/mountObjectGraph/objectGraphData/buildObjectGraphModel +
+// FS_GRAPH_* state + openGraphFile) is gone now that object pages are tables.
+const ORIGINAL_LENGTH = 809696;
+const ORIGINAL_SHA256 = '5c21ebdd45752d8cc066c7d7869d54e40da85412832984ac98ffe2110776ea2a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
