@@ -1,0 +1,4 @@
+// The external-database connector logo (a database cylinder), as a data: URI
+// rendered by the GUI as an <img src>. Generated artifact — do not hand-edit.
+export const DB_SOURCE_ICON =
+  'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2I4MmY2IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGVsbGlwc2UgY3g9IjEyIiBjeT0iNSIgcng9IjgiIHJ5PSIzIi8+PHBhdGggZD0iTTQgNXY2YzAgMS42NiAzLjU4IDMgOCAzczgtMS4zNCA4LTNWNSIvPjxwYXRoIGQ9Ik00IDExdjZjMCAxLjY2IDMuNTggMyA4IDNzOC0xLjM0IDgtM3YtNiIvPjwvc3ZnPg==';
