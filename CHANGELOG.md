@@ -8,13 +8,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [5.0.0] — 2026-06-28
 
-Major release. Three things land together: a self-maintaining, cloud-safe, and
-tunable **native vector search substrate**; a live **force-directed brain graph**
-across all three GUI graph surfaces; and **auto-update made visible on every
-surface** (with an opt-out). The public API is unchanged and untuned/non-cloud
-behavior matches prior releases.
+Major release. The GUI is reframed around the data-modeling story —
+**Inputs · Model · Outputs** — and gains the ability to **connect an external
+database as an Input**. Underneath, three substrate features land together: a
+self-maintaining, cloud-safe, and tunable **native vector search substrate**; a
+live **force-directed brain graph** across all GUI graph surfaces; and
+**auto-update made visible on every surface** (with an opt-out). Untuned/non-cloud
+behavior matches prior releases; the public API grows additively (a new external-
+database connector).
 
 ### Added
+
+- **Inputs · Model · Outputs GUI reframe.** The desktop GUI / `lattice gui` is
+  reorganized into three columns: **Inputs** (Files, Connectors, Databases),
+  **Model** (a **Graph | Tables** toggle over the brain graph and a new tiered
+  schema explorer — Source / Model / Derived / Surface, with Entity/Field views,
+  tier-visibility chips, and a detail panel of fields + caveats), and **Outputs**
+  (Artifacts, a Markdown view of the rendered context tree, a Tables mirror of the
+  Model view, plus Server Docs / API Docs / MCP). The assistant moves from a docked
+  rail to a floating **"Ask Lattice"** panel in the upper-right, and the live
+  activity feed moves to a header popover next to the version-history clock. One
+  shared client serves both the terminal GUI and the desktop app, so the reframe
+  lands on both at once.
+
+- **Connect an external database as an Input.** A new credential connector imports
+  an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
+  Postgres) — by connection string or host/user/password — introspecting its schema
+  and importing its tables as connected data types via the shared sync engine, so
+  they appear under the Source tier. Credentials and the introspected schema are
+  stored only in the machine-local encrypted store; imports are bounded (keyset/
+  offset paged with a hard page cap).
 
 - **Live force-directed brain graph across all three graph surfaces.** A new,
   dependency-free force-directed layout engine (many-body repulsion, degree-biased
