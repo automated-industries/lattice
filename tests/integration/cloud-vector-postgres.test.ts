@@ -195,7 +195,10 @@ describe.skipIf(!PG_URL)('cloud vector search — per-member row visibility', ()
     await owner.upsert('docs', { id: 'd1', body: 'budget finance everyone', secret: SECRET });
     await owner.refreshEmbeddings('docs');
     await secureCloud(owner);
-    await runAsyncOrSync(owner.adapter, `SELECT lattice_set_row_visibility('docs','d1','everyone')`);
+    await runAsyncOrSync(
+      owner.adapter,
+      `SELECT lattice_set_row_visibility('docs','d1','everyone')`,
+    );
     // `secret` is masked to the row owner only — even though it is an embedding field.
     await setColumnAudience(
       owner,
