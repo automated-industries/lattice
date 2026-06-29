@@ -45,9 +45,12 @@ export const outputsJs = `
     }
 
     // ── Outputs > Markdown ────────────────────────────────────────────────
-    // A collapsible view of the rendered LLM context tree (the transformed .md
-    // files under the workspace output dir). Clicking a leaf opens its content in
-    // the right-hand detail slide-over.
+    // A LAZY collapsible tree mirroring the on-disk Context/ layout (folders +
+    // .md files, arbitrary depth). Folders fetch their children on expand
+    // (/api/context/list) so a workspace with tens of thousands of context files
+    // never loads them all at once. Clicking a .md leaf opens it in the slide-in
+    // detail panel (which sits LEFT of the Outputs column, so the column stays
+    // visible + browsable).
     function renderOutputsMarkdown() {
       var host = document.getElementById('out-markdown-tree');
       if (!host) return;
@@ -55,60 +58,84 @@ export const outputsJs = `
         .then(function (data) {
           var entries = (data && data.entries) || [];
           if (!entries.length) { host.innerHTML = '<div class="src-empty">No rendered context yet.</div>'; return; }
-          host.innerHTML = '<ul class="src-tree">' + entries.map(outputsMdNodeHtml).join('') + '</ul>';
-          // Leaf (.md file) click → open in the detail slide-over.
-          host.querySelectorAll('.out-md-file').forEach(function (li) {
-            var row = li.querySelector(':scope > .src-row');
-            if (row) row.addEventListener('click', function () { openOutputsMarkdown(li.getAttribute('data-path'), li.getAttribute('data-name')); });
-          });
-          // Directory toggle (expand/collapse its .md children).
-          host.querySelectorAll('.out-md-folder > .src-row').forEach(function (row) {
-            row.addEventListener('click', function () {
-              var li = row.parentNode;
-              var ul = li.querySelector(':scope > .src-children');
-              var caret = row.querySelector('.src-caret');
-              if (!ul) return;
-              ul.hidden = !ul.hidden;
-              if (caret) caret.textContent = ul.hidden ? '\\u25b8' : '\\u25be';
-            });
-          });
+          host.innerHTML = '<ul class="src-tree">' + entries.map(function (e) { return mdNodeHtml(e, 0); }).join('') +
+            (data.truncated ? '<li class="src-note">\\u2026more not shown</li>' : '');
+          wireMdTree(host);
         })
         .catch(function () { host.innerHTML = '<div class="src-empty">No rendered context yet.</div>'; });
     }
 
-    function outputsMdNodeHtml(e) {
+    function mdNodeHtml(e, depth) {
+      var pad = depth * 12;
       if (e.kind === 'dir') {
-        var kids = (e.children || []).map(function (c) {
-          return '<li class="src-node out-md-file" data-path="' + escapeHtml(c.path) + '" data-name="' + escapeHtml(c.name) +
-            '"><div class="src-row" style="padding-left:26px"><span class="src-ic">\\ud83d\\udcc4</span>' +
-            '<span class="src-name">' + escapeHtml(c.name) + '</span></div></li>';
-        }).join('');
-        return '<li class="src-node out-md-folder"><div class="src-row" style="padding-left:0">' +
-          '<span class="src-caret">\\u25b8</span><span class="src-ic">\\ud83d\\udcc1</span>' +
+        return '<li class="mdt-node mdt-folder" data-path="' + escapeHtml(e.path) + '" data-depth="' + depth +
+          '" data-loaded="0"><div class="mdt-row" style="padding-left:' + pad + 'px">' +
+          '<span class="mdt-caret">\\u25b8</span><span class="src-ic">\\ud83d\\udcc1</span>' +
           '<span class="src-name">' + escapeHtml(e.name) + '</span></div>' +
-          '<ul class="src-children" hidden>' + kids + '</ul></li>';
+          '<ul class="mdt-children" hidden></ul></li>';
       }
-      return '<li class="src-node out-md-file" data-path="' + escapeHtml(e.path) + '" data-name="' + escapeHtml(e.name) +
-        '"><div class="src-row" style="padding-left:14px"><span class="src-ic">\\ud83d\\udcc4</span>' +
-        '<span class="src-name">' + escapeHtml(e.name) + '</span></div></li>';
+      return '<li class="mdt-node mdt-file" data-path="' + escapeHtml(e.path) + '" data-name="' + escapeHtml(e.name) +
+        '"><div class="mdt-row" style="padding-left:' + (pad + 14) + 'px">' +
+        '<span class="src-ic">\\ud83d\\udcc4</span><span class="src-name">' + escapeHtml(e.name) + '</span></div></li>';
     }
 
-    function openOutputsMarkdown(path, name) {
+    function wireMdTree(scope) {
+      scope.querySelectorAll('.mdt-folder > .mdt-row').forEach(function (row) {
+        if (row.__wired) return;
+        row.__wired = true;
+        row.addEventListener('click', function () { toggleMdFolder(row.parentNode); });
+      });
+      scope.querySelectorAll('.mdt-file > .mdt-row').forEach(function (row) {
+        if (row.__wired) return;
+        row.__wired = true;
+        row.addEventListener('click', function () {
+          var li = row.parentNode;
+          openOutputsDetail(li.getAttribute('data-name'), '/api/context/file?path=' + encodeURIComponent(li.getAttribute('data-path')), 'md');
+        });
+      });
+    }
+
+    function toggleMdFolder(li) {
+      var ul = li.querySelector(':scope > .mdt-children');
+      var caret = li.querySelector(':scope > .mdt-row > .mdt-caret');
+      if (!ul) return;
+      if (!ul.hidden) { ul.hidden = true; if (caret) caret.textContent = '\\u25b8'; return; }
+      if (li.getAttribute('data-loaded') === '1') {
+        ul.hidden = false; if (caret) caret.textContent = '\\u25be'; return;
+      }
+      var depth = Number(li.getAttribute('data-depth') || '0') + 1;
+      fetchJson('/api/context/list?path=' + encodeURIComponent(li.getAttribute('data-path')))
+        .then(function (data) {
+          var entries = (data && data.entries) || [];
+          ul.innerHTML = entries.map(function (e) { return mdNodeHtml(e, depth); }).join('') +
+            (data && data.truncated ? '<li class="src-note">\\u2026more not shown</li>' : '');
+          li.setAttribute('data-loaded', '1');
+          ul.hidden = false;
+          if (caret) caret.textContent = '\\u25be';
+          wireMdTree(ul);
+        })
+        .catch(function () {});
+    }
+
+    // ── Shared Outputs slide-in detail panel ──────────────────────────────
+    // Slides in from the right, positioned LEFT of the Outputs column so the
+    // column stays visible + clickable. Used for Markdown files (and Artifacts).
+    function openOutputsDetail(name, fetchUrl, mode) {
       var panel = document.getElementById('outputs-detail');
       var title = document.getElementById('outputs-detail-title');
       var body = document.getElementById('outputs-detail-body');
       if (!panel || !body) return;
-      if (title) title.textContent = name || path;
-      body.innerHTML = '<div class="muted" style="padding:12px">Loading…</div>';
-      panel.hidden = false;
+      if (title) title.textContent = name || '';
+      body.innerHTML = '<div class="muted" style="padding:12px">Loading\\u2026</div>';
+      panel.classList.add('open'); // CSS slides it in from the right
       var close = document.getElementById('outputs-detail-close');
-      if (close && !close.__wired) { close.__wired = true; close.addEventListener('click', function () { panel.hidden = true; }); }
-      fetchJson('/api/context/file?path=' + encodeURIComponent(path))
+      if (close && !close.__wired) { close.__wired = true; close.addEventListener('click', function () { panel.classList.remove('open'); }); }
+      fetchJson(fetchUrl)
         .then(function (d) {
           var content = stripFrontmatter((d && d.content) || '');
           body.innerHTML = content.trim()
             ? '<div class="md-body">' + mdToHtml(content) + '</div>'
-            : '<div class="src-empty">This context file is empty — it renders once the entity has data.</div>';
+            : '<div class="src-empty">This file is empty' + (mode === 'md' ? ' — it renders once the entity has data.' : '.') + '</div>';
         })
         .catch(function () { body.innerHTML = '<div class="src-empty">Could not load this file.</div>'; });
     }
