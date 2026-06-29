@@ -141,6 +141,12 @@ export const modelTablesJs = `
     // Entity/Field view doesn't refetch. Cleared implicitly on workspace switch
     // because the whole view is rebuilt.
     var mtEdgesCache = null;
+    // Wiring mode (ported from the schema-explorer pattern): "+ Wire" toggles a
+    // mode where the user clicks a SOURCE table then a TARGET table; the pair is
+    // linked via POST /api/schema/junctions (a many-to-many relationship). The
+    // relationships themselves are drawn as SVG connectors over the tier columns.
+    var mtWireMode = false;
+    var mtWireFrom = null;
     function renderModelTables(host) {
       if (!host) return;
       if (mtEdgesCache) { mtRenderTables(host, mtEdgesCache); return; }
@@ -175,15 +181,18 @@ export const modelTablesJs = `
           '<div class="mt-tier-body">' + cards + '</div></div>';
       }).join('');
 
+      var wireLabel = mtWireMode ? (mtWireFrom ? 'Pick target\\u2026' : 'Pick source\\u2026') : '+ Wire';
       host.innerHTML =
-        '<div class="mt">' +
+        '<div class="mt' + (mtWireMode ? ' mt-wiring' : '') + '">' +
           '<div class="mt-bar">' +
             '<span class="mt-bar-label">View</span>' +
             '<div class="mt-seg">' +
               '<button type="button" class="mt-seg-btn' + (level === 'entity' ? ' on' : '') + '" data-mt-level="entity">Entity</button>' +
               '<button type="button" class="mt-seg-btn' + (level === 'field' ? ' on' : '') + '" data-mt-level="field">Field</button>' +
             '</div>' +
-            '<button type="button" class="mt-wire" id="mt-wire-btn" title="Add or edit relationships between tables">+ Wire</button>' +
+            (mtWireMode ? '<span class="mt-wire-hint">Click a source table, then a target.</span>' : '') +
+            '<button type="button" class="mt-wire' + (mtWireMode ? ' on' : '') + '" id="mt-wire-btn" ' +
+              'title="Link two tables — click a source, then a target">' + wireLabel + '</button>' +
           '</div>' +
           '<div class="mt-main">' +
             '<div class="mt-tiers">' + tiers + '</div>' +
@@ -194,20 +203,110 @@ export const modelTablesJs = `
       host.querySelectorAll('.mt-seg-btn').forEach(function (b) {
         b.addEventListener('click', function () { mtSetLevel(b.getAttribute('data-mt-level')); renderModelTables(host); });
       });
-      // "+ Wire" opens the relationship editor (Settings → Data Model). A button +
-      // JS nav (not a static href) so the data-model editor stays drawer-reached.
+      // "+ Wire" toggles wiring mode (no navigation). In wiring mode a card click
+      // picks the source then the target; otherwise it opens the detail panel.
       var wireBtn = host.querySelector('#mt-wire-btn');
-      if (wireBtn) wireBtn.addEventListener('click', function () { location.hash = '#/settings/data-model'; });
-      host.querySelectorAll('.mt-card').forEach(function (b) {
-        b.addEventListener('click', function () { mtOpenDetail(b.getAttribute('data-table'), null, entities, lineage); });
+      if (wireBtn) wireBtn.addEventListener('click', function () {
+        mtWireMode = !mtWireMode;
+        mtWireFrom = null;
+        if (mtWireMode && mtLevel() !== 'entity') mtSetLevel('entity'); // wiring links tables
+        renderModelTables(host);
       });
-      // Field view: clicking a field row traces THAT field's lineage.
+      host.querySelectorAll('.mt-card').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var t = b.getAttribute('data-table');
+          if (mtWireMode) { mtWireClick(host, t); return; }
+          mtOpenDetail(t, null, entities, lineage);
+        });
+      });
+      // Field view: clicking a field row traces THAT field's lineage (not in wire mode).
       host.querySelectorAll('.mt-field[data-field]').forEach(function (b) {
         b.addEventListener('click', function (ev) {
           ev.stopPropagation();
+          if (mtWireMode) { mtWireClick(host, b.getAttribute('data-table')); return; }
           mtOpenDetail(b.getAttribute('data-table'), b.getAttribute('data-field'), entities, lineage);
         });
       });
+      // Highlight the picked source while wiring.
+      if (mtWireFrom) {
+        var fromCard = host.querySelector('.mt-card[data-table="' + mtWireFrom + '"]');
+        if (fromCard) fromCard.classList.add('mt-wire-from');
+      }
+      // Draw the relationship connectors over the tier columns + keep them in sync.
+      mtSetupEdges(host);
+    }
+
+    // Click handler while wiring: first click = source, second (different) = target
+    // → create a many-to-many link via the Lattice schema API, then refresh.
+    function mtWireClick(host, table) {
+      if (!mtWireFrom) { mtWireFrom = table; renderModelTables(host); return; }
+      if (mtWireFrom === table) { mtWireFrom = null; renderModelTables(host); return; } // re-click source → cancel
+      var left = mtWireFrom, right = table;
+      mtWireMode = false;
+      mtWireFrom = null;
+      var toast = typeof showToast === 'function' ? showToast : function () {};
+      fetch('/api/schema/junctions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ left: left, right: right }),
+      })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (res) {
+          if (!res.ok) { toast('Wire failed: ' + ((res.body && res.body.error) || 'could not link'), {}); renderModelTables(host); return; }
+          mtEdgesCache = null; // a new junction edge exists → re-fetch the graph edges
+          toast('Linked ' + displayFor(left).label + ' \\u2194 ' + displayFor(right).label, {});
+          var done = function () { renderModelTables(host); };
+          if (typeof refreshEntities === 'function') refreshEntities().then(done, done); else done();
+        })
+        .catch(function () { toast('Wire failed', {}); renderModelTables(host); });
+    }
+
+    // Draw the relationship edges as SVG bezier connectors between the tier-column
+    // cards (measured from the live DOM, like the schema-explorer pattern), and
+    // redraw on layout changes (detail panel open, resize).
+    function mtSetupEdges(host) {
+      var tiers = host.querySelector('.mt-tiers');
+      if (!tiers) return;
+      window.requestAnimationFrame(function () { mtDrawEdges(tiers); });
+      if (typeof ResizeObserver !== 'undefined') {
+        var ro = new ResizeObserver(function () { mtDrawEdges(tiers); });
+        ro.observe(tiers);
+      }
+    }
+    function mtDrawEdges(tiers) {
+      if (!tiers || !document.body.contains(tiers)) return;
+      var SVGNS = 'http://www.w3.org/2000/svg';
+      var svg = tiers.querySelector('svg.mt-edges');
+      if (!svg) {
+        svg = document.createElementNS(SVGNS, 'svg');
+        svg.setAttribute('class', 'mt-edges');
+        tiers.insertBefore(svg, tiers.firstChild);
+      }
+      var gr = tiers.getBoundingClientRect();
+      var W = tiers.scrollWidth, H = tiers.scrollHeight;
+      svg.setAttribute('width', String(W));
+      svg.setAttribute('height', String(H));
+      svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      var sx = tiers.scrollLeft, sy = tiers.scrollTop;
+      var paths = '';
+      (mtEdgesCache || []).forEach(function (e) {
+        var s = String(e.source).replace(/^table:/, '');
+        var t = String(e.target).replace(/^table:/, '');
+        if (s === t) return;
+        var a = tiers.querySelector('.mt-card[data-table="' + s + '"]');
+        var b = tiers.querySelector('.mt-card[data-table="' + t + '"]');
+        if (!a || !b) return;
+        var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        var x1 = ra.right - gr.left + sx, x2 = rb.left - gr.left + sx;
+        if (x2 < x1) { x1 = ra.left - gr.left + sx; x2 = rb.right - gr.left + sx; } // target is left of source
+        var y1 = ra.top - gr.top + sy + ra.height / 2;
+        var y2 = rb.top - gr.top + sy + rb.height / 2;
+        var dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
+        var d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+        var cls = e.type === 'manyToMany' ? 'mt-edge mt-edge-m2m' : 'mt-edge mt-edge-fk';
+        paths += '<path d="' + d + '" class="' + cls + '"/>';
+      });
+      svg.innerHTML = paths;
     }
 
     function mtCardHtml(e, level) {
