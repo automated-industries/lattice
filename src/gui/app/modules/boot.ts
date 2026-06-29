@@ -138,6 +138,7 @@ export const bootJs = `    // ────────────────�
         initOutputsResize();
         initAskLattice();
         initActivityHeader();
+        renderOutputs();
         renderComposer();
         initThreadControls();
         // Warm up on-device voice in the background shortly after boot so dictation
