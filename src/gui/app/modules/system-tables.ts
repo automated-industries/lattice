@@ -39,14 +39,52 @@ export const systemTablesJs = `    // ──────────────
     var DM_FK_COLOR = '#3b82f6'; // belongsTo — an enforced reference
     var DM_M2M_COLOR = '#3b82f6'; // every relationship is many-to-many now (FK deprecated) — green
 
-    // The brain graph as the center pane's main view — the schema graph, full
-    // size, with no inline entity editor (schema/column editing lives in
-    // Settings → Data Model). Clicking a node opens that object's tab.
+    // The Model view (center pane): a Graph | Tables toggle over one of two
+    // renderings of the same schema — the live force-directed brain graph, or the
+    // tiered Tables explorer. The choice persists across renders. Schema/column
+    // editing still lives in Settings → Data Model. Clicking a graph node opens
+    // that object's tab; clicking a Tables card opens its detail panel.
+    var modelView = 'graph';
+    try { if (window.localStorage.getItem('lattice.modelview') === 'tables') modelView = 'tables'; } catch (e) { /* default */ }
+
     function renderBrainGraph(content) {
       if (!content) content = document.getElementById('content');
       if (!content) return;
       dmActiveTable = null; // no inline editor in the center view
       content.innerHTML =
+        '<div class="model-view">' +
+          '<div class="model-toggle" role="tablist">' +
+            '<button type="button" class="model-tab" role="tab" data-model-view="graph">Graph</button>' +
+            '<button type="button" class="model-tab" role="tab" data-model-view="tables">Tables</button>' +
+          '</div>' +
+          '<div class="model-body" id="model-body"></div>' +
+        '</div>';
+      content.querySelectorAll('.model-tab').forEach(function (b) {
+        b.addEventListener('click', function () { setModelView(b.getAttribute('data-model-view')); });
+      });
+      renderModelBody();
+    }
+
+    function setModelView(v) {
+      modelView = v === 'tables' ? 'tables' : 'graph';
+      try { window.localStorage.setItem('lattice.modelview', modelView); } catch (e) { /* private mode */ }
+      renderModelBody();
+    }
+
+    // Render the active sub-view into #model-body and sync the toggle's active tab.
+    function renderModelBody() {
+      var body = document.getElementById('model-body');
+      if (!body) return;
+      document.querySelectorAll('.model-tab').forEach(function (t) {
+        t.classList.toggle('on', t.getAttribute('data-model-view') === modelView);
+        t.setAttribute('aria-selected', t.getAttribute('data-model-view') === modelView ? 'true' : 'false');
+      });
+      if (modelView === 'tables') {
+        renderModelTables(body);
+        return;
+      }
+      // Graph view — keep the #graph-mount id the live renderer + ingest animation expect.
+      body.innerHTML =
         '<div class="brain-graph"><div id="graph-mount">' +
           '<div class="muted" style="padding:24px">A live force-directed graph that builds as Claude streams.</div>' +
         '</div></div>';
