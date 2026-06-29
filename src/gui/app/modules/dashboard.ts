@@ -1636,8 +1636,10 @@ export const dashboardJs = `    // ───────────────
         .then(function () { invalidate('files'); return refreshEntities(); })
         .then(function () {
           showToast('Deleted "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
-          if (typeof closeTab === 'function') closeTab(tabKeyForHash(location.hash));
-          else location.hash = '#/graph';
+          // Navigate to the Files collection — the old closable-tab dismissal is a
+          // no-op under the two-permanent-tab model and would strand the user on the
+          // just-deleted record.
+          location.hash = '#/fs/files';
         })
         .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }
