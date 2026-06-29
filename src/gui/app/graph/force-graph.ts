@@ -165,9 +165,13 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
 
   const sim = new ForceSim<FNode>({
     chargeStrength: (n) => -30 * (n.radius / 6),
-    linkDistance: () => 90,
+    linkDistance: () => 120,
     linkStrength: () => 0.5,
-    collideRadius: (n) => n.radius + 8,
+    // Collision must clear the node's LABEL (drawn below the dot and far wider
+    // than it), not just the glow ring — otherwise labels overlap neighbours.
+    // Two passes resolve dense clusters before the alpha cools.
+    collideRadius: (n) => n.radius + 22,
+    collideIterations: 2,
     center: { x: 0, y: 0, strength: 0.05 },
   });
 
@@ -187,6 +191,10 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   stage.appendChild(nodeLayer);
   svg.appendChild(stage);
   mount.appendChild(svg);
+  // Hide the stage until the first real fit lands — otherwise frame 0 paints the
+  // un-fit spawn positions (clustered at the origin = top-left corner) before the
+  // fit centres them, a visible "loads twice" flash.
+  stage.style.visibility = 'hidden';
 
   // Re-fit once the mount first gets a real size — it can mount at 0×0 while a
   // freshly-set innerHTML lays out, which would otherwise leave the graph framed
@@ -206,6 +214,9 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   const nodeMap = new Map<string, FNode>();
   const edges: FEdge[] = [];
   const view = { k: 1, x: 0, y: 0 };
+  // Lowest allowed zoom = the fit-to-all k (everything + padding visible). Set on
+  // every fitAll so you can't zoom out past the whole graph.
+  let fitK = MIN_SCALE;
   let raf = 0;
   let running = false;
   let framed = false;
@@ -502,7 +513,10 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   );
 
   function zoomAt(px: number, py: number, nextK: number): void {
-    const k = Math.max(MIN_SCALE, Math.min(MAX_SCALE, nextK));
+    // Floor zoom-out at the fit-to-all k so you can't shrink the graph past the
+    // point where everything + padding is visible (a fixed MIN_SCALE floor let it
+    // zoom out to a speck).
+    const k = Math.max(fitK, Math.min(MAX_SCALE, nextK));
     view.x = px - ((px - view.x) * k) / view.k;
     view.y = py - ((py - view.y) * k) / view.k;
     view.k = k;
@@ -535,6 +549,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // ── framing / highlight / selection ─────────────────────────────────────────
   function fitAll(): void {
     fitTo([...nodeMap.values()]);
+    fitK = view.k; // the all-nodes fit becomes the zoom-out floor
   }
   function fitTo(ns: FNode[]): void {
     if (!ns.length) return;
@@ -565,11 +580,14 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     const pad = 90;
     const bw = Math.max(1, maxX - minX) + pad * 2;
     const bh = Math.max(1, maxY - minY) + pad * 2;
-    const k = Math.max(0.25, Math.min(2.2, Math.min(W() / bw, H() / bh)));
+    // Cap zoom-IN at 1.4× (was 2.2×, which blew up compact graphs to fill the
+    // pane). The MIN_SCALE floor lets a large graph fit fully.
+    const k = Math.max(MIN_SCALE, Math.min(1.4, Math.min(W() / bw, H() / bh)));
     view.k = k;
     view.x = W() / 2 - ((minX + maxX) / 2) * k;
     view.y = H() / 2 - ((minY + maxY) / 2) * k;
     applyView();
+    stage.style.visibility = 'visible'; // reveal only after a real fit has landed
   }
 
   function setHighlight(ids: string[] | null): void {

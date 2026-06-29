@@ -150,4 +150,13 @@ describe('createForceGraph — framing + label sizing (regressions)', () => {
       (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver = orig;
     }
   });
+
+  // BUG (flash): the stage must stay hidden until the first real fit, so the un-fit
+  // spawn positions never paint in the top-left corner before centring.
+  it('hides the stage until the first fit lands (no corner flash)', () => {
+    const { mount } = mountGraph();
+    const stage = mount.querySelector('.dm-stage') as unknown as HTMLElement;
+    // jsdom reports a 0×0 mount, so the fit defers — the stage must remain hidden.
+    expect(stage.style.visibility).toBe('hidden');
+  });
 });
