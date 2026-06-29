@@ -218,6 +218,30 @@ describe('GUI graph builder', () => {
     expect(full.truncated).toBe(false);
   });
 
+  it('schemaOnly returns the table topology with zero row/file detail nodes', () => {
+    // The 5.0 brain graph fetches ?schema=1 by default (instant + scales to any row
+    // count): table topology only, never the per-row/file detail nodes.
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const full = buildGuiGraph(configPath, outputDir);
+    const schema = buildGuiGraph(configPath, outputDir, { schemaOnly: true });
+    const tableNodes = (g: typeof full) => g.nodes.filter((n) => n.type === 'table').length;
+    const detailNodes = (g: typeof full) => g.nodes.filter((n) => n.type !== 'table').length;
+    // Same table topology as the full graph...
+    expect(tableNodes(schema)).toBe(tableNodes(full));
+    expect(tableNodes(schema)).toBeGreaterThan(0);
+    // ...but ZERO detail nodes (the schema-only payload draws no rows/files).
+    expect(detailNodes(schema)).toBe(0);
+    expect(detailNodes(full)).toBeGreaterThan(0); // the fixture DOES have detail nodes
+    // Not a capped view — complete at the schema level, so no truncation flag.
+    expect(schema.truncated).toBeUndefined();
+    // Edges stay referentially consistent: every endpoint is a present table node.
+    const ids = new Set(schema.nodes.map((n) => n.id));
+    for (const e of schema.edges) {
+      expect(ids.has(e.source)).toBe(true);
+      expect(ids.has(e.target)).toBe(true);
+    }
+  });
+
   it('adds extraTables (native entities / team-shared) as graph nodes', () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const graph = buildGuiGraph(configPath, outputDir, {
