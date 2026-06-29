@@ -12,6 +12,9 @@ export const sourcesJs = `
     function renderSources() {
       renderSourcesConnectors();
       renderInputsDatabases();
+      // The Outputs > Tables mirror reflects the same entities; keep it fresh as
+      // the sidebar re-renders (cheap — reads in-memory state, no fetch).
+      if (typeof renderOutputsTables === 'function') renderOutputsTables();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a

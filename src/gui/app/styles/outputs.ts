@@ -34,4 +34,37 @@ export const outputsCss = `    /* ── Outputs column ────────
     .out-link:hover { text-decoration: underline; }
     .out-placeholder { color: var(--text-muted); font-size: 12.5px; padding: 6px 12px; }
 
+    /* Outputs > Tables mirror — tiers stacked compactly in the narrow column. */
+    .out-tier + .out-tier { margin-top: 10px; }
+    .out-tier-head {
+      font-size: 10px; font-weight: 700; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 4px 2px;
+    }
+    .out-tier-row {
+      display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px;
+      color: var(--text); font-size: 13px; text-decoration: none;
+    }
+    .out-tier-row:hover { background: var(--row-hover); }
+    .out-tier-row .src-ic { flex: none; }
+    .out-tier-row .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Outputs detail slide-over — the rendered .md when a Markdown entry is opened. */
+    .outputs-detail {
+      position: fixed; top: 56px; right: 0; bottom: 0; width: min(520px, 92vw);
+      z-index: 1150; display: flex; flex-direction: column;
+      background: var(--surface); border-left: 1px solid var(--border);
+      box-shadow: -16px 0 40px -24px rgba(15, 23, 42, 0.25);
+      animation: outputsDetailIn 0.16s ease-out;
+    }
+    .outputs-detail[hidden] { display: none; }
+    @keyframes outputsDetailIn { from { transform: translateX(16px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .outputs-detail-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+    }
+    .outputs-detail-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; }
+    .outputs-detail-close { flex: none; width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
+    .outputs-detail-close:hover { background: var(--row-hover); color: var(--text); }
+    .outputs-detail-body { flex: 1 1 auto; overflow: auto; padding: 16px 18px; }
+
 `;
