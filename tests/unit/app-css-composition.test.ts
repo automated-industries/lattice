@@ -51,8 +51,9 @@ import { css } from '../../src/gui/app/css.js';
 // drill-in table view.
 // Added .fs-rows-table styles (object page = rows table); kept .pv-table which it
 // reuses.
-const ORIGINAL_LENGTH = 113325;
-const ORIGINAL_SHA256 = 'cc0e42ba8e69e59b95a1103f933e7288cab9c4b0a2244305336948d4fe9ed156';
+// Added .pvchip-related / .pvchip-created chip colors for the new provenance tiers.
+const ORIGINAL_LENGTH = 113451;
+const ORIGINAL_SHA256 = '8419bfd7d41fdc34c75ecb30220c8a7034539c093d73b30eeedde595014d90f8';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
