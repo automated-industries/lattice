@@ -91,9 +91,6 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       display: flex; align-items: baseline; gap: 8px; font-size: 12.5px;
       padding: 3px 0 3px 8px; border-left: 2px solid var(--border-strong);
     }
-    .mt-caveats .mt-caveat { padding: 8px 10px; border-radius: 8px; background: var(--surface-2); margin-bottom: 6px; }
-    .mt-caveat-label { font-size: 12.5px; font-weight: 600; color: var(--text); }
-    .mt-caveat-detail { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
     .mt-detail-open { display: inline-block; margin-top: 14px; font-size: 13px; color: var(--accent); text-decoration: none; }
     .mt-detail-open:hover { text-decoration: underline; }
     .mt-detail-field.mt-field-focus { background: var(--accent-soft); border-radius: 4px; }

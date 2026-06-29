@@ -20,12 +20,14 @@ export const tabsJs = `
     ];
     var activeTabKey = 'graph';
 
-    // 'graph' | 'tables' | null. Only the two model views map to a tab; any other
-    // route returns null → no tab is highlighted while it's on screen.
+    // 'graph' | 'tables' | null. The two model views map to their tab; object /
+    // collection / record pages (#/fs/* and #/objects/*) belong to the Tables view
+    // — they're reached by drilling in from it — so they keep the Tables tab lit.
     function tabKeyForHash(hash) {
       hash = hash || '#/';
       if (hash === '#/' || hash === '' || hash === GRAPH_HASH) return 'graph';
       if (hash === '#/tables') return 'tables';
+      if (hash.indexOf('#/fs/') === 0 || hash.indexOf('#/objects/') === 0) return 'tables';
       return null;
     }
 
