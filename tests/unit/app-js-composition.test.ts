@@ -54,9 +54,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // element IDs so the chat client is unchanged); a live activity feed moves to a
 // header popover next to the version-history clock (activity-header.js; renderFeedItem
 // now also appends there); the rail-resize becomes an Outputs-column resize
-// (initOutputsResize). Recaptured.
-const ORIGINAL_LENGTH = 793191;
-const ORIGINAL_SHA256 = '34d32064f4ba224e4a63e5d13a990bb3999ae7137793261c39e0bcd87a9d0501';
+// (initOutputsResize). Step 3 (Model view): a Graph | Tables toggle in the center
+// pane (system-tables segment) over the existing brain graph and a new tiered Tables
+// explorer (model-tables.js — Source/Model/Derived/Surface columns, Entity/Field
+// toggle, tier chips, detail panel + generic computed caveats; the tier classifier
+// mirrors src/gui/tier-classify.ts). Recaptured.
+const ORIGINAL_LENGTH = 806430;
+const ORIGINAL_SHA256 = 'f2b343b03a6849822a75a21f355a19a7e8dfe77a9c30b5be5aac426f0509057a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
