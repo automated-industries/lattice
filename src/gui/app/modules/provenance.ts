@@ -1,65 +1,8 @@
 // Data-provenance views (object-type page + single-row panel). For an object,
 // show WHERE its data came from across the raw / computed / observation tiers,
-// as a force-directed graph or a table. The graph reuses the shared, out-of-band
-// force-graph renderer (loaded like the brain graph via /gui-assets); when that
-// renderer isn't available the view degrades gracefully to the table form.
-// Vocabulary is generic (object / raw / computed / observation) — no domain
-// coupling to any particular dataset.
+// as a TABLE (the single object view — no graph toggle). Vocabulary is generic
+// (object / raw / computed / observation) — no domain coupling to any dataset.
 export const provenanceJs = `
-    var provenanceView = {};   // per-table 'graph' | 'table' (default graph)
-    var _provGraphModule;      // cached dynamic import of the renderer
-    var provGraphHandle = null;
-
-    function loadProvGraphRenderer() {
-      if (!_provGraphModule) _provGraphModule = import('/gui-assets/force-graph.mjs');
-      return _provGraphModule;
-    }
-
-    var PROV_TIER_META = {
-      object: { icon: '\\u25C9', radius: 26 },
-      raw: { icon: '\\u{1F4E5}', radius: 18 },
-      computed: { icon: '\\u2699', radius: 18 },
-      observation: { icon: '\\u2728', radius: 13 },
-    };
-    function provTierMeta(type) { return PROV_TIER_META[type] || PROV_TIER_META.observation; }
-
-    // Map the /api/provenance payload to the generic force-graph node/edge shape.
-    function buildProvenanceModel(payload) {
-      var src = (payload && payload.nodes) ? payload.nodes : [];
-      var nodes = src.map(function (n) {
-        var m = provTierMeta(n.type);
-        return {
-          id: n.id,
-          label: n.label,
-          icon: m.icon,
-          radius: m.radius,
-          cls: 'pvnode-' + n.type,
-          title: n.label + (n.count != null ? ' \\u00B7 ' + n.count : ''),
-          type: n.type, kind: n.kind, table: n.table, rowId: n.rowId, count: n.count,
-        };
-      });
-      var ids = {};
-      nodes.forEach(function (n) { ids[n.id] = true; });
-      var edges = ((payload && payload.edges) ? payload.edges : [])
-        .filter(function (e) { return ids[e.source] && ids[e.target]; })
-        .map(function (e) {
-          return {
-            source: e.source, target: e.target, cls: 'pv-edge', marker: 'fk',
-            title: String(e.relation || '').replace(/_/g, ' '),
-          };
-        });
-      return { nodes: nodes, edges: edges };
-    }
-
-    function provenanceLegendHtml() {
-      return '<div class="dm-legend pv-legend">' +
-        '<span class="pv-sw pvnode-raw"></span>Raw' +
-        '<span class="pv-sw pvnode-computed"></span>Computed' +
-        '<span class="pv-sw pvnode-observation"></span>AI observation' +
-        '<span class="pv-sw pvnode-object"></span>Object' +
-        '</div>';
-    }
-
     var PROV_TIERS = [
       { type: 'raw', label: 'Raw sources' },
       { type: 'computed', label: 'Computed' },
@@ -93,39 +36,12 @@ export const provenanceJs = `
         '</tr></thead><tbody>' + sections + '</tbody></table>';
     }
 
-    function renderProvenanceGraph(mount, payload) {
-      var model = buildProvenanceModel(payload);
-      if (!model.nodes.length) {
-        mount.innerHTML = '<div class="fs-empty">No sources recorded yet for this object.</div>';
-        return;
-      }
-      loadProvGraphRenderer().then(function (mod) {
-        if (!document.body.contains(mount)) return; // navigated away while loading
-        if (provGraphHandle) { try { provGraphHandle.stop(); } catch (e) {} provGraphHandle = null; }
-        mount.innerHTML = '';
-        provGraphHandle = mod.createForceGraph(mount, {
-          nodes: model.nodes,
-          edges: model.edges,
-          reducedMotion: (typeof graphReducedMotion === 'function') ? graphReducedMotion() : false,
-          onNode: function (node) {
-            if (node.table && node.rowId) {
-              location.hash = '#/fs/' + encodeURIComponent(node.table) + '/' + encodeURIComponent(node.rowId);
-            } else if (node.table) {
-              location.hash = '#/fs/' + encodeURIComponent(node.table);
-            }
-          },
-        });
-      }).catch(function () {
-        // Renderer not available (e.g. assets not built) — fall back to the table.
-        mount.innerHTML =
-          '<div class="prov-fallback muted">Interactive graph unavailable \\u2014 showing sources as a table.</div>' +
-          provenanceTableHtml(payload);
-      });
-    }
-
-    // Object-type page: provenance-centric (graph default, with a graph/table
-    // toggle). Nested relation paths still use the row tile grid (renderFsCollection).
-    function renderProvenance(content, table, mode) {
+    // Object-type page: the SINGLE object view — the provenance table (where the
+    // object's data comes from). No graph/table toggle; reached from the Tables
+    // explorer ("Open object" / a tier card) or a brain-graph node, so it belongs
+    // to the Tables tab and its back breadcrumb returns to Tables. Nested relation
+    // paths still use the row tile grid (renderFsCollection).
+    function renderProvenance(content, table) {
       var myGen = renderGen;
       // Files are a SOURCE layer, not a provenance object — their page is the
       // on-disk folder hierarchy.
@@ -134,34 +50,25 @@ export const provenanceJs = `
         setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
         return;
       }
-      mode = (mode === 'table') ? 'table' : 'graph';
-      provenanceView[table] = mode;
-      if (provGraphHandle) { try { provGraphHandle.stop(); } catch (e) {} provGraphHandle = null; }
       var d = displayFor(table);
       fetchJson('/api/provenance?table=' + encodeURIComponent(table)).then(function (payload) {
         if (myGen !== renderGen) return; // superseded by a newer navigation
-        var count = ((payload && payload.nodes) ? payload.nodes : [])
-          .filter(function (n) { return n.type !== 'object'; }).length;
+        // Count the source rows the table actually lists (raw/computed/observation)
+        // so the header never disagrees with the body; omit the chip when there are
+        // none (no more bare "0 sources").
+        var nodes = (payload && payload.nodes) ? payload.nodes : [];
+        var count = nodes.filter(function (n) {
+          return n.type === 'raw' || n.type === 'computed' || n.type === 'observation';
+        }).length;
         content.innerHTML =
-          '<a class="breadcrumb" href="#/graph">\\u2190 Graph</a>' +
+          '<a class="breadcrumb" href="#/tables">\\u2190 Tables</a>' +
           '<div class="view-header">' +
             '<span class="entity-icon">' + d.icon + '</span>' +
             '<h1>' + escapeHtml(d.label) + '</h1>' +
-            '<span class="count">' + count + ' source' + (count === 1 ? '' : 's') + '</span>' +
-            '<div class="actions">' +
-              '<button class="btn' + (mode === 'graph' ? ' pv-active' : '') + '" id="pv-view-graph" type="button">Graph</button>' +
-              '<button class="btn' + (mode === 'table' ? ' pv-active' : '') + '" id="pv-view-table" type="button">Table</button>' +
-            '</div>' +
+            (count ? '<span class="count">' + count + ' source' + (count === 1 ? '' : 's') + '</span>' : '') +
           '</div>' +
-          (mode === 'graph' ? provenanceLegendHtml() : '') +
-          '<div id="prov-mount" class="prov-mount' + (mode === 'table' ? ' prov-mount-table' : '') + '"></div>';
-        var mount = content.querySelector('#prov-mount');
-        if (mode === 'table') mount.innerHTML = provenanceTableHtml(payload);
-        else renderProvenanceGraph(mount, payload);
-        var bg = content.querySelector('#pv-view-graph');
-        var bt = content.querySelector('#pv-view-table');
-        if (bg) bg.addEventListener('click', function () { renderProvenance(content, table, 'graph'); });
-        if (bt) bt.addEventListener('click', function () { renderProvenance(content, table, 'table'); });
+          '<div id="prov-mount" class="prov-mount prov-mount-table"></div>';
+        content.querySelector('#prov-mount').innerHTML = provenanceTableHtml(payload);
       }).catch(function (err) {
         if (myGen !== renderGen) return;
         setContent(content, myGen, '<div class="placeholder"><h2>Failed</h2>' +

@@ -968,7 +968,7 @@ export const dashboardJs = `    // ───────────────
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
       if (topLevel && tableByName(segs[0])) {
-        renderProvenance(content, segs[0], provenanceView[segs[0]] || 'graph');
+        renderProvenance(content, segs[0]); // single object view (table only)
         return;
       }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);

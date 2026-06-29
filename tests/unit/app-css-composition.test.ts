@@ -44,8 +44,11 @@ import { css } from '../../src/gui/app/css.js';
 // Show-tier chips; dedicated nested Markdown-tree styles (.mdt-*); the Inputs
 // column header pinned flush + full-width (aligned with Model/Outputs); a graph
 // loading spinner (.graph-loading/.graph-spinner) shown until settled.
-const ORIGINAL_LENGTH = 114368;
-const ORIGINAL_SHA256 = '1b26b13f319e966e64aadf81ab4748cbaa31eadc2191b93ce467db33f5f0b6c7';
+// Removed the dead CAVEATS styles (.mt-caveat*) and the dead provenance graph-mode
+// styles (.pv-legend/.pv-sw/.pvnode-*/.btn.pv-active/.prov-fallback) now that the
+// object page is a single table view.
+const ORIGINAL_LENGTH = 112761;
+const ORIGINAL_SHA256 = 'cb05c1fcf61690b30cb5c5f5a5035f0e00137211f35c24201b70ab8fbcbd555c';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
