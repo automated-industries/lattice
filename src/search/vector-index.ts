@@ -150,6 +150,16 @@ function setIndexVectorType(adapter: StorageAdapter, table: string, t: VecColTyp
 }
 
 /**
+ * Drop the cached embedding column type for a table so the next query re-introspects
+ * it. Called when a native-index query fails — e.g. another connection rebuilt the
+ * index with a different precision (`halfvec` vs `vector`) and this connection's
+ * cached cast no longer matches the actual column.
+ */
+export function invalidateVectorTypeCache(adapter: StorageAdapter, table: string): void {
+  indexVectorTypeCache.get(adapter)?.delete(table);
+}
+
+/**
  * The pg index's embedding column type (`vector` full precision vs `halfvec`
  * half precision). Cached; introspected on a miss; defaults to `vector` when
  * unknown. Only meaningful on Postgres — the cast it drives is pg-only.
@@ -233,15 +243,17 @@ export async function buildVectorIndex(
          chunk_index INTEGER NOT NULL DEFAULT 0,
          content     TEXT,
          embedding   ${vtype}(${String(d)}) NOT NULL,
+         embedded_at TEXT,
          PRIMARY KEY (row_pk, chunk_index)
        )`,
     );
     // Populate from the JSON store (the text JSON array casts straight to the
-    // index's vector type).
+    // index's vector type). Carry `embedded_at` so the freshness check can detect
+    // content drift at an unchanged row count (the incremental mirror is async).
     await runAsyncOrSync(
       adapter,
-      `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding)
-         SELECT "row_pk", "chunk_index", "content", ("embedding")::${vtype}
+      `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding, embedded_at)
+         SELECT "row_pk", "chunk_index", "content", ("embedding")::${vtype}, "embedded_at"
          FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
@@ -461,17 +473,44 @@ export async function getVectorIndexMeta(
  * on this check to degrade to a correct scan rather than serve stale hits.
  */
 export async function vectorIndexFresh(adapter: StorageAdapter, table: string): Promise<boolean> {
-  const idxRow = await getAsyncOrSync(
-    adapter,
-    `SELECT count(*) AS n FROM "${vectorIndexName(table)}"`,
-  );
+  const idxName = vectorIndexName(table);
+  const idxRow = await getAsyncOrSync(adapter, `SELECT count(*) AS n FROM "${idxName}"`);
   const srcRow = await getAsyncOrSync(
     adapter,
     `SELECT count(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
     [table],
   );
   // Distinct sentinels so a failed/absent read never reports a false "fresh".
-  return Number(idxRow?.n ?? -1) === Number(srcRow?.n ?? -2);
+  if (Number(idxRow?.n ?? -1) !== Number(srcRow?.n ?? -2)) return false;
+
+  // Equal COUNTS don't prove equal CONTENT. The Postgres incremental mirror is
+  // fire-and-forget, so a same-chunk-count update (or a partially-applied mirror)
+  // leaves the index holding stale vectors at an unchanged count. Compare the
+  // freshest `embedded_at`: if the store has a row newer than anything mirrored
+  // into the index, the index is stale → fall back to the exact scan. (The pg
+  // index is a plain table carrying `embedded_at`; sqlite-vec builds atomically
+  // with no async-mirror window, so count parity is sufficient there.)
+  if (adapter.dialect === 'postgres') {
+    try {
+      const idxTs = await getAsyncOrSync(
+        adapter,
+        `SELECT max("embedded_at") AS t FROM "${idxName}"`,
+      );
+      const srcTs = await getAsyncOrSync(
+        adapter,
+        `SELECT max("embedded_at") AS t FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+        [table],
+      );
+      const it = typeof idxTs?.t === 'string' ? idxTs.t : '';
+      const st = typeof srcTs?.t === 'string' ? srcTs.t : '';
+      if (st > it) return false; // store has content newer than the index → stale
+    } catch {
+      // An index built before `embedded_at` existed (an earlier 5.0 build): treat
+      // it as stale so the exact scan serves correct results until the next rebuild.
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -497,8 +536,8 @@ export async function mirrorVectorIndexRow(
   await runAsyncOrSync(adapter, `DELETE FROM "${idx}" WHERE "row_pk" = ?`, [pk]);
   await runAsyncOrSync(
     adapter,
-    `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding)
-       SELECT "row_pk", "chunk_index", "content", ("embedding")::${vtype}
+    `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding, embedded_at)
+       SELECT "row_pk", "chunk_index", "content", ("embedding")::${vtype}, "embedded_at"
        FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`,
     [table, pk],
   );
@@ -530,15 +569,28 @@ export async function syncIndexAfterBulk(adapter: StorageAdapter, table: string)
     `SELECT "vec_dim" AS d FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
     [table],
   );
-  const dim = Number(dimRow?.d ?? 0);
-  if (dim <= 0) {
-    await dropVectorIndex(adapter, table);
-    return;
-  }
   // Rebuild with the same tuning the index was originally built with (recorded in
   // the registry), so an auto-rebuild after a bulk refresh preserves the operator's
-  // chosen HNSW params without the caller having to re-supply them.
+  // chosen HNSW params (and quantization) without the caller having to re-supply them.
   const meta = await getVectorIndexMeta(adapter, table);
+  let dim = Number(dimRow?.d ?? 0);
+  if (dim <= 0) {
+    // No stored row reported a dimension. That's "drop the index" ONLY when the
+    // table truly has no vectors left; if vectors exist but their vec_dim is NULL
+    // (legacy-migrated chunks), fall back to the dimension recorded in the registry
+    // rather than DESTROYING a still-valid index.
+    const cntRow = await getAsyncOrSync(
+      adapter,
+      `SELECT count(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+      [table],
+    );
+    if (Number(cntRow?.n ?? 0) === 0) {
+      await dropVectorIndex(adapter, table);
+      return;
+    }
+    dim = meta?.vecDim ?? 0; // registry vecDim is already numeric
+    if (dim <= 0) return; // can't determine the dimension — leave the existing index intact
+  }
   const rebuildOpts: VectorIndexOptions = {};
   if (meta?.hnswM != null) rebuildOpts.m = meta.hnswM;
   if (meta?.hnswEfConstruction != null) rebuildOpts.efConstruction = meta.hnswEfConstruction;
@@ -582,15 +634,22 @@ export async function searchVectorIndex(
     // Query-time HNSW breadth: `hnsw.ef_search` is a GUC, so it must be SET on the
     // same connection that runs the query — pin both in one transaction. Omitted →
     // pgvector's default, identical to before.
-    if (efSearch !== undefined && adapter.withClient) {
+    if (efSearch !== undefined) {
+      // Validate the tuning ALWAYS (loud on an invalid value), not only on the
+      // withClient path — otherwise a bad efSearch was silently swallowed.
       const ef = Math.trunc(efSearch);
       if (!Number.isFinite(ef) || ef <= 0) {
         throw new Error(`searchVectorIndex: invalid efSearch ${JSON.stringify(efSearch)}`);
       }
-      return adapter.withClient(async (tx) => {
-        await tx.run(`SET LOCAL hnsw.ef_search = ${String(ef)}`);
-        return toHits(await tx.all(sql, [qjson, qjson]));
-      });
+      if (adapter.withClient) {
+        return adapter.withClient(async (tx) => {
+          await tx.run(`SET LOCAL hnsw.ef_search = ${String(ef)}`);
+          return toHits(await tx.all(sql, [qjson, qjson]));
+        });
+      }
+      // No pinned-connection capability: ef_search is a per-connection GUC, so the
+      // tuning can't be applied here (the value was still validated). Falls through
+      // to pgvector's default breadth — a no-op, not a wrong result.
     }
     return toHits(await allAsyncOrSync(adapter, sql, [qjson, qjson]));
   }
