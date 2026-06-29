@@ -45,8 +45,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // views). Pinned length + hash recomputed for the merged inline host.
 // (Bump: GA decoupled from the prod website property — reads window.__LATTICE_GA_ID,
 // default opt-in — so the local app no longer inflates the website's unique users.)
-const ORIGINAL_LENGTH = 788073;
-const ORIGINAL_SHA256 = 'aef45417ec33dce56742938f9499d5c306663d8ac16c8b46787eef787af27604';
+// 5.0 GUI reframe — Inputs/Model/Outputs. Step 1: a new "Databases" section in
+// the left Inputs sidebar (inputs.js segment: renderInputsDatabases empty-state +
+// add-button shell, refreshed alongside Files/Connectors from renderSources), plus
+// the 'databases' group added to the collapsible-group state list. Recaptured.
+const ORIGINAL_LENGTH = 788838;
+const ORIGINAL_SHA256 = '209f550139ae2fcec6020d45f4a223b3345b0fc4468d5bf4374534e374be8ee9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
