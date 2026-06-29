@@ -1041,6 +1041,7 @@ export const dashboardJs = `    // ───────────────
           });
         });
       }).catch(function (err) {
+        if (myGen !== renderGen) return; // a stale error must not clobber a newer view
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
@@ -1387,6 +1388,7 @@ export const dashboardJs = `    // ───────────────
           });
         });
       }).catch(function (err) {
+        if (myGen !== renderGen) return; // a stale error must not clobber a newer view
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
