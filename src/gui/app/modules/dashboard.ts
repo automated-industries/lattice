@@ -914,7 +914,9 @@ export const dashboardJs = `    // ───────────────
     }
 
     function fsBreadcrumb(segs, crumbs) {
-      var parts = ['<a href="#/">Home</a>'];
+      // Rooted at the Tables explorer so every object/record/folder path reads
+      // consistently: Tables ▸ <Object> ▸ <record/relation> …
+      var parts = ['<a href="#/tables">Tables</a>'];
       var t0 = segs[0];
       var prefix = '#/fs/' + encodeURIComponent(t0);
       parts.push('<a href="' + prefix + '">' + escapeHtml(displayFor(t0).label) + '</a>');
@@ -967,10 +969,8 @@ export const dashboardJs = `    // ───────────────
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
-      if (topLevel && tableByName(segs[0])) {
-        renderProvenance(content, segs[0]); // single object view (table only)
-        return;
-      }
+      // Files keep their bespoke file-list table (folders + loose files).
+      if (topLevel && segs[0] === 'files') { renderFilesRootView(content); return; }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
       crumbsP.then(function (crumbs) {
         var table, rowsP;
@@ -991,19 +991,27 @@ export const dashboardJs = `    // ───────────────
           if (myGen !== renderGen) return; // superseded by a newer navigation
           var d = displayFor(table);
           var base = fsHref(segs);
-          var rowTiles = rows.length
-            ? rows.map(function (r) {
-                var icon = (table === 'files') ? fileEmoji(r) : '📁';
-                // Per-row privacy indicator in the tile corner (lock = private, eye
-                // = shared); '' on a local workspace (no _access). Same component +
-                // tooltip as the entity-detail header.
-                return '<a class="fs-tile" href="' + base + '/' + encodeURIComponent(r.id) + '">' +
-                  visIndicator(r._access, 'fs-tile-vis') +
-                  '<div class="fs-tile-icon">' + icon + '</div>' +
-                  '<div class="fs-tile-label">' + escapeHtml(fsDisplayName(r)) + '</div>' +
-                '</a>';
-              }).join('')
-            : (topLevel ? '' : '<div class="fs-empty">Nothing here yet.</div>');
+          // The object view is the table's ROWS in a table (mirroring the Files
+          // file list): columns are the object's fields, the first cell links to
+          // the record. One consistent object view — no graph, no tiles.
+          var cols = objRowCols(tableByName(table));
+          var thead = cols.map(function (c) {
+            return '<th>' + escapeHtml(fieldLabel(c)) + '</th>';
+          }).join('');
+          var body = rows.map(function (r) {
+            var cells = cols.map(function (c, i) {
+              var v = fsCellText(table, r, c);
+              if (i === 0) {
+                v = '<a href="' + base + '/' + encodeURIComponent(r.id) + '">' +
+                  (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
+              }
+              return '<td>' + v + '</td>';
+            }).join('');
+            return '<tr>' + cells + '</tr>';
+          }).join('');
+          var tableHtml = rows.length
+            ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
+            : '<div class="fs-empty" style="padding:24px">Nothing here yet.</div>';
           content.innerHTML =
             fsBreadcrumb(segs, crumbs) +
             '<div class="view-header">' +
@@ -1011,11 +1019,40 @@ export const dashboardJs = `    // ───────────────
               '<h1>' + escapeHtml(d.label) + '</h1>' +
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
             '</div>' +
-            '<div class="fs-grid">' + rowTiles + '</div>';
+            tableHtml;
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // Columns to show in the object rows table: the object's own fields, minus
+    // internal/system/binary columns, capped so a wide table stays readable.
+    function objRowCols(t) {
+      if (!t || !t.columns) return ['id'];
+      var skip = {
+        deleted_at: 1, blob_path: 1, extracted_text: 1, extraction_status: 1,
+        embedding: 1, vector: 1, _access: 1, _pk: 1, ref_kind: 1,
+      };
+      var cols = t.columns.filter(function (c) {
+        return !skip[c] && c.indexOf('_source_') !== 0 && c.toLowerCase().indexOf('embedding') < 0;
+      });
+      // Lead with a human-ish column when present, not the raw id.
+      cols.sort(function (a, b) {
+        var rank = function (c) { return c === 'id' ? 2 : (/(name|title|label)/i.test(c) ? 0 : 1); };
+        return rank(a) - rank(b);
+      });
+      return cols.slice(0, 8);
+    }
+
+    // Compact one-line cell value (masked for secrets, truncated) for the rows table.
+    function fsCellText(table, row, col) {
+      var raw = row[col];
+      if (raw == null || raw === '') return '<span class="fs-empty-val">—</span>';
+      if (isSecretColumn(table, col) || looksEncrypted(raw)) return '<span class="muted">' + SECRET_MASK + '</span>';
+      var s = String(raw).replace(/\\s+/g, ' ').trim();
+      if (s.length > 90) s = s.slice(0, 88) + '…';
+      return escapeHtml(s);
     }
 
     // ── Object page as a focused graph ──────────────────────────────────────
@@ -1212,7 +1249,7 @@ export const dashboardJs = `    // ───────────────
     // Home ▸ Files ▸ <root> ▸ …folders… [▸ <leafLabel current>]. Folder crumbs link
     // to their #/folder route; leafLabel (a filename) is appended non-linked.
     function folderBreadcrumb(path, roots, leafLabel) {
-      var parts = ['<a href="#/graph">Home</a>', '<a href="#/fs/files">Files</a>'];
+      var parts = ['<a href="#/tables">Tables</a>', '<a href="#/fs/files">Files</a>'];
       var root = null;
       (roots || []).forEach(function (r) {
         if (r.kind !== 'folder') return;

@@ -49,7 +49,7 @@ test('navigation paints the new view immediately even when data is slow', async 
   });
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
   // …then the provenance view fills in.
-  await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
   // Open a record (the row detail) directly: the nav must paint the new frame
   // immediately (a loading state), not freeze on the slow row fetch.
