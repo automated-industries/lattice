@@ -206,21 +206,23 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // fit centres them, a visible "loads twice" flash.
   stage.style.visibility = 'hidden';
 
-  // Re-frame on a later pane/window resize (sidebar collapse, assistant-rail
-  // toggle) — but ONLY after the settle path has already framed the graph once,
-  // and only while the user is still at the auto-fit view (so a manually
-  // zoomed/panned user isn't yanked back).
-  //
-  // It must NOT do the FIRST fit: firing fitAll while the sim is still settling
-  // (nodes clustered at the spawn origin, the stage at scale 1 = top-left corner)
-  // is exactly what flashed the graph in the corner and "loaded twice". The first
-  // framing is owned by the settle path (frame()/settleNow → fitAll on settle),
-  // and the 0×0-mount case is handled by fitTo's own rAF retry — so the stage
-  // stays hidden until a real, settled fit lands, then reveals already centred.
+  // Frame the graph once the mount first gets a real size — it reliably reveals
+  // the stage the moment the pane is measurable (the settle path alone is
+  // timing-dependent and can leave the stage hidden under a slow first layout),
+  // and `fitTo` always CENTERS, so this early fit is centred, never a corner. It
+  // ALSO re-frames on later pane/window resizes (sidebar collapse, assistant-rail
+  // toggle) — but only while the user is still at the auto-fit view, so a manually
+  // zoomed/panned user isn't yanked back.
   if (typeof ResizeObserver !== 'undefined') {
+    let firstFit = false;
     const ro = new ResizeObserver(() => {
-      if (!framed || !mount.clientWidth || !mount.clientHeight) return;
-      if (Math.abs(view.k - fitK) < 1e-3) fitAll();
+      if (!mount.clientWidth || !mount.clientHeight) return;
+      if (!firstFit) {
+        firstFit = true;
+        fitAll();
+      } else if (Math.abs(view.k - fitK) < 1e-3) {
+        fitAll();
+      }
     });
     ro.observe(mount);
   }
