@@ -46,11 +46,17 @@ import { appJs } from '../../src/gui/app/script.js';
 // (Bump: GA decoupled from the prod website property — reads window.__LATTICE_GA_ID,
 // default opt-in — so the local app no longer inflates the website's unique users.)
 // 5.0 GUI reframe — Inputs/Model/Outputs. Step 1: a new "Databases" section in
-// the left Inputs sidebar (inputs.js segment: renderInputsDatabases empty-state +
-// add-button shell, refreshed alongside Files/Connectors from renderSources), plus
-// the 'databases' group added to the collapsible-group state list. Recaptured.
-const ORIGINAL_LENGTH = 788838;
-const ORIGINAL_SHA256 = '209f550139ae2fcec6020d45f4a223b3345b0fc4468d5bf4374534e374be8ee9';
+// the left Inputs sidebar (inputs.js segment). Step 2 (right-side reframe): the
+// docked assistant rail is replaced by a right-hand Outputs column (outputs.js —
+// Artifacts moved here from the left, plus Markdown/Tables/Server-Docs/API-Docs/MCP
+// section shells); the chat moves to a floating "Ask Lattice" panel (ask-lattice.js
+// — open/close + file drag-drop; the composer/feed/thread controls reuse the same
+// element IDs so the chat client is unchanged); a live activity feed moves to a
+// header popover next to the version-history clock (activity-header.js; renderFeedItem
+// now also appends there); the rail-resize becomes an Outputs-column resize
+// (initOutputsResize). Recaptured.
+const ORIGINAL_LENGTH = 793191;
+const ORIGINAL_SHA256 = '34d32064f4ba224e4a63e5d13a990bb3999ae7137793261c39e0bcd87a9d0501';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

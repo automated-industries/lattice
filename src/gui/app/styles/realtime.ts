@@ -10,7 +10,7 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
     @media (prefers-reduced-motion: reduce) {
       tr.lattice-flash > td { animation: none; }
       .feed-item, .chat-msg { animation: none; }
-      .assistant-rail .rail-title { animation: none !important; }
+      .ask-lattice-panel-title { animation: none !important; }
       .app-loading-spinner { animation: none; }
       *, *::before, *::after { transition-duration: 0.01ms !important; }
     }

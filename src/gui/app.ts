@@ -73,6 +73,18 @@ export const guiAppHtml = `<!doctype html>
       <button class="history-btn" id="redo-btn" title="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
     </div>
+    <div class="activity" id="activity">
+      <button class="history-btn activity-pill" id="activity-pill" title="Recent activity" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        <span class="activity-count" id="activity-count" hidden>0</span>
+      </button>
+      <div class="activity-popover" id="activity-popover" hidden>
+        <div class="activity-popover-head">Recent activity</div>
+        <div class="activity-feed" id="activity-feed">
+          <div class="activity-empty" id="activity-empty">No activity yet. Changes you make appear here.</div>
+        </div>
+      </div>
+    </div>
     <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
     <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
     <button id="settings-gear" title="Settings" aria-label="Open settings">
@@ -81,6 +93,11 @@ export const guiAppHtml = `<!doctype html>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
     </button>
+    <div class="ask-lattice" id="ask-lattice">
+      <button class="ask-lattice-trigger" id="ask-lattice-trigger" title="Ask Lattice — powered by Claude" aria-haspopup="dialog" aria-expanded="false">
+        <span class="ask-lattice-mark" aria-hidden="true">✦</span><span class="ask-lattice-label">Ask Lattice</span>
+      </button>
+    </div>
   </header>
   <div class="layout">
     <nav class="sidebar">
@@ -96,14 +113,6 @@ export const guiAppHtml = `<!doctype html>
               <button class="src-add" id="src-add-file" type="button">＋ File</button>
             </div>
             <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
-          </div>
-        </div>
-        <div class="src-group">
-          <button class="section-label section-toggle" data-group="artifacts" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Built by Lattice</span>
-          </button>
-          <div class="section-body" data-group-body="artifacts">
-            <div id="src-artifacts-tree"></div>
           </div>
         </div>
         <div class="src-group">
@@ -149,18 +158,49 @@ export const guiAppHtml = `<!doctype html>
       </div>
       <div id="content"></div>
     </main>
-    <aside class="assistant-rail" id="assistant-rail">
-      <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="rail-handle" id="rail-handle" title="Expand / collapse"></div>
-      <div class="rail-header">
-        <span class="rail-title">Assistant</span>
-        <select class="rail-threads" id="rail-threads" title="Conversations"></select>
-        <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
+    <aside class="outputs" id="outputs-rail" aria-label="Outputs">
+      <div class="outputs-resize" id="outputs-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="outputs-head"><span class="outputs-title">Outputs</span></div>
+      <div class="outputs-body" id="outputs-body">
+        <section class="out-group">
+          <button class="section-label section-toggle" data-group="out-artifacts" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Artifacts</span>
+          </button>
+          <div class="section-body" data-group-body="out-artifacts"><div id="out-artifacts-tree"></div></div>
+        </section>
+        <section class="out-group">
+          <button class="section-label section-toggle" data-group="out-markdown" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Markdown</span>
+          </button>
+          <div class="section-body" data-group-body="out-markdown"><div id="out-markdown-tree"></div></div>
+        </section>
+        <section class="out-group">
+          <button class="section-label section-toggle" data-group="out-tables" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Tables</span>
+          </button>
+          <div class="section-body" data-group-body="out-tables"><div id="out-tables-mount"></div></div>
+        </section>
+        <section class="out-group">
+          <button class="section-label section-toggle" data-group="out-serverdocs" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Server Docs</span>
+          </button>
+          <div class="section-body" data-group-body="out-serverdocs"><div id="out-serverdocs"></div></div>
+        </section>
+        <section class="out-group">
+          <button class="section-label section-toggle" data-group="out-apidocs" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">API Docs</span>
+          </button>
+          <div class="section-body" data-group-body="out-apidocs">
+            <a class="out-link" id="out-apidocs-link" href="https://latticesql.com/docs" target="_blank" rel="noopener">Open the docs ↗</a>
+          </div>
+        </section>
+        <section class="out-group">
+          <button class="section-label section-toggle" data-group="out-mcp" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">MCP</span>
+          </button>
+          <div class="section-body" data-group-body="out-mcp"><div class="out-placeholder">Coming soon.</div></div>
+        </section>
       </div>
-      <div class="rail-feed" id="rail-feed">
-        <div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>
-      </div>
-      <div class="rail-composer" id="rail-composer"></div>
     </aside>
   </div>
 
@@ -186,6 +226,24 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="drawer-body" id="connectors-dialog-body"></div>
   </aside>
+
+  <!-- Floating assistant. The chat composer/feed/thread controls reuse the same
+       element IDs the docked rail used (#rail-feed/#rail-composer/#rail-threads/
+       #rail-newchat/#rail-empty), so the chat client code is unchanged — only its
+       housing moved to this upper-right floating panel. -->
+  <div class="ask-lattice-panel" id="ask-lattice-panel" hidden role="dialog" aria-label="Ask Lattice">
+    <div class="ask-lattice-panel-head">
+      <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">✦</span> Ask Lattice</span>
+      <span class="ask-lattice-by">powered by Claude</span>
+      <select class="rail-threads" id="rail-threads" title="Conversations"></select>
+      <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
+      <button class="ask-lattice-close" id="ask-lattice-close" title="Close" aria-label="Close">✕</button>
+    </div>
+    <div class="rail-feed" id="rail-feed">
+      <div class="rail-empty" id="rail-empty">Ask anything about your workspace.</div>
+    </div>
+    <div class="rail-composer" id="rail-composer"></div>
+  </div>
 
   <script>${analyticsJs}</script>
   <script>${appJs}</script>
