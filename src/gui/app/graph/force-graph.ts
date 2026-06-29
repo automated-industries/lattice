@@ -196,16 +196,20 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // fit centres them, a visible "loads twice" flash.
   stage.style.visibility = 'hidden';
 
-  // Re-fit once the mount first gets a real size — it can mount at 0×0 while a
-  // freshly-set innerHTML lays out, which would otherwise leave the graph framed
-  // against the 900/600 fallback (clustered in a corner).
+  // Frame the graph once the mount first gets a real size (it can mount at 0×0
+  // while a freshly-set innerHTML lays out, which would otherwise frame against the
+  // 900/600 fallback — the corner cluster), AND re-frame on later pane/window
+  // resizes (sidebar collapse, assistant rail toggle) — but ONLY while the user is
+  // still at the auto-fit view, so a manually zoomed/panned user isn't yanked back.
   if (typeof ResizeObserver !== 'undefined') {
-    let refit = false;
+    let firstFit = false;
     const ro = new ResizeObserver(() => {
-      if (!refit && mount.clientWidth && mount.clientHeight) {
-        refit = true;
+      if (!mount.clientWidth || !mount.clientHeight) return;
+      if (!firstFit) {
+        firstFit = true;
         fitAll();
-        ro.disconnect();
+      } else if (Math.abs(view.k - fitK) < 1e-3) {
+        fitAll(); // still at the fit zoom → keep the whole graph framed as the pane changes
       }
     });
     ro.observe(mount);

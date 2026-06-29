@@ -11,7 +11,12 @@
 // route-type page_location.
 export const analyticsJs = `
 (function () {
-  var MEASUREMENT_ID = 'G-3M1RPJ4ZB3';
+  // The local GUI must NOT report into the public website's GA property — doing so
+  // commingled dev/CI/app launches with real site visitors and inflated unique
+  // users (every fresh config home mints a new client_id). The id is now read from
+  // an injectable global and is EMPTY by default, so a local install sends NOTHING.
+  // To enable app analytics, set window.__LATTICE_GA_ID to a SEPARATE GA property.
+  var MEASUREMENT_ID = (typeof window !== 'undefined' && window.__LATTICE_GA_ID) || '';
   var DISABLE_FLAG = 'ga-disable-' + MEASUREMENT_ID;
   var loaded = false;
   var consent = false;
@@ -50,7 +55,7 @@ export const analyticsJs = `
   }
 
   function load() {
-    if (loaded) return;
+    if (loaded || !MEASUREMENT_ID) return; // no property configured → never load gtag.js
     loaded = true;
     var s = document.createElement('script');
     s.async = true;

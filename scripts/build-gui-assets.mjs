@@ -64,9 +64,9 @@ async function main() {
 
   // 1b. Bundle the force-directed graph renderer (dependency-free) into an ESM
   //     module loaded out-of-band by the GUI via dynamic import. Unlike the voice
-  //     assets below this is core, not optional — but it has no exotic deps, so
-  //     the bundle does not fail in practice. A failure here is logged; the GUI
-  //     surfaces a load error rather than crashing (graceful at runtime).
+  //     assets below this is CORE, not optional — all three graph surfaces import
+  //     it — so a failure here is BUILD-FATAL: never ship (or publish, via
+  //     prepublishOnly) a package missing the renderer.
   mkdirSync(assetsDir, { recursive: true });
   try {
     await esbuild.build({
@@ -77,14 +77,14 @@ async function main() {
       platform: 'browser',
       target: 'es2022',
       minify: true,
-      logLevel: 'silent',
+      logLevel: 'warning',
     });
     console.log('[gui-assets] built dist/gui-assets/force-graph.mjs');
   } catch (e) {
-    console.warn(
-      `[gui-assets] graph renderer bundle failed (${e && e.message ? e.message : String(e)}); ` +
-        `the GUI will surface a graph load error at runtime`,
+    console.error(
+      `[gui-assets] FATAL: core graph renderer bundle failed: ${e && e.message ? e.message : String(e)}`,
     );
+    throw e; // core asset — fail the build rather than ship a broken GUI
   }
 
   // 2. Locate the speech library (a devDependency, build-time only). Absent ⇒ skip.
