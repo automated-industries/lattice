@@ -343,9 +343,7 @@ export async function searchByEmbedding(
         // via <table>_v, but the raw chunk is not). Re-derive matchedContent from
         // the already-masked row so masked fields drop out; owners/local callers
         // keep the exact matched chunk.
-        result.matchedContent = isCloudMember
-          ? concatRowText(row, config.fields)
-          : r.content;
+        result.matchedContent = isCloudMember ? concatRowText(row, config.fields) : r.content;
       }
     }
     results.push(result);
