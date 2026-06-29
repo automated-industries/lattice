@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
-import { DatabaseConnector, type ExternalRecord } from '../../src/connectors/index.js';
+import { Lattice } from '../../src/lattice.js';
+import {
+  DatabaseConnector,
+  createConnector,
+  syncConnector,
+  type ExternalRecord,
+} from '../../src/connectors/index.js';
 
 /**
  * Real connect → introspect → import against an external Postgres. Gated on
@@ -83,6 +89,43 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
       expect(alpha.row.active).toBe(1); // boolean → 1
       const beta = records.find((r) => r.id === 'w2')!;
       expect(beta.row.active).toBe(0); // boolean false → 0
+    } finally {
+      await connector.disconnect(connectionId);
+    }
+  });
+
+  it('imports rows into a Lattice table via the sync engine, stamped with lineage', async () => {
+    const connector = new DatabaseConnector();
+    const { connectionId } = await connector.connect({
+      connectionString: PG_URL!,
+      schema: SCHEMA,
+    });
+    const db = new Lattice(':memory:');
+    await db.init();
+    try {
+      const toolkit = `db_source:${connectionId}`;
+      const widgets = connector.models(toolkit).find((m) => m.model === 'widgets')!;
+      const connectorId = await createConnector(db, {
+        connector: 'db_source',
+        toolkit,
+        connectionRef: connectionId,
+        connectedBy: 'test',
+        displayName: 'test',
+      });
+      for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+
+      const res = await syncConnector(db, connector, connectorId);
+      expect(res.upserted[widgets.table]).toBe(3);
+
+      const rows = (await db.query(widgets.table, {
+        filters: [{ col: 'deleted_at', op: 'isNull' }],
+      })) as Record<string, unknown>[];
+      expect(rows.length).toBe(3);
+      const w1 = rows.find((r) => r.id === 'w1')!;
+      expect(w1.name).toBe('Alpha');
+      expect(w1.qty).toBe(3);
+      // The sync engine stamps connector lineage on every imported row.
+      expect(w1._source_connector_id).toBeTruthy();
     } finally {
       await connector.disconnect(connectionId);
     }
