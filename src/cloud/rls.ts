@@ -3,6 +3,7 @@ import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import { pkSqlExpr } from '../db/pk.js';
+import { LINEAGE_TABLE, ensureLineageTable } from '../gui/lineage-store.js';
 // Re-exported so existing consumers (cloud/audience.ts) keep importing it from
 // here; the canonical definition now lives in the pure db/pk.ts leaf.
 export { pkSqlExpr } from '../db/pk.js';
@@ -983,6 +984,28 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
 );
 DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
+`,
+  );
+}
+
+/**
+ * Defense-in-depth lock on the lineage substrate (`__lattice_lineage`). It records
+ * source→object edges (source ids/detail a non-owner shouldn't be able to
+ * enumerate). Today it is merely UNGRANTED to members; this ENABLEs + FORCEs RLS
+ * with NO member policy/grant, so even a future accidental `GRANT` can't leak
+ * cross-member lineage — RLS-with-no-policy denies every non-BYPASSRLS role while
+ * the owner's BYPASSRLS connection (where the provenance builder runs) is
+ * unaffected. Ensures the table exists first so the lock applies even before the
+ * first import creates it. Idempotent; converges on every owner open. No-op off PG.
+ */
+export async function enableLineageRls(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  await ensureLineageTable(db.adapter);
+  await runCloudBootstrapSql(
+    db,
+    `
+ALTER TABLE "${LINEAGE_TABLE}" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "${LINEAGE_TABLE}" FORCE ROW LEVEL SECURITY;
 `,
   );
 }

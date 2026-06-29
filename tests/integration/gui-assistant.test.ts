@@ -251,7 +251,11 @@ describe('assistant key storage', () => {
     const res = await fetch(`${server.url}/gui-assets/transcriber.worker.mjs`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/javascript');
-    expect(res.headers.get('cache-control')).toContain('immutable');
+    // Code assets (.mjs/.js) live at a STABLE per-build filename whose CONTENT
+    // changes every build, so they must REVALIDATE — not be cached immutably, which
+    // pinned a stale bundle in the webview across upgrades. (The large, truly
+    // content-stable WASM binaries keep the long-lived immutable header.)
+    expect(res.headers.get('cache-control')).toContain('no-cache');
 
     // A traversal attempt outside the assets dir is rejected (never served).
     const escape = await fetch(`${server.url}/gui-assets/..%2f..%2fpackage.json`);

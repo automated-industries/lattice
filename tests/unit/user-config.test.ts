@@ -109,13 +109,14 @@ describe('framework user-config', () => {
   describe('preferences.json round-trip', () => {
     const DEFAULTS = {
       show_system_tables: false,
-      analytics: true,
+      // Telemetry is opt-in: a local-first tool defaults analytics OFF.
+      analytics: false,
       // On-device dictation is the keyless default (no API key, audio stays local).
       voice_provider: 'local',
       aggressiveness: 0.85,
     };
 
-    it('returns defaults when the file is missing (analytics on by default)', () => {
+    it('returns defaults when the file is missing (analytics OFF by default — opt-in)', () => {
       const prefs = readPreferences();
       expect(prefs).toEqual(DEFAULTS);
     });
@@ -210,10 +211,10 @@ describe('framework user-config', () => {
       else process.env.SCARF_ANALYTICS = savedScarf;
     });
 
-    it('defaults to enabled (opt-out model)', () => {
+    it('defaults to DISABLED (opt-in model — telemetry is off until the user enables it)', () => {
       delete process.env.DO_NOT_TRACK;
       delete process.env.SCARF_ANALYTICS;
-      expect(analyticsEnabled()).toBe(true);
+      expect(analyticsEnabled()).toBe(false);
     });
 
     it('honors the analytics preference', () => {

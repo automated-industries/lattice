@@ -321,6 +321,11 @@ export async function buildProvenanceGraph(
       const tier = (asStr(g.tier) || 'raw') as ProvenanceNodeType;
       const relation = asStr(g.relation) || relFor(kind);
       const id = `src:${kind}:${srcTable || kind}`;
+      // The junction derivation above already emitted (and counted) the grouped
+      // `files` node from the actual file→object links. addNode SUMS counts on a
+      // repeated id, so re-adding the lineage `file` rows here would double-count
+      // files that are both junction-linked AND lineage-recorded — skip them.
+      if (kind === 'file' && nodes.has(id)) continue;
       addNode(nodes, {
         id,
         label: labelForSource(kind, srcTable || undefined),
