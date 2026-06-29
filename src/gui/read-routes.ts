@@ -313,6 +313,57 @@ async function dashboardPayload(
  * throw row_access_denied / row_owner_only, and those must propagate to
  * server.ts's existing outer catch (which maps them to 404 / 403).
  */
+/** One node in the lazy rendered-context tree (folder or .md file). */
+interface ContextTreeEntry {
+  name: string;
+  /** Path relative to the output dir, POSIX-joined. */
+  path: string;
+  kind: 'dir' | 'file';
+}
+
+/**
+ * List the IMMEDIATE children (sub-folders + `.md` files) of `outputDir/rel` for
+ * the Outputs > Markdown tree. Lazy by design — a large workspace's Context tree
+ * has tens of thousands of files, so each level is fetched on demand and bounded
+ * (Rule of thumb: never an unbounded recursive scan). Internal dot-dirs are
+ * skipped; the path is containment-guarded (normalize + prefix + realpath) like
+ * the /gui-assets route. Returns null when the dir is missing or escapes the root.
+ */
+function listContextChildren(
+  outputDir: string,
+  rel: string,
+): { entries: ContextTreeEntry[]; truncated: boolean } | null {
+  const base = outputDir.replace(/[/\\]+$/, '');
+  const dir = rel ? normalize(join(base, rel)) : base;
+  const within = dir === base || dir.startsWith(base + sep);
+  if (!within || !existsSync(dir) || !statSync(dir).isDirectory()) return null;
+  try {
+    const real = realpathSync(dir);
+    const realBase = realpathSync(base);
+    if (real !== realBase && !real.startsWith(realBase + sep)) return null;
+  } catch {
+    return null;
+  }
+  const CAP = 1000;
+  const all = readdirSync(dir, { withFileTypes: true }).filter((d) => !d.name.startsWith('.'));
+  const dirs = all
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort((a, b) => a.localeCompare(b));
+  const files = all
+    .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.md'))
+    .map((d) => d.name)
+    .sort((a, b) => a.localeCompare(b));
+  const mk = (name: string, kind: 'dir' | 'file'): ContextTreeEntry => ({
+    name,
+    path: rel ? `${rel}/${name}` : name,
+    kind,
+  });
+  // Folders first, then files; the tree mirrors the on-disk Context/ layout.
+  const combined = [...dirs.map((n) => mk(n, 'dir')), ...files.map((n) => mk(n, 'file'))];
+  return { entries: combined.slice(0, CAP), truncated: combined.length > CAP };
+}
+
 export async function handleReadRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -807,46 +858,26 @@ export async function handleReadRoutes(
     return true;
   }
 
-  // ── Rendered markdown context tree: /api/context/tree + /api/context/file ──
-  // The Outputs > Markdown panel reflects the rendered LLM context tree under the
-  // workspace output dir. Read-only and bounded: /tree lists filenames only (one
-  // shallow scan, internal dot-dirs skipped); /file reads ONE .md, path-containment-
-  // guarded exactly like the /gui-assets route (normalize + prefix + realpath).
+  // ── Rendered markdown context tree (lazy): /api/context/tree + /list + /file ──
+  // The Outputs > Markdown panel mirrors the on-disk Context/ tree. It's LAZY: /tree
+  // returns the top level, /list?path=<dir> returns one folder's immediate children
+  // (so a workspace with tens of thousands of context files never ships a huge
+  // payload), and /file reads ONE .md. All three are read-only + path-containment-
+  // guarded (normalize + prefix + realpath), internal dot-dirs skipped.
   if (method === 'GET' && pathname === '/api/context/tree') {
-    const base = active.outputDir.replace(/[/\\]+$/, '');
-    const entries: {
-      name: string;
-      path: string;
-      kind: 'file' | 'dir';
-      children?: { name: string; path: string }[];
-    }[] = [];
-    try {
-      if (existsSync(base) && statSync(base).isDirectory()) {
-        const top = readdirSync(base, { withFileTypes: true })
-          // Skip the internal .lattice* / .lattice-native / .lattice-gui dirs.
-          .filter((d) => !d.name.startsWith('.'))
-          .slice(0, 500);
-        for (const d of top) {
-          if (d.isFile() && d.name.toLowerCase().endsWith('.md')) {
-            entries.push({ name: d.name, path: d.name, kind: 'file' });
-          } else if (d.isDirectory()) {
-            const kids = readdirSync(join(base, d.name), { withFileTypes: true })
-              .filter((c) => c.isFile() && c.name.toLowerCase().endsWith('.md'))
-              .slice(0, 500)
-              .map((c) => ({ name: c.name, path: `${d.name}/${c.name}` }));
-            if (kids.length)
-              entries.push({ name: d.name, path: d.name, kind: 'dir', children: kids });
-          }
-        }
-      }
-    } catch {
-      // Render dir missing/unreadable → empty tree (the SPA shows a placeholder).
+    const r = listContextChildren(active.outputDir, '');
+    sendJson(res, { entries: r?.entries ?? [], truncated: r?.truncated ?? false });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/context/list') {
+    const rel = decodeURIComponent(url.searchParams.get('path') ?? '');
+    const r = rel ? listContextChildren(active.outputDir, rel) : null;
+    if (!r) {
+      sendJson(res, { error: 'context folder not found' }, 404);
+      return true;
     }
-    // Directories first, then files, alphabetical within each.
-    entries.sort((a, b) =>
-      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1,
-    );
-    sendJson(res, { entries });
+    sendJson(res, { entries: r.entries, truncated: r.truncated });
     return true;
   }
 
