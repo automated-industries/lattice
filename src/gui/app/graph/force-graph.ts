@@ -165,13 +165,23 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
 
   const sim = new ForceSim<FNode>({
     chargeStrength: (n) => -30 * (n.radius / 6),
-    linkDistance: () => 120,
+    linkDistance: () => 140,
     linkStrength: () => 0.5,
-    // Collision must clear the node's LABEL (drawn below the dot and far wider
-    // than it), not just the glow ring — otherwise labels overlap neighbours.
-    // Two passes resolve dense clusters before the alpha cools.
-    collideRadius: (n) => n.radius + 22,
-    collideIterations: 2,
+    // Collision must clear the node's LABEL, not just the dot. The label is drawn
+    // centred below the dot and is FAR wider than it — a 24-char name renders
+    // ~165px wide vs an ~11px radius. Reserving only the dot radius (the old
+    // `+22`) let neighbours' labels overlap badly. We reserve roughly HALF the
+    // label's on-screen width (in graph units) so the layout spreads enough that,
+    // after the fit scales it to the pane, the constant-~13px labels stay clear.
+    // Spreading also pushes the bounding box past the fit's zoom-IN cap, so the
+    // fit zooms to FILL the pane (screen gap ≈ pane / √nodes) instead of clustering
+    // tight. Three passes resolve dense clusters before the alpha cools.
+    collideRadius: (n) => {
+      const chars = n.source.label ? n.source.label.length : 0;
+      const halfLabel = chars * 4.2 + 14; // ≈ 8.4px/char at 13px → half-width + margin
+      return Math.max(n.radius + 14, halfLabel);
+    },
+    collideIterations: 3,
     center: { x: 0, y: 0, strength: 0.05 },
   });
 
@@ -196,21 +206,21 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // fit centres them, a visible "loads twice" flash.
   stage.style.visibility = 'hidden';
 
-  // Frame the graph once the mount first gets a real size (it can mount at 0×0
-  // while a freshly-set innerHTML lays out, which would otherwise frame against the
-  // 900/600 fallback — the corner cluster), AND re-frame on later pane/window
-  // resizes (sidebar collapse, assistant rail toggle) — but ONLY while the user is
-  // still at the auto-fit view, so a manually zoomed/panned user isn't yanked back.
+  // Re-frame on a later pane/window resize (sidebar collapse, assistant-rail
+  // toggle) — but ONLY after the settle path has already framed the graph once,
+  // and only while the user is still at the auto-fit view (so a manually
+  // zoomed/panned user isn't yanked back).
+  //
+  // It must NOT do the FIRST fit: firing fitAll while the sim is still settling
+  // (nodes clustered at the spawn origin, the stage at scale 1 = top-left corner)
+  // is exactly what flashed the graph in the corner and "loaded twice". The first
+  // framing is owned by the settle path (frame()/settleNow → fitAll on settle),
+  // and the 0×0-mount case is handled by fitTo's own rAF retry — so the stage
+  // stays hidden until a real, settled fit lands, then reveals already centred.
   if (typeof ResizeObserver !== 'undefined') {
-    let firstFit = false;
     const ro = new ResizeObserver(() => {
-      if (!mount.clientWidth || !mount.clientHeight) return;
-      if (!firstFit) {
-        firstFit = true;
-        fitAll();
-      } else if (Math.abs(view.k - fitK) < 1e-3) {
-        fitAll(); // still at the fit zoom → keep the whole graph framed as the pane changes
-      }
+      if (!framed || !mount.clientWidth || !mount.clientHeight) return;
+      if (Math.abs(view.k - fitK) < 1e-3) fitAll();
     });
     ro.observe(mount);
   }
