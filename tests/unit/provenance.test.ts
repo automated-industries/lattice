@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
@@ -348,5 +348,173 @@ describe('provenance: raw file sources from existing junctions (no lineage row)'
     const g = await buildProvenanceGraph(d, 'contracts', { rowId: 'c1' });
     // No config → the junction path is skipped; only the center object remains.
     expect(g.nodes.filter((n) => n.kind === 'file')).toHaveLength(0);
+  });
+});
+
+/**
+ * Universal row traceback: an entity row created by the seed/upsert path (no
+ * connector, no file junction, no __lattice_lineage row, no ai-audit) must STILL
+ * trace back to something — its creation + its belongsTo parents — rather than
+ * reporting "no sources". Surfacing the parents must be RLS-safe (a hidden parent
+ * yields no node) and a graceful no-op for a member (no relation config).
+ */
+describe('provenance: universal row traceback (creation + belongsTo parents)', () => {
+  let db: Lattice | undefined;
+  const dirs: string[] = [];
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  async function setupProjects(): Promise<{ db: Lattice; configPath: string; outputDir: string }> {
+    const root = mkdtempSync(join(tmpdir(), 'lattice-prov-'));
+    dirs.push(root);
+    const outputDir = join(root, 'context');
+    mkdirSync(outputDir, { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/x.db',
+        'entities:',
+        '  projects:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '      org_id: { type: uuid }',
+        '      client_id: { type: uuid }',
+        '    relations:',
+        '      org: { type: belongsTo, table: orgs, foreignKey: org_id }',
+        '      client: { type: belongsTo, table: clients, foreignKey: client_id }',
+        '    outputFile: PROJECTS.md',
+        '  orgs:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: ORGS.md',
+        '  clients:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: CLIENTS.md',
+        '',
+      ].join('\n'),
+    );
+    const d = new Lattice(':memory:');
+    db = d;
+    d.define('projects', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        name: 'TEXT',
+        org_id: 'TEXT',
+        client_id: 'TEXT',
+        created_at: 'TEXT',
+        updated_at: 'TEXT',
+        deleted_at: 'TEXT',
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'p.md',
+    });
+    d.define('orgs', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'o.md',
+    });
+    d.define('clients', {
+      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', deleted_at: 'TEXT' },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'cl.md',
+    });
+    d.define('_lattice_gui_audit', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        ts: 'TEXT',
+        table_name: 'TEXT',
+        row_id: 'TEXT',
+        operation: 'TEXT',
+        source: 'TEXT',
+      },
+      primaryKey: 'id',
+      render: () => '',
+      outputFile: 'a.md',
+    });
+    await d.init();
+    await d.insert('orgs', { id: 'org1', name: 'Acme Org' });
+    await d.insert('clients', { id: 'cli1', name: 'Beta Client' });
+    return { db: d, configPath, outputDir };
+  }
+
+  it('gives every entity row a traceback: a creation node + its belongsTo parents', async () => {
+    const { db: d, configPath, outputDir } = await setupProjects();
+    await d.insert('projects', {
+      id: 'p1',
+      name: 'Proj',
+      org_id: 'org1',
+      client_id: 'cli1',
+      created_at: '2026-04-06 02:56:54',
+      updated_at: '2026-04-06 02:56:54',
+    });
+    const row = await d.get('projects', 'p1');
+    const g = await buildProvenanceGraph(d, 'projects', {
+      rowId: 'p1',
+      row: row ?? undefined,
+      configPath,
+      outputDir,
+    });
+    // More than just the centre object node — the bug was an empty graph here.
+    expect(g.nodes.filter((n) => n.type !== 'object').length).toBeGreaterThan(0);
+    // Universal floor: a creation node always present for a row.
+    expect(g.nodes.some((n) => n.type === 'created')).toBe(true);
+    // belongsTo parents surfaced as related nodes, each linked to the object.
+    expect(g.nodes.find((n) => n.id === 'rel:orgs:org1')?.type).toBe('related');
+    expect(g.nodes.find((n) => n.id === 'rel:clients:cli1')?.type).toBe('related');
+    expect(g.edges.some((e) => e.source === 'rel:orgs:org1' && e.target.includes('projects'))).toBe(
+      true,
+    );
+  });
+
+  it('is RLS-safe: a belongsTo FK whose parent row is not visible yields NO node', async () => {
+    const { db: d, configPath, outputDir } = await setupProjects();
+    // org_id points at a row that does not exist (simulates an RLS-hidden parent).
+    await d.insert('projects', {
+      id: 'p2',
+      name: 'Hidden-parent',
+      org_id: 'ghost',
+      client_id: 'cli1',
+      created_at: 't',
+      updated_at: 't',
+    });
+    const row = await d.get('projects', 'p2');
+    const g = await buildProvenanceGraph(d, 'projects', {
+      rowId: 'p2',
+      row: row ?? undefined,
+      configPath,
+      outputDir,
+    });
+    expect(g.nodes.some((n) => n.id.startsWith('rel:orgs:'))).toBe(false);
+    expect(g.edges.some((e) => e.source.startsWith('rel:orgs:'))).toBe(false);
+    // …but the creation floor + the VISIBLE client parent still show.
+    expect(g.nodes.some((n) => n.type === 'created')).toBe(true);
+    expect(g.nodes.some((n) => n.id === 'rel:clients:cli1')).toBe(true);
+  });
+
+  it('degrades for a member (no relation config): creation floor only, no relation nodes, no throw', async () => {
+    const { db: d } = await setupProjects();
+    await d.insert('projects', {
+      id: 'p3',
+      name: 'NoCfg',
+      org_id: 'org1',
+      client_id: 'cli1',
+      created_at: 't',
+      updated_at: 't',
+    });
+    const row = await d.get('projects', 'p3');
+    const g = await buildProvenanceGraph(d, 'projects', { rowId: 'p3', row: row ?? undefined });
+    expect(g.nodes.some((n) => n.type === 'created')).toBe(true);
+    expect(g.nodes.some((n) => n.type === 'related')).toBe(false);
   });
 });
