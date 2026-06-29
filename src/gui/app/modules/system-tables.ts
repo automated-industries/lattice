@@ -200,6 +200,20 @@ export const systemTablesJs = `    // ──────────────
             },
           });
           if (dmActiveTable) { dmShowEntityEditor(dmActiveTable); schemaGraphHandle.setSelected(dmActiveTable); }
+          // Large workspaces cap the row/file detail nodes (a force graph can't
+          // lay out tens of thousands). Surface it rather than silently truncate;
+          // the full schema is in the Tables view.
+          if (graph.truncated) {
+            liveMount.style.position = 'relative';
+            var tnote = document.createElement('div');
+            tnote.className = 'graph-trunc-note';
+            tnote.style.cssText = 'position:absolute;bottom:10px;left:50%;transform:translateX(-50%);' +
+              'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 12px;' +
+              'font-size:12px;color:var(--text-muted);box-shadow:var(--shadow-1);z-index:5;white-space:nowrap';
+            tnote.textContent = 'Large workspace (' + (graph.totalEntities || 0) +
+              ' objects) — graph shows the schema + a sample. Use Tables for the full list.';
+            liveMount.appendChild(tnote);
+          }
         }).catch(function (err) {
           var m = document.getElementById('graph-mount');
           if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
