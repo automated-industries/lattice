@@ -60,10 +60,10 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       // Even segment count → item view; odd → folder/collection view.
       var fsegs = fsParse(hash);
       if (fsegs) {
-        // #/fs/<table>/new → inline create view (must precede the even/odd
-        // item-vs-collection heuristic, since [table,'new'] is even-length).
-        if (fsegs[fsegs.length - 1] === 'new') renderFsCreate(content, fsegs);
-        else if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs);
+        // The inline record-create view was removed; redirect any lingering
+        // #/fs/<table>/new link to that table's collection.
+        if (fsegs[fsegs.length - 1] === 'new') { location.hash = fsHref(fsegs.slice(0, -1)); return; }
+        if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs);
         else renderFsItem(content, fsegs);
         return;
       }

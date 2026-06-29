@@ -523,6 +523,9 @@ export async function handleReadRoutes(
     );
     const graphOpts: import('./data.js').BuildGuiGraphOptions = {
       extraTables: registeredExtraTables(active.db, yamlNames),
+      // ?schema=1 → table topology only (the GUI graph never draws row nodes), so a
+      // large workspace ships a tiny payload instead of tens of thousands of rows.
+      schemaOnly: url.searchParams.get('schema') === '1',
     };
     sendJson(res, buildGuiGraph(active.configPath, active.outputDir, graphOpts));
     return true;
