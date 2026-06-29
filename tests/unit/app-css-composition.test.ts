@@ -52,8 +52,9 @@ import { css } from '../../src/gui/app/css.js';
 // Added .fs-rows-table styles (object page = rows table); kept .pv-table which it
 // reuses.
 // Added .pvchip-related / .pvchip-created chip colors for the new provenance tiers.
-const ORIGINAL_LENGTH = 113451;
-const ORIGINAL_SHA256 = '8419bfd7d41fdc34c75ecb30220c8a7034539c093d73b30eeedde595014d90f8';
+// Clickable-row cursor/hover for the object + Files rows tables (.fs-row-click).
+const ORIGINAL_LENGTH = 113548;
+const ORIGINAL_SHA256 = '8d07961d6968322610bb5aa43aaafa39ded162af146bc7c2ac5726d2d4e0afdc';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
