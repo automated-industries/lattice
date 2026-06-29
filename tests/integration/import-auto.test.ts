@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -59,6 +59,30 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     expect(r?.asOf).toBe('2026-03-31');
     expect(r?.matchedCount).toBe(2);
     expect(await db.count('funds')).toBe(4); // snapshot appended, not overwritten
+  });
+
+  // Regression: a materialized entity's overview must land in the hidden
+  // .schema-only/ dir, NOT as a bare <NAME>.md at the Context ROOT. A root file is
+  // an orphan — it clutters the visible Markdown tree and duplicates the per-row
+  // <Entity>/ context dir. (The bug set outputFile = name.toUpperCase()+'.md'.)
+  it('persists imported entities with a .schema-only/ overview, never a root <NAME>.md orphan', async () => {
+    const { configPath } = await freshWorkspace();
+    await materializeImport(
+      { db: dbs[dbs.length - 1]!, configPath },
+      doc(),
+      inferSchema(doc()),
+      [],
+      {
+        asOf: '2025-06-30',
+      },
+    );
+    const cfg = readFileSync(configPath, 'utf8');
+    // Every entity overview path is under .schema-only/ …
+    expect(cfg).toMatch(/outputFile:\s*\.schema-only\/funds\.md/);
+    expect(cfg).toMatch(/outputFile:\s*\.schema-only\/investments\.md/);
+    // … and NOT a bare uppercase root file (the orphan the bug produced).
+    expect(cfg).not.toMatch(/outputFile:\s*FUNDS\.md/);
+    expect(cfg).not.toMatch(/outputFile:\s*INVESTMENTS\.md/);
   });
 
   it('surfaces a brand-new structured drop as a new-dataset proposal (no silent create)', async () => {
