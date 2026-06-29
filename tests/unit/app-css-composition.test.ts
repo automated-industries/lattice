@@ -19,8 +19,14 @@ import { css } from '../../src/gui/app/css.js';
 // colors, the source table, the collapsed detail panel) plus the collapsible
 // sidebar-group rules. Pinned length + hash recomputed for the merged CSS.
 // (Bump: collapsible sidebar-group indentation fix — header gutter + body indent.)
-const ORIGINAL_LENGTH = 97020;
-const ORIGINAL_SHA256 = '4f82e1dc1084a88ee2794c989a7da575589e6f9898095877f9fa5b0c56edb592';
+// 5.0 GUI reframe (right-side): the docked assistant-rail styles become a floating
+// "Ask Lattice" panel (assistant-rail.js segment repurposed); a new Outputs-column
+// segment (outputs.js); header chrome for the activity-feed popover + the Ask Lattice
+// trigger (topbar.js); the layout grid's third track + token rename to
+// --outputs-width; reduced-motion + frosted-fallback selectors retargeted off the
+// removed .assistant-rail. Recaptured.
+const ORIGINAL_LENGTH = 101265;
+const ORIGINAL_SHA256 = '8c15a8513bc2e99fb12450cf17bc6118237fbdc1423079e2e414d200df1e0ba5';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

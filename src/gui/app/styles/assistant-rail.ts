@@ -48,42 +48,51 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
     .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
     .staging-send { flex: 1; }
-    .assistant-rail {
-      position: relative;
-      background:
-        radial-gradient(120% 60% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
-        var(--sheen),
-        rgba(255, 255, 255, 0.66);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-left: 1px solid rgba(59, 130, 246, 0.10);
-      box-shadow: inset 1px 0 0 rgba(15, 23, 42, 0.035), -16px 0 40px -24px rgba(15, 23, 42, 0.12);
+    /* ── Floating "Ask Lattice" assistant panel ────────────────────── */
+    .ask-lattice-panel {
+      position: fixed; top: 60px; right: 16px; z-index: 1200;
+      width: min(400px, calc(100vw - 32px));
+      height: min(620px, calc(100vh - 96px));
       display: flex; flex-direction: column;
-      min-width: 0; overflow: hidden;
+      background:
+        radial-gradient(120% 50% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
+        var(--sheen),
+        var(--glass-strong);
+      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
+      border: 1px solid rgba(59, 130, 246, 0.18); border-radius: 14px;
+      box-shadow: var(--shadow-3), var(--hl-top);
+      overflow: hidden;
+      animation: askLatticeIn 0.16s ease-out;
     }
-    .rail-resize {
-      position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
-      cursor: col-resize; background: transparent; z-index: 5;
-      transition: background-color 120ms;
-    }
-    .rail-resize:hover, .rail-resize.dragging { background: var(--accent-soft); }
-    .rail-header {
-      flex: 0 0 auto; padding: 12px 14px;
+    .ask-lattice-panel[hidden] { display: none; }
+    .ask-lattice-panel.dragging-file { outline: 2px dashed var(--accent); outline-offset: -6px; }
+    @keyframes askLatticeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    .ask-lattice-panel-head {
+      flex: 0 0 auto; padding: 10px 12px;
+      display: flex; align-items: center; gap: 8px;
       background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
       border-bottom: 1px solid rgba(59, 130, 246, 0.14);
-      display: flex; align-items: center; gap: 8px;
     }
-    .rail-title {
-      font-size: 11px; font-weight: 600; color: var(--accent);
-      text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
+    .ask-lattice-panel-title {
+      font-size: 12px; font-weight: 600; color: var(--accent);
+      display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
     }
-    /* Title glows while the assistant is working (pending feed / typing) */
-    @keyframes railPulse {
-      0%, 100% { text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
-      50% { text-shadow: 0 0 18px rgba(59, 130, 246, 0.7); }
+    .ask-lattice-panel .ask-lattice-mark { color: var(--accent); }
+    .ask-lattice-by { font-size: 10.5px; color: var(--text-muted); flex: 0 0 auto; }
+    .ask-lattice-close {
+      flex: 0 0 auto; width: 24px; height: 24px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
+      cursor: pointer; font-size: 13px; line-height: 1;
     }
-    .assistant-rail:has(.feed-pending) .rail-title,
-    .assistant-rail:has(.chat-typing) .rail-title { animation: railPulse 1.6s ease-in-out infinite; }
+    .ask-lattice-close:hover { background: var(--row-hover); color: var(--text); }
+    /* Title glows while the assistant is working (pending feed / typing) */
+    @keyframes askPulse {
+      0%, 100% { text-shadow: 0 0 8px rgba(59, 130, 246, 0.25); }
+      50% { text-shadow: 0 0 16px rgba(59, 130, 246, 0.6); }
+    }
+    .ask-lattice-panel:has(.feed-pending) .ask-lattice-panel-title,
+    .ask-lattice-panel:has(.chat-typing) .ask-lattice-panel-title { animation: askPulse 1.6s ease-in-out infinite; }
     .rail-threads {
       flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
       border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px;

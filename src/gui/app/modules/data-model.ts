@@ -1661,12 +1661,25 @@ export const dataModelJs = `    // ───────────────
       };
     }
     function renderFeedItem(ev) {
-      // Realtime activity now surfaces as a transient TOP-RIGHT status (it flashes
-      // as it happens, then clears) — no persistent activity pills in the right
-      // rail. The rail is for the assistant conversation; the live brain-graph
+      // Realtime activity surfaces two ways: a transient TOP-RIGHT status that
+      // flashes as it happens, and a persistent entry in the header activity feed
+      // (the popover next to the version-history clock). The live brain-graph
       // animation still shows ingests landing on the graph.
       if (ev && ev.summary && typeof setStatus === 'function') {
         setStatus({ id: 'activity', kind: 'accent', text: ev.summary, priority: 30, sticky: false, ttl: 4500 });
+      }
+      if (ev && (ev.summary || ev.op) && typeof activityFeedEl === 'function') {
+        var feed = activityFeedEl();
+        if (feed) {
+          var empty = document.getElementById('activity-empty');
+          if (empty) empty.remove();
+          var card = makeFeedCard(ev);
+          // Single live event: stamp "now" (the duration form is for turn replay).
+          card.timeEl.textContent = 'now';
+          feed.insertBefore(card.item, feed.firstChild); // newest first
+          while (feed.children.length > 50) feed.removeChild(feed.lastChild); // bounded log
+          if (typeof bumpActivityCount === 'function') bumpActivityCount();
+        }
       }
     }
     // Replay a persisted assistant turn's data-change events as collapsed activity
