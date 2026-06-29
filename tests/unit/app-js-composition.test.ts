@@ -94,8 +94,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // schema-only (?schema=1 → table topology, no row nodes — instant + scalable) with
 // a settle-then-reveal spinner (no off-centre jump) and the "N objects" note
 // removed; the inline record-create ("New <entity>") feature is removed entirely.
-const ORIGINAL_LENGTH = 814539;
-const ORIGINAL_SHA256 = '7820f73707326193fa4ab36ac96c1d12bb11f36ea00503399986fa2e7d390239';
+// Lineage is built from the server-computed /api/graph?schema=1 edges (cached),
+// not the client's entity.relations — so it works for cloud members too (who
+// never receive the owner's relation config).
+const ORIGINAL_LENGTH = 815398;
+const ORIGINAL_SHA256 = '91e1f0567acf1f909364cf8d5a202c828f3f2ae588e0e586638bc49908efc90e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
