@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
+import {
+  createReadStream,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, parsePageParam } from './http.js';
 import { Lattice } from '../lattice.js';
@@ -797,6 +804,84 @@ export async function handleReadRoutes(
     })) as { column_name: string }[];
     const secretCols = new Set(colMetaRows.map((r) => r.column_name));
     sendJson(res, { files: readRowContext(active.outputDir, locator, secretCols) });
+    return true;
+  }
+
+  // ── Rendered markdown context tree: /api/context/tree + /api/context/file ──
+  // The Outputs > Markdown panel reflects the rendered LLM context tree under the
+  // workspace output dir. Read-only and bounded: /tree lists filenames only (one
+  // shallow scan, internal dot-dirs skipped); /file reads ONE .md, path-containment-
+  // guarded exactly like the /gui-assets route (normalize + prefix + realpath).
+  if (method === 'GET' && pathname === '/api/context/tree') {
+    const base = active.outputDir.replace(/[/\\]+$/, '');
+    const entries: {
+      name: string;
+      path: string;
+      kind: 'file' | 'dir';
+      children?: { name: string; path: string }[];
+    }[] = [];
+    try {
+      if (existsSync(base) && statSync(base).isDirectory()) {
+        const top = readdirSync(base, { withFileTypes: true })
+          // Skip the internal .lattice* / .lattice-native / .lattice-gui dirs.
+          .filter((d) => !d.name.startsWith('.'))
+          .slice(0, 500);
+        for (const d of top) {
+          if (d.isFile() && d.name.toLowerCase().endsWith('.md')) {
+            entries.push({ name: d.name, path: d.name, kind: 'file' });
+          } else if (d.isDirectory()) {
+            const kids = readdirSync(join(base, d.name), { withFileTypes: true })
+              .filter((c) => c.isFile() && c.name.toLowerCase().endsWith('.md'))
+              .slice(0, 500)
+              .map((c) => ({ name: c.name, path: `${d.name}/${c.name}` }));
+            if (kids.length)
+              entries.push({ name: d.name, path: d.name, kind: 'dir', children: kids });
+          }
+        }
+      }
+    } catch {
+      // Render dir missing/unreadable → empty tree (the SPA shows a placeholder).
+    }
+    // Directories first, then files, alphabetical within each.
+    entries.sort((a, b) =>
+      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1,
+    );
+    sendJson(res, { entries });
+    return true;
+  }
+
+  if (method === 'GET' && pathname === '/api/context/file') {
+    const rel = decodeURIComponent(url.searchParams.get('path') ?? '');
+    const base = active.outputDir.replace(/[/\\]+$/, '');
+    const target = normalize(join(base, rel));
+    const within = target === base || target.startsWith(base + sep);
+    if (
+      !rel ||
+      !within ||
+      !target.toLowerCase().endsWith('.md') ||
+      !existsSync(target) ||
+      !statSync(target).isFile()
+    ) {
+      sendJson(res, { error: 'context file not found' }, 404);
+      return true;
+    }
+    // Defense-in-depth against symlinks (mirrors the /gui-assets guard).
+    try {
+      const real = realpathSync(target);
+      const realBase = realpathSync(base);
+      if (real !== realBase && !real.startsWith(realBase + sep)) {
+        sendJson(res, { error: 'context file not found' }, 404);
+        return true;
+      }
+    } catch {
+      sendJson(res, { error: 'context file not found' }, 404);
+      return true;
+    }
+    sendJson(res, {
+      name: rel.split('/').pop() ?? rel,
+      path: rel,
+      content: readFileSync(target, 'utf8'),
+    });
     return true;
   }
 

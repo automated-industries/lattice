@@ -58,9 +58,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // pane (system-tables segment) over the existing brain graph and a new tiered Tables
 // explorer (model-tables.js — Source/Model/Derived/Surface columns, Entity/Field
 // toggle, tier chips, detail panel + generic computed caveats; the tier classifier
-// mirrors src/gui/tier-classify.ts). Recaptured.
-const ORIGINAL_LENGTH = 806430;
-const ORIGINAL_SHA256 = 'f2b343b03a6849822a75a21f355a19a7e8dfe77a9c30b5be5aac426f0509057a';
+// mirrors src/gui/tier-classify.ts). Step 4 (Outputs content): the Markdown panel
+// renders the workspace's rendered context tree (outputs.js: renderOutputsMarkdown
+// over GET /api/context/tree + a click-to-open detail slide-over via
+// /api/context/file, reusing mdToHtml/stripFrontmatter) and the Tables mirror
+// reuses mtBuildModel for a compact tiered list. Recaptured.
+const ORIGINAL_LENGTH = 812357;
+const ORIGINAL_SHA256 = '3a71e29c725a8d57f972f532dba4a6c61864d95753547d2dc3ba0050dad0a315';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
