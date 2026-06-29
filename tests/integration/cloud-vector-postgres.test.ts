@@ -15,7 +15,9 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
 import { secureCloud } from '../../src/cloud/setup.js';
+import { setColumnAudience } from '../../src/cloud/audience.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
+import { runAsyncOrSync } from '../../src/db/adapter.js';
 import type { EmbeddingsConfig } from '../../src/types.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -157,5 +159,76 @@ describe.skipIf(!PG_URL)('cloud vector search — per-member row visibility', ()
     const ownerHits = await ownerView.search('docs', 'budget finance', { topK: 10 });
     expect(ownerHits.map((h) => String(h.row.id)).sort()).toEqual(['d1', 'd2', 'd3']);
     ownerView.close();
+  });
+
+  // Regression (adversarial review): a column that is BOTH an embedding field AND
+  // owner-audience-masked must not leak its cleartext to a non-owner member via
+  // `matchedContent` — the row object is masked through <table>_v, but the raw chunk
+  // content from the embeddings store is NOT column-masked.
+  it('a member never receives an owner-masked embedding field via matchedContent', async () => {
+    const tag = randomBytes(4).toString('hex');
+    const schema = `vecm_${tag}`;
+    const bob = `vecm_b_${tag}`;
+    schemas.push(schema);
+    roles.push(bob);
+
+    const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
+    pools.push(admin);
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    const url = schemaUrl(schema);
+
+    const SECRET = 'TOPSECRET-SALARY-budget-900000';
+    const maskedEmb = (): EmbeddingsConfig => ({
+      fields: ['body', 'secret'],
+      embed: tokenEmbed(8),
+      modelId: 'test-v1',
+    });
+
+    const owner = new Lattice(url);
+    owner.define('docs', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', secret: 'TEXT', deleted_at: 'TEXT' },
+      embeddings: maskedEmb(),
+      render: () => '',
+      outputFile: 'docs.md',
+    });
+    await owner.init();
+    await owner.upsert('docs', { id: 'd1', body: 'budget finance everyone', secret: SECRET });
+    await owner.refreshEmbeddings('docs');
+    await secureCloud(owner);
+    await runAsyncOrSync(owner.adapter, `SELECT lattice_set_row_visibility('docs','d1','everyone')`);
+    // `secret` is masked to the row owner only — even though it is an embedding field.
+    await setColumnAudience(
+      owner,
+      'docs',
+      'secret',
+      'owner',
+      ['id', 'body', 'secret', 'deleted_at'],
+      ['id'],
+    );
+    const bobPw = generateMemberPassword();
+    await provisionMemberRole(owner, bob, bobPw);
+    owner.close();
+
+    const member = new Lattice(memberUrlFor(schema, bob, bobPw));
+    member.define('docs', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', secret: 'TEXT', deleted_at: 'TEXT' },
+      embeddings: maskedEmb(),
+      render: () => '',
+      outputFile: 'docs.md',
+    });
+    await member.init();
+    expect(member.isCloudMemberOpen()).toBe(true);
+
+    const sem = await member.search('docs', 'budget finance secret', { topK: 10 });
+    const hit = sem.find((h) => String(h.row.id) === 'd1');
+    expect(hit).toBeDefined(); // the member CAN see the row (everyone)
+    expect(hit!.row.secret == null).toBe(true); // …with `secret` masked to NULL
+    // The masked field's cleartext must NOT come back through the matched chunk.
+    expect(hit!.matchedContent ?? '').not.toContain(SECRET);
+
+    const hyb = await member.hybridSearch('docs', 'budget finance secret', { topK: 10 });
+    const hhit = hyb.find((h) => String(h.row.id) === 'd1');
+    expect(hhit?.matchedContent ?? '').not.toContain(SECRET);
+    member.close();
   });
 });

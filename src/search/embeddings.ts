@@ -337,7 +337,16 @@ export async function searchByEmbedding(
     const result: SearchResult = { row, score: r.score };
     if (r.chunkIndex > 0 || r.content !== null) {
       result.chunkIndex = r.chunkIndex;
-      if (r.content !== null) result.matchedContent = r.content;
+      if (r.content !== null) {
+        // The stored chunk content is NOT column-masked, so for a cloud member it
+        // could echo an owner-audience field's cleartext (the row object is masked
+        // via <table>_v, but the raw chunk is not). Re-derive matchedContent from
+        // the already-masked row so masked fields drop out; owners/local callers
+        // keep the exact matched chunk.
+        result.matchedContent = isCloudMember
+          ? concatRowText(row, config.fields)
+          : r.content;
+      }
     }
     results.push(result);
     if (results.length >= k) break;
