@@ -99,6 +99,9 @@ export const displayConfigJs = `
     }
 
     function displayFor(name) {
+      // Artifacts is a virtual object (files carrying an artifact_type), not a real
+      // table — give it a stable label + icon.
+      if (name === 'artifacts') return { label: 'Artifacts', icon: '🧩' };
       var override = state.iconOverrides[name];
       var base = DISPLAY[name];
       var icon = (override && override.icon) || (base && base.icon) || autoEmojiFor(name) || DEFAULT_ICON;
