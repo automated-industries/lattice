@@ -28,8 +28,11 @@ import { css } from '../../src/gui/app/css.js';
 // Tables-explorer styles (model-tables.js segment). Step 4 adds the Outputs
 // Tables-mirror tier styles + the Markdown detail slide-over (outputs.js segment).
 // Recaptured.
-const ORIGINAL_LENGTH = 109524;
-const ORIGINAL_SHA256 = '12a692abc4f6847ef663a6e333ef59b1779a85c922198a5c4d4ebe94d9a1f966';
+// Ask Lattice polish: the floating panel becomes a depth-shadowed card offset
+// further off the top-right corner, with class-based open/close transitions
+// (animate in + out), replacing the [hidden]/keyframe approach (assistant-rail.js).
+const ORIGINAL_LENGTH = 110208;
+const ORIGINAL_SHA256 = '73f8c9f75ae76ee8cb8137e12d8a3d756b4bf6288bb6f1b9c85b513283e1fd65';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

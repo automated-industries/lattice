@@ -49,24 +49,47 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
     .staging-send { flex: 1; }
     /* ── Floating "Ask Lattice" assistant panel ────────────────────── */
+    /* A detached, 3-dimensional card floating off the top-right corner. Shown by
+       toggling the .open class (not [hidden]) so it can animate IN and OUT from
+       the corner. Closed state stays in the DOM but inert + invisible. */
     .ask-lattice-panel {
-      position: fixed; top: 60px; right: 16px; z-index: 1200;
-      width: min(400px, calc(100vw - 32px));
-      height: min(620px, calc(100vh - 96px));
+      position: fixed; top: 68px; right: 24px; z-index: 1200;
+      width: min(400px, calc(100vw - 48px));
+      height: min(620px, calc(100vh - 104px));
       display: flex; flex-direction: column;
       background:
         radial-gradient(120% 50% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
         var(--sheen),
         var(--glass-strong);
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border: 1px solid rgba(59, 130, 246, 0.18); border-radius: 14px;
-      box-shadow: var(--shadow-3), var(--hl-top);
+      border: 1px solid rgba(59, 130, 246, 0.18); border-radius: 16px;
+      /* Layered shadow for real depth (a card lifted off the surface). */
+      box-shadow:
+        0 1px 2px rgba(15, 23, 42, 0.08),
+        0 8px 24px -6px rgba(15, 23, 42, 0.22),
+        0 24px 60px -12px rgba(15, 23, 42, 0.30),
+        var(--hl-top);
       overflow: hidden;
-      animation: askLatticeIn 0.16s ease-out;
+      transform-origin: top right;
+      opacity: 0;
+      transform: translate(12px, -12px) scale(0.96);
+      visibility: hidden;
+      pointer-events: none;
+      transition:
+        opacity 0.18s ease,
+        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+        visibility 0s linear 0.2s;
     }
-    .ask-lattice-panel[hidden] { display: none; }
+    .ask-lattice-panel.open {
+      opacity: 1;
+      transform: translate(0, 0) scale(1);
+      visibility: visible;
+      pointer-events: auto;
+      transition:
+        opacity 0.18s ease,
+        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
     .ask-lattice-panel.dragging-file { outline: 2px dashed var(--accent); outline-offset: -6px; }
-    @keyframes askLatticeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
     .ask-lattice-panel-head {
       flex: 0 0 auto; padding: 10px 12px;
       display: flex; align-items: center; gap: 8px;
@@ -79,7 +102,6 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
     }
     .ask-lattice-panel .ask-lattice-mark { color: var(--accent); }
-    .ask-lattice-by { font-size: 10.5px; color: var(--text-muted); flex: 0 0 auto; }
     .ask-lattice-close {
       flex: 0 0 auto; width: 24px; height: 24px; border: 1px solid var(--border);
       border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
