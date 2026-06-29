@@ -116,6 +116,10 @@ export interface GuiGraphEdge {
 export interface GuiGraphPayload {
   nodes: GuiGraphNode[];
   edges: GuiGraphEdge[];
+  /** True when row/file detail nodes were capped (a large workspace). */
+  truncated?: boolean;
+  /** Total entity (row) count in the workspace, before capping. */
+  totalEntities?: number;
 }
 
 interface GuiData {
@@ -317,6 +321,15 @@ export interface BuildGuiGraphOptions {
    * owns nor has shared to them.
    */
   visibleFilter?: (tableName: string) => boolean;
+  /**
+   * Cap on the total row/file ("detail") nodes drawn over the always-present
+   * table topology. A force-directed graph can't render tens of thousands of
+   * nodes (a large cloud), so detail nodes are bounded; the table+relationship
+   * schema always renders in full. Default 1200.
+   */
+  maxDetailNodes?: number;
+  /** Per-table cap on row nodes, so one huge table can't consume the whole budget. Default 50. */
+  maxEntityNodesPerTable?: number;
 }
 
 /**
@@ -434,7 +447,29 @@ export function buildGuiGraph(
     }
   }
 
+  // Bound the row/file "detail" nodes so a large workspace (a big cloud) doesn't
+  // ship + render tens of thousands of nodes — a force-directed graph can't lay
+  // those out, so the view would freeze. The table topology above always renders
+  // in full; here we cap per-table and against a global budget, and report what
+  // was dropped (truncated/totalEntities) so the GUI can say "showing N of M".
+  const maxDetailNodes = options.maxDetailNodes ?? 1200;
+  const maxEntityNodesPerTable = options.maxEntityNodesPerTable ?? 50;
+  const perTableEntityCount = new Map<string, number>();
+  let detailNodeCount = 0;
+  let truncated = false;
+  const totalEntities = data.entities.length;
+
   for (const entity of data.entities) {
+    if (detailNodeCount >= maxDetailNodes) {
+      truncated = true;
+      break;
+    }
+    const usedForTable = perTableEntityCount.get(entity.table) ?? 0;
+    if (usedForTable >= maxEntityNodesPerTable) {
+      truncated = true;
+      continue;
+    }
+    perTableEntityCount.set(entity.table, usedForTable + 1);
     const entityId = `entity:${entity.table}:${entity.slug}`;
     addNode(nodes, {
       id: entityId,
@@ -450,8 +485,13 @@ export function buildGuiGraph(
       type: 'contains',
       label: entity.table,
     });
+    detailNodeCount++;
 
     for (const file of entity.files) {
+      if (detailNodeCount >= maxDetailNodes) {
+        truncated = true;
+        break;
+      }
       const fileId = `file:${file.path}`;
       addNode(nodes, {
         id: fileId,
@@ -463,6 +503,7 @@ export function buildGuiGraph(
         status: file.exists ? 'rendered' : 'missing',
       });
       addEdge(edges, { source: entityId, target: fileId, type: 'renders', label: file.name });
+      detailNodeCount++;
 
       if (!file.exists) continue;
       const absPath = safeResolveInside(outputDir, file.path);
@@ -523,7 +564,7 @@ export function buildGuiGraph(
     (e) => presentNodeIds.has(e.source) && presentNodeIds.has(e.target),
   );
 
-  return { nodes: [...nodes.values()], edges: liveEdges };
+  return { nodes: [...nodes.values()], edges: liveEdges, truncated, totalEntities };
 }
 
 export function getGuiProject(configPath: string, outputDir: string): GuiProjectSummary {

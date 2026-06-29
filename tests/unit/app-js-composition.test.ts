@@ -70,8 +70,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // fills the Inputs > Databases section (inputs.js): list connected external DBs +
 // a connect modal (connection string OR host/user/password) posting to
 // /api/db-sources, with disconnect + post-import refresh.
-const ORIGINAL_LENGTH = 816806;
-const ORIGINAL_SHA256 = '8684a348467acbfef143034b46d4d0e6e5dc04d6e6e7cde1694a7947046fadfa';
+// Graph high-volume cap: the brain graph drew a node per row/file uncapped (a
+// large cloud → tens of thousands of nodes → the force layout froze). The graph
+// builder now bounds row/file detail nodes (the table topology always renders in
+// full) and reports truncated/totalEntities; renderSchemaGraph surfaces a
+// "large workspace" note so the cap isn't silent.
+const ORIGINAL_LENGTH = 817770;
+const ORIGINAL_SHA256 = '224b3ee663f87bf47fde5b8ae505b7aca827ae53dd374320abe4de6555e04afc';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
