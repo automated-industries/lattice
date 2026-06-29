@@ -20,21 +20,33 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-seg-btn:first-child { border-radius: 6px 0 0 6px; }
     .mt-seg-btn:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
     .mt-seg-btn.on { background: var(--accent-soft); color: var(--accent); border-color: rgba(59, 130, 246, 0.35); }
-    /* "+ Wire" — opens the relationship editor (Settings → Data Model). */
+    /* "+ Wire" — toggles wiring mode (click a source table, then a target). */
     .mt-wire {
       margin-left: auto; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
       border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
       color: var(--accent); text-decoration: none; cursor: pointer;
     }
     .mt-wire:hover { background: var(--accent-soft); border-color: rgba(59, 130, 246, 0.35); }
+    .mt-wire.on { background: var(--accent); color: var(--btn-text); border-color: var(--accent); }
+    .mt-wire-hint { margin-left: auto; margin-right: 10px; font-size: 12px; color: var(--accent); }
+    .mt-wire-hint + .mt-wire { margin-left: 0; }
 
     .mt-main { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
     .mt-tiers {
+      position: relative; /* positioning context for the edge SVG overlay */
       flex: 1 1 auto; min-width: 0; overflow: auto;
       display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 14px; padding: 16px; align-content: start;
     }
-    .mt-tier { min-width: 0; }
+    /* Relationship connectors drawn under the cards; never intercept clicks. */
+    svg.mt-edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; overflow: visible; }
+    .mt-edge { fill: none; stroke-width: 1.5; }
+    .mt-edge-fk { stroke: var(--accent); opacity: 0.45; }
+    .mt-edge-m2m { stroke: #7c3aed; opacity: 0.4; stroke-dasharray: 4 3; }
+    .mt-tier { min-width: 0; position: relative; z-index: 1; }
+    /* Wiring affordances. */
+    .mt.mt-wiring .mt-card { cursor: crosshair; }
+    .mt-card.mt-wire-from { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-2); }
     .mt-tier-head {
       font-size: 11px; font-weight: 700; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;

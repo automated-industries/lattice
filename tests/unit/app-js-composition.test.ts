@@ -116,8 +116,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // Connect-a-database is now the same left side-drawer as Add a Connector
 // (openDbConnectDrawer reuses the connector drawer chrome + .conn-form/.conn-field
 // classes), replacing the centered modal (inputs.js segment).
-const ORIGINAL_LENGTH = 811989;
-const ORIGINAL_SHA256 = '5b84c61f3b142ef0547ad403c7ebef0f0952b0145d2eeee604f350d195df55d1';
+// Tables explorer wiring (schema-explorer pattern): relationships are drawn as SVG
+// connectors between the tier cards (mtDrawEdges), and "+ Wire" toggles a mode
+// where clicking a source then a target creates an m2m link via POST
+// /api/schema/junctions (mtWireClick) — replacing the broken settings navigation.
+const ORIGINAL_LENGTH = 817268;
+const ORIGINAL_SHA256 = 'f44ef2820f34aa44b1f736e6c9b3a43d578eb48bec8fb89cc3a07b09900b79c4';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
