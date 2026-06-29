@@ -1007,7 +1007,7 @@ export const dashboardJs = `    // ───────────────
               }
               return '<td>' + v + '</td>';
             }).join('');
-            return '<tr>' + cells + '</tr>';
+            return '<tr class="fs-row-click" data-href="' + base + '/' + encodeURIComponent(r.id) + '">' + cells + '</tr>';
           }).join('');
           var tableHtml = rows.length
             ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
@@ -1020,6 +1020,15 @@ export const dashboardJs = `    // ───────────────
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
             '</div>' +
             tableHtml;
+          // The WHOLE row opens the record (not just the name cell). Inner links
+          // (the name) still work on their own; ignore clicks that hit one.
+          content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
+            tr.addEventListener('click', function (ev) {
+              if (ev.target && ev.target.closest && ev.target.closest('a')) return;
+              var h = tr.getAttribute('data-href');
+              if (h) location.hash = h;
+            });
+          });
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
@@ -1295,13 +1304,21 @@ export const dashboardJs = `    // ───────────────
           : (id ? '#/fs/files/' + encodeURIComponent(id) : '');
         var ic = isFolder ? '\\ud83d\\udcc1' : '\\ud83d\\udcc4';
         var nm = href ? '<a href="' + href + '">' + escapeHtml(e.name) + '</a>' : escapeHtml(e.name);
-        return '<tr><td><span class="src-ic">' + ic + '</span> ' + nm + '</td>' +
+        var trAttr = href ? ' class="fs-row-click" data-href="' + href + '"' : '';
+        return '<tr' + trAttr + '><td><span class="src-ic">' + ic + '</span> ' + nm + '</td>' +
           '<td>' + (isFolder ? 'Folder' : 'File') + '</td>' +
           '<td class="fs-files-path">' + escapeHtml(e.path || '') + '</td></tr>';
       }).join('');
       content.innerHTML = header +
         '<table class="pv-table fs-files-table"><thead><tr>' +
         '<th>Name</th><th>Type</th><th>Location</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      content.querySelectorAll('.fs-files-table tr.fs-row-click').forEach(function (tr) {
+        tr.addEventListener('click', function (ev) {
+          if (ev.target && ev.target.closest && ev.target.closest('a')) return;
+          var h = tr.getAttribute('data-href');
+          if (h) location.hash = h;
+        });
+      });
     }
     // #/folder/<abs path> — one folder's immediate children as a graph.
     function renderFolderView(content, path) {
