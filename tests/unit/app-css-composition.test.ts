@@ -31,8 +31,11 @@ import { css } from '../../src/gui/app/css.js';
 // Ask Lattice polish: the floating panel becomes a depth-shadowed card offset
 // further off the top-right corner, with class-based open/close transitions
 // (animate in + out), replacing the [hidden]/keyframe approach (assistant-rail.js).
-const ORIGINAL_LENGTH = 110208;
-const ORIGINAL_SHA256 = '73f8c9f75ae76ee8cb8137e12d8a3d756b4bf6288bb6f1b9c85b513283e1fd65';
+// Markdown rework: the Outputs detail panel slides in from the right positioned
+// LEFT of the Outputs column (right: var(--outputs-width)) so the column stays
+// visible, via class-based .open transitions (outputs.js style segment).
+const ORIGINAL_LENGTH = 110696;
+const ORIGINAL_SHA256 = '3c2ab582978e70bc538facbd0d79025f557266c2386525e66947900f931f0729';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
