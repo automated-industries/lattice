@@ -44,51 +44,29 @@ export const systemTablesJs = `    // ──────────────
     // tiered Tables explorer. The choice persists across renders. Schema/column
     // editing still lives in Settings → Data Model. Clicking a graph node opens
     // that object's tab; clicking a Tables card opens its detail panel.
-    var modelView = 'graph';
-    try { if (window.localStorage.getItem('lattice.modelview') === 'tables') modelView = 'tables'; } catch (e) { /* default */ }
-
+    // Graph vs Tables is a top-level tab (a route — #/graph and #/tables), NOT an
+    // in-pane toggle. So the center pane renders a SINGLE view (no nested toggle
+    // bar / div-in-div); the tab strip in the Model header switches between them.
     function renderBrainGraph(content) {
       if (!content) content = document.getElementById('content');
       if (!content) return;
       dmActiveTable = null; // no inline editor in the center view
-      content.innerHTML =
-        '<div class="model-view">' +
-          '<div class="model-toggle" role="tablist">' +
-            '<button type="button" class="model-tab" role="tab" data-model-view="graph">Graph</button>' +
-            '<button type="button" class="model-tab" role="tab" data-model-view="tables">Tables</button>' +
-          '</div>' +
-          '<div class="model-body" id="model-body"></div>' +
-        '</div>';
-      content.querySelectorAll('.model-tab').forEach(function (b) {
-        b.addEventListener('click', function () { setModelView(b.getAttribute('data-model-view')); });
-      });
-      renderModelBody();
-    }
-
-    function setModelView(v) {
-      modelView = v === 'tables' ? 'tables' : 'graph';
-      try { window.localStorage.setItem('lattice.modelview', modelView); } catch (e) { /* private mode */ }
-      renderModelBody();
-    }
-
-    // Render the active sub-view into #model-body and sync the toggle's active tab.
-    function renderModelBody() {
-      var body = document.getElementById('model-body');
-      if (!body) return;
-      document.querySelectorAll('.model-tab').forEach(function (t) {
-        t.classList.toggle('on', t.getAttribute('data-model-view') === modelView);
-        t.setAttribute('aria-selected', t.getAttribute('data-model-view') === modelView ? 'true' : 'false');
-      });
-      if (modelView === 'tables') {
-        renderModelTables(body);
-        return;
-      }
       // Graph view — keep the #graph-mount id the live renderer + ingest animation expect.
-      body.innerHTML =
+      content.innerHTML =
         '<div class="brain-graph"><div id="graph-mount">' +
           '<div class="muted" style="padding:24px">A live force-directed graph that builds as Claude streams.</div>' +
         '</div></div>';
       renderSchemaGraph();
+    }
+
+    // The Model > Tables route: the tiered Tables explorer (Source/Model/Derived/
+    // Surface). Mounted directly in #content — no toggle wrapper.
+    function renderModelTablesView(content) {
+      if (!content) content = document.getElementById('content');
+      if (!content) return;
+      dmActiveTable = null;
+      content.innerHTML = '<div class="model-tables-view" id="model-tables-host"></div>';
+      renderModelTables(document.getElementById('model-tables-host'));
     }
 
     // Settings → Data Model: an entity list + the entity editor panel (the schema

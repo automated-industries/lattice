@@ -82,8 +82,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // mirroring the on-disk Context/ layout (folders fetch children via
 // /api/context/list on expand), and the detail panel is a shared slide-in
 // (openOutputsDetail) opened via an .open class (outputs.js segment).
-const ORIGINAL_LENGTH = 819600;
-const ORIGINAL_SHA256 = '8466d0fefd829bf6642ce1c1f0940ea9d71313fb2473a35db228771255301165';
+// Nav redesign: Graph vs Tables is now a top-level tab/route (#/graph, #/tables),
+// not an in-pane toggle — the redundant Brain Graph tab + the model-toggle div-in-
+// div are gone. tabs.js now has just two permanent tabs (records no longer spawn
+// tabs); renderBrainGraph/renderModelTablesView render a single view into #content
+// (the setModelView/renderModelBody + dynamic-tab helpers were removed → net
+// shrink). Breadcrumb "Brain Graph" → "Graph".
+const ORIGINAL_LENGTH = 817062;
+const ORIGINAL_SHA256 = '82368304341c9ccb85ca020172891ec4b3e840f291866b2bda6e543be489837f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
