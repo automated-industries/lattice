@@ -89,8 +89,9 @@ export const outputsJs = `
         if (row.__wired) return;
         row.__wired = true;
         row.addEventListener('click', function () {
-          var li = row.parentNode;
-          openOutputsDetail(li.getAttribute('data-name'), '/api/context/file?path=' + encodeURIComponent(li.getAttribute('data-path')), 'md');
+          // Open in the CENTER pane (not a slide-in drawer) so the Outputs column
+          // stays visible + browsable.
+          location.hash = '#/md/' + encodeURIComponent(row.parentNode.getAttribute('data-path'));
         });
       });
     }
@@ -117,27 +118,32 @@ export const outputsJs = `
         .catch(function () {});
     }
 
-    // ── Shared Outputs slide-in detail panel ──────────────────────────────
-    // Slides in from the right, positioned LEFT of the Outputs column so the
-    // column stays visible + clickable. Used for Markdown files (and Artifacts).
-    function openOutputsDetail(name, fetchUrl, mode) {
-      var panel = document.getElementById('outputs-detail');
-      var title = document.getElementById('outputs-detail-title');
-      var body = document.getElementById('outputs-detail-body');
-      if (!panel || !body) return;
-      if (title) title.textContent = name || '';
-      body.innerHTML = '<div class="muted" style="padding:12px">Loading\\u2026</div>';
-      panel.classList.add('open'); // CSS slides it in from the right
-      var close = document.getElementById('outputs-detail-close');
-      if (close && !close.__wired) { close.__wired = true; close.addEventListener('click', function () { panel.classList.remove('open'); }); }
-      fetchJson(fetchUrl)
+    // ── #/md/<path> — a context Markdown file opened in the CENTER pane ──────
+    // Replaces the old slide-in drawer: the markdown renders in #content (the
+    // middle column) with a breadcrumb, so the Outputs column stays visible.
+    function renderMarkdownDoc(content, path) {
+      if (!content) content = document.getElementById('content');
+      if (!content) return;
+      var name = String(path).split('/').pop() || path;
+      content.innerHTML =
+        '<nav class="fs-crumbs"><a href="#/tables">Tables</a><span class="fs-sep">\\u25b8</span>' +
+          '<span class="fs-crumb-cur">Markdown</span><span class="fs-sep">\\u25b8</span>' +
+          '<span class="fs-crumb-cur">' + escapeHtml(name) + '</span></nav>' +
+        '<div class="view-header"><span class="entity-icon">\\ud83d\\udcc4</span>' +
+          '<h1>' + escapeHtml(name) + '</h1></div>' +
+        '<div class="md-doc" id="md-doc"><div class="muted" style="padding:12px">Loading\\u2026</div></div>';
+      fetchJson('/api/context/file?path=' + encodeURIComponent(path))
         .then(function (d) {
-          var content = stripFrontmatter((d && d.content) || '');
-          body.innerHTML = content.trim()
-            ? '<div class="md-body">' + mdToHtml(content) + '</div>'
-            : '<div class="src-empty">This file is empty' + (mode === 'md' ? ' — it renders once the entity has data.' : '.') + '</div>';
+          var md = stripFrontmatter((d && d.content) || '');
+          var el = document.getElementById('md-doc');
+          if (el) el.innerHTML = md.trim()
+            ? '<div class="md-body">' + mdToHtml(md) + '</div>'
+            : '<div class="src-empty">This file is empty — it renders once the entity has data.</div>';
         })
-        .catch(function () { body.innerHTML = '<div class="src-empty">Could not load this file.</div>'; });
+        .catch(function () {
+          var el = document.getElementById('md-doc');
+          if (el) el.innerHTML = '<div class="src-empty">Could not load this file.</div>';
+        });
     }
 
     // ── Outputs > Tables (mirror) ─────────────────────────────────────────
