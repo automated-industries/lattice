@@ -6,8 +6,8 @@ import { bootGui, createRow, type BootedGui } from './helpers.js';
  * Graph and Tables. They switch the Model view between the force-directed brain
  * graph (#/graph) and the tiered Tables explorer (#/tables). Records and object
  * pages are NOT tabs — they render in the content area below (reached by drilling
- * a node), and a breadcrumb navigates back to the Graph. The non-empty filter
- * shows only objects that have rows.
+ * a node), keep the Tables tab highlighted, and an object page's breadcrumb
+ * returns to the Tables explorer. The non-empty filter shows objects with rows.
  */
 
 let gui: BootedGui;
@@ -56,35 +56,35 @@ test('the non-empty filter shows objects with rows', async ({ page }) => {
   await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
 });
 
-test('opening a record renders in the content with NO tab (records are not tabs)', async ({
-  page,
-}) => {
+test('object + record pages are not tabs but keep the Tables tab highlighted', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  // Clicking an object node navigates into the object's page — still no extra tab.
+  // Clicking an object node navigates into the object's page — no extra tab, and
+  // the object page belongs to the Tables view (Tables tab stays lit).
   await page.locator('g.gnode[data-id="items"]').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/items/);
   await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(2);
-  // Opening the record (row detail) renders in the content; the strip still has
-  // only the two model tabs, and neither is highlighted while off the model views.
+  await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
+  // Opening the record (row detail) renders in the content; still only the two
+  // model tabs, and the Tables tab stays highlighted.
   await page.evaluate((id) => {
     window.location.hash = '#/fs/items/' + id;
   }, itemId);
   await expect.poll(() => page.evaluate(() => location.hash)).toContain(itemId);
   await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(2);
-  await expect(page.locator('.tab.active')).toHaveCount(0);
+  await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
 });
 
-// Regression: the object page's back breadcrumb must return to the Graph, not the
-// object's table/list view (it used to href the list route).
-test('back from an object page returns to the Graph, not the list view', async ({ page }) => {
+// Regression: the object page's back breadcrumb returns to the Tables explorer
+// (the object page is the single table view reached from Tables).
+test('back from an object page returns to the Tables explorer', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  // Into the object page — which defaults to the provenance view.
+  // Into the object page — the single table (provenance) view.
   await page.locator('g.gnode[data-id="items"]').click();
   await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
-  // Click the "← Graph" breadcrumb.
+  // Click the "← Tables" breadcrumb.
   await page.locator('.breadcrumb').click();
-  // It must land on the Graph — NOT the list view.
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/graph');
-  await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/);
-  await expect(page.locator('.brain-graph #graph-mount')).toBeVisible();
+  // It must land on the Tables explorer.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
+  await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
+  await expect(page.locator('.model-tables-view .mt')).toBeVisible({ timeout: 5000 });
 });
