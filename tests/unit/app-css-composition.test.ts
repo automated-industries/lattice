@@ -39,8 +39,13 @@ import { css } from '../../src/gui/app/css.js';
 // restyled as seamless underline tabs sitting on the header's bottom border, and
 // the now-dead .model-toggle/.model-view/.model-body styles removed (replaced by
 // the .model-tables-view route container).
-const ORIGINAL_LENGTH = 110957;
-const ORIGINAL_SHA256 = '91062349ff2dc9270f6cc0c39442cfff5b656afcae1672415e2be5f737dbfe5e';
+// Live-review polish batch: Tables-explorer lineage styles (selection highlight on
+// tier cards + lineage chips + field-lineage rows + "+ Wire") replacing the dead
+// Show-tier chips; dedicated nested Markdown-tree styles (.mdt-*); the Inputs
+// column header pinned flush + full-width (aligned with Model/Outputs); a graph
+// loading spinner (.graph-loading/.graph-spinner) shown until settled.
+const ORIGINAL_LENGTH = 114368;
+const ORIGINAL_SHA256 = '1b26b13f319e966e64aadf81ab4748cbaa31eadc2191b93ce467db33f5f0b6c7';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

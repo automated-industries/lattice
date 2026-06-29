@@ -26,8 +26,6 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-tile-vis { position: absolute; top: 8px; right: 8px; opacity: 0.55; }
     .fs-tile-vis svg { width: 13px; height: 13px; }
     .fs-tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-3); }
-    .fs-tile-create { border-style: dashed; background: transparent; }
-    .fs-tile-create .fs-tile-icon { color: var(--accent); }
     .fs-tile-icon { font-size: 40px; line-height: 1; }
     .fs-tile-label {
       font-size: 13px; font-weight: 500; color: var(--text);
