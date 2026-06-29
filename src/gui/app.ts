@@ -229,6 +229,16 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-body" id="connectors-dialog-body"></div>
   </aside>
 
+  <!-- Connect-a-database: the SAME side-drawer chrome as Add a Connector. -->
+  <div class="connectors-backdrop" id="db-connect-backdrop" hidden></div>
+  <aside class="connectors-dialog" id="db-connect-dialog" hidden aria-label="Connect a database">
+    <div class="drawer-head">
+      <span class="drawer-title">Connect a database</span>
+      <button class="drawer-close" id="db-connect-close" title="Close" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body" id="db-connect-body"></div>
+  </aside>
+
   <!-- Floating assistant. The chat composer/feed/thread controls reuse the same
        element IDs the docked rail used (#rail-feed/#rail-composer/#rail-threads/
        #rail-newchat/#rail-empty), so the chat client code is unchanged — only its
