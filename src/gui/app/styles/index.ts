@@ -22,6 +22,7 @@ import { fsWorkspaceCss } from './fs-workspace.js';
 import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
 import { outputsCss } from './outputs.js';
+import { modelTablesCss } from './model-tables.js';
 import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
@@ -51,6 +52,7 @@ export const css = [
   settingsDrawerCss,
   assistantRailCss,
   outputsCss,
+  modelTablesCss,
   chatCss,
   inlineImportCss,
   tabsCss,

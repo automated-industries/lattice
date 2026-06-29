@@ -24,9 +24,10 @@ import { css } from '../../src/gui/app/css.js';
 // segment (outputs.js); header chrome for the activity-feed popover + the Ask Lattice
 // trigger (topbar.js); the layout grid's third track + token rename to
 // --outputs-width; reduced-motion + frosted-fallback selectors retargeted off the
-// removed .assistant-rail. Recaptured.
-const ORIGINAL_LENGTH = 101265;
-const ORIGINAL_SHA256 = '8c15a8513bc2e99fb12450cf17bc6118237fbdc1423079e2e414d200df1e0ba5';
+// removed .assistant-rail. Step 3 adds the Model Graph|Tables toggle + the tiered
+// Tables-explorer styles (model-tables.js segment). Recaptured.
+const ORIGINAL_LENGTH = 107539;
+const ORIGINAL_SHA256 = '8ad560ae9baaaac99e048a17aa24caa9ff3056efb304756286522e4f6a442859';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
