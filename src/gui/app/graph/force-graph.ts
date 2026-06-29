@@ -218,6 +218,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // every fitAll so you can't zoom out past the whole graph.
   let fitK = MIN_SCALE;
   let raf = 0;
+  let fitRaf = 0; // the deferred-fit retry handle, so stop() can cancel it
   let running = false;
   let framed = false;
   let selectedId: string | null = null;
@@ -341,6 +342,10 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     sim.setNodes([...nodeMap.values()]);
     sim.setLinks(edges.map((e) => ({ source: e.source.id, target: e.target.id })));
     sim.reheat(0.9);
+    // Re-frame once the grown/shrunk graph settles: the settle path re-runs fitAll,
+    // which both centres the new node set and refreshes the zoom-out floor (fitK)
+    // so you can always zoom out to see everything that was just ingested.
+    framed = false;
     start();
   }
 
@@ -552,19 +557,28 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     fitK = view.k; // the all-nodes fit becomes the zoom-out floor
   }
   function fitTo(ns: FNode[]): void {
-    if (!ns.length) return;
+    if (!ns.length) {
+      // Nothing to frame (e.g. setHighlight matched no nodes). Keep the current
+      // view, but never leave the stage hidden when the graph has content.
+      if (nodeMap.size) stage.style.visibility = 'visible';
+      return;
+    }
     // Defer the fit until the mount actually has a layout box. A freshly-cleared
     // mount (or a synchronous reduced-motion settle) can run here at 0×0, where
     // W()/H() fall back to 900/600 and translate the cluster into a corner. Retry
-    // next frame; the ResizeObserver below also re-fits once the pane sizes up.
+    // next frame (tracked in fitRaf so stop() cancels it — no forever-rescheduling
+    // rAF on a detached mount); the ResizeObserver also re-fits once the pane sizes.
     if (!mount.clientWidth || !mount.clientHeight) {
       framed = false;
-      requestAnimationFrame(() => {
-        if (!framed) {
-          framed = true;
-          fitTo(ns);
-        }
-      });
+      if (typeof requestAnimationFrame === 'function') {
+        fitRaf = requestAnimationFrame(() => {
+          fitRaf = 0;
+          if (!framed) {
+            framed = true;
+            fitTo(ns);
+          }
+        });
+      }
       return;
     }
     let minX = Infinity;
@@ -624,8 +638,12 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // ── lifecycle ────────────────────────────────────────────────────────────--
   function stop(): void {
     running = false;
-    if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
+    if (typeof cancelAnimationFrame === 'function') {
+      if (raf) cancelAnimationFrame(raf);
+      if (fitRaf) cancelAnimationFrame(fitRaf);
+    }
     raf = 0;
+    fitRaf = 0;
   }
   function step(n = 1): void {
     sim.tick(n);
