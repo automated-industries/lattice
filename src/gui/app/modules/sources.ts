@@ -11,6 +11,7 @@ export const sourcesJs = `
 
     function renderSources() {
       renderSourcesConnectors();
+      renderInputsDatabases();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a
@@ -273,7 +274,7 @@ export const sourcesJs = `
       btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     }
     function applySidebarGroupStates() {
-      ['files', 'artifacts', 'connectors', 'objects', 'system'].forEach(applySidebarGroupState);
+      ['files', 'artifacts', 'connectors', 'databases', 'objects', 'system'].forEach(applySidebarGroupState);
     }
     function toggleSidebarGroup(group) {
       setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
