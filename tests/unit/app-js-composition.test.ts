@@ -75,8 +75,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // builder now bounds row/file detail nodes (the table topology always renders in
 // full) and reports truncated/totalEntities; renderSchemaGraph surfaces a
 // "large workspace" note so the cap isn't silent.
-const ORIGINAL_LENGTH = 817770;
-const ORIGINAL_SHA256 = '224b3ee663f87bf47fde5b8ae505b7aca827ae53dd374320abe4de6555e04afc';
+// Ask Lattice polish: the floating panel opens/closes via an `.open` class (so it
+// can animate in AND out from the top-right corner), a click outside collapses it,
+// and "powered by Claude" is dropped (ask-lattice.js segment).
+const ORIGINAL_LENGTH = 818416;
+const ORIGINAL_SHA256 = '86862b340c84ad0b97a5cef0b00787e9bd49fe1728d01772e7d9e08f19faa765';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
