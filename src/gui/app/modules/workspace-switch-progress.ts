@@ -48,6 +48,8 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         if (!soft) renderBrainGraph(content);
         return;
       }
+      // Model > Tables — the tiered explorer, a sibling tab of the graph.
+      if (hash === '#/tables') { renderModelTablesView(content); return; }
       if (hash === '#/dashboard') { renderDashboard(content); return; }
 
       // Folder drill-in (the Files object's on-disk hierarchy): #/folder/<abs path>.

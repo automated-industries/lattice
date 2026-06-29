@@ -1,19 +1,9 @@
 // Auto-composed section of the GUI stylesheet (see styles/index.ts). The Model
-// "Tables" explorer: the Graph|Tables toggle, the four tier columns, the
-// entity/field cards, the field tints, and the detail panel.
-export const modelTablesCss = `    /* ── Model view: Graph | Tables toggle ─────────────────── */
-    .model-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-    .model-toggle { display: inline-flex; gap: 2px; padding: 10px 14px 0; flex: 0 0 auto; }
-    .model-tab {
-      padding: 6px 16px; font: inherit; font-size: 13px; font-weight: 600;
-      border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
-      cursor: pointer;
-    }
-    .model-tab:first-child { border-radius: 8px 0 0 8px; }
-    .model-tab:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
-    .model-tab.on { background: var(--accent-soft); color: var(--accent); border-color: rgba(59, 130, 246, 0.35); }
-    .model-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
-    .model-body .brain-graph { height: 100%; }
+// "Tables" explorer: the four tier columns, the entity/field cards, the field
+// tints, and the detail panel. (Graph vs Tables is now a top-level tab/route,
+// not an in-pane toggle — so the old toggle styles are gone.)
+export const modelTablesCss = `    /* ── Model "Tables" route container ────────────────────── */
+    .model-tables-view { height: 100%; min-height: 0; }
 
     /* ── Tables explorer ───────────────────────────────────── */
     .mt { display: flex; flex-direction: column; height: 100%; min-height: 0; }
