@@ -31,6 +31,9 @@ export const provenanceCss = `
       color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 11.5px;
       max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    /* Object page = the table's rows (reuses .pv-table); hover the whole row. */
+    .fs-rows-table tbody tr:hover { background: var(--row-hover); }
+    .fs-rows-table td { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* Single-row detail provenance panel. */
     details.prov-panel { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 8px; }

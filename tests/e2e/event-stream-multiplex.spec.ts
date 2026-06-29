@@ -101,7 +101,7 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
-  await expect(page.locator('#prov-mount')).toBeVisible({
+  await expect(page.locator('.view-header')).toBeVisible({
     timeout: 5000,
   });
 

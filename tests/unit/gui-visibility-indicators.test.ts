@@ -8,19 +8,14 @@ import { css } from '../../src/gui/app/css.js';
  * Connect-with-Claude step in the onboarding wizard.
  */
 describe('gui visibility indicators', () => {
-  it('defines a shared visIndicator helper and reuses it on detail + cards', () => {
+  it('defines a shared visIndicator helper and reuses it on the detail header', () => {
     expect(appJs).toContain('function visIndicator(access, extraClass)');
     // Entity-detail header reuses it (keeps the detail-vis-icon tint class).
     expect(appJs).toContain("visIndicator(a, 'detail-vis-icon')");
-    // The fs card tiles reuse the SAME component, positioned in the corner.
-    expect(appJs).toContain("visIndicator(r._access, 'fs-tile-vis')");
   });
 
-  it('styles the shared indicator + the card-corner placement', () => {
+  it('styles the shared indicator', () => {
     expect(css).toContain('.vis-indicator');
-    expect(css).toContain('.fs-tile-vis');
-    // The tile must be a positioning context for the absolute corner indicator.
-    expect(css).toMatch(/\.fs-tile\s*\{[^}]*position:\s*relative/);
   });
 });
 

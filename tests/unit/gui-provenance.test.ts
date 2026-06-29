@@ -32,15 +32,15 @@ function loadPureHelpers(): {
 }
 
 describe('client provenance module', () => {
-  it('is composed into appJs / css (table-only object view)', () => {
-    expect(appJs).toContain('function renderProvenance(');
+  it('is composed into appJs / css (per-row provenance panel only)', () => {
+    // The full-page object provenance view is gone (the object page shows rows);
+    // only the per-ROW provenance panel + the shared table renderer remain.
     expect(appJs).toContain('function renderProvenancePanel(');
     expect(appJs).toContain('function provenanceTableHtml(');
     expect(appJs).toContain('/api/provenance');
     expect(css).toContain('details.prov-panel');
     expect(css).toContain('.pv-table');
-    // The object page is a single table view now — the graph mode + its helpers
-    // are gone.
+    expect(appJs).not.toContain('function renderProvenance(content, table)');
     expect(appJs).not.toContain('function buildProvenanceModel(');
     expect(appJs).not.toContain('function renderProvenanceGraph(');
     expect(css).not.toContain('.pvnode-object');

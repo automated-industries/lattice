@@ -49,8 +49,10 @@ import { css } from '../../src/gui/app/css.js';
 // object page is a single table view.
 // Added .fs-files-table path-column style for the Files object page / folder
 // drill-in table view.
-const ORIGINAL_LENGTH = 113067;
-const ORIGINAL_SHA256 = 'e2eb2cbb15e63d03607727e5f58a6c87317b0c358974c9fb68a6fb532e9f3007';
+// Added .fs-rows-table styles (object page = rows table); kept .pv-table which it
+// reuses.
+const ORIGINAL_LENGTH = 113325;
+const ORIGINAL_SHA256 = 'cc0e42ba8e69e59b95a1103f933e7288cab9c4b0a2244305336948d4fe9ed156';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
