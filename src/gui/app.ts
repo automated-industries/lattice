@@ -115,6 +115,15 @@ export const guiAppHtml = `<!doctype html>
             <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
           </div>
         </div>
+        <div class="src-group">
+          <button class="section-label section-toggle" data-group="databases" type="button" aria-expanded="true">
+            <span class="section-caret">▾</span><span class="section-label-text">Databases</span>
+          </button>
+          <div class="section-body" data-group-body="databases">
+            <div id="src-databases-list"></div>
+            <button class="src-add" id="src-add-database" type="button">＋ Connect a Database</button>
+          </div>
+        </div>
       </div>
       <div id="objects-section" hidden>
         <button class="section-label section-toggle" data-group="objects" type="button" aria-expanded="true">

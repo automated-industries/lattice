@@ -37,6 +37,7 @@ import { createDatabaseWizardJs } from './create-database-wizard.js';
 import { inlineImportJs } from './inline-import.js';
 import { connectorsSettingsJs } from './connectors-settings.js';
 import { sourcesJs } from './sources.js';
+import { inputsJs } from './inputs.js';
 
 export const appJs = [
   chartLibJs,
@@ -65,6 +66,10 @@ export const appJs = [
   // global scope and throw "fetchJson is not defined" when the tab is opened.
   connectorsSettingsJs,
   sourcesJs,
+  // Inputs > Databases section. Like sourcesJs, it uses wrapper-scoped helpers
+  // (fetchJson/escapeHtml/showToast) and is called from renderSources(), so it
+  // must stay INSIDE the main client IIFE — placed immediately after sourcesJs.
+  inputsJs,
   detailViewJs,
   markdownJs,
   settingsDrawerJs,
