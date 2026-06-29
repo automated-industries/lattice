@@ -51,7 +51,13 @@ export const settingsDrawerJs = `    // ─────────────�
         // hidden when there's no rendered context to show.
         mount.innerHTML = blocks;
         mount.hidden = !blocks;
-      }).catch(function () { mount.innerHTML = ''; mount.hidden = true; });
+        // Respect the record's Formatted/Markdown toggle once the async load lands.
+        if (typeof applyFsItemView === 'function') applyFsItemView();
+      }).catch(function () {
+        mount.innerHTML = '';
+        mount.hidden = true;
+        if (typeof applyFsItemView === 'function') applyFsItemView();
+      });
     }
 
 `;

@@ -127,8 +127,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // Dead-code removal: the unreachable focused-object-graph subsystem
 // (renderFsObjectGraph/mountObjectGraph/objectGraphData/buildObjectGraphModel +
 // FS_GRAPH_* state + openGraphFile) is gone now that object pages are tables.
-const ORIGINAL_LENGTH = 809696;
-const ORIGINAL_SHA256 = '5c21ebdd45752d8cc066c7d7869d54e40da85412832984ac98ffe2110776ea2a';
+// Record Formatted | Markdown toggle: the record view (renderFsItem) gains a
+// segmented control (fsItemView/setFsItemView/applyFsItemView) that shows either
+// the structured fields (Formatted) or the row's rendered context (Markdown).
+// Markdown-in-center: a context .md opens at #/md/<path> (renderMarkdownDoc) in the
+// center pane instead of the removed Outputs slide-in drawer (openOutputsDetail gone).
+const ORIGINAL_LENGTH = 812327;
+const ORIGINAL_SHA256 = 'd4599e251a1f0500fb568a36215010a3d3d72d257773d01c85d1d3f6f8ad02ec';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

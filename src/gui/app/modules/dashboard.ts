@@ -1210,6 +1210,35 @@ export const dashboardJs = `    // ───────────────
     }
 
     // Item view — one row as a document (click-to-edit) + its relationship folders.
+    // Record view mode: 'formatted' (the structured fields) | 'markdown' (the row's
+    // rendered context). B (clicking a Markdown file) deep-links into 'markdown'.
+    var fsItemView = 'formatted';
+    function setFsItemView(v) {
+      fsItemView = v === 'markdown' ? 'markdown' : 'formatted';
+      applyFsItemView();
+    }
+    function applyFsItemView() {
+      var md = fsItemView === 'markdown';
+      var ctx = document.getElementById('fs-context');
+      var doc = document.querySelector('#content .fs-doc');
+      var relT = document.querySelector('#content .fs-rel-title');
+      var relF = document.querySelector('#content .fs-rel-folders');
+      var prov = document.getElementById('row-provenance');
+      [doc, relT, relF, prov].forEach(function (el) { if (el) el.style.display = md ? 'none' : ''; });
+      if (ctx) {
+        ctx.style.display = md ? '' : 'none';
+        if (md) {
+          ctx.hidden = false; // override loadFsContext's no-content hide
+          if (!ctx.innerHTML.trim()) {
+            ctx.innerHTML = '<div class="fs-empty" style="padding:16px">No markdown rendered for this record yet.</div>';
+          }
+        }
+      }
+      document.querySelectorAll('#content .fs-view-toggle [data-fsview]').forEach(function (b) {
+        b.classList.toggle('on', b.getAttribute('data-fsview') === fsItemView);
+      });
+    }
+
     function renderFsItem(content, segs) {
       var myGen = renderGen;
       fsWalk(segs).then(function (crumbs) {
@@ -1267,17 +1296,26 @@ export const dashboardJs = `    // ───────────────
             '<div class="view-header">' +
               '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
               '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+              // Formatted (the structured fields) vs Markdown (the row's rendered context).
+              '<div class="fs-view-toggle">' +
+                '<button type="button" data-fsview="formatted">Formatted</button>' +
+                '<button type="button" data-fsview="markdown">Markdown</button>' +
+              '</div>' +
             '</div>' +
             detailVisLineEl(row) +
             (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            // Formatted markdown (rendered context) sits ABOVE the column-by-column
-            // data view; the raw fields follow underneath.
+            // The rendered-context markdown (Markdown view) and the column-by-column
+            // data (Formatted view); the Formatted/Markdown toggle shows one or the other.
             '<div class="fs-context" id="fs-context" hidden></div>' +
             '<div class="fs-doc">' + fields.join('') + '</div>' +
             (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '') +
             '<div id="row-provenance"></div>';
           if (table === 'files') renderFilePreview(row);
           loadFsContext(table, id);
+          content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
+            bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
+          });
+          applyFsItemView();
           wireFsEdit(content, table, id, t, row);
           // Collapsed, lazy-loaded "Data provenance" panel for this row.
           renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
