@@ -233,7 +233,7 @@ export const modelTablesJs = `
         if (fromCard) fromCard.classList.add('mt-wire-from');
       }
       // Draw the relationship connectors over the tier columns + keep them in sync.
-      mtSetupEdges(host);
+      mtSetupEdges();
     }
 
     // Click handler while wiring: first click = source, second (different) = target
@@ -264,17 +264,22 @@ export const modelTablesJs = `
     // Draw the relationship edges as SVG bezier connectors between the tier-column
     // cards (measured from the live DOM, like the schema-explorer pattern), and
     // redraw on layout changes (detail panel open, resize).
-    function mtSetupEdges(host) {
-      var tiers = host.querySelector('.mt-tiers');
-      if (!tiers) return;
-      window.requestAnimationFrame(function () { mtDrawEdges(tiers); });
-      if (typeof ResizeObserver !== 'undefined') {
-        var ro = new ResizeObserver(function () { mtDrawEdges(tiers); });
+    function mtSetupEdges() {
+      // Live-query the tiers each time (robust to a re-render replacing the node),
+      // and draw after layout + on a short fallback + on resize.
+      window.requestAnimationFrame(mtDrawEdges);
+      window.setTimeout(mtDrawEdges, 160);
+      var host = document.getElementById('model-tables-host');
+      var tiers = host && host.querySelector('.mt-tiers');
+      if (tiers && typeof ResizeObserver !== 'undefined') {
+        var ro = new ResizeObserver(mtDrawEdges);
         ro.observe(tiers);
       }
     }
-    function mtDrawEdges(tiers) {
-      if (!tiers || !document.body.contains(tiers)) return;
+    function mtDrawEdges() {
+      var host = document.getElementById('model-tables-host');
+      var tiers = host && host.querySelector('.mt-tiers');
+      if (!tiers) return;
       var SVGNS = 'http://www.w3.org/2000/svg';
       var svg = tiers.querySelector('svg.mt-edges');
       if (!svg) {
@@ -282,13 +287,15 @@ export const modelTablesJs = `
         svg.setAttribute('class', 'mt-edges');
         tiers.insertBefore(svg, tiers.firstChild);
       }
+      while (svg.firstChild) svg.removeChild(svg.firstChild); // SVG nodes built via
+      // createElementNS (NOT innerHTML, which parses in the HTML namespace → paths
+      // that never render).
       var gr = tiers.getBoundingClientRect();
       var W = tiers.scrollWidth, H = tiers.scrollHeight;
       svg.setAttribute('width', String(W));
       svg.setAttribute('height', String(H));
       svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
       var sx = tiers.scrollLeft, sy = tiers.scrollTop;
-      var paths = '';
       (mtEdgesCache || []).forEach(function (e) {
         var s = String(e.source).replace(/^table:/, '');
         var t = String(e.target).replace(/^table:/, '');
@@ -302,11 +309,11 @@ export const modelTablesJs = `
         var y1 = ra.top - gr.top + sy + ra.height / 2;
         var y2 = rb.top - gr.top + sy + rb.height / 2;
         var dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
-        var d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
-        var cls = e.type === 'manyToMany' ? 'mt-edge mt-edge-m2m' : 'mt-edge mt-edge-fk';
-        paths += '<path d="' + d + '" class="' + cls + '"/>';
+        var path = document.createElementNS(SVGNS, 'path');
+        path.setAttribute('d', 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2);
+        path.setAttribute('class', e.type === 'manyToMany' ? 'mt-edge mt-edge-m2m' : 'mt-edge mt-edge-fk');
+        svg.appendChild(path);
       });
-      svg.innerHTML = paths;
     }
 
     function mtCardHtml(e, level) {
