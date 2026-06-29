@@ -27,7 +27,13 @@ export const tabsJs = `
       hash = hash || '#/';
       if (hash === '#/' || hash === '' || hash === GRAPH_HASH) return 'graph';
       if (hash === '#/tables') return 'tables';
-      if (hash.indexOf('#/fs/') === 0 || hash.indexOf('#/objects/') === 0) return 'tables';
+      if (
+        hash.indexOf('#/fs/') === 0 ||
+        hash.indexOf('#/objects/') === 0 ||
+        hash.indexOf('#/folder/') === 0
+      ) {
+        return 'tables';
+      }
       return null;
     }
 

@@ -47,8 +47,10 @@ import { css } from '../../src/gui/app/css.js';
 // Removed the dead CAVEATS styles (.mt-caveat*) and the dead provenance graph-mode
 // styles (.pv-legend/.pv-sw/.pvnode-*/.btn.pv-active/.prov-fallback) now that the
 // object page is a single table view.
-const ORIGINAL_LENGTH = 112761;
-const ORIGINAL_SHA256 = 'cb05c1fcf61690b30cb5c5f5a5035f0e00137211f35c24201b70ab8fbcbd555c';
+// Added .fs-files-table path-column style for the Files object page / folder
+// drill-in table view.
+const ORIGINAL_LENGTH = 113067;
+const ORIGINAL_SHA256 = 'e2eb2cbb15e63d03607727e5f58a6c87317b0c358974c9fb68a6fb532e9f3007';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

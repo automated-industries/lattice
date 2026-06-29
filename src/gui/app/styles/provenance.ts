@@ -26,6 +26,11 @@ export const provenanceCss = `
     .pvchip-raw { color: var(--signal); border-color: var(--signal); }
     .pvchip-computed { color: var(--warn); border-color: var(--warn); }
     .pvchip-observation { color: var(--text-muted); }
+    /* Files object page / folder drill-in rendered as a table (reuses .pv-table). */
+    .fs-files-table .fs-files-path {
+      color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 11.5px;
+      max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 
     /* Single-row detail provenance panel. */
     details.prov-panel { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 8px; }
