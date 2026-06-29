@@ -63,6 +63,25 @@ export type { TrelloCreds, TrelloClient, TrelloPageOpts } from './trello/connect
 export { TRELLO_MODELS, defineTrelloTables } from './trello/models.js';
 
 export {
+  DatabaseConnector,
+  assembleConnectionString,
+  getDbSourceCreds,
+  setDbSourceCreds,
+  clearDbSourceCreds,
+} from './db-source/connector.js';
+export { dialectFor, PostgresDialect } from './db-source/dialects.js';
+export type { SqlDialect, PageOpts, SqlQuery } from './db-source/dialects.js';
+export {
+  getSchemaDescriptor,
+  setSchemaDescriptor,
+  clearSchemaDescriptor,
+  buildModelDefs,
+  latticeTableName,
+  slugify as slugifyDbName,
+} from './db-source/schema-cache.js';
+export type { DbSchemaDescriptor, DbTableDesc, DbColumnDesc } from './db-source/schema-cache.js';
+
+export {
   syncConnector,
   syncIfStale,
   syncStaleConnectors,
