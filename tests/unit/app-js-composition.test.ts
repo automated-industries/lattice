@@ -101,8 +101,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // now a single table-only provenance view (graph mode + buildProvenanceModel /
 // renderProvenanceGraph / legend removed), its breadcrumb returns to Tables, and
 // object/record routes keep the Tables tab highlighted (tabKeyForHash).
-const ORIGINAL_LENGTH = 809911;
-const ORIGINAL_SHA256 = 'd49b188846d40124f61e523c4ac7e266b8b09a174893ff47cc3dadff7390384f';
+// The Files object page + folder drill-ins render as a TABLE (paintFolderGraph
+// now emits a .fs-files-table, not a force graph; buildFolderGraphModel removed),
+// the Files breadcrumb returns to Tables, and #/folder/* keeps the Tables tab lit.
+const ORIGINAL_LENGTH = 810210;
+const ORIGINAL_SHA256 = '97ef400f8445fb3ef339a3f48c8b23413407a03bd2103cda58f67104e82932f7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
