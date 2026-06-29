@@ -108,8 +108,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // renderFsCollection), mirroring the Files file list — the full-page provenance
 // view (renderProvenance) is removed (per-row provenance panel kept). Breadcrumbs
 // are rooted at "Tables" (fsBreadcrumb + folderBreadcrumb) for one consistent path.
-const ORIGINAL_LENGTH = 809998;
-const ORIGINAL_SHA256 = 'e27b00a2843eeab6c977b32338556912bb85858dd81b5dca0071feb3b194ca95';
+// Per-row "Data provenance" now has a universal traceback: the client PROV_TIERS
+// renders the new 'related' (belongsTo parents) + 'created' (authoring floor)
+// tiers the server emits — so a seeded/authored row no longer reads "No sources".
+const ORIGINAL_LENGTH = 810088;
+const ORIGINAL_SHA256 = '944737cd032a983ecd3f7c4ad772b717616b549729ac1bd6d21cb99fe2ae289d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
