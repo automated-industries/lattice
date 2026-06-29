@@ -113,8 +113,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // tiers the server emits — so a seeded/authored row no longer reads "No sources".
 // Object/Files rows tables: the WHOLE row is clickable (opens the record), not
 // just the name cell (inner links still work).
-const ORIGINAL_LENGTH = 811108;
-const ORIGINAL_SHA256 = 'ad0d1722075cefb05f579ae5534111be6cdb3c71890a107b78345cfa03a9fac4';
+// Connect-a-database is now the same left side-drawer as Add a Connector
+// (openDbConnectDrawer reuses the connector drawer chrome + .conn-form/.conn-field
+// classes), replacing the centered modal (inputs.js segment).
+const ORIGINAL_LENGTH = 811989;
+const ORIGINAL_SHA256 = '5b84c61f3b142ef0547ad403c7ebef0f0952b0145d2eeee604f350d195df55d1';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
