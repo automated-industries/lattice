@@ -72,4 +72,19 @@ export const outputsCss = `    /* ── Outputs column ────────
     .outputs-detail-close:hover { background: var(--row-hover); color: var(--text); }
     .outputs-detail-body { flex: 1 1 auto; overflow: auto; padding: 16px 18px; }
 
+    /* ── Markdown context tree (lazy, nested) ──────────────────────────────── */
+    /* One consistent row style at every depth; the per-level indent is applied
+       inline (padding-left) on .mdt-row so a deep tree never overlaps. */
+    .mdt-children { list-style: none; margin: 0; padding: 0; }
+    .mdt-node { list-style: none; }
+    .mdt-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 8px; border-radius: 6px; cursor: pointer;
+      color: var(--text); font-size: 13px; line-height: 1.4;
+    }
+    .mdt-row:hover { background: var(--row-hover); }
+    .mdt-caret { width: 12px; flex: none; font-size: 9px; color: var(--text-muted); text-align: center; }
+    .mdt-row .src-ic { width: 16px; flex: none; text-align: center; font-size: 13px; }
+    .mdt-row .src-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 `;

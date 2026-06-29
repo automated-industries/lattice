@@ -149,7 +149,6 @@ export const provenanceJs = `
             '<h1>' + escapeHtml(d.label) + '</h1>' +
             '<span class="count">' + count + ' source' + (count === 1 ? '' : 's') + '</span>' +
             '<div class="actions">' +
-              '<a class="btn primary" href="' + fsHref([table, 'new']) + '">New ' + escapeHtml(d.label) + '</a>' +
               '<button class="btn' + (mode === 'graph' ? ' pv-active' : '') + '" id="pv-view-graph" type="button">Graph</button>' +
               '<button class="btn' + (mode === 'table' ? ' pv-active' : '') + '" id="pv-view-table" type="button">Table</button>' +
             '</div>' +

@@ -20,13 +20,13 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-seg-btn:first-child { border-radius: 6px 0 0 6px; }
     .mt-seg-btn:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
     .mt-seg-btn.on { background: var(--accent-soft); color: var(--accent); border-color: rgba(59, 130, 246, 0.35); }
-    .mt-chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
-    .mt-chip {
-      padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer;
-      border: 1px solid var(--border); border-radius: 999px;
-      background: var(--surface-2); color: var(--text-muted); opacity: 0.55;
+    /* "+ Wire" — opens the relationship editor (Settings → Data Model). */
+    .mt-wire {
+      margin-left: auto; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
+      color: var(--accent); text-decoration: none; cursor: pointer;
     }
-    .mt-chip.on { opacity: 1; background: var(--accent-soft); color: var(--accent); border-color: rgba(59, 130, 246, 0.35); }
+    .mt-wire:hover { background: var(--accent-soft); border-color: rgba(59, 130, 246, 0.35); }
 
     .mt-main { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
     .mt-tiers {
@@ -60,8 +60,9 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-fields { list-style: none; margin: 4px 0 2px; padding: 0 0 0 6px; display: flex; flex-direction: column; gap: 2px; }
     .mt-field {
       display: flex; align-items: baseline; gap: 8px; font-size: 12px;
-      padding: 1px 0 1px 8px; border-left: 2px solid var(--border-strong);
+      padding: 1px 0 1px 8px; border-left: 2px solid var(--border-strong); cursor: pointer;
     }
+    .mt-field:hover { background: var(--row-hover); }
     .mt-field-name { color: var(--text); }
     .mt-field-type { margin-left: auto; color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 11px; }
 
@@ -95,5 +96,25 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-caveat-detail { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
     .mt-detail-open { display: inline-block; margin-top: 14px; font-size: 13px; color: var(--accent); text-decoration: none; }
     .mt-detail-open:hover { text-decoration: underline; }
+    .mt-detail-field.mt-field-focus { background: var(--accent-soft); border-radius: 4px; }
+
+    /* ── Lineage: selection highlight on the tier cards + the detail chips ── */
+    /* Selecting a table rings it (accent) and tints its directly-connected cards:
+       upstream sources (violet) and downstream consumers (teal). */
+    .mt-card.mt-sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-2); }
+    .mt-card.mt-up { border-color: #7c3aed; box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.35); }
+    .mt-card.mt-down { border-color: #0d9488; box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.35); }
+    .mt-lin { display: flex; flex-direction: column; gap: 4px; }
+    .mt-lin-chip {
+      display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+      padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px;
+      background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .mt-lin-chip:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--row-hover); }
+    .mt-lin-via { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); }
+    .mt-fl { font-size: 12px; color: var(--text-muted); padding: 3px 0; font-family: ui-monospace, monospace; }
+    .mt-fl-f { color: var(--accent); }
+    .mt-fl-t { color: var(--text); }
+    .mt-fl-none { font-family: inherit; }
 
 `;
