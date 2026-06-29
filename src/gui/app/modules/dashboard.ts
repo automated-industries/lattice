@@ -1237,34 +1237,34 @@ export const dashboardJs = `    // ───────────────
       if (leafLabel) parts.push('<span class="fs-crumb-cur">' + escapeHtml(leafLabel) + '</span>');
       return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
     }
-    // center object + folder/file children → graph model (rendered by the shared
-    // live force-graph via mountObjectGraph).
-    function buildFolderGraphModel(centerLabel, entries, filesByPath) {
-      var nodes = [{ kind: 'object', name: centerLabel, label: centerLabel, icon: '📂', r: 24, x: 0, y: 0, vx: 0, vy: 0 }];
-      var links = [];
-      (entries || []).forEach(function (e) {
-        var idx = nodes.length;
-        if (e.kind === 'folder') {
-          nodes.push({ kind: 'folder', path: e.path, label: e.name, icon: '📁', r: 18, x: 0, y: 0, vx: 0, vy: 0 });
-        } else {
-          var id = e.id || (filesByPath ? filesByPath[e.path] : '') || '';
-          nodes.push({ kind: 'file', path: e.path || '', id: id, label: e.name, icon: '📄', r: 12, x: 0, y: 0, vx: 0, vy: 0 });
-        }
-        links.push({ si: 0, ti: idx });
-      });
-      return { nodes: nodes, links: links };
-    }
+    // Render a folder's children (the Files object page + folder drill-ins) as a
+    // TABLE — the single object view, no graph. Folders link to their drill-in;
+    // files link to their record. (The name arg is unused now the center node is gone.)
     function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg) {
       if (!entries.length) {
-        content.innerHTML = header +
-          '<div class="brain-graph object-graph"><div id="fsg-mount"><div class="fs-empty" style="padding:24px">' +
-          emptyMsg + '</div></div></div>';
-      } else {
-        var model = buildFolderGraphModel(name, entries, filesByPath || {});
-        content.innerHTML = header +
-          '<div class="brain-graph object-graph"><div id="fsg-mount"></div></div>';
-        mountObjectGraph(model, 'files', null);
+        content.innerHTML = header + '<div class="fs-empty" style="padding:24px">' + emptyMsg + '</div>';
+        return;
       }
+      var fbp = filesByPath || {};
+      var sorted = entries.slice().sort(function (a, b) {
+        if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+        return String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase());
+      });
+      var rows = sorted.map(function (e) {
+        var isFolder = e.kind === 'folder';
+        var id = e.id || (e.path ? fbp[e.path] : '') || '';
+        var href = isFolder
+          ? '#/folder/' + encodeURIComponent(e.path)
+          : (id ? '#/fs/files/' + encodeURIComponent(id) : '');
+        var ic = isFolder ? '\\ud83d\\udcc1' : '\\ud83d\\udcc4';
+        var nm = href ? '<a href="' + href + '">' + escapeHtml(e.name) + '</a>' : escapeHtml(e.name);
+        return '<tr><td><span class="src-ic">' + ic + '</span> ' + nm + '</td>' +
+          '<td>' + (isFolder ? 'Folder' : 'File') + '</td>' +
+          '<td class="fs-files-path">' + escapeHtml(e.path || '') + '</td></tr>';
+      }).join('');
+      content.innerHTML = header +
+        '<table class="pv-table fs-files-table"><thead><tr>' +
+        '<th>Name</th><th>Type</th><th>Location</th></tr></thead><tbody>' + rows + '</tbody></table>';
     }
     // #/folder/<abs path> — one folder's immediate children as a graph.
     function renderFolderView(content, path) {
@@ -1312,7 +1312,7 @@ export const dashboardJs = `    // ───────────────
           if (!under) entries.push({ kind: 'file', path: r.ref_uri || '', name: r.name || r.original_name || 'Untitled', id: r.id });
         });
         var d = displayFor('files');
-        var header = fsBreadcrumb(['files'], []) +
+        var header = '<a class="breadcrumb" href="#/tables">\\u2190 Tables</a>' +
           '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1>' +
           '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
         paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.');
