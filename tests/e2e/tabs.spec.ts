@@ -78,11 +78,11 @@ test('object + record pages are not tabs but keep the Tables tab highlighted', a
 // (the object page is the single table view reached from Tables).
 test('back from an object page returns to the Tables explorer', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  // Into the object page — the single table (provenance) view.
+  // Into the object page — the table's rows.
   await page.locator('g.gnode[data-id="items"]').click();
-  await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
-  // Click the "← Tables" breadcrumb.
-  await page.locator('.breadcrumb').click();
+  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
+  // Click the "Tables" crumb (the breadcrumb is rooted at Tables).
+  await page.locator('.fs-crumbs a', { hasText: 'Tables' }).first().click();
   // It must land on the Tables explorer.
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
   await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
