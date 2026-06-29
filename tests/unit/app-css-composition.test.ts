@@ -61,8 +61,11 @@ import { css } from '../../src/gui/app/css.js';
 // .mt-wiring crosshair / .mt-wire-from highlight).
 // Removed the dead object-graph CSS (#fsg-mount / .fsg-more / .ognode-*) that the
 // removed focused-object-graph subsystem used.
-const ORIGINAL_LENGTH = 114423;
-const ORIGINAL_SHA256 = '2e8a6de844e151ad32f1bc45b571aedc4209b9e6f872f07218d2e2ad7587cdbc';
+// Record Formatted | Markdown toggle: .fs-view-toggle segmented control on the
+// record view-header. Markdown-in-center: the Outputs slide-in drawer styles
+// (.outputs-detail*) are removed in favor of a center .md-doc render (#/md/<path>).
+const ORIGINAL_LENGTH = 113497;
+const ORIGINAL_SHA256 = 'ede847aff92dddff99e4dd845174de3fbbcf2959e101c4dea7a91cdd4b328173';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

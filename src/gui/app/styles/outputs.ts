@@ -44,33 +44,8 @@ export const outputsCss = `    /* ── Outputs column ────────
     .out-tier-row .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* Outputs detail slide-over — the rendered .md when a Markdown entry is opened. */
-    /* Sits to the LEFT of the Outputs column (right: var(--outputs-width)) so the
-       column stays visible + clickable, and slides in from the right (from behind
-       the column) via the .open class. */
-    .outputs-detail {
-      position: fixed; top: 56px; right: var(--outputs-width); bottom: 0;
-      width: min(560px, calc(100vw - var(--outputs-width) - var(--nav-width)));
-      z-index: 1150; display: flex; flex-direction: column;
-      background: var(--surface); border-left: 1px solid var(--border);
-      box-shadow: -16px 0 40px -24px rgba(15, 23, 42, 0.28);
-      transform: translateX(110%); opacity: 0; visibility: hidden; pointer-events: none;
-      transition:
-        transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-        opacity 0.18s ease,
-        visibility 0s linear 0.22s;
-    }
-    .outputs-detail.open {
-      transform: translateX(0); opacity: 1; visibility: visible; pointer-events: auto;
-      transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
-    }
-    .outputs-detail-head {
-      flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-      padding: 12px 14px; border-bottom: 1px solid var(--border);
-    }
-    .outputs-detail-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 14px; }
-    .outputs-detail-close { flex: none; width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
-    .outputs-detail-close:hover { background: var(--row-hover); color: var(--text); }
-    .outputs-detail-body { flex: 1 1 auto; overflow: auto; padding: 16px 18px; }
+    /* A context Markdown file opens in the CENTER pane (#/md/<path>), not a drawer. */
+    .md-doc { max-width: 900px; }
 
     /* ── Markdown context tree (lazy, nested) ──────────────────────────────── */
     /* One consistent row style at every depth; the per-level indent is applied

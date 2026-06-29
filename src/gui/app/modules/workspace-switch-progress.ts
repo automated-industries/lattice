@@ -50,6 +50,10 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       }
       // Model > Tables — the tiered explorer, a sibling tab of the graph.
       if (hash === '#/tables') { renderModelTablesView(content); return; }
+
+      // #/md/<path> — a context Markdown file opened in the center pane.
+      var mdm = /^#\\/md\\/(.+)$/.exec(hash);
+      if (mdm) { renderMarkdownDoc(content, decodeURIComponent(mdm[1])); return; }
       if (hash === '#/dashboard') { renderDashboard(content); return; }
 
       // Folder drill-in (the Files object's on-disk hierarchy): #/folder/<abs path>.
