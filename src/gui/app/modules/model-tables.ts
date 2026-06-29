@@ -264,6 +264,7 @@ export const modelTablesJs = `
     // Draw the relationship edges as SVG bezier connectors between the tier-column
     // cards (measured from the live DOM, like the schema-explorer pattern), and
     // redraw on layout changes (detail panel open, resize).
+    var mtEdgeRO = null;
     function mtSetupEdges() {
       // Live-query the tiers each time (robust to a re-render replacing the node),
       // and draw after layout + on a short fallback + on resize.
@@ -272,8 +273,11 @@ export const modelTablesJs = `
       var host = document.getElementById('model-tables-host');
       var tiers = host && host.querySelector('.mt-tiers');
       if (tiers && typeof ResizeObserver !== 'undefined') {
-        var ro = new ResizeObserver(mtDrawEdges);
-        ro.observe(tiers);
+        // Disconnect the prior observer so they don't accumulate across re-renders
+        // (every Entity/Field toggle, wire action, or workspace switch re-renders).
+        if (mtEdgeRO) { try { mtEdgeRO.disconnect(); } catch (e) { /* ignore */ } }
+        mtEdgeRO = new ResizeObserver(mtDrawEdges);
+        mtEdgeRO.observe(tiers);
       }
     }
     function mtDrawEdges() {
