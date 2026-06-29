@@ -184,7 +184,7 @@ export const guiAppHtml = `<!doctype html>
           <button class="section-label section-toggle" data-group="out-serverdocs" type="button" aria-expanded="true">
             <span class="section-caret">▾</span><span class="section-label-text">Server Docs</span>
           </button>
-          <div class="section-body" data-group-body="out-serverdocs"><div id="out-serverdocs"></div></div>
+          <div class="section-body" data-group-body="out-serverdocs"><div id="out-serverdocs"><div class="out-placeholder">Coming soon.</div></div></div>
         </section>
         <section class="out-group">
           <button class="section-label section-toggle" data-group="out-apidocs" type="button" aria-expanded="true">
