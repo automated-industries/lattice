@@ -1,7 +1,8 @@
-// Data-provenance views (object-type page + single-row panel). For an object,
-// show WHERE its data came from across the raw / computed / observation tiers,
-// as a TABLE (the single object view — no graph toggle). Vocabulary is generic
-// (object / raw / computed / observation) — no domain coupling to any dataset.
+// Data-provenance: the single-ROW "Data provenance" panel (where one record's
+// data came from, across the raw / computed / observation tiers) + the shared
+// provenanceTableHtml renderer. The full-page object provenance view was removed
+// — an object page now shows the table's rows. Vocabulary is generic (raw /
+// computed / observation) — no domain coupling to any dataset.
 export const provenanceJs = `
     var PROV_TIERS = [
       { type: 'raw', label: 'Raw sources' },
@@ -36,45 +37,9 @@ export const provenanceJs = `
         '</tr></thead><tbody>' + sections + '</tbody></table>';
     }
 
-    // Object-type page: the SINGLE object view — the provenance table (where the
-    // object's data comes from). No graph/table toggle; reached from the Tables
-    // explorer ("Open object" / a tier card) or a brain-graph node, so it belongs
-    // to the Tables tab and its back breadcrumb returns to Tables. Nested relation
-    // paths still use the row tile grid (renderFsCollection).
-    function renderProvenance(content, table) {
-      var myGen = renderGen;
-      // Files are a SOURCE layer, not a provenance object — their page is the
-      // on-disk folder hierarchy.
-      if (table === 'files') { renderFilesRootView(content); return; }
-      if (!tableByName(table)) {
-        setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
-        return;
-      }
-      var d = displayFor(table);
-      fetchJson('/api/provenance?table=' + encodeURIComponent(table)).then(function (payload) {
-        if (myGen !== renderGen) return; // superseded by a newer navigation
-        // Count the source rows the table actually lists (raw/computed/observation)
-        // so the header never disagrees with the body; omit the chip when there are
-        // none (no more bare "0 sources").
-        var nodes = (payload && payload.nodes) ? payload.nodes : [];
-        var count = nodes.filter(function (n) {
-          return n.type === 'raw' || n.type === 'computed' || n.type === 'observation';
-        }).length;
-        content.innerHTML =
-          '<a class="breadcrumb" href="#/tables">\\u2190 Tables</a>' +
-          '<div class="view-header">' +
-            '<span class="entity-icon">' + d.icon + '</span>' +
-            '<h1>' + escapeHtml(d.label) + '</h1>' +
-            (count ? '<span class="count">' + count + ' source' + (count === 1 ? '' : 's') + '</span>' : '') +
-          '</div>' +
-          '<div id="prov-mount" class="prov-mount prov-mount-table"></div>';
-        content.querySelector('#prov-mount').innerHTML = provenanceTableHtml(payload);
-      }).catch(function (err) {
-        if (myGen !== renderGen) return;
-        setContent(content, myGen, '<div class="placeholder"><h2>Failed</h2>' +
-          escapeHtml(err && err.message ? err.message : String(err)) + '</div>');
-      });
-    }
+    // (The full-page object provenance view was removed — the object page is now
+    // the table's ROWS, rendered by renderFsCollection. Per-ROW provenance is still
+    // available via renderProvenancePanel in the record view below.)
 
     // Single-row detail: a collapsed "Data provenance" section, lazy-loaded on
     // first open (zero extra egress on the initial row paint).

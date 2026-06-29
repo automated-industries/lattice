@@ -55,7 +55,7 @@ test('a live refresh updates the middle pane in place without flashing a loading
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
-  await expect(page.locator('#prov-mount')).toBeVisible({
+  await expect(page.locator('.view-header')).toBeVisible({
     timeout: 5000,
   });
 
@@ -81,7 +81,7 @@ test('a live refresh updates the middle pane in place without flashing a loading
   // spinner — the existing tiles stay on screen and are swapped only when ready.
   for (let i = 0; i < 6; i++) {
     expect(await page.locator('#content .route-loading').count()).toBe(0);
-    expect(await page.locator('#prov-mount').count()).toBeGreaterThan(0);
+    expect(await page.locator('.view-header').count()).toBeGreaterThan(0);
     await page.waitForTimeout(120);
   }
 });
