@@ -97,8 +97,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // Lineage is built from the server-computed /api/graph?schema=1 edges (cached),
 // not the client's entity.relations — so it works for cloud members too (who
 // never receive the owner's relation config).
-const ORIGINAL_LENGTH = 815398;
-const ORIGINAL_SHA256 = '91e1f0567acf1f909364cf8d5a202c828f3f2ae588e0e586638bc49908efc90e';
+// Tables detail panel drops the CAVEATS section (+ mtCaveats); the object page is
+// now a single table-only provenance view (graph mode + buildProvenanceModel /
+// renderProvenanceGraph / legend removed), its breadcrumb returns to Tables, and
+// object/record routes keep the Tables tab highlighted (tabKeyForHash).
+const ORIGINAL_LENGTH = 809911;
+const ORIGINAL_SHA256 = 'd49b188846d40124f61e523c4ac7e266b8b09a174893ff47cc3dadff7390384f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
