@@ -246,7 +246,7 @@ export const guiAppHtml = `<!doctype html>
 
   <!-- Outputs detail slide-over: shows a rendered context .md when a Markdown
        entry in the Outputs column is clicked. -->
-  <aside class="outputs-detail" id="outputs-detail" hidden aria-label="Output detail">
+  <aside class="outputs-detail" id="outputs-detail" aria-label="Output detail">
     <div class="outputs-detail-head">
       <span class="outputs-detail-title" id="outputs-detail-title"></span>
       <button class="outputs-detail-close" id="outputs-detail-close" title="Close" aria-label="Close">✕</button>

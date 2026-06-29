@@ -78,8 +78,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // Ask Lattice polish: the floating panel opens/closes via an `.open` class (so it
 // can animate in AND out from the top-right corner), a click outside collapses it,
 // and "powered by Claude" is dropped (ask-lattice.js segment).
-const ORIGINAL_LENGTH = 818416;
-const ORIGINAL_SHA256 = '86862b340c84ad0b97a5cef0b00787e9bd49fe1728d01772e7d9e08f19faa765';
+// Markdown rework: the Outputs Markdown view is now a LAZY collapsible tree
+// mirroring the on-disk Context/ layout (folders fetch children via
+// /api/context/list on expand), and the detail panel is a shared slide-in
+// (openOutputsDetail) opened via an .open class (outputs.js segment).
+const ORIGINAL_LENGTH = 819600;
+const ORIGINAL_SHA256 = '8466d0fefd829bf6642ce1c1f0940ea9d71313fb2473a35db228771255301165';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

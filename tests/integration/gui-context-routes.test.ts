@@ -56,25 +56,43 @@ const getJson = async (s: GuiServerHandle, path: string) => {
   return { status: r.status, body: (await r.json()) as Record<string, unknown> };
 };
 
-describe('GET /api/context/tree', () => {
-  it('lists entity .md files + per-entity dirs and skips internal dot-dirs', async () => {
+type TreeEntry = { name: string; path: string; kind: string };
+
+describe('GET /api/context/tree (lazy top level)', () => {
+  it('lists the top level (files + lazy folders) and skips internal dot-dirs', async () => {
     const { s } = await bootWithContext();
     const { status, body } = await getJson(s, '/api/context/tree');
     expect(status).toBe(200);
-    const entries = body.entries as {
-      name: string;
-      path: string;
-      kind: string;
-      children?: { name: string; path: string }[];
-    }[];
+    const entries = body.entries as TreeEntry[];
     const names = entries.map((e) => e.name);
     expect(names).toContain('TASKS.md');
     expect(names).toContain('Tasks');
-    // Internal dot-dir is excluded.
+    // Internal dot-dir is excluded; children are NOT inlined (lazy).
     expect(names).not.toContain('.lattice');
-    const tasksDir = entries.find((e) => e.name === 'Tasks');
-    expect(tasksDir?.kind).toBe('dir');
-    expect((tasksDir?.children ?? []).map((c) => c.path)).toContain('Tasks/task-1.md');
+    expect(entries.find((e) => e.name === 'Tasks')?.kind).toBe('dir');
+    expect(entries.find((e) => e.name === 'TASKS.md')?.kind).toBe('file');
+  });
+});
+
+describe('GET /api/context/list (lazy folder expand)', () => {
+  it("lists a folder's immediate children", async () => {
+    const { s } = await bootWithContext();
+    const { status, body } = await getJson(
+      s,
+      '/api/context/list?path=' + encodeURIComponent('Tasks'),
+    );
+    expect(status).toBe(200);
+    expect((body.entries as TreeEntry[]).map((e) => e.path)).toContain('Tasks/task-1.md');
+  });
+
+  it('404s an unknown folder and rejects path traversal', async () => {
+    const { s } = await bootWithContext();
+    expect((await getJson(s, '/api/context/list?path=' + encodeURIComponent('nope'))).status).toBe(
+      404,
+    );
+    expect(
+      (await getJson(s, '/api/context/list?path=' + encodeURIComponent('../../..'))).status,
+    ).toBe(404);
   });
 });
 
