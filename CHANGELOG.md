@@ -21,15 +21,17 @@ database connector).
 
 - **Inputs · Model · Outputs GUI reframe.** The desktop GUI / `lattice gui` is
   reorganized into three columns: **Inputs** (Files, Connectors, Databases),
-  **Model** (a **Graph | Tables** toggle over the brain graph and a new tiered
-  schema explorer — Source / Model / Derived / Surface, with Entity/Field views,
-  tier-visibility chips, and a detail panel of fields + caveats), and **Outputs**
+  **Model** (two top-level tabs — **Graph** and **Tables** — where Tables is a
+  tiered schema explorer (Source / Model / Derived / Surface) with Entity/Field
+  views, a detail panel of fields + table/field lineage, relationship edges drawn
+  between the tiers, and a **"+ Wire"** mode to link two tables), and **Outputs**
   (Artifacts, a Markdown view of the rendered context tree, a Tables mirror of the
-  Model view, plus Server Docs / API Docs / MCP). The assistant moves from a docked
-  rail to a floating **"Ask Lattice"** panel in the upper-right, and the live
-  activity feed moves to a header popover next to the version-history clock. One
-  shared client serves both the terminal GUI and the desktop app, so the reframe
-  lands on both at once.
+  Model view, plus Server Docs / API Docs / MCP). Opening an object shows its rows
+  as a table (mirroring the file list), with breadcrumbs rooted at Tables. The
+  assistant moves from a docked rail to a floating **"Ask Lattice"** panel in the
+  upper-right, and the live activity feed moves to a header popover next to the
+  version-history clock. One shared client serves both the terminal GUI and the
+  desktop app, so the reframe lands on both at once.
 
 - **Connect an external database as an Input.** A new credential connector imports
   an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
@@ -44,10 +46,10 @@ database connector).
   link springs, collision resolution, weak centering, alpha-cooled integration —
   DOM-free and fully unit-testable) drives a live SVG renderer with continuous
   animation, drag-to-pin, pan, pinch/wheel zoom, neighbor highlight/dim,
-  zoom-to-fit, and incremental fly-in growth. The schema **Brain Graph**, the
-  per-object graph, and the folder graph all move to it; the renderer loads out of
-  band from `/gui-assets/force-graph.mjs`, so the inline host script only maps each
-  model to a generic node/edge shape and wires that surface's routing. The old
+  zoom-to-fit, and incremental fly-in growth. It drives the schema **Graph** tab;
+  the renderer loads out of band from `/gui-assets/force-graph.mjs`, so the inline
+  host script only maps the schema model to a generic node/edge shape and wires the
+  routing. (Object and folder pages now render as tables, not graphs.) The old
   static graph builders + hand-rolled layout simulation were removed.
 
 - **Tunable + observable native vector index.** New optional knobs (all default to

@@ -120,8 +120,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // connectors between the tier cards (mtDrawEdges), and "+ Wire" toggles a mode
 // where clicking a source then a target creates an m2m link via POST
 // /api/schema/junctions (mtWireClick) — replacing the broken settings navigation.
-const ORIGINAL_LENGTH = 817752;
-const ORIGINAL_SHA256 = 'cb72f052dc2bb7b1b769897ed0a745aac146c86971d3cd761bf0aa7b63d51b43';
+// Review fixes: file soft-delete navigates to the Files collection (the old
+// closable-tab dismissal no-ops under the two-tab model + stranded the user), and
+// the Tables-explorer edge ResizeObserver is disconnected before re-creating (no
+// per-render observer accumulation).
+const ORIGINAL_LENGTH = 818154;
+const ORIGINAL_SHA256 = '98b9bb525d7163b62b392c6f250930ee22ff05dcac7b8dde7ab60b9692f6d6ff';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
