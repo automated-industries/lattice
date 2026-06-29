@@ -960,19 +960,14 @@ export const dashboardJs = `    // ───────────────
         '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
     }
 
-    // Per-object view mode for the top-level object page: 'graph' (default — a
-    // focused zoom-in of the brain graph) or 'list' (the tile grid).
-    var fsObjectView = {};
-    // Collection view — a folder of tiles. Top-level (#/fs/<table>) shows every
-    // row; a nested path (#/fs/<table>/<id>/<rel>) shows the related rows.
+    // Collection view — a folder of tiles for a NESTED relation path
+    // (#/fs/<table>/<id>/<rel>). The top-level object page (#/fs/<table>) is the
+    // data-provenance view (graph or table — how this object's rows are sourced).
     function renderFsCollection(content, segs) {
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
-      // The top-level object page defaults to the data-provenance view (graph or
-      // table — how this object's rows are sourced); "List view" switches to the
-      // row tile grid. Nested relation paths always use the grid.
-      if (topLevel && fsObjectView[segs[0]] !== 'list' && tableByName(segs[0])) {
+      if (topLevel && tableByName(segs[0])) {
         renderProvenance(content, segs[0], provenanceView[segs[0]] || 'graph');
         return;
       }
@@ -1015,19 +1010,8 @@ export const dashboardJs = `    // ───────────────
               '<span class="entity-icon">' + d.icon + '</span>' +
               '<h1>' + escapeHtml(d.label) + '</h1>' +
               '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
-              (topLevel
-                ? '<div class="actions">' +
-                    '<a class="btn primary" href="' + fsHref([table, 'new']) + '">New ' + escapeHtml(d.label) + '</a>' +
-                    '<button class="btn" id="fsg-view-graph" type="button">Provenance</button>' +
-                  '</div>'
-                : '') +
             '</div>' +
             '<div class="fs-grid">' + rowTiles + '</div>';
-          var gv = content.querySelector('#fsg-view-graph');
-          if (gv) gv.addEventListener('click', function () {
-            fsObjectView[table] = 'graph';
-            renderFsCollection(content, segs);
-          });
         });
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
@@ -1138,7 +1122,6 @@ export const dashboardJs = `    // ───────────────
               '<span class="count">' + total + ' item' + (total === 1 ? '' : 's') + '</span>' +
               '<div class="actions">' +
                 '<a class="btn" href="' + fsHref([table, 'new']) + '">+ New ' + escapeHtml(d.label) + '</a>' +
-                '<button class="btn" id="fsg-view-list" type="button">List view</button>' +
               '</div>' +
             '</div>';
           if (!rows.length && model.nodes.length <= 1) {
@@ -1165,11 +1148,6 @@ export const dashboardJs = `    // ───────────────
               }
             });
           }
-          var lv = content.querySelector('#fsg-view-list');
-          if (lv) lv.addEventListener('click', function () {
-            fsObjectView[table] = 'list';
-            renderFsCollection(content, [table]);
-          });
         })
         .catch(function (err) {
           if (myGen !== renderGen) return;
@@ -1280,7 +1258,7 @@ export const dashboardJs = `    // ───────────────
       });
       return { nodes: nodes, links: links };
     }
-    function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg, listToggle) {
+    function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg) {
       if (!entries.length) {
         content.innerHTML = header +
           '<div class="brain-graph object-graph"><div id="fsg-mount"><div class="fs-empty" style="padding:24px">' +
@@ -1290,10 +1268,6 @@ export const dashboardJs = `    // ───────────────
         content.innerHTML = header +
           '<div class="brain-graph object-graph"><div id="fsg-mount"></div></div>';
         mountObjectGraph(model, 'files', null);
-      }
-      if (listToggle) {
-        var lv = content.querySelector('#fsg-view-list');
-        if (lv) lv.addEventListener('click', function () { fsObjectView['files'] = 'list'; renderFsCollection(content, ['files']); });
       }
     }
     // #/folder/<abs path> — one folder's immediate children as a graph.
@@ -1317,7 +1291,7 @@ export const dashboardJs = `    // ───────────────
         var header = folderBreadcrumb(path, roots) +
           '<div class="view-header"><span class="entity-icon">📂</span><h1>' + escapeHtml(name) + '</h1>' +
           '<span class="count">' + entries.length + (truncated ? '+' : '') + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
-        paintFolderGraph(content, header, name, entries, filesByPath, 'This folder is empty.', false);
+        paintFolderGraph(content, header, name, entries, filesByPath, 'This folder is empty.');
       }).catch(function (err) {
         if (myGen !== renderGen) return;
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
@@ -1344,9 +1318,8 @@ export const dashboardJs = `    // ───────────────
         var d = displayFor('files');
         var header = fsBreadcrumb(['files'], []) +
           '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1>' +
-          '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span>' +
-          '<div class="actions"><button class="btn" id="fsg-view-list" type="button">List view</button></div></div>';
-        paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.', true);
+          '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
+        paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.');
       }).catch(function (err) {
         if (myGen !== renderGen) return;
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';

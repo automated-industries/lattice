@@ -63,8 +63,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // over GET /api/context/tree + a click-to-open detail slide-over via
 // /api/context/file, reusing mdToHtml/stripFrontmatter) and the Tables mirror
 // reuses mtBuildModel for a compact tiered list. Recaptured.
-const ORIGINAL_LENGTH = 812357;
-const ORIGINAL_SHA256 = '3a71e29c725a8d57f972f532dba4a6c61864d95753547d2dc3ba0050dad0a315';
+// Step 6 removes the redundant per-object "list view" tile-grid escape hatch:
+// the fsObjectView toggle, the three "List view" buttons (provenance + object-graph
+// + files-root) and the moot graph-toggle, so the top-level object page is the
+// provenance view; nested relation collections still render the tile grid.
+const ORIGINAL_LENGTH = 810488;
+const ORIGINAL_SHA256 = 'e15c78cf437ba39ea0c5918816ef60110a62a732e25af5b4fed2a0139fd9ecf0';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
