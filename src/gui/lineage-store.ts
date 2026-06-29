@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { StorageAdapter } from '../db/adapter.js';
-import { runAsyncOrSync } from '../db/adapter.js';
+import { runAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Internal table recording cross-tier DATA LINEAGE — the durable "object row X
@@ -72,6 +72,30 @@ export async function recordLineage(adapter: StorageAdapter, edges: LineageEdge[
   await ensureLineageTable(adapter);
   const now = new Date().toISOString();
   for (const e of edges) {
+    // Dedup: an edge is identified by its (object, source, tier, relation) tuple —
+    // NOT by the random id/timestamp. Re-recording the same edge (e.g. re-importing
+    // a table re-writes its table-level `*` edge) must NOT accumulate duplicate rows,
+    // which previously inflated the provenance "Import" count by 1 per re-import.
+    // COALESCE normalizes the nullable source_table/source_id for the comparison.
+    const dup = await getAsyncOrSync(
+      adapter,
+      `SELECT 1 AS x FROM "${LINEAGE_TABLE}"
+         WHERE "object_table" = ? AND "object_id" = ? AND "source_kind" = ? AND "tier" = ?
+           AND COALESCE("relation",'') = COALESCE(?,'')
+           AND COALESCE("source_table",'') = COALESCE(?,'')
+           AND COALESCE("source_id",'') = COALESCE(?,'')
+         LIMIT 1`,
+      [
+        e.objectTable,
+        e.objectId,
+        e.sourceKind,
+        e.tier,
+        e.relation,
+        e.sourceTable ?? null,
+        e.sourceId ?? null,
+      ],
+    );
+    if (dup) continue;
     await runAsyncOrSync(
       adapter,
       `INSERT INTO "${LINEAGE_TABLE}"

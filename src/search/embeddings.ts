@@ -13,6 +13,7 @@ import {
   vectorIndexFresh,
   searchVectorIndex,
   syncIndexAfterBulk,
+  invalidateVectorTypeCache,
 } from './vector-index.js';
 import { clampTopK } from './limits.js';
 
@@ -300,13 +301,22 @@ export async function searchByEmbedding(
     (await hasVectorIndex(adapter, table)) &&
     (await vectorIndexFresh(adapter, table))
   ) {
-    const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore, efSearch);
-    ranked = hits.map((h) => ({
-      pk: h.pk,
-      score: h.score,
-      chunkIndex: h.chunkIndex,
-      content: h.content,
-    }));
+    try {
+      const hits = await searchVectorIndex(adapter, table, queryVector, k * 4, minScore, efSearch);
+      ranked = hits.map((h) => ({
+        pk: h.pk,
+        score: h.score,
+        chunkIndex: h.chunkIndex,
+        content: h.content,
+      }));
+    } catch {
+      // A native-index query can fail if this connection's cached column type drifted
+      // from the actual index (e.g. another connection rebuilt it as halfvec, so the
+      // cached `::vector` cast no longer matches). Drop the stale cache and fall back
+      // to the exact in-process scan — correct results, never a thrown query.
+      invalidateVectorTypeCache(adapter, table);
+      ranked = await scanChunks(adapter, table, queryVector, minScore, config.maxScanChunks);
+    }
   } else {
     ranked = await scanChunks(adapter, table, queryVector, minScore, config.maxScanChunks);
   }
@@ -378,6 +388,11 @@ function scoreStoredChunks(
   return out;
 }
 
+/** Generous default bound on the no-index scan when the caller didn't set one — high
+ *  enough never to affect realistic tables, low enough to refuse a pathological
+ *  whole-table vector load rather than exhaust memory. Override via maxScanChunks. */
+const DEFAULT_MAX_SCAN_CHUNKS = 100_000;
+
 /** In-process cosine scan over the stored chunk vectors for a table. */
 async function scanChunks(
   adapter: StorageAdapter,
@@ -386,17 +401,18 @@ async function scanChunks(
   minScore: number,
   maxScanChunks?: number,
 ): Promise<RankedChunk[]> {
-  if (maxScanChunks !== undefined) {
-    // Opt-in hard bound on the no-index scan: count first and refuse loudly
-    // rather than load an unbounded set of vectors into memory. Never silently
-    // truncate — a partial cosine scan would return wrong results.
+  // Always bound the scan (defaulting when not opted in): count first and refuse
+  // loudly rather than load an unbounded vector set into memory. Never silently
+  // truncate — a partial cosine scan would return wrong results.
+  const cap = maxScanChunks ?? DEFAULT_MAX_SCAN_CHUNKS;
+  {
     const countRows = await allAsyncOrSync(
       adapter,
       `SELECT COUNT(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
     const n = Number(countRows[0]?.n ?? 0); // pg returns COUNT(*) as a string
-    if (n > maxScanChunks) throw new EmbeddingScanTooLargeError(table, n, maxScanChunks);
+    if (n > cap) throw new EmbeddingScanTooLargeError(table, n, cap);
   }
   const stored = await allAsyncOrSync(
     adapter,
