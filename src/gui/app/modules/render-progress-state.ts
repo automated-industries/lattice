@@ -19,15 +19,14 @@ export const renderProgressStateJs = `    // ───────────�
       var prefix = advancedMode() ? '#/objects/' : '#/fs/';
       location.hash = prefix + encodeURIComponent(table) + '/' + encodeURIComponent(id);
     }
-    // Route the typed query into the assistant rail as a chat turn. Opens the
-    // rail (a no-op on desktop; opens the mobile drawer) and submits via the
-    // same path as the composer, so the assistant searches + answers.
+    // Route the typed query into the floating Ask Lattice assistant as a chat turn.
+    // Opens the panel and submits via the same path as the composer, so the
+    // assistant searches + answers.
     function askAssistant(q) {
       hideSearchResults();
       var input = document.getElementById('search-input');
       if (input) input.value = '';
-      var rail = document.getElementById('assistant-rail');
-      if (rail) rail.classList.add('expanded');
+      if (typeof openAskLattice === 'function') openAskLattice();
       var chatInput = document.getElementById('chat-input');
       if (chatInput) chatInput.focus();
       sendChat(q);

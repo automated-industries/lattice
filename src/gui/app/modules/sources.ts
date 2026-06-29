@@ -25,13 +25,14 @@ export const sourcesJs = `
           rows.forEach(function (r) {
             if (r.ref_kind === 'local_ref' && r.ref_uri) sourcesFilesByPath[r.ref_uri] = r.id;
           });
-          renderSourcesArtifacts(rows.filter(function (r) { return r.artifact_type; }));
+          // Artifacts (Lattice-created files) now live in the Outputs column.
+          renderOutputsArtifacts(rows.filter(function (r) { return r.artifact_type; }));
           // Source files = everything the user ingested/uploaded (NOT Lattice-created
           // artifacts). Shown in the Files section alongside any registered on-disk
           // roots — so existing files appear even before a folder is added.
           renderSourcesFiles(rows.filter(function (r) { return !r.artifact_type; }));
         })
-        .catch(function () { renderSourcesArtifacts([]); renderSourcesFiles([]); });
+        .catch(function () { renderOutputsArtifacts([]); renderSourcesFiles([]); });
       wireSourcesButtons();
     }
 
@@ -196,24 +197,6 @@ export const sourcesJs = `
         .catch(function () {});
     }
 
-    function renderSourcesArtifacts(artifacts) {
-      var host = document.getElementById('src-artifacts-tree');
-      if (!host) return;
-      if (!artifacts.length) { host.innerHTML = '<div class="src-empty">Nothing created yet.</div>'; return; }
-      host.innerHTML = '<ul class="src-tree">' + artifacts.map(function (r) {
-        var name = r.name || r.original_name || 'Untitled';
-        var ic = r.artifact_type === 'html' ? '🌐' : '📝';
-        return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
-          '"><div class="src-row" style="padding-left:14px"><span class="src-ic">' + ic +
-          '</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
-      }).join('') + '</ul>';
-      host.querySelectorAll('.src-file > .src-row').forEach(function (row) {
-        row.addEventListener('click', function () {
-          location.hash = '#/fs/files/' + encodeURIComponent(row.parentNode.getAttribute('data-id'));
-        });
-      });
-    }
-
     function renderSourcesConnectors() {
       var host = document.getElementById('src-connectors-list');
       if (!host) return;
@@ -274,7 +257,11 @@ export const sourcesJs = `
       btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     }
     function applySidebarGroupStates() {
-      ['files', 'artifacts', 'connectors', 'databases', 'objects', 'system'].forEach(applySidebarGroupState);
+      [
+        'files', 'connectors', 'databases',
+        'out-artifacts', 'out-markdown', 'out-tables', 'out-serverdocs', 'out-apidocs', 'out-mcp',
+        'objects', 'system',
+      ].forEach(applySidebarGroupState);
     }
     function toggleSidebarGroup(group) {
       setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));

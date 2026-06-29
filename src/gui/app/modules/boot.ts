@@ -18,12 +18,12 @@ export const bootJs = `    // ────────────────�
     }
 
     function init() {
-      // Restore the persisted rail width synchronously, before any fetch, so it's
-      // applied on the first paint (no width flash) and isn't gated behind the
-      // async bootstrap. initRailResize re-applies it (idempotent) + wires the
-      // drag handle once the app has booted.
-      var savedRail = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
-      if (!isNaN(savedRail)) applyRailWidth(savedRail);
+      // Restore the persisted Outputs-column width synchronously, before any fetch,
+      // so it's applied on the first paint (no width flash) and isn't gated behind
+      // the async bootstrap. initOutputsResize re-applies it (idempotent) + wires
+      // the drag handle once the app has booted.
+      var savedOutputs = parseInt(window.localStorage.getItem(OUT_KEY) || '', 10);
+      if (!isNaN(savedOutputs)) applyOutputsWidth(savedOutputs);
       // The version chip + manual-upgrade link live in the static shell (present
       // from first paint, in both the normal and virgin-state boots), so wire the
       // click handler and run the first availability check here — independent of
@@ -135,9 +135,9 @@ export const bootJs = `    // ────────────────�
         initSearch();
         initLastEdited();
         initOffline();
-        initRailResize();
-        initRailDrawer();
-        initRailDragDrop();
+        initOutputsResize();
+        initAskLattice();
+        initActivityHeader();
         renderComposer();
         initThreadControls();
         // Warm up on-device voice in the background shortly after boot so dictation

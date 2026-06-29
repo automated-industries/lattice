@@ -46,11 +46,11 @@ export const tokensCss = `
       --glow-focus: 0 0 0 2px #ffffff, 0 0 0 4px rgba(59, 130, 246, 0.55);
 
       --nav-width: 220px;
-      --sidebar-width: 416px;
+      --outputs-width: 416px;
     }
     /* Keep frosted surfaces opaque where backdrop-filter is unsupported */
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-      header.topbar, .assistant-rail, .modal, .settings-drawer,
+      header.topbar, .outputs, .ask-lattice-panel, .modal, .settings-drawer,
       .db-menu, .search-results, .emoji-grid { background: var(--surface); }
     }
     * { box-sizing: border-box; }

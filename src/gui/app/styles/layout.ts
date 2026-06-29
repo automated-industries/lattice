@@ -7,7 +7,7 @@ export const layoutCss = `    /* ── Layout ───────────
        minimum keeps the track at content-width and the whole page scrolls
        horizontally. */
     .layout {
-      display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--sidebar-width);
+      display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--outputs-width);
       height: calc(100vh - 56px);
     }
     @media (max-width: 720px) {
