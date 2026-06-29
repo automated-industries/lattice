@@ -56,12 +56,11 @@ async function boot(): Promise<GuiServerHandle> {
 }
 
 describe('1.16.3 — served bundle ships the reframe + polish', () => {
-  it('A: inline create view, no modal', async () => {
+  it('A: the inline record-create view is removed (no create form or modal)', async () => {
     const html = await (await fetch(`${(await boot()).url}/`)).text();
-    expect(html).toContain('renderFsCreate');
-    expect(html).toContain('fs-create-form');
-    expect(html).toContain('fs-create-save');
-    expect(html).toContain('fs-create-cancel');
+    // 5.0 removed the "New <entity>" record-create feature entirely.
+    expect(html).not.toContain('renderFsCreate');
+    expect(html).not.toContain('fs-create-form');
     expect(html).not.toContain('openFsCreateModal');
   });
 

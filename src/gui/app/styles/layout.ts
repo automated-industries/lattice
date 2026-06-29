@@ -15,8 +15,14 @@ export const layoutCss = `    /* ── Layout ───────────
     }
     nav.sidebar {
       background: var(--surface); border-right: 1px solid var(--border);
-      padding: 18px 10px; overflow-y: auto;
+      /* No TOP padding: the Inputs column header must sit flush at the top, aligned
+         with the Model + Outputs headers. Horizontal/bottom padding stays for the
+         group content; the header breaks out to full width below. */
+      padding: 0 10px 18px; overflow-y: auto;
     }
+    /* The Inputs header spans the full column width (cancel the sidebar's side
+       padding) and pins flush to the top, level with the other column headers. */
+    nav.sidebar > .col-header { margin: 0 -10px 10px; }
     .section-label {
       font-size: 11px; font-weight: 600; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.06em;

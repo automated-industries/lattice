@@ -64,7 +64,17 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
 
     /* The brain graph fills the whole content pane. */
     .brain-graph { height: 100%; }
-    .brain-graph #graph-mount { height: 100%; }
+    .brain-graph #graph-mount { height: 100%; position: relative; }
+    /* Loading spinner shown until the graph has settled + centred (no off-centre
+       flash / jump). Covers the mount; removed the moment the graph is revealed. */
+    .graph-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2; }
+    .graph-spinner {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 3px solid var(--border); border-top-color: var(--accent);
+      animation: graphSpin 0.8s linear infinite;
+    }
+    @keyframes graphSpin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .graph-spinner { animation: none; } }
 
     /* ── Settings → Data Model entity list ─────────────────── */
     .dm-entity-list { list-style: none; margin: 0; padding: 0; }

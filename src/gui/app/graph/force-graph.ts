@@ -65,6 +65,7 @@ interface DomEvent {
 declare const document: {
   getElementById(id: string): El | null;
   createElementNS(ns: string, qualifiedName: string): El;
+  createElement(tag: string): El;
 };
 declare function requestAnimationFrame(cb: () => void): number;
 declare function cancelAnimationFrame(handle: number): void;
@@ -201,10 +202,25 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   stage.appendChild(nodeLayer);
   svg.appendChild(stage);
   mount.appendChild(svg);
-  // Hide the stage until the first real fit lands — otherwise frame 0 paints the
-  // un-fit spawn positions (clustered at the origin = top-left corner) before the
-  // fit centres them, a visible "loads twice" flash.
+  // Keep the stage hidden behind a loading spinner until the layout has SETTLED
+  // and been centred — so the graph never appears off-centre / clustered and then
+  // "jumps" into place. The user sees a spinner, then the finished, centred graph.
+  // (Later live-ingest updates animate normally — this only gates the FIRST paint.)
   stage.style.visibility = 'hidden';
+  let revealed = false;
+  let settledOnce = false;
+  const loadingEl = document.createElement('div');
+  loadingEl.setAttribute('class', 'graph-loading');
+  const spinnerEl = document.createElement('div');
+  spinnerEl.setAttribute('class', 'graph-spinner');
+  loadingEl.appendChild(spinnerEl);
+  mount.appendChild(loadingEl);
+  function reveal(): void {
+    if (revealed) return;
+    revealed = true;
+    stage.style.visibility = 'visible';
+    loadingEl.remove();
+  }
 
   // Frame the graph once the mount first gets a real size — it reliably reveals
   // the stage the moment the pane is measurable (the settle path alone is
@@ -237,6 +253,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   let fitRaf = 0; // the deferred-fit retry handle, so stop() can cancel it
   let running = false;
   let framed = false;
+  let graphTicks = 0; // ticks since start — drives the settle/reveal safety net
   let selectedId: string | null = null;
 
   const W = (): number => mount.clientWidth || 900;
@@ -275,9 +292,14 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   function frame(): void {
     sim.tick(1);
     paint();
-    if (!framed && sim.settled) {
+    graphTicks++;
+    // Reveal once the sim has settled (normal path) — or after a generous tick
+    // budget as a safety net, so a pathological never-settle never leaves the
+    // graph stuck behind the spinner.
+    if (!settledOnce && (sim.settled || graphTicks > 400)) settledOnce = true;
+    if (!framed && settledOnce) {
       framed = true;
-      fitAll();
+      fitAll(); // fitTo reveals once settledOnce is set (centred, settled positions)
     }
     if (sim.settled) {
       running = false;
@@ -304,10 +326,12 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       i++;
     }
     paint();
+    settledOnce = true; // synchronous settle → safe to fit + reveal at once
     if (!framed) {
       framed = true;
       fitAll();
     }
+    reveal();
   }
 
   // ── data ──────────────────────────────────────────────────────────────────
@@ -575,8 +599,8 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   function fitTo(ns: FNode[]): void {
     if (!ns.length) {
       // Nothing to frame (e.g. setHighlight matched no nodes). Keep the current
-      // view, but never leave the stage hidden when the graph has content.
-      if (nodeMap.size) stage.style.visibility = 'visible';
+      // view, but never leave the stage hidden when the graph has settled content.
+      if (nodeMap.size && settledOnce) reveal();
       return;
     }
     // Defer the fit until the mount actually has a layout box. A freshly-cleared
@@ -617,7 +641,9 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     view.x = W() / 2 - ((minX + maxX) / 2) * k;
     view.y = H() / 2 - ((minY + maxY) / 2) * k;
     applyView();
-    stage.style.visibility = 'visible'; // reveal only after a real fit has landed
+    // Reveal only after a real fit has landed AND the layout has settled — so the
+    // first thing the user sees is the centred, finished graph (no fly-in jump).
+    if (settledOnce) reveal();
   }
 
   function setHighlight(ids: string[] | null): void {

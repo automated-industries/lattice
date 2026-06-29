@@ -1120,15 +1120,11 @@ export const dashboardJs = `    // ───────────────
               '<span class="entity-icon">' + d.icon + '</span>' +
               '<h1>' + escapeHtml(d.label) + '</h1>' +
               '<span class="count">' + total + ' item' + (total === 1 ? '' : 's') + '</span>' +
-              '<div class="actions">' +
-                '<a class="btn" href="' + fsHref([table, 'new']) + '">+ New ' + escapeHtml(d.label) + '</a>' +
-              '</div>' +
             '</div>';
           if (!rows.length && model.nodes.length <= 1) {
             content.innerHTML = header +
               '<div class="brain-graph object-graph"><div id="fsg-mount">' +
-                '<div class="fs-empty" style="padding:24px">Nothing here yet. ' +
-                '<a href="' + fsHref([table, 'new']) + '">Create the first ' + escapeHtml(d.label) + '</a>.</div>' +
+                '<div class="fs-empty" style="padding:24px">Nothing here yet.</div>' +
               '</div></div>';
           } else {
             content.innerHTML = header +
@@ -1324,116 +1320,6 @@ export const dashboardJs = `    // ───────────────
         if (myGen !== renderGen) return;
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
-    }
-
-    // Create a new object from the simple view — a form styled like the item
-    // page with blank fields + a Save button, plus a select-menu + "+" for each
-    // many-to-many link. Reuses fieldFor() (intrinsic + belongsTo) and the
-    // existing row-create + junction-row endpoints (no new backend).
-    // Inline create view (#/fs/<table>/new) — mirrors renderFsItem's formatted
-    // layout (.fs-doc/.fs-field) with blank fields + Save/Cancel, instead of a
-    // modal. Reuses fieldFor() + the row-create + junction /link endpoints.
-    function renderFsCreate(content, segs) {
-      var table = segs[0];
-      var t = tableByName(table);
-      if (!t) { content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'; return; }
-      var d = displayFor(table);
-      var bt = belongsToColumns(t);
-      var juncs = junctionsFor(table);
-      var collectionHref = fsHref([table]);
-      // Preload FK + junction-remote target rows so the <select> menus populate.
-      var needed = bt.map(function (b) { return b.rel.table; })
-        .concat(juncs.map(function (j) { return j.remoteRel.table; }));
-      Promise.all(needed.map(loadAllRows)).then(function () {
-        var fieldsHtml = '';
-        intrinsicColumns(t).forEach(function (c) {
-          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(c)) + '</div>' +
-            '<div class="fs-field-val">' + fieldFor(c, '', t) + '</div></div>';
-        });
-        bt.forEach(function (b) {
-          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) + '</div>' +
-            '<div class="fs-field-val">' + fieldFor(b.rel.foreignKey, '', t) + '</div></div>';
-        });
-        juncs.forEach(function (j) {
-          var remoteRows = loadedTables[j.remoteRel.table] || [];
-          var opts = '<option value="">(none)</option>' + remoteRows.map(function (r) {
-            return '<option value="' + escapeHtml(r.id) + '">' + escapeHtml(displayNameFor(r)) + '</option>';
-          }).join('');
-          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(j.remoteRel.table)) + ' (links)</div>' +
-            '<div class="fs-field-val">' +
-              '<div class="fs-link-stage" data-junction="' + escapeHtml(j.junction) + '" data-local-fk="' + escapeHtml(j.localFk) + '" data-remote-fk="' + escapeHtml(j.remoteRel.foreignKey) + '">' +
-                '<select class="fs-link-select">' + opts + '</select>' +
-              '</div>' +
-              '<button type="button" class="btn fs-link-add">+ Add another</button>' +
-            '</div></div>';
-        });
-        content.innerHTML =
-          '<nav class="fs-crumbs"><a href="#/">Home</a><span class="fs-sep">▸</span>' +
-            '<a href="' + collectionHref + '">' + escapeHtml(d.label) + '</a><span class="fs-sep">▸</span>' +
-            '<span>New</span></nav>' +
-          '<div class="view-header">' +
-            '<span class="entity-icon">' + d.icon + '</span>' +
-            '<h1>New ' + escapeHtml(d.label) + '</h1>' +
-          '</div>' +
-          '<div class="fs-doc fs-create-form">' + fieldsHtml + '</div>' +
-          '<div class="fs-create-actions">' +
-            '<button class="btn" id="fs-create-cancel">Cancel</button>' +
-            '<button class="btn primary" id="fs-create-save">Save</button>' +
-          '</div>';
-        content.querySelectorAll('.fs-link-add').forEach(function (addBtn) {
-          addBtn.addEventListener('click', function () {
-            var stage = addBtn.previousElementSibling; // the .fs-link-stage
-            var firstSel = stage && stage.querySelector('.fs-link-select');
-            if (!firstSel) return;
-            var clone = firstSel.cloneNode(true);
-            clone.value = '';
-            stage.appendChild(clone);
-          });
-        });
-        content.querySelector('#fs-create-cancel').addEventListener('click', function () {
-          location.hash = collectionHref;
-        });
-        var saveBtn = content.querySelector('#fs-create-save');
-        saveBtn.addEventListener('click', function () {
-          var values = {};
-          content.querySelectorAll('.fs-create-form [name]').forEach(function (el) {
-            var v = el.value;
-            if (v !== '' && v != null) values[el.getAttribute('name')] = v;
-          });
-          var links = [];
-          content.querySelectorAll('.fs-link-stage').forEach(function (stage) {
-            var junction = stage.getAttribute('data-junction');
-            var localFk = stage.getAttribute('data-local-fk');
-            var remoteFk = stage.getAttribute('data-remote-fk');
-            stage.querySelectorAll('.fs-link-select').forEach(function (sel) {
-              if (sel.value) links.push({ junction: junction, localFk: localFk, remoteFk: remoteFk, remoteId: sel.value });
-            });
-          });
-          withBusy(saveBtn, function () {
-            return rowWrite('POST', '/api/tables/' + encodeURIComponent(table) + '/rows', values).then(function (res) {
-              var newId = res && (res.id || (res.row && res.row.id));
-              var chain = Promise.resolve();
-              links.forEach(function (lk) {
-                chain = chain.then(function () {
-                  // Junction /link endpoint (INSERT OR IGNORE on the two FKs) —
-                  // works for pk-less junctions + is idempotent.
-                  var jrow = {};
-                  jrow[lk.localFk] = newId;
-                  jrow[lk.remoteFk] = lk.remoteId;
-                  return rowWrite('POST', '/api/tables/' + encodeURIComponent(lk.junction) + '/link', jrow);
-                });
-              });
-              return chain.then(function () { return newId; });
-            }).then(function (newId) {
-              invalidate(table);
-              return refreshEntities().then(function () {
-                showToast('Created', {});
-                location.hash = newId ? fsHref([table, String(newId)]) : collectionHref;
-              });
-            }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
-          });
-        });
-      }).catch(function (err) { content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>'; });
     }
 
     // Item view — one row as a document (click-to-edit) + its relationship folders.
