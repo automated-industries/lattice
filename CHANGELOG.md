@@ -32,6 +32,12 @@ database connector).
   upper-right, and the live activity feed moves to a header popover next to the
   version-history clock. One shared client serves both the terminal GUI and the
   desktop app, so the reframe lands on both at once.
+  - **Artifacts** are their own object/table view (a rows table at its own route),
+    and opening an artifact roots its breadcrumb at Artifacts rather than Files.
+  - A record has a **Formatted | Markdown** toggle: Formatted shows the structured
+    fields, Markdown shows the row's rendered context.
+  - Clicking a Markdown file in Outputs opens it in the **center pane** (with a
+    breadcrumb), replacing the slide-in detail drawer.
 
 - **Connect an external database as an Input.** A new credential connector imports
   an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
