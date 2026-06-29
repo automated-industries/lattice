@@ -53,8 +53,11 @@ import { css } from '../../src/gui/app/css.js';
 // reuses.
 // Added .pvchip-related / .pvchip-created chip colors for the new provenance tiers.
 // Clickable-row cursor/hover for the object + Files rows tables (.fs-row-click).
-const ORIGINAL_LENGTH = 113548;
-const ORIGINAL_SHA256 = '8d07961d6968322610bb5aa43aaafa39ded162af146bc7c2ac5726d2d4e0afdc';
+// Connector/db drawer form fields + buttons restyled to the Ask Lattice composer
+// aesthetic (.conn-field input/select fill + radius + accent focus; .conn-or
+// divider; .conn-form-actions button polish).
+const ORIGINAL_LENGTH = 114414;
+const ORIGINAL_SHA256 = 'b9b3877646be9d040240d97b16fb68bd8a9d9a635298a240ea74c982fff6b51b';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
