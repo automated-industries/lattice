@@ -64,25 +64,23 @@ test('"Add a Connector" opens the connectors dialog', async ({ page }) => {
   await expect(page.locator('#connectors-dialog-body')).toContainText('Jira');
 });
 
-test('the Files object page is a folder graph and folders drill in', async ({ page }) => {
+test('the Files object page is a table and folders drill in', async ({ page }) => {
   const res = await page.request.post(gui.url + '/api/sources/roots', {
     data: { path: srcDir, kind: 'folder' },
   });
   expect(res.ok()).toBeTruthy();
 
-  // The Files object page (#/fs/files) shows the registered folder root as a node.
+  // The Files object page (#/fs/files) lists the registered folder root as a table row.
   await page.goto(gui.url + '#/fs/files');
-  await expect(page.locator('.object-graph')).toBeVisible({ timeout: 5000 });
-  const folderNode = page.locator('g.ognode-folder').first();
-  await expect(folderNode).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('table.fs-files-table')).toBeVisible({ timeout: 5000 });
+  const folderLink = page.locator('.fs-files-table a[href^="#/folder/"]').first();
+  await expect(folderLink).toBeVisible({ timeout: 5000 });
 
-  // Drilling into the folder → #/folder/… shows its sub-folder + file as nodes,
-  // and the breadcrumb runs through Files.
-  await folderNode.click();
+  // Drilling into the folder → #/folder/… lists its sub-folder + file as table rows.
+  await folderLink.click();
   await expect.poll(() => page.evaluate(() => location.hash)).toContain('#/folder/');
-  await expect(page.locator('g.ognode-folder').first()).toBeVisible({ timeout: 5000 }); // the 'sub' folder
-  await expect(page.locator('g.ognode-file').first()).toBeVisible(); // note.txt
-  await expect(page.locator('.fs-crumbs')).toContainText('Files');
+  await expect(page.locator('table.fs-files-table')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.fs-files-table')).toContainText('note.txt');
 });
 
 // Regression: the collapsible group header must be the outermost (furthest-left)
