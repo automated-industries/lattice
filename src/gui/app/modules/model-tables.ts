@@ -69,16 +69,6 @@ export const modelTablesJs = `
       return tables.map(function (t) {
         var d = displayFor(t.name);
         var cols = t.columns || [];
-        // Outgoing references: each belongsTo is an FK column pointing at a parent
-        // table. These drive the table + field lineage (this table draws FROM them).
-        var refs = [];
-        var rels = t.relations || {};
-        Object.keys(rels).forEach(function (k) {
-          var r = rels[k];
-          if (r && r.type === 'belongsTo' && r.table) {
-            refs.push({ field: r.foreignKey || k, target: r.table });
-          }
-        });
         return {
           name: t.name,
           tier: mtClassifyTier(t),
@@ -86,7 +76,6 @@ export const modelTablesJs = `
           icon: d.icon,
           rowCount: typeof t.rowCount === 'number' ? t.rowCount : null,
           neverShare: !!t.neverShare,
-          refs: refs,
           fields: cols.map(function (col) {
             var concept = mtConceptFor(col);
             var ftype = (t.fieldTypes && t.fieldTypes[col]) || (t.columnTypes && t.columnTypes[col]) || '';
@@ -97,22 +86,30 @@ export const modelTablesJs = `
     }
 
     // ── Lineage (ported pattern: adjacency + up/down-stream traversal) ───────
-    // Build forward/back adjacency from the entities' FK references. A belongsTo
-    // (this.fk → parent.id) means data flows parent → this, so the parent is
-    // UPSTREAM (a source) and this is DOWNSTREAM (a consumer). Field-level lineage
-    // is the same edge at column granularity: this.<fk> ← parent.id.
-    function mtLineage(entities) {
+    // Built from the SAME server-computed edges the graph uses (/api/graph?schema=1)
+    // — NOT the client's entity.relations, which a cloud member never receives
+    // (relations live in the owner's config). A belongsTo edge is source(child,
+    // FK holder) → target(parent), so the parent is UPSTREAM (a source) of the
+    // child and the child is DOWNSTREAM (a consumer) of the parent. many-to-many
+    // is a symmetric peer link, shown on both sides.
+    function mtLineage(entities, edges) {
       var byName = {};
       entities.forEach(function (e) { byName[e.name] = e; });
       var upstream = {}; // name → [{ table, field }] it references (its sources)
       var downstream = {}; // name → [{ table, field }] that reference it (its consumers)
-      entities.forEach(function (e) {
-        upstream[e.name] = upstream[e.name] || [];
-        e.refs.forEach(function (r) {
-          if (!byName[r.target]) return; // skip refs to junctions/hidden tables
-          upstream[e.name].push({ table: r.target, field: r.field });
-          (downstream[r.target] = downstream[r.target] || []).push({ table: e.name, field: r.field });
-        });
+      entities.forEach(function (e) { upstream[e.name] = []; downstream[e.name] = []; });
+      (edges || []).forEach(function (ed) {
+        var s = String(ed.source).replace(/^table:/, '');
+        var t = String(ed.target).replace(/^table:/, '');
+        var via = ed.label || '';
+        if (!byName[s] || !byName[t] || s === t) return;
+        if (ed.type === 'belongsTo') {
+          upstream[s].push({ table: t, field: via });
+          downstream[t].push({ table: s, field: via });
+        } else if (ed.type === 'manyToMany') {
+          downstream[s].push({ table: t, field: via });
+          downstream[t].push({ table: s, field: via });
+        }
       });
       return { upstream: upstream, downstream: downstream, byName: byName };
     }
@@ -152,11 +149,28 @@ export const modelTablesJs = `
     }
     function mtSetLevel(v) { try { window.localStorage.setItem('lattice.modeltables.level', v); } catch (e) {} }
 
+    // Cache the (tiny, schema-only) graph edges across re-renders so toggling the
+    // Entity/Field view doesn't refetch. Cleared implicitly on workspace switch
+    // because the whole view is rebuilt.
+    var mtEdgesCache = null;
     function renderModelTables(host) {
+      if (!host) return;
+      if (mtEdgesCache) { mtRenderTables(host, mtEdgesCache); return; }
+      fetchJson('/api/graph?schema=1')
+        .then(function (g) { mtEdgesCache = (g && g.edges) || []; mtRenderTables(host, mtEdgesCache); })
+        .catch(function () { mtRenderTables(host, []); });
+    }
+
+    function mtRenderTables(host, edges) {
+      // Re-resolve the live mount by id: the edges fetch is async, and a route
+      // re-render in the meantime can replace #model-tables-host — filling the
+      // passed (now-detached) node would silently render into nothing.
+      var live = document.getElementById('model-tables-host');
+      if (live) host = live;
       if (!host) return;
       var entities = mtBuildModel();
       var caveats = mtCaveats(entities);
-      var lineage = mtLineage(entities);
+      var lineage = mtLineage(entities, edges);
       var level = mtLevel();
 
       if (!entities.length) {
