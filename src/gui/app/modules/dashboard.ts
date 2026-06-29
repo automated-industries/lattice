@@ -919,7 +919,14 @@ export const dashboardJs = `    // ───────────────
       var parts = ['<a href="#/tables">Tables</a>'];
       var t0 = segs[0];
       var prefix = '#/fs/' + encodeURIComponent(t0);
-      parts.push('<a href="' + prefix + '">' + escapeHtml(displayFor(t0).label) + '</a>');
+      // An artifact (a file carrying an artifact_type) reads as its own "Artifacts"
+      // object, so its record breadcrumb roots at Artifacts rather than Files.
+      var leafNode = (crumbs || []).filter(function (c) { return c.type === 'node'; }).pop();
+      if (t0 === 'files' && leafNode && leafNode.row && leafNode.row.artifact_type) {
+        parts.push('<a href="#/fs/artifacts">Artifacts</a>');
+      } else {
+        parts.push('<a href="' + prefix + '">' + escapeHtml(displayFor(t0).label) + '</a>');
+      }
       (crumbs || []).forEach(function (c) {
         if (c.type === 'node') {
           prefix += '/' + encodeURIComponent(c.id);
@@ -971,6 +978,9 @@ export const dashboardJs = `    // ───────────────
       var topLevel = segs.length === 1;
       // Files keep their bespoke file-list table (folders + loose files).
       if (topLevel && segs[0] === 'files') { renderFilesRootView(content); return; }
+      // Artifacts = the subset of files carrying an artifact_type, shown as their
+      // own object/table (Tables ▸ Artifacts), not buried under Files.
+      if (topLevel && segs[0] === 'artifacts') { renderArtifactsView(content); return; }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
       crumbsP.then(function (crumbs) {
         var table, rowsP;
@@ -1033,6 +1043,54 @@ export const dashboardJs = `    // ───────────────
       }).catch(function (err) {
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // Artifacts object page: the files that carry an artifact_type, rendered as a
+    // normal rows table (mirroring the object page), each row opening the file
+    // record. The breadcrumb roots at Artifacts (see fsBreadcrumb).
+    function renderArtifactsView(content) {
+      var myGen = renderGen;
+      fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description'))
+        .then(function (resp) {
+          if (myGen !== renderGen) return; // superseded by a newer navigation
+          var rows = ((resp && resp.rows) || []).filter(function (r) { return !r.deleted_at && r.artifact_type; });
+          var d = displayFor('artifacts');
+          var cols = objRowCols(tableByName('files'));
+          var thead = cols.map(function (c) { return '<th>' + escapeHtml(fieldLabel(c)) + '</th>'; }).join('');
+          var body = rows.map(function (r) {
+            var href = '#/fs/files/' + encodeURIComponent(r.id);
+            var cells = cols.map(function (c, i) {
+              var v = fsCellText('files', r, c);
+              if (i === 0) {
+                v = '<a href="' + href + '">' + (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
+              }
+              return '<td>' + v + '</td>';
+            }).join('');
+            return '<tr class="fs-row-click" data-href="' + href + '">' + cells + '</tr>';
+          }).join('');
+          var tableHtml = rows.length
+            ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
+            : '<div class="fs-empty" style="padding:24px">Nothing created yet.</div>';
+          content.innerHTML =
+            fsBreadcrumb(['artifacts'], []) +
+            '<div class="view-header">' +
+              '<span class="entity-icon">' + d.icon + '</span>' +
+              '<h1>' + escapeHtml(d.label) + '</h1>' +
+              '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
+            '</div>' +
+            tableHtml;
+          content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
+            tr.addEventListener('click', function (ev) {
+              if (ev.target && ev.target.closest && ev.target.closest('a')) return;
+              var h = tr.getAttribute('data-href');
+              if (h) location.hash = h;
+            });
+          });
+        })
+        .catch(function (err) {
+          if (myGen !== renderGen) return;
+          content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+        });
     }
 
     // Columns to show in the object rows table: the object's own fields, minus
