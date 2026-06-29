@@ -7,22 +7,22 @@
 // stageFiles); inserted before createDatabaseWizardJs.
 export const askLatticeJs = `
     function askLatticePanel() { return document.getElementById('ask-lattice-panel'); }
+    function askLatticeOpen() { var p = askLatticePanel(); return !!p && p.classList.contains('open'); }
     function openAskLattice() {
       var panel = askLatticePanel(); if (!panel) return;
-      panel.hidden = false;
+      panel.classList.add('open'); // CSS animates it in from the top-right
       var trig = document.getElementById('ask-lattice-trigger');
       if (trig) trig.setAttribute('aria-expanded', 'true');
       var input = document.getElementById('chat-input');
       if (input) setTimeout(function () { input.focus(); }, 0);
     }
     function closeAskLattice() {
-      var panel = askLatticePanel(); if (panel) panel.hidden = true;
+      var panel = askLatticePanel(); if (panel) panel.classList.remove('open'); // animates out
       var trig = document.getElementById('ask-lattice-trigger');
       if (trig) trig.setAttribute('aria-expanded', 'false');
     }
     function toggleAskLattice() {
-      var panel = askLatticePanel(); if (!panel) return;
-      if (panel.hidden) openAskLattice(); else closeAskLattice();
+      if (askLatticeOpen()) closeAskLattice(); else openAskLattice();
     }
 
     function initAskLattice() {
@@ -40,7 +40,19 @@ export const askLatticeJs = `
       if (!window.__askLatticeEsc) {
         window.__askLatticeEsc = true;
         document.addEventListener('keydown', function (e) {
-          if (e.key === 'Escape') { var p = askLatticePanel(); if (p && !p.hidden) closeAskLattice(); }
+          if (e.key === 'Escape' && askLatticeOpen()) closeAskLattice();
+        });
+      }
+      // Clicking anywhere outside the panel (and not on the trigger) collapses it.
+      if (!window.__askLatticeOutside) {
+        window.__askLatticeOutside = true;
+        document.addEventListener('pointerdown', function (e) {
+          if (!askLatticeOpen()) return;
+          var panel = askLatticePanel();
+          var trigEl = document.getElementById('ask-lattice-trigger');
+          if (panel && panel.contains(e.target)) return;
+          if (trigEl && trigEl.contains(e.target)) return;
+          closeAskLattice();
         });
       }
       initAskLatticeDragDrop();
