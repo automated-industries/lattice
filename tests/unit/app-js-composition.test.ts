@@ -43,9 +43,10 @@ import { appJs } from '../../src/gui/app/script.js';
 // removed; the ingest animation feeds the live handle); and the data-provenance
 // module (renderProvenance / renderProvenancePanel + the source graph/table
 // views). Pinned length + hash recomputed for the merged inline host.
-// (Bump: the data-provenance back breadcrumb now returns to the Brain Graph.)
+// (Bump: GA decoupled from the prod website property — reads window.__LATTICE_GA_ID,
+// default opt-in — so the local app no longer inflates the website's unique users.)
 const ORIGINAL_LENGTH = 788073;
-const ORIGINAL_SHA256 = 'ff9d37c7d3e85419a80858f6ff52603c4050ddc14f8d3000cbd24bbfd5182d47';
+const ORIGINAL_SHA256 = 'aef45417ec33dce56742938f9499d5c306663d8ac16c8b46787eef787af27604';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

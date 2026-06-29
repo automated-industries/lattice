@@ -370,10 +370,17 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'asset not found' }, 404);
       return true;
     }
-    const mime = GUI_ASSET_MIME[extname(target).toLowerCase()] ?? 'application/octet-stream';
+    const ext = extname(target).toLowerCase();
+    const mime = GUI_ASSET_MIME[ext] ?? 'application/octet-stream';
+    // The bundled .mjs/.js (force-graph, voice worker) are rebuilt at a STABLE url
+    // on every build, so they MUST revalidate — an `immutable` cache served a stale
+    // renderer for a full year (masking shipped GUI fixes until a hard reload). The
+    // large vendored binaries (ONNX-Runtime .wasm) are content-stable, so they keep
+    // the long immutable cache (a 60 MB blob must not re-download each load).
+    const revalidate = ext === '.mjs' || ext === '.js';
     res.writeHead(200, {
       'content-type': mime,
-      'cache-control': 'public, max-age=31536000, immutable',
+      'cache-control': revalidate ? 'no-cache' : 'public, max-age=31536000, immutable',
       'x-content-type-options': 'nosniff',
       // The worker uses WASM threads/SharedArrayBuffer when the browser allows it;
       // these headers don't hurt single-threaded WASM and enable the threaded path.

@@ -572,13 +572,13 @@ export const dataModelJs = `    // ───────────────
     }
 
     function renderPreferencesPanel(host) {
-      var prefs = state.preferences || { show_system_tables: false, analytics: true };
+      var prefs = state.preferences || { show_system_tables: false, analytics: false };
       host.innerHTML =
         '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
           '<h3 style="margin:0 0 10px">Preferences</h3>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
             '<input type="checkbox" id="pref-analytics"' +
-              (prefs.analytics !== false ? ' checked' : '') + '>' +
+              (prefs.analytics === true ? ' checked' : '') + '>' +
             '<span>Send anonymous analytics</span>' +
           '</label>' +
           '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +

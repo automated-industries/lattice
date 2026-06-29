@@ -9,7 +9,9 @@ import { guiAppHtml } from '../../src/gui/app.js';
  * while opted out, lazy single gtag.js load on consent, the GA kill switch, and
  * the anonymization contract (sanitize + synthetic pageView).
  */
-const MEASUREMENT_ID = 'G-3M1RPJ4ZB3';
+// A TEST-ONLY id injected via window.__LATTICE_GA_ID — the module no longer
+// hardcodes the production website property (that pollution was the bug).
+const MEASUREMENT_ID = 'G-TEST1234567';
 const DISABLE_FLAG = 'ga-disable-' + MEASUREMENT_ID;
 
 interface GA {
@@ -28,6 +30,9 @@ function bootAnalytics(): GA {
   w.dataLayer = undefined;
   w.LatticeGA = undefined;
   w[DISABLE_FLAG] = undefined; // falsy reset (no-dynamic-delete); GA treats it as "not disabled"
+  // Inject the GA property id the way the server would (empty by default ⇒ no GA);
+  // the module reads window.__LATTICE_GA_ID rather than a hardcoded property.
+  w.__LATTICE_GA_ID = MEASUREMENT_ID;
   // The shipped module is an IIFE that attaches window.LatticeGA. Execute it in
   // this jsdom global (it needs a real document/window/navigator).
 
@@ -46,8 +51,11 @@ function events(): unknown[][] {
 }
 
 describe('#4 Google Analytics — static contract', () => {
-  it('analyticsJs carries the measurement id + privacy flags', () => {
-    expect(analyticsJs).toContain(MEASUREMENT_ID);
+  it('analyticsJs reads an injectable id (no hardcoded property) + privacy flags', () => {
+    // The id comes from window.__LATTICE_GA_ID (empty by default); the website's
+    // production property must never be hardcoded into the local app again.
+    expect(analyticsJs).toContain('window.__LATTICE_GA_ID');
+    expect(analyticsJs).not.toContain('G-3M1RPJ4ZB3');
     expect(analyticsJs).toContain('send_page_view: false');
     expect(analyticsJs).toContain('allow_google_signals: false');
     expect(analyticsJs).toContain('allow_ad_personalization_signals: false');
@@ -58,6 +66,24 @@ describe('#4 Google Analytics — static contract', () => {
     // The inlined IIFE references the URL (loaded lazily on consent), but there
     // must be NO static <script src="...googletagmanager..."> tag.
     expect(guiAppHtml).not.toMatch(/<script[^>]+src=["']https:\/\/www\.googletagmanager/i);
+  });
+
+  it('loads NOTHING when no GA property id is configured — even with consent', () => {
+    // Regression: a local install ships with no __LATTICE_GA_ID, so it must never
+    // contact GA (the duplicate-users bug was the local app reporting into the
+    // website property by default).
+    const w = window as unknown as Record<string, unknown>;
+    document.head.querySelectorAll('script').forEach((s) => {
+      s.remove();
+    });
+    w.dataLayer = undefined;
+    w.LatticeGA = undefined;
+    w.__LATTICE_GA_ID = ''; // no property configured (the default)
+    (0, eval)(analyticsJs);
+    const ga = w.LatticeGA as GA;
+    ga.init(true); // consent ON
+    ga.track('app_open', {});
+    expect(gtagScriptCount()).toBe(0); // empty id ⇒ no gtag.js injected, no network
   });
 
   it('the curated event set is wired into the embedded SPA (no silent drop)', () => {
