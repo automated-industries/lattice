@@ -196,6 +196,28 @@ describe('GUI graph builder', () => {
     ).toBe(true);
   });
 
+  it('caps row/file detail nodes for large workspaces but keeps the full table topology', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const full = buildGuiGraph(configPath, outputDir);
+    const capped = buildGuiGraph(configPath, outputDir, {
+      maxDetailNodes: 1,
+      maxEntityNodesPerTable: 1,
+    });
+    const tableNodes = (g: typeof full) => g.nodes.filter((n) => n.type === 'table').length;
+    const detailNodes = (g: typeof full) => g.nodes.filter((n) => n.type !== 'table').length;
+    // The cap is reported, not silent.
+    expect(capped.truncated).toBe(true);
+    expect(capped.totalEntities ?? 0).toBeGreaterThan(1);
+    // Table topology always renders in full (the schema is the point of the graph).
+    expect(tableNodes(capped)).toBe(tableNodes(full));
+    // Row/file detail nodes are bounded well below the uncapped count.
+    expect(detailNodes(capped)).toBeGreaterThanOrEqual(1);
+    expect(detailNodes(capped)).toBeLessThanOrEqual(2);
+    expect(detailNodes(capped)).toBeLessThan(detailNodes(full));
+    // The default (no cap option) leaves a small fixture untouched.
+    expect(full.truncated).toBe(false);
+  });
+
   it('adds extraTables (native entities / team-shared) as graph nodes', () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const graph = buildGuiGraph(configPath, outputDir, {
