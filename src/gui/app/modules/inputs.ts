@@ -44,7 +44,7 @@ export const inputsJs = `
       var add = document.getElementById('src-add-database');
       if (add && !add.__wired) {
         add.__wired = true;
-        add.addEventListener('click', openDbConnectModal);
+        add.addEventListener('click', openDbConnectDrawer);
       }
     }
 
@@ -73,42 +73,63 @@ export const inputsJs = `
         .catch(function (e) { showToast('Disconnect failed: ' + (e && e.message ? e.message : e), {}); if (rowEl) rowEl.style.opacity = ''; });
     }
 
-    // Connect modal — connection string OR host/user/password. Reuses the shared
-    // .modal-backdrop / .modal chrome.
-    function openDbConnectModal() {
-      var backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      document.body.appendChild(backdrop);
-      function close() { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); }
+    // Connect-a-database — the SAME left side-drawer + form styling as Add a
+    // Connector (the connector dialog chrome + .conn-form/.conn-field classes), so
+    // the two dialogs look identical. Connection string OR host/user/password.
+    var dbDrawerWired = false;
+    function closeDbConnectDrawer() {
+      var dlg = document.getElementById('db-connect-dialog');
+      var back = document.getElementById('db-connect-backdrop');
+      if (!dlg || !back) return;
+      dlg.classList.remove('open');
+      back.classList.remove('open');
+      window.setTimeout(function () { dlg.hidden = true; back.hidden = true; }, 220);
+    }
+    function openDbConnectDrawer() {
+      var dlg = document.getElementById('db-connect-dialog');
+      var back = document.getElementById('db-connect-backdrop');
+      var body = document.getElementById('db-connect-body');
+      if (!dlg || !back || !body) return;
       function field(label, id, type, ph) {
-        return '<label class="field-label">' + escapeHtml(label) + '</label>' +
+        return '<label class="conn-field">' + escapeHtml(label) +
           '<input type="' + type + '" id="' + id + '"' + (ph ? ' placeholder="' + escapeHtml(ph) + '"' : '') +
-          ' autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="width:100%;margin-bottom:8px">';
+          ' autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true"></label>';
       }
-      backdrop.innerHTML =
-        '<div class="modal">' +
-          '<div class="modal-head">Connect a database</div>' +
-          '<div class="modal-body">' +
-            '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">Connect an external Postgres database (AWS RDS, Supabase, or generic Postgres). Its tables are imported as a data source.</p>' +
-            field('Connection string', 'db-cs', 'password', 'postgres://user:pass@host:5432/db') +
-            '<div style="text-align:center;color:var(--text-muted);font-size:12px;margin:6px 0">— or —</div>' +
-            field('Host', 'db-host', 'text', 'db.example.com') +
-            field('Port', 'db-port', 'text', '5432') +
-            field('User', 'db-user', 'text', '') +
-            field('Password', 'db-pass', 'password', '') +
-            field('Database', 'db-name', 'text', '') +
-            field('Schema (optional)', 'db-schema', 'text', 'public') +
-            '<div id="db-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+      body.innerHTML =
+        '<div class="conn-lead">Connect an external Postgres database (AWS RDS, Supabase, or generic Postgres). Its tables are imported as a data source.</div>' +
+        '<div class="conn-card"><div class="conn-form">' +
+          field('Connection string', 'db-cs', 'password', 'postgres://user:pass@host:5432/db') +
+          '<div class="conn-or">— or —</div>' +
+          field('Host', 'db-host', 'text', 'db.example.com') +
+          field('Port', 'db-port', 'text', '5432') +
+          field('User', 'db-user', 'text', '') +
+          field('Password', 'db-pass', 'password', '') +
+          field('Database', 'db-name', 'text', '') +
+          field('Schema (optional)', 'db-schema', 'text', 'public') +
+          '<div id="db-msg" class="conn-msg"></div>' +
+          '<div class="conn-form-actions">' +
+            '<button class="btn" id="db-cancel">Cancel</button>' +
+            '<button class="btn primary" id="db-ok">Connect</button>' +
           '</div>' +
-          '<div class="modal-foot">' +
-            '<button class="btn" data-act="cancel">Cancel</button>' +
-            '<button class="btn primary" data-act="ok">Connect</button>' +
-          '</div>' +
-        '</div>';
-      backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
-      var okBtn = backdrop.querySelector('[data-act="ok"]');
-      function val(id) { var el = backdrop.querySelector('#' + id); return el ? el.value.trim() : ''; }
-      function setMsg(t) { var m = backdrop.querySelector('#db-msg'); if (m) m.textContent = t; }
+        '</div></div>';
+      back.hidden = false;
+      dlg.hidden = false;
+      window.requestAnimationFrame(function () { dlg.classList.add('open'); back.classList.add('open'); });
+      if (!dbDrawerWired) {
+        dbDrawerWired = true;
+        var closeBtn = document.getElementById('db-connect-close');
+        if (closeBtn) closeBtn.addEventListener('click', closeDbConnectDrawer);
+        back.addEventListener('click', closeDbConnectDrawer);
+        document.addEventListener('keydown', function (e) {
+          if (e.key !== 'Escape') return;
+          var d = document.getElementById('db-connect-dialog');
+          if (d && !d.hidden) closeDbConnectDrawer();
+        });
+      }
+      document.getElementById('db-cancel').addEventListener('click', closeDbConnectDrawer);
+      var okBtn = document.getElementById('db-ok');
+      function val(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; }
+      function setMsg(t) { var m = document.getElementById('db-msg'); if (m) m.textContent = t; }
       okBtn.addEventListener('click', function () {
         var payload = {
           connectionString: val('db-cs'),
@@ -128,7 +149,7 @@ export const inputsJs = `
           .then(function (res) {
             okBtn.disabled = false;
             if (!res.ok) { setMsg('Failed: ' + (res.body.error || 'could not connect')); return; }
-            close();
+            closeDbConnectDrawer();
             showToast('Connected ' + (res.body.displayName || 'database') + ' — tables imported.', {});
             refreshAfterDbImport();
           })

@@ -85,10 +85,23 @@ export const settingsDrawerCss = `    /* ── Settings drawer (slide-over) ─
     }
     .conn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .conn-card-title { font-size: 14px; font-weight: 600; }
-    .conn-form { display: flex; flex-direction: column; gap: 8px; }
-    .conn-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-muted); }
-    .conn-field input { background: var(--surface-2); }
-    .conn-form-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+    .conn-form { display: flex; flex-direction: column; gap: 10px; }
+    /* Fields + buttons match the Ask Lattice composer (surface-2 fill, strong
+       border, 8px radius, accent focus glow) — not default browser controls. */
+    .conn-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+    .conn-field input,
+    .conn-field select {
+      width: 100%; box-sizing: border-box;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      padding: 8px 10px; font: inherit; font-size: 13.5px; line-height: 1.4;
+    }
+    .conn-field input:focus,
+    .conn-field select:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
+    .conn-or { text-align: center; color: var(--text-muted); font-size: 12px; margin: 2px 0; }
+    .conn-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+    .conn-form-actions .btn { height: 36px; padding: 0 16px; border-radius: 8px; font-weight: 600; }
+    .conn-form-actions .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
     .conn-help { font-size: 12px; color: var(--text-muted); }
     .conn-connected { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .conn-status { font-size: 12px; text-transform: capitalize; }
