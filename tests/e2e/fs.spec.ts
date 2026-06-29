@@ -235,35 +235,3 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
   await page.keyboard.press('Escape');
   await expect(drawer).not.toHaveClass(/open/);
 });
-
-test('the simple-view create tile opens an inline form that makes a new object with a many-to-many link', async ({
-  page,
-}) => {
-  await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
-  await createRow(gui.url, 'tags', { label: 'fiction' });
-
-  await page.goto(gui.url);
-  await page.evaluate(() => {
-    window.location.hash = '#/fs/books';
-  });
-
-  // The "+ New" button in the object-graph header navigates to an INLINE create
-  // form (no modal), styled like the item page (#/fs/books/new).
-  await page.locator('.view-header a.btn').first().click();
-  const form = page.locator('.fs-create-form');
-  await expect(form).toBeVisible();
-  await expect(page.locator('.modal')).toHaveCount(0);
-  await form.locator('input[name="title"]').fill('Tidewater');
-  // belongsTo author + a many-to-many tag link (select by index — `tags` have
-  // no name/title so the option text is the id; index 1 is the first real row).
-  await form.locator('select[name="author_id"]').selectOption({ index: 1 });
-  await form.locator('.fs-link-select').first().selectOption({ index: 1 });
-  await page.locator('#fs-create-save').click();
-
-  // Lands on the new object's page…
-  await expect(page.locator('.view-header h1').filter({ hasText: 'Tidewater' })).toBeVisible();
-  // …and the M:N junction row was created from the staged link.
-  const res = await page.request.get(gui.url + '/api/tables/book_tags/rows');
-  const body = (await res.json()) as { rows: unknown[] };
-  expect(body.rows.length).toBe(1);
-});

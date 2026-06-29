@@ -88,8 +88,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // tabs); renderBrainGraph/renderModelTablesView render a single view into #content
 // (the setModelView/renderModelBody + dynamic-tab helpers were removed → net
 // shrink). Breadcrumb "Brain Graph" → "Graph".
-const ORIGINAL_LENGTH = 817062;
-const ORIGINAL_SHA256 = '82368304341c9ccb85ca020172891ec4b3e840f291866b2bda6e543be489837f';
+// Live-review polish batch: Tables explorer gains table + field lineage (upstream
+// sources / downstream consumers + a "+ Wire" link) and drops the dead Show-tier
+// chips; the Markdown tree gets dedicated styles; the brain graph is fetched
+// schema-only (?schema=1 → table topology, no row nodes — instant + scalable) with
+// a settle-then-reveal spinner (no off-centre jump) and the "N objects" note
+// removed; the inline record-create ("New <entity>") feature is removed entirely.
+const ORIGINAL_LENGTH = 814539;
+const ORIGINAL_SHA256 = '7820f73707326193fa4ab36ac96c1d12bb11f36ea00503399986fa2e7d390239';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

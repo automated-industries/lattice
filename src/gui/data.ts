@@ -330,6 +330,14 @@ export interface BuildGuiGraphOptions {
   maxDetailNodes?: number;
   /** Per-table cap on row nodes, so one huge table can't consume the whole budget. Default 50. */
   maxEntityNodesPerTable?: number;
+  /**
+   * Schema-only: emit the table topology (one node per table + relationship edges)
+   * with NO row/file detail nodes at all. The GUI's force graph is a data MODEL
+   * view — it only ever draws table nodes — so this skips generating the detail
+   * nodes it would otherwise discard, keeping the payload tiny + scalable no matter
+   * how many rows the workspace holds.
+   */
+  schemaOnly?: boolean;
 }
 
 /**
@@ -445,6 +453,19 @@ export function buildGuiGraph(
         }
       }
     }
+  }
+
+  // Schema-only (the GUI's data-model graph): return the table topology with no
+  // row/file detail nodes — tiny payload, scales to any row count. Filter edges
+  // for referential consistency, same as the full path below.
+  if (options.schemaOnly) {
+    const tableNodeIds = new Set(nodes.keys());
+    return {
+      nodes: [...nodes.values()],
+      edges: [...edges.values()].filter(
+        (e) => tableNodeIds.has(e.source) && tableNodeIds.has(e.target),
+      ),
+    };
   }
 
   // Bound the row/file "detail" nodes so a large workspace (a big cloud) doesn't

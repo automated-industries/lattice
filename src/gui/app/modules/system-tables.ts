@@ -52,9 +52,11 @@ export const systemTablesJs = `    // ──────────────
       if (!content) return;
       dmActiveTable = null; // no inline editor in the center view
       // Graph view — keep the #graph-mount id the live renderer + ingest animation expect.
+      // A neutral spinner (no placeholder copy) shows until the graph has settled +
+      // centred; the force renderer keeps its own spinner once it takes over the mount.
       content.innerHTML =
         '<div class="brain-graph"><div id="graph-mount">' +
-          '<div class="muted" style="padding:24px">A live force-directed graph that builds as Claude streams.</div>' +
+          '<div class="graph-loading"><div class="graph-spinner"></div></div>' +
         '</div></div>';
       renderSchemaGraph();
     }
@@ -146,7 +148,7 @@ export const systemTablesJs = `    // ──────────────
     function renderSchemaGraph() {
       var mount = document.getElementById('graph-mount');
       if (!mount) return;
-      fetchJson('/api/graph').then(function (graph) {
+      fetchJson('/api/graph?schema=1').then(function (graph) {
         var model = buildSchemaModel(graph);
         if (!model.nodes.length) {
           mount.innerHTML = '<div class="muted" style="padding:24px">No objects with data yet. Add files or connect a source to populate the graph.</div>';
@@ -178,20 +180,6 @@ export const systemTablesJs = `    // ──────────────
             },
           });
           if (dmActiveTable) { dmShowEntityEditor(dmActiveTable); schemaGraphHandle.setSelected(dmActiveTable); }
-          // Large workspaces cap the row/file detail nodes (a force graph can't
-          // lay out tens of thousands). Surface it rather than silently truncate;
-          // the full schema is in the Tables view.
-          if (graph.truncated) {
-            liveMount.style.position = 'relative';
-            var tnote = document.createElement('div');
-            tnote.className = 'graph-trunc-note';
-            tnote.style.cssText = 'position:absolute;bottom:10px;left:50%;transform:translateX(-50%);' +
-              'background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 12px;' +
-              'font-size:12px;color:var(--text-muted);box-shadow:var(--shadow-1);z-index:5;white-space:nowrap';
-            tnote.textContent = 'Large workspace (' + (graph.totalEntities || 0) +
-              ' objects) — graph shows the schema + a sample. Use Tables for the full list.';
-            liveMount.appendChild(tnote);
-          }
         }).catch(function (err) {
           var m = document.getElementById('graph-mount');
           if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';

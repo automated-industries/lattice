@@ -22,7 +22,7 @@ export const graphIngestAnimationJs = `
       // Need both the mounted view and a live handle to feed.
       if (!document.getElementById('graph-mount') || !schemaGraphHandle) return;
       var myGen = renderGen;
-      fetchJson('/api/graph')
+      fetchJson('/api/graph?schema=1')
         .then(function (graph) {
           if (renderGen !== myGen) return; // navigated away mid-fetch
           if (!document.getElementById('graph-mount') || !schemaGraphHandle) return;

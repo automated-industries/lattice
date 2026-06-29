@@ -69,6 +69,16 @@ export const modelTablesJs = `
       return tables.map(function (t) {
         var d = displayFor(t.name);
         var cols = t.columns || [];
+        // Outgoing references: each belongsTo is an FK column pointing at a parent
+        // table. These drive the table + field lineage (this table draws FROM them).
+        var refs = [];
+        var rels = t.relations || {};
+        Object.keys(rels).forEach(function (k) {
+          var r = rels[k];
+          if (r && r.type === 'belongsTo' && r.table) {
+            refs.push({ field: r.foreignKey || k, target: r.table });
+          }
+        });
         return {
           name: t.name,
           tier: mtClassifyTier(t),
@@ -76,12 +86,50 @@ export const modelTablesJs = `
           icon: d.icon,
           rowCount: typeof t.rowCount === 'number' ? t.rowCount : null,
           neverShare: !!t.neverShare,
+          refs: refs,
           fields: cols.map(function (col) {
             var concept = mtConceptFor(col);
             var ftype = (t.fieldTypes && t.fieldTypes[col]) || (t.columnTypes && t.columnTypes[col]) || '';
             return { name: col, cls: MT_CONCEPTS[concept] || 'state', type: ftype };
           }),
         };
+      });
+    }
+
+    // ── Lineage (ported pattern: adjacency + up/down-stream traversal) ───────
+    // Build forward/back adjacency from the entities' FK references. A belongsTo
+    // (this.fk → parent.id) means data flows parent → this, so the parent is
+    // UPSTREAM (a source) and this is DOWNSTREAM (a consumer). Field-level lineage
+    // is the same edge at column granularity: this.<fk> ← parent.id.
+    function mtLineage(entities) {
+      var byName = {};
+      entities.forEach(function (e) { byName[e.name] = e; });
+      var upstream = {}; // name → [{ table, field }] it references (its sources)
+      var downstream = {}; // name → [{ table, field }] that reference it (its consumers)
+      entities.forEach(function (e) {
+        upstream[e.name] = upstream[e.name] || [];
+        e.refs.forEach(function (r) {
+          if (!byName[r.target]) return; // skip refs to junctions/hidden tables
+          upstream[e.name].push({ table: r.target, field: r.field });
+          (downstream[r.target] = downstream[r.target] || []).push({ table: e.name, field: r.field });
+        });
+      });
+      return { upstream: upstream, downstream: downstream, byName: byName };
+    }
+
+    // Highlight the selected card + its directly connected cards in the tier
+    // columns (the "see how tables are connected" affordance, without a fragile
+    // absolute-positioned edge overlay). Re-applied on every selection.
+    function mtHighlight(name, lineage) {
+      var up = {}, down = {};
+      (lineage.upstream[name] || []).forEach(function (x) { up[x.table] = 1; });
+      (lineage.downstream[name] || []).forEach(function (x) { down[x.table] = 1; });
+      document.querySelectorAll('.mt-card').forEach(function (c) {
+        var t = c.getAttribute('data-table');
+        c.classList.remove('mt-sel', 'mt-up', 'mt-down');
+        if (t === name) c.classList.add('mt-sel');
+        else if (up[t]) c.classList.add('mt-up');
+        else if (down[t]) c.classList.add('mt-down');
       });
     }
 
@@ -103,32 +151,20 @@ export const modelTablesJs = `
       catch (e) { return 'entity'; }
     }
     function mtSetLevel(v) { try { window.localStorage.setItem('lattice.modeltables.level', v); } catch (e) {} }
-    function mtHiddenTiers() {
-      try { return new Set(JSON.parse(window.localStorage.getItem('lattice.modeltables.hidden') || '[]')); }
-      catch (e) { return new Set(); }
-    }
-    function mtSetHiddenTiers(set) {
-      try { window.localStorage.setItem('lattice.modeltables.hidden', JSON.stringify(Array.prototype.slice.call(set))); } catch (e) {}
-    }
 
     function renderModelTables(host) {
       if (!host) return;
       var entities = mtBuildModel();
       var caveats = mtCaveats(entities);
+      var lineage = mtLineage(entities);
       var level = mtLevel();
-      var hidden = mtHiddenTiers();
 
       if (!entities.length) {
         host.innerHTML = '<div class="mt"><div class="muted" style="padding:24px">No tables yet. Add files, connect a source, or connect a database to populate the model.</div></div>';
         return;
       }
 
-      var chips = MT_LAYERS.map(function (l) {
-        return '<button type="button" class="mt-chip mt-chip-' + l.id + (hidden.has(l.id) ? '' : ' on') +
-          '" data-mt-tier="' + l.id + '">' + escapeHtml(l.short) + '</button>';
-      }).join('');
-
-      var tiers = MT_LAYERS.filter(function (l) { return !hidden.has(l.id); }).map(function (l) {
+      var tiers = MT_LAYERS.map(function (l) {
         var ents = entities.filter(function (e) { return e.tier === l.id; });
         var cards = ents.length
           ? ents.map(function (e) { return mtCardHtml(e, level); }).join('')
@@ -146,8 +182,7 @@ export const modelTablesJs = `
               '<button type="button" class="mt-seg-btn' + (level === 'entity' ? ' on' : '') + '" data-mt-level="entity">Entity</button>' +
               '<button type="button" class="mt-seg-btn' + (level === 'field' ? ' on' : '') + '" data-mt-level="field">Field</button>' +
             '</div>' +
-            '<span class="mt-bar-label">Show</span>' +
-            '<div class="mt-chips">' + chips + '</div>' +
+            '<button type="button" class="mt-wire" id="mt-wire-btn" title="Add or edit relationships between tables">+ Wire</button>' +
           '</div>' +
           '<div class="mt-main">' +
             '<div class="mt-tiers">' + tiers + '</div>' +
@@ -158,17 +193,19 @@ export const modelTablesJs = `
       host.querySelectorAll('.mt-seg-btn').forEach(function (b) {
         b.addEventListener('click', function () { mtSetLevel(b.getAttribute('data-mt-level')); renderModelTables(host); });
       });
-      host.querySelectorAll('.mt-chip').forEach(function (b) {
-        b.addEventListener('click', function () {
-          var id = b.getAttribute('data-mt-tier');
-          var h = mtHiddenTiers();
-          if (h.has(id)) h.delete(id); else h.add(id);
-          mtSetHiddenTiers(h);
-          renderModelTables(host);
-        });
-      });
+      // "+ Wire" opens the relationship editor (Settings → Data Model). A button +
+      // JS nav (not a static href) so the data-model editor stays drawer-reached.
+      var wireBtn = host.querySelector('#mt-wire-btn');
+      if (wireBtn) wireBtn.addEventListener('click', function () { location.hash = '#/settings/data-model'; });
       host.querySelectorAll('.mt-card').forEach(function (b) {
-        b.addEventListener('click', function () { mtOpenDetail(b.getAttribute('data-table'), entities, caveats); });
+        b.addEventListener('click', function () { mtOpenDetail(b.getAttribute('data-table'), null, entities, caveats, lineage); });
+      });
+      // Field view: clicking a field row traces THAT field's lineage.
+      host.querySelectorAll('.mt-field[data-field]').forEach(function (b) {
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          mtOpenDetail(b.getAttribute('data-table'), b.getAttribute('data-field'), entities, caveats, lineage);
+        });
       });
     }
 
@@ -181,22 +218,56 @@ export const modelTablesJs = `
         '</button>';
       if (level !== 'field') return head;
       var rows = e.fields.map(function (f) {
-        return '<li class="mt-field mt-c-' + f.cls + '"><span class="mt-field-name">' + escapeHtml(f.name) + '</span>' +
+        return '<li class="mt-field mt-c-' + f.cls + '" data-table="' + escapeHtml(e.name) + '" data-field="' + escapeHtml(f.name) +
+          '"><span class="mt-field-name">' + escapeHtml(f.name) + '</span>' +
           (f.type ? '<span class="mt-field-type">' + escapeHtml(f.type) + '</span>' : '') + '</li>';
       }).join('');
       return head + '<ul class="mt-fields">' + rows + '</ul>';
     }
 
-    function mtOpenDetail(name, entities, caveats) {
+    // Detail panel: fields, table lineage (upstream sources / downstream
+    // consumers), and field-level lineage (each FK edge at column granularity).
+    // focusField (optional) highlights one field + narrows the field lineage to
+    // the edges that touch it — tracing the lineage of an individual field.
+    function mtOpenDetail(name, focusField, entities, caveats, lineage) {
       var panel = document.getElementById('mt-detail');
       if (!panel) return;
-      var e = entities.filter(function (x) { return x.name === name; })[0];
+      var e = lineage.byName[name];
       if (!e) { panel.hidden = true; return; }
+      mtHighlight(name, lineage);
       var mine = (caveats || []).filter(function (c) { return c.affects.indexOf(name) !== -1; });
       var fields = e.fields.map(function (f) {
-        return '<div class="mt-detail-field mt-c-' + f.cls + '"><span class="mt-field-name">' + escapeHtml(f.name) + '</span>' +
+        var on = focusField && f.name === focusField ? ' mt-field-focus' : '';
+        return '<div class="mt-detail-field mt-c-' + f.cls + on + '"><span class="mt-field-name">' + escapeHtml(f.name) + '</span>' +
           (f.type ? '<span class="mt-field-type">' + escapeHtml(f.type) + '</span>' : '') + '</div>';
       }).join('');
+
+      var up = lineage.upstream[name] || [];
+      var down = lineage.downstream[name] || [];
+      function labOf(t) { var d = lineage.byName[t]; return d ? d.label : t; }
+      function icOf(t) { var d = lineage.byName[t]; return d ? d.icon : '\\ud83d\\udce6'; }
+      function linChip(x) {
+        return '<button type="button" class="mt-lin-chip" data-lin="' + escapeHtml(x.table) + '">' +
+          '<span class="mt-card-ic">' + icOf(x.table) + '</span>' + escapeHtml(labOf(x.table)) +
+          ' <span class="mt-lin-via">' + escapeHtml(x.field) + '</span></button>';
+      }
+      var upHtml = up.length ? '<div class="mt-detail-sec"><h4>Upstream \\u00b7 sources</h4><div class="mt-lin">' + up.map(linChip).join('') + '</div></div>' : '';
+      var downHtml = down.length ? '<div class="mt-detail-sec"><h4>Downstream \\u00b7 consumers</h4><div class="mt-lin">' + down.map(linChip).join('') + '</div></div>' : '';
+
+      // Field-level lineage edges (this.<fk> → parent.id ; child.<fk> → this.id).
+      var fl = [];
+      up.forEach(function (x) {
+        if (focusField && x.field !== focusField) return;
+        fl.push('<div class="mt-fl"><span class="mt-fl-f">' + escapeHtml(x.field) + '</span> \\u2192 <span class="mt-fl-t">' + escapeHtml(labOf(x.table)) + '</span>.id</div>');
+      });
+      down.forEach(function (x) {
+        if (focusField && focusField !== 'id') return;
+        fl.push('<div class="mt-fl"><span class="mt-fl-t">' + escapeHtml(labOf(x.table)) + '</span>.' + escapeHtml(x.field) + ' \\u2192 <span class="mt-fl-f">id</span></div>');
+      });
+      var flHtml = fl.length
+        ? '<div class="mt-detail-sec"><h4>Field lineage' + (focusField ? ' \\u00b7 ' + escapeHtml(focusField) : '') + '</h4>' + fl.join('') + '</div>'
+        : (focusField ? '<div class="mt-detail-sec"><h4>Field lineage \\u00b7 ' + escapeHtml(focusField) + '</h4><div class="mt-fl mt-fl-none">No upstream/downstream links for this field.</div></div>' : '');
+
       var caveatHtml = mine.length
         ? '<div class="mt-detail-sec mt-caveats"><h4>Caveats</h4>' + mine.map(function (c) {
             return '<div class="mt-caveat"><div class="mt-caveat-label">' + escapeHtml(c.label) + '</div>' +
@@ -209,11 +280,16 @@ export const modelTablesJs = `
           '<span class="mt-detail-title">' + escapeHtml(e.label) + '</span>' +
           '<button type="button" class="mt-detail-close" id="mt-detail-close" aria-label="Close">\\u2715</button></div>' +
         '<div class="mt-detail-sub">table \\u00b7 ' + e.fields.length + ' fields \\u00b7 ' + rows + ' rows</div>' +
+        flHtml + upHtml + downHtml +
         '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>' +
         caveatHtml +
         '<a class="mt-detail-open" href="#/fs/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>';
       panel.hidden = false;
       var close = document.getElementById('mt-detail-close');
-      if (close) close.addEventListener('click', function () { panel.hidden = true; });
+      if (close) close.addEventListener('click', function () { panel.hidden = true; mtHighlight(null, lineage); });
+      // Lineage chips navigate the detail panel to the linked table.
+      panel.querySelectorAll('.mt-lin-chip').forEach(function (b) {
+        b.addEventListener('click', function () { mtOpenDetail(b.getAttribute('data-lin'), null, entities, caveats, lineage); });
+      });
     }
 `;
