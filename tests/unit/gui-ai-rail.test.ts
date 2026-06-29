@@ -1,38 +1,61 @@
 import { describe, it, expect } from 'vitest';
 import { guiAppHtml } from '../../src/gui/app.js';
 
-describe('assistant rail markup + wiring', () => {
-  it('includes the rail DOM hooks', () => {
-    expect(guiAppHtml).toContain('id="assistant-rail"');
+describe('floating Ask Lattice + Outputs markup + wiring', () => {
+  it('includes the floating assistant + Outputs DOM hooks (rail retired)', () => {
+    // The chat moved from a docked rail to a floating "Ask Lattice" panel; the
+    // right column is now the Outputs panel. The chat element IDs are reused inside
+    // the floating panel so the chat client code is unchanged.
+    expect(guiAppHtml).toContain('id="ask-lattice-panel"');
+    expect(guiAppHtml).toContain('id="ask-lattice-trigger"');
     expect(guiAppHtml).toContain('id="rail-feed"');
-    expect(guiAppHtml).toContain('id="rail-resize"');
-    expect(guiAppHtml).toContain('class="assistant-rail"');
+    expect(guiAppHtml).toContain('id="outputs-rail"');
+    expect(guiAppHtml).toContain('id="outputs-resize"');
+    expect(guiAppHtml).toContain('class="outputs"');
+    // The docked rail is gone.
+    expect(guiAppHtml).not.toContain('id="assistant-rail"');
+    expect(guiAppHtml).not.toContain('class="assistant-rail"');
   });
 
-  it('drives the layout grid off the --sidebar-width variable', () => {
-    expect(guiAppHtml).toContain('--sidebar-width');
-    expect(guiAppHtml).toContain('var(--sidebar-width)');
+  it('drives the layout grid off the --outputs-width variable', () => {
+    expect(guiAppHtml).toContain('--outputs-width');
+    expect(guiAppHtml).toContain('var(--outputs-width)');
+    expect(guiAppHtml).not.toContain('--sidebar-width');
   });
 
-  it('wires the multiplexed event stream + resize on boot', () => {
+  it('wires the multiplexed event stream + Outputs resize on boot', () => {
     // Feed/realtime/render events ride ONE WebSocket (`/api/stream`) instead of
     // three SSE streams, so a tab holds a single persistent connection.
     expect(guiAppHtml).toContain("'/api/stream'");
     expect(guiAppHtml).toContain('function startEventStream');
     expect(guiAppHtml).toContain('new WebSocket(');
-    expect(guiAppHtml).toContain('function initRailResize');
+    expect(guiAppHtml).toContain('function initOutputsResize');
     expect(guiAppHtml).toContain('startEventStream();');
-    expect(guiAppHtml).toContain('initRailResize();');
+    expect(guiAppHtml).toContain('initOutputsResize();');
     // The three separate SSE stream openers are gone.
     expect(guiAppHtml).not.toContain("new EventSource('/api/feed/stream')");
   });
 
-  it('wires file ingest (drag-drop + paperclip) into the rail', () => {
+  it('wires file ingest (drag-drop + paperclip) into the floating panel', () => {
     expect(guiAppHtml).toContain('function uploadFile');
-    expect(guiAppHtml).toContain('function initRailDragDrop');
+    expect(guiAppHtml).toContain('function initAskLatticeDragDrop');
     expect(guiAppHtml).toContain("'/api/ingest/upload'");
-    expect(guiAppHtml).toContain('initRailDragDrop();');
+    expect(guiAppHtml).toContain('initAskLattice();');
     expect(guiAppHtml).toContain('id="chat-clip"');
+  });
+
+  it('moves the live activity feed to a header popover (next to version history)', () => {
+    expect(guiAppHtml).toContain('id="activity-pill"');
+    expect(guiAppHtml).toContain('id="activity-feed"');
+    expect(guiAppHtml).toContain('function initActivityHeader');
+    expect(guiAppHtml).toContain('initActivityHeader();');
+  });
+
+  it('moves Artifacts out of the left Inputs sidebar into the Outputs column', () => {
+    expect(guiAppHtml).toContain('id="out-artifacts-tree"');
+    expect(guiAppHtml).toContain('function renderOutputsArtifacts');
+    // The old left-sidebar artifacts tree is gone.
+    expect(guiAppHtml).not.toContain('id="src-artifacts-tree"');
   });
 
   it('wires chat threading (new chat + conversation switcher)', () => {
@@ -117,11 +140,13 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('Workspace name must be 200 characters or fewer');
   });
 
-  it('provides a mobile bottom-drawer handle + toggle', () => {
-    expect(guiAppHtml).toContain('id="rail-handle"');
-    expect(guiAppHtml).toContain('function initRailDrawer');
-    expect(guiAppHtml).toContain('initRailDrawer();');
-    expect(guiAppHtml).toContain('@media (max-width: 720px)');
+  it('opens/closes the floating Ask Lattice panel from the header trigger', () => {
+    expect(guiAppHtml).toContain('function openAskLattice');
+    expect(guiAppHtml).toContain('function closeAskLattice');
+    expect(guiAppHtml).toContain('function toggleAskLattice');
+    // The retired mobile bottom-drawer is gone (the floating panel replaces it).
+    expect(guiAppHtml).not.toContain('id="rail-handle"');
+    expect(guiAppHtml).not.toContain('function initRailDrawer');
   });
 
   it('inline SPA script parses without syntax errors', () => {

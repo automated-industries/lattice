@@ -26,14 +26,14 @@ test.afterEach(async () => {
   rmSync(srcDir, { recursive: true, force: true });
 });
 
-test('the sidebar shows the three Sources sections', async ({ page }) => {
+test('the sidebar shows the three Inputs sections', async ({ page }) => {
   await page.goto(gui.url + '#/');
   const src = page.locator('#sources-nav');
   await expect(src.getByText('Files', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(src.getByText('Built by Lattice', { exact: true })).toBeVisible();
   await expect(src.getByText('Connectors', { exact: true })).toBeVisible();
-  // Artifacts is empty on a fresh workspace.
-  await expect(page.locator('#src-artifacts-tree')).toContainText('Nothing created yet');
+  await expect(src.getByText('Databases', { exact: true })).toBeVisible();
+  // Artifacts moved to the Outputs column; empty on a fresh workspace.
+  await expect(page.locator('#out-artifacts-tree')).toContainText('Nothing created yet');
 });
 
 test('a registered folder renders as a tree and lazily expands one level', async ({ page }) => {

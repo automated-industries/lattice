@@ -14,15 +14,20 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-// Dispatch a synthetic file drop on the rail (browsers block real paths).
+// Dispatch a synthetic file drop on the floating Ask Lattice panel (browsers block
+// real paths). Open the panel first so its drop handler is wired + its feed visible.
+async function openAssistant(page: import('@playwright/test').Page) {
+  await page.locator('#ask-lattice-trigger').click();
+  await expect(page.locator('#ask-lattice-panel')).toBeVisible();
+}
 async function dropFiles(page: import('@playwright/test').Page, names: string[]) {
   await page.evaluate((fileNames) => {
-    const rail = document.getElementById('assistant-rail')!;
+    const panel = document.getElementById('ask-lattice-panel')!;
     const dt = new DataTransfer();
     for (const name of fileNames) {
       dt.items.add(new File(['hello ' + name], name, { type: 'text/markdown' }));
     }
-    rail.dispatchEvent(
+    panel.dispatchEvent(
       new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
     );
   }, names);
@@ -40,7 +45,7 @@ test('dropping a file stages it for review, then Send ingests it', async ({ page
   });
 
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await openAssistant(page);
 
   await dropFiles(page, ['memo.md']);
 
@@ -69,7 +74,7 @@ test('staged files can be removed with ✕, and nothing ingests until Send', asy
   });
 
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await openAssistant(page);
 
   await dropFiles(page, ['a.md', 'b.md']);
   await expect(page.locator('.staging-file')).toHaveCount(2);
@@ -109,7 +114,7 @@ test('a multi-file drop stages all, and Send caps concurrent uploads with batch 
   });
 
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await openAssistant(page);
 
   const FILE_COUNT = 7;
   await dropFiles(
