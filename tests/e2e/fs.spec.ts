@@ -89,8 +89,8 @@ test('an object page shows its data provenance; a row opens its detail', async (
   await expect(navLink).toHaveAttribute('href', /#\/fs\//);
 
   await page.goto(`${gui.url}#/fs/authors`);
-  // The object page is the data-provenance view (graph/table of sources).
-  await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
+  // The object page is the table's rows (mirroring the Files file list).
+  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
 
   // Opening the row directly shows its detail preview.
   await page.goto(`${gui.url}#/fs/authors/${author.id}`);
@@ -109,19 +109,19 @@ test('drilling a row shows a column-built preview, relationship sub-folders, and
   await expect(booksFolder).toBeVisible();
   await booksFolder.click();
 
-  // Books collection (filtered to this author) → open the book.
+  // Books collection (filtered to this author) → a rows table; open the book.
   await expect(page).toHaveURL(new RegExp(`#/fs/authors/${authorId}/books$`));
-  const bookTile = page.locator('.fs-tile', { hasText: 'Tidewater' });
-  await expect(bookTile).toBeVisible();
-  await bookTile.click();
+  const bookLink = page.locator('.fs-rows-table a', { hasText: 'Tidewater' });
+  await expect(bookLink).toBeVisible();
+  await bookLink.click();
 
   // Book item view: a Reviews (1:N) folder AND a Tags (M:N) folder.
   await expect(page.locator('.fs-folder', { hasText: 'Reviews' })).toBeVisible();
   await expect(page.locator('.fs-folder', { hasText: 'Tags' })).toBeVisible();
 
-  // Breadcrumb reflects the full clickable drill path.
+  // Breadcrumb reflects the full clickable drill path, rooted at Tables.
   const crumbs = page.locator('.fs-crumbs');
-  await expect(crumbs).toContainText('Home');
+  await expect(crumbs).toContainText('Tables');
   await expect(crumbs).toContainText('Authors');
   await expect(crumbs).toContainText('Jane Author');
   await expect(crumbs).toContainText('Books');
@@ -129,7 +129,7 @@ test('drilling a row shows a column-built preview, relationship sub-folders, and
 
   // Drill one level deeper into Reviews to prove unbounded nesting.
   await page.locator('.fs-folder', { hasText: 'Reviews' }).click();
-  await expect(page.locator('.fs-tile', { hasText: 'Luminous.' })).toBeVisible();
+  await expect(page.locator('.fs-rows-table', { hasText: 'Luminous.' })).toBeVisible();
 });
 
 test('click-to-edit a value persists via PATCH', async ({ page }) => {

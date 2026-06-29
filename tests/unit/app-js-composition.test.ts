@@ -104,8 +104,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // The Files object page + folder drill-ins render as a TABLE (paintFolderGraph
 // now emits a .fs-files-table, not a force graph; buildFolderGraphModel removed),
 // the Files breadcrumb returns to Tables, and #/folder/* keeps the Tables tab lit.
-const ORIGINAL_LENGTH = 810210;
-const ORIGINAL_SHA256 = '97ef400f8445fb3ef339a3f48c8b23413407a03bd2103cda58f67104e82932f7';
+// The object page now shows the table's ROWS as a table (objRowCols/fsCellText in
+// renderFsCollection), mirroring the Files file list — the full-page provenance
+// view (renderProvenance) is removed (per-row provenance panel kept). Breadcrumbs
+// are rooted at "Tables" (fsBreadcrumb + folderBreadcrumb) for one consistent path.
+const ORIGINAL_LENGTH = 809998;
+const ORIGINAL_SHA256 = 'e27b00a2843eeab6c977b32338556912bb85858dd81b5dca0071feb3b194ca95';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
