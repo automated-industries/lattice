@@ -135,8 +135,10 @@ import { appJs } from '../../src/gui/app/script.js';
 // Artifacts object: files carrying an artifact_type render as their own table at
 // #/fs/artifacts (renderArtifactsView), and an artifact record's breadcrumb roots at
 // "Artifacts" (fsBreadcrumb) instead of Files; displayFor gains an 'artifacts' label.
-const ORIGINAL_LENGTH = 815838;
-const ORIGINAL_SHA256 = 'e3f3ff885e499aa0ac52fb51d49a40fd9f3f58d688b1c022c5182be40f35403e';
+// Review low: the renderFsCollection + renderFsItem error catches now guard on
+// renderGen so a stale async error can't clobber a newer view.
+const ORIGINAL_LENGTH = 816014;
+const ORIGINAL_SHA256 = '67827a8019623043278b2834e0b5b14089977e19b2d83e86f234145859ac645a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
