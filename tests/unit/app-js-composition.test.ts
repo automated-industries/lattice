@@ -66,9 +66,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // Step 6 removes the redundant per-object "list view" tile-grid escape hatch:
 // the fsObjectView toggle, the three "List view" buttons (provenance + object-graph
 // + files-root) and the moot graph-toggle, so the top-level object page is the
-// provenance view; nested relation collections still render the tile grid.
-const ORIGINAL_LENGTH = 810488;
-const ORIGINAL_SHA256 = 'e15c78cf437ba39ea0c5918816ef60110a62a732e25af5b4fed2a0139fd9ecf0';
+// provenance view; nested relation collections still render the tile grid. Step 5c
+// fills the Inputs > Databases section (inputs.js): list connected external DBs +
+// a connect modal (connection string OR host/user/password) posting to
+// /api/db-sources, with disconnect + post-import refresh.
+const ORIGINAL_LENGTH = 816806;
+const ORIGINAL_SHA256 = '8684a348467acbfef143034b46d4d0e6e5dc04d6e6e7cde1694a7947046fadfa';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
