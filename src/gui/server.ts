@@ -45,6 +45,7 @@ import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './inges
 import { dispatchSourcesRoute } from './sources-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
+import { dispatchDbSourcesRoute } from './db-sources-routes.js';
 import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
@@ -924,6 +925,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return await dispatchConnectorsRoute(req, res, {
                 db: active.db,
                 connectors: builtinConnectors(),
+                outputDir: active.outputDir,
+                connectedBy,
+              });
+            },
+          },
+          // ── Databases as an Input: connect/list/refresh/disconnect external DBs ──
+          // An external Postgres database imported as a data source. Distinct from
+          // /api/databases (sibling Lattice config switching) — see db-sources-routes.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/db-sources')) return false;
+              const ident = readIdentity();
+              const fallback = ident.email || ident.display_name || 'local';
+              const connectedBy = await resolveConnectorIdentity(active.db, fallback);
+              return await dispatchDbSourcesRoute(req, res, {
+                db: active.db,
                 outputDir: active.outputDir,
                 connectedBy,
               });
