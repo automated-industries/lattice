@@ -111,8 +111,10 @@ import { appJs } from '../../src/gui/app/script.js';
 // Per-row "Data provenance" now has a universal traceback: the client PROV_TIERS
 // renders the new 'related' (belongsTo parents) + 'created' (authoring floor)
 // tiers the server emits — so a seeded/authored row no longer reads "No sources".
-const ORIGINAL_LENGTH = 810088;
-const ORIGINAL_SHA256 = '944737cd032a983ecd3f7c4ad772b717616b549729ac1bd6d21cb99fe2ae289d';
+// Object/Files rows tables: the WHOLE row is clickable (opens the record), not
+// just the name cell (inner links still work).
+const ORIGINAL_LENGTH = 811108;
+const ORIGINAL_SHA256 = 'ad0d1722075cefb05f579ae5534111be6cdb3c71890a107b78345cfa03a9fac4';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
