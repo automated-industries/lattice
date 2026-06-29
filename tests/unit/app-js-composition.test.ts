@@ -132,8 +132,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // the structured fields (Formatted) or the row's rendered context (Markdown).
 // Markdown-in-center: a context .md opens at #/md/<path> (renderMarkdownDoc) in the
 // center pane instead of the removed Outputs slide-in drawer (openOutputsDetail gone).
-const ORIGINAL_LENGTH = 812327;
-const ORIGINAL_SHA256 = 'd4599e251a1f0500fb568a36215010a3d3d72d257773d01c85d1d3f6f8ad02ec';
+// Artifacts object: files carrying an artifact_type render as their own table at
+// #/fs/artifacts (renderArtifactsView), and an artifact record's breadcrumb roots at
+// "Artifacts" (fsBreadcrumb) instead of Files; displayFor gains an 'artifacts' label.
+const ORIGINAL_LENGTH = 815838;
+const ORIGINAL_SHA256 = 'e3f3ff885e499aa0ac52fb51d49a40fd9f3f58d688b1c022c5182be40f35403e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
