@@ -16,35 +16,34 @@ function escapeHtmlStub(s: unknown): string {
   );
 }
 
-// Eval the (string) provenance module and surface its pure helpers. The other
+// Eval the (string) provenance module and surface its pure helper. The other
 // functions reference IIFE globals but are never called, so defining them is safe.
 function loadPureHelpers(): {
-  buildProvenanceModel: (p: unknown) => { nodes: unknown[]; edges: unknown[] };
   provenanceTableHtml: (p: unknown) => string;
 } {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function(
     'escapeHtml',
-    provenanceJs +
-      '\nreturn { buildProvenanceModel: buildProvenanceModel, provenanceTableHtml: provenanceTableHtml };',
+    provenanceJs + '\nreturn { provenanceTableHtml: provenanceTableHtml };',
   );
   return factory(escapeHtmlStub) as {
-    buildProvenanceModel: (p: unknown) => { nodes: unknown[]; edges: unknown[] };
     provenanceTableHtml: (p: unknown) => string;
   };
 }
 
 describe('client provenance module', () => {
-  it('is composed into appJs / css', () => {
+  it('is composed into appJs / css (table-only object view)', () => {
     expect(appJs).toContain('function renderProvenance(');
     expect(appJs).toContain('function renderProvenancePanel(');
-    expect(appJs).toContain('function buildProvenanceModel(');
     expect(appJs).toContain('function provenanceTableHtml(');
     expect(appJs).toContain('/api/provenance');
-    expect(appJs).toContain('createForceGraph');
-    expect(css).toContain('.pvnode-object');
     expect(css).toContain('details.prov-panel');
     expect(css).toContain('.pv-table');
+    // The object page is a single table view now — the graph mode + its helpers
+    // are gone.
+    expect(appJs).not.toContain('function buildProvenanceModel(');
+    expect(appJs).not.toContain('function renderProvenanceGraph(');
+    expect(css).not.toContain('.pvnode-object');
   });
 
   it('removed the old create tile from the object-type view', () => {
@@ -52,41 +51,14 @@ describe('client provenance module', () => {
   });
 
   it('uses only the generic provenance tier vocabulary (no domain coupling)', () => {
-    // The tier node classes must be exactly the four generic tiers. Any other
-    // pvnode-* class would mean a source dataset's vocabulary had leaked into the
+    // The source-table tiers must be exactly the three generic tiers. Any other
+    // pvchip-* class would mean a source dataset's vocabulary had leaked into the
     // GUI — this guards the "technique, not data" port from a private source.
-    const cssTiers = new Set([...provenanceCss.matchAll(/pvnode-([a-z]+)/g)].map((m) => m[1]));
-    expect([...cssTiers].sort()).toEqual(['computed', 'object', 'observation', 'raw']);
-    // The JS tier metadata declares exactly the same four tiers, nothing else.
-    for (const tier of ['object', 'raw', 'computed', 'observation']) {
-      expect(provenanceJs).toContain(tier + ':');
+    const cssTiers = new Set([...provenanceCss.matchAll(/pvchip-([a-z]+)/g)].map((m) => m[1]));
+    expect([...cssTiers].sort()).toEqual(['computed', 'observation', 'raw']);
+    for (const tier of ['raw', 'computed', 'observation']) {
+      expect(provenanceJs).toContain("type: '" + tier + "'");
     }
-  });
-
-  it('buildProvenanceModel maps tiers to radius/class and drops dangling edges', () => {
-    const { buildProvenanceModel } = loadPureHelpers();
-    const model = buildProvenanceModel({
-      nodes: [
-        { id: 'table:t', label: 't', type: 'object', kind: 'table' },
-        { id: 'r1', label: 'File', type: 'raw', kind: 'file', count: 3 },
-        { id: 'o1', label: 'AI', type: 'observation', kind: 'observation', count: 1 },
-      ],
-      edges: [
-        { source: 'r1', target: 'table:t', relation: 'extracted_from' },
-        { source: 'o1', target: 'table:t', relation: 'observed_by' },
-        { source: 'ghost', target: 'table:t', relation: 'x' }, // dangling → dropped
-      ],
-    });
-    expect(model.nodes).toHaveLength(3);
-    const obj = model.nodes.find((n) => (n as { id: string }).id === 'table:t') as {
-      radius: number;
-      cls: string;
-    };
-    expect(obj.cls).toBe('pvnode-object');
-    expect(obj.radius).toBe(26);
-    const raw = model.nodes.find((n) => (n as { id: string }).id === 'r1') as { cls: string };
-    expect(raw.cls).toBe('pvnode-raw');
-    expect(model.edges).toHaveLength(2); // the ghost edge is pruned
   });
 
   it('provenanceTableHtml groups sources by tier and renders chips + counts', () => {
