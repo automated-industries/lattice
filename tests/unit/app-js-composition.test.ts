@@ -120,8 +120,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // connectors between the tier cards (mtDrawEdges), and "+ Wire" toggles a mode
 // where clicking a source then a target creates an m2m link via POST
 // /api/schema/junctions (mtWireClick) — replacing the broken settings navigation.
-const ORIGINAL_LENGTH = 817268;
-const ORIGINAL_SHA256 = 'f44ef2820f34aa44b1f736e6c9b3a43d578eb48bec8fb89cc3a07b09900b79c4';
+const ORIGINAL_LENGTH = 817752;
+const ORIGINAL_SHA256 = 'cb72f052dc2bb7b1b769897ed0a745aac146c86971d3cd761bf0aa7b63d51b43';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
