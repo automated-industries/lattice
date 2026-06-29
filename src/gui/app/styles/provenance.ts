@@ -26,6 +26,8 @@ export const provenanceCss = `
     .pvchip-raw { color: var(--signal); border-color: var(--signal); }
     .pvchip-computed { color: var(--warn); border-color: var(--warn); }
     .pvchip-observation { color: var(--text-muted); }
+    .pvchip-related { color: #7c3aed; border-color: #7c3aed; }
+    .pvchip-created { color: #0d9488; border-color: #0d9488; }
     /* Files object page / folder drill-in rendered as a table (reuses .pv-table). */
     .fs-files-table .fs-files-path {
       color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 11.5px;

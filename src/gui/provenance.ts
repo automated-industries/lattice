@@ -1,8 +1,8 @@
 import type { Lattice } from '../lattice.js';
-import type { AggregateResult, Row } from '../types.js';
+import type { AggregateResult, BelongsToRelation, Row } from '../types.js';
 import { allAsyncOrSync } from '../db/adapter.js';
 import { getConnector } from '../connectors/registry.js';
-import { tableJunctions } from './data.js';
+import { getGuiEntities, tableJunctions } from './data.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 
 /**
@@ -27,7 +27,15 @@ import { LINEAGE_TABLE } from './lineage-store.js';
  * — there is no domain coupling to any particular dataset.
  */
 
-export type ProvenanceNodeType = 'object' | 'raw' | 'computed' | 'observation';
+// `related` = a belongsTo parent row this object references; `created` = the
+// universal "this row was authored in Lattice" floor (so no row is ever sourceless).
+export type ProvenanceNodeType =
+  | 'object'
+  | 'raw'
+  | 'computed'
+  | 'observation'
+  | 'related'
+  | 'created';
 
 export interface ProvenanceNode {
   id: string;
@@ -63,6 +71,12 @@ export interface ProvenancePayload {
 export interface BuildProvenanceOptions {
   /** Scope to a single object row (bounded reads). Omit for the whole table. */
   rowId?: string;
+  /**
+   * The already-fetched object row (the route fetches it to 404 a missing id).
+   * Passing it here lets the row-scoped path read created_at + belongsTo FK values
+   * with ZERO extra DB reads. Optional: the table-scoped path doesn't use it.
+   */
+  row?: Row;
   /**
    * GUI config paths. When provided, raw file sources are derived from the
    * existing `*_files` junctions (so provenance reflects files already linked to
@@ -362,6 +376,108 @@ export async function buildProvenanceGraph(
       });
       addEdge(edges, { source: id, target: objectId, relation: 'observed_by', label: 'ai edits' });
     }
+  }
+
+  // ── RELATED (owner enrichment): the row's belongsTo PARENTS ─────────────────
+  // An entity row that wasn't connector-synced, file-extracted, imported, or
+  // AI-edited (e.g. a seeded/authored row) still references parents via its FK
+  // columns (project.org_id → orgs, project.client_id → clients). Surface those
+  // parents as upstream "related" nodes so every such row traces back.
+  //
+  // Bounded + RLS-safe: one batched IN query per distinct parent table (count =
+  // number of belongsTo relations, a schema constant — never row-proportional),
+  // run through the RLS-filtered db.query (NOT raw SQL). A parent the viewer may
+  // not see returns no row → no node is emitted (never fabricate one from the bare
+  // FK id — that would leak a hidden row's existence). belongsTo metadata lives
+  // only in the OWNER config, so for a cloud member this whole block is a no-op
+  // (relations are {}), leaving the universal "created" floor below.
+  if (rowId && options.row && options.configPath && options.outputDir) {
+    try {
+      const me = getGuiEntities(options.configPath, options.outputDir).tables.find(
+        (t) => t.name === table,
+      );
+      const belongs = me
+        ? Object.values(me.relations).filter((r): r is BelongsToRelation => r.type === 'belongsTo')
+        : [];
+      // Group the FK values by parent table (de-duped) so each parent table is one query.
+      const idsByParent = new Map<string, Set<string>>();
+      for (const rel of belongs) {
+        if (rel.table === table) continue; // skip self-references
+        const val = asStr(options.row[rel.foreignKey]);
+        if (!val) continue; // null/empty FK → no parent
+        let set = idsByParent.get(rel.table);
+        if (!set) {
+          set = new Set();
+          idsByParent.set(rel.table, set);
+        }
+        set.add(val);
+      }
+      for (const [parentTable, idSet] of idsByParent) {
+        const ids = [...idSet];
+        const pcols = db.getRegisteredColumns(parentTable) ?? {};
+        // Pick a display column that actually exists (don't hardcode 'name' — a
+        // parent table without it would make the projection throw + silently drop
+        // all enrichment). Fall back to the id when none exists.
+        const displayCol = ['name', 'title', 'label', 'slug'].find((c) => c in pcols);
+        const pk = db.getPrimaryKey(parentTable)[0] ?? 'id';
+        let prows: Row[] = [];
+        try {
+          prows = await db.query(parentTable, {
+            projection: displayCol ? [pk, displayCol] : [pk],
+            filters: [{ col: pk, op: 'in', val: ids }],
+            limit: ids.length,
+          });
+        } catch {
+          prows = [];
+        }
+        for (const pr of prows) {
+          const pid = asStr(pr[pk]);
+          if (!pid) continue; // RLS / missing → emit nothing for this parent
+          const name = (displayCol ? asStr(pr[displayCol]) : '') || pid;
+          const id = `rel:${parentTable}:${pid}`;
+          addNode(nodes, {
+            id,
+            label: name,
+            type: 'related',
+            kind: 'relation',
+            table: parentTable,
+            rowId: pid,
+          });
+          addEdge(edges, { source: id, target: objectId, relation: 'related_to', label: name });
+        }
+      }
+    } catch {
+      // Member shape (no relations) or unreadable config → the creation floor only.
+    }
+  }
+
+  // ── CREATED (universal floor): every ROW traces back to its authoring ────────
+  // The substrates above can all be empty (a seeded/authored row). Guarantee a
+  // non-empty traceback for any row from data it already carries — its created_at
+  // (read from the in-hand row; ZERO extra DB reads). Row-scoped only: the
+  // table-level view stays aggregate (and may legitimately be empty for a fresh
+  // table). Distinct `meta:` namespace so it can never collide with a `src:*` node.
+  if (rowId) {
+    const createdAt = options.row ? asStr(options.row.created_at) : '';
+    const updatedAt = options.row ? asStr(options.row.updated_at) : '';
+    const editedSince = createdAt && updatedAt && updatedAt !== createdAt;
+    const id = `meta:created:${table}`;
+    addNode(nodes, {
+      id,
+      label: createdAt
+        ? editedSince
+          ? `Created ${createdAt} · edited ${updatedAt}`
+          : `Created ${createdAt}`
+        : 'Created in Lattice',
+      type: 'created',
+      kind: 'creation',
+    });
+    addEdge(edges, {
+      source: id,
+      target: objectId,
+      relation: 'created',
+      label: createdAt || 'created',
+    });
   }
 
   // ── prune dangling edges (mirror src/gui/data.ts) ──────────────────────────
