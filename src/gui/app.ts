@@ -101,6 +101,7 @@ export const guiAppHtml = `<!doctype html>
   </header>
   <div class="layout">
     <nav class="sidebar">
+      <div class="col-header col-inputs"><span class="col-header-text">Inputs</span></div>
       <div id="sources-nav">
         <div class="src-group">
           <button class="section-label section-toggle" data-group="files" type="button" aria-expanded="true">
@@ -152,7 +153,8 @@ export const guiAppHtml = `<!doctype html>
       </div>
     </nav>
     <main class="content-wrap">
-      <div class="tabstrip" id="tabstrip">
+      <div class="tabstrip col-header col-model" id="tabstrip">
+        <span class="col-header-text">Model</span>
         <div class="tabstrip-tabs" id="tabstrip-tabs"></div>
         <div class="tabstrip-status" id="tabstrip-status"></div>
       </div>
@@ -160,7 +162,7 @@ export const guiAppHtml = `<!doctype html>
     </main>
     <aside class="outputs" id="outputs-rail" aria-label="Outputs">
       <div class="outputs-resize" id="outputs-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="outputs-head"><span class="outputs-title">Outputs</span></div>
+      <div class="outputs-head col-header col-outputs"><span class="col-header-text">Outputs</span></div>
       <div class="outputs-body" id="outputs-body">
         <section class="out-group">
           <button class="section-label section-toggle" data-group="out-artifacts" type="button" aria-expanded="true">
