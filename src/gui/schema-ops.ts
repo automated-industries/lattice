@@ -199,7 +199,9 @@ export async function materializeJunction(
       [relA]: { type: 'belongsTo', table: refA, foreignKey: colA },
       [relB]: { type: 'belongsTo', table: refB, foreignKey: colB },
     },
-    outputFile: jName.toUpperCase() + '.md',
+    // Hidden .schema-only/ overview (the codebase default), never a root <NAME>.md
+    // orphan at the Context root.
+    outputFile: '.schema-only/' + jName + '.md',
   };
   const doc = loadConfigDoc(active.configPath);
   doc.setIn(['entities', jName], entityDef);
@@ -382,7 +384,9 @@ export async function createUserEntity(
   const fields: Record<string, unknown> = { id: { type: 'uuid', primaryKey: true } };
   for (const c of cols) fields[c] = { type: 'text' };
   fields.deleted_at = { type: 'text' };
-  const entityDef = { fields, outputFile: entity.toUpperCase() + '.md' };
+  // Hidden .schema-only/ overview (the codebase default), never a root <NAME>.md
+  // orphan at the Context root (which duplicates the per-row <Entity>/ context dir).
+  const entityDef = { fields, outputFile: '.schema-only/' + entity + '.md' };
   const doc = loadConfigDoc(active.configPath);
   doc.setIn(['entities', entity], entityDef);
   saveConfigDoc(active.configPath, doc);

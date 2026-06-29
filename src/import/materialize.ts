@@ -110,7 +110,11 @@ function persistTable(
   if (!configPath || !existsSync(configPath)) return;
   try {
     const doc = loadConfigDoc(configPath);
-    doc.setIn(['entities', name], { fields, outputFile: name.toUpperCase() + '.md' });
+    // The per-entity overview goes in the hidden .schema-only/ dir (the default
+    // used everywhere else — lattice.ts, gui/data.ts, read-routes.ts), NOT a bare
+    // <NAME>.md at the Context root. A root file is an orphan: it clutters the
+    // visible tree and duplicates the rich per-row <Entity>/ context dir.
+    doc.setIn(['entities', name], { fields, outputFile: '.schema-only/' + name + '.md' });
     saveConfigDoc(configPath, doc);
   } catch {
     // Best-effort: defineLate already made the table usable this session.
