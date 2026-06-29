@@ -10,10 +10,12 @@ import { bootGui, createRow, type BootedGui } from './helpers.js';
  */
 
 let gui: BootedGui;
+let itemId: string;
 test.beforeEach(async () => {
   gui = await bootGui();
   // One row so the `items` object is non-empty and appears on the brain graph.
-  await createRow(gui.url, 'items', { name: 'first item' });
+  const r = (await createRow(gui.url, 'items', { name: 'first item' })) as { id: string };
+  itemId = r.id;
 });
 test.afterEach(async () => {
   await gui.close();
@@ -45,19 +47,20 @@ test('exploring objects stays in the graph tab; opening a record opens a closabl
   await page.locator('g.gnode[data-id="items"]').click();
   await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/, { timeout: 5000 });
   await expect(page.locator('.tab[data-key^="table:"]')).toHaveCount(0);
-  // The object page is the provenance view; List view reaches the rows. Opening a
-  // record (a row tile) spawns its own closable tab.
-  await page.locator('#pv-view-list').click();
-  const tile = page.locator('.fs-tile').first();
-  await expect(tile).toBeVisible({ timeout: 5000 });
-  await tile.click();
+  // The object page is the provenance view. Opening a record (the row detail)
+  // spawns its own closable tab.
+  await page.evaluate((id) => {
+    window.location.hash = '#/fs/items/' + id;
+  }, itemId);
   const recordTab = page.locator('.tab[data-key^="item:items:"]');
   await expect(recordTab).toBeVisible({ timeout: 5000 });
   await expect(recordTab).toHaveClass(/active/);
   await expect(recordTab.locator('.tab-close')).toHaveCount(1);
   // Re-opening the same record dedups (no second tab).
   await page.locator('.tab[data-key="graph"]').click();
-  await page.locator('.fs-tile').first().click();
+  await page.evaluate((id) => {
+    window.location.hash = '#/fs/items/' + id;
+  }, itemId);
   await expect(page.locator('.tab[data-key^="item:items:"]')).toHaveCount(1);
 });
 
@@ -72,10 +75,9 @@ test('clicking a graph node navigates the single graph tab (no new tab)', async 
 test('closing a record tab falls back to the Brain Graph', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
   await page.locator('g.gnode[data-id="items"]').click(); // into the object page
-  await page.locator('#pv-view-list').click(); // List view → the row grid
-  const tile = page.locator('.fs-tile').first();
-  await expect(tile).toBeVisible({ timeout: 5000 });
-  await tile.click(); // open the record → a closable tab
+  await page.evaluate((id) => {
+    window.location.hash = '#/fs/items/' + id; // open the record → a closable tab
+  }, itemId);
   const recordTab = page.locator('.tab[data-key^="item:items:"]');
   await expect(recordTab).toHaveClass(/active/, { timeout: 5000 });
   await recordTab.locator('.tab-close').click();
@@ -89,7 +91,7 @@ test('back from an object page returns to the Brain Graph, not the list view', a
   await page.goto(gui.url + '#/graph');
   // Into the object page — which defaults to the provenance view.
   await page.locator('g.gnode[data-id="items"]').click();
-  await expect(page.locator('#pv-view-list')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
   // Click the "← Brain Graph" breadcrumb.
   await page.locator('.breadcrumb').click();
   // It must land on the Brain Graph — NOT the list view.
