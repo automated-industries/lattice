@@ -76,8 +76,11 @@ async function seedChain(base: string): Promise<{ authorId: string; bookId: stri
   return { authorId, bookId };
 }
 
-test('an object page shows its data provenance; List view shows the row grid', async ({ page }) => {
-  await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
+test('an object page shows its data provenance; a row opens its detail', async ({ page }) => {
+  const author = (await createRow(gui.url, 'authors', {
+    name: 'Jane Author',
+    bio: 'A novelist.',
+  })) as { id: string };
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
@@ -89,11 +92,9 @@ test('an object page shows its data provenance; List view shows the row grid', a
   // The object page is the data-provenance view (graph/table of sources).
   await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
 
-  // "List view" switches to the row tile grid.
-  await page.locator('#pv-view-list').click();
-  const tile = page.locator('.fs-tile');
-  await expect(tile).toHaveCount(1);
-  await expect(tile.first()).toContainText('Jane Author');
+  // Opening the row directly shows its detail preview.
+  await page.goto(`${gui.url}#/fs/authors/${author.id}`);
+  await expect(page.locator('.fs-doc')).toContainText('Jane Author', { timeout: 5000 });
 });
 
 test('drilling a row shows a column-built preview, relationship sub-folders, and a breadcrumb', async ({

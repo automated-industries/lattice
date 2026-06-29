@@ -124,7 +124,7 @@ export const provenanceJs = `
     }
 
     // Object-type page: provenance-centric (graph default, with a graph/table
-    // toggle and a "List view" escape hatch to the row tile grid).
+    // toggle). Nested relation paths still use the row tile grid (renderFsCollection).
     function renderProvenance(content, table, mode) {
       var myGen = renderGen;
       // Files are a SOURCE layer, not a provenance object — their page is the
@@ -152,7 +152,6 @@ export const provenanceJs = `
               '<a class="btn primary" href="' + fsHref([table, 'new']) + '">New ' + escapeHtml(d.label) + '</a>' +
               '<button class="btn' + (mode === 'graph' ? ' pv-active' : '') + '" id="pv-view-graph" type="button">Graph</button>' +
               '<button class="btn' + (mode === 'table' ? ' pv-active' : '') + '" id="pv-view-table" type="button">Table</button>' +
-              '<button class="btn" id="pv-view-list" type="button">List view</button>' +
             '</div>' +
           '</div>' +
           (mode === 'graph' ? provenanceLegendHtml() : '') +
@@ -162,10 +161,8 @@ export const provenanceJs = `
         else renderProvenanceGraph(mount, payload);
         var bg = content.querySelector('#pv-view-graph');
         var bt = content.querySelector('#pv-view-table');
-        var bl = content.querySelector('#pv-view-list');
         if (bg) bg.addEventListener('click', function () { renderProvenance(content, table, 'graph'); });
         if (bt) bt.addEventListener('click', function () { renderProvenance(content, table, 'table'); });
-        if (bl) bl.addEventListener('click', function () { fsObjectView[table] = 'list'; renderFsCollection(content, [table]); });
       }).catch(function (err) {
         if (myGen !== renderGen) return;
         setContent(content, myGen, '<div class="placeholder"><h2>Failed</h2>' +

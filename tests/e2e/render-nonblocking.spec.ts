@@ -21,7 +21,11 @@ test.afterEach(async () => {
 const ROW_DELAY_MS = 800;
 
 test('navigation paints the new view immediately even when data is slow', async ({ page }) => {
-  for (let i = 0; i < 20; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
+  let firstItemId = '';
+  for (let i = 0; i < 20; i++) {
+    const r = (await createRow(gui.url, 'items', { name: 'Item ' + String(i) })) as { id: string };
+    if (i === 0) firstItemId = r.id;
+  }
 
   // Slow the object-page (provenance) + row fetches, to simulate a large local
   // table / a cloud open. (Entities/dashboard are NOT delayed, so the shell still
@@ -47,12 +51,11 @@ test('navigation paints the new view immediately even when data is slow', async 
   // …then the provenance view fills in.
   await expect(page.locator('#prov-mount')).toBeVisible({ timeout: 5000 });
 
-  // Open a record (List view → a row tile → detail): the nav must paint the new
-  // frame immediately (a loading state), not freeze on the slow row fetch.
-  await page.locator('#pv-view-list').click();
-  const tile = page.locator('.fs-tile').first();
-  await expect(tile).toBeVisible({ timeout: 5000 });
-  await tile.click();
+  // Open a record (the row detail) directly: the nav must paint the new frame
+  // immediately (a loading state), not freeze on the slow row fetch.
+  await page.evaluate((id) => {
+    window.location.hash = '#/fs/items/' + id;
+  }, firstItemId);
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
   // …and the item content eventually loads.
   await expect(page.locator('.fs-doc')).toBeVisible({ timeout: 5000 });
