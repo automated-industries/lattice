@@ -34,8 +34,13 @@ import { css } from '../../src/gui/app/css.js';
 // Markdown rework: the Outputs detail panel slides in from the right positioned
 // LEFT of the Outputs column (right: var(--outputs-width)) so the column stays
 // visible, via class-based .open transitions (outputs.js style segment).
-const ORIGINAL_LENGTH = 110696;
-const ORIGINAL_SHA256 = '3c2ab582978e70bc538facbd0d79025f557266c2386525e66947900f931f0729';
+// Nav redesign: shared .col-header chrome for the three column headers (Inputs ·
+// Model · Outputs — same font/style, per-column accent), the center tab strip
+// restyled as seamless underline tabs sitting on the header's bottom border, and
+// the now-dead .model-toggle/.model-view/.model-body styles removed (replaced by
+// the .model-tables-view route container).
+const ORIGINAL_LENGTH = 110957;
+const ORIGINAL_SHA256 = '91062349ff2dc9270f6cc0c39442cfff5b656afcae1672415e2be5f737dbfe5e';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
