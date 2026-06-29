@@ -297,6 +297,9 @@ export async function buildVectorIndex(
   await writeVectorMeta(adapter, table, {
     vecDim: d,
     metric: 'cosine',
+    // Record the half-precision choice so an auto-rebuild after a bulk refresh
+    // preserves it (otherwise the rebuild silently downgrades halfvec → vector).
+    quantization: opts.quantization === 'halfvec' ? 'halfvec' : 'none',
     // m / ef_construction are pgvector HNSW build params; recorded only where they apply.
     hnswM: adapter.dialect === 'postgres' ? opts.m : undefined,
     hnswEfConstruction: adapter.dialect === 'postgres' ? opts.efConstruction : undefined,
@@ -336,6 +339,7 @@ export interface VectorIndexMeta {
   table: string;
   vecDim: number;
   metric: string;
+  quantization: string;
   hnswM: number | null;
   hnswEfConstruction: number | null;
   sourceCount: number;
@@ -349,12 +353,23 @@ async function ensureVectorMetaTable(adapter: StorageAdapter): Promise<void> {
        "table_name"           TEXT PRIMARY KEY,
        "vec_dim"              INTEGER NOT NULL,
        "metric"               TEXT NOT NULL DEFAULT 'cosine',
+       "quantization"         TEXT NOT NULL DEFAULT 'none',
        "hnsw_m"               INTEGER,
        "hnsw_ef_construction" INTEGER,
        "source_count"         INTEGER NOT NULL DEFAULT 0,
        "built_at"             TEXT NOT NULL
      )`,
   );
+  // Backfill the column onto a registry created by an earlier build that predates
+  // quantization (the try/catch swallows "column already exists" on both dialects).
+  try {
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${VEC_META_TABLE}" ADD COLUMN "quantization" TEXT NOT NULL DEFAULT 'none'`,
+    );
+  } catch {
+    /* column already present */
+  }
 }
 
 async function writeVectorMeta(
@@ -363,6 +378,7 @@ async function writeVectorMeta(
   meta: {
     vecDim: number;
     metric: string;
+    quantization?: string | undefined;
     hnswM?: number | undefined;
     hnswEfConstruction?: number | undefined;
     sourceCount: number;
@@ -373,11 +389,12 @@ async function writeVectorMeta(
   await runAsyncOrSync(
     adapter,
     `INSERT INTO "${VEC_META_TABLE}"
-       ("table_name","vec_dim","metric","hnsw_m","hnsw_ef_construction","source_count","built_at")
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+       ("table_name","vec_dim","metric","quantization","hnsw_m","hnsw_ef_construction","source_count","built_at")
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT ("table_name") DO UPDATE SET
        "vec_dim" = excluded."vec_dim",
        "metric" = excluded."metric",
+       "quantization" = excluded."quantization",
        "hnsw_m" = excluded."hnsw_m",
        "hnsw_ef_construction" = excluded."hnsw_ef_construction",
        "source_count" = excluded."source_count",
@@ -386,6 +403,7 @@ async function writeVectorMeta(
       table,
       meta.vecDim,
       meta.metric,
+      meta.quantization ?? 'none',
       meta.hnswM ?? null,
       meta.hnswEfConstruction ?? null,
       meta.sourceCount,
@@ -410,7 +428,7 @@ export async function getVectorIndexMeta(
   try {
     row = await getAsyncOrSync(
       adapter,
-      `SELECT "vec_dim","metric","hnsw_m","hnsw_ef_construction","source_count","built_at"
+      `SELECT "vec_dim","metric","quantization","hnsw_m","hnsw_ef_construction","source_count","built_at"
          FROM "${VEC_META_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
@@ -422,6 +440,7 @@ export async function getVectorIndexMeta(
     table,
     vecDim: Number(row.vec_dim ?? 0),
     metric: typeof row.metric === 'string' ? row.metric : 'cosine',
+    quantization: typeof row.quantization === 'string' ? row.quantization : 'none',
     hnswM: row.hnsw_m == null ? null : Number(row.hnsw_m),
     hnswEfConstruction: row.hnsw_ef_construction == null ? null : Number(row.hnsw_ef_construction),
     sourceCount: Number(row.source_count ?? 0),
@@ -523,6 +542,7 @@ export async function syncIndexAfterBulk(adapter: StorageAdapter, table: string)
   const rebuildOpts: VectorIndexOptions = {};
   if (meta?.hnswM != null) rebuildOpts.m = meta.hnswM;
   if (meta?.hnswEfConstruction != null) rebuildOpts.efConstruction = meta.hnswEfConstruction;
+  if (meta?.quantization === 'halfvec') rebuildOpts.quantization = 'halfvec';
   await buildVectorIndex(adapter, table, dim, false, rebuildOpts);
 }
 

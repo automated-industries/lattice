@@ -64,10 +64,12 @@ export interface BuildProvenanceOptions {
   /** Scope to a single object row (bounded reads). Omit for the whole table. */
   rowId?: string;
   /**
-   * Owner config paths. When provided, raw file sources are derived from the
+   * GUI config paths. When provided, raw file sources are derived from the
    * existing `*_files` junctions (so provenance reflects files already linked to
-   * an object, not only future import/extraction lineage). Omitted for a scoped
-   * cloud member, who has no relation config — they fall back to lineage only.
+   * an object, not only future import/extraction lineage). The junction rows are
+   * read through the normal RLS-filtered query path, so a scoped cloud member
+   * only ever sees links for rows it may see; if no `*_files` relation is
+   * declared in the config, the derivation is a no-op (lineage only).
    */
   configPath?: string;
   outputDir?: string;
@@ -212,21 +214,27 @@ export async function buildProvenanceGraph(
           filters: [{ col: j.selfFk, op: 'eq', val: rowId }],
           limit: 200,
         });
-        for (const link of links) {
-          const fileId = asStr(link[j.otherFk]);
-          if (!fileId) continue;
-          let name = fileId;
-          try {
-            const fpk = db.getPrimaryKey('files')[0] ?? 'id';
-            const frows = await db.query('files', {
-              projection: ['name'],
-              filters: [{ col: fpk, op: 'eq', val: fileId }],
-              limit: 1,
-            });
-            if (frows[0]) name = asStr(frows[0].name) || fileId;
-          } catch {
-            /* keep the id as the label */
+        const fileIds = [...new Set(links.map((l) => asStr(l[j.otherFk])).filter(Boolean))];
+        if (fileIds.length === 0) continue;
+        // Resolve all file names in ONE batched `IN` query (not one PK lookup per
+        // file — that was an N+1 on the provenance read path).
+        const nameById = new Map<string, string>();
+        try {
+          const fpk = db.getPrimaryKey('files')[0] ?? 'id';
+          const frows = await db.query('files', {
+            projection: [fpk, 'name'],
+            filters: [{ col: fpk, op: 'in', val: fileIds }],
+            limit: fileIds.length,
+          });
+          for (const fr of frows) {
+            const nm = asStr(fr.name);
+            if (nm) nameById.set(asStr(fr[fpk]), nm);
           }
+        } catch {
+          /* keep ids as labels */
+        }
+        for (const fileId of fileIds) {
+          const name = nameById.get(fileId) ?? fileId;
           const id = `src:file:files:${fileId}`;
           addNode(nodes, {
             id,
