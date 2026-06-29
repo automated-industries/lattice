@@ -19,6 +19,7 @@ export type {
   WritebackValidationResult,
   RewardScores,
   EmbeddingsConfig,
+  VectorIndexOptions,
   FtsConfig,
   SearchOptions,
   SearchResult,
