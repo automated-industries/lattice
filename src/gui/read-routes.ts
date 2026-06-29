@@ -576,6 +576,7 @@ export async function handleReadRoutes(
       res,
       await buildProvenanceGraph(active.db, table, {
         rowId: id,
+        row, // already fetched above → creation + belongsTo tiers read it with no extra DB reads
         configPath: active.configPath,
         outputDir: active.outputDir,
       }),

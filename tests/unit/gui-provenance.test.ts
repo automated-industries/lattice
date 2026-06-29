@@ -55,10 +55,9 @@ describe('client provenance module', () => {
     // pvchip-* class would mean a source dataset's vocabulary had leaked into the
     // GUI — this guards the "technique, not data" port from a private source.
     const cssTiers = new Set([...provenanceCss.matchAll(/pvchip-([a-z]+)/g)].map((m) => m[1]));
-    expect([...cssTiers].sort()).toEqual(['computed', 'observation', 'raw']);
-    for (const tier of ['raw', 'computed', 'observation']) {
-      expect(provenanceJs).toContain("type: '" + tier + "'");
-    }
+    // All generic tiers (source tiers + the universal created/related traceback) —
+    // no domain dataset vocabulary.
+    expect([...cssTiers].sort()).toEqual(['computed', 'created', 'observation', 'raw', 'related']);
   });
 
   it('provenanceTableHtml groups sources by tier and renders chips + counts', () => {
@@ -77,9 +76,43 @@ describe('client provenance module', () => {
     expect(html).toContain('4');
   });
 
-  it('provenanceTableHtml shows an empty state when there are no sources', () => {
+  it('provenanceTableHtml shows an empty state ONLY when there is just the object node', () => {
     const { provenanceTableHtml } = loadPureHelpers();
     const html = provenanceTableHtml({ nodes: [{ id: 'table:t', type: 'object' }], edges: [] });
     expect(html).toContain('No sources recorded yet');
+  });
+
+  it("provenanceTableHtml renders the 'created' + 'related' tiers (the universal traceback)", () => {
+    const { provenanceTableHtml } = loadPureHelpers();
+    const html = provenanceTableHtml({
+      nodes: [
+        { id: 'table:projects', type: 'object' },
+        {
+          id: 'meta:created:projects',
+          type: 'created',
+          kind: 'creation',
+          label: 'Created 2026-04-06',
+        },
+        {
+          id: 'rel:orgs:o1',
+          type: 'related',
+          kind: 'relation',
+          label: 'Acme Org',
+          table: 'orgs',
+          rowId: 'o1',
+        },
+      ],
+      edges: [
+        { source: 'meta:created:projects', target: 'table:projects', relation: 'created' },
+        { source: 'rel:orgs:o1', target: 'table:projects', relation: 'related_to' },
+      ],
+    });
+    // The new tiers render — and the empty-state string is GONE.
+    expect(html).not.toContain('No sources recorded yet');
+    expect(html).toContain('Created');
+    expect(html).toContain('Related');
+    expect(html).toContain('Acme Org');
+    expect(html).toContain('pvchip-related');
+    expect(html).toContain('pvchip-created');
   });
 });

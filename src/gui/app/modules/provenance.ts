@@ -8,6 +8,8 @@ export const provenanceJs = `
       { type: 'raw', label: 'Raw sources' },
       { type: 'computed', label: 'Computed' },
       { type: 'observation', label: 'AI observations' },
+      { type: 'related', label: 'Related' },
+      { type: 'created', label: 'Created' },
     ];
     function provenanceTableHtml(payload) {
       var nodes = (payload && payload.nodes) ? payload.nodes : [];
