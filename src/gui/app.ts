@@ -245,6 +245,16 @@ export const guiAppHtml = `<!doctype html>
     <div class="rail-composer" id="rail-composer"></div>
   </div>
 
+  <!-- Outputs detail slide-over: shows a rendered context .md when a Markdown
+       entry in the Outputs column is clicked. -->
+  <aside class="outputs-detail" id="outputs-detail" hidden aria-label="Output detail">
+    <div class="outputs-detail-head">
+      <span class="outputs-detail-title" id="outputs-detail-title"></span>
+      <button class="outputs-detail-close" id="outputs-detail-close" title="Close" aria-label="Close">✕</button>
+    </div>
+    <div class="outputs-detail-body" id="outputs-detail-body"></div>
+  </aside>
+
   <script>${analyticsJs}</script>
   <script>${appJs}</script>
 </body>
