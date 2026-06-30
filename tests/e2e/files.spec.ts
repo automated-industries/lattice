@@ -11,7 +11,7 @@ test.afterEach(async () => {
 
 test('ingested text renders a preview on the files row detail', async ({ page }) => {
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Ingest a text snippet into the native `files` entity (paste-text path).
   const res = await page.request.post(`${gui.url}/api/ingest/text`, {
