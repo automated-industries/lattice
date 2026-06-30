@@ -31,7 +31,10 @@ test('an ingested file does not appear as a brain-graph node (files is a source)
   // Seed one real object so the graph is non-empty.
   await createRow(gui.url, 'items', { name: 'seed' });
   await page.goto(gui.url + '#/graph');
-  await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
+  // Topology check (items IS a graph node): assert the node is present, not that
+  // the force-graph reveal animation has finished — the reveal is slow in headless
+  // CI and is covered separately by graph-layout.spec.
+  await expect(page.locator('g.gnode[data-id="items"]')).toHaveCount(1, { timeout: 10000 });
   // No files yet → no files node (files is never a graph node regardless).
   await expect(page.locator('g.gnode[data-id="files"]')).toHaveCount(0);
 
@@ -58,6 +61,9 @@ test('an ingested file does not appear as a brain-graph node (files is a source)
   // …but reloading the graph shows NO files node (files is a source, not an
   // object), while the real `items` object remains.
   await page.reload();
-  await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
+  // Topology check (items IS a graph node): assert the node is present, not that
+  // the force-graph reveal animation has finished — the reveal is slow in headless
+  // CI and is covered separately by graph-layout.spec.
+  await expect(page.locator('g.gnode[data-id="items"]')).toHaveCount(1, { timeout: 10000 });
   await expect(page.locator('g.gnode[data-id="files"]')).toHaveCount(0);
 });
