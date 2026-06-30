@@ -126,3 +126,60 @@ describe('GET /api/context/file', () => {
     expect(status).toBe(404);
   });
 });
+
+describe('GET /api/context/tree (junction filtering)', () => {
+  // Regression: the Markdown panel used to list a "Files_<entity>" (link table)
+  // folder for every relation alongside the real entity — pure noise that read as
+  // "duplicates leaking in". The tree must hide junction (2-belongsTo) tables, the
+  // same way the brain graph renders them as edges rather than nodes.
+  it('hides junction (link) tables, listing only real entities', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ctx-jx-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  tasks:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '    outputFile: tasks.md',
+        '  projects:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: projects.md',
+        // A pure link table (two belongsTo, no payload) → classified as a junction.
+        '  tasks_projects:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      task_id: { type: uuid }',
+        '      project_id: { type: uuid }',
+        '    relations:',
+        '      task: { type: belongsTo, table: tasks, foreignKey: task_id }',
+        '      project: { type: belongsTo, table: projects, foreignKey: project_id }',
+        '    outputFile: tasks_projects.md',
+        '',
+      ].join('\n'),
+    );
+    const outputDir = join(root, 'context');
+    // Render dirs for both real entities AND the junction; only the junction folder
+    // should be filtered from the tree.
+    mkdirSync(join(outputDir, 'Tasks'), { recursive: true });
+    mkdirSync(join(outputDir, 'Projects'), { recursive: true });
+    mkdirSync(join(outputDir, 'Tasks_projects'), { recursive: true });
+    writeFileSync(join(outputDir, 'TASKS.md'), '# Tasks\n');
+    const s = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(s);
+    const { status, body } = await getJson(s, '/api/context/tree');
+    expect(status).toBe(200);
+    const names = (body.entries as TreeEntry[]).map((e) => e.name);
+    expect(names).toContain('Tasks');
+    expect(names).toContain('Projects');
+    expect(names).not.toContain('Tasks_projects'); // junction hidden
+  });
+});
