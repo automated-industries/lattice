@@ -57,8 +57,8 @@ test('navigation paints the new view immediately even when data is slow', async 
     window.location.hash = '#/fs/items/' + id;
   }, firstItemId);
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …and the item content eventually loads.
-  await expect(page.locator('.fs-doc')).toBeVisible({ timeout: 5000 });
+  // …and the item content eventually loads (the record view header).
+  await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
   // The GUI stays responsive: navigating again while data is still in flight
   // immediately repaints (no freeze, no stale view).
