@@ -30,6 +30,16 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-wire.on { background: var(--accent); color: var(--btn-text); border-color: var(--accent); }
     .mt-wire-hint { margin-left: auto; margin-right: 10px; font-size: 12px; color: var(--accent); }
     .mt-wire-hint + .mt-wire { margin-left: 0; }
+    /* "Merge" — toggles merge mode (move one table's rows into another, then
+       remove the emptied source). Sits next to "+ Wire"; a warm accent signals a
+       structural (but reversible) change. */
+    .mt-merge {
+      margin-left: 6px; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
+      color: #b45309; cursor: pointer;
+    }
+    .mt-merge:hover { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); }
+    .mt-merge.on { background: #d97706; color: var(--btn-text); border-color: #d97706; }
 
     .mt-main { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
     .mt-tiers {
@@ -46,9 +56,15 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-edge-fk { stroke: var(--accent); opacity: 0.6; }
     .mt-edge-m2m { stroke: #7c3aed; opacity: 0.6; }
     .mt-tier { min-width: 0; position: relative; z-index: 1; }
-    /* Wiring affordances. */
+    /* Wiring / merging affordances. */
     .mt.mt-wiring .mt-card { cursor: crosshair; }
     .mt-card.mt-wire-from { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-2); }
+    /* Invalid targets while a source is held: dimmed + unclickable/undroppable. */
+    .mt-card.mt-card-disabled { opacity: 0.4; pointer-events: none; cursor: not-allowed; }
+    /* The card currently being dragged onto a target. */
+    .mt-card.mt-drag-active { opacity: 0.6; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    /* In merge mode, tint the held source amber to match the Merge action. */
+    .mt.mt-mode-merge .mt-card.mt-wire-from { border-color: #d97706; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18), var(--shadow-2); }
     .mt-tier-head {
       font-size: 11px; font-weight: 700; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;

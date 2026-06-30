@@ -14,6 +14,7 @@ import {
   materializeJunction,
   createUserEntity,
   softDeleteUserEntity,
+  aiDeleteEntity,
 } from './schema-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import type { LatticeFieldDef } from '../config/types.js';
@@ -674,6 +675,47 @@ export async function handleSchemaRoutes(
       sessionId,
     );
     sendJson(res, { ok: true, column: colName });
+    return true;
+  }
+
+  // ── Merge one entity into another (move rows, then remove the source) ──
+  // Drag-to-merge in the Model → Tables explorer. Migrates every row of
+  // <source> into <target> with the SAME reversible primitive the assistant uses
+  // (aiDeleteEntity move_to): best-effort column mapping, soft-delete the
+  // originals, then soft-delete the emptied source — all through the audited
+  // mutation primitives, so the whole merge is reversible from history. The
+  // delete leg unregisters the source in place (no reopen), exactly as the chat
+  // delete_entity path does, so the bound `active` stays consistent. Owner-gated.
+  if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/merge$/.test(pathname)) {
+    const source = decodeURIComponent(pathname.split('/')[4] ?? '');
+    if (!active.validTables.has(source)) {
+      sendJson(res, { error: `Unknown entity: ${source}` }, 400);
+      return true;
+    }
+    const body = (await readJson<unknown>(req)) as { target?: unknown };
+    const target = typeof body.target === 'string' ? body.target.trim() : '';
+    if (!active.validTables.has(target)) {
+      sendJson(res, { error: 'Target entity must exist' }, 400);
+      return true;
+    }
+    if (source === target) {
+      sendJson(res, { error: 'Cannot merge an entity into itself' }, 400);
+      return true;
+    }
+    const outcome = await aiDeleteEntity(active, source, { move_to: target }, sessionId);
+    // move_to is always supplied, so `needsResolution` is unreachable here — but
+    // surface it rather than silently returning 200 if that ever changes.
+    if ('needsResolution' in outcome) {
+      sendJson(res, { error: outcome.message, rowCount: outcome.rowCount }, 400);
+      return true;
+    }
+    // An ok:false here is a precondition failure (row cap exceeded, inbound FK,
+    // native/junction target) — client-actionable, so 400, not a 500 server fault.
+    if (!outcome.ok) {
+      sendJson(res, { error: outcome.error }, 400);
+      return true;
+    }
+    sendJson(res, { ok: true, merged: source, into: target, movedRows: outcome.movedRows ?? 0 });
     return true;
   }
 

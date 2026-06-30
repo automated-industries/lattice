@@ -55,6 +55,15 @@ database connector).
   to signal "more than cap". Used to compute the GUI's approximate pagination total
   without an unbounded `COUNT(*)`.
 
+- **Tables-explorer "Wire" and "Merge" interactions.** In Model → Tables, both the
+  "+ Wire" mode (link two tables many-to-many) and a new "Merge" mode work by
+  clicking a source then a target **or** by dragging one table card onto another.
+  While a source is held, invalid targets grey out (the source itself, junctions,
+  and — for Wire — already-linked pairs). Merge moves the source's rows into the
+  target and removes the emptied source via the same reversible primitive the
+  assistant uses (`POST /api/schema/entities/:source/merge` — audited and
+  restorable from history).
+
 - **Connect an external database as an Input.** A new credential connector imports
   an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
   Postgres) — by connection string or host/user/password — introspecting its schema
