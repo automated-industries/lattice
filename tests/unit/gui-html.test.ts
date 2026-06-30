@@ -39,8 +39,11 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('Lattice');
   });
 
-  it('boots from /api/entities on load', () => {
-    expect(guiAppHtml).toContain("'/api/entities'");
+  it('boots from /api/entities-summary on load (the no-disk-scan Objects list)', () => {
+    // Boot / workspace switch / post-mutation reloads use the summary endpoint
+    // (tables + counts, no O(files) rendered-file scan) — the GUI never read the
+    // scanned `entities` field.
+    expect(guiAppHtml).toContain("'/api/entities-summary'");
   });
 
   it('disables autocapitalize/autocorrect/spellcheck on Postgres wizard text inputs', () => {

@@ -195,6 +195,14 @@ database connector).
   the old object." The whole merge is recorded in version history, so it can be
   restored. (An explicit request to delete an object's data outright is still a
   separate, confirm-first path.)
+- **Workspace switch (and boot / post-mutation reloads) no longer block on a disk
+  scan.** The Objects list is served by a new `GET /api/entities-summary` that
+  returns the tables + row counts WITHOUT the O(files) rendered-file scan the full
+  `/api/entities` does — the GUI never read the scanned field. The schema-only
+  brain graph (`/api/graph?schema=1`, the GUI's only graph mode) likewise skips that
+  scan. Switching a large workspace now renders the sidebar / Tables / graph
+  immediately instead of hanging until the scan finishes. `/api/entities` is
+  unchanged for any consumer that wants the rendered-file list.
 
 ### Fixed
 

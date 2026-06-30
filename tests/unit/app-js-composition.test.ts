@@ -171,8 +171,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // PUT /api/tables/:t/rows/:id/context. The old column-by-column field dump
 // (fsFieldHtml/.fs-doc) and its click-to-edit (wireFsEdit) are removed, and
 // loadFsContext renders ONE primary doc (no more duplicate "Files" sections).
-const ORIGINAL_LENGTH = 822210;
-const ORIGINAL_SHA256 = '5a2e9943886880efbdb76c03a70198e3006f7e272b7ab6faa92d9f9f8f1b1536';
+// Workspace-switch fast path: the boot / switch / post-mutation / route reloads
+// fetch /api/entities-summary (Objects list — tables + counts — with NO O(files)
+// rendered-file scan) instead of /api/entities (the GUI never read the scanned
+// `entities` field).
+const ORIGINAL_LENGTH = 822250;
+const ORIGINAL_SHA256 = 'ee2177e4dea17da488b3bb44bda5d7b083534bf5cef546d0872541f69ac9bb9c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

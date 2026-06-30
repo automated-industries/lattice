@@ -15,6 +15,7 @@ import type { GuiRequestContext } from './request-context.js';
 import {
   buildGuiGraph,
   getGuiEntities,
+  loadGuiData,
   getGuiProject,
   isJunctionTable,
   type GuiEntitiesPayload,
@@ -97,19 +98,22 @@ function registeredExtraTables(db: Lattice, yamlNames: Set<string>): GuiTableSum
     });
 }
 
-async function entitiesWithCounts(
+/**
+ * Enrich a base set of table summaries with per-table row counts and (cloud
+ * owner) sharing policy — the heavy, DB-touching part of the Objects list. Shared
+ * by the full {@link entitiesWithCounts} path and the no-disk-scan
+ * {@link entitiesSummary} path so both render an identical Objects list.
+ */
+async function enrichEntityTables(
   db: Lattice,
-  configPath: string,
-  outputDir: string,
-): Promise<GuiEntitiesPayload> {
-  const payload = getGuiEntities(configPath, outputDir);
-
-  const yamlNames = new Set(payload.tables.map((t) => t.name));
+  baseTables: GuiTableSummary[],
+): Promise<GuiTableSummary[]> {
+  const yamlNames = new Set(baseTables.map((t) => t.name));
   // Internal native entities (chat_threads/chat_messages) back the assistant's
   // conversation storage — they're real tables but must never surface in the
   // Objects list / dashboard cards. Drop them from the display payload here
   // (they stay registered + queryable for the chat route).
-  const allTables = [...payload.tables, ...registeredExtraTables(db, yamlNames)].filter(
+  const allTables = [...baseTables, ...registeredExtraTables(db, yamlNames)].filter(
     (t) => !isInternalNativeEntity(t.name),
   );
 
@@ -204,7 +208,35 @@ async function entitiesWithCounts(
     }
   }
 
-  return { ...payload, tables: enrichedTables };
+  return enrichedTables;
+}
+
+async function entitiesWithCounts(
+  db: Lattice,
+  configPath: string,
+  outputDir: string,
+): Promise<GuiEntitiesPayload> {
+  const payload = getGuiEntities(configPath, outputDir);
+  return { ...payload, tables: await enrichEntityTables(db, payload.tables) };
+}
+
+/**
+ * Same as {@link entitiesWithCounts} but WITHOUT the O(files) rendered-file scan
+ * (collectEntities). The Objects list / Tables / sidebar only read `tables`, so
+ * the workspace-switch hot path serves this and stays fast on a large workspace;
+ * the `entities` (rendered-file summaries) field is intentionally empty.
+ */
+async function entitiesSummary(
+  db: Lattice,
+  configPath: string,
+  outputDir: string,
+): Promise<GuiEntitiesPayload> {
+  const data = loadGuiData(configPath, outputDir, false); // skip the disk scan
+  return {
+    tables: await enrichEntityTables(db, data.tables),
+    entities: [],
+    hasManifest: data.manifest !== null,
+  };
 }
 
 const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
@@ -473,6 +505,13 @@ export async function handleReadRoutes(
   }
   if (method === 'GET' && pathname === '/api/entities') {
     sendJson(res, await entitiesWithCounts(active.db, active.configPath, active.outputDir));
+    return true;
+  }
+  // Fast path for the workspace-switch + boot + post-mutation reloads: the same
+  // Objects list (tables + counts), but WITHOUT the O(files) rendered-file scan
+  // that `/api/entities` does (the GUI never reads the scanned `entities` field).
+  if (method === 'GET' && pathname === '/api/entities-summary') {
+    sendJson(res, await entitiesSummary(active.db, active.configPath, active.outputDir));
     return true;
   }
   if (method === 'GET' && pathname === '/api/dashboard') {
