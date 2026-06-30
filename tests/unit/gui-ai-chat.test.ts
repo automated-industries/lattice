@@ -227,6 +227,27 @@ describe('chat tool loop', () => {
     expect(capturedSystem).toMatch(/never offer to "write a script"/i);
   });
 
+  it('tells the assistant to MERGE entities via delete_entity move_to without asking (reversible)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'merge these two lists into one' }));
+
+    // Consolidating one object into another must use the reversible move_to merge
+    // path (delete_entity), be done WITHOUT asking, and the model must stop ending
+    // the turn by telling the user they can now delete the old object themselves.
+    expect(capturedSystem).toMatch(/CONSOLIDATE or MERGE/i);
+    expect(capturedSystem).toContain('delete_entity');
+    expect(capturedSystem).toContain('move_to');
+    expect(capturedSystem).toMatch(/do NOT ask the user to confirm first/i);
+    expect(capturedSystem).toMatch(/restored from history/i);
+    expect(capturedSystem).toMatch(/do NOT end by telling them they can now delete/i);
+  });
+
   it("injects the cloud owner's workspace system prompt when provided", async () => {
     let capturedSystem = '';
     const client: LlmClient = {

@@ -169,6 +169,13 @@ database connector).
   persisted per group.
 - The object-type page's prominent "New &lt;object&gt;" tile is replaced by a "New"
   header action; row browsing remains available via "List view".
+- **The assistant finishes a merge instead of leaving cleanup to you.** When you ask
+  it to consolidate / merge one object into another, it now migrates the rows with
+  the reversible `move_to` path and removes the emptied source itself — without
+  asking first, and without ending the turn by telling you that you "can now delete
+  the old object." The whole merge is recorded in version history, so it can be
+  restored. (An explicit request to delete an object's data outright is still a
+  separate, confirm-first path.)
 
 ### Fixed
 
