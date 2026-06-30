@@ -38,6 +38,15 @@ database connector).
     fields, Markdown shows the row's rendered context.
   - Clicking a Markdown file in Outputs opens it in the **center pane** (with a
     breadcrumb), replacing the slide-in detail drawer.
+  - Object + Artifacts pages **paginate**: a Prev/Next pager with an "A–B of T"
+    total (rendered "T+" when the count is large). The object page fetches one
+    page at a time (server `limit`/`offset`); the total is an approximate,
+    bounded, RLS-scoped count.
+- **`Lattice.boundedCount(table, opts)`** — a new public query method: like
+  `count`, but it stops after `opts.cap + 1` matching rows (default cap 1000) so it
+  stays cheap on large tables, returning the exact count when `<= cap` or `cap + 1`
+  to signal "more than cap". Used to compute the GUI's approximate pagination total
+  without an unbounded `COUNT(*)`.
 
 - **Connect an external database as an Input.** A new credential connector imports
   an external Postgres-family database (AWS RDS Postgres, Supabase, or generic

@@ -64,8 +64,9 @@ import { css } from '../../src/gui/app/css.js';
 // Record Formatted | Markdown toggle: .fs-view-toggle segmented control on the
 // record view-header. Markdown-in-center: the Outputs slide-in drawer styles
 // (.outputs-detail*) are removed in favor of a center .md-doc render (#/md/<path>).
-const ORIGINAL_LENGTH = 113497;
-const ORIGINAL_SHA256 = 'ede847aff92dddff99e4dd845174de3fbbcf2959e101c4dea7a91cdd4b328173';
+// Rows-table pager: .rows-pager / .rows-pager-info + pager button sizing.
+const ORIGINAL_LENGTH = 113931;
+const ORIGINAL_SHA256 = 'ac3a8f40a0bb5d18fc3fcfb15e15176dbc2077f3517947e73e38ae7c5c83a94a';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

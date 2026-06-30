@@ -137,8 +137,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // "Artifacts" (fsBreadcrumb) instead of Files; displayFor gains an 'artifacts' label.
 // Review low: the renderFsCollection + renderFsItem error catches now guard on
 // renderGen so a stale async error can't clobber a newer view.
-const ORIGINAL_LENGTH = 816014;
-const ORIGINAL_SHA256 = '67827a8019623043278b2834e0b5b14089977e19b2d83e86f234145859ac645a';
+// Rows-table pagination: a shared paintRowsTable helper (thead/body + whole-row
+// click + a Prev/Next pager with an "A–B of T" / "T+" total), fsPagerView,
+// PAGE_SIZE + per-collection page state (fsPageByPath), and fetchRowsPage (returns
+// { rows, approxTotal, totalIsCapped }). renderFsCollection pages server-side;
+// renderArtifactsView + relation drills page client-side over the bounded array.
+const ORIGINAL_LENGTH = 819712;
+const ORIGINAL_SHA256 = 'b52437a31867a82ecf554b1522ae6814bd41c8ffb75557aa8c1622fd0481dac7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
