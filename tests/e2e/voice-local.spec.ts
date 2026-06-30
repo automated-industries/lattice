@@ -9,12 +9,22 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-/** Enable the composer (store a test Claude key + reload) and return the input. */
+/** Open the floating "Ask Lattice" panel. In the 5.0 reframe the composer (input /
+ *  mic / send) lives inside this collapsed panel, so it must be opened before any
+ *  composer element is visible. */
+async function openAskLattice(page: import('@playwright/test').Page) {
+  await page.locator('#ask-lattice-trigger').click();
+  await expect(page.locator('#ask-lattice-panel')).toBeVisible();
+}
+
+/** Enable the composer (store a test Claude key + reload), open the Ask Lattice
+ *  panel, and return the input. */
 async function enableComposer(page: import('@playwright/test').Page, url: string) {
   await page.request.put(`${url}/api/assistant/key`, {
     data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
   });
   await page.goto(url);
+  await openAskLattice(page);
   await expect(page.locator('#chat-input')).toBeVisible();
   return page.locator('#chat-input');
 }
