@@ -140,7 +140,7 @@ describe.skipIf(!PG_URL)('#2.1 member reads a masked table through the GUI', () 
     // Guards the recurring "only tested as owner/BYPASSRLS" failure class: the
     // bounded count must route through the same RLS-scoped relation as the rows.
     const gui = await memberGuiOnMaskedCloud();
-    const r = await fetch(`${gui.url}/api/tables/notes/rows`);
+    const r = await fetch(`${gui.url}/api/tables/notes/rows?withTotal=1`);
     expect(r.status).toBe(200);
     const body = (await r.json()) as {
       rows: { id: string }[];
