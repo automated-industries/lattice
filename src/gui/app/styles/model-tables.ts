@@ -38,11 +38,13 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 14px; padding: 16px; align-content: start;
     }
-    /* Relationship connectors drawn under the cards; never intercept clicks. */
-    svg.mt-edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; overflow: visible; }
-    .mt-edge { fill: none; stroke-width: 1.5; }
-    .mt-edge-fk { stroke: var(--accent); opacity: 0.45; }
-    .mt-edge-m2m { stroke: #7c3aed; opacity: 0.4; stroke-dasharray: 4 3; }
+    /* Relationship connectors sit ABOVE the cards (z-index 2 > the .mt-tier cards'
+       z-index 1) so a link is never hidden behind a table; pointer-events:none
+       keeps the cards clickable. Solid strokes (no dashes). */
+    svg.mt-edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible; }
+    .mt-edge { fill: none; stroke-width: 1.75; }
+    .mt-edge-fk { stroke: var(--accent); opacity: 0.6; }
+    .mt-edge-m2m { stroke: #7c3aed; opacity: 0.6; }
     .mt-tier { min-width: 0; position: relative; z-index: 1; }
     /* Wiring affordances. */
     .mt.mt-wiring .mt-card { cursor: crosshair; }

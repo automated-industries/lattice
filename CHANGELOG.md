@@ -38,6 +38,13 @@ database connector).
     fields, Markdown shows the row's rendered context.
   - Clicking a Markdown file in Outputs opens it in the **center pane** (with a
     breadcrumb), replacing the slide-in detail drawer.
+  - The **+ New workspace** dialog is a single step — enter a name (and, for a
+    cloud workspace, the Postgres connection) and click **Create**; the optional
+    starter-entities and review steps are gone (entities are added from the
+    workspace itself).
+  - Tables-explorer relationship edges render as **solid** strokes drawn **above**
+    the cards (never hidden behind a table), and links between same-column tables
+    loop out into the side gutter so they read clearly.
   - Object + Artifacts pages **paginate**: a Prev/Next pager with an "A–B of T"
     total (rendered "T+" when the count is large). The object page fetches one
     page at a time (server `limit`/`offset`); the total is an approximate,
