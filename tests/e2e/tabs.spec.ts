@@ -52,8 +52,10 @@ test('the Tables tab switches the Model view to the tiered explorer', async ({ p
 
 test('the non-empty filter shows objects with rows', async ({ page }) => {
   await page.goto(gui.url + '#/graph');
-  // `items` has a row → its node appears.
-  await expect(page.locator('g.gnode[data-id="items"]')).toBeVisible({ timeout: 5000 });
+  // `items` has a row → its node is present in the graph. Assert topology (the node
+  // exists), not the force-graph reveal animation (slow in headless CI; covered by
+  // graph-layout.spec).
+  await expect(page.locator('g.gnode[data-id="items"]')).toHaveCount(1, { timeout: 10000 });
 });
 
 test('object + record pages are not tabs but keep the Tables tab highlighted', async ({ page }) => {
