@@ -102,18 +102,21 @@ export const routerJs = `    // ────────────────
     /**
      * One PAGE of rows plus the pagination envelope: { rows, approxTotal,
      * totalIsCapped }. approxTotal is the server's bounded (approximate) total so a
-     * caller can render an "N–M of T" / "T+" pager. opts: { deletedMode, limit,
-     * offset, exclude }.
+     * caller can render an "N–M of T" / "T+" pager. This is the ONLY caller that
+     * asks for the total (?withTotal=1) — the whole-list callers (loadAllRows, the
+     * Sources sidebar) omit it so the server skips the extra count. opts:
+     * { deletedMode, artifactType, limit, offset, exclude }.
      */
     function fetchRowsPage(tableName, opts) {
       opts = opts || {};
       var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows';
-      var qs = [];
+      var qs = ['withTotal=1'];
       if (opts.deletedMode) qs.push('deleted=' + encodeURIComponent(opts.deletedMode));
+      if (opts.artifactType) qs.push('artifactType=' + encodeURIComponent(opts.artifactType));
       if (opts.limit != null) qs.push('limit=' + encodeURIComponent(opts.limit));
       if (opts.offset != null) qs.push('offset=' + encodeURIComponent(opts.offset));
       if (opts.exclude) qs.push('exclude=' + encodeURIComponent(opts.exclude));
-      if (qs.length) url += '?' + qs.join('&');
+      url += '?' + qs.join('&');
       return fetchJson(url).then(function (d) {
         var rows = (d && d.rows) || [];
         return {

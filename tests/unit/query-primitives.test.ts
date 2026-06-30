@@ -231,5 +231,14 @@ describe('p2 query primitives (SQLite)', () => {
       for (let i = 0; i < 3; i++) await d.insert('items', { id: `i${String(i)}`, name: 'x' });
       expect(await d.boundedCount('items')).toBe(3);
     });
+
+    it('clamps an absurd cap instead of building an exponential LIMIT that crashes', async () => {
+      // cap is interpolated into the LIMIT; >= 1e21 stringifies as "1e+21", which
+      // both engines reject. The clamp keeps it a plain decimal integer.
+      const d = await setup();
+      for (let i = 0; i < 4; i++) await d.insert('items', { id: `i${String(i)}`, name: 'x' });
+      expect(await d.boundedCount('items', { cap: 1e21 })).toBe(4); // resolves, doesn't throw
+      expect(await d.boundedCount('items', { cap: Number.POSITIVE_INFINITY })).toBe(4);
+    });
   });
 });

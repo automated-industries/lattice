@@ -418,10 +418,15 @@ export class QueryCore {
     ]);
     if (colErr) return colErr;
 
-    // Coerce to a safe positive integer — `cap` is interpolated into the LIMIT
-    // (not a bound parameter), so it must never carry a non-finite/negative value.
+    // Coerce to a decimal-safe, integer-safe positive value — `cap` is interpolated
+    // into the LIMIT (not a bound parameter), so it must never be non-finite, and it
+    // must stay below the magnitude where Number→string flips to exponential form
+    // (>= 1e21 → "1e+21", which both engines reject) and within safe-integer range.
+    // The 1e6 ceiling is far above any real pagination cap.
     const rawCap = opts.cap ?? 1000;
-    const cap = Number.isFinite(rawCap) ? Math.max(1, Math.floor(rawCap)) : 1000;
+    const cap = Number.isFinite(rawCap)
+      ? Math.min(Math.max(1, Math.floor(rawCap)), 1_000_000)
+      : 1000;
     const params: unknown[] = [];
     const whereClauses: string[] = [];
 
