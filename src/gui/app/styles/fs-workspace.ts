@@ -56,6 +56,17 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-context-doc .md-body p { margin: 6px 0; }
     .fs-context-doc .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
     .fs-context-doc .md-body a { color: var(--accent); }
+    /* Markdown view: the editable raw-markdown textarea (writes back to the row)
+       + an inline save-status line. */
+    .fs-context-edit {
+      display: block; width: 100%; max-width: 900px; min-height: 340px; box-sizing: border-box;
+      margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.6;
+      resize: vertical; tab-size: 2;
+    }
+    .fs-context-edit:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .fs-context-status { max-width: 900px; margin-top: 6px; min-height: 16px; font-size: 12px; color: var(--text-muted); }
     .fs-field { padding: 12px 0; border-bottom: 1px solid var(--border); }
     .fs-field:last-child { border-bottom: none; }
     /* Inline create-view action row (Save / Cancel). */

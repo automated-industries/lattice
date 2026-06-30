@@ -8,7 +8,7 @@ import {
   statSync,
 } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
-import { sendJson, parsePageParam } from './http.js';
+import { sendJson, readJson, parsePageParam } from './http.js';
 import { Lattice } from '../lattice.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { GuiRequestContext } from './request-context.js';
@@ -24,7 +24,8 @@ import { fullTextSearch } from '../search/fts.js';
 import { buildProvenanceGraph } from './provenance.js';
 import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import { resolveColumnDescription, resolveTableDescription } from './column-descriptions.js';
-import { parseAudit } from './mutations.js';
+import { parseAudit, updateRow } from './mutations.js';
+import { deriveUpdatesFromFile } from '../reverse-sync/default-reverse-sync.js';
 import {
   listNativeBindings,
   isNativeEntity,
@@ -827,7 +828,7 @@ export async function handleReadRoutes(
     const [, rawCtxTable, rawCtxId] = ctxMatch;
     const ctxTable = decodeURIComponent(rawCtxTable ?? '');
     const ctxId = decodeURIComponent(rawCtxId ?? '');
-    if (method !== 'GET') {
+    if (method !== 'GET' && method !== 'PUT') {
       sendJson(res, { error: `Method ${method} not allowed` }, 405);
       return true;
     }
@@ -840,6 +841,43 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'Row not found' }, 404);
       return true;
     }
+    // Secret columns for this table. They are redacted out of the GET render AND
+    // never round-tripped back on PUT — the served value is masked (••••••••), so
+    // writing it back would clobber the real secret.
+    const colMetaRows = (await active.db.query('_lattice_gui_column_meta', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: ctxTable },
+        { col: 'secret', op: 'eq', val: 1 },
+      ],
+    })) as { column_name: string }[];
+    const secretCols = new Set(colMetaRows.map((r) => r.column_name));
+
+    // ── Write-back: save an edited rendered record back to its columns ──
+    // The record's Markdown view is an editable textarea; saving it derives column
+    // updates from the markdown (YAML frontmatter + `key: value` body) via the same
+    // parser the file-watcher uses, then applies them through the audited mutation
+    // primitive (so the edit is reversible from history). Free-form prose that
+    // parses to no known column is a deliberate no-op (`updated: 0`) — a value is
+    // never guessed at, so a custom/lossy render can't corrupt the row.
+    if (method === 'PUT') {
+      const putBody = (await readJson<unknown>(req)) as { content?: unknown };
+      const content = typeof putBody.content === 'string' ? putBody.content : '';
+      const pkCols = active.db.getPrimaryKey(ctxTable);
+      const updates = deriveUpdatesFromFile(content, row, { table: ctxTable, pkCols });
+      const set = updates[0]?.set ?? {};
+      const safeSet: Record<string, unknown> = {};
+      for (const [col, val] of Object.entries(set)) {
+        if (secretCols.has(col)) continue; // never write a redacted secret value back
+        safeSet[col] = val;
+      }
+      const fields = Object.keys(safeSet);
+      if (fields.length > 0) {
+        await updateRow(ctx.buildMutationCtx(), ctxTable, ctxId, safeSet);
+      }
+      sendJson(res, { updated: fields.length, fields });
+      return true;
+    }
+
     const def = active.entityContextByTable.get(ctxTable);
     const locator = buildRowContextLocator(ctxTable, row, def, active.manifest);
     if (!locator) {
@@ -849,15 +887,6 @@ export async function handleReadRoutes(
       sendJson(res, { files: [] });
       return true;
     }
-    // Pull secret columns for this table so the rendered .md gets
-    // redacted before it crosses the wire.
-    const colMetaRows = (await active.db.query('_lattice_gui_column_meta', {
-      filters: [
-        { col: 'table_name', op: 'eq', val: ctxTable },
-        { col: 'secret', op: 'eq', val: 1 },
-      ],
-    })) as { column_name: string }[];
-    const secretCols = new Set(colMetaRows.map((r) => r.column_name));
     sendJson(res, { files: readRowContext(active.outputDir, locator, secretCols) });
     return true;
   }
