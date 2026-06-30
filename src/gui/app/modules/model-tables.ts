@@ -141,12 +141,19 @@ export const modelTablesJs = `
     // Entity/Field view doesn't refetch. Cleared implicitly on workspace switch
     // because the whole view is rebuilt.
     var mtEdgesCache = null;
-    // Wiring mode (ported from the schema-explorer pattern): "+ Wire" toggles a
-    // mode where the user clicks a SOURCE table then a TARGET table; the pair is
-    // linked via POST /api/schema/junctions (a many-to-many relationship). The
-    // relationships themselves are drawn as SVG connectors over the tier columns.
-    var mtWireMode = false;
-    var mtWireFrom = null;
+    // Schema-editing modes (ported from the schema-explorer pattern). Two toggles:
+    //   • "+ Wire" → pick/drag a SOURCE table onto a TARGET to LINK them (a
+    //     many-to-many relationship) via POST /api/schema/junctions.
+    //   • "Merge"  → pick/drag a SOURCE table onto a TARGET to MERGE source into
+    //     target (move the rows in, then remove the emptied source) via
+    //     POST /api/schema/entities/:source/merge — reversible from history.
+    // Either mode works by CLICK (source, then target) or by DRAG (source onto
+    // target). While a source is chosen, invalid targets are greyed out. The
+    // relationship edges themselves are drawn as SVG connectors over the columns.
+    var mtMode = null; // null | 'wire' | 'merge'
+    var mtPickFrom = null; // source table chosen by the first click (click flow)
+    var mtDragFrom = null; // source table while a drag is in progress (drag flow)
+    var mtSuppressClick = false; // swallow the click a completed drag may emit
     function renderModelTables(host) {
       if (!host) return;
       if (mtEdgesCache) { mtRenderTables(host, mtEdgesCache); return; }
@@ -181,18 +188,27 @@ export const modelTablesJs = `
           '<div class="mt-tier-body">' + cards + '</div></div>';
       }).join('');
 
-      var wireLabel = mtWireMode ? (mtWireFrom ? 'Pick target\\u2026' : 'Pick source\\u2026') : '+ Wire';
+      var actionVerb = mtMode === 'merge' ? 'merge' : 'link';
+      var hint = mtMode
+        ? (mtPickFrom
+            ? 'Pick the target to ' + actionVerb + ' into\\u2014or drag the source onto it. Click the source again to cancel.'
+            : 'Click a source table then a target\\u2014or drag one table onto another to ' + actionVerb + ' them.')
+        : '';
+      var wireLabel = mtMode === 'wire' ? (mtPickFrom ? 'Pick target\\u2026' : 'Pick source\\u2026') : '+ Wire';
+      var mergeLabel = mtMode === 'merge' ? (mtPickFrom ? 'Pick target\\u2026' : 'Pick source\\u2026') : 'Merge';
       host.innerHTML =
-        '<div class="mt' + (mtWireMode ? ' mt-wiring' : '') + '">' +
+        '<div class="mt' + (mtMode ? ' mt-wiring mt-mode-' + mtMode : '') + '">' +
           '<div class="mt-bar">' +
             '<span class="mt-bar-label">View</span>' +
             '<div class="mt-seg">' +
               '<button type="button" class="mt-seg-btn' + (level === 'entity' ? ' on' : '') + '" data-mt-level="entity">Entity</button>' +
               '<button type="button" class="mt-seg-btn' + (level === 'field' ? ' on' : '') + '" data-mt-level="field">Field</button>' +
             '</div>' +
-            (mtWireMode ? '<span class="mt-wire-hint">Click a source table, then a target.</span>' : '') +
-            '<button type="button" class="mt-wire' + (mtWireMode ? ' on' : '') + '" id="mt-wire-btn" ' +
-              'title="Link two tables — click a source, then a target">' + wireLabel + '</button>' +
+            (hint ? '<span class="mt-wire-hint">' + hint + '</span>' : '') +
+            '<button type="button" class="mt-wire' + (mtMode === 'wire' ? ' on' : '') + '" id="mt-wire-btn" ' +
+              'title="Link two tables (many-to-many) — click a source then a target, or drag one onto another">' + wireLabel + '</button>' +
+            '<button type="button" class="mt-merge' + (mtMode === 'merge' ? ' on' : '') + '" id="mt-merge-btn" ' +
+              'title="Merge one table into another — move its rows in, then remove it (reversible from history)">' + mergeLabel + '</button>' +
           '</div>' +
           '<div class="mt-main">' +
             '<div class="mt-tiers">' + tiers + '</div>' +
@@ -203,47 +219,106 @@ export const modelTablesJs = `
       host.querySelectorAll('.mt-seg-btn').forEach(function (b) {
         b.addEventListener('click', function () { mtSetLevel(b.getAttribute('data-mt-level')); renderModelTables(host); });
       });
-      // "+ Wire" toggles wiring mode (no navigation). In wiring mode a card click
-      // picks the source then the target; otherwise it opens the detail panel.
-      var wireBtn = host.querySelector('#mt-wire-btn');
-      if (wireBtn) wireBtn.addEventListener('click', function () {
-        mtWireMode = !mtWireMode;
-        mtWireFrom = null;
-        if (mtWireMode && mtLevel() !== 'entity') mtSetLevel('entity'); // wiring links tables
+      // The "+ Wire" / "Merge" toggles flip the active mode (mutually exclusive,
+      // no navigation). In a mode a card click/drag picks a source then a target;
+      // outside a mode a card click opens the detail panel.
+      function mtToggleMode(mode) {
+        mtMode = mtMode === mode ? null : mode;
+        mtPickFrom = null;
+        mtDragFrom = null;
+        if (mtMode && mtLevel() !== 'entity') mtSetLevel('entity'); // modes act on whole tables
         renderModelTables(host);
-      });
+      }
+      var wireBtn = host.querySelector('#mt-wire-btn');
+      if (wireBtn) wireBtn.addEventListener('click', function () { mtToggleMode('wire'); });
+      var mergeBtn = host.querySelector('#mt-merge-btn');
+      if (mergeBtn) mergeBtn.addEventListener('click', function () { mtToggleMode('merge'); });
       host.querySelectorAll('.mt-card').forEach(function (b) {
         b.addEventListener('click', function () {
+          if (mtSuppressClick) return; // a drag just completed — ignore the trailing click
           var t = b.getAttribute('data-table');
-          if (mtWireMode) { mtWireClick(host, t); return; }
+          if (mtMode) { mtModeClick(host, t); return; }
           mtOpenDetail(t, null, entities, lineage);
         });
+        mtAttachDrag(host, b);
       });
-      // Field view: clicking a field row traces THAT field's lineage (not in wire mode).
+      // Field view: clicking a field row traces THAT field's lineage (not in a mode).
       host.querySelectorAll('.mt-field[data-field]').forEach(function (b) {
         b.addEventListener('click', function (ev) {
           ev.stopPropagation();
-          if (mtWireMode) { mtWireClick(host, b.getAttribute('data-table')); return; }
+          if (mtMode) { mtModeClick(host, b.getAttribute('data-table')); return; }
           mtOpenDetail(b.getAttribute('data-table'), b.getAttribute('data-field'), entities, lineage);
         });
       });
-      // Highlight the picked source while wiring.
-      if (mtWireFrom) {
-        var fromCard = host.querySelector('.mt-card[data-table="' + mtWireFrom + '"]');
+      // Highlight the picked source + grey out invalid targets while in a mode.
+      if (mtMode && mtPickFrom) {
+        var fromCard = host.querySelector('.mt-card[data-table="' + mtPickFrom + '"]');
         if (fromCard) fromCard.classList.add('mt-wire-from');
+        mtMarkInvalidTargets(host, mtPickFrom);
       }
       // Draw the relationship connectors over the tier columns + keep them in sync.
       mtSetupEdges();
     }
 
-    // Click handler while wiring: first click = source, second (different) = target
-    // → create a many-to-many link via the Lattice schema API, then refresh.
-    function mtWireClick(host, table) {
-      if (!mtWireFrom) { mtWireFrom = table; renderModelTables(host); return; }
-      if (mtWireFrom === table) { mtWireFrom = null; renderModelTables(host); return; } // re-click source → cancel
-      var left = mtWireFrom, right = table;
-      mtWireMode = false;
-      mtWireFrom = null;
+    // ── Wire / Merge interaction (click flow + drag flow + grey-out) ─────────
+    // A target is INVALID while a source is held if it is the source itself, a
+    // junction (not normally rendered as a card), or — in WIRE mode — already
+    // linked to the source (an existing many-to-many edge, mirroring the server's
+    // duplicate-junction guard). MERGE accepts any other non-junction table; the
+    // server still enforces row caps / inbound-FK and reports them.
+    function mtInvalidTarget(source, table) {
+      if (table === source) return true;
+      var ents = (state.entities && state.entities.tables) || [];
+      for (var i = 0; i < ents.length; i++) {
+        if (ents[i].name === table && isJunction(ents[i])) return true;
+      }
+      if (mtMode === 'wire') {
+        var already = (mtEdgesCache || []).some(function (e) {
+          if (e.type !== 'manyToMany') return false;
+          var s = String(e.source).replace(/^table:/, '');
+          var t = String(e.target).replace(/^table:/, '');
+          return (s === source && t === table) || (s === table && t === source);
+        });
+        if (already) return true;
+      }
+      return false;
+    }
+    // Grey out (and, via CSS pointer-events:none, make undroppable) every invalid
+    // target while a source is held. The source keeps its pointer events so a
+    // re-click cancels; it is highlighted separately (.mt-wire-from).
+    function mtMarkInvalidTargets(host, source) {
+      host.querySelectorAll('.mt-card').forEach(function (c) {
+        var t = c.getAttribute('data-table');
+        if (t !== source && mtInvalidTarget(source, t)) c.classList.add('mt-card-disabled');
+        else c.classList.remove('mt-card-disabled');
+      });
+    }
+    function mtClearInvalidTargets(host) {
+      host.querySelectorAll('.mt-card.mt-card-disabled').forEach(function (c) {
+        c.classList.remove('mt-card-disabled');
+      });
+    }
+
+    // Click flow in a mode: first click picks the source (re-render highlights it
+    // + greys invalid targets); re-clicking it cancels; clicking a different valid
+    // card performs the action (wire or merge).
+    function mtModeClick(host, table) {
+      if (!mtPickFrom) { mtPickFrom = table; renderModelTables(host); return; }
+      if (mtPickFrom === table) { mtPickFrom = null; renderModelTables(host); return; } // re-click source → cancel
+      if (mtInvalidTarget(mtPickFrom, table)) return; // greyed/invalid target — ignore
+      mtModeAct(host, mtPickFrom, table);
+    }
+
+    // Run the active mode's action on source→target, then leave the mode.
+    function mtModeAct(host, source, target) {
+      var mode = mtMode;
+      mtMode = null; mtPickFrom = null; mtDragFrom = null;
+      if (mode === 'merge') mtMergeEntities(host, source, target);
+      else mtCreateJunction(host, source, target);
+    }
+
+    // Wire: POST a many-to-many junction linking the two tables, then refresh.
+    function mtCreateJunction(host, left, right) {
       var toast = typeof showToast === 'function' ? showToast : function () {};
       fetch('/api/schema/junctions', {
         method: 'POST',
@@ -252,13 +327,77 @@ export const modelTablesJs = `
       })
         .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
         .then(function (res) {
-          if (!res.ok) { toast('Wire failed: ' + ((res.body && res.body.error) || 'could not link'), {}); renderModelTables(host); return; }
+          if (!res.ok) { toast('Link failed: ' + ((res.body && res.body.error) || 'could not link'), {}); renderModelTables(host); return; }
           mtEdgesCache = null; // a new junction edge exists → re-fetch the graph edges
           toast('Linked ' + displayFor(left).label + ' \\u2194 ' + displayFor(right).label, {});
           var done = function () { renderModelTables(host); };
           if (typeof refreshEntities === 'function') refreshEntities().then(done, done); else done();
         })
-        .catch(function () { toast('Wire failed', {}); renderModelTables(host); });
+        .catch(function () { toast('Link failed', {}); renderModelTables(host); });
+    }
+
+    // Merge: POST source→target; the server moves the rows then removes the
+    // emptied source (reversible from history). Refresh entities + edges after.
+    function mtMergeEntities(host, source, target) {
+      var toast = typeof showToast === 'function' ? showToast : function () {};
+      fetch('/api/schema/entities/' + encodeURIComponent(source) + '/merge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target: target }),
+      })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (res) {
+          if (!res.ok) { toast('Merge failed: ' + ((res.body && res.body.error) || 'could not merge'), {}); renderModelTables(host); return; }
+          mtEdgesCache = null; // the source table is gone → re-fetch the graph edges
+          var moved = (res.body && res.body.movedRows) || 0;
+          toast('Merged ' + displayFor(source).label + ' into ' + displayFor(target).label + ' (' + moved + (moved === 1 ? ' row' : ' rows') + ') \\u00b7 undo from history', {});
+          var done = function () { renderModelTables(host); };
+          if (typeof refreshEntities === 'function') refreshEntities().then(done, done); else done();
+        })
+        .catch(function () { toast('Merge failed', {}); renderModelTables(host); });
+    }
+
+    // Drag flow: press on a card, drag it onto another, release to act. Only
+    // initiates in a mode; a plain click (no movement past the threshold) falls
+    // through to the card's click handler (pick/cancel). Uses Pointer Events
+    // (mouse + touch); the drop target is resolved via elementFromPoint, so a
+    // pointer-events:none (greyed/invalid) card can never receive a drop. A
+    // completed drag sets mtSuppressClick so the synthetic click is swallowed.
+    function mtAttachDrag(host, card) {
+      card.addEventListener('pointerdown', function (ev) {
+        if (!mtMode) return; // dragging only initiates a wire/merge in a mode
+        if (ev.button !== undefined && ev.button !== 0) return; // primary button only
+        var source = card.getAttribute('data-table');
+        var startX = ev.clientX, startY = ev.clientY;
+        var dragging = false;
+        function onMove(mv) {
+          if (dragging) return;
+          if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < 6) return;
+          dragging = true;
+          mtDragFrom = source;
+          card.classList.add('mt-drag-active');
+          mtMarkInvalidTargets(host, source);
+        }
+        function onUp(up) {
+          document.removeEventListener('pointermove', onMove, true);
+          document.removeEventListener('pointerup', onUp, true);
+          card.classList.remove('mt-drag-active');
+          if (!dragging) { mtDragFrom = null; return; } // a click, not a drag
+          mtSuppressClick = true; // swallow the click this drag emits…
+          window.setTimeout(function () { mtSuppressClick = false; }, 0); // …then re-enable
+          var el = document.elementFromPoint(up.clientX, up.clientY);
+          var targetCard = el && el.closest ? el.closest('.mt-card[data-table]') : null;
+          var target = targetCard && targetCard.getAttribute('data-table');
+          mtDragFrom = null;
+          if (target && target !== source && !mtInvalidTarget(source, target)) {
+            mtModeAct(host, source, target);
+          } else {
+            mtClearInvalidTargets(host); // cancelled / invalid drop — undo the grey-out
+          }
+        }
+        document.addEventListener('pointermove', onMove, true);
+        document.addEventListener('pointerup', onUp, true);
+      });
     }
 
     // Draw the relationship edges as SVG bezier connectors between the tier-column
