@@ -152,8 +152,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // Tables-explorer edges: solid strokes (m2m dash removed), drawn ABOVE the cards
 // (svg z-index 2) so links aren't hidden behind tables, and same-column links
 // loop out into the right gutter (mtDrawEdges overlap-aware routing).
-const ORIGINAL_LENGTH = 814262;
-const ORIGINAL_SHA256 = '3d8293681808a0732cda64ce15f2ef8c8611961cbfd9025b36f61e5bfb51df8f';
+// Workspace-switch Outputs refresh: reloadEverything() now re-renders the Outputs
+// column (Markdown context tree + Tables mirror) so a switch can't leak the prior
+// workspace's rendered markdown.
+const ORIGINAL_LENGTH = 814508;
+const ORIGINAL_SHA256 = '953cb29a96e58be1b784ef2ce624731300cb80290ecbcce18784424078af3644';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
