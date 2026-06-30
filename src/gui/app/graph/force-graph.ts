@@ -157,6 +157,28 @@ const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
 
 /**
+ * Clamp one axis of the stage translation so the graph's bounding box can never be
+ * panned/zoomed fully out of the viewport. `lo`/`hi` are the world-space min/max of
+ * the node bounding box on this axis, `k` the zoom, `pane` the viewport size, `m` a
+ * margin kept on-screen. When the box is smaller than the pane it stays fully inside
+ * [m, pane-m]; when it's larger than the pane it stays covering the pane (you can't
+ * scroll past an edge into empty space). Exported so the math is unit-tested without
+ * a DOM. Screen position of a world point x is `x*k + v`.
+ */
+export function clampAxis(
+  v: number,
+  lo: number,
+  hi: number,
+  k: number,
+  pane: number,
+  m: number,
+): number {
+  const a = m - lo * k; // near edge at +m
+  const b = pane - m - hi * k; // far edge at pane-m
+  return Math.min(Math.max(v, Math.min(a, b)), Math.max(a, b));
+}
+
+/**
  * Create a live force-directed graph inside `mount`. Returns a handle to feed it
  * data, drive highlight/selection, and tear it down. The renderer owns the SVG
  * subtree; on unmount, `stop()` the loop then discard `mount.innerHTML`.
@@ -269,6 +291,26 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     // the sidebar/tab text) regardless of the stage zoom — the transform's scale()
     // would otherwise magnify the glyphs back to the old oversized look.
     svg.style.setProperty('--gnode-label-size', `${(13 / view.k).toFixed(2)}px`);
+  }
+
+  // Keep the graph within the viewport on manual pan/zoom: clamp the translation so
+  // the node bounding box can never be moved fully off-screen. Layout/fit set the
+  // view directly (centred), so only the hand-rolled pan + zoom call this.
+  function clampView(): void {
+    if (!nodeMap.size) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of nodeMap.values()) {
+      minX = Math.min(minX, n.x - n.radius);
+      minY = Math.min(minY, n.y - n.radius);
+      maxX = Math.max(maxX, n.x + n.radius);
+      maxY = Math.max(maxY, n.y + n.radius);
+    }
+    const m = 60;
+    view.x = clampAxis(view.x, minX, maxX, view.k, W(), m);
+    view.y = clampAxis(view.y, minY, maxY, view.k, H(), m);
   }
 
   function paint(): void {
@@ -482,8 +524,14 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       if (!moved && Math.hypot(e.clientX - downX, e.clientY - downY) < 4) return;
       moved = true;
       const p = toGraph(e);
-      n.fx = p.x;
-      n.fy = p.y;
+      // Keep the dragged node inside the visible viewport so it can't be pulled out
+      // of the window (world coords of the on-screen edges, inset by the radius).
+      const x0 = (8 - view.x) / view.k + n.radius;
+      const x1 = (W() - 8 - view.x) / view.k - n.radius;
+      const y0 = (8 - view.y) / view.k + n.radius;
+      const y1 = (H() - 8 - view.y) / view.k - n.radius;
+      n.fx = Math.min(Math.max(p.x, Math.min(x0, x1)), Math.max(x0, x1));
+      n.fy = Math.min(Math.max(p.y, Math.min(y0, y1)), Math.max(y0, y1));
     });
     n.g.addEventListener('pointerup', (e) => {
       dragging = false;
@@ -532,6 +580,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       view.y += e.clientY - panY;
       panX = e.clientX;
       panY = e.clientY;
+      clampView();
       applyView();
     }
   });
@@ -565,6 +614,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     view.x = px - ((px - view.x) * k) / view.k;
     view.y = py - ((py - view.y) * k) / view.k;
     view.k = k;
+    clampView();
     applyView();
   }
 

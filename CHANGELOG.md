@@ -182,6 +182,11 @@ database connector).
   live renderer, so objects added afterward (e.g. while ingesting files) didn't
   appear until a manual refresh. The ingest animation now does a full graph render
   when no live handle exists yet, so the first objects fly in as they're created.
+- **The brain graph stays in the viewport.** Panning, zooming, or dragging a node
+  can no longer push the objects out of the visible window — the stage translation
+  is clamped so the graph's bounding box always remains on-screen (fully inside
+  when it fits the pane, always covering the pane when zoomed in), and a dragged
+  node is held within the visible area.
 - **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
   single transaction, so an interrupted build can no longer leave a half-filled
   index that looks complete.
