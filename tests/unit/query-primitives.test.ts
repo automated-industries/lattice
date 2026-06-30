@@ -197,4 +197,39 @@ describe('p2 query primitives (SQLite)', () => {
       await expect(d.aggregate('items', { aggregates: [] })).rejects.toThrow(/at least one/);
     });
   });
+
+  // --- P-BOUNDED-COUNT ----------------------------------------------------
+  // The pagination total: bounded so it never becomes an O(table) COUNT, exact
+  // below the cap, and respects the same WHERE/filters as the row fetch.
+  describe('boundedCount', () => {
+    it('returns the exact count when below the cap', async () => {
+      const d = await setup();
+      for (let i = 0; i < 7; i++) await d.insert('items', { id: `i${String(i)}`, name: 'x' });
+      expect(await d.boundedCount('items', { cap: 100 })).toBe(7);
+    });
+
+    it('stops at cap + 1 for a table larger than the cap', async () => {
+      const d = await setup();
+      for (let i = 0; i < 12; i++) await d.insert('items', { id: `i${String(i)}`, name: 'x' });
+      // 12 rows, cap 5 → the scan stops after 6 (cap+1); the caller renders "5+".
+      expect(await d.boundedCount('items', { cap: 5 })).toBe(6);
+    });
+
+    it('honors a filter (e.g. the deleted_at soft-delete clause)', async () => {
+      const d = await setup();
+      for (let i = 0; i < 4; i++) await d.insert('items', { id: `live${String(i)}`, name: 'x' });
+      await d.insert('items', { id: 'gone', name: 'x', deleted_at: '2026-01-01' });
+      const live = await d.boundedCount('items', {
+        cap: 100,
+        filters: [{ col: 'deleted_at', op: 'isNull' }],
+      });
+      expect(live).toBe(4); // the soft-deleted row is excluded, same as the row fetch
+    });
+
+    it('defaults the cap to 1000 when none is given', async () => {
+      const d = await setup();
+      for (let i = 0; i < 3; i++) await d.insert('items', { id: `i${String(i)}`, name: 'x' });
+      expect(await d.boundedCount('items')).toBe(3);
+    });
+  });
 });

@@ -100,6 +100,31 @@ export const routerJs = `    // ────────────────
     }
 
     /**
+     * One PAGE of rows plus the pagination envelope: { rows, approxTotal,
+     * totalIsCapped }. approxTotal is the server's bounded (approximate) total so a
+     * caller can render an "N–M of T" / "T+" pager. opts: { deletedMode, limit,
+     * offset, exclude }.
+     */
+    function fetchRowsPage(tableName, opts) {
+      opts = opts || {};
+      var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows';
+      var qs = [];
+      if (opts.deletedMode) qs.push('deleted=' + encodeURIComponent(opts.deletedMode));
+      if (opts.limit != null) qs.push('limit=' + encodeURIComponent(opts.limit));
+      if (opts.offset != null) qs.push('offset=' + encodeURIComponent(opts.offset));
+      if (opts.exclude) qs.push('exclude=' + encodeURIComponent(opts.exclude));
+      if (qs.length) url += '?' + qs.join('&');
+      return fetchJson(url).then(function (d) {
+        var rows = (d && d.rows) || [];
+        return {
+          rows: rows,
+          approxTotal: typeof (d && d.approxTotal) === 'number' ? d.approxTotal : rows.length,
+          totalIsCapped: !!(d && d.totalIsCapped),
+        };
+      });
+    }
+
+    /**
      * Invalidate cached rows for one or more tables. Call after any mutation
      * so the next renderTable / renderDetail re-fetches from the server.
      */
