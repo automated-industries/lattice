@@ -172,11 +172,14 @@ database connector).
 
 ### Fixed
 
-- **The Outputs > Markdown panel no longer lists junction (link) tables.** Every
-  relation rendered a `Files_<entity>` / `<a>_<b>` link-table folder next to the
-  real entity, cluttering the tree with apparent duplicates. The tree now hides
-  junction tables (the same rule the brain graph uses to draw them as edges rather
-  than nodes), so it lists only real entities.
+- **Link tables are hidden from every object list, not just the graph.** Junction /
+  link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
+  Model > Tables/Entities list with apparent duplicates. They're now hidden from the
+  Markdown panel, the Tables/Entities list, the sidebar, and graph nodes — the same
+  way the brain graph draws junctions as edges, not nodes. This also catches
+  _physical_ link tables created without declared relations (e.g. an AI-built
+  `files_<entity>` shaped `(id, name, x_id, y_id)`) via a display-only column-shape
+  rule that never touches the strict, deletion-safe junction check.
 - **Outputs Markdown no longer leaks across workspaces.** Switching workspaces
   refreshed entities, the sidebar, and the chat rail but not the Outputs column,
   so the Markdown context tree (and Tables mirror) kept showing the _previous_

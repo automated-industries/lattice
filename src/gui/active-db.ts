@@ -46,6 +46,14 @@ export interface ActiveDb {
   validTables: Set<string>;
   junctionTables: Set<string>;
   /**
+   * DISPLAY-only link tables to hide from object lists / sidebars / the Markdown
+   * panel: the strict {@link ActiveDb.junctionTables} PLUS physical link tables
+   * created without declared relations (e.g. an AI-built `files_<entity>`),
+   * classified by column shape via `isHiddenLinkTable`. Never used for any
+   * destructive path — purely cosmetic filtering.
+   */
+  hiddenLinkTables: Set<string>;
+  /**
    * Entity contexts registered on the live Lattice — covers both YAML and
    * programmatic `defineEntityContext()` registrations. Tables missing here
    * fall back to {@link ActiveDb.manifest} for row-context discovery.
