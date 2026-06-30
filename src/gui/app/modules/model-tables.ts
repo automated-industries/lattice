@@ -308,13 +308,27 @@ export const modelTablesJs = `
         var b = tiers.querySelector('.mt-card[data-table="' + t + '"]');
         if (!a || !b) return;
         var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-        var x1 = ra.right - gr.left + sx, x2 = rb.left - gr.left + sx;
-        if (x2 < x1) { x1 = ra.left - gr.left + sx; x2 = rb.right - gr.left + sx; } // target is left of source
-        var y1 = ra.top - gr.top + sy + ra.height / 2;
-        var y2 = rb.top - gr.top + sy + rb.height / 2;
-        var dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
+        var ay = ra.top - gr.top + sy + ra.height / 2;
+        var by = rb.top - gr.top + sy + rb.height / 2;
+        var d;
+        // Same-column cards (their x-ranges overlap) would have a straight link
+        // run hidden behind the stacked cards. Loop it out into the right gutter
+        // where it reads clearly; the bow scales with the vertical gap. Cards in
+        // different columns keep the horizontal S-curve across the gap between them.
+        var overlapX = Math.max(ra.left, rb.left) < Math.min(ra.right, rb.right);
+        if (overlapX) {
+          var ax = ra.right - gr.left + sx;
+          var bx = rb.right - gr.left + sx;
+          var gutter = Math.max(ax, bx) + Math.max(44, Math.abs(by - ay) * 0.6);
+          d = 'M ' + ax + ' ' + ay + ' C ' + gutter + ' ' + ay + ', ' + gutter + ' ' + by + ', ' + bx + ' ' + by;
+        } else {
+          var x1 = ra.right - gr.left + sx, x2 = rb.left - gr.left + sx;
+          if (x2 < x1) { x1 = ra.left - gr.left + sx; x2 = rb.right - gr.left + sx; } // target is left of source
+          var dx = Math.max(36, Math.abs(x2 - x1) * 0.45);
+          d = 'M ' + x1 + ' ' + ay + ' C ' + (x1 + dx) + ' ' + ay + ', ' + (x2 - dx) + ' ' + by + ', ' + x2 + ' ' + by;
+        }
         var path = document.createElementNS(SVGNS, 'path');
-        path.setAttribute('d', 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2);
+        path.setAttribute('d', d);
         path.setAttribute('class', e.type === 'manyToMany' ? 'mt-edge mt-edge-m2m' : 'mt-edge mt-edge-fk');
         svg.appendChild(path);
       });
