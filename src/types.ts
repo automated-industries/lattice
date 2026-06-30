@@ -934,6 +934,15 @@ export interface CountOptions {
   filters?: FilterExpr[];
 }
 
+export interface BoundedCountOptions extends CountOptions {
+  /**
+   * Stop counting after this many matching rows (default 1000). The query scans at
+   * most `cap + 1` rows, so it never becomes an O(table) COUNT on a huge table;
+   * callers render a result greater than `cap` as an approximate "cap+".
+   */
+  cap?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Aggregation (v4.1)
 // ---------------------------------------------------------------------------

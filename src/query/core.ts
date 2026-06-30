@@ -7,6 +7,7 @@ import type {
   Row,
   QueryOptions,
   CountOptions,
+  BoundedCountOptions,
   Filter,
   FilterExpr,
   FilterOp,
@@ -396,6 +397,52 @@ export class QueryCore {
     if (whereClauses.length > 0) {
       sql += ` WHERE ${whereClauses.join(' AND ')}`;
     }
+
+    const row = await getAsyncOrSync(this.adapter, sql, params);
+    return Number(row?.n ?? 0);
+  }
+
+  /**
+   * Like {@link count}, but bounded: the scan stops after `cap + 1` matching rows,
+   * so it stays cheap on a huge table (never an O(table) COUNT). Returns the exact
+   * count when it is `<= cap`, or `cap + 1` to signal "more than cap" — the caller
+   * renders that as an approximate "cap+". Same WHERE-building (and therefore the
+   * same RLS-scoped relation + soft-delete filter) as the row fetch it pairs with.
+   */
+  async boundedCount(table: string, opts: BoundedCountOptions = {}): Promise<number> {
+    this.assertIdent(table);
+
+    const colErr = this.invalidColumnError<number>(table, [
+      ...Object.keys(opts.where ?? {}),
+      ...collectFilterCols(opts.filters),
+    ]);
+    if (colErr) return colErr;
+
+    // Coerce to a safe positive integer — `cap` is interpolated into the LIMIT
+    // (not a bound parameter), so it must never carry a non-finite/negative value.
+    const rawCap = opts.cap ?? 1000;
+    const cap = Number.isFinite(rawCap) ? Math.max(1, Math.floor(rawCap)) : 1000;
+    const params: unknown[] = [];
+    const whereClauses: string[] = [];
+
+    if (opts.where && Object.keys(opts.where).length > 0) {
+      for (const [col, val] of Object.entries(opts.where)) {
+        whereClauses.push(`"${ident(col)}" = ?`);
+        params.push(val);
+      }
+    }
+
+    if (opts.filters && opts.filters.length > 0) {
+      const { clauses, params: fp } = this.buildFilters(opts.filters);
+      whereClauses.push(...clauses);
+      params.push(...fp);
+    }
+
+    const where = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
+    // The inner `LIMIT cap + 1` bounds the work: the engine stops after cap+1
+    // matching rows. Plain ANSI SQL — runs identically on SQLite and Postgres
+    // (the adapter rewrites `?` placeholders to `$N` for Postgres).
+    const sql = `SELECT COUNT(*) as n FROM (SELECT 1 FROM "${table}"${where} LIMIT ${String(cap + 1)}) x`;
 
     const row = await getAsyncOrSync(this.adapter, sql, params);
     return Number(row?.n ?? 0);
