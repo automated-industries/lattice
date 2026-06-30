@@ -76,6 +76,40 @@ async function seedChain(base: string): Promise<{ authorId: string; bookId: stri
   return { authorId, bookId };
 }
 
+test('object pages paginate: Prev/Next + "A–B of T", and Next loads the next window', async ({
+  page,
+}) => {
+  // PAGE_SIZE is 100; seed 101 tags so the object page spans two pages. Sequential
+  // batches keep the single-writer DB calm without being slow.
+  for (let b = 0; b < 101; b += 20) {
+    await Promise.all(
+      Array.from({ length: Math.min(20, 101 - b) }, (_, i) =>
+        createRow(gui.url, 'tags', { label: 'tag-' + String(b + i).padStart(3, '0') }),
+      ),
+    );
+  }
+
+  await page.goto(`${gui.url}#/fs/tags`);
+  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
+
+  // Page 1: 100 rows, "1–100 of 101", Prev disabled, Next enabled.
+  await expect(page.locator('.rows-pager-info')).toContainText('1–100 of 101');
+  await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(100);
+  await expect(page.locator('.rows-prev')).toBeDisabled();
+  await expect(page.locator('.rows-next')).toBeEnabled();
+
+  // Next → page 2: the remaining row, "101–101 of 101", Next disabled.
+  await page.locator('.rows-next').click();
+  await expect(page.locator('.rows-pager-info')).toContainText('101–101 of 101');
+  await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(1);
+  await expect(page.locator('.rows-next')).toBeDisabled();
+  await expect(page.locator('.rows-prev')).toBeEnabled();
+
+  // The whole row still opens the record (pagination didn't break row-click).
+  await page.locator('.fs-rows-table tbody tr').first().click();
+  await expect(page).toHaveURL(/#\/fs\/tags\/[^/]+$/);
+});
+
 test('an object page shows its data provenance; a row opens its detail', async ({ page }) => {
   const author = (await createRow(gui.url, 'authors', {
     name: 'Jane Author',

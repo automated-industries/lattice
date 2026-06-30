@@ -25,6 +25,7 @@ export type {
   SearchResult,
   QueryOptions,
   CountOptions,
+  BoundedCountOptions,
   InitOptions,
   Migration,
   WatchOptions,

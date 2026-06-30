@@ -76,6 +76,10 @@ async function memberGuiOnMaskedCloud(): Promise<GuiServerHandle> {
   // A row shared with everyone, but secret_note masked to the row owner only.
   await owner.insert('notes', { id: 'n1', body: 'visible', secret_note: 'EYES ONLY' });
   await runAsyncOrSync(owner.adapter, `SELECT lattice_set_row_visibility('notes','n1','everyone')`);
+  // A second row visible to the OWNER ONLY (private). The member must neither see
+  // it in the list NOR count it — proving the pagination total is RLS-scoped.
+  await owner.insert('notes', { id: 'n2', body: 'owner-private', secret_note: 'hidden' });
+  await runAsyncOrSync(owner.adapter, `SELECT lattice_set_row_visibility('notes','n2','private')`);
   await setColumnAudience(
     owner,
     'notes',
@@ -130,6 +134,22 @@ describe.skipIf(!PG_URL)('#2.1 member reads a masked table through the GUI', () 
     const row = (await r.json()) as { body: string; secret_note: unknown };
     expect(row.body).toBe('visible');
     expect(row.secret_note ?? null).toBeNull();
+  });
+
+  it('the pagination total (approxTotal) counts only rows the member can see', async () => {
+    // Guards the recurring "only tested as owner/BYPASSRLS" failure class: the
+    // bounded count must route through the same RLS-scoped relation as the rows.
+    const gui = await memberGuiOnMaskedCloud();
+    const r = await fetch(`${gui.url}/api/tables/notes/rows`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      rows: { id: string }[];
+      approxTotal: number;
+      totalIsCapped: boolean;
+    };
+    expect(body.rows.map((x) => x.id)).toEqual(['n1']); // owner-private n2 hidden
+    expect(body.approxTotal).toBe(1); // …and NOT counted (would be 2 if unscoped)
+    expect(body.totalIsCapped).toBe(false);
   });
 
   it('the masking view is NOT exposed as a separate sidebar object', async () => {
