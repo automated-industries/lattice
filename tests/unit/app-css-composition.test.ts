@@ -65,8 +65,10 @@ import { css } from '../../src/gui/app/css.js';
 // record view-header. Markdown-in-center: the Outputs slide-in drawer styles
 // (.outputs-detail*) are removed in favor of a center .md-doc render (#/md/<path>).
 // Rows-table pager: .rows-pager / .rows-pager-info + pager button sizing.
-const ORIGINAL_LENGTH = 113931;
-const ORIGINAL_SHA256 = 'ac3a8f40a0bb5d18fc3fcfb15e15176dbc2077f3517947e73e38ae7c5c83a94a';
+// Tables-explorer edges restyled: solid strokes (m2m dash removed), svg.mt-edges
+// raised above the cards (z-index 2), stroke-width + opacity bumped for visibility.
+const ORIGINAL_LENGTH = 114055;
+const ORIGINAL_SHA256 = 'd430b567e1f9d48734c50b61d1342fe9c09f6e02e5dd91aa27153c8cc62db74e';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
