@@ -91,7 +91,11 @@ test('read-only tool calls produce no activity cards (only data changes show)', 
 
 test('the composer textarea grows to fit multi-line input', async ({ page }) => {
   const input = await enableComposer(page, gui.url);
-  const heightOf = async () => (await input.boundingBox())!.height;
+  // Measure the textarea's LAYOUT height (offsetHeight), not boundingBox(): the
+  // Ask Lattice panel scales in via a CSS `transform`, which scales boundingBox's
+  // rendered rect mid-animation and made this flaky in headless CI. offsetHeight is
+  // the true laid-out height (what the auto-grow sets) and is transform-immune.
+  const heightOf = async () => input.evaluate((el) => (el as HTMLElement).offsetHeight);
 
   const oneLine = await heightOf();
   await input.fill(['line one', 'line two', 'line three', 'line four'].join('\n'));
