@@ -29,7 +29,7 @@ import { createFileLoopbackWatcher } from './file-watcher.js';
 import { RenderProgressBus } from './render-progress.js';
 import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
-import { isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
+import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
@@ -401,6 +401,16 @@ export async function openConfig(
     // empty for an owner/local open.
     ...discoveredJunctions,
   ]);
+  // DISPLAY-only superset: the strict junctions PLUS physical link tables created
+  // without declared relations (e.g. an AI-built `files_<entity>` shaped
+  // (id, name, x_id, y_id)), classified by column shape. Used only to hide link
+  // tables from the lists/sidebars/Markdown panel — never any destructive path.
+  const hiddenLinkTables = new Set([
+    ...junctionTables,
+    ...parsed.tables
+      .filter((t) => isHiddenLinkTable(tableToSummary(t.name, t.definition)))
+      .map((t) => t.name),
+  ]);
   // Pull entity contexts from the live Lattice — covers both YAML-declared
   // contexts (already loaded in the constructor from `parsed.entityContexts`)
   // and anything a caller registered via `db.defineEntityContext()` against
@@ -499,6 +509,7 @@ export async function openConfig(
     db,
     validTables,
     junctionTables,
+    hiddenLinkTables,
     entityContextByTable,
     manifest,
     softDeletable,

@@ -263,20 +263,25 @@ export const displayConfigJs = `
       return s.length > n ? s.slice(0, n) + '…' : s;
     }
 
-    // Lockstep mirror of isJunctionTable in src/gui/data.ts: a junction joins
-    // exactly two entities and carries no payload — 2 belongsTo relations AND
-    // every column is one of the 2 FK columns or a system column. A table with
-    // extra data columns (e.g. tasks with a title) is a first-class entity, not
-    // a junction. Keep this predicate identical to the server's.
+    // DISPLAY predicate — mirror of isHiddenLinkTable in src/gui/data.ts. Hides
+    // pure link tables from object lists / sidebars / graph nodes / the Markdown +
+    // Tables panels. Catches BOTH a relation-declared junction (exactly 2 belongsTo,
+    // only FK / system / name columns) AND a *physical* link table created without
+    // declared relations — an AI-built files_<entity> shaped (id, name, x_id, y_id).
+    // A display-only "name" label doesn't make a link table a first-class object.
+    // Used ONLY for hiding from display/nav — never for deletion. Keep in lockstep.
     function isJunction(table) {
+      var cols = table.columns || [];
+      var sys = { id: 1, created_at: 1, updated_at: 1, deleted_at: 1, name: 1 };
       var rels = Object.values(table.relations || {});
-      if (rels.length !== 2 || !rels.every(function (r) { return r.type === 'belongsTo'; })) {
-        return false;
+      if (rels.length === 2 && rels.every(function (r) { return r.type === 'belongsTo'; })) {
+        var fk = {};
+        rels.forEach(function (r) { fk[r.foreignKey] = 1; });
+        if (cols.every(function (c) { return fk[c] || sys[c]; })) return true;
       }
-      var sys = { id: 1, created_at: 1, updated_at: 1, deleted_at: 1 };
-      var fk = {};
-      rels.forEach(function (r) { fk[r.foreignKey] = 1; });
-      return (table.columns || []).every(function (c) { return fk[c] || sys[c]; });
+      // Physical link table (no / non-2 declared relations): exactly two *_id columns.
+      var payload = cols.filter(function (c) { return !sys[c]; });
+      return payload.length === 2 && payload.every(function (c) { return /_id$/.test(c); });
     }
 
     function tableByName(name) {

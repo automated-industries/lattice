@@ -182,4 +182,44 @@ describe('GET /api/context/tree (junction filtering)', () => {
     expect(names).toContain('Projects');
     expect(names).not.toContain('Tasks_projects'); // junction hidden
   });
+
+  it('hides a physical link table with no declared relations (AI-built files_<entity>)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ctx-jx2-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  documents:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '    outputFile: documents.md',
+        // A files_<entity> link table with NO belongsTo relations and a display
+        // "name" column — must still be hidden (column-shape detection).
+        '  files_documents:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '      file_id: { type: uuid }',
+        '      documents_id: { type: uuid }',
+        '    outputFile: files_documents.md',
+        '',
+      ].join('\n'),
+    );
+    const outputDir = join(root, 'context');
+    mkdirSync(join(outputDir, 'Documents'), { recursive: true });
+    mkdirSync(join(outputDir, 'Files_documents'), { recursive: true });
+    const s = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(s);
+    const { status, body } = await getJson(s, '/api/context/tree');
+    expect(status).toBe(200);
+    const names = (body.entries as TreeEntry[]).map((e) => e.name);
+    expect(names).toContain('Documents');
+    expect(names).not.toContain('Files_documents'); // physical link table hidden
+  });
 });
