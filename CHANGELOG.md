@@ -34,8 +34,11 @@ database connector).
   desktop app, so the reframe lands on both at once.
   - **Artifacts** are their own object/table view (a rows table at its own route),
     and opening an artifact roots its breadcrumb at Artifacts rather than Files.
-  - A record has a **Formatted | Markdown** toggle: Formatted shows the structured
-    fields, Markdown shows the row's rendered context.
+  - A record has a **Formatted | Markdown** toggle: Formatted shows the rendered
+    (compiled) markdown document; Markdown shows that same markdown in an editable
+    textarea that writes round-trippable field edits straight back to the record
+    (`PUT /api/tables/:t/rows/:id/context`). The old column-by-column field dump is
+    gone, and a record now shows a single compiled document (no duplicate sections).
   - Clicking a Markdown file in Outputs opens it in the **center pane** (with a
     breadcrumb), replacing the slide-in detail drawer.
   - The **+ New workspace** dialog is a single step — enter a name (and, for a
@@ -63,6 +66,13 @@ database connector).
   target and removes the emptied source via the same reversible primitive the
   assistant uses (`POST /api/schema/entities/:source/merge` — audited and
   restorable from history).
+
+- **Edit a record as markdown.** A record's **Markdown** view is now an editable
+  textarea; saving it writes the round-trippable fields (YAML frontmatter +
+  `key: value` body) back to the row via `PUT /api/tables/:t/rows/:id/context`,
+  using the same parser the file-watcher uses. Free-form prose that maps to no
+  column is a deliberate no-op (never guessed at), and secret columns are never
+  round-tripped (their served value is masked).
 
 - **Connect an external database as an Input.** A new credential connector imports
   an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
