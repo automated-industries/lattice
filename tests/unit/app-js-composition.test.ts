@@ -146,8 +146,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // clamps to the last real page; onPage bumps renderGen so a slow prior-page fetch
 // can't paint over a newer one; Artifacts page server-side (?artifactType=present)
 // so every artifact is reachable; paintRowsTable takes an emptyText override.
-const ORIGINAL_LENGTH = 820773;
-const ORIGINAL_SHA256 = '2d8b820341d4197ac240153c99e4d7ad0579e45c181e9019e4b5f917b9694efd';
+// Single-step Create Workspace dialog: the 3-step "+ New workspace" wizard
+// (name+kind → starter entities → review) collapses to one step (name+kind →
+// Create); the entity pre-creation step + createStarterEntities are removed.
+// Tables-explorer edges: solid strokes (m2m dash removed), drawn ABOVE the cards
+// (svg z-index 2) so links aren't hidden behind tables, and same-column links
+// loop out into the right gutter (mtDrawEdges overlap-aware routing).
+const ORIGINAL_LENGTH = 814262;
+const ORIGINAL_SHA256 = '3d8293681808a0732cda64ce15f2ef8c8611961cbfd9025b36f61e5bfb51df8f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
