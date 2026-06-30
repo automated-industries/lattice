@@ -172,6 +172,11 @@ database connector).
 
 ### Fixed
 
+- **The Outputs > Markdown panel no longer lists junction (link) tables.** Every
+  relation rendered a `Files_<entity>` / `<a>_<b>` link-table folder next to the
+  real entity, cluttering the tree with apparent duplicates. The tree now hides
+  junction tables (the same rule the brain graph uses to draw them as edges rather
+  than nodes), so it lists only real entities.
 - **Outputs Markdown no longer leaks across workspaces.** Switching workspaces
   refreshed entities, the sidebar, and the chat rail but not the Outputs column,
   so the Markdown context tree (and Tables mirror) kept showing the _previous_
