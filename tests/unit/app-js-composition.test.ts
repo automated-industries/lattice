@@ -166,8 +166,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // for both modes (drag a card onto another to link or merge — merge via POST
 // /api/schema/entities/:source/merge), and grey-out of invalid targets while a
 // source is held (model-tables.js segment).
-const ORIGINAL_LENGTH = 823554;
-const ORIGINAL_SHA256 = 'bbc583f02e46121447397b7939402206f73aeb35b59781718629cfb1e1f52824';
+// Record view redesign: Formatted = the rendered (compiled) markdown; Markdown =
+// an editable raw-markdown textarea that writes round-trippable columns back via
+// PUT /api/tables/:t/rows/:id/context. The old column-by-column field dump
+// (fsFieldHtml/.fs-doc) and its click-to-edit (wireFsEdit) are removed, and
+// loadFsContext renders ONE primary doc (no more duplicate "Files" sections).
+const ORIGINAL_LENGTH = 822210;
+const ORIGINAL_SHA256 = '5a2e9943886880efbdb76c03a70198e3006f7e272b7ab6faa92d9f9f8f1b1536';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
