@@ -61,7 +61,7 @@ export const bootJs = `    // ────────────────�
 
     function bootWorkspace() {
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),

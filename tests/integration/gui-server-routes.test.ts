@@ -126,6 +126,37 @@ describe('GUI server — SQLite read routes', () => {
       expect(r.status, `${route} should be 200`).toBe(200);
     }
   });
+
+  it('/api/entities-summary mirrors /api/entities tables + counts without the file scan', async () => {
+    const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
+    const h = await boot(cfg);
+    // Seed a row so a count is non-zero (the summary must still report counts).
+    const created = await api(h.url, '/api/tables/items/rows', {
+      method: 'POST',
+      body: { name: 'x' },
+    });
+    expect(created.status).toBe(201);
+
+    const full = await api(h.url, '/api/entities');
+    const summary = await api(h.url, '/api/entities-summary');
+    expect(summary.status).toBe(200);
+
+    const names = (b: Record<string, unknown>): string[] =>
+      ((b.tables ?? []) as { name: string }[]).map((t) => t.name).sort();
+    const counts = (b: Record<string, unknown>): Record<string, number | null> =>
+      Object.fromEntries(
+        ((b.tables ?? []) as { name: string; rowCount: number | null }[]).map((t) => [
+          t.name,
+          t.rowCount,
+        ]),
+      );
+    // Same Objects list (tables + row counts) as the full endpoint...
+    expect(names(summary.body)).toEqual(names(full.body));
+    expect(counts(summary.body)).toEqual(counts(full.body));
+    expect(counts(summary.body).items).toBe(1);
+    // ...but the O(files) rendered-file scan is skipped (the GUI never reads it).
+    expect(summary.body.entities).toEqual([]);
+  });
 });
 
 describe('GUI server — provenance routes', () => {

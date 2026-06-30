@@ -224,11 +224,19 @@ function parseConfigCached(configPath: string): ParsedConfig {
   return parsed;
 }
 
-export function loadGuiData(configPath: string, outputDir: string): GuiData {
+export function loadGuiData(
+  configPath: string,
+  outputDir: string,
+  includeEntities = true,
+): GuiData {
   const parsed = parseConfigCached(configPath);
   const manifest = readManifest(outputDir);
   const tables = parsed.tables.map(({ name, definition }) => tableToSummary(name, definition));
-  const entities = collectEntities(outputDir, manifest);
+  // The rendered-file scan (collectEntities) is O(files) on disk — only the full
+  // brain-graph detail-node path consumes it. The Objects list / Tables / the
+  // schema-only graph use just `tables`, so hot-path callers pass
+  // includeEntities=false to skip the scan and stay fast on a large workspace.
+  const entities = includeEntities ? collectEntities(outputDir, manifest) : [];
 
   return {
     parsed,
@@ -356,7 +364,10 @@ export function buildGuiGraph(
   outputDir: string,
   options: BuildGuiGraphOptions = {},
 ): GuiGraphPayload {
-  const data = loadGuiData(configPath, outputDir);
+  // Schema-only (the GUI's only graph mode) never draws row/file detail nodes, so
+  // it doesn't need the O(files) rendered-file scan — skip it. Markdown edges below
+  // still come from the (cheap) manifest, and `data.entities` is unused on this path.
+  const data = loadGuiData(configPath, outputDir, !options.schemaOnly);
   // Merge in runtime-registered tables (natives, team-shared) the YAML
   // doesn't carry, so the Data Model graph isn't empty for cloud DBs.
   if (options.extraTables && options.extraTables.length > 0) {
