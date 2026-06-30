@@ -126,19 +126,19 @@ test('an object page shows its data provenance; a row opens its detail', async (
   // The object page is the table's rows (mirroring the Files file list).
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
 
-  // Opening the row directly shows its detail preview.
+  // Opening the row directly shows its detail (the record view header carries the name).
   await page.goto(`${gui.url}#/fs/authors/${author.id}`);
-  await expect(page.locator('.fs-doc')).toContainText('Jane Author', { timeout: 5000 });
+  await expect(page.locator('.view-header')).toContainText('Jane Author', { timeout: 5000 });
 });
 
-test('drilling a row shows a column-built preview, relationship sub-folders, and a breadcrumb', async ({
+test('drilling a row shows the record view, relationship sub-folders, and a breadcrumb', async ({
   page,
 }) => {
   const { authorId } = await seedChain(gui.url);
 
-  // Author item view: preview + a "Books" sub-folder.
+  // Author item view: the record header + a "Books" sub-folder.
   await page.goto(`${gui.url}#/fs/authors/${authorId}`);
-  await expect(page.locator('.fs-doc')).toContainText('Jane Author');
+  await expect(page.locator('.view-header')).toContainText('Jane Author');
   const booksFolder = page.locator('.fs-folder', { hasText: 'Books' });
   await expect(booksFolder).toBeVisible();
   await booksFolder.click();
@@ -166,61 +166,31 @@ test('drilling a row shows a column-built preview, relationship sub-folders, and
   await expect(page.locator('.fs-rows-table', { hasText: 'Luminous.' })).toBeVisible();
 });
 
-test('click-to-edit a value persists via PATCH', async ({ page }) => {
+test('a record renders the Formatted | Markdown toggle and switches between the views', async ({
+  page,
+}) => {
+  // The 5.0 record view replaced the column-by-column field editor (and its inline
+  // click-to-edit) with a Formatted (rendered markdown) | Markdown (editable raw
+  // markdown that writes back via PUT …/context) toggle. The markdown write-back
+  // itself is covered at the API level by tests/integration/gui-row-context-writeback.
   const { authorId } = await seedChain(gui.url);
   await page.goto(`${gui.url}#/fs/authors/${authorId}`);
 
-  const nameCell = page.locator('.fs-field-val.ce[data-col="name"]');
-  await expect(nameCell).toContainText('Jane Author');
-  await nameCell.click();
-  const input = nameCell.locator('input');
-  await expect(input).toBeVisible();
-  await input.fill('Jane Q. Author');
-  await input.press('Enter');
+  // The record header carries the name; the Formatted | Markdown toggle is present
+  // with Formatted active by default.
+  await expect(page.locator('.view-header')).toContainText('Jane Author');
+  const toggle = page.locator('.fs-view-toggle');
+  await expect(toggle).toBeVisible();
+  await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
 
-  // The cell repaints with the new value …
-  await expect(nameCell).toContainText('Jane Q. Author');
-  // … and the change is actually persisted server-side.
-  const res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
-  expect(res.ok()).toBeTruthy();
-  const row = (await res.json()) as { name: string };
-  expect(row.name).toBe('Jane Q. Author');
-});
+  // Switch to the editable Markdown view…
+  await toggle.locator('[data-fsview="markdown"]').click();
+  await expect(toggle.locator('[data-fsview="markdown"]')).toHaveClass('on');
+  await expect(page.locator('#fs-context')).toBeVisible();
 
-test('a long-form field edits as a textarea and round-trips newlines losslessly (1.16.3 B)', async ({
-  page,
-}) => {
-  // `bio` is a long-form field that was NOT in the old hardcoded
-  // {body,summary,transcript} textarea set, so it used to open a single-line
-  // <input>. Focusing that input stripped the newlines, so a click+blur with
-  // no real edit fired a spurious PATCH that mangled the value (rendered as
-  // "huge text"). The fix: every FS_LONGFORM field opens a <textarea>.
-  const MULTILINE_BIO = 'Line one.\n\n## A heading\n\nLine two with **bold**.';
-  const author = await createRow(gui.url, 'authors', { name: 'Multi Line', bio: MULTILINE_BIO });
-  const authorId = String(author.id);
-  await page.goto(`${gui.url}#/fs/authors/${authorId}`);
-
-  const bioCell = page.locator('.fs-field-val.ce[data-col="bio"]');
-  await expect(bioCell).toBeVisible();
-
-  // Opens a <textarea>, never a single-line <input>.
-  await bioCell.click();
-  await expect(bioCell.locator('textarea')).toBeVisible();
-  await expect(bioCell.locator('input')).toHaveCount(0);
-
-  // No-op blur (no edit) must NOT change the stored value — the heart of the bug.
-  await bioCell.locator('textarea').blur();
-  let res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
-  expect(((await res.json()) as { bio: string }).bio).toBe(MULTILINE_BIO);
-
-  // A real edit round-trips with all newlines preserved (committed via blur —
-  // plain Enter inserts a newline in a textarea rather than committing).
-  const EDITED = MULTILINE_BIO + '\n\nAppended paragraph.';
-  await bioCell.click();
-  await bioCell.locator('textarea').fill(EDITED);
-  await bioCell.locator('textarea').blur();
-  res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
-  expect(((await res.json()) as { bio: string }).bio).toBe(EDITED);
+  // …and back to Formatted.
+  await toggle.locator('[data-fsview="formatted"]').click();
+  await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
 });
 
 test('Advanced mode toggle restores the classic row/table editor', async ({ page }) => {
