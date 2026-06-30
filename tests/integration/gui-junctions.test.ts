@@ -131,6 +131,44 @@ function m2mBetween(graph: Graph, a: string, b: string): boolean {
   );
 }
 
+/** Two first-class entities with the SAME data columns (name, email) so a merge
+ *  maps every row's values cleanly into the target. Used by the merge-route tests. */
+async function bootMergeable(): Promise<GuiServerHandle> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-merge-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  leads:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      email: { type: text }',
+      '    outputFile: leads.md',
+      '  contacts:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      email: { type: text }',
+      '    outputFile: contacts.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return server;
+}
+
 describe('Data Model — junction relationships', () => {
   it('creates a many-to-many that surfaces as a graph edge, then removes it', async () => {
     const s = await boot();
@@ -460,5 +498,74 @@ describe('Data Model — junction relationships', () => {
     // Deleting an unknown table is a 400, not a crash.
     const badDel = await fetch(`${s.url}/api/schema/entities/nope`, { method: 'DELETE' });
     expect(badDel.status).toBe(400);
+  });
+
+  it('merges one entity into another: moves the rows, removes the source, reversibly', async () => {
+    const s = await bootMergeable();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    // Seed two leads (a fresh row create is 201).
+    expect((await post('/api/tables/leads/rows', { name: 'Ada', email: 'ada@x.io' })).status).toBe(
+      201,
+    );
+    expect(
+      (await post('/api/tables/leads/rows', { name: 'Linus', email: 'linus@x.io' })).status,
+    ).toBe(201);
+
+    // Merge leads → contacts.
+    const res = await post('/api/schema/entities/leads/merge', { target: 'contacts' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok?: boolean;
+      merged?: string;
+      into?: string;
+      movedRows?: number;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.merged).toBe('leads');
+    expect(body.into).toBe('contacts');
+    expect(body.movedRows).toBe(2);
+
+    // The source is gone (soft-deleted) from the live entity list; the target stays.
+    expect(await entityNames(s)).not.toContain('leads');
+    expect(await entityNames(s)).toContain('contacts');
+
+    // The rows now live in the target, with their values mapped by column name.
+    const listed = (await (await fetch(`${s.url}/api/tables/contacts/rows`)).json()) as {
+      rows: { name: string; email: string }[];
+    };
+    expect(listed.rows.map((r) => r.name).sort()).toEqual(['Ada', 'Linus']);
+    expect(listed.rows.map((r) => r.email).sort()).toEqual(['ada@x.io', 'linus@x.io']);
+
+    // Reversible: the source's delete is captured in version history (a
+    // schema.delete_entity op that the History page replays to restore it).
+    const history = (await (await fetch(`${s.url}/api/history`)).json()) as {
+      entries: { operation: string; table_name?: string }[];
+    };
+    expect(
+      history.entries.some(
+        (h) => h.operation === 'schema.delete_entity' && h.table_name === 'leads',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects bad merges (into itself, unknown source/target) with 400 and deletes nothing', async () => {
+    const s = await bootMergeable();
+    const merge = (source: string, target: unknown) =>
+      fetch(`${s.url}/api/schema/entities/${source}/merge`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+    expect((await merge('leads', 'leads')).status).toBe(400); // into itself
+    expect((await merge('leads', 'ghosts')).status).toBe(400); // unknown target
+    expect((await merge('ghosts', 'contacts')).status).toBe(400); // unknown source
+    // None of the rejected merges removed anything.
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['leads', 'contacts']));
   });
 });

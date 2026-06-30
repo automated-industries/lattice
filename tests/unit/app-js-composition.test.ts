@@ -162,8 +162,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // DISPLAY rule (mirror of server isHiddenLinkTable) that also hides PHYSICAL link
 // tables created without declared relations (an AI-built files_<entity> shaped
 // (id, name, x_id, y_id)) from object lists / sidebars / graph nodes / panels.
-const ORIGINAL_LENGTH = 815478;
-const ORIGINAL_SHA256 = 'c80d4107037e31ef7b2a98ac07fade777c6df68a582a1f255daf556f15477bfd';
+// Tables-explorer Wire/Merge interactions: a second "Merge" mode plus drag-to-act
+// for both modes (drag a card onto another to link or merge — merge via POST
+// /api/schema/entities/:source/merge), and grey-out of invalid targets while a
+// source is held (model-tables.js segment).
+const ORIGINAL_LENGTH = 823554;
+const ORIGINAL_SHA256 = 'bbc583f02e46121447397b7939402206f73aeb35b59781718629cfb1e1f52824';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
