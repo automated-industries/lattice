@@ -68,6 +68,10 @@ export const searchJs = `    // ────────────────
         // <img>), else the previous workspace's logo stays until a hard refresh.
         applyWorkspaceLogo((results[5] || {}).logoEtag);
         renderSidebar();
+        // The Outputs column (Markdown context tree + Tables mirror) is
+        // per-workspace; refresh it on switch or the new workspace shows the
+        // PREVIOUS workspace's rendered context until a hard reload.
+        renderOutputs();
         // renderWsSwitcher set cloudMode from the new workspace's kind; re-render
         // the composer so the Private-mode toggle reflects local vs cloud (it is
         // forced checked+disabled on local). See #7.

@@ -172,6 +172,11 @@ database connector).
 
 ### Fixed
 
+- **Outputs Markdown no longer leaks across workspaces.** Switching workspaces
+  refreshed entities, the sidebar, and the chat rail but not the Outputs column,
+  so the Markdown context tree (and Tables mirror) kept showing the _previous_
+  workspace's rendered context until a hard reload. `reloadEverything()` now
+  re-renders Outputs on every switch, scoped to the active workspace.
 - **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
   single transaction, so an interrupted build can no longer leave a half-filled
   index that looks complete.
