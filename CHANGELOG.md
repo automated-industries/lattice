@@ -177,6 +177,11 @@ database connector).
   so the Markdown context tree (and Tables mirror) kept showing the _previous_
   workspace's rendered context until a hard reload. `reloadEverything()` now
   re-renders Outputs on every switch, scoped to the active workspace.
+- **The brain graph now populates in realtime during ingestion.** When the graph
+  was opened on an empty workspace it showed the empty-state and never created a
+  live renderer, so objects added afterward (e.g. while ingesting files) didn't
+  appear until a manual refresh. The ingest animation now does a full graph render
+  when no live handle exists yet, so the first objects fly in as they're created.
 - **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
   single transaction, so an interrupted build can no longer leave a half-filled
   index that looks complete.

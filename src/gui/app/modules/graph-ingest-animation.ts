@@ -19,13 +19,20 @@ export const graphIngestAnimationJs = `
     }
 
     function runGraphIngestAnim() {
-      // Need both the mounted view and a live handle to feed.
-      if (!document.getElementById('graph-mount') || !schemaGraphHandle) return;
+      // The graph view must be mounted; bail otherwise.
+      if (!document.getElementById('graph-mount')) return;
+      // If the graph mounted while the workspace was EMPTY there is no live handle
+      // yet (renderSchemaGraph painted the empty-state and returned). setData only
+      // updates an existing renderer, so the first objects ingested would never
+      // appear. A full re-render builds the handle and paints them — realtime, as
+      // files stream in. Once a handle exists, take the cheap setData delta path.
+      if (!schemaGraphHandle) { renderSchemaGraph(); return; }
       var myGen = renderGen;
       fetchJson('/api/graph?schema=1')
         .then(function (graph) {
           if (renderGen !== myGen) return; // navigated away mid-fetch
-          if (!document.getElementById('graph-mount') || !schemaGraphHandle) return;
+          if (!document.getElementById('graph-mount')) return;
+          if (!schemaGraphHandle) { renderSchemaGraph(); return; }
           var model = buildSchemaModel(graph);
           if (!model.nodes.length) return;
           graphModelCache = model;

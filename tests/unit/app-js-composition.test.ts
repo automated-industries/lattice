@@ -155,8 +155,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // Workspace-switch Outputs refresh: reloadEverything() now re-renders the Outputs
 // column (Markdown context tree + Tables mirror) so a switch can't leak the prior
 // workspace's rendered markdown.
-const ORIGINAL_LENGTH = 814508;
-const ORIGINAL_SHA256 = '953cb29a96e58be1b784ef2ce624731300cb80290ecbcce18784424078af3644';
+// Realtime graph on ingest: runGraphIngestAnim() now does a full renderSchemaGraph()
+// re-render when there is no live handle yet (graph mounted while empty), so the
+// first objects ingested appear live instead of staying on the empty-state.
+const ORIGINAL_LENGTH = 815003;
+const ORIGINAL_SHA256 = '88cdcb0d0c46fb678f90b830d93feeb8c0a96ed9040a5feb84f43dd03ebac9a8';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
