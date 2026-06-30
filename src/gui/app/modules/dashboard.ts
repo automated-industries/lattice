@@ -969,6 +969,88 @@ export const dashboardJs = `    // ───────────────
         '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
     }
 
+    // Rows-table page size + per-collection page index (keyed by the collection's
+    // hash, so drilling into a record and back preserves your page). A fresh
+    // collection key defaults to page 0.
+    var PAGE_SIZE = 100;
+    var fsPageByPath = {};
+
+    // Shared rows-table renderer for the object + Artifacts pages: thead/body, the
+    // whole-row-click affordance, and a Prev/Next pager with an "A–B of T" total.
+    // The caller supplies the already-sliced page of rows + a pre-formatted
+    // totalLabel ("123" or "1000+") + hasNext, so each caller owns its own
+    // server-capped vs client-side paging semantics.
+    // o = { breadcrumbHtml, icon, label, table, cols, rows, hrefFor, page,
+    //       pageSize, totalLabel, hasNext, onPage }
+    function paintRowsTable(content, o) {
+      var rows = o.rows || [];
+      var cols = o.cols;
+      var pageSize = o.pageSize || PAGE_SIZE;
+      var page = o.page || 0;
+      var thead = cols.map(function (c) { return '<th>' + escapeHtml(fieldLabel(c)) + '</th>'; }).join('');
+      var body = rows.map(function (r) {
+        var href = o.hrefFor(r);
+        var cells = cols.map(function (c, i) {
+          var v = fsCellText(o.table, r, c);
+          if (i === 0) {
+            v = '<a href="' + href + '">' + (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
+          }
+          return '<td>' + v + '</td>';
+        }).join('');
+        return '<tr class="fs-row-click" data-href="' + href + '">' + cells + '</tr>';
+      }).join('');
+      var tableHtml = rows.length
+        ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
+        : '<div class="fs-empty" style="padding:24px">Nothing here yet.</div>';
+
+      var first = rows.length ? page * pageSize + 1 : 0;
+      var last = page * pageSize + rows.length;
+      var info = rows.length
+        ? first + '\\u2013' + last + ' of ' + escapeHtml(o.totalLabel)
+        : '0 of ' + escapeHtml(o.totalLabel);
+      var hasPrev = page > 0;
+      var hasNext = !!o.hasNext;
+      var pager =
+        '<span class="rows-pager">' +
+          '<span class="rows-pager-info">' + info + '</span>' +
+          '<button type="button" class="btn rows-prev"' + (hasPrev ? '' : ' disabled') + '>\\u2039 Prev</button>' +
+          '<button type="button" class="btn rows-next"' + (hasNext ? '' : ' disabled') + '>Next \\u203a</button>' +
+        '</span>';
+
+      content.innerHTML =
+        o.breadcrumbHtml +
+        '<div class="view-header">' +
+          '<span class="entity-icon">' + o.icon + '</span>' +
+          '<h1>' + escapeHtml(o.label) + '</h1>' +
+          pager +
+        '</div>' +
+        tableHtml;
+
+      content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
+        tr.addEventListener('click', function (ev) {
+          if (ev.target && ev.target.closest && ev.target.closest('a')) return;
+          var h = tr.getAttribute('data-href');
+          if (h) location.hash = h;
+        });
+      });
+      var prevBtn = content.querySelector('.rows-prev');
+      var nextBtn = content.querySelector('.rows-next');
+      if (prevBtn && hasPrev) prevBtn.addEventListener('click', function () { o.onPage(page - 1); });
+      if (nextBtn && hasNext) nextBtn.addEventListener('click', function () { o.onPage(page + 1); });
+    }
+
+    // Pager display values for a fetched page. env = { rows, approxTotal,
+    // totalIsCapped } where approxTotal is the bounded server count (cap + 1 when
+    // capped). Returns { totalLabel, hasNext } in paintRowsTable's terms.
+    function fsPagerView(env, page) {
+      var last = page * PAGE_SIZE + env.rows.length;
+      if (env.totalIsCapped) {
+        // approxTotal is cap + 1 → show "cap+"; a full page means there's more.
+        return { totalLabel: String(env.approxTotal - 1) + '+', hasNext: env.rows.length >= PAGE_SIZE };
+      }
+      return { totalLabel: String(env.approxTotal), hasNext: last < env.approxTotal };
+    }
+
     // Collection view — a folder of tiles for a NESTED relation path
     // (#/fs/<table>/<id>/<rel>). The top-level object page (#/fs/<table>) is the
     // data-provenance view (graph or table — how this object's rows are sourced).
@@ -983,61 +1065,50 @@ export const dashboardJs = `    // ───────────────
       if (topLevel && segs[0] === 'artifacts') { renderArtifactsView(content); return; }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
       crumbsP.then(function (crumbs) {
-        var table, rowsP;
+        var base = fsHref(segs);
+        var page = fsPageByPath[base] || 0;
+        var table, envP;
         if (topLevel) {
           table = segs[0];
           if (!tableByName(table)) {
             setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
             return;
           }
-          rowsP = fetchRows(table, '');
+          // Server-side paging: fetch only this page + the bounded approximate total.
+          envP = fetchRowsPage(table, { limit: PAGE_SIZE, offset: page * PAGE_SIZE });
         } else {
           var last = crumbs[crumbs.length - 1];
           if (!last || last.type !== 'rel') throw new Error('Bad collection path');
           table = last.rel.targetTable;
-          rowsP = fsRelatedRows(last.parentTable, last.parentRow, last.rel);
+          // Relation drill: fsRelatedRows returns a bounded array (JS-filtered by
+          // membership), so page client-side over it.
+          envP = fsRelatedRows(last.parentTable, last.parentRow, last.rel).then(function (all) {
+            return {
+              rows: all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+              approxTotal: all.length,
+              totalIsCapped: false,
+            };
+          });
         }
-        return rowsP.then(function (rows) {
+        return envP.then(function (env) {
           if (myGen !== renderGen) return; // superseded by a newer navigation
           var d = displayFor(table);
-          var base = fsHref(segs);
-          // The object view is the table's ROWS in a table (mirroring the Files
-          // file list): columns are the object's fields, the first cell links to
-          // the record. One consistent object view — no graph, no tiles.
-          var cols = objRowCols(tableByName(table));
-          var thead = cols.map(function (c) {
-            return '<th>' + escapeHtml(fieldLabel(c)) + '</th>';
-          }).join('');
-          var body = rows.map(function (r) {
-            var cells = cols.map(function (c, i) {
-              var v = fsCellText(table, r, c);
-              if (i === 0) {
-                v = '<a href="' + base + '/' + encodeURIComponent(r.id) + '">' +
-                  (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
-              }
-              return '<td>' + v + '</td>';
-            }).join('');
-            return '<tr class="fs-row-click" data-href="' + base + '/' + encodeURIComponent(r.id) + '">' + cells + '</tr>';
-          }).join('');
-          var tableHtml = rows.length
-            ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
-            : '<div class="fs-empty" style="padding:24px">Nothing here yet.</div>';
-          content.innerHTML =
-            fsBreadcrumb(segs, crumbs) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
-              '<h1>' + escapeHtml(d.label) + '</h1>' +
-              '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
-            '</div>' +
-            tableHtml;
-          // The WHOLE row opens the record (not just the name cell). Inner links
-          // (the name) still work on their own; ignore clicks that hit one.
-          content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
-            tr.addEventListener('click', function (ev) {
-              if (ev.target && ev.target.closest && ev.target.closest('a')) return;
-              var h = tr.getAttribute('data-href');
-              if (h) location.hash = h;
-            });
+          var pv = fsPagerView(env, page);
+          // The object view is the table's ROWS in a table (mirroring the Files file
+          // list), one page at a time with a Prev/Next pager. One consistent view.
+          paintRowsTable(content, {
+            breadcrumbHtml: fsBreadcrumb(segs, crumbs),
+            icon: d.icon,
+            label: d.label,
+            table: table,
+            cols: objRowCols(tableByName(table)),
+            rows: env.rows,
+            hrefFor: function (r) { return base + '/' + encodeURIComponent(r.id); },
+            page: page,
+            pageSize: PAGE_SIZE,
+            totalLabel: pv.totalLabel,
+            hasNext: pv.hasNext,
+            onPage: function (p) { fsPageByPath[base] = p; renderFsCollection(content, segs); },
           });
         });
       }).catch(function (err) {
@@ -1051,41 +1122,31 @@ export const dashboardJs = `    // ───────────────
     // record. The breadcrumb roots at Artifacts (see fsBreadcrumb).
     function renderArtifactsView(content) {
       var myGen = renderGen;
+      var page = fsPageByPath['#/fs/artifacts'] || 0;
       fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description'))
         .then(function (resp) {
           if (myGen !== renderGen) return; // superseded by a newer navigation
-          var rows = ((resp && resp.rows) || []).filter(function (r) { return !r.deleted_at && r.artifact_type; });
+          var fetched = (resp && resp.rows) || [];
+          var all = fetched.filter(function (r) { return !r.deleted_at && r.artifact_type; });
           var d = displayFor('artifacts');
-          var cols = objRowCols(tableByName('files'));
-          var thead = cols.map(function (c) { return '<th>' + escapeHtml(fieldLabel(c)) + '</th>'; }).join('');
-          var body = rows.map(function (r) {
-            var href = '#/fs/files/' + encodeURIComponent(r.id);
-            var cells = cols.map(function (c, i) {
-              var v = fsCellText('files', r, c);
-              if (i === 0) {
-                v = '<a href="' + href + '">' + (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
-              }
-              return '<td>' + v + '</td>';
-            }).join('');
-            return '<tr class="fs-row-click" data-href="' + href + '">' + cells + '</tr>';
-          }).join('');
-          var tableHtml = rows.length
-            ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
-            : '<div class="fs-empty" style="padding:24px">Nothing created yet.</div>';
-          content.innerHTML =
-            fsBreadcrumb(['artifacts'], []) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
-              '<h1>' + escapeHtml(d.label) + '</h1>' +
-              '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
-            '</div>' +
-            tableHtml;
-          content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
-            tr.addEventListener('click', function (ev) {
-              if (ev.target && ev.target.closest && ev.target.closest('a')) return;
-              var h = tr.getAttribute('data-href');
-              if (h) location.hash = h;
-            });
+          // We page client-side over the artifact subset of the (bounded) files
+          // fetch. If that fetch hit its 500-row cap there may be more artifacts we
+          // didn't see, so the total is approximate ("N+").
+          var filesCapped = fetched.length >= 500;
+          var slice = all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+          paintRowsTable(content, {
+            breadcrumbHtml: fsBreadcrumb(['artifacts'], []),
+            icon: d.icon,
+            label: d.label,
+            table: 'files',
+            cols: objRowCols(tableByName('files')),
+            rows: slice,
+            hrefFor: function (r) { return '#/fs/files/' + encodeURIComponent(r.id); },
+            page: page,
+            pageSize: PAGE_SIZE,
+            totalLabel: filesCapped ? String(all.length) + '+' : String(all.length),
+            hasNext: page * PAGE_SIZE + slice.length < all.length,
+            onPage: function (p) { fsPageByPath['#/fs/artifacts'] = p; renderArtifactsView(content); },
           });
         })
         .catch(function (err) {

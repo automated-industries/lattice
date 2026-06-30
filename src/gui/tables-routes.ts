@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJson, readJson, parsePageParam } from './http.js';
+import { sendJson, readJson, parsePageParam, MAX_ROWS_PAGE } from './http.js';
 import type { Row } from '../types.js';
 import type { GuiRequestContext } from './request-context.js';
 import { readRelationFor, attachRowAccess } from './active-db.js';
@@ -130,7 +130,17 @@ export async function handleTablesRoutes(
         // everywhere else (validTables, ownership lookups, writes).
         const rows = await active.db.query(readRelationFor(active, table), queryOpts);
         await attachRowAccess(active.db, table, rows);
-        sendJson(res, { rows });
+        // Approximate total for pagination ("N–M of T", rendered "T+" when capped).
+        // Counted through the SAME RLS-scoped relation + soft-delete filter as the
+        // rows above, so a member's total matches what they can actually see; bounded
+        // (stops after MAX_ROWS_PAGE+1) so it never becomes a full-table COUNT.
+        const approxTotal = await active.db.boundedCount(
+          readRelationFor(active, table),
+          queryOpts.filters
+            ? { filters: queryOpts.filters, cap: MAX_ROWS_PAGE }
+            : { cap: MAX_ROWS_PAGE },
+        );
+        sendJson(res, { rows, approxTotal, totalIsCapped: approxTotal > MAX_ROWS_PAGE });
         return true;
       }
       if (method === 'POST') {

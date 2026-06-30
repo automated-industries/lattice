@@ -7,6 +7,7 @@ import type {
   WritebackDefinition,
   QueryOptions,
   CountOptions,
+  BoundedCountOptions,
   AggregateOptions,
   AggregateResult,
   QueryPageOptions,
@@ -2342,6 +2343,17 @@ export class Lattice {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
     return this._queryCore.count(table, opts);
+  }
+
+  /**
+   * Bounded variant of {@link count}: stops after `opts.cap + 1` matching rows
+   * (default cap 1000) so it stays cheap on large tables. Returns the exact count
+   * when `<= cap`, else `cap + 1` to signal "more than cap" (render as "cap+").
+   */
+  async boundedCount(table: string, opts: BoundedCountOptions = {}): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    return this._queryCore.boundedCount(table, opts);
   }
 
   /**
