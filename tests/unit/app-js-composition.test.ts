@@ -138,12 +138,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // Review low: the renderFsCollection + renderFsItem error catches now guard on
 // renderGen so a stale async error can't clobber a newer view.
 // Rows-table pagination: a shared paintRowsTable helper (thead/body + whole-row
-// click + a Prev/Next pager with an "A–B of T" / "T+" total), fsPagerView,
-// PAGE_SIZE + per-collection page state (fsPageByPath), and fetchRowsPage (returns
-// { rows, approxTotal, totalIsCapped }). renderFsCollection pages server-side;
-// renderArtifactsView + relation drills page client-side over the bounded array.
-const ORIGINAL_LENGTH = 819712;
-const ORIGINAL_SHA256 = 'b52437a31867a82ecf554b1522ae6814bd41c8ffb75557aa8c1622fd0481dac7';
+// click + a Prev/Next pager with an "A–B of T" / "T+" total), PAGE_SIZE +
+// per-collection page state (fsPageByPath), and fetchRowsPage (returns
+// { rows, approxTotal, totalIsCapped }, asking the server for the total via
+// ?withTotal=1). Review hardening: fetchRowsPage over-fetches one sentinel row so
+// hasNext is exact (no phantom trailing page) via fsServerPage; a stale page index
+// clamps to the last real page; onPage bumps renderGen so a slow prior-page fetch
+// can't paint over a newer one; Artifacts page server-side (?artifactType=present)
+// so every artifact is reachable; paintRowsTable takes an emptyText override.
+const ORIGINAL_LENGTH = 820773;
+const ORIGINAL_SHA256 = '2d8b820341d4197ac240153c99e4d7ad0579e45c181e9019e4b5f917b9694efd';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
