@@ -9,27 +9,28 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('a server-side mutation flashes a transient top-right status (no rail pills)', async ({
+test('a server-side mutation flashes a transient status and logs to the activity popover (not rail pills)', async ({
   page,
 }) => {
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
-  // Activity no longer renders as persistent pills in the right rail.
-  await expect(page.locator('.feed-item')).toHaveCount(0);
+  await expect(page.locator('nav.sidebar')).toBeVisible();
+  // The (removed) right rail never showed pills; the header activity popover
+  // starts empty before any mutation.
+  await expect(page.locator('#activity-popover .feed-item')).toHaveCount(0);
 
   await createRow(gui.url, 'items', { name: 'Hello from e2e' });
 
   // The mutation is published to the in-process FeedBus and pushed as a `feed`
   // message over the multiplexed /api/stream WebSocket the page opened on boot.
   // The client flashes it as a transient note in the top-right status indicator
-  // (it auto-clears) — it does NOT create a rail pill.
+  // (it auto-clears) AND logs it to the header activity popover — never a rail pill.
   await expect(page.locator('#app-status')).toBeVisible();
-  await expect(page.locator('.feed-item')).toHaveCount(0);
+  await expect(page.locator('#activity-popover .feed-item')).toHaveCount(1);
 });
 
 test('a server-side new entity appears in the sidebar without a reload', async ({ page }) => {
   await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // The entity does not exist yet — its nav item is absent.
   const navItem = page.locator('#object-nav a[data-route="#/fs/consulting_agreements"]');
