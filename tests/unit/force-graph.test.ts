@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { createForceGraph, type GraphNode } from '../../src/gui/app/graph/force-graph.js';
+import {
+  clampAxis,
+  createForceGraph,
+  type GraphNode,
+} from '../../src/gui/app/graph/force-graph.js';
 
 /**
  * DOM smoke test for the live force-graph renderer, run in a jsdom window. The
@@ -158,5 +162,28 @@ describe('createForceGraph — framing + label sizing (regressions)', () => {
     const stage = mount.querySelector('.dm-stage') as unknown as HTMLElement;
     // jsdom reports a 0×0 mount, so the fit defers — the stage must remain hidden.
     expect(stage.style.visibility).toBe('hidden');
+  });
+});
+
+describe('clampAxis — keep the graph inside the viewport (pan/zoom clamp)', () => {
+  // Box [0,100] world units, k=1, pane 500, margin 10 -> translation v in [10, 390].
+  it('keeps a box smaller than the pane fully inside [m, pane-m]', () => {
+    expect(clampAxis(200, 0, 100, 1, 500, 10)).toBe(200); // inside -> unchanged
+    expect(clampAxis(-100, 0, 100, 1, 500, 10)).toBe(10); // would push off left
+    expect(clampAxis(1000, 0, 100, 1, 500, 10)).toBe(390); // would push off right
+  });
+
+  // Box [0,1000] (bigger than the 500 pane) -> v in [-510, 10]: always covers the
+  // pane, never reveals empty gutter beyond an edge.
+  it('keeps a box larger than the pane covering the viewport', () => {
+    expect(clampAxis(0, 0, 1000, 1, 500, 10)).toBe(0); // inside -> unchanged
+    expect(clampAxis(500, 0, 1000, 1, 500, 10)).toBe(10); // can't pan past left edge
+    expect(clampAxis(-1000, 0, 1000, 1, 500, 10)).toBe(-510); // can't pan past right edge
+  });
+
+  // Zoom scales the box: [0,100] at k=2 spans 200 screen px (still < 500) -> v in [10, 290].
+  it('accounts for the zoom factor', () => {
+    expect(clampAxis(290, 0, 100, 2, 500, 10)).toBe(290);
+    expect(clampAxis(400, 0, 100, 2, 500, 10)).toBe(290);
   });
 });
