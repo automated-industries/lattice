@@ -961,14 +961,6 @@ export const dashboardJs = `    // ───────────────
       }
       return escapeHtml(s);
     }
-    function fsFieldHtml(table, row, col) {
-      var ro = fsIsReadonly(table, col);
-      var cls = 'fs-field-val' + (ro ? ' readonly' : ' ce');
-      var attr = ro ? '' : ' data-col="' + escapeHtml(col) + '" title="Click to edit"';
-      return '<div class="fs-field"><div class="fs-field-label"' + titleAttr(colDesc(table, col)) + '>' + escapeHtml(fieldLabel(col)) + '</div>' +
-        '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
-    }
-
     // Rows-table page size + per-collection page index (keyed by the collection's
     // hash, so drilling into a record and back preserves your page). A fresh
     // collection key defaults to page 0.
@@ -1357,20 +1349,21 @@ export const dashboardJs = `    // ───────────────
     function applyFsItemView() {
       var md = fsItemView === 'markdown';
       var ctx = document.getElementById('fs-context');
-      var doc = document.querySelector('#content .fs-doc');
+      // Formatted = the rendered (compiled) markdown (.fs-context-doc); Markdown =
+      // the editable raw-markdown textarea (+ its save status). loadFsContext builds
+      // both inside #fs-context; here we just toggle which one shows.
+      var rendered = ctx && ctx.querySelector('.fs-context-doc');
+      var editor = ctx && ctx.querySelector('.fs-context-edit');
+      var status = ctx && ctx.querySelector('.fs-context-status');
       var relT = document.querySelector('#content .fs-rel-title');
       var relF = document.querySelector('#content .fs-rel-folders');
       var prov = document.getElementById('row-provenance');
-      [doc, relT, relF, prov].forEach(function (el) { if (el) el.style.display = md ? 'none' : ''; });
-      if (ctx) {
-        ctx.style.display = md ? '' : 'none';
-        if (md) {
-          ctx.hidden = false; // override loadFsContext's no-content hide
-          if (!ctx.innerHTML.trim()) {
-            ctx.innerHTML = '<div class="fs-empty" style="padding:16px">No markdown rendered for this record yet.</div>';
-          }
-        }
-      }
+      // The relationship folders + provenance belong to the Formatted (reading)
+      // view; hide them while editing the raw markdown.
+      [relT, relF, prov].forEach(function (el) { if (el) el.style.display = md ? 'none' : ''; });
+      if (rendered) rendered.style.display = md ? 'none' : '';
+      if (editor) editor.style.display = md ? '' : 'none';
+      if (status) status.style.display = md ? '' : 'none';
       document.querySelectorAll('#content .fs-view-toggle [data-fsview]').forEach(function (b) {
         b.classList.toggle('on', b.getAttribute('data-fsview') === fsItemView);
       });
@@ -1405,65 +1398,49 @@ export const dashboardJs = `    // ───────────────
         // a View Source toggle) with a Version History + Delete dropdown — not the
         // column-by-column field dump or the "Inside" grid.
         if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d); return; }
-        var bt = belongsToColumns(t);
         var rels = fsRelations(table);
-        // Preload belongsTo targets so parent links can show names.
-        Promise.all(bt.map(function (b) { return loadAllRows(b.rel.table); })).then(function () {
-          if (myGen !== renderGen) return; // superseded by a newer navigation
-          var fields = [];
-          intrinsicColumns(t).forEach(function (c) { fields.push(fsFieldHtml(table, row, c)); });
-          bt.forEach(function (b) {
-            var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-            var dd = ref
-              ? '<a class="fs-link" href="#/fs/' + encodeURIComponent(b.rel.table) + '/' + encodeURIComponent(ref.id) + '">📁 ' + escapeHtml(fsDisplayName(ref)) + '</a>'
-              : '<span class="fs-empty-val">—</span>';
-            fields.push('<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) +
-              '</div><div class="fs-field-val">' + dd + '</div></div>');
-          });
-          var base = fsHref(segs);
-          var folderTiles = rels.map(function (rel) {
-            return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
-              '<div class="fs-tile-icon">📁</div>' +
-              '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
-              '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
-            '</a>';
-          }).join('');
-          content.innerHTML =
-            fsBreadcrumb(segs, crumbs) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
-              '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
-              // Formatted (the structured fields) vs Markdown (the row's rendered context).
-              '<div class="fs-view-toggle">' +
-                '<button type="button" data-fsview="formatted">Formatted</button>' +
-                '<button type="button" data-fsview="markdown">Markdown</button>' +
-              '</div>' +
+        if (myGen !== renderGen) return; // superseded by a newer navigation while fsWalk resolved
+        var base = fsHref(segs);
+        var folderTiles = rels.map(function (rel) {
+          return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
+            '<div class="fs-tile-icon">📁</div>' +
+            '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
+            '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
+          '</a>';
+        }).join('');
+        content.innerHTML =
+          fsBreadcrumb(segs, crumbs) +
+          '<div class="view-header">' +
+            '<span class="entity-icon">' + d.icon + '</span>' +
+            '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+            // Formatted = the rendered (compiled) markdown; Markdown = the editable
+            // raw markdown that writes back to this record. The toggle shows one.
+            '<div class="fs-view-toggle">' +
+              '<button type="button" data-fsview="formatted">Formatted</button>' +
+              '<button type="button" data-fsview="markdown">Markdown</button>' +
             '</div>' +
-            detailVisLineEl(row) +
-            (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            // The rendered-context markdown (Markdown view) and the column-by-column
-            // data (Formatted view); the Formatted/Markdown toggle shows one or the other.
-            '<div class="fs-context" id="fs-context" hidden></div>' +
-            '<div class="fs-doc">' + fields.join('') + '</div>' +
-            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '') +
-            '<div id="row-provenance"></div>';
-          if (table === 'files') renderFilePreview(row);
-          loadFsContext(table, id);
-          content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
-            bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
-          });
-          applyFsItemView();
-          wireFsEdit(content, table, id, t, row);
-          // Collapsed, lazy-loaded "Data provenance" panel for this row.
-          renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
-          // Per-row sharing controls — same affordance as the advanced detail view.
-          wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
-          rels.forEach(function (rel) {
-            fsRelatedRows(table, row, rel).then(function (rs) {
-              var el = content.querySelector('[data-count-for="' + rel.token + '"]');
-              if (el) el.textContent = rs.length + (rs.length === 1 ? ' item' : ' items');
-            }).catch(function () { /* count is best-effort */ });
-          });
+          '</div>' +
+          detailVisLineEl(row) +
+          // #fs-context holds BOTH the rendered doc (.fs-context-doc) and the
+          // editable raw-markdown textarea (.fs-context-edit); loadFsContext fills
+          // it and applyFsItemView toggles which one shows.
+          '<div class="fs-context" id="fs-context" hidden></div>' +
+          (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '') +
+          '<div id="row-provenance"></div>';
+        loadFsContext(table, id);
+        content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
+          bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
+        });
+        applyFsItemView();
+        // Collapsed, lazy-loaded "Data provenance" panel for this row.
+        renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
+        // Per-row sharing controls — same affordance as the advanced detail view.
+        wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
+        rels.forEach(function (rel) {
+          fsRelatedRows(table, row, rel).then(function (rs) {
+            var el = content.querySelector('[data-count-for="' + rel.token + '"]');
+            if (el) el.textContent = rs.length + (rs.length === 1 ? ' item' : ' items');
+          }).catch(function () { /* count is best-effort */ });
         });
       }).catch(function (err) {
         if (myGen !== renderGen) return; // a stale error must not clobber a newer view
@@ -1655,44 +1632,4 @@ export const dashboardJs = `    // ───────────────
 
     // Click-to-edit on rendered values. Reuses fieldFor() for the input and the
     // same PATCH → invalidate → refreshEntities chain as renderDetail's save.
-    function wireFsEdit(content, table, id, t, row) {
-      content.querySelectorAll('.fs-field-val.ce').forEach(function (cell) {
-        cell.addEventListener('click', function (e) {
-          if (cell.classList.contains('editing')) return;
-          if (e.target && e.target.closest('a, button, input, textarea, select')) return;
-          var col = cell.getAttribute('data-col');
-          var current = row[col];
-          cell.classList.add('editing');
-          cell.innerHTML = fieldFor(col, current == null ? '' : current, t);
-          var input = cell.querySelector('input, textarea, select');
-          if (!input) { cell.classList.remove('editing'); cell.innerHTML = fsValInner(table, row, col); return; }
-          input.focus();
-          if (input.select) { try { input.select(); } catch (_) { /* ignore */ } }
-          var done = false;
-          function repaint() { cell.classList.remove('editing'); cell.innerHTML = fsValInner(table, row, col); }
-          function finish(save) {
-            if (done) return; done = true;
-            if (!save) { repaint(); return; }
-            var val = input.value === '' ? null : input.value;
-            var before = current == null ? '' : String(current);
-            if ((val == null ? '' : String(val)) === before) { repaint(); return; }
-            var body = {}; body[col] = val;
-            fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), {
-              method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-            }).then(function () {
-              row[col] = val; invalidate(table); return refreshEntities();
-            }).then(function () {
-              repaint(); showToast('Updated', { undo: undoLast });
-            }).catch(function (err) { showToast('Save failed: ' + err.message, {}); repaint(); });
-          }
-          input.addEventListener('blur', function () { finish(true); });
-          input.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
-            else if (ev.key === 'Enter' && input.tagName !== 'TEXTAREA') { ev.preventDefault(); finish(true); }
-            else if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); finish(true); }
-          });
-        });
-      });
-    }
-
 `;
