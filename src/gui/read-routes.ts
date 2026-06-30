@@ -870,15 +870,14 @@ export async function handleReadRoutes(
   // guarded (normalize + prefix + realpath), internal dot-dirs skipped.
   if (method === 'GET' && pathname === '/api/context/tree') {
     const r = listContextChildren(active.outputDir, '');
-    // The top level renders one context folder per entity — but pure link tables
-    // (junctions, e.g. files_corporations) are an implementation detail, not
-    // user-facing documents. Hide them here exactly as the brain graph does (it
-    // renders junctions as edges, never nodes) so the Markdown panel lists only
-    // real entities, not a "Files_<entity>" duplicate for every relation. Junction
-    // folders are the TitleCase form of the snake_case table name; match
-    // case-insensitively against the active workspace's junction set.
+    // Hide pure link tables from the Markdown panel — an implementation detail, not
+    // user-facing documents (same as the brain graph, which draws them as edges,
+    // not nodes). active.hiddenLinkTables (precomputed at workspace open) covers
+    // BOTH relation-declared junctions AND physical link tables created without
+    // declared relations (e.g. an AI-built `files_<entity>`). Junction folders are
+    // the TitleCase form of the snake_case table name; match case-insensitively.
     const entries = (r?.entries ?? []).filter(
-      (e) => !(e.kind === 'dir' && active.junctionTables.has(e.name.toLowerCase())),
+      (e) => !(e.kind === 'dir' && active.hiddenLinkTables.has(e.name.toLowerCase())),
     );
     sendJson(res, { entries, truncated: r?.truncated ?? false });
     return true;

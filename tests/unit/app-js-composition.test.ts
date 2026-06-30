@@ -158,8 +158,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // Realtime graph on ingest: runGraphIngestAnim() now does a full renderSchemaGraph()
 // re-render when there is no live handle yet (graph mounted while empty), so the
 // first objects ingested appear live instead of staying on the empty-state.
-const ORIGINAL_LENGTH = 815003;
-const ORIGINAL_SHA256 = '88cdcb0d0c46fb678f90b830d93feeb8c0a96ed9040a5feb84f43dd03ebac9a8';
+// Hide link tables everywhere: the client isJunction predicate is broadened to a
+// DISPLAY rule (mirror of server isHiddenLinkTable) that also hides PHYSICAL link
+// tables created without declared relations (an AI-built files_<entity> shaped
+// (id, name, x_id, y_id)) from object lists / sidebars / graph nodes / panels.
+const ORIGINAL_LENGTH = 815478;
+const ORIGINAL_SHA256 = 'c80d4107037e31ef7b2a98ac07fade777c6df68a582a1f255daf556f15477bfd';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
