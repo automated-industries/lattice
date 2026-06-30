@@ -143,7 +143,7 @@ export const routerJs = `    // ────────────────
      */
     function refreshEntities() {
       return Promise.all([
-        fetchJson('/api/entities').then(function (d) { state.entities = d; }),
+        fetchJson('/api/entities-summary').then(function (d) { state.entities = d; }),
         refreshHistoryState(),
       ]);
     }

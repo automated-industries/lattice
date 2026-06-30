@@ -28,7 +28,7 @@ export const searchJs = `    // ────────────────
     function afterMutation() {
       loadedTables = {};
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         refreshHistoryState(),
       ]).then(function (r) {
         state.entities = r[0];
@@ -51,7 +51,7 @@ export const searchJs = `    // ────────────────
     /** Refetch everything after a DB switch and rerender. */
     function reloadEverything() {
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),

@@ -64,7 +64,7 @@ export const renderProgressStateJs = `    // ───────────�
      */
     function dmRefreshPanel(name, rebuildGraph) {
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
       ]).then(function (r) {

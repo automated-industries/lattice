@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   buildGuiGraph,
   getGuiEntities,
+  loadGuiData,
   isJunctionTable,
   type GuiTableSummary,
 } from '../../src/gui/data.js';
@@ -240,6 +241,19 @@ describe('GUI graph builder', () => {
       expect(ids.has(e.source)).toBe(true);
       expect(ids.has(e.target)).toBe(true);
     }
+  });
+
+  it('loadGuiData(includeEntities=false) skips the O(files) rendered-file scan', () => {
+    // The fixture renders entity files, so the DEFAULT load collects them...
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const full = loadGuiData(configPath, outputDir);
+    expect(full.entities.length).toBeGreaterThan(0);
+    // ...but the hot-path load (boot / workspace switch / Objects list) skips the
+    // disk scan: same tables + manifest, empty entities.
+    const fast = loadGuiData(configPath, outputDir, false);
+    expect(fast.entities).toEqual([]);
+    expect(fast.tables.map((t) => t.name).sort()).toEqual(full.tables.map((t) => t.name).sort());
+    expect(fast.manifest).toEqual(full.manifest);
   });
 
   it('adds extraTables (native entities / team-shared) as graph nodes', () => {
