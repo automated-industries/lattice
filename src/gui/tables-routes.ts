@@ -107,11 +107,16 @@ export async function handleTablesRoutes(
         const deletedMode = url.searchParams.get('deleted');
         // Row visibility is enforced by Postgres RLS at the database.
         const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
+        const filters: NonNullable<typeof queryOpts.filters> = [];
         if (active.softDeletable.has(table) && deletedMode !== 'any') {
-          queryOpts.filters = [
-            { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
-          ];
+          filters.push({ col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' });
         }
+        // The Artifacts object page pages the files that carry an artifact_type,
+        // server-side (so it isn't capped at one client-side fetch window).
+        if (url.searchParams.get('artifactType') === 'present') {
+          filters.push({ col: 'artifact_type', op: 'isNotNull' });
+        }
+        if (filters.length) queryOpts.filters = filters;
         // Optional column projection (?exclude=col,col) so a caller can skip heavy
         // columns it doesn't need — e.g. the Sources sidebar excluding
         // files.extracted_text (up to 200 KB/row) on its frequent re-renders
@@ -130,17 +135,24 @@ export async function handleTablesRoutes(
         // everywhere else (validTables, ownership lookups, writes).
         const rows = await active.db.query(readRelationFor(active, table), queryOpts);
         await attachRowAccess(active.db, table, rows);
-        // Approximate total for pagination ("N–M of T", rendered "T+" when capped).
-        // Counted through the SAME RLS-scoped relation + soft-delete filter as the
-        // rows above, so a member's total matches what they can actually see; bounded
-        // (stops after MAX_ROWS_PAGE+1) so it never becomes a full-table COUNT.
-        const approxTotal = await active.db.boundedCount(
-          readRelationFor(active, table),
-          queryOpts.filters
-            ? { filters: queryOpts.filters, cap: MAX_ROWS_PAGE }
-            : { cap: MAX_ROWS_PAGE },
-        );
-        sendJson(res, { rows, approxTotal, totalIsCapped: approxTotal > MAX_ROWS_PAGE });
+        // Only the paginating caller asks for the total (?withTotal=1). The many
+        // whole-list callers (loadAllRows, the Sources sidebar, relation-chip
+        // fetches) discard it, so we skip the extra (bounded) count for them.
+        if (url.searchParams.get('withTotal') === '1') {
+          // Approximate total for pagination ("N–M of T", rendered "T+" when capped).
+          // Counted through the SAME RLS-scoped relation + filters as the rows above,
+          // so a member's total matches what they can actually see; bounded (stops
+          // after MAX_ROWS_PAGE+1) so it never becomes a full-table COUNT.
+          const approxTotal = await active.db.boundedCount(
+            readRelationFor(active, table),
+            queryOpts.filters
+              ? { filters: queryOpts.filters, cap: MAX_ROWS_PAGE }
+              : { cap: MAX_ROWS_PAGE },
+          );
+          sendJson(res, { rows, approxTotal, totalIsCapped: approxTotal > MAX_ROWS_PAGE });
+        } else {
+          sendJson(res, { rows });
+        }
         return true;
       }
       if (method === 'POST') {

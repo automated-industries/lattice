@@ -89,11 +89,11 @@ describe('row-list pagination total + offset window', () => {
     return id;
   }
 
-  it('returns approxTotal + totalIsCapped and an offset-sliced window', async () => {
+  it('returns approxTotal + totalIsCapped and an offset-sliced window (with ?withTotal=1)', async () => {
     const s = await boot();
     for (let i = 0; i < 5; i++) await postTask(s, `T${String(i)}`);
 
-    const page1 = (await (await rows(s, '?limit=2&offset=0')).json()) as {
+    const page1 = (await (await rows(s, '?withTotal=1&limit=2&offset=0')).json()) as {
       rows: { id: string }[];
       approxTotal: number;
       totalIsCapped: boolean;
@@ -102,7 +102,7 @@ describe('row-list pagination total + offset window', () => {
     expect(page1.approxTotal).toBe(5); // small fixture → exact
     expect(page1.totalIsCapped).toBe(false);
 
-    const page3 = (await (await rows(s, '?limit=2&offset=4')).json()) as {
+    const page3 = (await (await rows(s, '?withTotal=1&limit=2&offset=4')).json()) as {
       rows: { id: string }[];
       approxTotal: number;
     };
@@ -112,6 +112,15 @@ describe('row-list pagination total + offset window', () => {
     // The offset genuinely shifts the window (page 1 and the last page are disjoint).
     const ids1 = new Set(page1.rows.map((r) => r.id));
     expect(page3.rows.every((r) => !ids1.has(r.id))).toBe(true);
+  });
+
+  it('omits the count unless ?withTotal=1 — the whole-list callers do not pay for it', async () => {
+    const s = await boot();
+    for (let i = 0; i < 3; i++) await postTask(s, `T${String(i)}`);
+    const body = (await (await rows(s, '?limit=2')).json()) as Record<string, unknown>;
+    expect(Array.isArray(body.rows)).toBe(true);
+    expect('approxTotal' in body).toBe(false); // no extra bounded count was run
+    expect('totalIsCapped' in body).toBe(false);
   });
 });
 

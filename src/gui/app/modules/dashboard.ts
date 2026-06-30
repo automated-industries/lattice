@@ -1001,7 +1001,7 @@ export const dashboardJs = `    // ───────────────
       }).join('');
       var tableHtml = rows.length
         ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
-        : '<div class="fs-empty" style="padding:24px">Nothing here yet.</div>';
+        : '<div class="fs-empty" style="padding:24px">' + escapeHtml(o.emptyText || 'Nothing here yet.') + '</div>';
 
       var first = rows.length ? page * pageSize + 1 : 0;
       var last = page * pageSize + rows.length;
@@ -1039,16 +1039,19 @@ export const dashboardJs = `    // ───────────────
       if (nextBtn && hasNext) nextBtn.addEventListener('click', function () { o.onPage(page + 1); });
     }
 
-    // Pager display values for a fetched page. env = { rows, approxTotal,
-    // totalIsCapped } where approxTotal is the bounded server count (cap + 1 when
-    // capped). Returns { totalLabel, hasNext } in paintRowsTable's terms.
-    function fsPagerView(env, page) {
-      var last = page * PAGE_SIZE + env.rows.length;
-      if (env.totalIsCapped) {
-        // approxTotal is cap + 1 → show "cap+"; a full page means there's more.
-        return { totalLabel: String(env.approxTotal - 1) + '+', hasNext: env.rows.length >= PAGE_SIZE };
-      }
-      return { totalLabel: String(env.approxTotal), hasNext: last < env.approxTotal };
+    // Turn a server page envelope into paintRowsTable terms. env.rows was fetched
+    // with limit PAGE_SIZE + 1 (a sentinel over-fetch): if the extra row came back
+    // there IS a next page — a precise signal that works even when the count is
+    // capped or the total is an exact multiple of the page size (no phantom page).
+    // env.approxTotal is the bounded count (cap + 1 when capped → render "cap+").
+    function fsServerPage(env) {
+      var hasMore = env.rows.length > PAGE_SIZE;
+      return {
+        rows: env.rows.slice(0, PAGE_SIZE),
+        approxTotal: env.approxTotal,
+        totalLabel: env.totalIsCapped ? String(env.approxTotal - 1) + '+' : String(env.approxTotal),
+        hasNext: hasMore,
+      };
     }
 
     // Collection view — a folder of tiles for a NESTED relation path
@@ -1067,33 +1070,40 @@ export const dashboardJs = `    // ───────────────
       crumbsP.then(function (crumbs) {
         var base = fsHref(segs);
         var page = fsPageByPath[base] || 0;
-        var table, envP;
+        var table, viewP;
         if (topLevel) {
           table = segs[0];
           if (!tableByName(table)) {
             setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
             return;
           }
-          // Server-side paging: fetch only this page + the bounded approximate total.
-          envP = fetchRowsPage(table, { limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+          // Server-side paging: fetch this page + ONE sentinel row (limit + 1) so
+          // "is there a next page" is exact, plus the bounded approximate total.
+          viewP = fetchRowsPage(table, { limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE }).then(fsServerPage);
         } else {
           var last = crumbs[crumbs.length - 1];
           if (!last || last.type !== 'rel') throw new Error('Bad collection path');
           table = last.rel.targetTable;
           // Relation drill: fsRelatedRows returns a bounded array (JS-filtered by
-          // membership), so page client-side over it.
-          envP = fsRelatedRows(last.parentTable, last.parentRow, last.rel).then(function (all) {
+          // membership), so page client-side over the full array.
+          viewP = fsRelatedRows(last.parentTable, last.parentRow, last.rel).then(function (all) {
             return {
               rows: all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
               approxTotal: all.length,
-              totalIsCapped: false,
+              totalLabel: String(all.length),
+              hasNext: (page + 1) * PAGE_SIZE < all.length,
             };
           });
         }
-        return envP.then(function (env) {
+        return viewP.then(function (view) {
           if (myGen !== renderGen) return; // superseded by a newer navigation
+          // A stale page index (rows deleted under us, or a remembered deep page)
+          // can land past the end → clamp to the last real page and re-render.
+          if (!view.rows.length && page > 0) {
+            var lastPage = Math.max(0, Math.ceil((view.approxTotal || 0) / PAGE_SIZE) - 1);
+            if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs); return; }
+          }
           var d = displayFor(table);
-          var pv = fsPagerView(env, page);
           // The object view is the table's ROWS in a table (mirroring the Files file
           // list), one page at a time with a Prev/Next pager. One consistent view.
           paintRowsTable(content, {
@@ -1102,13 +1112,14 @@ export const dashboardJs = `    // ───────────────
             label: d.label,
             table: table,
             cols: objRowCols(tableByName(table)),
-            rows: env.rows,
+            rows: view.rows,
             hrefFor: function (r) { return base + '/' + encodeURIComponent(r.id); },
             page: page,
             pageSize: PAGE_SIZE,
-            totalLabel: pv.totalLabel,
-            hasNext: pv.hasNext,
-            onPage: function (p) { fsPageByPath[base] = p; renderFsCollection(content, segs); },
+            totalLabel: view.totalLabel,
+            hasNext: view.hasNext,
+            // Bump renderGen so a slow prior-page fetch can't paint over this one.
+            onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs); },
           });
         });
       }).catch(function (err) {
@@ -1119,34 +1130,40 @@ export const dashboardJs = `    // ───────────────
 
     // Artifacts object page: the files that carry an artifact_type, rendered as a
     // normal rows table (mirroring the object page), each row opening the file
-    // record. The breadcrumb roots at Artifacts (see fsBreadcrumb).
+    // record. Paged server-side (?artifactType=present) like any object page, so
+    // every artifact is reachable. The breadcrumb roots at Artifacts (see fsBreadcrumb).
     function renderArtifactsView(content) {
       var myGen = renderGen;
-      var page = fsPageByPath['#/fs/artifacts'] || 0;
-      fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description'))
-        .then(function (resp) {
+      var base = '#/fs/artifacts';
+      var page = fsPageByPath[base] || 0;
+      fetchRowsPage('files', {
+        artifactType: 'present',
+        exclude: 'extracted_text,description',
+        limit: PAGE_SIZE + 1,
+        offset: page * PAGE_SIZE,
+      })
+        .then(function (env) {
           if (myGen !== renderGen) return; // superseded by a newer navigation
-          var fetched = (resp && resp.rows) || [];
-          var all = fetched.filter(function (r) { return !r.deleted_at && r.artifact_type; });
+          var view = fsServerPage(env);
+          if (!view.rows.length && page > 0) {
+            var lastPage = Math.max(0, Math.ceil((view.approxTotal || 0) / PAGE_SIZE) - 1);
+            if (lastPage !== page) { fsPageByPath[base] = lastPage; renderArtifactsView(content); return; }
+          }
           var d = displayFor('artifacts');
-          // We page client-side over the artifact subset of the (bounded) files
-          // fetch. If that fetch hit its 500-row cap there may be more artifacts we
-          // didn't see, so the total is approximate ("N+").
-          var filesCapped = fetched.length >= 500;
-          var slice = all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
           paintRowsTable(content, {
             breadcrumbHtml: fsBreadcrumb(['artifacts'], []),
             icon: d.icon,
             label: d.label,
             table: 'files',
             cols: objRowCols(tableByName('files')),
-            rows: slice,
+            rows: view.rows,
             hrefFor: function (r) { return '#/fs/files/' + encodeURIComponent(r.id); },
             page: page,
             pageSize: PAGE_SIZE,
-            totalLabel: filesCapped ? String(all.length) + '+' : String(all.length),
-            hasNext: page * PAGE_SIZE + slice.length < all.length,
-            onPage: function (p) { fsPageByPath['#/fs/artifacts'] = p; renderArtifactsView(content); },
+            totalLabel: view.totalLabel,
+            hasNext: view.hasNext,
+            emptyText: 'Nothing created yet.',
+            onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderArtifactsView(content); },
           });
         })
         .catch(function (err) {
