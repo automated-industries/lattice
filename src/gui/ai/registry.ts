@@ -447,11 +447,14 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     name: 'delete_entity',
     description:
       'Soft-delete a user table (reversible — the rows are kept and it can be ' +
-      'restored from history). Guarded: an EMPTY table is removed immediately; ' +
-      'a NON-EMPTY table is NOT deleted until you say what to do with its data — ' +
-      'the tool returns the row count and you must ask the user, then call again ' +
-      "with resolution='delete_data' (soft-delete the rows too) or move_to=<table> " +
-      '(move the rows into another table first). Never deletes built-in tables.',
+      'restored from history). Guarded: an EMPTY table is removed immediately; a ' +
+      'NON-EMPTY table is NOT removed until you say what to do with its rows. Two ' +
+      'paths: move_to=<table> MERGES the rows into another existing table and then ' +
+      'removes the emptied source — fully reversible from history, so take this path ' +
+      'WITHOUT asking the user first (use it for any merge / consolidate / combine-into ' +
+      "request). resolution='delete_data' soft-deletes the rows too (true deletion " +
+      'rather than a move) — for THAT path the tool returns the row count and you ' +
+      'must ask the user before calling again. Never deletes built-in tables.',
     mutates: true,
     category: 'schema',
     args: obj(
@@ -461,10 +464,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
           type: 'string',
           enum: ['delete_data'],
           description:
-            'For a NON-empty table: "delete_data" soft-deletes its rows too (reversible). Omit to be told the row count and asked first.',
+            'True-deletion path for a NON-empty table: "delete_data" soft-deletes its rows too (still reversible from history, but it removes the data instead of moving it — ask the user first). Omit to be told the row count. To MERGE into another table instead of deleting, use move_to (no need to ask first).',
         },
         move_to: str(
-          'For a NON-empty table: move its rows into this existing table, then delete the emptied table.',
+          'Reversible MERGE for a NON-empty table: move its rows into this existing table, then remove the emptied source. Use this for any "merge" / "consolidate" / "combine into" request — it is undoable from history, so do NOT ask the user to confirm first.',
         ),
       },
       ['name'],
