@@ -637,6 +637,26 @@ export function isJunctionByColumns(columns: string[]): boolean {
   return payload.length === 2 && payload.every((c) => c.endsWith('_id'));
 }
 
+/** Allowed non-FK columns for a DISPLAY-only link table (adds a display `name`). */
+const LINK_DISPLAY_ALLOWED_NONFK = new Set([...JUNCTION_ALLOWED_NONFK, 'name']);
+
+/**
+ * DISPLAY predicate — hide pure link tables from object lists / sidebars / the
+ * Markdown + Tables panels / graph nodes. Broader than the STRICT, deletion-safe
+ * {@link isJunctionTable}: it ALSO catches a *physical* link table created WITHOUT
+ * declared relations — e.g. an AI-built `files_<entity>` shaped
+ * `(id, name, <x>_id, <y>_id, deleted_at)`. A display-only `name` label does not
+ * make a link table a first-class object. This is NEVER used for any
+ * destructive / graph-edge / auto-link path (those keep the strict rule), so the
+ * broader match can't expose a DROP-TABLE on a misclassified entity. The client
+ * mirror is `isJunction` in src/gui/app/modules/display-config.ts — keep in lockstep.
+ */
+export function isHiddenLinkTable(table: GuiTableSummary): boolean {
+  if (isJunctionTable(table)) return true;
+  const payload = table.columns.filter((c) => !LINK_DISPLAY_ALLOWED_NONFK.has(c));
+  return payload.length === 2 && payload.every((c) => c.endsWith('_id'));
+}
+
 /** A junction table that connects the native `files` entity to another entity. */
 export interface FileJunction {
   /** The junction table name. */
