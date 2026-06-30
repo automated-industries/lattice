@@ -67,8 +67,11 @@ import { css } from '../../src/gui/app/css.js';
 // Rows-table pager: .rows-pager / .rows-pager-info + pager button sizing.
 // Tables-explorer edges restyled: solid strokes (m2m dash removed), svg.mt-edges
 // raised above the cards (z-index 2), stroke-width + opacity bumped for visibility.
-const ORIGINAL_LENGTH = 114055;
-const ORIGINAL_SHA256 = 'd430b567e1f9d48734c50b61d1342fe9c09f6e02e5dd91aa27153c8cc62db74e';
+// Tables-explorer Wire/Merge: a warm-accent "Merge" toggle button, plus
+// .mt-card-disabled (greyed/undroppable invalid targets) and .mt-drag-active (the
+// card being dragged) states.
+const ORIGINAL_LENGTH = 115271;
+const ORIGINAL_SHA256 = 'da854b82a64d666720e24030e9aa2583175c19a1e5cc4b62dc6d2c1d7a7a9e70';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
