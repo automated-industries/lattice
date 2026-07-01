@@ -110,11 +110,14 @@ export function readRowContext(
       // `**col:** value`, and a plain/frontmatter `col: value` line. The old
       // `^col:` anchor missed the bold-bullet form and leaked secrets to the
       // browser. The column name is regex-escaped so an unusual name can't alter
-      // the pattern. `\r?$` so a CRLF-rendered file redacts the whole value too.
+      // the pattern. The bold-bullet match also swallows any 2-space-indented
+      // CONTINUATION lines (the multi-line render encoding — renderFieldBullet), so
+      // a multi-line secret (e.g. a PEM key) is masked whole, not just its first
+      // line. `\r?` handles a CRLF-rendered file.
       const esc = col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       content = content
         .replace(
-          new RegExp(`^(\\s*(?:[-*]\\s+)?\\*\\*${esc}:\\*\\*\\s*).*?\\r?$`, 'gm'),
+          new RegExp(`^(\\s*(?:[-*]\\s+)?\\*\\*${esc}:\\*\\*\\s*).*(?:\\r?\\n {2,}.*)*`, 'gm'),
           `$1${SECRET_MASK}`,
         )
         .replace(new RegExp(`^(${esc}:\\s*).*?\\r?$`, 'gm'), `$1${SECRET_MASK}`);
