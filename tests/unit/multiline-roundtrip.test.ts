@@ -86,6 +86,25 @@ describe('multi-line field round-trip', () => {
     expect(updates[0]!.set).toEqual({ status: 'done' });
   });
 
+  it('round-trips a value whose FIRST line is blank (leading newline) instead of dropping it', () => {
+    // `- **key:** ` (empty first line) used to trim to `key:` and be dropped whole.
+    for (const body of ['\nafter a blank first line', '\n\ntwo blank lines then text']) {
+      expect(roundTrip({ body }).body).toBe(body);
+    }
+  });
+
+  it('preserves a leading-blank field when only another field is edited (no silent drop)', () => {
+    const row: Row = { id: 'r1', body: '\nStarts after a blank line', status: 'open' };
+    const edited = block({ body: row.body, status: 'done' });
+    const updates = deriveUpdatesFromFile(edited, row, { table: 't', pkCols: ['id'] });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.set).toEqual({ status: 'done' }); // body NOT dropped
+  });
+
+  it('does not capture a bare `Foo:` prose line as an empty-string field', () => {
+    expect(parseEntityProfileContent('# Title\n\nNotes:\nsome prose here\n')).toEqual({});
+  });
+
   it('detects a genuine edit to a multi-line field', () => {
     const row: Row = { id: 'r1', body: 'Line 1\nLine 2', status: 'open' };
     const edited = block({ body: 'Line 1\nLine 2 EDITED', status: 'open' });
