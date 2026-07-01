@@ -180,8 +180,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // the drag adds a pointercancel/unified teardown; and the record Markdown
 // write-back captures renderGen so a debounced save can't fire into a navigated-
 // away record.
-const ORIGINAL_LENGTH = 823851;
-const ORIGINAL_SHA256 = 'e863ffd3143d98ada65eb1736a7795ef41d681aa3b9cc2a6e04ef7397bc2d832';
+const ORIGINAL_LENGTH = 834752;
+const ORIGINAL_SHA256 = '77a8aa4e726f59da37398670cc1a1e00fc1611a68f7cba8531cee5cf31b5ae59';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
@@ -195,5 +195,12 @@ describe('appJs composition', () => {
   it('matches the original sha256 exactly (byte-identical)', () => {
     const hash = createHash('sha256').update(normalized).digest('hex');
     expect(hash).toBe(ORIGINAL_SHA256);
+  });
+
+  it('composes to syntactically valid JavaScript', () => {
+    // The bundle is inlined as `<script>${appJs}</script>`, so a template-string
+    // slip in any module (an unbalanced brace, a stray backtick) would only surface
+    // in the browser. Parse it here to catch that at build time.
+    expect(() => new Function(normalized)).not.toThrow();
   });
 });

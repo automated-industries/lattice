@@ -136,6 +136,7 @@ export const bootJs = `    // ────────────────�
         initLastEdited();
         initOffline();
         initOutputsResize();
+        initColumnCollapse();
         initAskLattice();
         initActivityHeader();
         renderOutputs();

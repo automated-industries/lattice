@@ -101,7 +101,7 @@ export const guiAppHtml = `<!doctype html>
   </header>
   <div class="layout">
     <nav class="sidebar">
-      <div class="col-header col-inputs"><span class="col-header-text">Inputs</span></div>
+      <div class="col-header col-inputs"><span class="col-header-text">Inputs</span><button class="col-collapse" data-col="inputs" type="button" title="Collapse Inputs" aria-label="Collapse Inputs">‹</button></div>
       <div id="sources-nav">
         <div class="src-group">
           <button class="section-label section-toggle" data-group="files" type="button" aria-expanded="true">
@@ -157,12 +157,13 @@ export const guiAppHtml = `<!doctype html>
         <span class="col-header-text">Model</span>
         <div class="tabstrip-tabs" id="tabstrip-tabs"></div>
         <div class="tabstrip-status" id="tabstrip-status"></div>
+        <button class="col-collapse col-collapse-center" data-col="model" type="button" title="Collapse Model" aria-label="Collapse Model">‹›</button>
       </div>
       <div id="content"></div>
     </main>
     <aside class="outputs" id="outputs-rail" aria-label="Outputs">
       <div class="outputs-resize" id="outputs-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="outputs-head col-header col-outputs"><span class="col-header-text">Outputs</span></div>
+      <div class="outputs-head col-header col-outputs"><span class="col-header-text">Outputs</span><button class="col-collapse" data-col="outputs" type="button" title="Collapse Outputs" aria-label="Collapse Outputs">›</button></div>
       <div class="outputs-body" id="outputs-body">
         <section class="out-group">
           <button class="section-label section-toggle" data-group="out-artifacts" type="button" aria-expanded="true">
