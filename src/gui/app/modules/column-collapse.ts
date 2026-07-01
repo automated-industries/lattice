@@ -14,20 +14,11 @@ export const columnCollapseJs = `
     }
     function applyColumnCollapse() {
       var inC = colCollapsed('inputs'), moC = colCollapsed('model'), ouC = colCollapsed('outputs');
+      // The grid tracks (incl. keeping a flexible column) are driven by these body
+      // classes in pure CSS — see .layout in the stylesheet.
       document.body.classList.toggle('collapse-inputs', inC);
       document.body.classList.toggle('collapse-model', moC);
       document.body.classList.toggle('collapse-outputs', ouC);
-      var RAIL = '46px';
-      var inW = inC ? RAIL : 'var(--nav-width)';
-      var ouW = ouC ? RAIL : 'var(--outputs-width)';
-      var moW = moC ? RAIL : 'minmax(0, 1fr)';
-      // The grid needs a flexible track. If Model is collapsed, promote an expanded
-      // side to fill; if all three are collapsed, let Model flex so nothing clips.
-      if (moC && !inC) inW = 'minmax(0, 1fr)';
-      else if (moC && !ouC) ouW = 'minmax(0, 1fr)';
-      else if (moC && inC && ouC) moW = 'minmax(0, 1fr)';
-      var layout = document.querySelector('.layout');
-      if (layout) layout.style.gridTemplateColumns = inW + ' ' + moW + ' ' + ouW;
       document.querySelectorAll('.col-collapse[data-col]').forEach(function (b) {
         var col = b.getAttribute('data-col');
         var on = col === 'inputs' ? inC : (col === 'outputs' ? ouC : moC);
