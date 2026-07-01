@@ -10,6 +10,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 import { entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 
+/** Same value as `SECRET_MASK` in gui/ai/handlers/read.ts — kept local here to
+ *  avoid a circular import (read.ts imports {@link readRowContext} from this file). */
+const SECRET_MASK = '••••••••';
+
 export interface ContextFile {
   name: string;
   path: string;
@@ -101,8 +105,19 @@ export function readRowContext(
     if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
     let content = readFileSync(absPath, 'utf8');
     for (const col of secretCols) {
-      const re = new RegExp(`^(${col}):.*$`, 'gm');
-      content = content.replace(re, `$1: ••••••••`);
+      // Redact the secret value in EVERY shape the renderer can emit it: the
+      // DEFAULT bold bullet `- **col:** value` (renderSelf), an inline
+      // `**col:** value`, and a plain/frontmatter `col: value` line. The old
+      // `^col:` anchor missed the bold-bullet form and leaked secrets to the
+      // browser. The column name is regex-escaped so an unusual name can't alter
+      // the pattern. `\r?$` so a CRLF-rendered file redacts the whole value too.
+      const esc = col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      content = content
+        .replace(
+          new RegExp(`^(\\s*(?:[-*]\\s+)?\\*\\*${esc}:\\*\\*\\s*).*?\\r?$`, 'gm'),
+          `$1${SECRET_MASK}`,
+        )
+        .replace(new RegExp(`^(${esc}:\\s*).*?\\r?$`, 'gm'), `$1${SECRET_MASK}`);
     }
     return { name: filename, path: relPath, content };
   });
