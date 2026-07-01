@@ -65,9 +65,17 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .folders-view .fs-tile-icon { font-size: 42px; line-height: 1; }
     .folders-view .fs-file .fs-tile-icon { font-size: 34px; }
     .folders-view .fs-tile-label { text-align: center; }
-    .fs-tile-emoji { font-size: 13px; }
-    /* A folder's name is click-to-rename inline. */
-    .fs-tile-name:hover { text-decoration: underline dotted; cursor: text; }
+    /* Folder icon = 📁 with the object's emoji laid on its face. */
+    .fs-folder-icon { position: relative; display: inline-block; line-height: 1; }
+    .fs-folder-base { font-size: 46px; line-height: 1; }
+    .fs-folder-badge {
+      position: absolute; left: 50%; top: 60%; transform: translate(-50%, -50%);
+      font-size: 19px; line-height: 1; pointer-events: none;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+    }
+    /* Rename: right-click a folder tile, or click the open-folder breadcrumb name. */
+    .folders-crumb-cur .fs-tile-name { cursor: text; }
+    .folders-crumb-cur .fs-tile-name:hover { text-decoration: underline dotted; }
     .fs-tile-name.fs-renaming {
       outline: 1px solid var(--accent); background: var(--surface);
       padding: 0 3px; border-radius: 4px; cursor: text; text-decoration: none;
