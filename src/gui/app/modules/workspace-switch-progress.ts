@@ -40,9 +40,16 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       renderTabStrip();
       if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
 
-      // The brain graph is the default + permanent view; the dashboard moves to
-      // its own reachable route.
-      if (hash === '#/' || hash === '' || hash === '#/graph') {
+      // Folders — the DEFAULT center view: the workspace's objects as a grid of
+      // folders (double-click to open; rows inside show as files; linked objects
+      // nest). #/folders/<obj> opens one object's folder.
+      if (hash === '#/' || hash === '' || hash === '#/folders') { renderFoldersView(content); return; }
+      var flm = /^#\\/folders\\/([^/]+)$/.exec(hash);
+      if (flm) { renderFolderEntity(content, decodeURIComponent(flm[1])); return; }
+
+      // The brain graph — a sibling tab of Folders/Tables. (Was the default; Folders
+      // is now the landing view.)
+      if (hash === '#/graph') {
         // A soft (background) refresh must NOT rebuild the graph — the ingest
         // animation owns in-place graph updates, and a rebuild here would wipe it.
         if (!soft) renderBrainGraph(content);
