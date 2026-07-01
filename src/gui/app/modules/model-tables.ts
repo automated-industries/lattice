@@ -1,17 +1,16 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The Model
 // "Tables" view — a tiered schema explorer (Source · inputs / Model · entities /
-// Derived · AI loop / Surface · app) with an Entity/Field toggle and a click-to-open
+// Surface · app) with an Entity/Field toggle and a click-to-open
 // detail panel (fields + table/field lineage). Built from state.entities + the
 // server graph edges (/api/graph?schema=1). Must stay INSIDE the
 // client IIFE (uses state/displayFor/isJunction/escapeHtml); inserted before
 // createDatabaseWizardJs. renderModelTables(host) is called from the Model view's
 // Graph|Tables toggle (system-tables segment).
 export const modelTablesJs = `
-    // The four tiers, source → surface (mirrors the data-model layering).
+    // The three tiers, source → surface (mirrors the data-model layering).
     var MT_LAYERS = [
       { id: 'source', name: 'Source \\u00b7 inputs', short: 'Source' },
       { id: 'model', name: 'Model \\u00b7 entities', short: 'Model' },
-      { id: 'derived', name: 'Derived \\u00b7 AI loop', short: 'Derived' },
       { id: 'surface', name: 'Surface \\u00b7 app', short: 'Surface' },
     ];
     // Field-tint concept → colour class (CSS .mt-c-<class>).
@@ -22,9 +21,7 @@ export const modelTablesJs = `
       metric: 'measure', status: 'state', flag: 'state',
       timestamp: 'time', credential: 'secret',
     };
-    var MT_DERIVED_RE = /(^|_)(embeddings?|vectors?|proposals?|learnings?|observations?|insights?|predictions?|scores?)(_|$)/i;
     var MT_SURFACE_RE = /(^|_)(settings?|config|auth|oauth|tokens?|sessions?|chat|threads?|messages?|todos?|notifications?|app)(_|$)/i;
-    var MT_VECTOR_COL_RE = /(^|_)(embedding|vector)(_|$)/i;
 
     // MIRROR of src/gui/tier-classify.ts \`classifyTier\` — keep the two in sync (the
     // TS file is the unit-tested source of truth; this is its client copy).
@@ -34,8 +31,6 @@ export const modelTablesJs = `
       if (t && t.connectorToolkit) return 'source';
       if (name === 'files') return 'source';
       if (cols.indexOf('_source_connector_id') !== -1) return 'source';
-      if (MT_DERIVED_RE.test(name)) return 'derived';
-      for (var i = 0; i < cols.length; i++) { if (MT_VECTOR_COL_RE.test(cols[i])) return 'derived'; }
       if (name === 'secrets') return 'surface';
       if (MT_SURFACE_RE.test(name)) return 'surface';
       return 'model';
