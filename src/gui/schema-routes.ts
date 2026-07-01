@@ -252,6 +252,17 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
       return true;
     }
+    // Owner-gate on cloud: dropping a table mutates the owner's config, so a
+    // scoped member must not do it (local + cloud-owner both pass; RLS alone
+    // does not gate this DDL/config path). Same pattern as the policy routes.
+    if (
+      active.db.getDialect() === 'postgres' &&
+      (await cloudRlsInstalled(active.db)) &&
+      !(await canManageRoles(active.db))
+    ) {
+      sendJson(res, { error: 'Only a cloud owner can delete tables' }, 403);
+      return true;
+    }
     // Inbound-FK guard: refuse if another table links to this one.
     const inbound: string[] = [];
     for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
@@ -616,6 +627,14 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
       return true;
     }
+    if (
+      active.db.getDialect() === 'postgres' &&
+      (await cloudRlsInstalled(active.db)) &&
+      !(await canManageRoles(active.db))
+    ) {
+      sendJson(res, { error: 'Only a cloud owner can add a link' }, 403);
+      return true;
+    }
     const body = (await readJson<unknown>(req)) as { target?: unknown };
     const target = typeof body.target === 'string' ? body.target.trim() : '';
     if (!active.validTables.has(target)) {
@@ -690,6 +709,14 @@ export async function handleSchemaRoutes(
     const source = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(source)) {
       sendJson(res, { error: `Unknown entity: ${source}` }, 400);
+      return true;
+    }
+    if (
+      active.db.getDialect() === 'postgres' &&
+      (await cloudRlsInstalled(active.db)) &&
+      !(await canManageRoles(active.db))
+    ) {
+      sendJson(res, { error: 'Only a cloud owner can merge tables' }, 403);
       return true;
     }
     const body = (await readJson<unknown>(req)) as { target?: unknown };

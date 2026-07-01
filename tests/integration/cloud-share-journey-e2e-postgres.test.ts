@@ -290,6 +290,24 @@ describe.skipIf(!PG_URL)(
       ).body as ShareResp;
       expect(denied.ok).not.toBe(true);
       expect(denied.error).toBeTruthy();
+
+      // ── Owner-gate: a scoped MEMBER can write ROWS (above) but must NOT drive
+      // SCHEMA/config mutations — merge, delete-table, or add-link all edit the
+      // owner's config and are 403 for a member (RLS alone does not gate them).
+      const mergeDenied = await postJson(member, '/api/schema/entities/shared_t/merge', {
+        target: 'shared_t',
+      });
+      expect(mergeDenied.status).toBe(403);
+      const linkDenied = await postJson(member, '/api/schema/entities/shared_t/links', {
+        target: 'shared_t',
+      });
+      expect(linkDenied.status).toBe(403);
+      const dropDenied = await fetch(`${member.url}/api/schema/entities/shared_t`, {
+        method: 'DELETE',
+      });
+      expect(dropDenied.status).toBe(403);
+      // The shared table survives the denied drop.
+      expect((await ownerDb.query('shared_t', {})).length).toBeGreaterThan(0);
     });
   },
 );
