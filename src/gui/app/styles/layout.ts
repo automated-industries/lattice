@@ -56,11 +56,11 @@ export const layoutCss = `    /* ── Layout ───────────
     body.wm-dragging { cursor: grabbing; }
     body.wm-dragging .wm-drag-active { opacity: 0.4; }
     body.wm-active [data-table]:not([data-kind="file"]) { cursor: crosshair; }
-    /* The dragged object's floating clone that follows the cursor. */
+    /* The dragged object's floating clone that follows the cursor. Keeps the tile's
+       own look (the added classes) — just floats + lifts it. */
     .wm-ghost {
-      position: fixed; z-index: 3000; margin: 0; pointer-events: none; opacity: 0.9;
-      transform: rotate(-2deg); box-shadow: 0 10px 28px rgba(15, 23, 42, 0.32);
-      border-radius: 10px; background: var(--surface);
+      position: fixed; z-index: 3000; margin: 0; pointer-events: none; opacity: 0.85;
+      transform: rotate(-2deg); filter: drop-shadow(0 8px 12px rgba(15, 23, 42, 0.35));
     }
     @media (max-width: 720px) {
       #content { padding-bottom: 24px; }
