@@ -54,6 +54,32 @@ describe('readRowContext secret redaction', () => {
     expect(content).toContain('visible');
   });
 
+  it('masks a MULTI-LINE secret whole, including its indented continuation lines', () => {
+    // A multi-line secret (e.g. a PEM key) renders as a bullet + 2-space-indented
+    // continuation lines; every line must be masked, not just the first.
+    const { outputDir, locator } = writeRendered(
+      [
+        '# Row',
+        '',
+        '- **title:** Hello',
+        '- **private_key:** -----BEGIN KEY-----',
+        '  bWlkZGxlLWJhc2U2NA==',
+        '  c2Vjb25kLWxpbmU=',
+        '  -----END KEY-----',
+        '- **note:** after',
+        '',
+      ].join('\n'),
+    );
+    const content = readRowContext(outputDir, locator, new Set(['private_key']))[0]!.content;
+    expect(content).not.toContain('BEGIN KEY'); // first line masked
+    expect(content).not.toContain('bWlkZGxlLWJhc2U2NA=='); // continuation masked
+    expect(content).not.toContain('c2Vjb25kLWxpbmU='); // continuation masked
+    expect(content).not.toContain('END KEY'); // last continuation masked
+    expect(content).toContain('- **private_key:** ••••••••'); // collapsed to the mask
+    expect(content).toContain('Hello'); // neighbor above untouched
+    expect(content).toContain('- **note:** after'); // neighbor below untouched
+  });
+
   it('does not let a similarly-named non-secret column trigger redaction', () => {
     // Only the exact secret column name is masked; `api_key_hint` stays visible.
     const { outputDir, locator } = writeRendered(

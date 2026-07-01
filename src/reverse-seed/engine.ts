@@ -595,36 +595,67 @@ function parseEntityProfileContent(content: string): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   const lines = content.split('\n');
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+  const isSkippable = (t: string): boolean =>
+    !t || t.startsWith('#') || t === '---' || t.startsWith('<!--') || t.startsWith('>');
+
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = (lines[i] ?? '').trim();
     // Skip empty lines, headings, dividers, read-only markers, frontmatter delimiters
-    if (
-      !trimmed ||
-      trimmed.startsWith('#') ||
-      trimmed === '---' ||
-      trimmed.startsWith('<!--') ||
-      trimmed.startsWith('>')
-    ) {
+    if (isSkippable(trimmed)) {
+      i++;
       continue;
     }
 
     // The default entity-context render emits one bold bullet per field —
     // `- **key:** value`, with the colon sitting INSIDE the bold (see
-    // canonical-context.ts / entity-templates.ts). Also accept `**key**: value`
-    // and plain `key: value`. Normalize by dropping a leading list bullet and the
-    // bold markers that wrap the KEY (never the value), then split on the first
-    // ': '. Without this, the render's own output never parsed back — body edits
-    // to a rendered file were silently dropped as "not auto-importable".
+    // canonical-context.ts). Also accept `**key**: value` and plain `key: value`.
+    // Normalize by dropping a leading list bullet and the bold markers that wrap
+    // the KEY (never the value), then split on the first ': '. Without this, the
+    // render's own output never parsed back — body edits to a rendered file were
+    // silently dropped as "not auto-importable".
     let normalized = trimmed.replace(/^[-*]\s+/, '');
     normalized = normalized
       .replace(/^\*\*(.+?):\*\*/, '$1:') // `**key:**` → `key:`  (colon inside bold)
       .replace(/^\*\*(.+?)\*\*:/, '$1:'); // `**key**:` → `key:`  (colon outside bold)
     const colonIdx = normalized.indexOf(': ');
-    if (colonIdx > 0) {
-      const key = normalized.slice(0, colonIdx).trim();
-      const val = normalized.slice(colonIdx + 2);
-      row[key] = coerceValue(val);
+    if (colonIdx <= 0) {
+      i++;
+      continue;
     }
+    const key = normalized.slice(0, colonIdx).trim();
+    const valueLines: string[] = [normalized.slice(colonIdx + 2)];
+
+    // Accumulate the value's 2-space-indented CONTINUATION lines (the multi-line
+    // render encoding — see renderFieldBullet). Strip exactly the 2-space marker so
+    // the value's own indentation survives. A blank line stays part of the value
+    // only when another indented line follows it (interior blank line); otherwise
+    // it ends the value. Stops at the next unindented content (new bullet, heading,
+    // divider) or EOF. Trailing blank lines are trimmed off the value.
+    i++;
+    while (i < lines.length) {
+      const cont = lines[i] ?? '';
+      if (cont.startsWith('  ')) {
+        valueLines.push(cont.slice(2));
+        i++;
+      } else if (cont.trim() === '') {
+        let j = i + 1;
+        while (j < lines.length && (lines[j] ?? '').trim() === '') j++;
+        if (j < lines.length && (lines[j] ?? '').startsWith('  ')) {
+          valueLines.push('');
+          i++;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+    while (valueLines.length > 1 && valueLines[valueLines.length - 1] === '') {
+      valueLines.pop();
+    }
+
+    row[key] = coerceValue(valueLines.join('\n'));
   }
 
   return row;

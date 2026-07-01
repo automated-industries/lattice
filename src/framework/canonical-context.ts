@@ -193,6 +193,22 @@ function canonicalSlug(def: TableDefinition): (row: Row) => string {
 
 const HIDDEN_COLS = new Set(['deleted_at', '_reward_total', '_reward_count']);
 
+/**
+ * Render one field as a Markdown bullet. Single-line values stay on the bullet
+ * line (`- **key:** value`). A multi-line value keeps its first line inline and
+ * writes each remaining line as a 2-space-indented CONTINUATION line, so the whole
+ * value round-trips through {@link parseEntityProfileContent} instead of being
+ * silently truncated to its first line on the next reverse-sync. Interior empty
+ * lines are written blank (no marker) and recovered by the parser's look-ahead.
+ */
+export function renderFieldBullet(k: string, v: unknown): string {
+  const text = toText(v);
+  if (!text.includes('\n')) return `- **${k}:** ${text}`;
+  const [first = '', ...rest] = text.split('\n');
+  const cont = rest.map((line) => (line === '' ? '' : `  ${line}`)).join('\n');
+  return `- **${k}:** ${first}\n${cont}`;
+}
+
 /** Render a single entity row as a titled, frontmatter-tagged detail block. */
 function renderSelf(table: string): (rows: Row[]) => string {
   return (rows: Row[]): string => {
@@ -201,7 +217,7 @@ function renderSelf(table: string): (rows: Row[]) => string {
     const title = rowLabel(row) || singularUpper(table);
     const fields = Object.entries(row)
       .filter(([k, v]) => !HIDDEN_COLS.has(k) && v != null && toText(v).length > 0)
-      .map(([k, v]) => `- **${k}:** ${toText(v)}`)
+      .map(([k, v]) => renderFieldBullet(k, v))
       .join('\n');
     return `${frontmatter({ [`${table}_id`]: toText(row.id) })}# ${title}\n\n${fields}\n`;
   };
