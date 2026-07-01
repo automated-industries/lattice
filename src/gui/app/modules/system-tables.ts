@@ -166,6 +166,9 @@ export const systemTablesJs = `    // ──────────────
             edges: data.edges,
             reducedMotion: graphReducedMotion(),
             onNode: function (node) {
+              // In Wire/Merge mode a node click picks a source then a target (drag
+              // stays off the graph, which owns node repositioning); otherwise open.
+              if (typeof wmModeClick === 'function' && wmModeClick(node.id)) return;
               location.hash = (advancedMode() ? '#/objects/' : '#/fs/') + encodeURIComponent(node.id);
             },
             onEdge: function (edge) {
