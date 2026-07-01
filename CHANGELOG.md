@@ -235,14 +235,21 @@ database connector).
   The debounced write-back captures the render generation and bails if the view has
   been superseded, so a pending save — or its failure notice — never lands on a
   no-longer-visible record.
-- **Merging one object into another is now lossless, safe, and asks when it can't
-  proceed.** The merge (drag-to-merge, or the assistant's `move_to`) could drop
-  source-only fields, duplicate rows on a history restore, declassify a secret, and
-  hard-fail with jargon over its size cap. Now it: adds any missing fields to the
+- **Merging one object into another is now lossless, safe, atomic, and asks when it
+  can't proceed.** The merge (drag-to-merge, or the assistant's `move_to`) could drop
+  source-only fields, duplicate rows on a history restore, declassify a secret,
+  hard-fail with jargon over its size cap, and — worst — throw partway through and
+  leave rows split between the two objects. Now it: adds any missing fields to the
   target so nothing is dropped; refuses a source whose rows aren't soft-deletable
   (they can't be reversibly removed); refuses to move a secret field into a
-  non-secret target; and, over the auto-merge size limit, hands the decision back to
-  ask the user instead of dead-ending the assistant.
+  non-secret target; over the auto-merge size limit, hands the decision back to ask
+  the user instead of dead-ending the assistant; type-checks every value against the
+  target's columns up front (so an incompatible value aborts before anything moves);
+  and runs the entire move inside a single database transaction, so it either
+  completes fully or changes nothing — it can never leave the two objects half-merged.
+  Backed by a new public `Lattice.transaction(fn)` primitive: every write `fn`
+  performs commits together or rolls back together, with read-your-writes inside the
+  transaction, scoped per async context so concurrent callers never share one.
 
 - **Link tables are hidden from every object list, not just the graph.** Junction /
   link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
