@@ -748,7 +748,13 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: outcome.error }, 400);
       return true;
     }
-    sendJson(res, { ok: true, merged: source, into: target, movedRows: outcome.movedRows ?? 0 });
+    sendJson(res, {
+      ok: true,
+      merged: source,
+      into: target,
+      movedRows: outcome.movedRows ?? 0,
+      rewiredLinks: outcome.rewiredLinks ?? 0,
+    });
     return true;
   }
 
