@@ -110,14 +110,20 @@ export function readRowContext(
       // `**col:** value`, and a plain/frontmatter `col: value` line. The old
       // `^col:` anchor missed the bold-bullet form and leaked secrets to the
       // browser. The column name is regex-escaped so an unusual name can't alter
-      // the pattern. The bold-bullet match also swallows any 2-space-indented
-      // CONTINUATION lines (the multi-line render encoding — renderFieldBullet), so
-      // a multi-line secret (e.g. a PEM key) is masked whole, not just its first
-      // line. `\r?` handles a CRLF-rendered file.
+      // the pattern. The bold-bullet match also swallows the value's 2-space-indented
+      // CONTINUATION lines (the multi-line render encoding — renderFieldBullet),
+      // INCLUDING an interior blank line (rendered as an empty line) when another
+      // indented line follows it — so a multi-line secret (a PEM key, a
+      // multi-paragraph token) is masked whole, not just up to its first blank line.
+      // The continuation stops at the next unindented content, so a trailing blank +
+      // the next field/section is never swallowed. `\r?` handles a CRLF-rendered file.
       const esc = col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       content = content
         .replace(
-          new RegExp(`^(\\s*(?:[-*]\\s+)?\\*\\*${esc}:\\*\\*\\s*).*(?:\\r?\\n {2,}.*)*`, 'gm'),
+          new RegExp(
+            `^(\\s*(?:[-*]\\s+)?\\*\\*${esc}:\\*\\*\\s*).*(?:\\r?\\n(?: {2,}.*| *(?=\\r?\\n {2,})))*`,
+            'gm',
+          ),
           `$1${SECRET_MASK}`,
         )
         .replace(new RegExp(`^(${esc}:\\s*).*?\\r?$`, 'gm'), `$1${SECRET_MASK}`);

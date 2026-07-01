@@ -51,5 +51,9 @@ describe('workspace switch refreshes the Outputs column (no cross-workspace mark
     await (w.reloadEverything as () => Promise<void>)();
 
     expect(renderOutputs).toHaveBeenCalled();
+    // The switch must also reset the Tables-explorer state (cached edges + any
+    // in-flight Wire/Merge selection), or the new workspace shows the old one's
+    // relationships. reloadEverything() is the single canonical switch path.
+    expect(w.mtResetState).toHaveBeenCalled();
   });
 });
