@@ -15,24 +15,28 @@ export const tabsJs = `
     // content area below with NO tab (it's reached by drilling in; a breadcrumb
     // navigates back). So the strip never grows beyond these two.
     var tabs = [
+      { key: 'folders', title: 'Folders', icon: '', hash: '#/folders', closable: false },
       { key: 'graph', title: 'Graph', icon: '', hash: GRAPH_HASH, closable: false },
       { key: 'tables', title: 'Tables', icon: '', hash: '#/tables', closable: false },
     ];
-    var activeTabKey = 'graph';
+    var activeTabKey = 'folders';
 
-    // 'graph' | 'tables' | null. The two model views map to their tab; object /
-    // collection / record pages (#/fs/* and #/objects/*) belong to the Tables view
-    // — they're reached by drilling in from it — so they keep the Tables tab lit.
+    // 'folders' | 'graph' | 'tables' | null. Each model view maps to its tab; object
+    // / collection / record pages (#/folders/*, #/fs/*, #/objects/*) belong to the
+    // Folders view — they're reached by drilling in from it — so they keep the
+    // Folders tab lit. Folders is the default landing view.
     function tabKeyForHash(hash) {
       hash = hash || '#/';
-      if (hash === '#/' || hash === '' || hash === GRAPH_HASH) return 'graph';
+      if (hash === '#/' || hash === '' || hash === '#/folders') return 'folders';
+      if (hash === GRAPH_HASH) return 'graph';
       if (hash === '#/tables') return 'tables';
       if (
+        hash.indexOf('#/folders/') === 0 ||
         hash.indexOf('#/fs/') === 0 ||
         hash.indexOf('#/objects/') === 0 ||
         hash.indexOf('#/folder/') === 0
       ) {
-        return 'tables';
+        return 'folders';
       }
       return null;
     }

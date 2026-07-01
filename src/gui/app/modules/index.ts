@@ -42,6 +42,8 @@ import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
 import { modelTablesJs } from './model-tables.js';
+import { foldersJs } from './folders.js';
+import { columnCollapseJs } from './column-collapse.js';
 
 export const appJs = [
   chartLibJs,
@@ -80,6 +82,8 @@ export const appJs = [
   activityHeaderJs,
   askLatticeJs,
   modelTablesJs,
+  foldersJs,
+  columnCollapseJs,
   detailViewJs,
   markdownJs,
   settingsDrawerJs,

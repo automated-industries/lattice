@@ -35,6 +35,38 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-folder-count { font-size: 11px; color: var(--text-muted); }
     .fs-empty { color: var(--text-muted); font-style: italic; padding: 28px 4px; }
 
+    /* ── Folders view (the default tab: objects as folders) ─────────── */
+    .folders-view { padding: 2px 2px 24px; }
+    .folders-crumbs {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+      font-size: 14px; color: var(--text-muted);
+    }
+    .folders-crumbs a { color: var(--accent); }
+    .folders-crumbs a:hover { text-decoration: underline; }
+    .folders-crumb-sep { color: var(--text-muted); }
+    .folders-crumb-cur { color: var(--text); font-weight: 600; }
+    .folders-rename-cur {
+      margin-left: auto; font-size: 12px; color: var(--text-muted);
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 3px 9px; cursor: pointer;
+    }
+    .folders-rename-cur:hover { color: var(--accent); border-color: var(--accent); }
+    .folders-section {
+      font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-muted); margin: 20px 2px 10px;
+    }
+    .folders-grid { max-width: none; }
+    .fs-tile-rename {
+      position: absolute; top: 6px; right: 6px; opacity: 0;
+      font-size: 12px; line-height: 1; color: var(--text-muted);
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 6px; width: 22px; height: 22px; cursor: pointer;
+      transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .fs-tile:hover .fs-tile-rename { opacity: 0.9; }
+    .fs-tile-rename:hover { color: var(--accent); border-color: var(--accent); }
+    .fs-file .fs-tile-icon { font-size: 32px; }
+
     /* Document preview (item view, built from columns) */
     .fs-doc {
       background: var(--surface); border: 1px solid var(--border);
