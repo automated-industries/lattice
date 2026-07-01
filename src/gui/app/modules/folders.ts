@@ -47,8 +47,9 @@ export const foldersJs = `
       }).join('');
       var crumb = '<div class="folders-crumbs"><a href="#/folders">Folders</a>' +
         '<span class="folders-crumb-sep">/</span>' +
-        '<span class="folders-crumb-cur">' + d.icon + ' ' + escapeHtml(d.label) + '</span>' +
-        '<button type="button" class="folders-rename-cur" data-table="' + escapeHtml(table) + '" title="Rename object">✎ Rename</button>' +
+        '<span class="folders-crumb-cur">' + d.icon + ' ' +
+          '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '" title="Click to rename">' + escapeHtml(d.label) + '</span>' +
+        '</span>' +
         '</div>';
       setContent(content, myGen,
         '<div class="folders-view">' + crumb +
@@ -57,10 +58,8 @@ export const foldersJs = `
           '<div class="fs-grid folders-grid folders-files" id="folders-files"><div class="fs-empty" style="padding:12px">Loading…</div></div>' +
         '</div>');
       foldersWireGrid(document.getElementById('folders-sub'));
-      var renameCur = content.querySelector('.folders-rename-cur');
-      if (renameCur) renameCur.addEventListener('click', function () {
-        foldersRenameObject(table, null);
-      });
+      var crumbName = content.querySelector('.folders-crumb-cur .fs-tile-name[data-rename]');
+      if (crumbName) crumbName.addEventListener('click', function (e) { e.stopPropagation(); foldersRenameInline(crumbName); });
       // Load the object's rows → file tiles.
       fetchRowsPage(table, { limit: 300 }).then(fsServerPage).then(function (view) {
         if (myGen !== renderGen) return;
@@ -81,25 +80,21 @@ export const foldersJs = `
 
     // A folder or file tile. Also an mt-card + data-table so the global wire/merge
     // drag handler can treat it as a wireable object. Double-click / Enter opens.
-    // A desktop-style FOLDER (a two-tone folder graphic with the object's emoji on
-    // its face) or a FILE (the file-type emoji). Both label with the name below.
+    // A FOLDER (the 📁 icon — the same one used across the app — with the object's
+    // emoji + name as its label) or a FILE (the file-type emoji + name). A folder's
+    // name is click-to-rename inline (no button, no popup).
     function foldersTileHtml(href, icon, label, table, meta, kind) {
       var isFolder = kind === 'folder';
-      var graphic = isFolder
-        ? '<div class="fs-folder-graphic">' +
-            '<svg viewBox="0 0 48 40" class="fs-folder-svg" aria-hidden="true">' +
-              '<path class="fs-folder-back" d="M4 11a2 2 0 0 1 2-2h11l3 4h22a2 2 0 0 1 2 2v3H4z"></path>' +
-              '<path class="fs-folder-front" d="M4 15h40v19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path>' +
-            '</svg>' +
-            '<span class="fs-folder-emoji">' + icon + '</span>' +
-          '</div>'
-        : '<div class="fs-tile-icon">' + icon + '</div>';
+      var iconHtml = isFolder ? '📁' : icon;
+      var labelHtml = isFolder
+        ? '<span class="fs-tile-emoji">' + icon + '</span> ' +
+          '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '">' + escapeHtml(label) + '</span>'
+        : escapeHtml(label);
       return '<div class="fs-tile fs-' + kind + ' mt-card" role="link" tabindex="0" ' +
         'data-href="' + escapeHtml(href) + '" data-table="' + escapeHtml(table) + '" data-kind="' + kind + '" ' +
         'title="' + escapeHtml(label) + '">' +
-        (isFolder ? '<button type="button" class="fs-tile-rename" title="Rename" aria-label="Rename">✎</button>' : '') +
-        graphic +
-        '<div class="fs-tile-label">' + escapeHtml(label) + '</div>' +
+        '<div class="fs-tile-icon">' + iconHtml + '</div>' +
+        '<div class="fs-tile-label">' + labelHtml + '</div>' +
         (meta ? '<div class="fs-folder-count">' + escapeHtml(String(meta)) + '</div>' : '') +
         '</div>';
     }
@@ -116,8 +111,8 @@ export const foldersJs = `
       return String(r.id || '(item)');
     }
 
-    // Open on double-click / Enter (single click is left for wire/merge selection);
-    // the hover pencil renames a folder object.
+    // Open on double-click / Enter. Clicking a folder's NAME renames it inline
+    // (no button, no popup). Single click on the tile is left for wire/merge.
     function foldersWireGrid(grid) {
       if (!grid) return;
       grid.querySelectorAll('.fs-tile').forEach(function (tile) {
@@ -128,11 +123,9 @@ export const foldersJs = `
         tile.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') { var href = tile.getAttribute('data-href'); if (href) location.hash = href; }
         });
-        var rn = tile.querySelector('.fs-tile-rename');
-        if (rn) rn.addEventListener('click', function (e) {
-          e.stopPropagation();
-          foldersRenameObject(tile.getAttribute('data-table'), tile.querySelector('.fs-tile-label'));
-        });
+      });
+      grid.querySelectorAll('.fs-tile-name[data-rename]').forEach(function (nm) {
+        nm.addEventListener('click', function (e) { e.stopPropagation(); foldersRenameInline(nm); });
       });
       // Folder tiles are wire/merge objects: drag one onto another to link,
       // Shift-drag to merge (the global Wire/Merge layer; skips file tiles).
@@ -147,14 +140,38 @@ export const foldersJs = `
       return slug;
     }
 
-    // Rename an object (folder). Renames the table via the schema rename route; the
-    // shown name derives from the identifier, so a friendly name is slugified.
-    function foldersRenameObject(table, labelEl) {
-      if (!table) return;
-      var cur = labelEl ? labelEl.textContent : displayFor(table).label;
-      var next = window.prompt('Rename "' + cur + '" to:', cur);
-      if (next == null) return;
-      var slug = foldersSlugify(next);
+    // Inline rename: make the folder-name span editable in place; Enter/blur saves,
+    // Esc cancels. The typed name is slugified to an identifier server-side.
+    function foldersRenameInline(nm) {
+      var table = nm.getAttribute('data-rename');
+      if (!table || nm.getAttribute('contenteditable') === 'true') return;
+      var orig = nm.textContent;
+      nm.setAttribute('contenteditable', 'true');
+      nm.classList.add('fs-renaming');
+      nm.focus();
+      try {
+        var range = document.createRange(); range.selectNodeContents(nm);
+        var sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      } catch (e) { /* selection unavailable */ }
+      function cleanup() {
+        nm.removeAttribute('contenteditable'); nm.classList.remove('fs-renaming');
+        nm.removeEventListener('keydown', onKey); nm.removeEventListener('blur', onBlur);
+      }
+      function onKey(e) {
+        if (e.key === 'Enter') { e.preventDefault(); nm.blur(); }
+        else if (e.key === 'Escape') { e.preventDefault(); nm.textContent = orig; nm.blur(); }
+      }
+      function onBlur() {
+        var next = nm.textContent;
+        cleanup();
+        if (next && next.trim() && foldersSlugify(next) !== table) foldersDoRename(table, next);
+        else nm.textContent = orig;
+      }
+      nm.addEventListener('keydown', onKey);
+      nm.addEventListener('blur', onBlur);
+    }
+    function foldersDoRename(table, name) {
+      var slug = foldersSlugify(name);
       if (!slug || slug === table) return;
       fetch('/api/schema/entities/' + encodeURIComponent(table) + '/rename', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -164,10 +181,10 @@ export const foldersJs = `
           if (!res.ok) throw new Error((body && body.error) || 'Rename failed');
           var goHash = location.hash.indexOf('#/folders/') === 0 ? '#/folders/' + encodeURIComponent(slug) : location.hash;
           if (typeof refreshEntities === 'function') {
-            refreshEntities().then(function () { location.hash = goHash; renderRoute(); if (location.hash === goHash) renderRoute(); });
+            refreshEntities().then(function () { if (location.hash !== goHash) location.hash = goHash; renderRoute(); });
           }
           if (typeof showToast === 'function') showToast('Renamed to "' + slug + '"');
         });
-      }).catch(function (err) { if (typeof showToast === 'function') showToast(err.message, 'error'); });
+      }).catch(function (err) { if (typeof showToast === 'function') showToast(err.message, { type: 'error' }); });
     }
 `;
