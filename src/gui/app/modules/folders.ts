@@ -123,6 +123,9 @@ export const foldersJs = `
           foldersRenameObject(tile.getAttribute('data-table'), tile.querySelector('.fs-tile-label'));
         });
       });
+      // Folder tiles are wire/merge objects: drag one onto another to link,
+      // Shift-drag to merge (the global Wire/Merge layer; skips file tiles).
+      if (typeof wmWire === 'function') wmWire(grid);
     }
 
     // Slugify a friendly name to a valid object identifier (the rename route requires

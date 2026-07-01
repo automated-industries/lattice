@@ -30,6 +30,13 @@ database connector).
   Outputs — has a collapse toggle in its header that shrinks it to a thin rail
   (state persisted in localStorage); the grid always keeps a flexible track, so you
   can focus any column.
+- **Wire / Merge moved above the tab line and made global.** The **+ Wire** and
+  **Merge** buttons now sit on the tab strip (beside Folders / Graph / Tables) and
+  work in every view. **Drag** one object onto another to link them (many-to-many);
+  **Shift-drag** to merge one into the other — on both the Folders tiles and the
+  Tables cards. On the Graph, the buttons drive a click-to-pick flow (click a
+  source node, then a target) so it doesn't fight the graph's own node dragging. Esc
+  cancels a pick.
 - **Inputs · Model · Outputs GUI reframe.** The desktop GUI / `lattice gui` is
   reorganized into three columns: **Inputs** (Files, Connectors, Databases),
   **Model** (two top-level tabs — **Graph** and **Tables** — where Tables is a
