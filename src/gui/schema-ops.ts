@@ -1,7 +1,13 @@
 import { parseConfigFile } from '../config/parser.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { isNativeEntity } from '../framework/native-entities.js';
-import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mutations.js';
+import {
+  recordSchemaAudit,
+  createRow,
+  deleteRow,
+  updateRow,
+  type MutationCtx,
+} from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
 import type { ActiveDb } from './active-db.js';
@@ -546,7 +552,7 @@ export type DeleteResolution = 'delete_data' | { move_to: string };
 
 /** Outcome of {@link aiDeleteEntity}. `needsResolution` ⇒ ask the user first. */
 export type DeleteEntityOutcome =
-  | { ok: true; deleted: string; deletedRows?: number; movedRows?: number }
+  | { ok: true; deleted: string; deletedRows?: number; movedRows?: number; rewiredLinks?: number }
   | { ok: false; error: string }
   | { needsResolution: true; rowCount: number; message: string };
 
@@ -625,19 +631,27 @@ export async function aiDeleteEntity(
   if (isNativeEntity(name)) {
     return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
   }
-  const inbound: string[] = [];
+  const inbound: { table: string; relName: string; foreignKey: string }[] = [];
   for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
     if (t.name === name) continue;
-    for (const rel of Object.values(t.relations)) {
+    for (const [relName, rel] of Object.entries(t.relations)) {
       if (rel.type === 'belongsTo' && rel.table === name) {
-        inbound.push(`${t.name}.${rel.foreignKey}`);
+        inbound.push({ table: t.name, relName, foreignKey: rel.foreignKey });
       }
     }
   }
-  if (inbound.length > 0) {
+  const isMove = resolution !== undefined && resolution !== 'delete_data';
+  // Inbound links block a plain delete (there's nowhere to move them), but a MERGE
+  // rewires them onto the target instead of refusing — the move_to path below
+  // updates each foreign key to the moved rows and repoints its relation.
+  if (inbound.length > 0 && !isMove) {
     return {
       ok: false,
-      error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Remove those links first.`,
+      error: `Cannot delete "${name}" — these links point at it: ${inbound
+        .map((l) => `${l.table}.${l.foreignKey}`)
+        .join(
+          ', ',
+        )}. Merge "${name}" into another table to carry the links across, or remove those links first.`,
     };
   }
 
@@ -652,8 +666,9 @@ export async function aiDeleteEntity(
     ? await active.db.count(name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
     : await active.db.count(name);
 
-  // Empty → safe to remove straight away.
-  if (rowCount === 0) {
+  // Empty → safe to remove straight away. (A merge that must also repoint inbound
+  // links falls through to the move_to path even with zero rows.)
+  if (rowCount === 0 && !(isMove && inbound.length > 0)) {
     await softDeleteUserEntity(active, name, sessionId);
     return { ok: true, deleted: name };
   }
@@ -789,18 +804,57 @@ export async function aiDeleteEntity(
   // edit, not a DB write, so it stays outside the transaction and runs only after
   // the row moves have committed.)
   let movedRows = 0;
+  const idMap = new Map<string, string>(); // old source row id → new target row id
   await active.db.transaction(async () => {
     movedRows = 0;
+    idMap.clear();
     for (const r of rows) {
       const mapped: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(r)) {
         if (!SKIP.has(k) && k in cols) mapped[k] = v;
       }
-      await createRow(mctx, target, mapped); // new id auto-assigned
+      const created = await createRow(mctx, target, mapped); // new id auto-assigned
+      idMap.set(String(r.id), created.id);
       await deleteRow(mctx, name, String(r.id), false);
       movedRows++;
     }
+    // Carry every inbound link across with the rows: update each foreign key that
+    // pointed at a moved source row so it now points at that row's copy in the
+    // target. Same transaction as the moves → a failure rolls the whole merge back.
+    // Bounded (Rule: no unbounded reads) — only link rows referencing a moved row.
+    if (idMap.size > 0) {
+      const movedIds = [...idMap.keys()];
+      for (const link of inbound) {
+        const linkRows = (await active.db.query(link.table, {
+          filters: [{ col: link.foreignKey, op: 'in', val: movedIds }],
+        })) as Record<string, unknown>[];
+        for (const lr of linkRows) {
+          const ref = lr[link.foreignKey];
+          if (typeof ref !== 'string' && typeof ref !== 'number') continue; // FK is a uuid / int
+          const newId = idMap.get(String(ref));
+          if (newId !== undefined) {
+            await updateRow(mctx, link.table, String(lr.id), { [link.foreignKey]: newId });
+          }
+        }
+      }
+    }
   });
+  // Repoint each inbound relation from the (now-removed) source to the target so the
+  // links reference the merged object, not a deleted one. Config edit (not a DB
+  // write) → after the transaction commits, alongside the source removal. The link
+  // table + FK column keep their names (they just point at the target now).
+  if (inbound.length > 0) {
+    const doc = loadConfigDoc(active.configPath);
+    for (const link of inbound) {
+      doc.setIn(['entities', link.table, 'relations', link.relName], {
+        type: 'belongsTo',
+        table: target,
+        foreignKey: link.foreignKey,
+      });
+    }
+    saveConfigDoc(active.configPath, doc);
+  }
   await softDeleteUserEntity(active, name, sessionId);
-  return { ok: true, deleted: name, movedRows };
+  if (inbound.length > 0) syncCanonicalContexts(active); // refresh rollups for the repointed links
+  return { ok: true, deleted: name, movedRows, rewiredLinks: inbound.length };
 }
