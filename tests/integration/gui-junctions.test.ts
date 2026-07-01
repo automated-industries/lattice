@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import Database from 'better-sqlite3';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { parseConfigFile } from '../../src/config/parser.js';
 import { getGuiEntities, isJunctionTable } from '../../src/gui/data.js';
@@ -210,6 +211,45 @@ async function bootTyped(): Promise<GuiServerHandle> {
   });
   servers.push(server);
   return server;
+}
+
+/** `src` and `dst`, both soft-deletable with an `email` column — used to force a
+ *  mid-merge UNIQUE violation. Returns the SQLite file path so the test can add a
+ *  physical constraint the GUI config can't express. */
+async function bootDupTarget(): Promise<{ server: GuiServerHandle; dbPath: string }> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-dup-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  src:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      email: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: src.md',
+      '  dst:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      email: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: dst.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return { server, dbPath: join(root, 'data', 'test.db') };
 }
 
 describe('Data Model — junction relationships', () => {
@@ -696,6 +736,69 @@ describe('Data Model — junction relationships', () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(/secret|visible/i);
     expect(await entityNames(s)).toContain('leads'); // nothing moved
+  });
+
+  it('rolls back the ENTIRE merge when a row fails mid-loop (no split state)', async () => {
+    // This exercises the transaction wrap end-to-end (not just the type pre-flight,
+    // which aborts before the transaction opens). Two source rows share an email;
+    // a physical UNIQUE index on the target — which the type pre-flight can't catch —
+    // makes the SECOND row's insert throw mid-loop, so the whole merge must roll back.
+    const { server: s, dbPath } = await bootDupTarget();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post('/api/tables/src/rows', { email: 'dup@x.io' })).status).toBe(201);
+    expect((await post('/api/tables/src/rows', { email: 'dup@x.io' })).status).toBe(201);
+
+    // Add a UNIQUE constraint the GUI config can't express, via a second connection.
+    const raw = new Database(dbPath);
+    raw.exec('CREATE UNIQUE INDEX dst_email_uq ON dst(email)');
+    raw.close();
+
+    // Merge: row 1 inserts into dst OK, row 2's insert hits the UNIQUE violation
+    // mid-loop → the transaction rolls back. The route maps the throw to a 500.
+    const res = await post('/api/schema/entities/src/merge', { target: 'dst' });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+
+    // Atomic: NOTHING moved. src keeps both rows (soft-deletes rolled back), dst empty.
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/src/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(2);
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/dst/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(0);
+    // src is still a live table (the source-removal never ran — the move threw first).
+    expect(await entityNames(s)).toContain('src');
+  });
+
+  it('hands an over-cap merge back as needsResolution (400 + plain-language message)', async () => {
+    // A source larger than AI_DELETE_ROW_CAP (1000) must not hard-fail with jargon;
+    // it returns a needsResolution outcome the route maps to 400 + a plain message.
+    const { server: s, dbPath } = await bootDupTarget();
+    const raw = new Database(dbPath);
+    const stmt = raw.prepare('INSERT INTO src (id, email, deleted_at) VALUES (?, ?, NULL)');
+    const many = raw.transaction((n: number) => {
+      for (let i = 0; i < n; i++) stmt.run(`ovc-${i}`, `e${i}@x.io`);
+    });
+    many(1001); // > cap
+    raw.close();
+
+    const res = await fetch(`${s.url}/api/schema/entities/src/merge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'dst' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(
+      /too many to merge automatically/i,
+    );
+    // Nothing moved — the source is intact.
+    expect(await entityNames(s)).toContain('src');
   });
 
   it('type-pre-flights the merge and aborts BEFORE any write (no partial merge)', async () => {
