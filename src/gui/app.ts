@@ -161,7 +161,6 @@ export const guiAppHtml = `<!doctype html>
           <button class="wm-btn" id="wm-merge-btn" type="button" title="Merge one object into another — moves its rows in, then removes it (reversible). Shift-drag one object onto another to merge.">Merge</button>
         </div>
         <div class="tabstrip-status" id="tabstrip-status"></div>
-        <button class="col-collapse col-collapse-center" data-col="model" type="button" title="Collapse Model" aria-label="Collapse Model">‹›</button>
       </div>
       <div id="content"></div>
     </main>

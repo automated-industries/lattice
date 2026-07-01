@@ -11,6 +11,24 @@ export const wireMergeJs = `
     var wmPick = null;   // first-picked object in the click flow
     var wmSuppressClick = false;
 
+    // A floating clone of the dragged object that follows the cursor.
+    var _wmGhost = null, _wmGhostDX = 0, _wmGhostDY = 0;
+    function wmMakeGhost(el, x, y) {
+      wmRemoveGhost();
+      var r = el.getBoundingClientRect();
+      var g = el.cloneNode(true);
+      g.className = 'wm-ghost';
+      g.style.width = r.width + 'px';
+      _wmGhostDX = x - r.left; _wmGhostDY = y - r.top;
+      document.body.appendChild(g);
+      _wmGhost = g;
+      wmMoveGhost(x, y);
+    }
+    function wmMoveGhost(x, y) {
+      if (_wmGhost) { _wmGhost.style.left = (x - _wmGhostDX) + 'px'; _wmGhost.style.top = (y - _wmGhostDY) + 'px'; }
+    }
+    function wmRemoveGhost() { if (_wmGhost && _wmGhost.parentNode) _wmGhost.parentNode.removeChild(_wmGhost); _wmGhost = null; }
+
     function wmIsJunction(table) {
       var ents = (state.entities && state.entities.tables) || [];
       for (var i = 0; i < ents.length; i++) if (ents[i].name === table) return isJunction(ents[i]);
@@ -88,6 +106,7 @@ export const wireMergeJs = `
           document.removeEventListener('pointercancel', onCancel, true);
           el.classList.remove('wm-drag-active');
           document.body.classList.remove('wm-dragging', 'wm-drag-merge');
+          wmRemoveGhost();
           clearHover();
         }
         function targetAt(x, y) {
@@ -101,7 +120,9 @@ export const wireMergeJs = `
           if (!dragging) {
             if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < 6) return;
             dragging = true; el.classList.add('wm-drag-active'); document.body.classList.add('wm-dragging');
+            wmMakeGhost(el, mv.clientX, mv.clientY); // the dragged object follows the cursor
           }
+          wmMoveGhost(mv.clientX, mv.clientY);
           var c = targetAt(mv.clientX, mv.clientY);
           if (c !== hovered) { clearHover(); hovered = c; if (c) c.classList.add('wm-drop-target'); }
           document.body.classList.toggle('wm-drag-merge', !!mv.shiftKey);
