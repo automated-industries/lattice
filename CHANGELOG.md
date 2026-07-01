@@ -263,6 +263,15 @@ database connector).
   performs commits together or rolls back together, with read-your-writes inside the
   transaction, scoped per async context so concurrent callers never share one.
 
+- **Merge carries inbound links across instead of dead-ending.** Merging an object
+  that another table links to used to fail with "these links point at it — remove
+  those links first," forcing you to manually unlink everything before merging. Now
+  the merge rewires those links onto the target: each linking table's foreign keys
+  are updated to the moved rows and its relation is repointed to the merged object,
+  all inside the same transaction as the move. The link table and its column keep
+  their names. (A plain delete of a linked-to table still refuses — there's no
+  target to move the links to — but now suggests merging instead.)
+
 - **Link tables are hidden from every object list, not just the graph.** Junction /
   link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
   Model > Tables/Entities list with apparent duplicates. They're now hidden from the
