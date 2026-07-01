@@ -223,6 +223,18 @@ database connector).
   names via the full disk scan before building the graph; they now use the no-scan
   loader, completing the workspace-switch speedup for the graph the ingest animation
   depends on.
+- **The Tables explorer no longer shows a previous workspace's relationships after a
+  switch.** Its cached relationship edges and any in-flight Wire/Merge selection are
+  reset on workspace switch, so the new workspace's schema is drawn from scratch.
+- **Drag-to-wire/merge cleans up after a cancelled gesture.** A touch-scroll or OS
+  gesture-takeover (`pointercancel`) now tears down the drag (its document
+  listeners, the dragged-card highlight, and the greyed-out targets) instead of
+  leaking them across gestures; `.mt-card` sets `touch-action: none` so a touch drag
+  doesn't scroll the page mid-gesture.
+- **A record's Markdown edit can't save into a record you've navigated away from.**
+  The debounced write-back captures the render generation and bails if the view has
+  been superseded, so a pending save — or its failure notice — never lands on a
+  no-longer-visible record.
 
 - **Link tables are hidden from every object list, not just the graph.** Junction /
   link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the

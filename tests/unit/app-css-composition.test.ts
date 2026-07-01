@@ -72,8 +72,10 @@ import { css } from '../../src/gui/app/css.js';
 // card being dragged) states.
 // Record Markdown view: .fs-context-edit (the editable raw-markdown textarea) +
 // .fs-context-status (its inline save status).
-const ORIGINAL_LENGTH = 116076;
-const ORIGINAL_SHA256 = 'd001341e1e06948a2d5a2950d0f26443a3a56b450bd2d138a00c3fed97ffcf8c';
+// Review batch A2: .mt-card gets touch-action:none so a touch drag-to-wire/merge
+// doesn't scroll the page mid-gesture.
+const ORIGINAL_LENGTH = 116265;
+const ORIGINAL_SHA256 = '61ee9983a7437d58af4b8f9d476e415e8b5eeb6c2212edc6d93d0b46029c1772';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
