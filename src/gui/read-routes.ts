@@ -558,8 +558,12 @@ export async function handleReadRoutes(
     return true;
   }
   if (method === 'GET' && pathname === '/api/graph') {
+    // Only the table NAMES are needed here — use the no-disk-scan loader
+    // (loadGuiData(..., false) returns the same parsed.tables.map(tableToSummary))
+    // so the schema-only graph the ingest animation depends on doesn't run the
+    // O(files) rendered-file scan that getGuiEntities would.
     const yamlNames = new Set(
-      getGuiEntities(active.configPath, active.outputDir).tables.map((t) => t.name),
+      loadGuiData(active.configPath, active.outputDir, false).tables.map((t) => t.name),
     );
     const graphOpts: import('./data.js').BuildGuiGraphOptions = {
       extraTables: registeredExtraTables(active.db, yamlNames),
@@ -693,7 +697,8 @@ export async function handleReadRoutes(
       // link/unlink on `meeting_people` shows up under both Meetings
       // and People).
       const junctionMatchesFilter = new Set<string>();
-      for (const guiTable of getGuiEntities(active.configPath, active.outputDir).tables) {
+      // Only table shape + relations are read here — skip the O(files) scan.
+      for (const guiTable of loadGuiData(active.configPath, active.outputDir, false).tables) {
         if (!isJunctionTable(guiTable)) continue;
         const rels = Object.values(guiTable.relations);
         if (rels.some((r) => r.table === filterTable)) {
