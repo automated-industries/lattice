@@ -252,6 +252,54 @@ async function bootDupTarget(): Promise<{ server: GuiServerHandle; dbPath: strin
   return { server, dbPath: join(root, 'data', 'test.db') };
 }
 
+/** `authors` (merge source) + `writers` (target), plus `posts` which has a
+ *  belongsTo INBOUND link to authors (posts.author_id). Used to test that merging
+ *  authors→writers rewires the inbound link onto the target instead of refusing.
+ *  Returns the root so the test can read the repointed relation from the config. */
+async function bootInboundLink(): Promise<{ server: GuiServerHandle; root: string }> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-inbound-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  authors:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: authors.md',
+      '  writers:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: writers.md',
+      '  posts:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      title: { type: text }',
+      '      author_id: { type: uuid }',
+      '    relations:',
+      '      author: { type: belongsTo, table: authors, foreignKey: author_id }',
+      '    outputFile: posts.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return { server, root };
+}
+
 describe('Data Model — junction relationships', () => {
   it('creates a many-to-many that surfaces as a graph edge, then removes it', async () => {
     const s = await boot();
@@ -702,16 +750,61 @@ describe('Data Model — junction relationships', () => {
     ).toBe(1);
   });
 
-  it('refuses to merge a source another table links to (inbound FK)', async () => {
-    const s = await bootWithTasks(); // tasks.assignee_id → people
-    const res = await fetch(`${s.url}/api/schema/entities/people/merge`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ target: 'articles' }),
-    });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toMatch(/links point at it|inbound/i);
-    expect(await entityNames(s)).toEqual(expect.arrayContaining(['people', 'articles', 'tasks']));
+  it('merge rewires inbound-link foreign keys AND repoints the relation onto the target', async () => {
+    const { server: s, root } = await bootInboundLink();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const a1 = (
+      (await (await post('/api/tables/authors/rows', { name: 'A One' })).json()) as {
+        id: string;
+      }
+    ).id;
+    const a2 = (
+      (await (await post('/api/tables/authors/rows', { name: 'A Two' })).json()) as {
+        id: string;
+      }
+    ).id;
+    await post('/api/tables/posts/rows', { title: 'P1', author_id: a1 });
+    await post('/api/tables/posts/rows', { title: 'P2', author_id: a2 });
+
+    const res = await post('/api/schema/entities/authors/merge', { target: 'writers' });
+    expect(res.status).toBe(200); // previously 400 on the inbound link
+    const body = (await res.json()) as { movedRows: number; rewiredLinks: number };
+    expect(body.movedRows).toBe(2);
+    expect(body.rewiredLinks).toBe(1);
+
+    // authors gone; writers holds the two moved rows (with NEW ids).
+    expect(await entityNames(s)).not.toContain('authors');
+    const writers = (
+      (await (await fetch(`${s.url}/api/tables/writers/rows`)).json()) as {
+        rows: { id: string; name: string }[];
+      }
+    ).rows;
+    expect(writers.map((w) => w.name).sort()).toEqual(['A One', 'A Two']);
+    const writerIds = new Set(writers.map((w) => w.id));
+
+    // Every post's author_id was rewired to the moved row's new id in writers —
+    // the links followed the data instead of dangling at the deleted authors.
+    const posts = (
+      (await (await fetch(`${s.url}/api/tables/posts/rows`)).json()) as {
+        rows: { author_id: string }[];
+      }
+    ).rows;
+    expect(posts).toHaveLength(2);
+    for (const p of posts) {
+      expect(writerIds.has(p.author_id)).toBe(true); // points at a moved row in writers
+      expect([a1, a2]).not.toContain(p.author_id); // no longer the old authors id
+    }
+
+    // The relation itself is repointed in the config: posts.author → writers.
+    const cfg = parse(readFileSync(join(root, 'lattice.config.yml'), 'utf8')) as {
+      entities: { posts: { relations: { author: { table: string } } } };
+    };
+    expect(cfg.entities.posts.relations.author.table).toBe('writers');
   });
 
   it('refuses to merge when a secret source column would land in a non-secret target', async () => {
