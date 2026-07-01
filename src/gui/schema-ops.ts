@@ -553,6 +553,23 @@ export type DeleteEntityOutcome =
 /** Above this row count, the assistant refuses to auto-delete/move data. */
 const AI_DELETE_ROW_CAP = 1000;
 
+/** The GUI-marked secret columns for a table (read-only; empty when the workspace
+ *  has no column-meta table). Used by the merge path so it never moves a secret
+ *  value into a non-secret column. */
+async function secretColumns(active: ActiveDb, table: string): Promise<Set<string>> {
+  try {
+    const rows = (await active.db.query('_lattice_gui_column_meta', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: table },
+        { col: 'secret', op: 'eq', val: 1 },
+      ],
+    })) as { column_name: string }[];
+    return new Set(rows.map((r) => r.column_name));
+  } catch {
+    return new Set(); // no column-meta table on this workspace — nothing secret
+  }
+}
+
 /**
  * The assistant's guarded, reversible table delete. Safeguards (so the model
  * can't destroy data on a careless request):
@@ -658,29 +675,69 @@ export async function aiDeleteEntity(
   if (active.junctionTables.has(target) || isNativeEntity(target)) {
     return { ok: false, error: `Cannot move rows into "${target}".` };
   }
-  if (rowCount > AI_DELETE_ROW_CAP) {
+  // A source whose rows can't be soft-deleted (no deleted_at) can't be MERGED
+  // reversibly: the copies would land in the target while the originals stay
+  // physically present, so a history "restore" would duplicate everything. Refuse.
+  if (!softDeletable) {
     return {
       ok: false,
-      error: `"${name}" has ${String(rowCount)} rows — too many to auto-move (cap ${String(AI_DELETE_ROW_CAP)}).`,
+      error: `"${name}" can't be merged — its rows have no deleted_at column to reversibly remove. Delete or clear it manually instead.`,
     };
   }
+  // Too large to move automatically → hand it back as a decision (ask the user)
+  // rather than a hard error the assistant can't recover from.
+  if (rowCount > AI_DELETE_ROW_CAP) {
+    return {
+      needsResolution: true,
+      rowCount,
+      message:
+        `"${name}" has ${String(rowCount)} rows — too many to merge automatically (the safe ` +
+        `limit is ${String(AI_DELETE_ROW_CAP)}). Ask the user to trim it first or leave it as its ` +
+        `own object; do not retry the merge as-is.`,
+    };
+  }
+  const SKIP = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
   const targetCols = active.db.getRegisteredColumns(target);
   if (!targetCols) return { ok: false, error: `Could not read the columns of "${target}".` };
-  const rows = (await active.db.query(
-    name,
-    softDeletable
-      ? { filters: [{ col: 'deleted_at', op: 'isNull' }], limit: AI_DELETE_ROW_CAP }
-      : { limit: AI_DELETE_ROW_CAP },
-  )) as Record<string, unknown>[];
-  const SKIP = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
+  // Never declassify: if a secret source column would land in a non-secret target
+  // column (a new one, or an existing non-secret one), refuse rather than expose it.
+  const sourceSecret = await secretColumns(active, name);
+  if (sourceSecret.size > 0) {
+    const targetSecret = await secretColumns(active, target);
+    const exposed = [...sourceSecret].filter((c) => !SKIP.has(c) && !targetSecret.has(c));
+    if (exposed.length > 0) {
+      return {
+        ok: false,
+        error: `Cannot merge "${name}": the secret field${exposed.length === 1 ? '' : 's'} ${exposed.join(', ')} would become visible in "${target}". Unmark them as secret, or move them manually, first.`,
+      };
+    }
+  }
+  // Column union: widen the target with any source column it lacks so no field is
+  // silently dropped from the merged copies (the target gains the source's fields;
+  // added columns are audited by addUserColumn, so this stays reversible).
+  const sourceCols = active.db.getRegisteredColumns(name) ?? {};
+  const toAdd = Object.keys(sourceCols).filter((c) => !SKIP.has(c) && !(c in targetCols));
+  for (const col of toAdd) {
+    const added = await addUserColumn(active, target, col, sessionId);
+    if (!added.ok) {
+      return { ok: false, error: `Could not add "${col}" to "${target}" for the merge: ${added.error}` };
+    }
+  }
+  // Re-read after any widening so newly-added columns are included in the mapping.
+  const cols = active.db.getRegisteredColumns(target) ?? targetCols;
+
+  const rows = (await active.db.query(name, {
+    filters: [{ col: 'deleted_at', op: 'isNull' }],
+    limit: AI_DELETE_ROW_CAP,
+  })) as Record<string, unknown>[];
   let movedRows = 0;
   for (const r of rows) {
     const mapped: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(r)) {
-      if (!SKIP.has(k) && k in targetCols) mapped[k] = v;
+      if (!SKIP.has(k) && k in cols) mapped[k] = v;
     }
     await createRow(mctx, target, mapped); // new id auto-assigned
-    if (softDeletable) await deleteRow(mctx, name, String(r.id), false);
+    await deleteRow(mctx, name, String(r.id), false);
     movedRows++;
   }
   await softDeleteUserEntity(active, name, sessionId);
