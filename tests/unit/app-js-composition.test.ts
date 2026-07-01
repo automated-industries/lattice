@@ -180,8 +180,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // the drag adds a pointercancel/unified teardown; and the record Markdown
 // write-back captures renderGen so a debounced save can't fire into a navigated-
 // away record.
-const ORIGINAL_LENGTH = 841342;
-const ORIGINAL_SHA256 = '80de1d4cb9daa4b322c25d46e06c4243946df14435ef75cb2da6a74b56d02890';
+const ORIGINAL_LENGTH = 843018;
+const ORIGINAL_SHA256 = '73a1b72deef8a2383c04df45f98bc73ae361af451059191711aec0f1387a94e2';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

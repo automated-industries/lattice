@@ -12,15 +12,11 @@ export const layoutCss = `    /* ── Layout ───────────
         var(--gtc-in, var(--nav-width)) var(--gtc-mo, minmax(0, 1fr)) var(--gtc-ou, var(--outputs-width));
       height: calc(100vh - 56px);
     }
-    /* Collapsed columns become a 46px rail; a flexible track is always kept so the
-       grid fills the viewport (Model collapse promotes a side; all-three promotes
-       Model). Pure CSS — the JS only toggles the body classes. */
+    /* A collapsed side column (Inputs / Outputs) becomes a 46px rail; the Model
+       (center) track always flexes to fill. Pure CSS — the JS toggles the classes. */
     body.collapse-inputs { --gtc-in: 46px; }
     body.collapse-outputs { --gtc-ou: 46px; }
-    body.collapse-model { --gtc-mo: 46px; --gtc-in: minmax(0, 1fr); }
-    body.collapse-model.collapse-inputs { --gtc-in: 46px; --gtc-ou: minmax(0, 1fr); }
-    body.collapse-model.collapse-inputs.collapse-outputs { --gtc-in: 46px; --gtc-mo: minmax(0, 1fr); --gtc-ou: 46px; }
-    /* ── Column collapse (Inputs / Model / Outputs → thin rails) ─────── */
+    /* ── Column collapse (Inputs / Outputs → thin rails) ─────────────── */
     .col-collapse {
       margin-left: auto; flex: none; width: 22px; height: 22px; padding: 0;
       display: inline-flex; align-items: center; justify-content: center;
@@ -28,7 +24,6 @@ export const layoutCss = `    /* ── Layout ───────────
       color: var(--text-muted); font-size: 13px; line-height: 1;
     }
     .col-collapse:hover { background: var(--surface-2); color: var(--text); }
-    .col-collapse-center { margin-left: 8px; }
     /* Collapsed: hide the column BODY and everything in its header EXCEPT the
        re-expand button, which centers in the thin rail. */
     body.collapse-inputs nav.sidebar { overflow: hidden; padding: 0; }
@@ -41,10 +36,6 @@ export const layoutCss = `    /* ── Layout ───────────
     body.collapse-outputs .col-outputs { justify-content: center; padding: 0; }
     body.collapse-outputs .col-outputs > *:not(.col-collapse) { display: none; }
     body.collapse-outputs .col-outputs .col-collapse { margin: 0; transform: scaleX(-1); }
-    body.collapse-model #content { display: none; }
-    body.collapse-model .col-model { justify-content: center; padding: 0; }
-    body.collapse-model .col-model > *:not(.col-collapse-center) { display: none; }
-    body.collapse-model .col-model .col-collapse-center { margin: 0; }
     /* ── Global Wire / Merge (buttons above the tab line + drag feedback) ─── */
     .wm-actions { display: flex; align-items: center; gap: 6px; flex: none; margin: 0 8px; }
     .wm-btn {
@@ -54,12 +45,23 @@ export const layoutCss = `    /* ── Layout ───────────
     }
     .wm-btn:hover { color: var(--text); border-color: var(--accent); }
     .wm-btn.on { color: #fff; background: var(--accent); border-color: var(--accent); }
-    .wm-picked { outline: 2px solid var(--accent); outline-offset: 1px; }
-    .wm-drop-target { outline: 2px dashed var(--accent); outline-offset: 1px; }
-    body.wm-drag-merge .wm-drop-target { outline-style: solid; outline-color: #f59e0b; }
+    .wm-picked { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px; }
+    .wm-drop-target {
+      outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px;
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+    body.wm-drag-merge .wm-drop-target {
+      outline-color: #f59e0b; background: color-mix(in srgb, #f59e0b 20%, transparent);
+    }
     body.wm-dragging { cursor: grabbing; }
-    body.wm-dragging .wm-drag-active { opacity: 0.6; }
+    body.wm-dragging .wm-drag-active { opacity: 0.4; }
     body.wm-active [data-table]:not([data-kind="file"]) { cursor: crosshair; }
+    /* The dragged object's floating clone that follows the cursor. */
+    .wm-ghost {
+      position: fixed; z-index: 3000; margin: 0; pointer-events: none; opacity: 0.9;
+      transform: rotate(-2deg); box-shadow: 0 10px 28px rgba(15, 23, 42, 0.32);
+      border-radius: 10px; background: var(--surface);
+    }
     @media (max-width: 720px) {
       #content { padding-bottom: 24px; }
     }
