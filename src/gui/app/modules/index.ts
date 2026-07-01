@@ -44,6 +44,7 @@ import { askLatticeJs } from './ask-lattice.js';
 import { modelTablesJs } from './model-tables.js';
 import { foldersJs } from './folders.js';
 import { columnCollapseJs } from './column-collapse.js';
+import { wireMergeJs } from './wiremerge.js';
 
 export const appJs = [
   chartLibJs,
@@ -84,6 +85,7 @@ export const appJs = [
   modelTablesJs,
   foldersJs,
   columnCollapseJs,
+  wireMergeJs,
   detailViewJs,
   markdownJs,
   settingsDrawerJs,
