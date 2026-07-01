@@ -49,6 +49,7 @@ import { isEncrypted } from './security/encryption.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
 import { computeRenderCursor, cursorIsFresh } from './lifecycle/render-cursor.js';
 import { existsSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
 import {
@@ -249,6 +250,14 @@ const RENDER_FOLD_MAX_CHANGES = 100_000;
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
+  /**
+   * Ambient transaction executor for {@link transaction}. When a store is set,
+   * every write helper routes through it (via {@link _exec}) instead of the base
+   * adapter, so the whole call chain lands on one transaction connection. Scoped
+   * to the async context of the `transaction(fn)` callback, so concurrent callers
+   * never share a transaction.
+   */
+  private readonly _txStore = new AsyncLocalStorage<StorageAdapter>();
   private _changelogService?: ChangelogService;
   private _changelogWriterInstance?: ChangelogWriter;
   private _reportBuilder?: ReportBuilder;
@@ -670,9 +679,9 @@ export class Lattice {
     if (this.getDialect() === 'postgres') {
       try {
         const [marker, role] = await Promise.all([
-          getAsyncOrSync(this._adapter, `SELECT to_regclass('__lattice_owners') AS reg`),
+          getAsyncOrSync(this._exec(), `SELECT to_regclass('__lattice_owners') AS reg`),
           getAsyncOrSync(
-            this._adapter,
+            this._exec(),
             `SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`,
           ),
         ]);
@@ -816,6 +825,71 @@ export class Lattice {
   }
 
   /**
+   * The adapter that write/read SQL should execute against: the ambient
+   * transaction connection when inside {@link transaction}, otherwise the base
+   * adapter. Only the row `run`/`get` execution helpers consult this — schema,
+   * introspection, search, and graph helpers keep the base adapter, since those
+   * are structural and should not be scoped to a data transaction.
+   */
+  private _exec(): StorageAdapter {
+    return this._txStore.getStore() ?? this._adapter;
+  }
+
+  /**
+   * Run `fn` inside a single database transaction. Every write `fn` performs
+   * through this Lattice (insert / update / delete and their audit + changelog
+   * writes) executes on one connection and commits together, or rolls back
+   * together if `fn` throws. Reads inside `fn` see its own uncommitted writes.
+   *
+   * The transaction is scoped to the async context of `fn` (via
+   * `AsyncLocalStorage`), so two concurrent callers on the same Lattice never
+   * accidentally share a transaction. A nested `transaction` call reuses the
+   * outer transaction rather than opening a second one. When the adapter cannot
+   * open a transaction (`withClient` unavailable), `fn` runs WITHOUT one — the
+   * caller's own validation still applies; this mirrors the hard-delete fallback.
+   *
+   * @since 5.0.0
+   */
+  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    const withClient = this._adapter.withClient?.bind(this._adapter);
+    if (!withClient || this._txStore.getStore()) {
+      // No transaction support, or already inside one → run inline.
+      return fn();
+    }
+    const real = this._adapter;
+    return withClient((tx) => {
+      const unavailable = (op: string) => (): never => {
+        throw new Error(
+          `Lattice.transaction: synchronous ${op}() is unavailable inside a transaction`,
+        );
+      };
+      const txAdapter: StorageAdapter = {
+        dialect: real.dialect,
+        run: unavailable('run'),
+        get: unavailable('get'),
+        all: unavailable('all'),
+        prepare: (sql) => real.prepare(sql),
+        open: () => {
+          real.open();
+        },
+        close: () => {
+          real.close();
+        },
+        introspectColumns: (table) => real.introspectColumns(table),
+        addColumn: (table, column, typeSpec) => {
+          real.addColumn(table, column, typeSpec);
+        },
+        runAsync: async (sql, params) => {
+          await tx.run(sql, params);
+        },
+        getAsync: (sql, params) => tx.get(sql, params),
+        allAsync: (sql, params) => tx.all(sql, params),
+      };
+      return this._txStore.run(txAdapter, fn);
+    });
+  }
+
+  /**
    * True when a table opts into the observation/changelog substrate
    * (`def.changelog`). Callers that want to bypass the high-level {@link delete}
    * with a transaction-scoped raw delete use this to know whether the table also
@@ -926,7 +1000,7 @@ export class Lattice {
         // (and the masking-view regen) through the owner-side SECURITY DEFINER
         // helper, which runs as the owner. A real error (bad type, missing table,
         // helper absent on an older cloud) propagates — never silently swallowed.
-        await runAsyncOrSync(this._adapter, `SELECT lattice_member_add_column(?, ?, ?)`, [
+        await runAsyncOrSync(this._exec(), `SELECT lattice_member_add_column(?, ?, ?)`, [
           table,
           column,
           typeSpec,
@@ -1003,7 +1077,7 @@ export class Lattice {
     if (notInit) return notInit;
     this._assertRowSize(table, row);
     const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
-    await runAsyncOrSync(this._adapter, sql, values);
+    await runAsyncOrSync(this._exec(), sql, values);
     await this._afterInsert(table, pkValue, rowWithPk, provenance);
     return pkValue;
   }
@@ -1246,7 +1320,7 @@ export class Lattice {
       ? `ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`
       : `ON CONFLICT(${conflictCols}) DO NOTHING`;
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ${onConflict}`,
       values,
     );
@@ -1268,7 +1342,7 @@ export class Lattice {
     this._assertIdent(table, col);
 
     const existing = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT * FROM "${table}" WHERE "${col}" = ?`,
       [val],
     );
@@ -1333,7 +1407,7 @@ export class Lattice {
     let previousValues: Record<string, unknown> | null = null;
     if (this._changelogTables.has(table)) {
       const current = await getAsyncOrSync(
-        this._adapter,
+        this._exec(),
         `SELECT * FROM "${table}" WHERE ${clause}`,
         pkParams,
       );
@@ -1347,7 +1421,7 @@ export class Lattice {
 
     const values = [...Object.values(encrypted), ...pkParams];
 
-    await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
+    await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
 
     // Canonical pk so a row addressed by composite lookup keys its
     // change-log entry the same way insert() keyed it.
@@ -1368,7 +1442,7 @@ export class Lattice {
     const def = this._schema.getTables().get(table);
     if (def?.embeddings) {
       const fullRow = await getAsyncOrSync(
-        this._adapter,
+        this._exec(),
         `SELECT * FROM "${table}" WHERE ${clause}`,
         pkParams,
       );
@@ -1405,7 +1479,7 @@ export class Lattice {
     if (!touchesDep) return sanitized;
     const { clause, params } = this._pkWhere(table, id);
     const current = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT * FROM "${table}" WHERE ${clause}`,
       params,
     );
@@ -1432,7 +1506,7 @@ export class Lattice {
     if (!this._rollupSources.has(sourceTable)) return;
     const { clause, params } = this._pkWhere(sourceTable, sourceId);
     const src = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT * FROM "${sourceTable}" WHERE ${clause}`,
       params,
     );
@@ -1457,7 +1531,7 @@ export class Lattice {
         : `${spec.fn.toUpperCase()}("${spec.column ?? spec.foreignKey}")`;
     const fallback = spec.fn === 'count' ? '0' : 'NULL';
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${parentTable}" SET "${name}" = COALESCE(
          (SELECT ${inner} FROM "${spec.sourceTable}" WHERE "${spec.foreignKey}" = ?${srcDeleted}), ${fallback})
        WHERE "${parentPk}" = ?`,
@@ -1484,7 +1558,7 @@ export class Lattice {
         .map((col) => `"${col}" = ?`)
         .join(', ');
       if (setCols === '') continue;
-      await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE "${pk}" = ?`, [
+      await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE "${pk}" = ?`, [
         ...Object.values(values),
         row[pk],
       ]);
@@ -1541,11 +1615,11 @@ export class Lattice {
     let previousRow: Row | null = null;
     if (this._changelogTables.has(table) || this._rollupSources.has(table)) {
       previousRow =
-        (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
+        (await getAsyncOrSync(this._exec(), `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
         null;
     }
 
-    await runAsyncOrSync(this._adapter, `DELETE FROM "${table}" WHERE ${clause}`, params);
+    await runAsyncOrSync(this._exec(), `DELETE FROM "${table}" WHERE ${clause}`, params);
     if (previousRow && this._rollupSources.has(table)) {
       await this._propagateRollupsFromRow(table, previousRow);
     }
@@ -1741,7 +1815,7 @@ export class Lattice {
 
     // Check if record exists
     const existing = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
@@ -1752,7 +1826,7 @@ export class Lattice {
       const entries = Object.entries(encUpdated).filter(([k]) => k !== 'id');
       if (entries.length === 0) return existing.id as string;
       const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
-      await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
+      await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
         ...entries.map(([, v]) => v),
         existing.id,
       ]);
@@ -1783,7 +1857,7 @@ export class Lattice {
       .map(() => '?')
       .join(', ');
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
       Object.values(encInserted),
     );
@@ -1806,7 +1880,7 @@ export class Lattice {
     this._assertIdent(table, naturalKeyCol);
 
     const existing = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
@@ -1823,7 +1897,7 @@ export class Lattice {
     if (cols.has('updated_at')) withTs.push(['updated_at', new Date().toISOString()]);
 
     const setCols = withTs.map(([k]) => `"${k}" = ?`).join(', ');
-    await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
+    await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
       ...withTs.map(([, v]) => v),
       existing.id,
     ]);
@@ -1856,7 +1930,7 @@ export class Lattice {
     // Count rows that will be soft-deleted
     const placeholders = currentKeys.map(() => '?').join(', ');
     const countRow = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT COUNT(*) as cnt FROM "${table}"
        WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
        AND deleted_at IS NULL`,
@@ -1868,7 +1942,7 @@ export class Lattice {
 
     if (count > 0) {
       await runAsyncOrSync(
-        this._adapter,
+        this._exec(),
         `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
          WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
          AND deleted_at IS NULL`,
@@ -1931,7 +2005,7 @@ export class Lattice {
       .join(', ');
     const verb = opts?.upsert ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
@@ -1951,7 +2025,7 @@ export class Lattice {
     if (entries.length === 0) return;
     const where = entries.map(([k]) => `"${k}" = ?`).join(' AND ');
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
@@ -2020,7 +2094,18 @@ export class Lattice {
    *  asymmetry is preserved: only query/get invoke them. */
   private get _queryCore(): QueryCore {
     this._queryCoreInstance ??= new QueryCore({
-      adapter: this._adapter,
+      // Resolve the adapter per-access so reads honor the ambient transaction:
+      // inside `transaction(fn)`, `_exec()` is the tx connection (read-your-writes
+      // — e.g. createRow re-reads the row it just inserted for its audit snapshot);
+      // outside one it is the base adapter, so this forwards transparently. Methods
+      // are bound to the resolved adapter so their internal `this` stays correct.
+      adapter: new Proxy({} as StorageAdapter, {
+        get: (_t, prop): unknown => {
+          const real = this._exec();
+          const val: unknown = Reflect.get(real, prop, real);
+          return typeof val === 'function' ? (val as (...a: unknown[]) => unknown).bind(real) : val;
+        },
+      }),
       assertIdent: (table, ...cols) => {
         this._assertIdent(table, ...cols);
       },
@@ -2082,7 +2167,7 @@ export class Lattice {
     const { clause, params: pkParams } = this._pkWhere(table, id);
     // Incremental running average: new_total = (old_total * old_count + avg) / (old_count + 1)
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${table}" SET "_reward_total" = ("_reward_total" * "_reward_count" + ?) / ("_reward_count" + 1), "_reward_count" = "_reward_count" + 1 WHERE ${clause}`,
       [avg, ...pkParams],
     );
@@ -2196,7 +2281,7 @@ export class Lattice {
     }
     // Determine the dimension from a stored vector.
     const sample = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT "vec_dim" AS d FROM "_lattice_embeddings" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
       [table],
     );
@@ -2398,7 +2483,7 @@ export class Lattice {
     this._assertTrust(table);
     const { clause, params } = this._pkWhere(table, id);
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${table}" SET "_trust_state" = 'verified', "_verified_by" = ?, "_verified_at" = ?, "_review_reason" = NULL WHERE ${clause}`,
       [verifiedBy ?? null, new Date().toISOString(), ...params],
     );
@@ -2414,7 +2499,7 @@ export class Lattice {
     this._assertTrust(table);
     const { clause, params } = this._pkWhere(table, id);
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${table}" SET "_trust_state" = 'needs_review', "_review_reason" = ? WHERE ${clause}`,
       [reason ?? null, ...params],
     );
@@ -2569,7 +2654,7 @@ export class Lattice {
   async presignFile(fileId: string, method: 'GET' | 'PUT', ttlSeconds = 60): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
-    const row = await getAsyncOrSync(this._adapter, `SELECT lattice_presign_file(?, ?, ?) AS url`, [
+    const row = await getAsyncOrSync(this._exec(), `SELECT lattice_presign_file(?, ?, ?) AS url`, [
       fileId,
       method,
       ttlSeconds,
