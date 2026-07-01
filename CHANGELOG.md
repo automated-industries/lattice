@@ -153,6 +153,11 @@ database connector).
 
 ### Changed
 
+- **The Model → Tables explorer drops the "Derived · AI loop" column.** The tiered
+  schema view is now three columns — Source · inputs, Model · entities, Surface ·
+  app. Tables that were classified as derived (embeddings, proposals, learnings,
+  observations, …) now group under Model like any other entity. The `Tier` type and
+  its `classifyTier` heuristic drop the `derived` tier accordingly.
 - **The native vector index now stays in sync with writes.** Previously
   `buildVectorIndex` produced a point-in-time snapshot that silently went stale as
   rows changed, so semantic search could return outdated results until the index
