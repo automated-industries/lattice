@@ -42,6 +42,9 @@ export const settingsDrawerJs = `    // ─────────────�
     function loadFsContext(tableName, id) {
       var mount = document.getElementById('fs-context');
       if (!mount) return;
+      // Capture the render generation so a debounced save can't fire into a record
+      // the user has navigated away from (renderRoute bumps renderGen on every nav).
+      var myGen = renderGen;
       var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows/' +
                 encodeURIComponent(id) + '/context';
       fetchJson(url).then(function (data) {
@@ -78,6 +81,10 @@ export const settingsDrawerJs = `    // ─────────────�
           setStatus('Editing\\u2026');
           if (saveTimer) window.clearTimeout(saveTimer);
           saveTimer = window.setTimeout(function () {
+            // Superseded by a newer navigation: don't PUT into a record that is no
+            // longer on screen (and don't write "Saved"/"Save failed" to a
+            // detached status node the user can't see).
+            if (myGen !== renderGen) return;
             if (cur === lastSaved) return;
             lastSaved = cur;
             setStatus('Saving\\u2026');

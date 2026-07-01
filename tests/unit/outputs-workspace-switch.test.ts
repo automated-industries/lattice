@@ -35,6 +35,9 @@ describe('workspace switch refreshes the Outputs column (no cross-workspace mark
       'refreshThreadList',
       'renderRoute',
       'startEventStream',
+      // Defined in the model-tables module (same IIFE in the real bundle); stub it
+      // here so this isolated searchJs eval doesn't ReferenceError on the switch-reset.
+      'mtResetState',
     ]) {
       w[name] = vi.fn();
     }

@@ -138,8 +138,10 @@ export const modelTablesJs = `
     function mtSetLevel(v) { try { window.localStorage.setItem('lattice.modeltables.level', v); } catch (e) {} }
 
     // Cache the (tiny, schema-only) graph edges across re-renders so toggling the
-    // Entity/Field view doesn't refetch. Cleared implicitly on workspace switch
-    // because the whole view is rebuilt.
+    // Entity/Field view doesn't refetch. This lives in the client IIFE for the
+    // SPA's lifetime and is NOT cleared by a re-render, so a workspace switch must
+    // reset it (mtResetState, from reloadEverything) or the explorer draws the
+    // previous workspace's edges + lineage.
     var mtEdgesCache = null;
     // Schema-editing modes (ported from the schema-explorer pattern). Two toggles:
     //   • "+ Wire" → pick/drag a SOURCE table onto a TARGET to LINK them (a
@@ -154,6 +156,16 @@ export const modelTablesJs = `
     var mtPickFrom = null; // source table chosen by the first click (click flow)
     var mtDragFrom = null; // source table while a drag is in progress (drag flow)
     var mtSuppressClick = false; // swallow the click a completed drag may emit
+    // Reset all cross-render Tables-explorer state. Called on a workspace switch
+    // (reloadEverything) — these module-scope vars otherwise persist the PREVIOUS
+    // workspace's edges + an in-flight wire/merge selection into the new one.
+    function mtResetState() {
+      mtEdgesCache = null;
+      mtMode = null;
+      mtPickFrom = null;
+      mtDragFrom = null;
+      mtSuppressClick = false;
+    }
     function renderModelTables(host) {
       if (!host) return;
       if (mtEdgesCache) { mtRenderTables(host, mtEdgesCache); return; }
@@ -370,6 +382,17 @@ export const modelTablesJs = `
         var source = card.getAttribute('data-table');
         var startX = ev.clientX, startY = ev.clientY;
         var dragging = false;
+        // Single teardown for EVERY end-of-gesture (drop, cancel, gesture takeover):
+        // remove all three document listeners + clear drag state. Without a
+        // pointercancel path a touch-scroll / OS gesture leaks listeners and leaves
+        // the board stuck greyed-out with .mt-drag-active on the card.
+        function teardown() {
+          document.removeEventListener('pointermove', onMove, true);
+          document.removeEventListener('pointerup', onUp, true);
+          document.removeEventListener('pointercancel', onCancel, true);
+          card.classList.remove('mt-drag-active');
+          mtDragFrom = null;
+        }
         function onMove(mv) {
           if (dragging) return;
           if (Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < 6) return;
@@ -378,17 +401,19 @@ export const modelTablesJs = `
           card.classList.add('mt-drag-active');
           mtMarkInvalidTargets(host, source);
         }
+        function onCancel() {
+          if (dragging) mtClearInvalidTargets(host); // undo the grey-out; act on nothing
+          teardown();
+        }
         function onUp(up) {
-          document.removeEventListener('pointermove', onMove, true);
-          document.removeEventListener('pointerup', onUp, true);
-          card.classList.remove('mt-drag-active');
-          if (!dragging) { mtDragFrom = null; return; } // a click, not a drag
+          var wasDragging = dragging;
+          teardown();
+          if (!wasDragging) return; // a click, not a drag — let onclick handle it
           mtSuppressClick = true; // swallow the click this drag emits…
           window.setTimeout(function () { mtSuppressClick = false; }, 0); // …then re-enable
           var el = document.elementFromPoint(up.clientX, up.clientY);
           var targetCard = el && el.closest ? el.closest('.mt-card[data-table]') : null;
           var target = targetCard && targetCard.getAttribute('data-table');
-          mtDragFrom = null;
           if (target && target !== source && !mtInvalidTarget(source, target)) {
             mtModeAct(host, source, target);
           } else {
@@ -397,6 +422,7 @@ export const modelTablesJs = `
         }
         document.addEventListener('pointermove', onMove, true);
         document.addEventListener('pointerup', onUp, true);
+        document.addEventListener('pointercancel', onCancel, true);
       });
     }
 
