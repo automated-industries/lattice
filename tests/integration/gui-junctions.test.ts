@@ -131,8 +131,10 @@ function m2mBetween(graph: Graph, a: string, b: string): boolean {
   );
 }
 
-/** Two first-class entities with the SAME data columns (name, email) so a merge
- *  maps every row's values cleanly into the target. Used by the merge-route tests. */
+/** Two first-class entities that share name+email; `leads` additionally has a
+ *  source-only `phone` (exercises the merge column-union) and BOTH carry
+ *  `deleted_at` so they are soft-deletable (required to merge reversibly).
+ *  Used by the merge-route tests. */
 async function bootMergeable(): Promise<GuiServerHandle> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-merge-'));
   dirs.push(root);
@@ -149,12 +151,15 @@ async function bootMergeable(): Promise<GuiServerHandle> {
       '      id: { type: uuid, primaryKey: true }',
       '      name: { type: text }',
       '      email: { type: text }',
+      '      phone: { type: text }',
+      '      deleted_at: { type: text }',
       '    outputFile: leads.md',
       '  contacts:',
       '    fields:',
       '      id: { type: uuid, primaryKey: true }',
       '      name: { type: text }',
       '      email: { type: text }',
+      '      deleted_at: { type: text }',
       '    outputFile: contacts.md',
       '',
     ].join('\n'),
@@ -567,5 +572,91 @@ describe('Data Model — junction relationships', () => {
     expect((await merge('ghosts', 'contacts')).status).toBe(400); // unknown source
     // None of the rejected merges removed anything.
     expect(await entityNames(s)).toEqual(expect.arrayContaining(['leads', 'contacts']));
+  });
+
+  it('unions source-only columns into the target (no silent field drop)', async () => {
+    const s = await bootMergeable();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    // `leads` has a `phone` column that `contacts` lacks.
+    expect(
+      (await post('/api/tables/leads/rows', { name: 'Ada', email: 'a@x.io', phone: '555-0001' }))
+        .status,
+    ).toBe(201);
+
+    const res = await post('/api/schema/entities/leads/merge', { target: 'contacts' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { movedRows?: number }).movedRows).toBe(1);
+
+    // contacts GAINED the `phone` column AND the moved row keeps its phone value.
+    const ents = (await (await fetch(`${s.url}/api/entities`)).json()) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    expect(ents.tables.find((t) => t.name === 'contacts')!.columns).toContain('phone');
+    const rows = (await (await fetch(`${s.url}/api/tables/contacts/rows`)).json()) as {
+      rows: { name: string; phone: string }[];
+    };
+    expect(rows.rows.find((r) => r.name === 'Ada')!.phone).toBe('555-0001');
+  });
+
+  it('refuses to merge a source whose rows are not soft-deletable (no deleted_at)', async () => {
+    const s = await boot(); // articles/tags have no deleted_at column
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    // Non-empty (an empty table would just soft-delete immediately, before move_to).
+    expect((await post('/api/tables/articles/rows', { title: 'Keep me' })).status).toBe(201);
+    const res = await post('/api/schema/entities/articles/merge', { target: 'tags' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/deleted_at|reversibly/i);
+    // Nothing was moved or deleted.
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['articles', 'tags']));
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/articles/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(1);
+  });
+
+  it('refuses to merge a source another table links to (inbound FK)', async () => {
+    const s = await bootWithTasks(); // tasks.assignee_id → people
+    const res = await fetch(`${s.url}/api/schema/entities/people/merge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'articles' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/links point at it|inbound/i);
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['people', 'articles', 'tasks']));
+  });
+
+  it('refuses to merge when a secret source column would land in a non-secret target', async () => {
+    const s = await bootMergeable();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (await post('/api/tables/leads/rows', { name: 'Ada', email: 'secret@x.io' })).status,
+    ).toBe(201);
+    // Mark leads.email secret; contacts.email is NOT secret.
+    const marked = await fetch(`${s.url}/api/gui-meta/columns/leads/email`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: true }),
+    });
+    expect(marked.status).toBe(200);
+    const res = await post('/api/schema/entities/leads/merge', { target: 'contacts' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/secret|visible/i);
+    expect(await entityNames(s)).toContain('leads'); // nothing moved
   });
 });

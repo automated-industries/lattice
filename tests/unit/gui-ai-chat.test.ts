@@ -246,6 +246,9 @@ describe('chat tool loop', () => {
     expect(capturedSystem).toMatch(/do NOT ask the user to confirm first/i);
     expect(capturedSystem).toMatch(/restored from history/i);
     expect(capturedSystem).toMatch(/do NOT end by telling them they can now delete/i);
+    // If the merge tool refuses (e.g. too large), relay it — never retry the same call.
+    expect(capturedSystem).toMatch(/too large to merge automatically/i);
+    expect(capturedSystem).toMatch(/do NOT retry the same call/i);
   });
 
   it("injects the cloud owner's workspace system prompt when provided", async () => {

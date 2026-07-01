@@ -235,6 +235,14 @@ database connector).
   The debounced write-back captures the render generation and bails if the view has
   been superseded, so a pending save — or its failure notice — never lands on a
   no-longer-visible record.
+- **Merging one object into another is now lossless, safe, and asks when it can't
+  proceed.** The merge (drag-to-merge, or the assistant's `move_to`) could drop
+  source-only fields, duplicate rows on a history restore, declassify a secret, and
+  hard-fail with jargon over its size cap. Now it: adds any missing fields to the
+  target so nothing is dropped; refuses a source whose rows aren't soft-deletable
+  (they can't be reversibly removed); refuses to move a secret field into a
+  non-secret target; and, over the auto-merge size limit, hands the decision back to
+  ask the user instead of dead-ending the assistant.
 
 - **Link tables are hidden from every object list, not just the graph.** Junction /
   link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
