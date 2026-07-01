@@ -74,8 +74,8 @@ import { css } from '../../src/gui/app/css.js';
 // .fs-context-status (its inline save status).
 // Review batch A2: .mt-card gets touch-action:none so a touch drag-to-wire/merge
 // doesn't scroll the page mid-gesture.
-const ORIGINAL_LENGTH = 120405;
-const ORIGINAL_SHA256 = 'ad0932e78bb9656e171a09fbe2010d27dd6f4dca29ac807f64d4bfe7edb9baf2';
+const ORIGINAL_LENGTH = 122175;
+const ORIGINAL_SHA256 = '9def98b57f23db1c96c8f01ee74778195b4dd013b82697c50cc545fba9ce2242';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
