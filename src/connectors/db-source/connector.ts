@@ -30,7 +30,7 @@ import type {
   ListChangesContext,
   ToolkitPresentation,
 } from '../types.js';
-import { ConnectorUnavailableError } from '../jira/connector.js';
+import { ConnectorUnavailableError } from '../errors.js';
 import { dialectFor, type SqlDialect } from './dialects.js';
 import { openExternalPool, withExternalPool, type ExternalPool } from './external-pool.js';
 import { DB_SOURCE_ICON } from './icon.js';

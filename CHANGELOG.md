@@ -19,6 +19,21 @@ database connector).
 
 ### Added
 
+- **MCP-backed connectors — connect any MCP server as an Input.** Connectors are
+  now powered by the Model Context Protocol: Lattice runs as a **local MCP client**
+  and pulls a server's read tools in as connected data types. Everything runs on
+  your machine — a remote server is reached over Streamable HTTP or SSE with that
+  server's **own OAuth** (tokens stored in the machine-local encrypted store), and a
+  local server runs as a **stdio** child process. Nothing is routed through any
+  cloud middleman. Ships with **Gmail**, **Google Calendar**, and **Google Drive**
+  (typed schemas; point them at a Google-Workspace MCP server), **Jira** (Atlassian
+  Remote MCP) and **monday.com** (both pre-pointed at their hosted endpoints),
+  **Trello**, and a **generic "custom MCP server"** connector you point at any URL.
+  Connector data keeps the same conventions as before — typed connected tables,
+  per-member `private` visibility, FTS, graph edges, and rendered context. New
+  public API: `McpConnector` / `isMcpConnector`, `McpConnectorBase` /
+  `SimpleMcpConnector`, `introspectiveConnector`, the per-provider connector
+  factories, and the `@modelcontextprotocol/sdk` optional dependency.
 - **Folders view — objects as folders (now the default center tab).** A new
   **Folders** tab (first, and the landing view) shows the workspace's objects as a
   grid of folders. Double-click a folder to open it: its rows appear as "files"
