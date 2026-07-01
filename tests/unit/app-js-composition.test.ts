@@ -175,8 +175,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // fetch /api/entities-summary (Objects list — tables + counts — with NO O(files)
 // rendered-file scan) instead of /api/entities (the GUI never read the scanned
 // `entities` field).
-const ORIGINAL_LENGTH = 822250;
-const ORIGINAL_SHA256 = 'ee2177e4dea17da488b3bb44bda5d7b083534bf5cef546d0872541f69ac9bb9c';
+// Review batch A2 — Tables-explorer + write-back client safety: mtResetState()
+// clears cached edges + wire/merge state on workspace switch (reloadEverything);
+// the drag adds a pointercancel/unified teardown; and the record Markdown
+// write-back captures renderGen so a debounced save can't fire into a navigated-
+// away record.
+const ORIGINAL_LENGTH = 824269;
+const ORIGINAL_SHA256 = '09326d72c699b73853d52ef4eb0aea486a601b362aab4a6355cb4fb39866eb16';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

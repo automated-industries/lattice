@@ -89,6 +89,10 @@ export const searchJs = `    // ────────────────
         // workspace switch/reload doesn't flash the loading frame over the pane.
         else renderRoute({ soft: true });
         loadedTables = {};
+        // The Tables explorer's cached edges + any in-flight wire/merge selection
+        // are per-workspace module state — reset them so the new workspace doesn't
+        // inherit the previous one's relationship edges or picked source.
+        mtResetState();
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event
         // stream so realtime/feed/render all rebind to this workspace.
