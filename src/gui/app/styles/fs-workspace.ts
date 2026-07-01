@@ -56,31 +56,23 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       color: var(--text-muted); margin: 20px 2px 10px;
     }
     .folders-grid { max-width: none; }
-    /* Desktop-icon style: no card box — just the folder/file graphic + a name. */
-    .folders-view .fs-grid { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 4px; }
+    /* Desktop-icon style: no card box — just the 📁 icon + a centered name. */
+    .folders-view .fs-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 4px; }
     .folders-view .fs-tile {
-      background: none; border: 0; box-shadow: none; padding: 12px 6px 10px; gap: 6px;
+      background: none; border: 0; box-shadow: none; padding: 12px 6px 10px; gap: 5px;
     }
     .folders-view .fs-tile:hover { background: var(--surface-2); transform: none; box-shadow: none; }
-    /* The folder graphic (a two-tone desktop folder) with the object's emoji on it. */
-    .fs-folder-graphic { position: relative; width: 62px; height: 50px; }
-    .fs-folder-svg { width: 62px; height: 50px; display: block; filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.18)); }
-    .fs-folder-back { fill: #e0a93a; }
-    .fs-folder-front { fill: #f4c95d; }
-    .fs-folder-emoji {
-      position: absolute; left: 0; right: 0; top: 17px; text-align: center;
-      font-size: 21px; line-height: 1; pointer-events: none;
-    }
+    .folders-view .fs-tile-icon { font-size: 42px; line-height: 1; }
     .folders-view .fs-file .fs-tile-icon { font-size: 34px; }
-    .fs-tile-rename {
-      position: absolute; top: 4px; right: 4px; opacity: 0; z-index: 1;
-      font-size: 11px; line-height: 1; color: var(--text-muted);
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 6px; width: 20px; height: 20px; cursor: pointer;
-      transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    .folders-view .fs-tile-label { text-align: center; }
+    .fs-tile-emoji { font-size: 13px; }
+    /* A folder's name is click-to-rename inline. */
+    .fs-tile-name:hover { text-decoration: underline dotted; cursor: text; }
+    .fs-tile-name.fs-renaming {
+      outline: 1px solid var(--accent); background: var(--surface);
+      padding: 0 3px; border-radius: 4px; cursor: text; text-decoration: none;
+      -webkit-line-clamp: none; display: inline;
     }
-    .fs-tile:hover .fs-tile-rename { opacity: 0.9; }
-    .fs-tile-rename:hover { color: var(--accent); border-color: var(--accent); }
 
     /* Document preview (item view, built from columns) */
     .fs-doc {
