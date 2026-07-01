@@ -56,7 +56,7 @@ import { appJs } from '../../src/gui/app/script.js';
 // now also appends there); the rail-resize becomes an Outputs-column resize
 // (initOutputsResize). Step 3 (Model view): a Graph | Tables toggle in the center
 // pane (system-tables segment) over the existing brain graph and a new tiered Tables
-// explorer (model-tables.js — Source/Model/Derived/Surface columns, Entity/Field
+// explorer (model-tables.js — Source/Model/Surface columns, Entity/Field
 // toggle, tier chips, detail panel + generic computed caveats; the tier classifier
 // mirrors src/gui/tier-classify.ts). Step 4 (Outputs content): the Markdown panel
 // renders the workspace's rendered context tree (outputs.js: renderOutputsMarkdown
@@ -180,8 +180,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // the drag adds a pointercancel/unified teardown; and the record Markdown
 // write-back captures renderGen so a debounced save can't fire into a navigated-
 // away record.
-const ORIGINAL_LENGTH = 824269;
-const ORIGINAL_SHA256 = '09326d72c699b73853d52ef4eb0aea486a601b362aab4a6355cb4fb39866eb16';
+const ORIGINAL_LENGTH = 823851;
+const ORIGINAL_SHA256 = 'e863ffd3143d98ada65eb1736a7795ef41d681aa3b9cc2a6e04ef7397bc2d832';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
