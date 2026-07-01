@@ -85,10 +85,13 @@ export const foldersJs = `
     // name is click-to-rename inline (no button, no popup).
     function foldersTileHtml(href, icon, label, table, meta, kind) {
       var isFolder = kind === 'folder';
-      var iconHtml = isFolder ? '📁' : icon;
+      // Folder = the 📁 icon with the object's emoji laid on its face; name below.
+      var iconHtml = isFolder
+        ? '<span class="fs-folder-icon"><span class="fs-folder-base">📁</span>' +
+            '<span class="fs-folder-badge">' + icon + '</span></span>'
+        : icon;
       var labelHtml = isFolder
-        ? '<span class="fs-tile-emoji">' + icon + '</span> ' +
-          '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '">' + escapeHtml(label) + '</span>'
+        ? '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '">' + escapeHtml(label) + '</span>'
         : escapeHtml(label);
       return '<div class="fs-tile fs-' + kind + ' mt-card" role="link" tabindex="0" ' +
         'data-href="' + escapeHtml(href) + '" data-table="' + escapeHtml(table) + '" data-kind="' + kind + '" ' +
@@ -111,21 +114,22 @@ export const foldersJs = `
       return String(r.id || '(item)');
     }
 
-    // Open on double-click / Enter. Clicking a folder's NAME renames it inline
-    // (no button, no popup). Single click on the tile is left for wire/merge.
+    // Single-click opens the object/file page; right-click a folder renames it
+    // inline (no button, no popup). A finished wire/merge drag is swallowed so it
+    // doesn't also open.
     function foldersWireGrid(grid) {
       if (!grid) return;
       grid.querySelectorAll('.fs-tile').forEach(function (tile) {
-        tile.addEventListener('dblclick', function () {
+        tile.addEventListener('click', function () {
+          if (wmSuppressClick) return; // a wire/merge drag just finished
           var href = tile.getAttribute('data-href');
           if (href) location.hash = href;
         });
         tile.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') { var href = tile.getAttribute('data-href'); if (href) location.hash = href; }
         });
-      });
-      grid.querySelectorAll('.fs-tile-name[data-rename]').forEach(function (nm) {
-        nm.addEventListener('click', function (e) { e.stopPropagation(); foldersRenameInline(nm); });
+        var nm = tile.querySelector('.fs-tile-name[data-rename]');
+        if (nm) tile.addEventListener('contextmenu', function (e) { e.preventDefault(); foldersRenameInline(nm); });
       });
       // Folder tiles are wire/merge objects: drag one onto another to link,
       // Shift-drag to merge (the global Wire/Merge layer; skips file tiles).
