@@ -5,7 +5,7 @@ import { listConnectors, getConnector, createConnector } from '../connectors/reg
 import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls } from '../connectors/acl.js';
-import { ConnectorUnavailableError } from '../connectors/jira/connector.js';
+import { ConnectorUnavailableError } from '../connectors/errors.js';
 import { DatabaseConnector } from '../connectors/db-source/connector.js';
 import { getSchemaDescriptor } from '../connectors/db-source/schema-cache.js';
 
