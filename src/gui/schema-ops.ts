@@ -766,13 +766,10 @@ export async function aiDeleteEntity(
   })) as Record<string, unknown>[];
   // Pre-flight: abort BEFORE moving any row if a value can't be assigned to its
   // target column's type (e.g. TEXT "N/A" into an INTEGER column). Without this an
-  // incompatible row mid-loop would throw and leave the merge half-done (early rows
-  // moved + soft-deleted, the rest not). Unioned columns are TEXT so they never
-  // trip this; only a pre-existing same-named column of a strict type can. NOTE:
-  // this makes the DOMINANT failure impossible; a rare transient DB error mid-loop
-  // is still non-atomic but every step is audited, so the partial state is
-  // recoverable from version history (full DB-transaction atomicity is a larger,
-  // separate change to the core write pipeline).
+  // incompatible row mid-loop would throw INSIDE the transaction below; the type
+  // check turns that into a clean up-front refusal instead of a rolled-back write.
+  // Unioned columns are TEXT so they never trip this; only a pre-existing same-named
+  // column of a strict type can.
   for (const r of rows) {
     for (const [k, v] of Object.entries(r)) {
       if (SKIP.has(k) || !(k in cols)) continue;

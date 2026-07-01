@@ -618,13 +618,29 @@ function parseEntityProfileContent(content: string): Record<string, unknown> {
     normalized = normalized
       .replace(/^\*\*(.+?):\*\*/, '$1:') // `**key:**` → `key:`  (colon inside bold)
       .replace(/^\*\*(.+?)\*\*:/, '$1:'); // `**key**:` → `key:`  (colon outside bold)
+    // Split key from the first-line value. Normal case is `key: value` (colon +
+    // space). A value whose FIRST line is empty renders as `- **key:** ` and trims
+    // to `key:` (colon at end) — recover the key with an empty first line; the value
+    // lives on the continuation lines below. Without this, a leading-blank-line
+    // value would be silently dropped whole on the next reverse-sync.
     const colonIdx = normalized.indexOf(': ');
-    if (colonIdx <= 0) {
+    let key: string;
+    let firstVal: string;
+    if (colonIdx > 0) {
+      key = normalized.slice(0, colonIdx).trim();
+      firstVal = normalized.slice(colonIdx + 2);
+    } else if (normalized.length > 1 && normalized.endsWith(':')) {
+      key = normalized.slice(0, -1).trim();
+      firstVal = '';
+    } else {
       i++;
       continue;
     }
-    const key = normalized.slice(0, colonIdx).trim();
-    const valueLines: string[] = [normalized.slice(colonIdx + 2)];
+    if (key.length === 0) {
+      i++;
+      continue;
+    }
+    const valueLines: string[] = [firstVal];
 
     // Accumulate the value's 2-space-indented CONTINUATION lines (the multi-line
     // render encoding — see renderFieldBullet). Strip exactly the 2-space marker so
@@ -653,6 +669,13 @@ function parseEntityProfileContent(content: string): Record<string, unknown> {
     }
     while (valueLines.length > 1 && valueLines[valueLines.length - 1] === '') {
       valueLines.pop();
+    }
+
+    // A colon-terminated key with an empty first line AND no continuation lines is
+    // a bare `Foo:` prose line, not a rendered field (the renderer never emits an
+    // empty value) — don't capture it as an empty-string column.
+    if (firstVal === '' && valueLines.length === 1) {
+      continue;
     }
 
     row[key] = coerceValue(valueLines.join('\n'));
