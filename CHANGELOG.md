@@ -211,21 +211,25 @@ database connector).
   the default `- **col:** value` bullet crossed the wire in plaintext. Redaction now
   covers the bold-bullet, inline, and frontmatter shapes (the column name is regex-
   escaped).
-- **Schema mutations are cloud-owner-gated.** Merging a table, deleting a table, and
-  adding a link now return 403 for a scoped cloud member (they edit the owner's
-  config, which RLS alone does not gate); local and cloud-owner paths are unaffected.
+- **Schema mutations are cloud-owner-gated.** Every config- or DDL-mutating schema
+  route — create/rename/delete a table, add/change columns, add/remove a link, merge,
+  and purge — now returns 403 for a scoped cloud member. These edit the owner's
+  on-disk config (a raw file write that Postgres RLS does not protect, and which some
+  routes perform before any DB DDL), so RLS alone can't gate them; local and
+  cloud-owner paths are unaffected.
 - **Multi-line field values now round-trip through the rendered Markdown.** The
   default renderer inlined a value's newlines into a single `- **key:** value`
   bullet, and the reverse-sync parser read one line per field — so a multi-line
   value (a description, a note, a PEM key) was silently truncated to its first line
   the next time any field on that record was saved. The renderer now writes each
   extra line as a 2-space-indented continuation line and the parser accumulates
-  them, so a value survives a full render → parse → render cycle unchanged
-  (interior blank lines, and lines that look like bullets/headings/`key: value`
-  pairs, are all preserved). A defense-in-depth guard still skips a "value is only
-  the stored value's first line" derivation so a stale parse can never drop lines.
-  Secret multi-line values are masked whole (every continuation line), not just
-  their first line, before the context crosses the wire.
+  them, so a value survives a full render → parse → render cycle unchanged —
+  including interior blank lines, a value whose first line is blank, and lines that
+  look like bullets/headings/`key: value` pairs. A defense-in-depth guard still skips
+  a "value is only the stored value's first line" derivation so a stale parse can
+  never drop lines. Secret multi-line values are masked whole (every continuation
+  line, across interior blank lines), not just their first line, before the context
+  crosses the wire.
 - **The schema-only brain graph no longer runs the O(files) rendered-file scan.**
   `GET /api/graph?schema=1` (and the table-filtered history route) gathered table
   names via the full disk scan before building the graph; they now use the no-scan

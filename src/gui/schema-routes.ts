@@ -94,6 +94,30 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
  * it handled the request. The interleaved PUT /api/gui-meta/columns/:t/:c route
  * keeps its relative position within the block.
  */
+/**
+ * Owner-gate for a config/DDL-mutating schema route on a secured cloud. Returns
+ * true (and writes a 403) when the caller is a scoped member — postgres + RLS
+ * installed + cannot manage roles. Returns false (no response written) for
+ * local/sqlite, an unsecured cloud, or the owner, so the caller proceeds.
+ *
+ * These routes mutate the OWNER's on-disk config (saveConfigDoc is a raw
+ * writeFileSync, which several run BEFORE any DB DDL) and/or run schema DDL —
+ * neither of which Postgres RLS protects. So every config/DDL-mutating schema
+ * route must gate here, not rely on RLS alone; a scoped member could otherwise
+ * corrupt the owner's config over HTTP even though RLS blocks the DB write.
+ */
+async function denyIfNotCloudOwner(
+  db: Parameters<typeof canManageRoles>[0],
+  res: ServerResponse,
+  verb: string,
+): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return false;
+  if (!(await cloudRlsInstalled(db))) return false;
+  if (await canManageRoles(db)) return false;
+  sendJson(res, { error: `Only a cloud owner can ${verb}` }, 403);
+  return true;
+}
+
 export async function handleSchemaRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -112,6 +136,7 @@ export async function handleSchemaRoutes(
 
   // ── Create entity (additive — not in audit log, irreversible from GUI) ──
   if (method === 'POST' && pathname === '/api/schema/entities') {
+    if (await denyIfNotCloudOwner(active.db, res, 'create a table')) return true;
     const body = (await readJson<unknown>(req)) as { name?: unknown; icon?: unknown };
     const entityName = typeof body.name === 'string' ? body.name.trim() : '';
     if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(entityName)) {
@@ -160,6 +185,7 @@ export async function handleSchemaRoutes(
   // Creates a junction table with two ref columns linking `left` and
   // `right`, so it surfaces as an m2m edge in the Data Model graph.
   if (method === 'POST' && pathname === '/api/schema/junctions') {
+    if (await denyIfNotCloudOwner(active.db, res, 'create a link table')) return true;
     const body = (await readJson<unknown>(req)) as {
       left?: unknown;
       right?: unknown;
@@ -252,17 +278,9 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
       return true;
     }
-    // Owner-gate on cloud: dropping a table mutates the owner's config, so a
-    // scoped member must not do it (local + cloud-owner both pass; RLS alone
-    // does not gate this DDL/config path). Same pattern as the policy routes.
-    if (
-      active.db.getDialect() === 'postgres' &&
-      (await cloudRlsInstalled(active.db)) &&
-      !(await canManageRoles(active.db))
-    ) {
-      sendJson(res, { error: 'Only a cloud owner can delete tables' }, 403);
-      return true;
-    }
+    // Owner-gate: dropping a table mutates the owner's config; RLS alone doesn't
+    // gate this DDL/config path.
+    if (await denyIfNotCloudOwner(active.db, res, 'delete tables')) return true;
     // Inbound-FK guard: refuse if another table links to this one.
     const inbound: string[] = [];
     for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
@@ -415,6 +433,7 @@ export async function handleSchemaRoutes(
   // Lattice instance so the in-memory schema matches the new config.
   // We don't audit-log schema changes (they're structural, not data).
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/rename$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, 'rename a table')) return true;
     const oldName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(oldName)) {
       sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
@@ -461,6 +480,7 @@ export async function handleSchemaRoutes(
     return true;
   }
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, "change a table's columns")) return true;
     const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(entityName)) {
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
@@ -627,14 +647,7 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
       return true;
     }
-    if (
-      active.db.getDialect() === 'postgres' &&
-      (await cloudRlsInstalled(active.db)) &&
-      !(await canManageRoles(active.db))
-    ) {
-      sendJson(res, { error: 'Only a cloud owner can add a link' }, 403);
-      return true;
-    }
+    if (await denyIfNotCloudOwner(active.db, res, 'add a link')) return true;
     const body = (await readJson<unknown>(req)) as { target?: unknown };
     const target = typeof body.target === 'string' ? body.target.trim() : '';
     if (!active.validTables.has(target)) {
@@ -711,14 +724,7 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Unknown entity: ${source}` }, 400);
       return true;
     }
-    if (
-      active.db.getDialect() === 'postgres' &&
-      (await cloudRlsInstalled(active.db)) &&
-      !(await canManageRoles(active.db))
-    ) {
-      sendJson(res, { error: 'Only a cloud owner can merge tables' }, 403);
-      return true;
-    }
+    if (await denyIfNotCloudOwner(active.db, res, 'merge tables')) return true;
     const body = (await readJson<unknown>(req)) as { target?: unknown };
     const target = typeof body.target === 'string' ? body.target.trim() : '';
     if (!active.validTables.has(target)) {
@@ -753,6 +759,7 @@ export async function handleSchemaRoutes(
   // COLUMN), never a table. To remove a whole table, use
   // DELETE /api/schema/entities/:name.
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, 'remove a link')) return true;
     const parts = pathname.split('/');
     const entityName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[6] ?? '');
@@ -825,6 +832,7 @@ export async function handleSchemaRoutes(
   // (soft-deleted) object and reclaim space. Irreversible — after a purge,
   // the prior soft-delete can no longer be reverted (its data is gone).
   if (method === 'POST' && pathname === '/api/schema/purge') {
+    if (await denyIfNotCloudOwner(active.db, res, 'purge tables')) return true;
     const body = (await readJson<unknown>(req)) as {
       type?: unknown;
       name?: unknown;

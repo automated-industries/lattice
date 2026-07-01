@@ -80,6 +80,32 @@ describe('readRowContext secret redaction', () => {
     expect(content).toContain('- **note:** after'); // neighbor below untouched
   });
 
+  it('masks a multi-line secret that contains an INTERIOR BLANK line (no partial leak)', () => {
+    // A multi-line secret whose value has a blank line between paragraphs renders
+    // as a bullet + an empty line + more indented lines. The empty line must not
+    // terminate the mask — everything after it must still be redacted.
+    const { outputDir, locator } = writeRendered(
+      [
+        '# Row',
+        '',
+        '- **title:** Hello',
+        '- **token:** PART-ONE-SECRET',
+        '', // interior blank line inside the secret value
+        '  PART-TWO-SECRET',
+        '  PART-THREE-SECRET',
+        '- **note:** after',
+        '',
+      ].join('\n'),
+    );
+    const content = readRowContext(outputDir, locator, new Set(['token']))[0]!.content;
+    expect(content).not.toContain('PART-ONE-SECRET'); // first line masked
+    expect(content).not.toContain('PART-TWO-SECRET'); // line after the blank masked
+    expect(content).not.toContain('PART-THREE-SECRET'); // and the rest
+    expect(content).toContain('- **token:** ••••••••');
+    expect(content).toContain('Hello'); // neighbor above untouched
+    expect(content).toContain('- **note:** after'); // neighbor below untouched (not swallowed)
+  });
+
   it('does not let a similarly-named non-secret column trigger redaction', () => {
     // Only the exact secret column name is masked; `api_key_hint` stays visible.
     const { outputDir, locator } = writeRendered(
