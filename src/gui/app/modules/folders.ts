@@ -81,13 +81,24 @@ export const foldersJs = `
 
     // A folder or file tile. Also an mt-card + data-table so the global wire/merge
     // drag handler can treat it as a wireable object. Double-click / Enter opens.
+    // A desktop-style FOLDER (a two-tone folder graphic with the object's emoji on
+    // its face) or a FILE (the file-type emoji). Both label with the name below.
     function foldersTileHtml(href, icon, label, table, meta, kind) {
       var isFolder = kind === 'folder';
+      var graphic = isFolder
+        ? '<div class="fs-folder-graphic">' +
+            '<svg viewBox="0 0 48 40" class="fs-folder-svg" aria-hidden="true">' +
+              '<path class="fs-folder-back" d="M4 11a2 2 0 0 1 2-2h11l3 4h22a2 2 0 0 1 2 2v3H4z"></path>' +
+              '<path class="fs-folder-front" d="M4 15h40v19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path>' +
+            '</svg>' +
+            '<span class="fs-folder-emoji">' + icon + '</span>' +
+          '</div>'
+        : '<div class="fs-tile-icon">' + icon + '</div>';
       return '<div class="fs-tile fs-' + kind + ' mt-card" role="link" tabindex="0" ' +
         'data-href="' + escapeHtml(href) + '" data-table="' + escapeHtml(table) + '" data-kind="' + kind + '" ' +
         'title="' + escapeHtml(label) + '">' +
         (isFolder ? '<button type="button" class="fs-tile-rename" title="Rename" aria-label="Rename">✎</button>' : '') +
-        '<div class="fs-tile-icon">' + icon + '</div>' +
+        graphic +
         '<div class="fs-tile-label">' + escapeHtml(label) + '</div>' +
         (meta ? '<div class="fs-folder-count">' + escapeHtml(String(meta)) + '</div>' : '') +
         '</div>';

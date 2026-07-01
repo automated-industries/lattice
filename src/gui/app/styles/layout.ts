@@ -7,9 +7,19 @@ export const layoutCss = `    /* ── Layout ───────────
        minimum keeps the track at content-width and the whole page scrolls
        horizontally. */
     .layout {
-      display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--outputs-width);
+      display: grid;
+      grid-template-columns:
+        var(--gtc-in, var(--nav-width)) var(--gtc-mo, minmax(0, 1fr)) var(--gtc-ou, var(--outputs-width));
       height: calc(100vh - 56px);
     }
+    /* Collapsed columns become a 46px rail; a flexible track is always kept so the
+       grid fills the viewport (Model collapse promotes a side; all-three promotes
+       Model). Pure CSS — the JS only toggles the body classes. */
+    body.collapse-inputs { --gtc-in: 46px; }
+    body.collapse-outputs { --gtc-ou: 46px; }
+    body.collapse-model { --gtc-mo: 46px; --gtc-in: minmax(0, 1fr); }
+    body.collapse-model.collapse-inputs { --gtc-in: 46px; --gtc-ou: minmax(0, 1fr); }
+    body.collapse-model.collapse-inputs.collapse-outputs { --gtc-in: 46px; --gtc-mo: minmax(0, 1fr); --gtc-ou: 46px; }
     /* ── Column collapse (Inputs / Model / Outputs → thin rails) ─────── */
     .col-collapse {
       margin-left: auto; flex: none; width: 22px; height: 22px; padding: 0;
@@ -19,21 +29,22 @@ export const layoutCss = `    /* ── Layout ───────────
     }
     .col-collapse:hover { background: var(--surface-2); color: var(--text); }
     .col-collapse-center { margin-left: 8px; }
-    /* Collapsed: hide the body, keep a thin header with just the re-expand button. */
-    body.collapse-inputs nav.sidebar { overflow: hidden; }
+    /* Collapsed: hide the column BODY and everything in its header EXCEPT the
+       re-expand button, which centers in the thin rail. */
+    body.collapse-inputs nav.sidebar { overflow: hidden; padding: 0; }
     body.collapse-inputs nav.sidebar > *:not(.col-header) { display: none; }
-    body.collapse-inputs .col-inputs { justify-content: center; }
-    body.collapse-inputs .col-inputs .col-header-text { display: none; }
+    body.collapse-inputs .col-inputs { justify-content: center; padding: 0; margin: 0; }
+    body.collapse-inputs .col-inputs > *:not(.col-collapse) { display: none; }
     body.collapse-inputs .col-inputs .col-collapse { margin: 0; transform: scaleX(-1); }
     body.collapse-outputs .outputs-body { display: none; }
     body.collapse-outputs .outputs-resize { display: none; }
-    body.collapse-outputs .col-outputs { justify-content: center; }
-    body.collapse-outputs .col-outputs .col-header-text { display: none; }
+    body.collapse-outputs .col-outputs { justify-content: center; padding: 0; }
+    body.collapse-outputs .col-outputs > *:not(.col-collapse) { display: none; }
     body.collapse-outputs .col-outputs .col-collapse { margin: 0; transform: scaleX(-1); }
     body.collapse-model #content { display: none; }
-    body.collapse-model .col-model .tabstrip-tabs,
-    body.collapse-model .col-model .tabstrip-status { display: none; }
-    body.collapse-model .col-model .col-header-text { display: none; }
+    body.collapse-model .col-model { justify-content: center; padding: 0; }
+    body.collapse-model .col-model > *:not(.col-collapse-center) { display: none; }
+    body.collapse-model .col-model .col-collapse-center { margin: 0; }
     /* ── Global Wire / Merge (buttons above the tab line + drag feedback) ─── */
     .wm-actions { display: flex; align-items: center; gap: 6px; flex: none; margin: 0 8px; }
     .wm-btn {
