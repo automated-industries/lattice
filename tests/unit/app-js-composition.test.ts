@@ -180,8 +180,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // the drag adds a pointercancel/unified teardown; and the record Markdown
 // write-back captures renderGen so a debounced save can't fire into a navigated-
 // away record.
-const ORIGINAL_LENGTH = 843626;
-const ORIGINAL_SHA256 = '2f2b726054d413950b364e4466a63a3d72c881cb0fae0b23158c05b86b2eb14a';
+// 5.0 MCP connectors — the connectors settings panel gains a server-URL form for
+// bring-your-own-URL MCP connectors and an OAuth-redirect open + auto-refresh
+// handler. Length + hash recaptured for the merged inline host.
+const ORIGINAL_LENGTH = 845728;
+const ORIGINAL_SHA256 = '018f53427f0a8b03d550a23c4b75f720365084084824ddc3ef91d791e2b2c63a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
@@ -201,6 +204,7 @@ describe('appJs composition', () => {
     // The bundle is inlined as `<script>${appJs}</script>`, so a template-string
     // slip in any module (an unbalanced brace, a stray backtick) would only surface
     // in the browser. Parse it here to catch that at build time.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval -- intentional: parse-only syntax check of the internally-composed bundle
     expect(() => new Function(normalized)).not.toThrow();
   });
 });
