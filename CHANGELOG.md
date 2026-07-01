@@ -206,6 +206,24 @@ database connector).
 
 ### Fixed
 
+- **Secret values no longer leak into a record's Markdown view.** The rendered-
+  context redaction only matched a plain `col:` line, so a secret column rendered in
+  the default `- **col:** value` bullet crossed the wire in plaintext. Redaction now
+  covers the bold-bullet, inline, and frontmatter shapes (the column name is regex-
+  escaped).
+- **Schema mutations are cloud-owner-gated.** Merging a table, deleting a table, and
+  adding a link now return 403 for a scoped cloud member (they edit the owner's
+  config, which RLS alone does not gate); local and cloud-owner paths are unaffected.
+- **Editing one field never truncates another field's multi-line value.** The record
+  Markdown write-back derivation skips a field whose parsed value is only the first
+  line of a stored multi-line value (a parse artifact of the line-by-line body
+  parser), so an unrelated edit can't silently drop the remaining lines.
+- **The schema-only brain graph no longer runs the O(files) rendered-file scan.**
+  `GET /api/graph?schema=1` (and the table-filtered history route) gathered table
+  names via the full disk scan before building the graph; they now use the no-scan
+  loader, completing the workspace-switch speedup for the graph the ingest animation
+  depends on.
+
 - **Link tables are hidden from every object list, not just the graph.** Junction /
   link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
   Model > Tables/Entities list with apparent duplicates. They're now hidden from the

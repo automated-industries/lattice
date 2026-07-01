@@ -73,7 +73,16 @@ export function diffToUpdates(
   for (const [key, val] of Object.entries(parsed)) {
     if (SYSTEM_COLUMNS.has(key) || pkCols.has(key)) continue;
     if (!(key in row)) continue; // only round-trip real columns
-    if (norm(row[key]) === norm(val)) continue; // unchanged (type-tolerant compare)
+    const stored = norm(row[key]);
+    const next = norm(val);
+    if (stored === next) continue; // unchanged (type-tolerant compare)
+    // Truncation guard: the body parser reads a `- **key:** value` bullet one
+    // line at a time, so a MULTI-LINE stored value parses back to only its first
+    // line. Never overwrite a multi-line field with just its first line — that is
+    // a parse artifact, not a real edit, and would silently drop the rest.
+    // (Defense-in-depth kept even alongside the multi-line round-trip renderer.)
+    const nl = stored.indexOf('\n');
+    if (nl > -1 && !next.includes('\n') && stored.slice(0, nl) === next) continue;
     set[key] = val;
   }
   if (Object.keys(set).length === 0) return [];
