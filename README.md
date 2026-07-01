@@ -1092,6 +1092,25 @@ await db.delete('tasks', 'task-001');
 await db.delete('event_seats', { event_id: 'e-1', seat_no: 3 });
 ```
 
+#### `transaction()` (v5.0+)
+
+```typescript
+await db.transaction<T>(fn: () => Promise<T>): Promise<T>
+```
+
+Run `fn` inside a single database transaction. Every write `fn` performs through this Lattice (`insert` / `update` / `delete` and their audit + changelog writes) commits together, or rolls back together if `fn` throws. Reads inside `fn` see its own uncommitted writes (read-your-writes). The transaction is scoped to the async context of `fn`, so two concurrent callers never accidentally share one; a nested `transaction()` reuses the outer transaction. When the adapter cannot open a transaction, `fn` runs without one.
+
+```typescript
+// Move every row from one table to another as one atomic unit — either all
+// rows move, or (on any error) nothing does.
+await db.transaction(async () => {
+  for (const row of rows) {
+    await db.insert('archive', row);
+    await db.delete('inbox', row.id);
+  }
+});
+```
+
 #### `get()`
 
 ```typescript

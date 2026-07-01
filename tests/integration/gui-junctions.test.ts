@@ -174,6 +174,44 @@ async function bootMergeable(): Promise<GuiServerHandle> {
   return server;
 }
 
+/** A source `s` with a TEXT `qty` and a target `t` with an INTEGER `qty` (same
+ *  name, incompatible type) — used to test the merge's type pre-flight. */
+async function bootTyped(): Promise<GuiServerHandle> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-typed-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  s:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      qty: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: s.md',
+      '  t:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      qty: { type: integer }',
+      '      deleted_at: { type: text }',
+      '    outputFile: t.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return server;
+}
+
 describe('Data Model — junction relationships', () => {
   it('creates a many-to-many that surfaces as a graph edge, then removes it', async () => {
     const s = await boot();
@@ -619,8 +657,8 @@ describe('Data Model — junction relationships', () => {
     // Nothing was moved or deleted.
     expect(await entityNames(s)).toEqual(expect.arrayContaining(['articles', 'tags']));
     expect(
-      ((await (await fetch(`${s.url}/api/tables/articles/rows`)).json()) as { rows: unknown[] }).rows
-        .length,
+      ((await (await fetch(`${s.url}/api/tables/articles/rows`)).json()) as { rows: unknown[] })
+        .rows.length,
     ).toBe(1);
   });
 
@@ -658,5 +696,33 @@ describe('Data Model — junction relationships', () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(/secret|visible/i);
     expect(await entityNames(s)).toContain('leads'); // nothing moved
+  });
+
+  it('type-pre-flights the merge and aborts BEFORE any write (no partial merge)', async () => {
+    const s = await bootTyped(); // s.qty is TEXT, t.qty is INTEGER
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post('/api/tables/s/rows', { qty: '5' })).status).toBe(201);
+    expect((await post('/api/tables/s/rows', { qty: 'N/A' })).status).toBe(201); // can't be an INTEGER
+
+    const res = await post('/api/schema/entities/s/merge', { target: 't' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not compatible/i);
+
+    // NOTHING moved: the source is intact (both rows, still a table) and the target
+    // is still empty — the merge aborted before the first write, so no split state.
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['s', 't']));
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/s/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(2);
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/t/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(0);
   });
 });
