@@ -17,14 +17,6 @@ describe('classifyTier — generic Model/Tables tier heuristic', () => {
     );
   });
 
-  it('DERIVED: AI-loop outputs by name or an embedding/vector column', () => {
-    expect(classifyTier(t('predictions'))).toBe('derived');
-    expect(classifyTier(t('learnings'))).toBe('derived');
-    expect(classifyTier(t('observations'))).toBe('derived');
-    expect(classifyTier(t('note_embeddings'))).toBe('derived');
-    expect(classifyTier(t('chunks', { columns: ['id', 'embedding'] }))).toBe('derived');
-  });
-
   it('SURFACE: app/system plumbing + the secrets store', () => {
     expect(classifyTier(t('user_settings'))).toBe('surface');
     expect(classifyTier(t('oauth_tokens'))).toBe('surface');
@@ -39,11 +31,17 @@ describe('classifyTier — generic Model/Tables tier heuristic', () => {
     expect(classifyTier(t('companies'))).toBe('model');
     // An unknown brand-new table falls through to MODEL, not a guess.
     expect(classifyTier(t('widgets_v2'))).toBe('model');
+    // Former AI-loop/embedding tables now fall through to MODEL too (the DERIVED
+    // tier was removed) unless they carry a stronger SOURCE/SURFACE signal.
+    expect(classifyTier(t('predictions'))).toBe('model');
+    expect(classifyTier(t('observations'))).toBe('model');
+    expect(classifyTier(t('note_embeddings'))).toBe('model');
+    expect(classifyTier(t('chunks', { columns: ['id', 'embedding'] }))).toBe('model');
   });
 
-  it('priority: explicit connector provenance wins over a name that looks derived', () => {
-    // A connector-synced table named like an AI output is still a SOURCE — the
-    // toolkit is authoritative provenance, not a name guess.
+  it('priority: explicit connector provenance wins over the name heuristic', () => {
+    // A connector-synced table is a SOURCE — the toolkit is authoritative
+    // provenance, ahead of the SURFACE/MODEL name rules.
     expect(classifyTier(t('insights', { connectorToolkit: 'salesforce' }))).toBe('source');
   });
 });
