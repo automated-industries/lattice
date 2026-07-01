@@ -19,6 +19,17 @@ database connector).
 
 ### Added
 
+- **Folders view — objects as folders (now the default center tab).** A new
+  **Folders** tab (first, and the landing view) shows the workspace's objects as a
+  grid of folders. Double-click a folder to open it: its rows appear as "files"
+  (icon by file type) and its linked objects nest as sub-folders (a linked object A
+  shows inside B and B inside A). Clicking a file opens that record's page. A folder
+  can be renamed in place (renames the object). Graph and Tables remain as sibling
+  tabs.
+- **Collapsible layout columns.** Each of the three columns — Inputs, Model,
+  Outputs — has a collapse toggle in its header that shrinks it to a thin rail
+  (state persisted in localStorage); the grid always keeps a flexible track, so you
+  can focus any column.
 - **Inputs · Model · Outputs GUI reframe.** The desktop GUI / `lattice gui` is
   reorganized into three columns: **Inputs** (Files, Connectors, Databases),
   **Model** (two top-level tabs — **Graph** and **Tables** — where Tables is a
