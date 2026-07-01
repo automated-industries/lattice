@@ -214,10 +214,18 @@ database connector).
 - **Schema mutations are cloud-owner-gated.** Merging a table, deleting a table, and
   adding a link now return 403 for a scoped cloud member (they edit the owner's
   config, which RLS alone does not gate); local and cloud-owner paths are unaffected.
-- **Editing one field never truncates another field's multi-line value.** The record
-  Markdown write-back derivation skips a field whose parsed value is only the first
-  line of a stored multi-line value (a parse artifact of the line-by-line body
-  parser), so an unrelated edit can't silently drop the remaining lines.
+- **Multi-line field values now round-trip through the rendered Markdown.** The
+  default renderer inlined a value's newlines into a single `- **key:** value`
+  bullet, and the reverse-sync parser read one line per field — so a multi-line
+  value (a description, a note, a PEM key) was silently truncated to its first line
+  the next time any field on that record was saved. The renderer now writes each
+  extra line as a 2-space-indented continuation line and the parser accumulates
+  them, so a value survives a full render → parse → render cycle unchanged
+  (interior blank lines, and lines that look like bullets/headings/`key: value`
+  pairs, are all preserved). A defense-in-depth guard still skips a "value is only
+  the stored value's first line" derivation so a stale parse can never drop lines.
+  Secret multi-line values are masked whole (every continuation line), not just
+  their first line, before the context crosses the wire.
 - **The schema-only brain graph no longer runs the O(files) rendered-file scan.**
   `GET /api/graph?schema=1` (and the table-filtered history route) gathered table
   names via the full disk scan before building the graph; they now use the no-scan
