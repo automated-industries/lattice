@@ -195,27 +195,14 @@ export const modelTablesJs = `
           '<div class="mt-tier-body">' + cards + '</div></div>';
       }).join('');
 
-      var actionVerb = mtMode === 'merge' ? 'merge' : 'link';
-      var hint = mtMode
-        ? (mtPickFrom
-            ? 'Pick the target to ' + actionVerb + ' into\\u2014or drag the source onto it. Click the source again to cancel.'
-            : 'Click a source table then a target\\u2014or drag one table onto another to ' + actionVerb + ' them.')
-        : '';
-      var wireLabel = mtMode === 'wire' ? (mtPickFrom ? 'Pick target\\u2026' : 'Pick source\\u2026') : '+ Wire';
-      var mergeLabel = mtMode === 'merge' ? (mtPickFrom ? 'Pick target\\u2026' : 'Pick source\\u2026') : 'Merge';
       host.innerHTML =
-        '<div class="mt' + (mtMode ? ' mt-wiring mt-mode-' + mtMode : '') + '">' +
+        '<div class="mt">' +
           '<div class="mt-bar">' +
             '<span class="mt-bar-label">View</span>' +
             '<div class="mt-seg">' +
               '<button type="button" class="mt-seg-btn' + (level === 'entity' ? ' on' : '') + '" data-mt-level="entity">Entity</button>' +
               '<button type="button" class="mt-seg-btn' + (level === 'field' ? ' on' : '') + '" data-mt-level="field">Field</button>' +
             '</div>' +
-            (hint ? '<span class="mt-wire-hint">' + hint + '</span>' : '') +
-            '<button type="button" class="mt-wire' + (mtMode === 'wire' ? ' on' : '') + '" id="mt-wire-btn" ' +
-              'title="Link two tables (many-to-many) — click a source then a target, or drag one onto another">' + wireLabel + '</button>' +
-            '<button type="button" class="mt-merge' + (mtMode === 'merge' ? ' on' : '') + '" id="mt-merge-btn" ' +
-              'title="Merge one table into another — move its rows in, then remove it (reversible from history)">' + mergeLabel + '</button>' +
           '</div>' +
           '<div class="mt-main">' +
             '<div class="mt-tiers">' + tiers + '</div>' +
@@ -226,43 +213,22 @@ export const modelTablesJs = `
       host.querySelectorAll('.mt-seg-btn').forEach(function (b) {
         b.addEventListener('click', function () { mtSetLevel(b.getAttribute('data-mt-level')); renderModelTables(host); });
       });
-      // The "+ Wire" / "Merge" toggles flip the active mode (mutually exclusive,
-      // no navigation). In a mode a card click/drag picks a source then a target;
-      // outside a mode a card click opens the detail panel.
-      function mtToggleMode(mode) {
-        mtMode = mtMode === mode ? null : mode;
-        mtPickFrom = null;
-        mtDragFrom = null;
-        if (mtMode && mtLevel() !== 'entity') mtSetLevel('entity'); // modes act on whole tables
-        renderModelTables(host);
-      }
-      var wireBtn = host.querySelector('#mt-wire-btn');
-      if (wireBtn) wireBtn.addEventListener('click', function () { mtToggleMode('wire'); });
-      var mergeBtn = host.querySelector('#mt-merge-btn');
-      if (mergeBtn) mergeBtn.addEventListener('click', function () { mtToggleMode('merge'); });
       host.querySelectorAll('.mt-card').forEach(function (b) {
         b.addEventListener('click', function () {
-          if (mtSuppressClick) return; // a drag just completed — ignore the trailing click
-          var t = b.getAttribute('data-table');
-          if (mtMode) { mtModeClick(host, t); return; }
-          mtOpenDetail(t, null, entities, lineage);
+          if (wmSuppressClick) return; // a wire/merge drag just completed — ignore the trailing click
+          mtOpenDetail(b.getAttribute('data-table'), null, entities, lineage);
         });
-        mtAttachDrag(host, b);
       });
-      // Field view: clicking a field row traces THAT field's lineage (not in a mode).
+      // Field view: clicking a field row traces THAT field's lineage.
       host.querySelectorAll('.mt-field[data-field]').forEach(function (b) {
         b.addEventListener('click', function (ev) {
           ev.stopPropagation();
-          if (mtMode) { mtModeClick(host, b.getAttribute('data-table')); return; }
           mtOpenDetail(b.getAttribute('data-table'), b.getAttribute('data-field'), entities, lineage);
         });
       });
-      // Highlight the picked source + grey out invalid targets while in a mode.
-      if (mtMode && mtPickFrom) {
-        var fromCard = host.querySelector('.mt-card[data-table="' + mtPickFrom + '"]');
-        if (fromCard) fromCard.classList.add('mt-wire-from');
-        mtMarkInvalidTargets(host, mtPickFrom);
-      }
+      // Table cards are wire/merge objects, driven by the global Wire/Merge buttons
+      // above the tab line: drag one card onto another to link, Shift-drag to merge.
+      if (typeof wmWire === 'function') wmWire(host);
       // Draw the relationship connectors over the tier columns + keep them in sync.
       mtSetupEdges();
     }

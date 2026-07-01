@@ -34,6 +34,21 @@ export const layoutCss = `    /* ── Layout ───────────
     body.collapse-model .col-model .tabstrip-tabs,
     body.collapse-model .col-model .tabstrip-status { display: none; }
     body.collapse-model .col-model .col-header-text { display: none; }
+    /* ── Global Wire / Merge (buttons above the tab line + drag feedback) ─── */
+    .wm-actions { display: flex; align-items: center; gap: 6px; flex: none; margin: 0 8px; }
+    .wm-btn {
+      font-size: 12px; font-weight: 600; color: var(--text-muted);
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 4px 10px; cursor: pointer; white-space: nowrap;
+    }
+    .wm-btn:hover { color: var(--text); border-color: var(--accent); }
+    .wm-btn.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+    .wm-picked { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .wm-drop-target { outline: 2px dashed var(--accent); outline-offset: 1px; }
+    body.wm-drag-merge .wm-drop-target { outline-style: solid; outline-color: #f59e0b; }
+    body.wm-dragging { cursor: grabbing; }
+    body.wm-dragging .wm-drag-active { opacity: 0.6; }
+    body.wm-active [data-table]:not([data-kind="file"]) { cursor: crosshair; }
     @media (max-width: 720px) {
       #content { padding-bottom: 24px; }
     }
