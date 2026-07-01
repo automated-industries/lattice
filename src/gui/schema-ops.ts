@@ -570,6 +570,37 @@ async function secretColumns(active: ActiveDb, table: string): Promise<Set<strin
   }
 }
 
+/** Conservative pre-flight for the merge: is `v` assignable to a column of
+ *  `sqlType`? Only rejects a CLEARLY incompatible value (a non-numeric into an
+ *  int/real/bool column) so the merge aborts BEFORE any write rather than throwing
+ *  mid-loop and leaving rows split. Text/uuid/datetime/json accept anything; null
+ *  is always allowed. */
+function isAssignableToColumn(v: unknown, sqlType: string | undefined): boolean {
+  if (v === null || v === undefined) return true;
+  const t = (sqlType ?? '').toLowerCase();
+  if (t.includes('int')) {
+    if (typeof v === 'number') return Number.isInteger(v);
+    if (typeof v === 'boolean') return true;
+    if (typeof v === 'string') return /^-?\d+$/.test(v.trim());
+    return false;
+  }
+  if (/real|floa|doub|numeric|decimal/.test(t)) {
+    if (typeof v === 'number') return Number.isFinite(v);
+    if (typeof v === 'string') {
+      const s = v.trim();
+      return s !== '' && Number.isFinite(Number(s));
+    }
+    return false;
+  }
+  if (t.includes('bool')) {
+    if (typeof v === 'boolean') return true;
+    if (typeof v === 'number') return v === 0 || v === 1;
+    if (typeof v === 'string') return ['true', 'false', '0', '1'].includes(v.trim().toLowerCase());
+    return false;
+  }
+  return true;
+}
+
 /**
  * The assistant's guarded, reversible table delete. Safeguards (so the model
  * can't destroy data on a careless request):
@@ -720,7 +751,10 @@ export async function aiDeleteEntity(
   for (const col of toAdd) {
     const added = await addUserColumn(active, target, col, sessionId);
     if (!added.ok) {
-      return { ok: false, error: `Could not add "${col}" to "${target}" for the merge: ${added.error}` };
+      return {
+        ok: false,
+        error: `Could not add "${col}" to "${target}" for the merge: ${added.error}`,
+      };
     }
   }
   // Re-read after any widening so newly-added columns are included in the mapping.
@@ -730,16 +764,46 @@ export async function aiDeleteEntity(
     filters: [{ col: 'deleted_at', op: 'isNull' }],
     limit: AI_DELETE_ROW_CAP,
   })) as Record<string, unknown>[];
-  let movedRows = 0;
+  // Pre-flight: abort BEFORE moving any row if a value can't be assigned to its
+  // target column's type (e.g. TEXT "N/A" into an INTEGER column). Without this an
+  // incompatible row mid-loop would throw and leave the merge half-done (early rows
+  // moved + soft-deleted, the rest not). Unioned columns are TEXT so they never
+  // trip this; only a pre-existing same-named column of a strict type can. NOTE:
+  // this makes the DOMINANT failure impossible; a rare transient DB error mid-loop
+  // is still non-atomic but every step is audited, so the partial state is
+  // recoverable from version history (full DB-transaction atomicity is a larger,
+  // separate change to the core write pipeline).
   for (const r of rows) {
-    const mapped: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(r)) {
-      if (!SKIP.has(k) && k in cols) mapped[k] = v;
+      if (SKIP.has(k) || !(k in cols)) continue;
+      if (!isAssignableToColumn(v, cols[k])) {
+        return {
+          ok: false,
+          error: `Cannot merge "${name}" into "${target}": the value ${JSON.stringify(v)} in "${k}" is not compatible with the "${k}" column in "${target}". Fix or clear those values first.`,
+        };
+      }
     }
-    await createRow(mctx, target, mapped); // new id auto-assigned
-    await deleteRow(mctx, name, String(r.id), false);
-    movedRows++;
   }
+  // Move every row inside ONE transaction: each copy-into-target + soft-delete-of
+  // -source (and their audit/changelog writes) commit together, or roll back
+  // together if any row throws mid-loop. Combined with the type pre-flight above,
+  // a merge either completes fully or changes nothing — it can never leave rows
+  // split between the two tables. (The source-entity removal below is a config
+  // edit, not a DB write, so it stays outside the transaction and runs only after
+  // the row moves have committed.)
+  let movedRows = 0;
+  await active.db.transaction(async () => {
+    movedRows = 0;
+    for (const r of rows) {
+      const mapped: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(r)) {
+        if (!SKIP.has(k) && k in cols) mapped[k] = v;
+      }
+      await createRow(mctx, target, mapped); // new id auto-assigned
+      await deleteRow(mctx, name, String(r.id), false);
+      movedRows++;
+    }
+  });
   await softDeleteUserEntity(active, name, sessionId);
   return { ok: true, deleted: name, movedRows };
 }
