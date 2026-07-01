@@ -10,6 +10,30 @@ export const layoutCss = `    /* ── Layout ───────────
       display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--outputs-width);
       height: calc(100vh - 56px);
     }
+    /* ── Column collapse (Inputs / Model / Outputs → thin rails) ─────── */
+    .col-collapse {
+      margin-left: auto; flex: none; width: 22px; height: 22px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: none; border: 0; border-radius: 6px; cursor: pointer;
+      color: var(--text-muted); font-size: 13px; line-height: 1;
+    }
+    .col-collapse:hover { background: var(--surface-2); color: var(--text); }
+    .col-collapse-center { margin-left: 8px; }
+    /* Collapsed: hide the body, keep a thin header with just the re-expand button. */
+    body.collapse-inputs nav.sidebar { overflow: hidden; }
+    body.collapse-inputs nav.sidebar > *:not(.col-header) { display: none; }
+    body.collapse-inputs .col-inputs { justify-content: center; }
+    body.collapse-inputs .col-inputs .col-header-text { display: none; }
+    body.collapse-inputs .col-inputs .col-collapse { margin: 0; transform: scaleX(-1); }
+    body.collapse-outputs .outputs-body { display: none; }
+    body.collapse-outputs .outputs-resize { display: none; }
+    body.collapse-outputs .col-outputs { justify-content: center; }
+    body.collapse-outputs .col-outputs .col-header-text { display: none; }
+    body.collapse-outputs .col-outputs .col-collapse { margin: 0; transform: scaleX(-1); }
+    body.collapse-model #content { display: none; }
+    body.collapse-model .col-model .tabstrip-tabs,
+    body.collapse-model .col-model .tabstrip-status { display: none; }
+    body.collapse-model .col-model .col-header-text { display: none; }
     @media (max-width: 720px) {
       #content { padding-bottom: 24px; }
     }
