@@ -56,16 +56,31 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       color: var(--text-muted); margin: 20px 2px 10px;
     }
     .folders-grid { max-width: none; }
+    /* Desktop-icon style: no card box — just the folder/file graphic + a name. */
+    .folders-view .fs-grid { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 4px; }
+    .folders-view .fs-tile {
+      background: none; border: 0; box-shadow: none; padding: 12px 6px 10px; gap: 6px;
+    }
+    .folders-view .fs-tile:hover { background: var(--surface-2); transform: none; box-shadow: none; }
+    /* The folder graphic (a two-tone desktop folder) with the object's emoji on it. */
+    .fs-folder-graphic { position: relative; width: 62px; height: 50px; }
+    .fs-folder-svg { width: 62px; height: 50px; display: block; filter: drop-shadow(0 2px 3px rgba(15, 23, 42, 0.18)); }
+    .fs-folder-back { fill: #e0a93a; }
+    .fs-folder-front { fill: #f4c95d; }
+    .fs-folder-emoji {
+      position: absolute; left: 0; right: 0; top: 17px; text-align: center;
+      font-size: 21px; line-height: 1; pointer-events: none;
+    }
+    .folders-view .fs-file .fs-tile-icon { font-size: 34px; }
     .fs-tile-rename {
-      position: absolute; top: 6px; right: 6px; opacity: 0;
-      font-size: 12px; line-height: 1; color: var(--text-muted);
-      background: var(--surface-2); border: 1px solid var(--border);
-      border-radius: 6px; width: 22px; height: 22px; cursor: pointer;
+      position: absolute; top: 4px; right: 4px; opacity: 0; z-index: 1;
+      font-size: 11px; line-height: 1; color: var(--text-muted);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; width: 20px; height: 20px; cursor: pointer;
       transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
     }
     .fs-tile:hover .fs-tile-rename { opacity: 0.9; }
     .fs-tile-rename:hover { color: var(--accent); border-color: var(--accent); }
-    .fs-file .fs-tile-icon { font-size: 32px; }
 
     /* Document preview (item view, built from columns) */
     .fs-doc {
