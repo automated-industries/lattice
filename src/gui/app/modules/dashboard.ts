@@ -784,6 +784,22 @@ export const dashboardJs = `    // ───────────────
     function fsHref(segs) {
       return '#/fs/' + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
     }
+    // The record-namespace prefix for a section, so an in-section drill keeps its
+    // section (and thus its lit tab + breadcrumb root). Folders records live under
+    // #/fs, Graph under #/graph, Tables under #/tables — all rendered by the SAME
+    // record/collection renderers, told which section they're in.
+    function sectionHref(section, segs) {
+      var p = section === 'graph' ? '#/graph/' : section === 'tables' ? '#/tables/' : '#/fs/';
+      return p + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
+    }
+    // The section a hash belongs to, from its prefix — used by in-place re-renders
+    // (a mode toggle / save) that don't carry the section as an argument.
+    function sectionOfHash(hash) {
+      hash = hash || location.hash || '';
+      if (hash.indexOf('#/graph/') === 0) return 'graph';
+      if (hash.indexOf('#/tables/') === 0) return 'tables';
+      return 'folders';
+    }
 
     // A human label for one row: first non-empty title-ish column; failing that
     // a short snippet of a body/description field; failing that a short id.
@@ -889,19 +905,32 @@ export const dashboardJs = `    // ───────────────
       return step().then(function () { return crumbs; });
     }
 
-    function fsBreadcrumb(segs, crumbs) {
-      // Rooted at the Tables explorer so every object/record/folder path reads
-      // consistently: Tables ▸ <Object> ▸ <record/relation> …
-      var parts = ['<a href="#/tables">Tables</a>'];
+    function fsBreadcrumb(segs, crumbs, section) {
+      // Rooted at the SECTION you drilled in from (Folders / Graph / Tables), so the
+      // breadcrumb root matches the highlighted tab: <Section> ▸ <Object> ▸ <record>…
+      section = section || 'folders';
+      var rootHref = section === 'graph' ? '#/graph' : section === 'tables' ? '#/tables' : '#/folders';
+      var rootLabel = section === 'graph' ? 'Graph' : section === 'tables' ? 'Tables' : 'Objects';
+      var parts = ['<a href="' + rootHref + '">' + rootLabel + '</a>'];
       var t0 = segs[0];
-      var prefix = '#/fs/' + encodeURIComponent(t0);
+      // The OBJECT crumb opens that section's real Object Page for t0 (Folders → the
+      // icon grid, Graph → the entity graph, Tables → the rows list). 'artifacts' is
+      // a VIRTUAL object (no real table) served only by renderArtifactsView via the
+      // #/fs/artifacts special-case, so it must keep that self-view href in every
+      // section — #/folders/artifacts would hit renderFolderEntity and dead-end.
+      var objHref = t0 === 'artifacts' ? '#/fs/artifacts'
+        : section === 'graph' ? '#/graph/' + encodeURIComponent(t0)
+        : section === 'tables' ? '#/tables/' + encodeURIComponent(t0)
+        : '#/folders/' + encodeURIComponent(t0);
+      // Record/relation crumbs accumulate onto the section's RECORD prefix.
+      var prefix = sectionHref(section, [t0]);
       // An artifact (a file carrying an artifact_type) reads as its own "Artifacts"
       // object, so its record breadcrumb roots at Artifacts rather than Files.
       var leafNode = (crumbs || []).filter(function (c) { return c.type === 'node'; }).pop();
       if (t0 === 'files' && leafNode && leafNode.row && leafNode.row.artifact_type) {
         parts.push('<a href="#/fs/artifacts">Artifacts</a>');
       } else {
-        parts.push('<a href="' + prefix + '">' + escapeHtml(displayFor(t0).label) + '</a>');
+        parts.push('<a href="' + objHref + '">' + escapeHtml(displayFor(t0).label) + '</a>');
       }
       (crumbs || []).forEach(function (c) {
         if (c.type === 'node') {
@@ -1025,7 +1054,8 @@ export const dashboardJs = `    // ───────────────
     // Collection view — a folder of tiles for a NESTED relation path
     // (#/fs/<table>/<id>/<rel>). The top-level object page (#/fs/<table>) is the
     // data-provenance view (graph or table — how this object's rows are sourced).
-    function renderFsCollection(content, segs) {
+    function renderFsCollection(content, segs, section) {
+      section = section || 'folders';
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
@@ -1036,7 +1066,7 @@ export const dashboardJs = `    // ───────────────
       if (topLevel && segs[0] === 'artifacts') { renderArtifactsView(content); return; }
       var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
       crumbsP.then(function (crumbs) {
-        var base = fsHref(segs);
+        var base = sectionHref(section, segs);
         var page = fsPageByPath[base] || 0;
         var table, viewP;
         if (topLevel) {
@@ -1069,13 +1099,13 @@ export const dashboardJs = `    // ───────────────
           // can land past the end → clamp to the last real page and re-render.
           if (!view.rows.length && page > 0) {
             var lastPage = Math.max(0, Math.ceil((view.approxTotal || 0) / PAGE_SIZE) - 1);
-            if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs); return; }
+            if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs, section); return; }
           }
           var d = displayFor(table);
           // The object view is the table's ROWS in a table (mirroring the Files file
           // list), one page at a time with a Prev/Next pager. One consistent view.
           paintRowsTable(content, {
-            breadcrumbHtml: fsBreadcrumb(segs, crumbs),
+            breadcrumbHtml: fsBreadcrumb(segs, crumbs, section),
             icon: d.icon,
             label: d.label,
             table: table,
@@ -1087,7 +1117,7 @@ export const dashboardJs = `    // ───────────────
             totalLabel: view.totalLabel,
             hasNext: view.hasNext,
             // Bump renderGen so a slow prior-page fetch can't paint over this one.
-            onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs); },
+            onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs, section); },
           });
         });
       }).catch(function (err) {
@@ -1345,7 +1375,8 @@ export const dashboardJs = `    // ───────────────
       });
     }
 
-    function renderFsItem(content, segs) {
+    function renderFsItem(content, segs, section) {
+      section = section || 'folders';
       var myGen = renderGen;
       fsWalk(segs).then(function (crumbs) {
         var leaf = crumbs[crumbs.length - 1];
@@ -1353,10 +1384,10 @@ export const dashboardJs = `    // ───────────────
         var table = leaf.table, id = leaf.id, row = leaf.row;
         var t = tableByName(table);
         if (!t) { location.hash = '#/'; return; } // table removed → dashboard
-        // The open record was deleted out from under the view — fall back to the
-        // parent folder rather than repaint a tombstone (respect an explicit trash view).
+        // The open record was deleted out from under the view — fall back to this
+        // section's object page rather than repaint a tombstone (respect trash view).
         if (!row || (row.deleted_at && tableViewMode[table] !== 'trash')) {
-          location.hash = '#/fs/' + encodeURIComponent(table);
+          location.hash = sectionHref(section, [table]);
           return;
         }
         var d = displayFor(table);
@@ -1373,24 +1404,21 @@ export const dashboardJs = `    // ───────────────
         // Files + artifacts get the two-view document layout (formatted display +
         // a View Source toggle) with a Version History + Delete dropdown — not the
         // column-by-column field dump or the "Inside" grid.
-        if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d); return; }
+        if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d, section); return; }
         var rels = fsRelations(table);
         if (myGen !== renderGen) return; // superseded by a newer navigation while fsWalk resolved
-        var base = fsHref(segs);
+        var base = sectionHref(section, segs);
         var folderTiles = rels.map(function (rel) {
-          // Same folder icon as the Folders view: the 📁 base with the target
-          // object's emoji badged on its face (not a bare 📁).
+          // The connected object's OWN emoji (not a folder icon) — these are objects.
           var relIcon = displayFor(rel.targetTable || rel.token).icon;
           return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
-            '<div class="fs-tile-icon"><span class="fs-folder-icon">' +
-              '<span class="fs-folder-base">📁</span><span class="fs-folder-badge">' + relIcon + '</span>' +
-            '</span></div>' +
+            '<div class="fs-tile-icon">' + relIcon + '</div>' +
             '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
             '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
           '</a>';
         }).join('');
         content.innerHTML =
-          fsBreadcrumb(segs, crumbs) +
+          fsBreadcrumb(segs, crumbs, section) +
           '<div class="view-header">' +
             '<span class="entity-icon">' + d.icon + '</span>' +
             '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
@@ -1406,7 +1434,9 @@ export const dashboardJs = `    // ───────────────
           // editable raw-markdown textarea (.fs-context-edit); loadFsContext fills
           // it and applyFsItemView toggles which one shows.
           '<div class="fs-context" id="fs-context" hidden></div>' +
-          (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '') +
+          // "Connected objects" — the related objects, shown only when they actually
+          // have rows (count > 0). Rendered hidden; revealed once the counts resolve.
+          (rels.length ? '<h3 class="fs-rel-title" hidden>Connected objects</h3><div class="fs-grid fs-rel-folders" hidden>' + folderTiles + '</div>' : '') +
           '<div id="row-provenance"></div>';
         loadFsContext(table, id);
         content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
@@ -1416,13 +1446,37 @@ export const dashboardJs = `    // ───────────────
         // Collapsed, lazy-loaded "Data provenance" panel for this row.
         renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
         // Per-row sharing controls — same affordance as the advanced detail view.
-        wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
-        rels.forEach(function (rel) {
-          fsRelatedRows(table, row, rel).then(function (rs) {
-            var el = content.querySelector('[data-count-for="' + rel.token + '"]');
-            if (el) el.textContent = rs.length + (rs.length === 1 ? ' item' : ' items');
-          }).catch(function () { /* count is best-effort */ });
-        });
+        wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs, section); });
+        // Resolve every relation's count, then reveal ONLY the non-empty ones and
+        // drop the empties — "Connected objects" lists objects with count > 0. If
+        // none have rows, the whole section stays hidden (removed).
+        if (rels.length) {
+          Promise.all(rels.map(function (rel) {
+            return fsRelatedRows(table, row, rel)
+              .then(function (rs) { return { rel: rel, n: rs.length }; })
+              .catch(function () { return { rel: rel, n: 0 }; });
+          })).then(function (counts) {
+            if (myGen !== renderGen) return;
+            var any = false;
+            counts.forEach(function (c) {
+              var el = content.querySelector('[data-count-for="' + c.rel.token + '"]');
+              var tile = el ? el.closest('.fs-tile') : null;
+              if (c.n > 0) {
+                any = true;
+                if (el) el.textContent = c.n + (c.n === 1 ? ' item' : ' items');
+              } else if (tile && tile.parentNode) {
+                tile.parentNode.removeChild(tile);
+              }
+            });
+            var title = content.querySelector('.fs-rel-title');
+            var grid = content.querySelector('.fs-rel-folders');
+            if (any) { if (title) title.hidden = false; if (grid) grid.hidden = false; }
+            else {
+              if (title && title.parentNode) title.parentNode.removeChild(title);
+              if (grid && grid.parentNode) grid.parentNode.removeChild(grid);
+            }
+          });
+        }
       }).catch(function (err) {
         if (myGen !== renderGen) return; // a stale error must not clobber a newer view
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
@@ -1436,7 +1490,8 @@ export const dashboardJs = `    // ───────────────
     function sourceTextOf(row) {
       return row && typeof row.extracted_text === 'string' ? row.extracted_text : '';
     }
-    function renderFsDocItem(content, segs, crumbs, id, row, d) {
+    function renderFsDocItem(content, segs, crumbs, id, row, d, section) {
+      section = section || 'folders';
       // The tab shows the FILE's name (e.g. "Properties Dashboard"), not the
       // object name ("Files").
       if (typeof setTabTitle === 'function') {
@@ -1449,7 +1504,7 @@ export const dashboardJs = `    // ───────────────
       // Actions live in a dropdown menu next to the title; View source / Version
       // history are full-page modes (they replace the body, not overlay it).
       content.innerHTML =
-        fsBreadcrumb(segs, crumbs) +
+        fsBreadcrumb(segs, crumbs, section) +
         '<div class="view-header">' +
           '<span class="entity-icon">' + fileEmoji(row) + '</span>' +
           '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
@@ -1533,7 +1588,7 @@ export const dashboardJs = `    // ───────────────
           var act = it.getAttribute('data-act');
           if (act === 'delete') { removeFile(segs, id, row); return; }
           fileViewMode[id] = act; // display | source | history
-          renderFsItem(content, segs); // re-render this item in the new mode
+          renderFsItem(content, segs, sectionOfHash()); // re-render this item in the new mode
         });
       });
       var save = content.querySelector('#file-source-save');
@@ -1586,7 +1641,7 @@ export const dashboardJs = `    // ───────────────
         .then(function () {
           fileViewMode[id] = 'display'; // back to the formatted view
           showToast('Saved', { undo: undoLast });
-          renderFsItem(content, segs);
+          renderFsItem(content, segs, sectionOfHash());
         })
         .catch(function (e) { showToast('Save failed: ' + e.message, {}); });
     }
@@ -1603,10 +1658,11 @@ export const dashboardJs = `    // ───────────────
         .then(function () { invalidate('files'); return refreshEntities(); })
         .then(function () {
           showToast('Deleted "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
-          // Navigate to the Files collection — the old closable-tab dismissal is a
-          // no-op under the two-permanent-tab model and would strand the user on the
-          // just-deleted record.
-          location.hash = '#/fs/files';
+          // Navigate to the Files collection in the SAME section the record was
+          // opened from (Folders/Graph/Tables) — a hard-coded #/fs would yank the
+          // user out of Graph/Tables into Folders. The old closable-tab dismissal is
+          // a no-op under the permanent-tab model and would strand the deleted record.
+          location.hash = sectionHref(sectionOfHash(), ['files']);
         })
         .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }
