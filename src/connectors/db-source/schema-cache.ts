@@ -31,6 +31,13 @@ export interface DbTableDesc {
   pk: string[];
   /** Whether this table is imported (table-level selection). */
   selected: boolean;
+  /**
+   * Single-column FOREIGN KEYs introspected from the remote (composite FKs are
+   * dropped at introspection time). Materialized as graph edges between the
+   * imported tables so a connected database's relational structure carries over.
+   * Optional — descriptors persisted before FK introspection existed lack it.
+   */
+  fks?: { column: string; refTable: string; refColumn: string }[];
 }
 
 export interface DbSchemaDescriptor {
@@ -110,6 +117,10 @@ export function buildModelDefs(
 ): ConnectedModelDef[] {
   const toolkit = `db_source:${connectionId}`;
   const out: ConnectedModelDef[] = [];
+  // Which imported tables an FK can point AT: the referenced table must itself be
+  // imported, and the referenced column must be its single-column PK (so the FK
+  // value maps 1:1 onto the imported row's — later connector-namespaced — key).
+  const importable = new Map(descriptor.tables.filter((t) => t.selected).map((t) => [t.name, t]));
   for (const t of descriptor.tables) {
     if (!t.selected) continue;
     const { key: naturalKey } = naturalKeyFor(t);
@@ -137,11 +148,31 @@ export function buildModelDefs(
       description: `Imported from external database table "${t.name}".`,
       render: 'default-detail',
     };
+    // Remote FOREIGN KEYs → graph edges between the imported tables, so the
+    // source database's relational structure carries over (the sync engine
+    // namespaces the FK values and derives the edges — same machinery as the
+    // other connectors). Only FK → single-column-PK links qualify; anything
+    // else can't map onto the imported row keys.
+    const graphEdges = (t.fks ?? [])
+      .filter((fk) => {
+        // An FK that IS this table's own PK (a 1:1 table) is skipped: the sync
+        // engine namespaces the PK once at ingest and would double-namespace it
+        // as an FK column, corrupting the key.
+        if (fk.column === naturalKey) return false;
+        const ref = importable.get(fk.refTable);
+        return !!ref && ref.pk.length === 1 && ref.pk[0] === fk.refColumn;
+      })
+      .map((fk) => ({
+        fkColumn: fk.column,
+        dstTable: latticeTableName(descriptor.prefix, fk.refTable),
+        type: 'references',
+      }));
     out.push({
       model: t.name,
       table: latticeTableName(descriptor.prefix, t.name),
       naturalKey,
       definition,
+      ...(graphEdges.length ? { graphEdges } : {}),
     });
   }
   return out;

@@ -64,6 +64,14 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
       `INSERT INTO ${SCHEMA}.orders (region, num, item) VALUES
         ('east', 1, 'anvil'), ('west', 1, 'rope')`,
     );
+    // A single-column FK → widgets(id): must import as a graph edge between the
+    // imported tables (the remote's relational structure carries over).
+    await admin.query(
+      `CREATE TABLE ${SCHEMA}.reviews (id text PRIMARY KEY, widget_id text REFERENCES ${SCHEMA}.widgets(id), rating integer)`,
+    );
+    await admin.query(
+      `INSERT INTO ${SCHEMA}.reviews (id, widget_id, rating) VALUES ('r1','w1',5), ('r2','w2',3)`,
+    );
   });
 
   afterAll(async () => {
@@ -196,6 +204,55 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
         filters: [{ col: 'deleted_at', op: 'isNull' }],
       })) as Record<string, unknown>[];
       expect(live3.length).toBe(1);
+    } finally {
+      await connector.disconnect(connectionId);
+    }
+  });
+
+  it('imports remote FOREIGN KEYs as graph edges + namespaces tables per connection', async () => {
+    const connector = new DatabaseConnector();
+    const { connectionId } = await connector.connect({
+      connectionString: PG_URL!,
+      schema: SCHEMA,
+    });
+    const db = new Lattice(':memory:');
+    await db.init();
+    try {
+      const toolkit = `db_source:${connectionId}`;
+      const models = connector.models(toolkit);
+      const reviews = models.find((m) => m.model === 'reviews')!;
+      const widgets = models.find((m) => m.model === 'widgets')!;
+
+      // Table names carry a short connection-id suffix, so two connections whose
+      // databases share a name (every Supabase DB is "postgres") can never merge
+      // into the same imported tables.
+      expect(reviews.table).toContain(`_${connectionId.slice(0, 4)}_`);
+
+      // The remote FK reviews.widget_id → widgets.id imports as a graph edge spec.
+      expect(reviews.graphEdges).toEqual([
+        { fkColumn: 'widget_id', dstTable: widgets.table, type: 'references' },
+      ]);
+
+      const connectorId = await createConnector(db, {
+        connector: 'db_source',
+        toolkit,
+        connectionRef: connectionId,
+        connectedBy: 'test',
+        displayName: 'test',
+      });
+      for (const m of models) await db.defineLate(m.table, m.definition);
+      const res = await syncConnector(db, connector, connectorId);
+      expect(res.upserted[reviews.table]).toBe(2);
+      // Two review rows → two derived edges into the imported widgets table.
+      expect(res.edges).toBe(2);
+      const out = await db.neighbors(
+        { table: reviews.table, id: `${connectorId}:r1` },
+        { direction: 'out' },
+      );
+      expect(out.length).toBe(1);
+      expect(out[0]!.dstTable).toBe(widgets.table);
+      expect(out[0]!.dstId).toBe(`${connectorId}:w1`);
+      expect(out[0]!.type).toBe('references');
     } finally {
       await connector.disconnect(connectionId);
     }

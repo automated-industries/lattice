@@ -241,8 +241,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // Back/Forward page-nav buttons next to Undo/Redo. Graph object bubbles size on a
 // log scale by row count. The Outputs "Tables" mirror opens objects under #/tables
 // (Tables tab stays lit). Length + hash recaptured.
-const ORIGINAL_LENGTH = 600127;
-const ORIGINAL_SHA256 = 'b9a7526ec6d2fed6ec78517df22205b956c82fa5aaa82e7eaf2dcc65c77ee069';
+// 5.0 GUI batch 9 — SOURCE-tier tables (files, connector-synced, imported
+// databases) are raw inputs, excluded from the Objects grid (foldersModel) and the
+// schema graph (buildSchemaModel); they appear only in the Inputs column + the
+// Tables explorer's Source column. Length + hash recaptured.
+const ORIGINAL_LENGTH = 600681;
+const ORIGINAL_SHA256 = '1c84702505165c91139527fd4533f97086d25be0c9b64eed0e54a04c071c82e2';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

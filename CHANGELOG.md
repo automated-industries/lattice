@@ -48,6 +48,18 @@ database connector).
 
 ### Added
 
+- **External databases import their relational structure.** Single-column
+  FOREIGN KEYs on the remote are introspected at connect time and materialized as
+  graph edges between the imported tables (same machinery as the other
+  connectors), so a connected database's rows arrive already linked.
+- **Per-connection table namespacing.** Imported table names now carry a short
+  connection-id suffix in addition to the database name, so two connections whose
+  databases share a name (every Supabase database is `postgres`) can never merge
+  into the same imported tables.
+- **Table imports surface like file ingests.** A successful database import (and
+  each refresh) publishes an activity-feed summary — the same live-feedback
+  contract as dropping files.
+
 - **MCP-backed connectors — connect any MCP server as an Input.** Connectors are
   now powered by the Model Context Protocol: Lattice runs as a **local MCP client**
   and pulls a server's read tools in as connected data types. Everything runs on
@@ -214,6 +226,11 @@ database connector).
   list, brain graph, and cloud-member grants).
 
 ### Changed
+
+- **Source-tier tables are excluded from the Objects grid and the graph.** Files,
+  connector-synced tables, and imported database tables are raw inputs — they're
+  browsed from the Inputs column and listed under the Tables explorer's Source
+  column, never as first-class objects in the Objects/Graph views.
 
 - **The Model → Tables explorer drops the "Derived · AI loop" column.** The tiered
   schema view is now three columns — Source · inputs, Model · entities, Surface ·

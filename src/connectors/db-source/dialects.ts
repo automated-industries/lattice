@@ -43,6 +43,13 @@ export interface SqlDialect {
   columnsSql(schema: string): SqlQuery;
   /** Primary-key columns for a schema → rows `{ table, col }` (key order). */
   primaryKeysSql(schema: string): SqlQuery;
+  /**
+   * FOREIGN KEY columns for a schema → rows `{ cname, table, col, ref_table,
+   * ref_col }`. May emit multiple rows per composite constraint — the caller
+   * groups by `cname` and keeps single-column FKs only (those are the ones that
+   * map cleanly onto graph edges).
+   */
+  foreignKeysSql(schema: string): SqlQuery;
   /** Map a native column type to a Lattice column SQL spec (TEXT | INTEGER | REAL). */
   mapType(nativeType: string): 'TEXT' | 'INTEGER' | 'REAL';
   /** Build a bounded page query (keyset when keyCol set, else offset). */
@@ -91,6 +98,25 @@ export const PostgresDialect: SqlDialect = {
              WHERE tc.table_schema = $1
                AND tc.constraint_type = 'PRIMARY KEY'
              ORDER BY tc.table_name, kcu.ordinal_position`,
+      params: [schema],
+    };
+  },
+
+  foreignKeysSql(schema: string): SqlQuery {
+    return {
+      sql: `SELECT tc.constraint_name AS cname, kcu.table_name AS "table",
+                   kcu.column_name AS col, ccu.table_name AS ref_table,
+                   ccu.column_name AS ref_col
+              FROM information_schema.table_constraints tc
+              JOIN information_schema.key_column_usage kcu
+                ON kcu.constraint_name = tc.constraint_name
+               AND kcu.constraint_schema = tc.constraint_schema
+              JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+               AND ccu.constraint_schema = tc.constraint_schema
+             WHERE tc.constraint_type = 'FOREIGN KEY'
+               AND tc.table_schema = $1
+             ORDER BY tc.constraint_name`,
       params: [schema],
     };
   },

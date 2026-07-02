@@ -11,9 +11,12 @@ export const foldersJs = `
     // Top-level objects, alphabetised — each is a folder. A nested object (one
     // that belongsTo a parent) is hidden here: it shows INSIDE its parent instead
     // (via fsRelations reverse-1:N). Objects with no belongsTo parent are roots.
+    // SOURCE-tier tables (files, connector-synced, imported databases) are raw
+    // inputs, not first-class objects — they're browsed via the Inputs column and
+    // listed only under the Tables explorer's Source column, never here.
     function foldersModel() {
       return mtBuildModel().filter(function (e) {
-        return foldersParentTables(e.name).length === 0;
+        return e.tier !== 'source' && foldersParentTables(e.name).length === 0;
       }).slice().sort(function (a, b) {
         return String(a.label || '').toLowerCase().localeCompare(String(b.label || '').toLowerCase());
       });
