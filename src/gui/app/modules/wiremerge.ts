@@ -17,15 +17,17 @@ export const wireMergeJs = `
       wmRemoveGhost();
       var r = el.getBoundingClientRect();
       var g = el.cloneNode(true);
-      // Keep the tile's own classes (so its layout/centering carry over) and append
-      // it inside the SAME container, so scoped styles (e.g. .folders-view centering)
-      // still apply — position:fixed then floats it regardless of the grid.
+      // Append to document.body — NOT the grid. position:fixed is only viewport-
+      // relative when no ancestor is a containing block (a transform/filter/etc.);
+      // appending under body guarantees that, so the ghost anchors to the cursor
+      // instead of being offset by an ancestor's position. Keeps the tile's own
+      // classes for its look; explicit width/height below preserve its size.
       g.classList.add('wm-ghost');
       g.removeAttribute('id');
       g.style.width = r.width + 'px';
       g.style.height = r.height + 'px';
       _wmGhostDX = x - r.left; _wmGhostDY = y - r.top;
-      (el.parentNode || document.body).appendChild(g);
+      document.body.appendChild(g);
       _wmGhost = g;
       wmMoveGhost(x, y);
     }

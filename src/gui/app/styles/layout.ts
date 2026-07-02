@@ -57,9 +57,13 @@ export const layoutCss = `    /* ── Layout ───────────
     body.wm-dragging .wm-drag-active { opacity: 0.4; }
     body.wm-active [data-table]:not([data-kind="file"]) { cursor: crosshair; }
     /* The dragged object's floating clone that follows the cursor. Keeps the tile's
-       own look (the added classes) — just floats + lifts it. */
+       own look (the added classes) — just floats + lifts it. position:fixed MUST
+       win: the clone is an .fs-tile, and .fs-tile is position:relative (for the
+       corner privacy indicator) at equal specificity, so without !important the
+       clone stays relative and left/top offset it from its in-grid position instead
+       of anchoring to the cursor (the ~100px drag offset). */
     .wm-ghost {
-      position: fixed; z-index: 3000; margin: 0; pointer-events: none; opacity: 0.85;
+      position: fixed !important; z-index: 3000; margin: 0; pointer-events: none; opacity: 0.85;
       transform: rotate(-2deg); filter: drop-shadow(0 8px 12px rgba(15, 23, 42, 0.35));
     }
     @media (max-width: 720px) {
