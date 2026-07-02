@@ -59,8 +59,29 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       // of the Graph section). Soft refreshes skip the rebuild like #/graph.
       var grm = /^#\\/graph\\/([^/]+)$/.exec(hash);
       if (grm) { if (!soft) renderEntityGraph(content, decodeURIComponent(grm[1])); return; }
+      // Graph section RECORD / relation-collection: #/graph/<obj>/<id>[/<rel>/…] →
+      // the SHARED record renderer told section='graph', so the Graph tab stays lit
+      // and the breadcrumb roots at Graph. Needs ≥2 segments, so it can't shadow the
+      // single-segment entity-graph route above.
+      var grItem = /^#\\/graph\\/([^/]+)\\/(.+)$/.exec(hash);
+      if (grItem) {
+        var gs = (grItem[1] + '/' + grItem[2]).split('/').map(function (s) { return decodeURIComponent(s); });
+        if (gs.length % 2 === 1) renderFsCollection(content, gs, 'graph');
+        else renderFsItem(content, gs, 'graph');
+        return;
+      }
       // Model > Tables — the tiered explorer, a sibling tab of the graph.
       if (hash === '#/tables') { renderModelTablesView(content); return; }
+      // Tables section Object Page + RECORD: #/tables/<obj>[/<id>][/<rel>/…] → the
+      // shared renderer told section='tables' (Object Page = the rows list). Comes
+      // AFTER the exact #/tables match so it only catches the drill-in paths.
+      var tbItem = /^#\\/tables\\/(.+)$/.exec(hash);
+      if (tbItem) {
+        var ts = tbItem[1].split('/').map(function (s) { return decodeURIComponent(s); });
+        if (ts.length % 2 === 1) renderFsCollection(content, ts, 'tables');
+        else renderFsItem(content, ts, 'tables');
+        return;
+      }
 
       // #/md/<path> — a context Markdown file opened in the center pane.
       var mdm = /^#\\/md\\/(.+)$/.exec(hash);
@@ -78,8 +99,8 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         // The inline record-create view was removed; redirect any lingering
         // #/fs/<table>/new link to that table's collection.
         if (fsegs[fsegs.length - 1] === 'new') { location.hash = fsHref(fsegs.slice(0, -1)); return; }
-        if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs);
-        else renderFsItem(content, fsegs);
+        if (fsegs.length % 2 === 1) renderFsCollection(content, fsegs, 'folders');
+        else renderFsItem(content, fsegs, 'folders');
         return;
       }
 

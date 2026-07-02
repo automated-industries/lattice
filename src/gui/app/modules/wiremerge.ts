@@ -46,7 +46,18 @@ export const wireMergeJs = `
     }
     function wmToast(msg, err) { if (typeof showToast === 'function') showToast(msg, err ? { type: 'error' } : {}); }
     function wmAfterAct() {
-      var done = function () { if (typeof renderRoute === 'function') renderRoute(); };
+      var done = function () {
+        // On the brain graph (#/graph), animate the link/merge as a live DELTA via
+        // the same setData path live ingest uses — the renderer diffs by id (new
+        // edges fly in, a merged-away node is removed) — instead of tearing the
+        // graph down and rebuilding it. Every other view re-renders normally.
+        if (location.hash === '#/graph' && typeof schemaGraphHandle !== 'undefined' && schemaGraphHandle &&
+            document.getElementById('graph-mount') && typeof scheduleGraphIngestAnim === 'function') {
+          scheduleGraphIngestAnim();
+        } else if (typeof renderRoute === 'function') {
+          renderRoute();
+        }
+      };
       if (typeof refreshEntities === 'function') refreshEntities().then(done, done); else done();
     }
 

@@ -59,7 +59,7 @@ export const foldersJs = `
           '<a class="folders-crumb-link" href="#/folders/' + encodeURIComponent(p) + '" data-crumb-table="' + escapeHtml(p) + '">' +
             pd.icon + ' ' + escapeHtml(pd.label) + '</a>';
       }).join('');
-      var crumb = '<div class="folders-crumbs"><a href="#/folders" data-crumb-table="">Folders</a>' +
+      var crumb = '<div class="folders-crumbs"><a href="#/folders" data-crumb-table="">Objects</a>' +
         crumbParents +
         '<span class="folders-crumb-sep">/</span>' +
         '<span class="folders-crumb-cur">' + d.icon + ' ' +
@@ -98,18 +98,14 @@ export const foldersJs = `
       });
     }
 
-    // A folder or file tile. Also an mt-card + data-table so the global wire/merge
+    // An object or file tile. Also an mt-card + data-table so the global wire/merge
     // drag handler can treat it as a wireable object. Double-click / Enter opens.
-    // A FOLDER (the 📁 icon — the same one used across the app — with the object's
-    // emoji + name as its label) or a FILE (the file-type emoji + name). A folder's
-    // name is click-to-rename inline (no button, no popup).
+    // An OBJECT (its own emoji + name as its label) or a FILE (the file-type emoji +
+    // name). An object's name is click-to-rename inline (no button, no popup). We use
+    // the object's OWN emoji — not a folder icon — since these are objects, not folders.
     function foldersTileHtml(href, icon, label, table, meta, kind) {
       var isFolder = kind === 'folder';
-      // Folder = the 📁 icon with the object's emoji laid on its face; name below.
-      var iconHtml = isFolder
-        ? '<span class="fs-folder-icon"><span class="fs-folder-base">📁</span>' +
-            '<span class="fs-folder-badge">' + icon + '</span></span>'
-        : icon;
+      var iconHtml = icon;
       var labelHtml = isFolder
         ? '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '">' + escapeHtml(label) + '</span>'
         : escapeHtml(label);
@@ -226,7 +222,7 @@ export const foldersJs = `
             return;
           }
           if (typeof showToast === 'function') showToast(displayFor(source).label + ' nested under ' + displayFor(target).label);
-          if (typeof refreshEntities === 'function') refreshEntities().then(function () { renderRoute(); }); else renderRoute();
+          if (typeof refreshEntities === 'function') refreshEntities().then(function () { renderRoute({ soft: true }); }); else renderRoute({ soft: true });
         }).catch(function () { if (typeof showToast === 'function') showToast('Could not nest', { type: 'error' }); });
     }
 
@@ -260,7 +256,7 @@ export const foldersJs = `
         .then(function (res) {
           if (!res.ok) { if (typeof showToast === 'function') showToast('Could not move out: ' + ((res.body && res.body.error) || 'failed'), { type: 'error' }); return; }
           if (typeof showToast === 'function') showToast(displayFor(source).label + ' moved out of ' + displayFor(parent).label);
-          if (typeof refreshEntities === 'function') refreshEntities().then(function () { renderRoute(); }); else renderRoute();
+          if (typeof refreshEntities === 'function') refreshEntities().then(function () { renderRoute({ soft: true }); }); else renderRoute({ soft: true });
         }).catch(function () { if (typeof showToast === 'function') showToast('Could not move out', { type: 'error' }); });
     }
 

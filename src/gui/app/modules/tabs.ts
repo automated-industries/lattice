@@ -15,7 +15,7 @@ export const tabsJs = `
     // content area below with NO tab (it's reached by drilling in; a breadcrumb
     // navigates back). So the strip never grows beyond these two.
     var tabs = [
-      { key: 'folders', title: 'Folders', icon: '', hash: '#/folders', closable: false },
+      { key: 'folders', title: 'Objects', icon: '', hash: '#/folders', closable: false },
       { key: 'graph', title: 'Graph', icon: '', hash: GRAPH_HASH, closable: false },
       { key: 'tables', title: 'Tables', icon: '', hash: '#/tables', closable: false },
     ];
@@ -28,9 +28,10 @@ export const tabsJs = `
     function tabKeyForHash(hash) {
       hash = hash || '#/';
       if (hash === '#/' || hash === '' || hash === '#/folders') return 'folders';
-      // #/graph and its drill-in #/graph/<obj> both belong to the Graph section.
+      // #/graph and its drill-in #/graph/<obj>[/<id>…] all belong to the Graph section.
       if (hash === GRAPH_HASH || hash.indexOf('#/graph/') === 0) return 'graph';
-      if (hash === '#/tables') return 'tables';
+      // #/tables and its Object Page / record drill-ins #/tables/<obj>[/<id>…].
+      if (hash === '#/tables' || hash.indexOf('#/tables/') === 0) return 'tables';
       if (
         hash.indexOf('#/folders/') === 0 ||
         hash.indexOf('#/fs/') === 0 ||

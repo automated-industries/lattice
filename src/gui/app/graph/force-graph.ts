@@ -399,6 +399,18 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       nodeMap.set(node.id, fnode);
     }
 
+    // Remove nodes no longer present (e.g. a merged-away table) so a link/merge
+    // reflects in realtime through setData rather than a full graph rebuild. New
+    // sets that only GROW (the wave-reveal + live ingest) never hit this.
+    const wantNodes = new Set(nodes.map((n) => n.id));
+    for (const [id, fnode] of nodeMap) {
+      if (!wantNodes.has(id)) {
+        fnode.g.remove();
+        nodeMap.delete(id);
+        changed = true;
+      }
+    }
+
     const wantEdges = new Set(newEdges.map((e) => `${e.source}->${e.target}`));
     for (let i = edges.length - 1; i >= 0; i--) {
       const existing = edges[i];

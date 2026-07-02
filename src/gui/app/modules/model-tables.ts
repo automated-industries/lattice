@@ -7,11 +7,11 @@
 // createDatabaseWizardJs. renderModelTables(host) is called from the Model view's
 // Graph|Tables toggle (system-tables segment).
 export const modelTablesJs = `
-    // The three tiers, source → surface (mirrors the data-model layering).
+    // The two tiers: Source (ingested/connected) → Tables (mirrors the data-model
+    // layering). The former "Surface · app" tier was removed as arbitrary.
     var MT_LAYERS = [
       { id: 'source', name: 'Source \\u00b7 inputs', short: 'Source' },
-      { id: 'model', name: 'Model \\u00b7 entities', short: 'Model' },
-      { id: 'surface', name: 'Surface \\u00b7 app', short: 'Surface' },
+      { id: 'model', name: 'Tables', short: 'Tables' },
     ];
     // Field-tint concept → colour class (CSS .mt-c-<class>).
     var MT_CONCEPTS = {
@@ -21,18 +21,16 @@ export const modelTablesJs = `
       metric: 'measure', status: 'state', flag: 'state',
       timestamp: 'time', credential: 'secret',
     };
-    var MT_SURFACE_RE = /(^|_)(settings?|config|auth|oauth|tokens?|sessions?|chat|threads?|messages?|todos?|notifications?|app)(_|$)/i;
-
     // MIRROR of src/gui/tier-classify.ts \`classifyTier\` — keep the two in sync (the
-    // TS file is the unit-tested source of truth; this is its client copy).
+    // TS file is the unit-tested source of truth; this is its client copy). Two
+    // tiers only: Source (authoritative provenance) → Tables (everything else; the
+    // former "Surface" tier was removed).
     function mtClassifyTier(t) {
       var name = String((t && t.name) || '').toLowerCase();
       var cols = (t && t.columns) || [];
       if (t && t.connectorToolkit) return 'source';
       if (name === 'files') return 'source';
       if (cols.indexOf('_source_connector_id') !== -1) return 'source';
-      if (name === 'secrets') return 'surface';
-      if (MT_SURFACE_RE.test(name)) return 'surface';
       return 'model';
     }
 
@@ -557,7 +555,7 @@ export const modelTablesJs = `
         '<div class="mt-detail-sub">table \\u00b7 ' + e.fields.length + ' fields \\u00b7 ' + rows + ' rows</div>' +
         flHtml + upHtml + downHtml +
         '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>' +
-        '<a class="mt-detail-open" href="#/fs/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>';
+        '<a class="mt-detail-open" href="#/tables/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>';
       panel.hidden = false;
       var close = document.getElementById('mt-detail-close');
       if (close) close.addEventListener('click', function () { panel.hidden = true; mtHighlight(null, lineage); });
