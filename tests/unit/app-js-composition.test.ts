@@ -198,9 +198,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // still mounts (the user can always switch away).
 // 5.0 drag fix — the wire/merge ghost is appended to <body> (not the folders grid)
 // so position:fixed is viewport-relative and the clone anchors to the cursor.
+// 5.0 GUI batch — "already linked" fails silently, the Wire button is now "Link",
+// the record view's Inside folders use the emoji folder icon, and file drag-drop is
+// a whole-window overlay (openAskLattice on drop) instead of the Gladys panel. The
+// folder view drops the "Linked" section header (linked + child folders list first).
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 576353;
-const ORIGINAL_SHA256 = 'd6bf6bbf9289276ebfea399eb2a0c76542e5270998458aff4a9eb0ca5d79c6c2';
+const ORIGINAL_LENGTH = 577541;
+const ORIGINAL_SHA256 = '0c90fb70dbf35efbfd350550a8d2498028a9fa384c9a15a4d73bfa8056622426';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

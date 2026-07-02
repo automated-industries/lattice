@@ -53,7 +53,8 @@ export const foldersJs = `
         '</div>';
       setContent(content, myGen,
         '<div class="folders-view">' + crumb +
-          (subFolders ? '<h3 class="folders-section">Linked</h3><div class="fs-grid folders-grid folders-sub" id="folders-sub">' + subFolders + '</div>' : '') +
+          // Linked + child folders show FIRST (no "Linked" header), then the items.
+          (subFolders ? '<div class="fs-grid folders-grid folders-sub" id="folders-sub">' + subFolders + '</div>' : '') +
           '<h3 class="folders-section">Items</h3>' +
           '<div class="fs-grid folders-grid folders-files" id="folders-files"><div class="fs-empty" style="padding:12px">Loading…</div></div>' +
         '</div>');
