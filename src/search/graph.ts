@@ -109,6 +109,9 @@ export async function removeEdge(
   adapter: StorageAdapter,
   edge: Omit<GraphEdge, 'weight' | 'type'> & { type?: string },
 ): Promise<void> {
+  // Publicly exported and callable before any addEdge ever created the table —
+  // ensure it exists so the raw DELETE can't throw "no such table" on a fresh DB.
+  await ensureEdgesTable(adapter);
   const clauses = ['"src_table" = ?', '"src_id" = ?', '"dst_table" = ?', '"dst_id" = ?'];
   const params: unknown[] = [edge.srcTable, edge.srcId, edge.dstTable, edge.dstId];
   if (edge.type !== undefined) {

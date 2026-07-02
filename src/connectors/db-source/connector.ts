@@ -300,9 +300,15 @@ export class DatabaseConnector implements CredentialConnector {
       for (const c of t.columns) row[c.name] = coerce(r[c.name], specByCol.get(c.name) ?? 'TEXT');
       let recId: string;
       if (synthesized) {
+        // Composite PK → a JSON array of the key parts. MUST be sanitizer-safe:
+        // the previous '\\x01' joiner was a control char that sanitizeRow STRIPS
+        // at storage time, so the stored _pk never matched the in-memory seen-key
+        // and pruneVanished_ soft-deleted every composite-PK row on the very sync
+        // that imported it. JSON is also collision-safe (a separator appearing
+        // inside a key value can't produce an ambiguous joined string).
         recId =
           t.pk.length > 1
-            ? t.pk.map((k) => keyStr(r[k])).join('')
+            ? JSON.stringify(t.pk.map((k) => keyStr(r[k])))
             : createHash('sha1').update(JSON.stringify(row)).digest('hex');
         row._pk = recId;
       } else {
