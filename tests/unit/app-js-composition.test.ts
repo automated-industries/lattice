@@ -209,8 +209,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // same-column edge bow is clamped inside the content box so a link in a narrow
 // (wrapped) Model pane is never clipped by overflow (mtDrawEdges in model-tables).
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 582802;
-const ORIGINAL_SHA256 = '3d2de8617ddff42904f0a68453a8a707db38ad01231e820432c84a6c9e7e8e9f';
+// 5.0 GUI batch 3 — folder one-to-many nesting: a folder drag nests (belongsTo)
+// instead of m2m-linking (wmAttachDrag/wmWire take onDrop/onDropOut; folders pass
+// foldersNestDrop/foldersUnnestDrop); the top-level grid hides nested children;
+// breadcrumbs show the parent chain; child folders move into the single "Items"
+// section (folders first, then rows). Length + hash recaptured.
+const ORIGINAL_LENGTH = 590371;
+const ORIGINAL_SHA256 = 'ec914757921a955610b51a514d48b359776b695b5ab21d37714096aa5815fde9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

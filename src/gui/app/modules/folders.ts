@@ -8,9 +8,13 @@
 // function declarations hoist), so it must be composed after model-tables.js and
 // before createDatabaseWizard.js (where the IIFE closes).
 export const foldersJs = `
-    // Every non-junction object, alphabetised — each is a folder.
+    // Top-level objects, alphabetised — each is a folder. A nested object (one
+    // that belongsTo a parent) is hidden here: it shows INSIDE its parent instead
+    // (via fsRelations reverse-1:N). Objects with no belongsTo parent are roots.
     function foldersModel() {
-      return mtBuildModel().slice().sort(function (a, b) {
+      return mtBuildModel().filter(function (e) {
+        return foldersParentTables(e.name).length === 0;
+      }).slice().sort(function (a, b) {
         return String(a.label || '').toLowerCase().localeCompare(String(b.label || '').toLowerCase());
       });
     }
@@ -45,7 +49,18 @@ export const foldersJs = `
         return foldersTileHtml('#/folders/' + encodeURIComponent(rel.targetTable),
           displayFor(rel.targetTable).icon, rel.label, rel.targetTable, 'linked', 'folder');
       }).join('');
-      var crumb = '<div class="folders-crumbs"><a href="#/folders">Folders</a>' +
+      // Breadcrumb parent chain: root … immediate-parent … this folder. Each
+      // ancestor is a link AND a drop target (drag a folder onto it to move it
+      // out to that level); the "Folders" root drops to the top level.
+      var chain = foldersAncestorChain(table);
+      var crumbParents = chain.map(function (p) {
+        var pd = displayFor(p);
+        return '<span class="folders-crumb-sep">/</span>' +
+          '<a class="folders-crumb-link" href="#/folders/' + encodeURIComponent(p) + '" data-crumb-table="' + escapeHtml(p) + '">' +
+            pd.icon + ' ' + escapeHtml(pd.label) + '</a>';
+      }).join('');
+      var crumb = '<div class="folders-crumbs"><a href="#/folders" data-crumb-table="">Folders</a>' +
+        crumbParents +
         '<span class="folders-crumb-sep">/</span>' +
         '<span class="folders-crumb-cur">' + d.icon + ' ' +
           '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '" title="Click to rename">' + escapeHtml(d.label) + '</span>' +
@@ -53,29 +68,33 @@ export const foldersJs = `
         '</div>';
       setContent(content, myGen,
         '<div class="folders-view">' + crumb +
-          // Linked + child folders show FIRST (no "Linked" header), then the items.
-          (subFolders ? '<div class="fs-grid folders-grid folders-sub" id="folders-sub">' + subFolders + '</div>' : '') +
+          // ONE "Items" section: child + linked folders list FIRST, then the rows.
           '<h3 class="folders-section">Items</h3>' +
-          '<div class="fs-grid folders-grid folders-files" id="folders-files"><div class="fs-empty" style="padding:12px">Loading…</div></div>' +
+          '<div class="fs-grid folders-grid folders-files" id="folders-files">' +
+            subFolders +
+            '<div class="fs-empty folders-loading" style="padding:12px">Loading…</div>' +
+          '</div>' +
         '</div>');
-      foldersWireGrid(document.getElementById('folders-sub'));
+      // Wire the folders now so a nest drag works before the rows finish loading.
+      foldersWireGrid(document.getElementById('folders-files'));
       var crumbName = content.querySelector('.folders-crumb-cur .fs-tile-name[data-rename]');
       if (crumbName) crumbName.addEventListener('click', function (e) { e.stopPropagation(); foldersRenameInline(crumbName); });
-      // Load the object's rows → file tiles.
+      // Load the object's rows → file tiles, then re-render the Items grid as
+      // (folders first) + (file rows). Folders and files share the one grid.
       fetchRowsPage(table, { limit: 300 }).then(fsServerPage).then(function (view) {
         if (myGen !== renderGen) return;
         var host = document.getElementById('folders-files');
         if (!host) return;
-        if (!view.rows.length) { host.innerHTML = '<div class="fs-empty" style="padding:12px">No items yet.</div>'; return; }
-        host.innerHTML = view.rows.map(function (r) {
+        var filesHtml = view.rows.map(function (r) {
           return foldersTileHtml('#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(r.id),
             fileEmoji(r), foldersRowLabel(r), table, '', 'file');
         }).join('');
+        host.innerHTML = (subFolders + filesHtml) || '<div class="fs-empty" style="padding:12px">No items yet.</div>';
         foldersWireGrid(host);
       }).catch(function (err) {
         if (myGen !== renderGen) return;
         var host = document.getElementById('folders-files');
-        if (host) host.innerHTML = '<div class="fs-empty" style="padding:12px">Failed to load items: ' + escapeHtml(err.message) + '</div>';
+        if (host) host.innerHTML = subFolders + '<div class="fs-empty" style="padding:12px">Failed to load items: ' + escapeHtml(err.message) + '</div>';
       });
     }
 
@@ -132,9 +151,117 @@ export const foldersJs = `
         var nm = tile.querySelector('.fs-tile-name[data-rename]');
         if (nm) tile.addEventListener('contextmenu', function (e) { e.preventDefault(); foldersRenameInline(nm); });
       });
-      // Folder tiles are wire/merge objects: drag one onto another to link,
-      // Shift-drag to merge (the global Wire/Merge layer; skips file tiles).
-      if (typeof wmWire === 'function') wmWire(grid);
+      // Folder tiles: DRAG one folder onto another to NEST it (a one-to-many
+      // relationship — the dragged folder becomes a child of the target). This is
+      // distinct from the global Wire/Merge many-to-many link, which on the
+      // Folders page is reached with the "Link" button (click a source, then a
+      // target). Dragging a nested folder out onto empty space un-nests it.
+      if (typeof wmWire === 'function') wmWire(grid, foldersNestDrop, foldersUnnestDrop);
+    }
+
+    // The belongsTo parents of a table (the folders IT is nested under).
+    function foldersParentTables(table) {
+      var t = tableByName(table);
+      if (!t) return [];
+      var out = [];
+      var rels = t.relations || {};
+      for (var k in rels) {
+        if (!Object.prototype.hasOwnProperty.call(rels, k)) continue;
+        if (rels[k] && rels[k].type === 'belongsTo' && rels[k].table) out.push(rels[k].table);
+      }
+      return out;
+    }
+    // Walk UP the belongsTo chain from the table; true if maybeAncestor is reached.
+    // Used to reject a nest that would create a cycle (nesting A under one of its
+    // own descendants). Bounded by a seen-set so a pre-existing cycle can't hang.
+    function foldersIsAncestor(maybeAncestor, table) {
+      var seen = {};
+      var stack = foldersParentTables(table);
+      while (stack.length) {
+        var p = stack.pop();
+        if (p === maybeAncestor) return true;
+        if (seen[p]) continue;
+        seen[p] = 1;
+        stack = stack.concat(foldersParentTables(p));
+      }
+      return false;
+    }
+    // The parent chain [root, …, immediate-parent] for breadcrumbs. Follows the
+    // first belongsTo parent at each level (a folder usually has one), seen-set
+    // bounded so a cycle can't loop forever.
+    function foldersAncestorChain(table) {
+      var chain = [];
+      var seen = {};
+      var cur = table;
+      while (true) {
+        var parents = foldersParentTables(cur);
+        if (!parents.length) break;
+        var p = parents[0];
+        if (seen[p]) break;
+        seen[p] = 1;
+        chain.unshift(p);
+        cur = p;
+      }
+      return chain;
+    }
+
+    // Nest source under target: source belongsTo target (target becomes the
+    // parent). A completed folder-on-folder drag calls this.
+    function foldersNestDrop(source, target) {
+      if (!source || !target || source === target) return;
+      // A folder can't be nested into its own descendant (would loop the tree).
+      if (foldersIsAncestor(source, target)) {
+        if (typeof showToast === 'function') showToast("Can't nest a folder inside its own child", { type: 'error' });
+        return;
+      }
+      fetch('/api/schema/entities/' + encodeURIComponent(source) + '/links', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target: target }),
+      }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (res) {
+          if (!res.ok) {
+            // Already nested there → desired end state already holds; fail silently.
+            var e = (res.body && res.body.error) || '';
+            if (!/already link/i.test(e) && typeof showToast === 'function') showToast('Could not nest: ' + (e || 'failed'), { type: 'error' });
+            return;
+          }
+          if (typeof showToast === 'function') showToast(displayFor(source).label + ' nested under ' + displayFor(target).label);
+          if (typeof refreshEntities === 'function') refreshEntities().then(function () { renderRoute(); }); else renderRoute();
+        }).catch(function () { if (typeof showToast === 'function') showToast('Could not nest', { type: 'error' }); });
+    }
+
+    // Drag a folder onto the BREADCRUMB → un-nest it from the CURRENT parent (the
+    // folder whose view we're in), moving it up a level. Requiring the drop to
+    // land on the breadcrumb keeps a stray drop on empty space from un-nesting by
+    // accident. Only meaningful inside a folder view (the top level has no parent).
+    function foldersUnnestDrop(source, ev) {
+      var at = (ev && document.elementFromPoint) ? document.elementFromPoint(ev.clientX, ev.clientY) : null;
+      if (!at || !at.closest || !at.closest('.folders-crumbs')) return;
+      var m = /^#\\/folders\\/([^/]+)/.exec(location.hash || '');
+      var parent = m ? decodeURIComponent(m[1]) : '';
+      if (!parent || parent === source) return;
+      foldersUnnest(source, parent);
+    }
+
+    // Remove source's belongsTo → parent (drop the FK), un-nesting it. The row
+    // data is preserved (soft-delete on the server), so it's undoable.
+    function foldersUnnest(source, parent) {
+      var t = tableByName(source);
+      if (!t) return;
+      var fk = null;
+      var rels = t.relations || {};
+      for (var k in rels) {
+        if (!Object.prototype.hasOwnProperty.call(rels, k)) continue;
+        if (rels[k] && rels[k].type === 'belongsTo' && rels[k].table === parent) { fk = rels[k].foreignKey; break; }
+      }
+      if (!fk) return; // not nested under this parent
+      fetch('/api/schema/entities/' + encodeURIComponent(source) + '/links/' + encodeURIComponent(fk), { method: 'DELETE' })
+        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+        .then(function (res) {
+          if (!res.ok) { if (typeof showToast === 'function') showToast('Could not move out: ' + ((res.body && res.body.error) || 'failed'), { type: 'error' }); return; }
+          if (typeof showToast === 'function') showToast(displayFor(source).label + ' moved out of ' + displayFor(parent).label);
+          if (typeof refreshEntities === 'function') refreshEntities().then(function () { renderRoute(); }); else renderRoute();
+        }).catch(function () { if (typeof showToast === 'function') showToast('Could not move out', { type: 'error' }); });
     }
 
     // Slugify a friendly name to a valid object identifier (the rename route requires
