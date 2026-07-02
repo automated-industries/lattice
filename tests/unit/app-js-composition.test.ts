@@ -188,9 +188,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // blocks native text-selection/scroll gestures.
 // 5.0 perf review — realtime refresh now scopes cache invalidation to the changed
 // table(s) instead of wiping the whole row cache, and relation-chip fetches exclude
-// files.extracted_text. Length + hash recaptured.
-const ORIGINAL_LENGTH = 849022;
-const ORIGINAL_SHA256 = '1cf25560a5c138239bc11aff82fc2d5e21c0581f689b431bacb752bd81ff4f61';
+// files.extracted_text.
+// 5.0 startup speed — the ~275 KB vendored Chart.js (chartLibJs, ~31% of the bundle)
+// is no longer composed in; it's served on demand at /gui-assets/chart-lib.js and
+// fetched only when an HTML-file artifact preview needs it. The bundle parsed on
+// EVERY startup dropped ~32% (849022 → 575322). Length + hash recaptured.
+const ORIGINAL_LENGTH = 575322;
+const ORIGINAL_SHA256 = '35bd7a53a34b5224d1869287bcc62f8de96eb0cf365ab7c69b228b29109d4c69';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

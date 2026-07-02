@@ -1,7 +1,9 @@
 // Composes the GUI client script from its per-subsystem segments, in exact original
-// order, joined with the empty string. The concatenation is byte-identical to the
-// original single template literal (pinned by tests/unit/app-js-composition.test.ts).
-import { chartLibJs } from './chart-lib.js';
+// order, joined with the empty string (pinned by tests/unit/app-js-composition.test.ts).
+// NOTE: `chartLibJs` (the ~275 KB vendored Chart.js, ~31% of the bundle) is
+// deliberately NOT composed here — it is served on demand at `/gui-assets/chart-lib.js`
+// and fetched only when an HTML-file artifact preview needs it (see dashboard.ts
+// ensureChartLib), so it no longer weighs on every startup's parse.
 import { displayConfigJs } from './display-config.js';
 import { bootJs } from './boot.js';
 import { bootInterstitialJs } from './boot-interstitial.js';
@@ -47,7 +49,6 @@ import { columnCollapseJs } from './column-collapse.js';
 import { wireMergeJs } from './wiremerge.js';
 
 export const appJs = [
-  chartLibJs,
   displayConfigJs,
   bootJs,
   bootInterstitialJs,
