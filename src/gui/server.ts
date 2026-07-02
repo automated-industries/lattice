@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dirname, resolve } from 'node:path';
-import { sendJson, readJson, sendHtmlCompressed } from './http.js';
+import { sendJson, readJson, sendHtmlCompressed, sendCompressed } from './http.js';
+import { chartLibJs } from './app/modules/chart-lib.js';
 import { computeBoundAuthorities, isSameOriginRequest, isLoopbackHost } from './origin-guard.js';
 import {
   type ActiveDb,
@@ -661,6 +662,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // server relaunched onto a new build, so the tab reloads itself.
         if (method === 'GET' && pathname === '/api/version') {
           sendJson(res, { version: guiVersion });
+          return;
+        }
+        // The vendored Chart.js (~275 KB) used only by the HTML-file artifact
+        // preview. Served on demand (fetched by dashboard.ts ensureChartLib) instead
+        // of inlined into the client bundle, so it no longer weighs on every
+        // startup's parse. Cacheable — a modest max-age avoids a stale-asset footgun
+        // while keeping the rare re-fetch cheap.
+        if (method === 'GET' && pathname === '/gui-assets/chart-lib.js') {
+          sendCompressed(
+            req,
+            res,
+            chartLibJs,
+            'text/javascript; charset=utf-8',
+            'public, max-age=86400',
+          );
           return;
         }
         // Desktop shell only: open an external URL in the OS default browser.
