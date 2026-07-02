@@ -79,8 +79,11 @@ import { css } from '../../src/gui/app/css.js';
 // stream and freezes the ghost. Plus the assistant persona: .chat-msg.assistant
 // gets a ::before avatar (the older-woman emoji) so replies read as coming from
 // Gladys. Length + hash recaptured.
-const ORIGINAL_LENGTH = 122960;
-const ORIGINAL_SHA256 = '755111c9f5af88a8af5d4cd3d7307b96fd46d612b822626ea6c81f89cdc2592f';
+// 5.0 drag fix — .wm-ghost is position:fixed !important so it beats .fs-tile's
+// position:relative (equal specificity), and the ghost is appended to <body>; both
+// ensure the drag clone anchors to the cursor instead of being offset ~100px.
+const ORIGINAL_LENGTH = 123298;
+const ORIGINAL_SHA256 = '9383d822747aa4eed14cdf66bef2715c26bab2d502d499d3ff387fe23f13de85';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

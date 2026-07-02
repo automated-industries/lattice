@@ -195,9 +195,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // EVERY startup dropped ~32% (849022 → 575322).
 // 5.0 reliability — a read-degraded active workspace no longer bricks the GUI: the
 // /api/entities-summary fetch has its own catch so the header workspace switcher
-// still mounts (the user can always switch away). Length + hash recaptured.
-const ORIGINAL_LENGTH = 576214;
-const ORIGINAL_SHA256 = '07b390a8bfa5fa8a3b96229582bfedf308ea547b80cce263d65e43ab3b5583fa';
+// still mounts (the user can always switch away).
+// 5.0 drag fix — the wire/merge ghost is appended to <body> (not the folders grid)
+// so position:fixed is viewport-relative and the clone anchors to the cursor.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 576353;
+const ORIGINAL_SHA256 = 'd6bf6bbf9289276ebfea399eb2a0c76542e5270998458aff4a9eb0ca5d79c6c2';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
