@@ -273,6 +273,20 @@ database connector).
 
 ### Fixed
 
+- **Connect-a-database works, fails atomically, and never corrupts an import.**
+  Connecting an external Postgres crashed with `no such table: __lattice_edges`
+  and left a phantom connection behind. Three defects, all fixed: (1) composite-
+  primary-key record ids were joined with a control character that the row
+  sanitizer strips at storage time, so every freshly imported composite-PK row was
+  judged vanished and soft-deleted by the same sync that inserted it — ids are now
+  a sanitizer-safe JSON array of the key parts; (2) the prune's raw edge cleanup
+  ran against a `__lattice_edges` table that a db-source workspace never creates —
+  it now self-ensures the table (and runs before the soft-delete commit, so a
+  failure can't strand hidden rows), and the exported `removeEdge` got the same
+  guard; (3) a failed initial import now rolls the whole connection back (registry
+  row, stored credentials, schema descriptor, imported rows) so a failed connect
+  leaves nothing behind. A connected database also no longer double-lists under
+  Connectors — it appears only in the Databases section.
 - **The assistant handles dates.** It was never told the current date, so "the
   meeting I had today" resolved against the model's stale training cutoff and
   returned months-old rows; and `list_rows` read oldest-first by the row's
