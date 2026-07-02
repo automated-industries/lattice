@@ -837,24 +837,9 @@ export const dataModelJs = `    // ───────────────
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
-          '<div class="dbconfig-panel" style="margin-bottom:14px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<label class="toggle" title="Advanced mode — row/table editor instead of the file workspace" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer">' +
-              '<input type="checkbox" id="advanced-toggle">' +
-              '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
-              '<span class="toggle-label">Advanced View</span>' +
-            '</label>' +
-            '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">Row/table editor instead of the file workspace.</p>' +
-          '</div>' +
           '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
           '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
         '</div>';
-      // Advanced View toggle lives here now (moved out of the sidebar). Wired on
-      // each render since renderLatticeSettings rebuilds the drawer body.
-      var advToggle = content.querySelector('#advanced-toggle');
-      if (advToggle) {
-        advToggle.checked = advancedMode();
-        advToggle.addEventListener('change', function () { setAdvancedMode(advToggle.checked); });
-      }
       var host = document.getElementById('lattice-dbs-host');
       // Single source of truth: the workspace registry (same as the header switcher).
       fetchJson('/api/workspaces').then(function (data) {

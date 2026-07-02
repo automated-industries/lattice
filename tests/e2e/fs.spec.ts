@@ -193,31 +193,18 @@ test('a record renders the Formatted | Markdown toggle and switches between the 
   await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
 });
 
-test('Advanced mode toggle restores the classic row/table editor', async ({ page }) => {
+test('object navigation always targets the file workspace (single view)', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author' });
-  // The dashboard (now reached via its own route; the graph is the default view)
-  // lists cards that point at the file-system route in default mode.
+  // There is a single view — the file workspace. Cards and the object nav both
+  // point at #/fs/… ; the former "Advanced View" toggle + classic #/objects editor
+  // were removed, and Settings → Lattice no longer carries a view toggle.
   await page.goto(`${gui.url}#/dashboard`);
-  const card = page.locator('.card').first();
-  await expect(card).toHaveAttribute('href', /#\/fs\//);
+  await expect(page.locator('.card').first()).toHaveAttribute('href', /#\/fs\//);
+  await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/fs\//);
 
-  // Advanced View now lives in Settings → Lattice (moved out of the sidebar).
-  // Open the gear → Lattice tab, then click the toggle track the way a user would.
   await page.locator('#settings-gear').click();
   await page.locator('.drawer-tab[data-tab="lattice"]').click();
-  await page.locator('#drawer-body .toggle-track').click();
-  await expect(page.locator('#advanced-toggle')).toBeChecked();
-  await page.keyboard.press('Escape'); // close the drawer to reach the sidebar
-
-  // Object navigation now targets the classic #/objects route …
-  await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/objects\//);
-  // … which renders the row table with its inline create row. Scope to the main
-  // content region: the settings drawer we just opened retains its rendered
-  // Lattice panel (which has its own workspace-list <table>), so an unscoped
-  // `table` locator is ambiguous after a hash-only navigation.
-  await page.goto(`${gui.url}#/objects/authors`);
-  await expect(page.locator('#content table')).toBeVisible();
-  await expect(page.locator('#content tr.create-row')).toBeVisible();
+  await expect(page.locator('#advanced-toggle')).toHaveCount(0);
 });
 
 test('the gear opens a settings drawer with Database / Lattice / User tabs', async ({ page }) => {

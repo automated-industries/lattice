@@ -85,7 +85,7 @@ export const guiAppHtml = `<!doctype html>
         </div>
       </div>
     </div>
-    <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
+    <span class="header-status-slot" id="header-status-slot"></span>
     <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
     <button id="settings-gear" title="Settings" aria-label="Open settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -222,6 +222,7 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
+    <div class="drawer-version" title="Lattice version">Lattice <span class="app-version" id="app-version"><!--LATTICE_VERSION--></span></div>
   </aside>
 
   <div class="connectors-backdrop" id="connectors-backdrop" hidden></div>
