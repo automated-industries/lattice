@@ -16,11 +16,25 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
   res.end(JSON.stringify(body));
 }
 
-// The GUI shell inlines the whole ~1 MB client bundle. It's static (only its
-// version placeholder varies — constant per server), so compress each distinct
-// html ONCE and cache the variants: negotiation is then a Map lookup, never a
-// per-request compress on the page-load path.
-let _htmlCache: { key: string; identity: Buffer; gzip: Buffer; br: Buffer } | null = null;
+// Large static bodies (the GUI shell; the lazily-loaded chart lib) are compressed
+// ONCE and cached by content, so Accept-Encoding negotiation is a Map lookup, never
+// a per-request compress on a hot path. Keyed by the body string; a handful of
+// distinct bodies, so the Map stays tiny.
+const _compressCache = new Map<string, { identity: Buffer; gzip: Buffer; br: Buffer }>();
+
+function compressedVariants(body: string): { identity: Buffer; gzip: Buffer; br: Buffer } {
+  let v = _compressCache.get(body);
+  if (!v) {
+    const identity = Buffer.from(body, 'utf8');
+    v = {
+      identity,
+      gzip: gzipSync(identity),
+      br: brotliCompressSync(identity, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }),
+    };
+    _compressCache.set(body, v);
+  }
+  return v;
+}
 
 /** Which content-encoding a client accepts, in our preference order (br > gzip). */
 export function pickEncoding(acceptEncoding: string | string[] | undefined): 'br' | 'gzip' | null {
@@ -31,33 +45,36 @@ export function pickEncoding(acceptEncoding: string | string[] | undefined): 'br
 }
 
 /**
- * Serve an HTML body with Accept-Encoding negotiation (brotli/gzip/identity),
- * `no-store` (the shell is version-gated, never cached), and a `Vary` header.
- * Compressing the inlined bundle cuts the shell transfer ~5× for any real browser.
+ * Serve a static body with Accept-Encoding negotiation (brotli/gzip/identity), a
+ * `Vary` header, and the given content-type + cache-control. Compression is cached
+ * per body.
  */
-export function sendHtmlCompressed(req: IncomingMessage, res: ServerResponse, html: string): void {
-  if (_htmlCache?.key !== html) {
-    const identity = Buffer.from(html, 'utf8');
-    _htmlCache = {
-      key: html,
-      identity,
-      gzip: gzipSync(identity),
-      br: brotliCompressSync(identity, {
-        params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 },
-      }),
-    };
-  }
+export function sendCompressed(
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+  contentType: string,
+  cacheControl = 'no-store',
+): void {
+  const v = compressedVariants(body);
   const encoding = pickEncoding(req.headers['accept-encoding']);
-  const body =
-    encoding === 'br' ? _htmlCache.br : encoding === 'gzip' ? _htmlCache.gzip : _htmlCache.identity;
+  const out = encoding === 'br' ? v.br : encoding === 'gzip' ? v.gzip : v.identity;
   const headers: Record<string, string> = {
-    'content-type': 'text/html; charset=utf-8',
-    'cache-control': 'no-store',
+    'content-type': contentType,
+    'cache-control': cacheControl,
     vary: 'accept-encoding',
   };
   if (encoding) headers['content-encoding'] = encoding;
   res.writeHead(200, headers);
-  res.end(body);
+  res.end(out);
+}
+
+/**
+ * Serve the GUI shell HTML: `no-store` (version-gated, never cached) + compression.
+ * Compressing the inlined bundle cuts the shell transfer ~5× for any real browser.
+ */
+export function sendHtmlCompressed(req: IncomingMessage, res: ServerResponse, html: string): void {
+  sendCompressed(req, res, html, 'text/html; charset=utf-8', 'no-store');
 }
 
 /** Default request-body cap (1 MB). Endpoints that accept larger payloads pass
