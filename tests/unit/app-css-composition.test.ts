@@ -95,8 +95,11 @@ import { css } from '../../src/gui/app/css.js';
 // (.drawer-version). Length + hash recaptured.
 // 5.0 GUI batch 6 — the drilled-in entity graph (.brain-graph.entity-graph) lays a
 // breadcrumb bar (.graph-crumbs) above the graph canvas. Length + hash recaptured.
-const ORIGINAL_LENGTH = 126736;
-const ORIGINAL_SHA256 = 'bb82798d06cf10c5b4163f0aa1136a55d9c4c0ece2472c62ea1a61863de03020';
+// 5.0 GUI batch 8 — the top search box CSS is removed (.topsearch/.search-* gone;
+// .last-edited kept); a .history-sep divides Back/Forward from Undo/Redo. Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 125060;
+const ORIGINAL_SHA256 = '237dcd13ad77f9dcf239597c827d49eaf5dd53eaef831d4cd3d83610f2e8093d';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
