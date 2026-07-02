@@ -90,8 +90,11 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 GUI batch 2a — the consumer chip's via truncates (ellipsis) and the chip
 // shrinks (min-width:0) so the remove-✕ can't be pushed off the fixed-width detail
 // panel. Length + hash recaptured.
-const ORIGINAL_LENGTH = 125745;
-const ORIGINAL_SHA256 = '4b69973591fed44ebac49c1e9f3244447c11688acfdaf16124718761d0ccc923';
+// 5.0 GUI batch 4 — the status pill moves to the header slot where the version was
+// (.header-status-slot) and the version moves to the Settings drawer footer
+// (.drawer-version). Length + hash recaptured.
+const ORIGINAL_LENGTH = 126339;
+const ORIGINAL_SHA256 = 'c7cb7ed576db367a4c0f1ea40f1a9a3e2f9a4cc44b66b54c7e68165a553550a6';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

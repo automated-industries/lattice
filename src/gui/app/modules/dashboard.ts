@@ -766,25 +766,12 @@ export const dashboardJs = `    // ───────────────
     // row/table editor (renderTable / renderDetail) is preserved behind
     // an "Advanced mode" toggle in the settings drawer.
     // ════════════════════════════════════════════════════════════
-    var FS_KEYS = { advanced: 'lattice-advanced-mode' };
-
+    // The GUI has a SINGLE view: the file workspace. The former "Advanced View"
+    // (classic row/table editor) and its Settings toggle were removed. advancedMode()
+    // remains as a false constant so the call sites that branched on it all resolve
+    // to the file-workspace routes (#/fs/…) with no dead toggle state.
     function advancedMode() {
-      return window.localStorage.getItem(FS_KEYS.advanced) === '1';
-    }
-    function setAdvancedMode(on) {
-      gaTrack('setting_change', { setting: 'advanced_mode', value: !!on }); // coarse enum + bool
-      window.localStorage.setItem(FS_KEYS.advanced, on ? '1' : '0');
-      document.body.classList.toggle('advanced-mode', on);
-      // Preserve context: map the current location between the file-system
-      // (#/fs/…) and the classic (#/objects/…) route families.
-      var cur = location.hash || '#/';
-      var mapped = mapHashForMode(cur, on);
-      renderSidebar();
-      if (mapped && mapped !== cur) location.hash = mapped; // triggers hashchange → renderRoute
-      // Same-hash advanced-mode toggle re-renders the current pane in place — a
-      // soft refresh so it never flashes the loading frame (the data is already
-      // loaded; only the display-config changed).
-      else renderRoute({ soft: true });
+      return false;
     }
 
     // Parse "#/fs/a/b/c…" into its decoded segment list (or null).
@@ -796,37 +783,6 @@ export const dashboardJs = `    // ───────────────
     // Build a "#/fs/…" hash from a segment list.
     function fsHref(segs) {
       return '#/fs/' + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
-    }
-    // Resolve the terminal (table, id) of a drill path WITHOUT fetching —
-    // relation metadata alone is enough. Used for mode switching.
-    function fsTerminal(segs) {
-      var table = segs[0];
-      var id = null;
-      var i = 1;
-      while (i < segs.length) {
-        id = segs[i]; i++;
-        if (i < segs.length) {
-          var rel = resolveRelation(table, segs[i]); i++;
-          if (!rel) return { table: table, id: id };
-          table = rel.targetTable; id = null;
-        }
-      }
-      return { table: table, id: id };
-    }
-    function mapHashForMode(hash, advanced) {
-      if (advanced) {
-        var fsegs = fsParse(hash);
-        if (!fsegs) return hash;
-        var term = fsTerminal(fsegs);
-        return term.id
-          ? '#/objects/' + encodeURIComponent(term.table) + '/' + encodeURIComponent(term.id)
-          : '#/objects/' + encodeURIComponent(term.table);
-      }
-      var m = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
-      if (!m) return hash;
-      return m[2]
-        ? '#/fs/' + encodeURIComponent(m[1]) + '/' + encodeURIComponent(m[2])
-        : '#/fs/' + encodeURIComponent(m[1]);
     }
 
     // A human label for one row: first non-empty title-ish column; failing that

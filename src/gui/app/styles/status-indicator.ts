@@ -1,6 +1,9 @@
 // Auto-composed section of the GUI stylesheet (see styles/index.ts). The single
 // top-right status indicator that lives in the tab strip's status slot.
 export const statusIndicatorCss = `    /* ── Top-right status indicator ────────────────────────── */
+    /* The header slot the status pill homes into — where the version used to sit
+       (the version moved into the Settings drawer footer). */
+    .header-status-slot { display: inline-flex; align-items: center; flex: 0 0 auto; }
     .app-status {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 3px 10px; border-radius: 999px;

@@ -12,15 +12,16 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('id="sidebar-collapse"');
     expect(guiAppHtml).not.toContain('id="settings-nav"');
 
-    // Settings now live in a slide-over drawer opened by the header gear,
-    // with one tab per existing settings page + the Advanced-mode toggle.
+    // Settings now live in a slide-over drawer opened by the header gear, with one
+    // tab per settings page. (The "Advanced View" toggle + classic-editor feature
+    // were removed — the file workspace is the single view.)
     expect(guiAppHtml).toContain('id="settings-gear"');
     expect(guiAppHtml).toContain('id="settings-drawer"');
     expect(guiAppHtml).toContain('id="drawer-body"');
     expect(guiAppHtml).toContain('data-tab="database"');
     expect(guiAppHtml).toContain('data-tab="lattice"');
     expect(guiAppHtml).toContain('data-tab="user"');
-    expect(guiAppHtml).toContain('id="advanced-toggle"');
+    expect(guiAppHtml).not.toContain('id="advanced-toggle"');
 
     // Data Model still lives inside Database Settings (renderEntityEditorInto —
     // an entity list + editor), rendered into the drawer body. The schema graph
@@ -155,13 +156,16 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('db-leave-btn');
   });
 
-  it('3.3: stamps the package version left of the settings gear', () => {
+  it('3.3: stamps the package version in the Settings drawer footer', () => {
     // The shell carries a placeholder that startGuiServer() replaces with the
     // real `v<version>` at serve time (so the static bundle stays version-free).
     expect(guiAppHtml).toContain('id="app-version"');
     expect(guiAppHtml).toContain('<!--LATTICE_VERSION-->');
-    // The version chip sits before the gear in source order.
-    expect(guiAppHtml.indexOf('id="app-version"')).toBeLessThan(
+    // The version moved OUT of the header (its old spot is now the status-pill
+    // slot) and into the Settings drawer footer — so it sits AFTER the gear now.
+    expect(guiAppHtml).toContain('class="drawer-version"');
+    expect(guiAppHtml).toContain('id="header-status-slot"');
+    expect(guiAppHtml.indexOf('id="app-version"')).toBeGreaterThan(
       guiAppHtml.indexOf('id="settings-gear"'),
     );
   });

@@ -214,8 +214,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // foldersNestDrop/foldersUnnestDrop); the top-level grid hides nested children;
 // breadcrumbs show the parent chain; child folders move into the single "Items"
 // section (folders first, then rows). Length + hash recaptured.
-const ORIGINAL_LENGTH = 590371;
-const ORIGINAL_SHA256 = 'ec914757921a955610b51a514d48b359776b695b5ab21d37714096aa5815fde9';
+// 5.0 GUI batch 4 — the status pill homes into the header slot where the version
+// was (status-indicator prefers #header-status-slot); the "Advanced View" toggle
+// + feature are removed (advancedMode() is a false constant; setAdvancedMode /
+// mapHashForMode / fsTerminal deleted), leaving the file workspace as the only
+// view. Length + hash recaptured.
+const ORIGINAL_LENGTH = 587581;
+const ORIGINAL_SHA256 = '86f164101c478c55b9f5fdbc076646feabf9110c0cfaf0e5b84d194b2abcf647';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

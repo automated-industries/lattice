@@ -39,6 +39,13 @@ export const settingsDrawerCss = `    /* ── Settings drawer (slide-over) ─
     .drawer-tab.active { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--border-strong); }
     .drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 20px; }
     .drawer-body .teams-page { padding: 16px 18px; }
+    /* Lattice version, pinned to the bottom of the Settings drawer (moved here
+       from the header, whose spot the status pill now occupies). */
+    .drawer-version {
+      flex: 0 0 auto; padding: 10px 18px; border-top: 1px solid var(--border);
+      color: var(--text-muted); font-size: 12px;
+    }
+    .drawer-version .app-version { color: var(--text); }
 
     /* Toggle switch (advanced mode) */
     .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
