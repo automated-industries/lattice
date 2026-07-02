@@ -93,8 +93,10 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 GUI batch 4 — the status pill moves to the header slot where the version was
 // (.header-status-slot) and the version moves to the Settings drawer footer
 // (.drawer-version). Length + hash recaptured.
-const ORIGINAL_LENGTH = 126339;
-const ORIGINAL_SHA256 = 'c7cb7ed576db367a4c0f1ea40f1a9a3e2f9a4cc44b66b54c7e68165a553550a6';
+// 5.0 GUI batch 6 — the drilled-in entity graph (.brain-graph.entity-graph) lays a
+// breadcrumb bar (.graph-crumbs) above the graph canvas. Length + hash recaptured.
+const ORIGINAL_LENGTH = 126736;
+const ORIGINAL_SHA256 = 'bb82798d06cf10c5b4163f0aa1136a55d9c4c0ece2472c62ea1a61863de03020';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

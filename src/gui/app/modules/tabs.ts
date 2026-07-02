@@ -28,7 +28,8 @@ export const tabsJs = `
     function tabKeyForHash(hash) {
       hash = hash || '#/';
       if (hash === '#/' || hash === '' || hash === '#/folders') return 'folders';
-      if (hash === GRAPH_HASH) return 'graph';
+      // #/graph and its drill-in #/graph/<obj> both belong to the Graph section.
+      if (hash === GRAPH_HASH || hash.indexOf('#/graph/') === 0) return 'graph';
       if (hash === '#/tables') return 'tables';
       if (
         hash.indexOf('#/folders/') === 0 ||

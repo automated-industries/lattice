@@ -224,8 +224,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // first) via successive setData calls, so entities fly in progressively like the
 // live-ingest delta instead of all at once (revealGraphInWaves in system-tables).
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 589596;
-const ORIGINAL_SHA256 = 'e1e5679a03049f7326fb7c76aceb0fccdf6558740db7b4c18ceca26304d837f6';
+// 5.0 GUI batch 6 — Graph section drill-down: clicking an entity node opens
+// #/graph/<obj> → renderEntityGraph (that entity's rows as nodes, linked to the
+// rows they belongsTo, labelled by name/id); clicking a node opens the record
+// (entity) page; a breadcrumb rooted at "Graph" keeps the Graph tab lit
+// (tabKeyForHash + the #/graph/<obj> route). Length + hash recaptured.
+const ORIGINAL_LENGTH = 595453;
+const ORIGINAL_SHA256 = 'b9fe3e627381b13c21ad0537535c9299db7fbe5655512bc7ac267678d696625f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
