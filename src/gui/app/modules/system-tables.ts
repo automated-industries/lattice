@@ -142,10 +142,12 @@ export const systemTablesJs = `    // ──────────────
               nodes: [], edges: [],
               reducedMotion: graphReducedMotion(),
               onNode: function (node) {
-                // Click a node → that record's entity page (shared across sections).
+                // Click a node → that record's entity page, kept in the Graph section
+                // (#/graph/<table>/<id>) so the Graph tab stays lit + breadcrumb roots
+                // at Graph. The shared record renderer handles it via section='graph'.
                 var sep = node.id.indexOf(':');
                 if (sep < 0) return;
-                location.hash = '#/fs/' + encodeURIComponent(node.id.slice(0, sep)) + '/' + encodeURIComponent(node.id.slice(sep + 1));
+                location.hash = '#/graph/' + encodeURIComponent(node.id.slice(0, sep)) + '/' + encodeURIComponent(node.id.slice(sep + 1));
               },
             });
             revealGraphInWaves(nodes, edges, myGen);

@@ -4,8 +4,8 @@
 // so it's unit-tested directly; the client module (app/modules/model-tables.ts)
 // embeds a byte-for-byte JS mirror of `classifyTier` (kept in sync with this file).
 
-/** The three columns of the data-model view, source → surface. */
-export type Tier = 'source' | 'model' | 'surface';
+/** The two columns of the data-model view: Source (ingested/connected) → Tables. */
+export type Tier = 'source' | 'model';
 
 /** The subset of a table summary the classifier reads. */
 export interface ClassifiableTable {
@@ -17,17 +17,13 @@ export interface ClassifiableTable {
   native?: boolean;
 }
 
-// App / system plumbing (settings, auth, chat, notifications, …).
-const SURFACE_RE =
-  /(^|_)(settings?|config|auth|oauth|tokens?|sessions?|chat|threads?|messages?|todos?|notifications?|app)(_|$)/i;
-
 /**
- * Classify a table into one of the three tiers. Priority order matters:
+ * Classify a table into one of the two tiers. Priority order matters:
  * 1. SOURCE — an explicit provenance signal (connector-synced, the ingested
- *    `files` table, or a stamped `_source_connector_id` column). Authoritative,
- *    so it wins over name heuristics.
- * 2. SURFACE — app/system/settings/auth/chat plumbing, or the secrets store.
- * 3. MODEL — the default: first-class user/business entities.
+ *    `files` table, or a stamped `_source_connector_id` column). Authoritative.
+ * 2. MODEL ("Tables") — the default: every other table. The former "Surface"
+ *    (app/system/settings/auth/chat plumbing) tier was removed as an arbitrary
+ *    distinction — those tables now list under Tables like the rest.
  */
 export function classifyTier(t: ClassifiableTable): Tier {
   const name = t.name.toLowerCase();
@@ -38,10 +34,6 @@ export function classifyTier(t: ClassifiableTable): Tier {
   if (name === 'files') return 'source';
   if (cols.includes('_source_connector_id')) return 'source';
 
-  // 2. SURFACE — app/system plumbing + secrets.
-  if (name === 'secrets') return 'surface';
-  if (SURFACE_RE.test(name)) return 'surface';
-
-  // 3. MODEL — default.
+  // 2. MODEL ("Tables") — default (includes the former Surface tables).
   return 'model';
 }
