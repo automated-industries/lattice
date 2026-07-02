@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { gzipSync, brotliCompressSync, constants as zlibConstants } from 'node:zlib';
 
 /**
  * Shared HTTP helpers for the GUI route modules. These were copy-pasted across
@@ -13,6 +14,50 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
     'cache-control': 'no-store',
   });
   res.end(JSON.stringify(body));
+}
+
+// The GUI shell inlines the whole ~1 MB client bundle. It's static (only its
+// version placeholder varies — constant per server), so compress each distinct
+// html ONCE and cache the variants: negotiation is then a Map lookup, never a
+// per-request compress on the page-load path.
+let _htmlCache: { key: string; identity: Buffer; gzip: Buffer; br: Buffer } | null = null;
+
+/** Which content-encoding a client accepts, in our preference order (br > gzip). */
+export function pickEncoding(acceptEncoding: string | string[] | undefined): 'br' | 'gzip' | null {
+  const ae = Array.isArray(acceptEncoding) ? acceptEncoding.join(',') : (acceptEncoding ?? '');
+  if (/\bbr\b/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae)) return 'gzip';
+  return null;
+}
+
+/**
+ * Serve an HTML body with Accept-Encoding negotiation (brotli/gzip/identity),
+ * `no-store` (the shell is version-gated, never cached), and a `Vary` header.
+ * Compressing the inlined bundle cuts the shell transfer ~5× for any real browser.
+ */
+export function sendHtmlCompressed(req: IncomingMessage, res: ServerResponse, html: string): void {
+  if (_htmlCache?.key !== html) {
+    const identity = Buffer.from(html, 'utf8');
+    _htmlCache = {
+      key: html,
+      identity,
+      gzip: gzipSync(identity),
+      br: brotliCompressSync(identity, {
+        params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 },
+      }),
+    };
+  }
+  const encoding = pickEncoding(req.headers['accept-encoding']);
+  const body =
+    encoding === 'br' ? _htmlCache.br : encoding === 'gzip' ? _htmlCache.gzip : _htmlCache.identity;
+  const headers: Record<string, string> = {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    vary: 'accept-encoding',
+  };
+  if (encoding) headers['content-encoding'] = encoding;
+  res.writeHead(200, headers);
+  res.end(body);
 }
 
 /** Default request-body cap (1 MB). Endpoints that accept larger payloads pass

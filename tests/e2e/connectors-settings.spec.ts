@@ -26,12 +26,17 @@ test('the connectors dialog renders data-driven cards (helpers in scope)', async
   await expect(dlg).toBeVisible({ timeout: 5000 });
 
   const body = page.locator('#connectors-dialog-body');
-  // Both connectors render as cards (data-driven), each with its logo + the
-  // credential fields it declares — proof the form, not just the shell, rendered.
-  await expect(body.getByText('Jira', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(body.getByText('Trello', { exact: true })).toBeVisible();
-  await expect(body.locator('#cred-jira-site')).toBeVisible();
-  await expect(body.locator('#cred-trello-apiKey')).toBeVisible();
+  // 5.0: connectors are data-driven MCP cards from /api/connectors. Bring-your-own
+  // toolkits render a server-URL field; branded ones (a default MCP endpoint)
+  // render a Connect button. None have the old credential fields anymore.
+  await expect(body.getByText('Gmail', { exact: true })).toBeVisible({ timeout: 5000 });
+  await expect(body.getByText('Jira', { exact: true })).toBeVisible();
+  await expect(body.getByText('Custom MCP server', { exact: true })).toBeVisible();
+  // The generic connector renders its MCP server-URL input — proof the per-card
+  // form (not just the dialog shell) rendered.
+  await expect(body.locator('#mcp-url-mcp')).toBeVisible();
+  // The retired credential path is gone (Jira is now MCP, no #cred-jira-site).
+  await expect(body.locator('#cred-jira-site')).toHaveCount(0);
   await expect(body.locator('.connector-icon').first()).toBeVisible();
 
   // The scope bug surfaced as an uncaught "fetchJson is not defined" before the

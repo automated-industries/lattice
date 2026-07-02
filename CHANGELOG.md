@@ -17,6 +17,35 @@ live **force-directed brain graph** across all GUI graph surfaces; and
 behavior matches prior releases; the public API grows additively (a new external-
 database connector).
 
+### Security
+
+- **CSRF / DNS-rebinding hardening for the local GUI server.** State-changing
+  requests and the realtime WebSocket upgrade now require a same-origin request
+  and a `Host` header matching the bound loopback authority, so a web page you
+  visit while the GUI is running can't drive the local API as you. Binding the GUI
+  to a non-loopback address now requires an explicit `--allow-remote` opt-in.
+- **SSRF guard on the generic MCP connector.** A user-supplied MCP server URL is
+  validated (scheme + DNS resolution) and private / loopback / link-local /
+  cloud-metadata targets are refused before any request is made.
+- **Per-member connector key isolation.** Connector rows are namespaced by the
+  per-member connection, so two members connecting the same external instance no
+  longer collide on the shared primary key; connector sync errors are sanitized so
+  a conflicting key value can't leak.
+- **OAuth callback pinned to loopback** — the connector `redirect_uri` is derived
+  from the bound loopback authority, not the request `Host`.
+
+### Performance
+
+- **Instant undo/redo state.** Header undo/redo availability is computed with
+  bounded `COUNT` queries + an index instead of loading the session's entire audit
+  log (with row snapshots) on every edit and navigation.
+- **Credential key derivation is cached**, removing an event-loop stall during a
+  large connector sync; the sync reuses one MCP transport across the run instead of
+  reconnecting per parent, and prunes vanished rows in a single transaction.
+- **Scoped realtime refresh** — a collaborator's edit invalidates only the changed
+  table's cache, not the whole cache; relation chips skip heavy text columns.
+- **The GUI shell is served with brotli/gzip** content negotiation.
+
 ### Added
 
 - **MCP-backed connectors — connect any MCP server as an Input.** Connectors are

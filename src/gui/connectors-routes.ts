@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { sendJson, readJson } from './http.js';
+import { isLoopbackHost } from './origin-guard.js';
 import type { Connector, CredentialField } from '../connectors/types.js';
 import { isCredentialConnector, isMcpConnector } from '../connectors/types.js';
 import type { McpConnector } from '../connectors/types.js';
@@ -85,9 +86,16 @@ function toolkitDescriptor(connector: Connector, toolkit: string): ToolkitDescri
   return out;
 }
 
-/** The loopback OAuth callback for THIS GUI origin (works in browser + desktop webview). */
+/**
+ * The loopback OAuth callback for THIS GUI origin (works in browser + desktop
+ * webview). Pinned to a loopback authority: a non-loopback / rebound Host header
+ * can't steer the redirect_uri off-box (mirrors the assistant OAuth path). A
+ * captured code is unusable anyway (PKCE code_verifier stays server-side), so
+ * falling back to bare 127.0.0.1 on a bad Host is the safe failure.
+ */
 function mcpOAuthRedirectUri(req: IncomingMessage): string {
-  const host = req.headers.host ?? '127.0.0.1';
+  const rawHost = req.headers.host ?? '127.0.0.1';
+  const host = isLoopbackHost(rawHost) ? rawHost : '127.0.0.1';
   return `http://${host}/api/connectors/oauth/callback`;
 }
 
