@@ -104,8 +104,8 @@ describe('#4 Google Analytics — static contract', () => {
       'data_model_share',
       'workspace_create',
       'workspace_switch',
-      'search',
-      // ('setting_change' was retired with the Advanced View toggle — no emitter.)
+      // ('search' retired with the top search box; 'setting_change' with the
+      //  Advanced View toggle — both emitters removed, so neither is in the SPA.)
     ];
     for (const evt of expected) {
       expect(guiAppHtml, `event ${evt} should be instrumented`).toContain(`'${evt}'`);
