@@ -107,7 +107,13 @@ export const wireMergeJs = `
     }
 
     // Drag flow (always on): drag one object onto another → link; Shift → merge.
-    function wmAttachDrag(el) {
+    // onDrop (optional) overrides what a completed drop does: called as
+    // onDrop(source, targetTable, ev, merge). The Folders view passes a NEST drop
+    // (belongsTo one-to-many) here so a folder drag nests instead of m2m-linking,
+    // while other views keep the default link/merge. onDropOut (optional) fires
+    // when a drag ends OUTSIDE any valid object (empty space / breadcrumb) — the
+    // Folders view uses it to un-nest a dragged child folder.
+    function wmAttachDrag(el, onDrop, onDropOut) {
       el.addEventListener('pointerdown', function (ev) {
         if (ev.button !== undefined && ev.button !== 0) return;
         var source = el.getAttribute('data-table');
@@ -160,7 +166,8 @@ export const wireMergeJs = `
           teardown();
           if (!wasDragging) return;
           wmSuppressClick = true; window.setTimeout(function () { wmSuppressClick = false; }, 0);
-          if (c) wmAct(source, c.getAttribute('data-table'), merge);
+          if (c) { if (onDrop) onDrop(source, c.getAttribute('data-table'), up, merge); else wmAct(source, c.getAttribute('data-table'), merge); }
+          else if (onDropOut) onDropOut(source, up);
         }
         document.addEventListener('pointermove', onMove, true);
         document.addEventListener('pointerup', onUp, true);
@@ -169,13 +176,15 @@ export const wireMergeJs = `
     }
 
     // Make every wireable [data-table] object in a container draggable + pickable.
-    // Rows ("files") are skipped — they're not link/merge objects.
-    function wmWire(container) {
+    // Rows ("files") are skipped — they're not link/merge objects. onDrop/onDropOut
+    // (optional) customize what a drop does (the Folders view nests instead of
+    // linking); omitted → default link/merge.
+    function wmWire(container, onDrop, onDropOut) {
       if (!container) return;
       container.querySelectorAll('[data-table]').forEach(function (el) {
         if (el.getAttribute('data-kind') === 'file' || el.__wmWired) return;
         el.__wmWired = true;
-        wmAttachDrag(el);
+        wmAttachDrag(el, onDrop, onDropOut);
         el.addEventListener('click', function (e) {
           if (wmSuppressClick) { e.preventDefault(); e.stopPropagation(); return; }
           if (wmMode) { e.preventDefault(); e.stopPropagation(); wmModeClick(el.getAttribute('data-table')); }
