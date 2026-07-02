@@ -262,7 +262,7 @@ export const sourcesJs = `
     function applySidebarGroupStates() {
       [
         'files', 'connectors', 'databases',
-        'out-artifacts', 'out-markdown', 'out-tables', 'out-serverdocs', 'out-apidocs', 'out-mcp',
+        'out-artifacts', 'out-markdown', 'out-tables',
         'objects', 'system',
       ].forEach(applySidebarGroupState);
     }

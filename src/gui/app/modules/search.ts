@@ -4,6 +4,12 @@ export const searchJs = `    // ────────────────
     // Version history (undo / redo / log)
     // ────────────────────────────────────────────────────────────
     function wireHistoryControls() {
+      // Back / Forward move through the page-navigation (hash) history, like a
+      // browser's nav arrows. They sit next to Undo/Redo (which are for DATA edits).
+      var back = document.getElementById('nav-back-btn');
+      if (back) back.addEventListener('click', function () { window.history.back(); });
+      var fwd = document.getElementById('nav-fwd-btn');
+      if (fwd) fwd.addEventListener('click', function () { window.history.forward(); });
       document.getElementById('undo-btn').addEventListener('click', function () {
         gaTrack('history_action', { action: 'undo' });
         fetchJson('/api/history/undo', { method: 'POST' })

@@ -1,47 +1,12 @@
 // Auto-composed segment of the GUI client script. Verbatim substring of the original
 // appJs template literal — do not hand-edit; see modules/index.ts for composition.
 export const renderProgressStateJs = `    // ────────────────────────────────────────────────────────────
-    // Search — the top box hands the query to the AI ASSISTANT (which answers
-    // conversationally using its search/read tools), not a plain full-text
-    // match. hideSearchResults/openSearchHit are retained because the activity
-    // feed still uses openSearchHit to jump to a row.
+    // openSearchHit — jump to a row's record page. Retained for the activity feed,
+    // the create-database wizard, and onboarding. (The old top search BOX was
+    // removed — the assistant, "Ask Gladys", is the single search surface.)
     // ────────────────────────────────────────────────────────────
-    function hideSearchResults() {
-      var box = document.getElementById('search-results');
-      if (box) { box.hidden = true; box.innerHTML = ''; }
-    }
     function openSearchHit(table, id) {
-      hideSearchResults();
-      var input = document.getElementById('search-input');
-      if (input) input.value = '';
-      // Open the hit in whichever mode the user is in: the file-workspace
-      // (#/fs/) view in simple mode, the row editor (#/objects/) in advanced.
-      var prefix = advancedMode() ? '#/objects/' : '#/fs/';
-      location.hash = prefix + encodeURIComponent(table) + '/' + encodeURIComponent(id);
-    }
-    // Route the typed query into the floating Ask Lattice assistant as a chat turn.
-    // Opens the panel and submits via the same path as the composer, so the
-    // assistant searches + answers.
-    function askAssistant(q) {
-      hideSearchResults();
-      var input = document.getElementById('search-input');
-      if (input) input.value = '';
-      if (typeof openAskLattice === 'function') openAskLattice();
-      var chatInput = document.getElementById('chat-input');
-      if (chatInput) chatInput.focus();
-      sendChat(q);
-    }
-    function initSearch() {
-      var input = document.getElementById('search-input');
-      if (!input) return;
-      input.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { input.value = ''; input.blur(); }
-        else if (e.key === 'Enter') {
-          e.preventDefault();
-          var q = input.value.trim();
-          if (q) { gaTrack('search', {}); askAssistant(q); } // event only — never the query text
-        }
-      });
+      location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(id);
     }
 
     /** Reload column meta after a secret-flag change. */
