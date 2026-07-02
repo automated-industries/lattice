@@ -232,6 +232,27 @@ export abstract class McpConnectorBase implements McpConnector {
 
   // --- Sync: page an MCP read tool, yield rows (sync engine unchanged) --------
 
+  // While a sync session is active for a connection, ONE transport is opened
+  // lazily (on the first listChanges) and reused across every model + parent key,
+  // then closed by endSyncSession. Outside a session, listChanges opens + closes
+  // its own (single-shot callers, e.g. connect-time validation).
+  private readonly _activeSessions = new Set<string>();
+  private readonly _sessionTransports = new Map<string, McpTransport>();
+
+  /** Reuse ONE transport for this connection across the sync's models/parents. */
+  beginSyncSession(connectionId: string): Promise<void> {
+    this._activeSessions.add(connectionId); // transport opened lazily on first use
+    return Promise.resolve();
+  }
+
+  /** Close + evict the shared transport opened during the session (idempotent). */
+  async endSyncSession(connectionId: string): Promise<void> {
+    this._activeSessions.delete(connectionId);
+    const t = this._sessionTransports.get(connectionId);
+    this._sessionTransports.delete(connectionId);
+    if (t) await t.close();
+  }
+
   async *listChanges(
     toolkit: string,
     model: string,
@@ -239,7 +260,16 @@ export abstract class McpConnectorBase implements McpConnector {
   ): AsyncIterable<ExternalRecord> {
     const binding = this.bindings(toolkit).find((b) => b.model === model);
     if (!binding) return;
-    const transport: McpTransport = await this.openServerTransport(toolkit, ctx.connectionId);
+    // Reuse the session transport when a sync session is active; otherwise open a
+    // one-shot transport and close it in the finally. This collapses the old
+    // per-parent-key N+1 (a fresh connect/initialize per parent) to one connect
+    // for the whole connector sync.
+    const sessionActive = this._activeSessions.has(ctx.connectionId);
+    let transport = this._sessionTransports.get(ctx.connectionId);
+    if (!transport) {
+      transport = await this.openServerTransport(toolkit, ctx.connectionId);
+      if (sessionActive) this._sessionTransports.set(ctx.connectionId, transport);
+    }
     try {
       let cursor: string | null | undefined = ctx.cursor ?? null;
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -260,7 +290,8 @@ export abstract class McpConnectorBase implements McpConnector {
         cursor = next;
       }
     } finally {
-      await transport.close();
+      // Session transports are closed by endSyncSession; one-shot transports here.
+      if (!sessionActive) await transport.close();
     }
   }
 
@@ -317,6 +348,11 @@ export interface McpConnectorDeps {
  * its table schema + per-model tool bindings — no class boilerplate.
  */
 export class SimpleMcpConnector extends McpConnectorBase {
+  // A plain data field (assigned in the constructor), NOT a getter: the abstract
+  // base declares `connector`, and under `useDefineForClassFields` a getter here
+  // collides with the base field's [[Set]] init ("cannot set property … which has
+  // only a getter"), 500-ing the connectors route. GenericMcpConnector does the same.
+  readonly connector: string;
   private readonly toolkit: string;
 
   constructor(
@@ -324,12 +360,10 @@ export class SimpleMcpConnector extends McpConnectorBase {
     deps: McpConnectorDeps = {},
   ) {
     super(deps.transportFactory, deps.oauth);
+    this.connector = spec.connector;
     this.toolkit = spec.toolkit ?? spec.connector;
   }
 
-  get connector(): string {
-    return this.spec.connector;
-  }
   toolkits(): string[] {
     return [this.toolkit];
   }

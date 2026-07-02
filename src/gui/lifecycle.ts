@@ -325,6 +325,22 @@ export async function openConfig(
   // Owner-only: a scoped cloud member has no DDL grant. Idempotent.
   if (!memberOpen) await ensureLineageTable(db.adapter);
 
+  // Bounded-read indexes on the audit log. `_lattice_gui_audit` grows for the life
+  // of the DB, and both the session-scoped undo/redo COUNT(*)s (/api/history, fired
+  // on every edit/nav) and the per-row history peek scan it. Without these each
+  // call is a sequential scan on a large cloud audit log. Owner-only (a scoped
+  // member has no DDL grant); idempotent. The table exists by now (db.init above).
+  if (!memberOpen) {
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_session_idx" ON "_lattice_gui_audit" ("session_id", "undone")`,
+    );
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_row_idx" ON "_lattice_gui_audit" ("table_name", "row_id")`,
+    );
+  }
+
   // Per-viewer render: on a cloud MEMBER open, route every render-time table read
   // through the member's masking view (`<table>_v`) when one exists, so the
   // rendered context tree on disk is the member's own RLS-scoped, cell-masked

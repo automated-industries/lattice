@@ -9,6 +9,7 @@ import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { detectInstallContext } from './update-context.js';
 import { startGuiServer, openUrl } from './gui/server.js';
+import { isLoopbackHost } from './gui/origin-guard.js';
 import { probeRunningGui } from './gui/probe-running.js';
 import { superviseGui } from './gui/supervisor.js';
 import { ensureRootForGui } from './framework/gui-bootstrap.js';
@@ -59,6 +60,8 @@ interface ParsedArgs {
   /** `false` when `--no-auto-update` (or env LATTICE_NO_AUTO_UPDATE=1) disables the GUI's auto-update. */
   autoUpdate: boolean;
   host: string;
+  /** --allow-remote — required to bind the unauthenticated GUI to a non-loopback host. */
+  allowRemote: boolean;
   /** --name <display> — workspace / user display name (workspace create, gui). */
   displayName?: string | undefined;
   /** --json — emit machine-readable JSON instead of formatted text (doctor). */
@@ -95,6 +98,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let noOpen = false;
   let autoUpdate = true;
   let host = '127.0.0.1';
+  let allowRemote = false;
   let subcommand: string | undefined;
   let displayName: string | undefined;
   let root: string | undefined;
@@ -182,6 +186,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--host' && i + 1 < argv.length) {
       i++;
       host = argv[i] ?? host;
+    } else if (arg === '--allow-remote') {
+      allowRemote = true;
     } else if (arg === '--name' && i + 1 < argv.length) {
       i++;
       displayName = argv[i];
@@ -228,6 +234,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     // argv, but the desktop shell and any wrapper set the env instead — honor both.
     autoUpdate: autoUpdate && process.env.LATTICE_NO_AUTO_UPDATE !== '1',
     host,
+    allowRemote,
     displayName,
     root,
     json,
@@ -809,6 +816,18 @@ async function runGui(args: ParsedArgs): Promise<void> {
     // single switchable workspace. There is no "database mode" fallback — that
     // duality was the source of the inconsistent header/settings lists.
     if (args.root) process.env.LATTICE_ROOT = args.root;
+    // The GUI's data routes are UNAUTHENTICATED — safe only on the loopback. Binding
+    // to a non-loopback host exposes read/write/delete + the connector SSRF surface
+    // to the whole network, so require an explicit opt-in rather than a warning that
+    // is easy to miss. (The same-origin/Host guard still applies either way.)
+    if (!isLoopbackHost(args.host) && !args.allowRemote) {
+      console.error(
+        `Refusing to bind the GUI to non-loopback host "${args.host}": its data routes are ` +
+          `UNAUTHENTICATED and would be reachable from the network. Re-run with --allow-remote ` +
+          `if that is genuinely intended (and only behind your own network controls).`,
+      );
+      process.exit(1);
+    }
     const boot = ensureRootForGui({
       startDir: args.root ?? process.cwd(),
       configPath: resolve(args.config),
@@ -824,6 +843,8 @@ async function runGui(args: ParsedArgs): Promise<void> {
       outputDir: boot.contextDir,
       latticeRoot: boot.root,
       port,
+      // Honored only after the --allow-remote gate above; defaults to loopback.
+      host: args.host,
       openBrowser: !args.noOpen,
       autoRender: true,
       version: getVersion(),

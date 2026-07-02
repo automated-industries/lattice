@@ -121,7 +121,9 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
         filters: [{ col: 'deleted_at', op: 'isNull' }],
       })) as Record<string, unknown>[];
       expect(rows.length).toBe(3);
-      const w1 = rows.find((r) => r.id === 'w1')!;
+      // The sync engine namespaces keys by connectorId (so two members importing
+      // the same source can't collide on the shared PK).
+      const w1 = rows.find((r) => r.id === `${connectorId}:w1`)!;
       expect(w1.name).toBe('Alpha');
       expect(w1.qty).toBe(3);
       // The sync engine stamps connector lineage on every imported row.
