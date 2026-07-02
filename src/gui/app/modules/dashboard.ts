@@ -210,6 +210,22 @@ export const dashboardJs = `    // ───────────────
     // The CSP grants inline script/style only, NO network at all (connect-src 'none'
     // + every fetch-directive 'none'/data:), and no nested browsing contexts — data
     // comes through the postMessage broker, not the network.
+    // Load the vendored Chart.js on demand (it's no longer inlined in the bundle —
+    // ~275 KB off every startup's parse). Sets window.__LATTICE_CHART_LIB__; cached
+    // after the first HTML-file preview. Fail-soft: on a load error the preview still
+    // renders, just without chart support.
+    function ensureChartLib() {
+      if (window.__LATTICE_CHART_LIB__) return Promise.resolve();
+      if (window.__latticeChartLibPromise) return window.__latticeChartLibPromise;
+      window.__latticeChartLibPromise = new Promise(function (resolve) {
+        var s = document.createElement('script');
+        s.src = '/gui-assets/chart-lib.js';
+        s.onload = function () { resolve(); };
+        s.onerror = function () { resolve(); };
+        document.head.appendChild(s);
+      });
+      return window.__latticeChartLibPromise;
+    }
     function htmlFileSrcdoc(rawHtml) {
       var csp = '<meta http-equiv="Content-Security-Policy" content="' +
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
@@ -281,8 +297,12 @@ export const dashboardJs = `    // ───────────────
         // chat edit that rewrites this row's extracted_text reloads the frame with
         // the new page in place — no page refresh.
         installHtmlFileBroker();
-        var frame = document.getElementById('html-file-frame');
-        if (frame) frame.srcdoc = htmlFileSrcdoc(row.extracted_text);
+        // Ensure the chart lib is loaded, THEN set the srcdoc (re-resolve the frame
+        // in case a re-render replaced it while the lib was fetching).
+        ensureChartLib().then(function () {
+          var f = document.getElementById('html-file-frame');
+          if (f) f.srcdoc = htmlFileSrcdoc(row.extracted_text);
+        });
       }
       var openBtn = document.getElementById('file-open');
       if (openBtn) openBtn.addEventListener('click', function () {
