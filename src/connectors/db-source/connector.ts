@@ -140,6 +140,14 @@ async function introspectSchema(
   }[];
   const pkQ = dialect.primaryKeysSql(schema);
   const pkRows = (await pool.query(pkQ.sql, pkQ.params)).rows as { table: string; col: string }[];
+  const fkQ = dialect.foreignKeysSql(schema);
+  const fkRows = (await pool.query(fkQ.sql, fkQ.params)).rows as {
+    cname: string;
+    table: string;
+    col: string;
+    ref_table: string;
+    ref_col: string;
+  }[];
 
   const colsByTable = new Map<string, { name: string; sqlSpec: 'TEXT' | 'INTEGER' | 'REAL' }[]>();
   for (const r of colRows) {
@@ -153,13 +161,34 @@ async function introspectSchema(
     arr.push(r.col);
     pkByTable.set(r.table, arr);
   }
+  // Group FK rows by constraint and keep SINGLE-COLUMN constraints only — a
+  // composite FK (or the cross-product a composite produces through the
+  // information_schema join) has >1 rows and can't map onto one graph edge.
+  const fksByConstraint = new Map<string, typeof fkRows>();
+  for (const r of fkRows) {
+    const arr = fksByConstraint.get(r.cname) ?? [];
+    arr.push(r);
+    fksByConstraint.set(r.cname, arr);
+  }
+  const fksByTable = new Map<string, { column: string; refTable: string; refColumn: string }[]>();
+  for (const rows of fksByConstraint.values()) {
+    const [only] = rows;
+    if (rows.length !== 1 || !only) continue;
+    const arr = fksByTable.get(only.table) ?? [];
+    arr.push({ column: only.col, refTable: only.ref_table, refColumn: only.ref_col });
+    fksByTable.set(only.table, arr);
+  }
   const tables: DbTableDesc[] = tableRows
-    .map((t) => ({
-      name: t.name,
-      columns: colsByTable.get(t.name) ?? [],
-      pk: pkByTable.get(t.name) ?? [],
-      selected: true,
-    }))
+    .map((t) => {
+      const fks = fksByTable.get(t.name);
+      return {
+        name: t.name,
+        columns: colsByTable.get(t.name) ?? [],
+        pk: pkByTable.get(t.name) ?? [],
+        selected: true,
+        ...(fks ? { fks } : {}),
+      };
+    })
     .filter((t) => t.columns.length > 0);
   return { dialect: dialect.id, schema, prefix, tables };
 }
@@ -256,7 +285,14 @@ export class DatabaseConnector implements CredentialConnector {
           dbName = 'database';
         }
       }
-      return introspectSchema(pool, dialect, schema, slugify(dbName));
+      // The imported-table prefix is the database name + a short connection-id
+      // suffix. The name alone COLLIDES across providers that share a default
+      // database name (every Supabase project is "postgres"): two different
+      // connections would then import into the SAME db_<prefix>_* tables and
+      // cross-contaminate each other's rows. The suffix keeps names readable
+      // while guaranteeing per-connection isolation.
+      const prefix = `${slugify(dbName).slice(0, 24)}_${connectionId.slice(0, 4)}`;
+      return introspectSchema(pool, dialect, schema, prefix);
     });
 
     if (!descriptor.tables.length) {
