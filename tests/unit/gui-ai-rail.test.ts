@@ -36,9 +36,12 @@ describe('floating Ask Lattice + Outputs markup + wiring', () => {
     expect(guiAppHtml).not.toContain("new EventSource('/api/feed/stream')");
   });
 
-  it('wires file ingest (drag-drop + paperclip) into the floating panel', () => {
+  it('wires file ingest (whole-window drop zone + paperclip)', () => {
     expect(guiAppHtml).toContain('function uploadFile');
-    expect(guiAppHtml).toContain('function initAskLatticeDragDrop');
+    // The drop target is now the whole window (a full-screen overlay), not a
+    // panel-scoped listener — a drop anywhere opens Gladys and stages the file.
+    expect(guiAppHtml).toContain('function initFileDropZone');
+    expect(guiAppHtml).toContain('file-drop-overlay');
     expect(guiAppHtml).toContain("'/api/ingest/upload'");
     expect(guiAppHtml).toContain('initAskLattice();');
     expect(guiAppHtml).toContain('id="chat-clip"');
