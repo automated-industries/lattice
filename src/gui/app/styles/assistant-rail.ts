@@ -89,7 +89,21 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
         opacity 0.18s ease,
         transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    .ask-lattice-panel.dragging-file { outline: 2px dashed var(--accent); outline-offset: -6px; }
+    /* Whole-window file-drop overlay (dragging a file anywhere in the window).
+       pointer-events:none so the drag/drop events still reach the document handler. */
+    .file-drop-overlay {
+      position: fixed; inset: 0; z-index: 9000; display: none;
+      align-items: center; justify-content: center; pointer-events: none;
+      background: rgba(15, 23, 42, 0.55);
+      -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+    }
+    body.dragging-file .file-drop-overlay { display: flex; }
+    .file-drop-inner {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      font-size: 20px; font-weight: 600; color: #fff;
+      border: 2px dashed rgba(255, 255, 255, 0.85); border-radius: 16px; padding: 40px 56px;
+    }
+    .file-drop-emoji { font-size: 44px; line-height: 1; }
     .ask-lattice-panel-head {
       flex: 0 0 auto; padding: 10px 12px;
       display: flex; align-items: center; gap: 8px;

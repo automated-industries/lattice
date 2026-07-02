@@ -1422,8 +1422,13 @@ export const dashboardJs = `    // ───────────────
         if (myGen !== renderGen) return; // superseded by a newer navigation while fsWalk resolved
         var base = fsHref(segs);
         var folderTiles = rels.map(function (rel) {
+          // Same folder icon as the Folders view: the 📁 base with the target
+          // object's emoji badged on its face (not a bare 📁).
+          var relIcon = displayFor(rel.targetTable || rel.token).icon;
           return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
-            '<div class="fs-tile-icon">📁</div>' +
+            '<div class="fs-tile-icon"><span class="fs-folder-icon">' +
+              '<span class="fs-folder-base">📁</span><span class="fs-folder-badge">' + relIcon + '</span>' +
+            '</span></div>' +
             '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
             '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
           '</a>';

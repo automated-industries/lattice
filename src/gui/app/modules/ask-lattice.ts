@@ -55,38 +55,48 @@ export const askLatticeJs = `
           closeAskLattice();
         });
       }
-      initAskLatticeDragDrop();
+      initFileDropZone();
     }
 
-    // File drag-drop onto the chat panel — stage dropped files for review (same flow
-    // the docked rail used; re-housed here onto the floating panel).
-    function initAskLatticeDragDrop() {
-      var panel = askLatticePanel(); if (!panel || panel.__dndWired) return;
-      panel.__dndWired = true;
+    // File drag-drop over the WHOLE WINDOW — a full-window overlay ("Drop a file to
+    // ingest it") appears wherever you drag a file, and the drop stages it into
+    // Gladys for review + ingest (opening her panel if it's closed). Not scoped to
+    // the Gladys panel anymore.
+    function initFileDropZone() {
+      if (window.__fileDropWired) return;
+      window.__fileDropWired = true;
+      var overlay = document.createElement('div');
+      overlay.className = 'file-drop-overlay';
+      overlay.innerHTML = '<div class="file-drop-inner"><div class="file-drop-emoji">📎</div>Drop a file to ingest it</div>';
+      document.body.appendChild(overlay);
       function isFileDrag(e) {
         var t = e.dataTransfer && e.dataTransfer.types;
         return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
       }
       var depth = 0;
-      function clearOverlay() { depth = 0; panel.classList.remove('dragging-file'); }
-      panel.addEventListener('dragenter', function (e) {
+      function show() { document.body.classList.add('dragging-file'); }
+      function hide() { depth = 0; document.body.classList.remove('dragging-file'); }
+      document.addEventListener('dragenter', function (e) {
         if (!isFileDrag(e)) return;
-        e.preventDefault(); depth++; panel.classList.add('dragging-file');
+        e.preventDefault(); depth++; show();
       });
-      panel.addEventListener('dragover', function (e) {
+      document.addEventListener('dragover', function (e) {
         if (!isFileDrag(e)) return;
-        e.preventDefault(); panel.classList.add('dragging-file');
+        e.preventDefault(); show();
       });
-      panel.addEventListener('dragleave', function () {
+      document.addEventListener('dragleave', function () {
         depth = Math.max(0, depth - 1);
-        if (depth === 0) panel.classList.remove('dragging-file');
+        if (depth === 0) hide();
       });
-      panel.addEventListener('drop', function (e) {
+      document.addEventListener('drop', function (e) {
+        if (!isFileDrag(e)) { hide(); return; }
         e.preventDefault();
-        clearOverlay();
-        if (e.dataTransfer && e.dataTransfer.files) stageFiles(e.dataTransfer.files);
+        hide();
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          if (typeof openAskLattice === 'function' && !askLatticeOpen()) openAskLattice();
+          stageFiles(e.dataTransfer.files);
+        }
       });
-      window.addEventListener('dragend', clearOverlay);
-      window.addEventListener('drop', clearOverlay);
+      window.addEventListener('dragend', hide);
     }
 `;
