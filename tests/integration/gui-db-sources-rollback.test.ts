@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { Lattice } from '../../src/lattice.js';
+import { FeedBus } from '../../src/gui/feed.js';
 import { dispatchDbSourcesRoute } from '../../src/gui/db-sources-routes.js';
 import { dispatchConnectorsRoute } from '../../src/gui/connectors-routes.js';
 import { createConnector, listConnectors } from '../../src/connectors/registry.js';
@@ -80,7 +81,7 @@ describe('db-source connect failure semantics', () => {
     const fake = new ExplodingDbConnector();
     server = createServer((req, res) => {
       void (async () => {
-        const deps = { db, outputDir: tmp, connectedBy: 'tester' };
+        const deps = { db, outputDir: tmp, connectedBy: 'tester', feed: new FeedBus() };
         if (await dispatchDbSourcesRoute(req, res, { ...deps, connectorOverride: fake })) return;
         if (await dispatchConnectorsRoute(req, res, { ...deps, connectors: [] })) return;
         res.statusCode = 404;

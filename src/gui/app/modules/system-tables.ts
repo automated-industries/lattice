@@ -339,6 +339,10 @@ export const systemTablesJs = `    // ──────────────
         var meta = byName[name] || {};
         var rc = (meta.rowCount != null) ? meta.rowCount : 0;
         if (rc <= 0) return; // only show objects that have items in them (non-empty)
+        // SOURCE-tier tables (files, connector-synced, imported databases) are raw
+        // inputs — excluded from the graph (like the Objects grid); they live in
+        // the Inputs column + the Tables explorer's Source column only.
+        if (mtClassifyTier(meta) === 'source') return;
         index[name] = nodes.length;
         nodes.push({
           name: name,

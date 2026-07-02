@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
+import type { FeedBus } from './feed.js';
 import { sendJson, readJson } from './http.js';
 import { listConnectors, getConnector, createConnector } from '../connectors/registry.js';
 import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
@@ -23,6 +24,12 @@ export interface DbSourcesRouteDeps {
   outputDir: string;
   /** Identity that owns connections made in this session. */
   connectedBy: string;
+  /**
+   * Activity feed — a table import surfaces the same way a file ingest does
+   * (a summary line in the feed / status), so connecting a database gives the
+   * same live feedback as dropping files.
+   */
+  feed: FeedBus;
   /** Test seam — substitute connector (defaults to a real DatabaseConnector). */
   connectorOverride?: DatabaseConnector;
 }
@@ -97,6 +104,7 @@ export async function dispatchDbSourcesRoute(
       for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
       await enableConnectorRls(db, connector, toolkit);
       const result = await syncConnector(db, connector, connectorId);
+      publishImportSummary(deps.feed, connection.displayName ?? 'database', result.upserted);
       sendJson(res, { connectorId, displayName: connection.displayName, result });
     } catch (e) {
       let rollbackNote = '';
@@ -153,6 +161,7 @@ export async function dispatchDbSourcesRoute(
     if (sub === 'refresh' && method === 'POST') {
       try {
         const result = await syncConnector(db, connector, id);
+        publishImportSummary(deps.feed, rec.displayName ?? 'database', result.upserted);
         sendJson(res, { result });
       } catch (e) {
         sendJson(res, { error: (e as Error).message }, isActionable(e) ? 422 : 500);
@@ -174,4 +183,25 @@ export async function dispatchDbSourcesRoute(
 
 function isActionable(err: unknown): boolean {
   return err instanceof ConnectorUnavailableError;
+}
+
+/**
+ * Surface a table import in the activity feed exactly like a file ingest does —
+ * one summary line covering what landed (same live-feedback contract as files).
+ */
+function publishImportSummary(
+  feed: FeedBus,
+  displayName: string,
+  upserted: Record<string, number>,
+): void {
+  const tables = Object.keys(upserted);
+  if (tables.length === 0) return;
+  const rows = Object.values(upserted).reduce((a, b) => a + b, 0);
+  feed.publish({
+    table: tables[0] ?? 'files',
+    op: 'insert',
+    rowId: null,
+    source: 'system',
+    summary: `Imported ${String(rows)} rows across ${String(tables.length)} tables from "${displayName}"`,
+  });
 }
