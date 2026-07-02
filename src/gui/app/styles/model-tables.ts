@@ -144,6 +144,17 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     }
     .mt-lin-chip:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--row-hover); }
     .mt-lin-via { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); }
+    /* A consumer chip pairs the (clickable) chip with a ✕ that removes the link. */
+    .mt-lin-chip-wrap { display: flex; align-items: stretch; gap: 4px; }
+    .mt-lin-chip-wrap .mt-lin-chip { flex: 1 1 auto; width: auto; }
+    .mt-lin-x {
+      flex: none; display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; border: 1px solid var(--border); border-radius: 7px;
+      background: var(--surface-2); color: var(--text-muted); cursor: pointer;
+      font-size: 11px; line-height: 1; user-select: none;
+    }
+    .mt-lin-x:hover { color: #ef4444; border-color: rgba(239, 68, 68, 0.5); background: color-mix(in srgb, #ef4444 12%, transparent); }
+    .mt-lin-x-busy { opacity: 0.5; pointer-events: none; }
     .mt-fl { font-size: 12px; color: var(--text-muted); padding: 3px 0; font-family: ui-monospace, monospace; }
     .mt-fl-f { color: var(--accent); }
     .mt-fl-t { color: var(--text); }

@@ -84,8 +84,11 @@ import { css } from '../../src/gui/app/css.js';
 // ensure the drag clone anchors to the cursor instead of being offset ~100px.
 // 5.0 GUI batch — the file-drag overlay is now a whole-window .file-drop-overlay
 // (replacing the Gladys-panel outline). Length + hash recaptured.
-const ORIGINAL_LENGTH = 124020;
-const ORIGINAL_SHA256 = '356f121acd99ea8ac909f141da07456966971c5fb5b7878376d56efc13425c00';
+// 5.0 GUI batch 2 — workspace-switch fade overlay (.ws-switch-overlay in layout),
+// and the Tables-explorer consumer-chip remove-✕ styles (.mt-lin-chip-wrap /
+// .mt-lin-x / .mt-lin-x-busy in model-tables). Length + hash recaptured.
+const ORIGINAL_LENGTH = 125329;
+const ORIGINAL_SHA256 = '0cbf9c93ed98f0bbf0783763103d2995e350b7ee660c9565dbd4f2b2f8b0121c';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

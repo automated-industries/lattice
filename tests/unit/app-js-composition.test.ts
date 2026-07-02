@@ -203,8 +203,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // a whole-window overlay (openAskLattice on drop) instead of the Gladys panel. The
 // folder view drops the "Linked" section header (linked + child folders list first).
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 577541;
-const ORIGINAL_SHA256 = '0c90fb70dbf35efbfd350550a8d2498028a9fa384c9a15a4d73bfa8056622426';
+// 5.0 GUI batch 2 — a workspace switch shows a full-app fade overlay while the
+// columns rebuild (reloadEverything show/hideSwitchOverlay in search); the
+// Tables-explorer consumer chips gain a remove-✕ (linChip + mtRemoveLink) and the
+// same-column edge bow is clamped inside the content box so a link in a narrow
+// (wrapped) Model pane is never clipped by overflow (mtDrawEdges in model-tables).
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 582802;
+const ORIGINAL_SHA256 = '3d2de8617ddff42904f0a68453a8a707db38ad01231e820432c84a6c9e7e8e9f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
