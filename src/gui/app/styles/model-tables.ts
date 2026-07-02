@@ -82,8 +82,10 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       background: var(--sheen), var(--surface-2); border: 1px solid rgba(15, 23, 42, 0.05);
       box-shadow: var(--shadow-1); font: inherit;
       /* Drag-to-wire/merge uses pointer events; suppress the browser's touch pan/
-         zoom on a card so a touch-drag doesn't scroll the page mid-gesture. */
-      touch-action: none;
+         zoom AND native text-selection so a drag can't hand the pointer stream to
+         the OS mid-gesture (that freezes the ghost in webviews — same fix as
+         .fs-tile). Pairs with setPointerCapture in wiremerge.ts. */
+      touch-action: none; -webkit-user-select: none; user-select: none;
       transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
     }
     .mt-card:hover { border-color: rgba(59, 130, 246, 0.4); box-shadow: var(--shadow-2); transform: translateY(-1px); }

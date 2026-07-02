@@ -10,6 +10,10 @@ export const bootInterstitialJs = `    // ────────────�
     // afterMutation() (debounced); 'state' events drive the topbar pill.
     // ────────────────────────────────────────────────────────────
     var realtimePending = null;
+    // Tables changed during the current debounce window, so scoped cache
+    // invalidation drops ONLY those (not the whole cache) when the refresh fires.
+    // 'ALL' (sticky) means an unknown/schema change → full wipe.
+    var realtimeDirtyTables = null;
     // Team-cloud collaboration state. usersById resolves "last edited by"
     // names; lastEditedByPk maps "<table>|<pk>" → { userId, at } from realtime
     // change envelopes + the /last-edited seed. Both stay empty on local.

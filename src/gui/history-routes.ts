@@ -53,15 +53,21 @@ export async function handleHistoryRoutes(
     // Peek the latest LIVE entry to branch row vs schema. Schema reverts
     // need config + re-open (which dispose the db row helpers capture), so
     // they're handled here directly; row ops go through undoLast.
+    // Newest live entry only — ISO `ts` sorts lexically == chronologically, so
+    // ORDER BY ts DESC LIMIT 1 in SQL replaces loading the whole session log to
+    // pick one row.
     const live = (
       (await active.db.query('_lattice_gui_audit', {
         filters: [
           { col: 'undone', op: 'eq', val: 0 },
           { col: 'session_id', op: 'eq', val: sessionId },
         ],
+        orderBy: 'ts',
+        orderDir: 'desc',
+        limit: 1,
       })) as Record<string, unknown>[]
     ).map(parseAudit);
-    const target = live.sort((a, b) => b.ts.localeCompare(a.ts))[0];
+    const target = live[0];
     if (target && isSchemaOp(target.operation)) {
       try {
         ctx.swapActive(await applySchemaConfig(active, target, 'inverse', deps.autoRender));
@@ -91,15 +97,20 @@ export async function handleHistoryRoutes(
     return true;
   }
   if (method === 'POST' && pathname === '/api/history/redo') {
+    // Oldest undone entry only — redo replays in the order originally undone, so
+    // ORDER BY ts ASC LIMIT 1 in SQL replaces loading every undone row to pick one.
     const undone = (
       (await active.db.query('_lattice_gui_audit', {
         filters: [
           { col: 'undone', op: 'eq', val: 1 },
           { col: 'session_id', op: 'eq', val: sessionId },
         ],
+        orderBy: 'ts',
+        orderDir: 'asc',
+        limit: 1,
       })) as Record<string, unknown>[]
     ).map(parseAudit);
-    const target = undone.sort((a, b) => a.ts.localeCompare(b.ts))[0];
+    const target = undone[0];
     if (target && isSchemaOp(target.operation)) {
       try {
         ctx.swapActive(await applySchemaConfig(active, target, 'forward', deps.autoRender));

@@ -94,8 +94,8 @@ export const guiAppHtml = `<!doctype html>
       </svg>
     </button>
     <div class="ask-lattice" id="ask-lattice">
-      <button class="ask-lattice-trigger" id="ask-lattice-trigger" title="Ask Lattice" aria-haspopup="dialog" aria-expanded="false">
-        <span class="ask-lattice-mark" aria-hidden="true">✦</span><span class="ask-lattice-label">Ask Lattice</span>
+      <button class="ask-lattice-trigger" id="ask-lattice-trigger" title="Ask Gladys" aria-haspopup="dialog" aria-expanded="false">
+        <span class="ask-lattice-mark" aria-hidden="true">👵🏻</span><span class="ask-lattice-label">Ask Gladys</span>
       </button>
     </div>
   </header>
@@ -247,9 +247,9 @@ export const guiAppHtml = `<!doctype html>
        element IDs the docked rail used (#rail-feed/#rail-composer/#rail-threads/
        #rail-newchat/#rail-empty), so the chat client code is unchanged — only its
        housing moved to this upper-right floating panel. -->
-  <div class="ask-lattice-panel" id="ask-lattice-panel" role="dialog" aria-label="Ask Lattice">
+  <div class="ask-lattice-panel" id="ask-lattice-panel" role="dialog" aria-label="Ask Gladys">
     <div class="ask-lattice-panel-head">
-      <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">✦</span> Ask Lattice</span>
+      <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
       <select class="rail-threads" id="rail-threads" title="Conversations"></select>
       <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
       <button class="ask-lattice-close" id="ask-lattice-close" title="Close" aria-label="Close">✕</button>

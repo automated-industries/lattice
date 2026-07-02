@@ -20,6 +20,11 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       background: var(--sheen), var(--surface); border: 1px solid var(--border);
       border-radius: 12px; box-shadow: var(--shadow-2), var(--hl-top); cursor: pointer;
       transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      /* Wire/Merge drag: block native text-selection + scroll/pan gestures on the
+         tile so a drag can't hand the pointer stream to the OS (which stops
+         pointermove and freezes the ghost). Chrome tolerates the omission; some
+         webviews don't. Pairs with setPointerCapture in wiremerge.ts. */
+      -webkit-user-select: none; user-select: none; touch-action: none;
     }
     /* Per-row privacy indicator in a card-tile corner (lock = private, eye =
        shared). Reuses the shared .vis-indicator component. */
