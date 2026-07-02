@@ -273,6 +273,14 @@ database connector).
 
 ### Fixed
 
+- **Every table gets a `deleted_at` column on open.** A table created without the
+  soft-delete envelope (an import, or an older/non-standard path) had no
+  `deleted_at`, so reversible delete, merge, and undo refused it ("no `deleted_at`
+  column to reversibly remove"). The on-open data upgrade now backfills the
+  standard nullable `deleted_at` on any user table missing it — existing rows read
+  as live (NULL), no data changes — so the soft-delete envelope is universal. It's
+  self-idempotent (only alters tables that currently lack the column) and
+  fault-isolated per table. `deleted_at` was already a non-removable system column.
 - **Secret values no longer leak into a record's Markdown view.** The rendered-
   context redaction only matched a plain `col:` line, so a secret column rendered in
   the default `- **col:** value` bullet crossed the wire in plaintext. Redaction now

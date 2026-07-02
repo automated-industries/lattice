@@ -29,6 +29,7 @@ const FILES_PATH_SENTINEL = 'internal:upgrade:files-path-to-local-ref:v1';
  * step re-runs next open (and the once-it-holds case self-heals).
  */
 export async function upgradeLegacyData(db: Lattice): Promise<void> {
+  await runUpgradeStep('ensure deleted_at column', () => ensureDeletedAtColumn(db));
   await runUpgradeStep('deleted_at normalization', () => normalizeEmptyDeletedAt(db));
   await runUpgradeStep('files path backfill', () => backfillFilesPath(db));
 }
@@ -42,6 +43,58 @@ async function runUpgradeStep(name: string, fn: () => Promise<void>): Promise<vo
     console.warn(
       `[lattice] open-time data upgrade step "${name}" skipped (will retry on next open): ${msg}`,
     );
+  }
+}
+
+/**
+ * Every user table (excludes the `__lattice_*` bookkeeping tables and SQLite's
+ * internal `sqlite_*` tables). Dialect-aware introspection.
+ */
+async function allUserTables(db: Lattice): Promise<string[]> {
+  const rows =
+    db.getDialect() === 'postgres'
+      ? ((await allAsyncOrSync(
+          db.adapter,
+          `SELECT table_name AS name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'`,
+        )) as { name: string }[])
+      : ((await allAsyncOrSync(
+          db.adapter,
+          `SELECT name FROM sqlite_master WHERE type = 'table'`,
+        )) as { name: string }[]);
+  return rows
+    .map((r) => r.name)
+    .filter((n) => !n.startsWith('__lattice') && !n.startsWith('sqlite_'));
+}
+
+/**
+ * Every queryable user table MUST carry a `deleted_at` column — it's what gives a
+ * table reversible (soft) delete, merge, and undo. A table created by an older or
+ * non-standard path (an import, a hand-written migration) without the soft-delete
+ * envelope made merge/delete refuse ("no deleted_at column to reversibly remove").
+ * Backfill the standard nullable `TEXT deleted_at` on any user table missing it so
+ * the envelope is universal: NULL = live, a timestamp = deleted, so every existing
+ * (live) row keeps reading correctly with zero data change.
+ *
+ * Self-idempotent WITHOUT a sentinel: we introspect the CURRENT schema each open
+ * and only ALTER tables that presently lack the column, so a re-open finds nothing
+ * to do (SQLite's ADD COLUMN is not idempotent, so the pre-check is load-bearing).
+ * Per-table fault isolation: one table that can't be altered (a lock, an exotic
+ * constraint) is warned and skipped, never fatal to the open — the next open
+ * retries it. This mirrors the files-path backfill's add-missing-columns pattern.
+ */
+async function ensureDeletedAtColumn(db: Lattice): Promise<void> {
+  const have = new Set(await tablesWithDeletedAt(db));
+  const missing = (await allUserTables(db)).filter((t) => !have.has(t));
+  for (const table of missing) {
+    try {
+      await addColumnAsyncOrSync(db.adapter, table, 'deleted_at', 'TEXT');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[lattice] could not add deleted_at to "${table}" (will retry next open): ${msg}`,
+      );
+    }
   }
 }
 
