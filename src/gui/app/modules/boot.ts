@@ -144,7 +144,6 @@ export const bootJs = `    // ────────────────�
             'or check the database connection, then reload.</p></div>';
         }
         startEventStream();
-        initSearch();
         initLastEdited();
         initOffline();
         initOutputsResize();
