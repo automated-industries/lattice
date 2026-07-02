@@ -192,9 +192,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // 5.0 startup speed — the ~275 KB vendored Chart.js (chartLibJs, ~31% of the bundle)
 // is no longer composed in; it's served on demand at /gui-assets/chart-lib.js and
 // fetched only when an HTML-file artifact preview needs it. The bundle parsed on
-// EVERY startup dropped ~32% (849022 → 575322). Length + hash recaptured.
-const ORIGINAL_LENGTH = 575322;
-const ORIGINAL_SHA256 = '35bd7a53a34b5224d1869287bcc62f8de96eb0cf365ab7c69b228b29109d4c69';
+// EVERY startup dropped ~32% (849022 → 575322).
+// 5.0 reliability — a read-degraded active workspace no longer bricks the GUI: the
+// /api/entities-summary fetch has its own catch so the header workspace switcher
+// still mounts (the user can always switch away). Length + hash recaptured.
+const ORIGINAL_LENGTH = 576214;
+const ORIGINAL_SHA256 = '07b390a8bfa5fa8a3b96229582bfedf308ea547b80cce263d65e43ab3b5583fa';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
