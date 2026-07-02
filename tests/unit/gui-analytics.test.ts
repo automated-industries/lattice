@@ -105,7 +105,7 @@ describe('#4 Google Analytics — static contract', () => {
       'workspace_create',
       'workspace_switch',
       'search',
-      'setting_change',
+      // ('setting_change' was retired with the Advanced View toggle — no emitter.)
     ];
     for (const evt of expected) {
       expect(guiAppHtml, `event ${evt} should be instrumented`).toContain(`'${evt}'`);
