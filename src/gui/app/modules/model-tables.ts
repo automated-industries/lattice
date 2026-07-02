@@ -98,12 +98,16 @@ export const modelTablesJs = `
         var t = String(ed.target).replace(/^table:/, '');
         var via = ed.label || '';
         if (!byName[s] || !byName[t] || s === t) return;
+        // Each edge carries what it takes to REMOVE it (the chip's ✕): a belongsTo
+        // is a FK column on the child (drop via DELETE .../links/<fk>); a m2m is a
+        // junction table (drop via DELETE .../entities/<junction>). via is the FK
+        // column for belongsTo and the junction table name for m2m (graph label).
         if (ed.type === 'belongsTo') {
-          upstream[s].push({ table: t, field: via });
-          downstream[t].push({ table: s, field: via });
+          upstream[s].push({ table: t, field: via, kind: 'belongsTo', childTable: s, fk: via });
+          downstream[t].push({ table: s, field: via, kind: 'belongsTo', childTable: s, fk: via });
         } else if (ed.type === 'manyToMany') {
-          downstream[s].push({ table: t, field: via });
-          downstream[t].push({ table: s, field: via });
+          downstream[s].push({ table: t, field: via, kind: 'manyToMany', junction: via });
+          downstream[t].push({ table: s, field: via, kind: 'manyToMany', junction: via });
         }
       });
       return { upstream: upstream, downstream: downstream, byName: byName };
@@ -438,15 +442,33 @@ export const modelTablesJs = `
         var by = rb.top - gr.top + sy + rb.height / 2;
         var d;
         // Same-column cards (their x-ranges overlap) would have a straight link
-        // run hidden behind the stacked cards. Loop it out into the right gutter
+        // run hidden behind the stacked cards. Loop it out into a side gutter
         // where it reads clearly; the bow scales with the vertical gap. Cards in
         // different columns keep the horizontal S-curve across the gap between them.
         var overlapX = Math.max(ra.left, rb.left) < Math.min(ra.right, rb.right);
         if (overlapX) {
+          // The tiers grid wraps to fewer/narrower columns when the Model pane is
+          // narrow, so a card's right edge can sit flush against the container's
+          // right edge. .mt-tiers is overflow:auto, so a bow past the content box
+          // is CLIPPED — the link vanishes even though it's drawn (the "linked but
+          // no line in table view" bug). Bow toward whichever side has more room
+          // and clamp the control point inside [pad, W-pad] so it can never be
+          // clipped; the bow depth still scales with the vertical gap.
+          var pad = 4;
           var ax = ra.right - gr.left + sx;
           var bx = rb.right - gr.left + sx;
-          var gutter = Math.max(ax, bx) + Math.max(44, Math.abs(by - ay) * 0.6);
-          d = 'M ' + ax + ' ' + ay + ' C ' + gutter + ' ' + ay + ', ' + gutter + ' ' + by + ', ' + bx + ' ' + by;
+          var lax = ra.left - gr.left + sx;
+          var lbx = rb.left - gr.left + sx;
+          var bow = Math.max(44, Math.abs(by - ay) * 0.6);
+          var rightAnchor = Math.max(ax, bx);
+          var leftAnchor = Math.min(lax, lbx);
+          if (W - rightAnchor >= leftAnchor) {
+            var gr2 = Math.min(rightAnchor + bow, W - pad);
+            d = 'M ' + ax + ' ' + ay + ' C ' + gr2 + ' ' + ay + ', ' + gr2 + ' ' + by + ', ' + bx + ' ' + by;
+          } else {
+            var gl = Math.max(leftAnchor - bow, pad);
+            d = 'M ' + lax + ' ' + ay + ' C ' + gl + ' ' + ay + ', ' + gl + ' ' + by + ', ' + lbx + ' ' + by;
+          }
         } else {
           var x1 = ra.right - gr.left + sx, x2 = rb.left - gr.left + sx;
           if (x2 < x1) { x1 = ra.left - gr.left + sx; x2 = rb.right - gr.left + sx; } // target is left of source
@@ -496,13 +518,22 @@ export const modelTablesJs = `
       var down = lineage.downstream[name] || [];
       function labOf(t) { var d = lineage.byName[t]; return d ? d.label : t; }
       function icOf(t) { var d = lineage.byName[t]; return d ? d.icon : '\\ud83d\\udce6'; }
-      function linChip(x) {
-        return '<button type="button" class="mt-lin-chip" data-lin="' + escapeHtml(x.table) + '">' +
-          '<span class="mt-card-ic">' + icOf(x.table) + '</span>' + escapeHtml(labOf(x.table)) +
-          ' <span class="mt-lin-via">' + escapeHtml(x.field) + '</span></button>';
+      function linChip(x, removable) {
+        var rm = removable
+          ? '<span class="mt-lin-x" role="button" tabindex="0" title="Remove this link"' +
+              ' data-rm-kind="' + escapeHtml(x.kind || '') + '"' +
+              ' data-rm-child="' + escapeHtml(x.childTable || '') + '"' +
+              ' data-rm-fk="' + escapeHtml(x.fk || '') + '"' +
+              ' data-rm-junction="' + escapeHtml(x.junction || '') + '">\\u2715</span>'
+          : '';
+        return '<span class="mt-lin-chip-wrap">' +
+          '<button type="button" class="mt-lin-chip" data-lin="' + escapeHtml(x.table) + '">' +
+            '<span class="mt-card-ic">' + icOf(x.table) + '</span>' + escapeHtml(labOf(x.table)) +
+            ' <span class="mt-lin-via">' + escapeHtml(x.field) + '</span></button>' +
+          rm + '</span>';
       }
-      var upHtml = up.length ? '<div class="mt-detail-sec"><h4>Upstream \\u00b7 sources</h4><div class="mt-lin">' + up.map(linChip).join('') + '</div></div>' : '';
-      var downHtml = down.length ? '<div class="mt-detail-sec"><h4>Downstream \\u00b7 consumers</h4><div class="mt-lin">' + down.map(linChip).join('') + '</div></div>' : '';
+      var upHtml = up.length ? '<div class="mt-detail-sec"><h4>Upstream \\u00b7 sources</h4><div class="mt-lin">' + up.map(function (x) { return linChip(x, false); }).join('') + '</div></div>' : '';
+      var downHtml = down.length ? '<div class="mt-detail-sec"><h4>Downstream \\u00b7 consumers</h4><div class="mt-lin">' + down.map(function (x) { return linChip(x, true); }).join('') + '</div></div>' : '';
 
       // Field-level lineage edges (this.<fk> → parent.id ; child.<fk> → this.id).
       var fl = [];
@@ -533,6 +564,46 @@ export const modelTablesJs = `
       // Lineage chips navigate the detail panel to the linked table.
       panel.querySelectorAll('.mt-lin-chip').forEach(function (b) {
         b.addEventListener('click', function () { mtOpenDetail(b.getAttribute('data-lin'), null, entities, lineage); });
+      });
+      // The ✕ on a consumer chip removes that link (drop the child's FK, or
+      // delete the m2m junction). Both are owner-gated soft-deletes on the server,
+      // so they're undoable from history.
+      panel.querySelectorAll('.mt-lin-x').forEach(function (x) {
+        function go(ev) { ev.preventDefault(); ev.stopPropagation(); mtRemoveLink(x, name); }
+        x.addEventListener('click', go);
+        x.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') go(ev); });
+      });
+    }
+
+    // Remove a relationship from a consumer chip's ✕. A belongsTo link drops the
+    // child's FK column (DELETE .../entities/<child>/links/<fk>); a many-to-many
+    // link deletes the junction table (DELETE .../entities/<junction>). Server
+    // soft-deletes both (undoable). On success, drop the edge cache and re-render.
+    function mtRemoveLink(x, fromTable) {
+      var kind = x.getAttribute('data-rm-kind');
+      var url;
+      if (kind === 'manyToMany') {
+        var j = x.getAttribute('data-rm-junction');
+        if (!j) return;
+        url = '/api/schema/entities/' + encodeURIComponent(j);
+      } else {
+        var child = x.getAttribute('data-rm-child');
+        var fk = x.getAttribute('data-rm-fk');
+        if (!child || !fk) return;
+        url = '/api/schema/entities/' + encodeURIComponent(child) + '/links/' + encodeURIComponent(fk);
+      }
+      x.classList.add('mt-lin-x-busy');
+      fetch(url, { method: 'DELETE' }).then(function (res) {
+        return res.json().then(function (body) {
+          if (!res.ok) throw new Error((body && body.error) || 'Could not remove link');
+          if (typeof showToast === 'function') showToast('Link removed', {});
+          mtEdgesCache = null; // relationship set changed — refetch edges
+          var host = document.getElementById('model-tables-host');
+          if (host) renderModelTables(host);
+        });
+      }).catch(function (err) {
+        x.classList.remove('mt-lin-x-busy');
+        if (typeof showToast === 'function') showToast(err.message, { type: 'error' });
       });
     }
 `;
