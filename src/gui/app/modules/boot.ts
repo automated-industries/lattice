@@ -61,7 +61,10 @@ export const bootJs = `    // ────────────────�
 
     function bootWorkspace() {
       return Promise.all([
-        fetchJson('/api/entities-summary'),
+        // Own catch so a read-degraded active workspace (its first data read 500s)
+        // can't reject the whole boot — otherwise renderWsSwitcher below never runs
+        // and the user is BRICKED (can't switch away from the broken workspace).
+        fetchJson('/api/entities-summary').catch(function () { return { tables: [], __failed: true }; }),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
@@ -131,6 +134,15 @@ export const bootJs = `    // ────────────────�
         wireHistoryControls();
         refreshHistoryState();
         renderRoute();
+        // The active workspace opened but its data couldn't be read — the switcher
+        // is mounted (above), so surface a clear escape hatch instead of a blank pane.
+        if (results[0] && results[0].__failed) {
+          var failEl = document.getElementById('content');
+          if (failEl) failEl.innerHTML =
+            '<div class="placeholder"><h2>This workspace could not load</h2>' +
+            '<p>Its data could not be read. Pick another workspace from the switcher above, ' +
+            'or check the database connection, then reload.</p></div>';
+        }
         startEventStream();
         initSearch();
         initLastEdited();
