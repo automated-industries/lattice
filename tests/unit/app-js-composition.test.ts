@@ -219,8 +219,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // + feature are removed (advancedMode() is a false constant; setAdvancedMode /
 // mapHashForMode / fsTerminal deleted), leaving the file workspace as the only
 // view. Length + hash recaptured.
-const ORIGINAL_LENGTH = 587581;
-const ORIGINAL_SHA256 = '86f164101c478c55b9f5fdbc076646feabf9110c0cfaf0e5b84d194b2abcf647';
+// 5.0 GUI batch 5 — the schema graph mounts empty (instant canvas, renderer module
+// loaded in parallel with the data fetch) and reveals nodes in waves (biggest hubs
+// first) via successive setData calls, so entities fly in progressively like the
+// live-ingest delta instead of all at once (revealGraphInWaves in system-tables).
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 589596;
+const ORIGINAL_SHA256 = 'e1e5679a03049f7326fb7c76aceb0fccdf6558740db7b4c18ceca26304d837f6';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
