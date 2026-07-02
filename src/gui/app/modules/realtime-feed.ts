@@ -278,13 +278,25 @@ export const realtimeFeedJs = `    // ──────────────
         }
       });
     }
-    function scheduleRealtimeRefresh() {
+    function scheduleRealtimeRefresh(changedTable) {
+      // Accumulate every table that changed across the debounce window so scoped
+      // invalidation covers them all, not just the first. An absent table (schema
+      // change / unknown) is sticky "ALL" → full wipe.
+      if (!changedTable) {
+        realtimeDirtyTables = 'ALL';
+      } else if (realtimeDirtyTables !== 'ALL') {
+        realtimeDirtyTables = realtimeDirtyTables || {};
+        realtimeDirtyTables[changedTable] = true;
+      }
       if (realtimePending) return;
       realtimePending = setTimeout(function () {
         realtimePending = null;
+        var dirty = realtimeDirtyTables;
+        realtimeDirtyTables = null;
+        var tables = dirty && dirty !== 'ALL' ? Object.keys(dirty) : null;
         // afterMutation refreshes entities + the current view. Fire-and-
         // forget: any error just falls through to next manual action.
-        afterMutation().catch(function () { /* swallow */ });
+        afterMutation(tables).catch(function () { /* swallow */ });
       }, 200);
     }
 `;

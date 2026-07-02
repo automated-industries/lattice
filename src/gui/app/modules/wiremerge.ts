@@ -103,6 +103,11 @@ export const wireMergeJs = `
         if (ev.button !== undefined && ev.button !== 0) return;
         var source = el.getAttribute('data-table');
         if (!source) return;
+        // Capture the pointer to this tile so the whole drag streams pointermove to
+        // us even if the cursor leaves the tile or the webview would otherwise route
+        // the gesture to a native scroll/selection. Chrome works without it; some
+        // webviews freeze the ghost (pointermove stops) unless we own the pointer.
+        if (ev.pointerId != null && el.setPointerCapture) { try { el.setPointerCapture(ev.pointerId); } catch (e) {} }
         var startX = ev.clientX, startY = ev.clientY, dragging = false, hovered = null;
         function clearHover() { if (hovered) { hovered.classList.remove('wm-drop-target'); hovered = null; } }
         function teardown() {
@@ -115,7 +120,15 @@ export const wireMergeJs = `
           clearHover();
         }
         function targetAt(x, y) {
+          // Hide the floating ghost during the hit-test so elementFromPoint returns
+          // the tile UNDER the cursor, not the ghost itself (a clone of the source,
+          // so it would resolve to source and fail source!==target). The ghost has
+          // pointer-events:none, but not every webview honors that for
+          // elementFromPoint — hiding it is the robust, engine-agnostic guarantee.
+          var ghostDisp = _wmGhost ? _wmGhost.style.display : null;
+          if (_wmGhost) _wmGhost.style.display = 'none';
           var t = document.elementFromPoint(x, y);
+          if (_wmGhost) _wmGhost.style.display = ghostDisp || '';
           var c = t && t.closest ? t.closest('[data-table]') : null;
           if (!c || c === el) return null;
           if (c.getAttribute('data-kind') === 'file') return null;

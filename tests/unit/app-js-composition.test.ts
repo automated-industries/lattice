@@ -182,9 +182,15 @@ import { appJs } from '../../src/gui/app/script.js';
 // away record.
 // 5.0 MCP connectors — the connectors settings panel gains a server-URL form for
 // bring-your-own-URL MCP connectors and an OAuth-redirect open + auto-refresh
-// handler. Length + hash recaptured for the merged inline host.
-const ORIGINAL_LENGTH = 845728;
-const ORIGINAL_SHA256 = '018f53427f0a8b03d550a23c4b75f720365084084824ddc3ef91d791e2b2c63a';
+// handler. Plus wire/merge drag fixes for webviews: the drop hit-test hides the
+// floating ghost so elementFromPoint finds the tile underneath, the tile takes
+// setPointerCapture so the gesture keeps streaming pointermove, and the tile CSS
+// blocks native text-selection/scroll gestures.
+// 5.0 perf review — realtime refresh now scopes cache invalidation to the changed
+// table(s) instead of wiping the whole row cache, and relation-chip fetches exclude
+// files.extracted_text. Length + hash recaptured.
+const ORIGINAL_LENGTH = 849022;
+const ORIGINAL_SHA256 = '1cf25560a5c138239bc11aff82fc2d5e21c0581f689b431bacb752bd81ff4f61';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

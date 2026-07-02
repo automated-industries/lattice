@@ -240,7 +240,11 @@ describe('connectors routes (SQLite)', () => {
     const body = r.body as { connectorId: string; result: { upserted: Record<string, number> } };
     expect(body.connectorId).toBeTruthy();
     expect(body.result.upserted).toEqual({ demo_things: 1 });
-    expect(await db!.get('demo_things', 'T1')).toMatchObject({ tid: 'T1', name: 'one' });
+    // Keys are namespaced by connectorId so members can't collide on a shared PK.
+    expect(await db!.get('demo_things', `${body.connectorId}:T1`)).toMatchObject({
+      tid: `${body.connectorId}:T1`,
+      name: 'one',
+    });
     expect(await getConnectorByToolkit(db!, 'demo', 'u1')).not.toBeNull();
   });
 

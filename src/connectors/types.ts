@@ -163,6 +163,15 @@ export interface Connector {
     model: string,
     ctx: ListChangesContext,
   ): AsyncIterable<ExternalRecord>;
+  /**
+   * Optional batch lifecycle. The sync engine calls `beginSyncSession` before a
+   * connector's models are synced and `endSyncSession` after (even on error), so a
+   * connector can open ONE shared resource (e.g. a single MCP transport) and reuse
+   * it across every `listChanges` call instead of reconnecting per parent key.
+   * Connectors that omit these fall back to per-call open (behavior unchanged).
+   */
+  beginSyncSession?(connectionId: string): Promise<void>;
+  endSyncSession?(connectionId: string): Promise<void>;
   /** Revoke a connected account (teardown). */
   disconnect(connectionId: string): Promise<void>;
 }

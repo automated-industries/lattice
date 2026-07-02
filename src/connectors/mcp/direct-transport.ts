@@ -11,6 +11,7 @@
  */
 
 import { ConnectorUnavailableError } from '../errors.js';
+import { assertSafeUrl } from '../../sources/url-safety.js';
 import type { McpTransport, McpToolCall, McpToolInfo, McpServerRef } from './transport.js';
 import {
   LatticeOAuthProvider,
@@ -154,7 +155,7 @@ function makeAuthTransport(
 }
 
 /** Build the SDK transport for a server ref (HTTP/SSE with the stored OAuth token, or stdio). */
-function buildSdkTransport(sdk: LoadedSdk, ref: McpServerRef): unknown {
+async function buildSdkTransport(sdk: LoadedSdk, ref: McpServerRef): Promise<unknown> {
   if (ref.transport === 'stdio') {
     if (!ref.command) {
       throw new ConnectorUnavailableError(
@@ -168,8 +169,12 @@ function buildSdkTransport(sdk: LoadedSdk, ref: McpServerRef): unknown {
   if (!url) {
     throw new ConnectorUnavailableError(`MCP server "${ref.name}" has no URL — reconnect.`);
   }
+  // SSRF guard: the server URL is user-supplied (generic connector) — DNS-resolve
+  // and reject private/loopback/link-local/metadata targets before the SDK fetches
+  // it. Local MCP servers use the stdio transport, not HTTP-to-loopback.
+  const safeUrl = await assertSafeUrl(url);
   const provider = new LatticeOAuthProvider(ref.connectionId, redirectUriPlaceholder());
-  return makeAuthTransport(sdk, new URL(url), provider, ref.transport);
+  return makeAuthTransport(sdk, safeUrl, provider, ref.transport);
 }
 
 /**
@@ -179,7 +184,7 @@ function buildSdkTransport(sdk: LoadedSdk, ref: McpServerRef): unknown {
  */
 export async function connectDirect(ref: McpServerRef): Promise<McpTransport> {
   const sdk = await loadSdk();
-  const transport = buildSdkTransport(sdk, ref);
+  const transport = await buildSdkTransport(sdk, ref);
   const client = new sdk.Client(CLIENT_INFO, { capabilities: {} });
   await client.connect(transport);
   return new DirectMcpTransport(client);
@@ -212,7 +217,10 @@ export interface BeginOAuthArgs {
 export async function beginOAuth(
   args: BeginOAuthArgs,
 ): Promise<{ authorizationUrl: string | undefined; toolNames: string[] }> {
-  setMcpServerUrl(args.connectionId, args.serverUrl);
+  // SSRF guard FIRST (before persisting or loading the SDK): the user supplies
+  // this URL, so DNS-resolve and reject private/loopback/link-local/metadata hosts.
+  const safeUrl = await assertSafeUrl(args.serverUrl);
+  setMcpServerUrl(args.connectionId, safeUrl.toString());
   const sdk = await loadSdk();
   const providerOpts: { clientName?: string; scope?: string; state?: string } = {
     state: args.state,
@@ -220,7 +228,7 @@ export async function beginOAuth(
   if (args.clientName !== undefined) providerOpts.clientName = args.clientName;
   if (args.scope !== undefined) providerOpts.scope = args.scope;
   const provider = new LatticeOAuthProvider(args.connectionId, args.redirectUri, providerOpts);
-  const transport = makeAuthTransport(sdk, new URL(args.serverUrl), provider, args.transportKind);
+  const transport = makeAuthTransport(sdk, safeUrl, provider, args.transportKind);
   const client = new sdk.Client(CLIENT_INFO, { capabilities: {} });
   try {
     await client.connect(transport);
@@ -259,13 +267,15 @@ export async function completeOAuth(args: CompleteOAuthArgs): Promise<{ toolName
   if (!serverUrl) {
     throw new ConnectorUnavailableError('No pending MCP connection — restart the connect flow.');
   }
+  // Re-validate the stored URL (defense-in-depth; it was checked at begin).
+  const safeUrl = await assertSafeUrl(serverUrl);
   const sdk = await loadSdk();
   const providerOpts: { clientName?: string; scope?: string; state?: string } = {};
   if (args.clientName !== undefined) providerOpts.clientName = args.clientName;
   if (args.scope !== undefined) providerOpts.scope = args.scope;
   if (args.state !== undefined) providerOpts.state = args.state;
   const provider = new LatticeOAuthProvider(args.connectionId, args.redirectUri, providerOpts);
-  const transport = makeAuthTransport(sdk, new URL(serverUrl), provider, args.transportKind);
+  const transport = makeAuthTransport(sdk, safeUrl, provider, args.transportKind);
   await transport.finishAuth(args.code);
   const client = new sdk.Client(CLIENT_INFO, { capabilities: {} });
   await client.connect(transport);

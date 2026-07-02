@@ -165,7 +165,9 @@ export const offlineEditQueueJs = `    // ────────────�
         setStatusPill((data && data.mode) || 'local', (data && data.state) || 'local');
       } else if (type === 'realtime-change') {
         if (data) onRealtimeChange(data);
-        scheduleRealtimeRefresh();
+        // Pass the changed table so only its cache entry is invalidated; a missing
+        // table falls back to a full wipe (unchanged behavior).
+        scheduleRealtimeRefresh(data && data.table);
       } else if (type === 'feed') {
         // renderFeedItem now flashes each change as a transient top-right status
         // (the realtime update) — no rail pills.
@@ -178,7 +180,11 @@ export const offlineEditQueueJs = `    // ────────────�
         if (data && ['insert', 'link', 'schema'].indexOf(data.op) !== -1) {
           scheduleGraphIngestAnim();
         }
-        if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
+        // A schema change can alter any table's shape → full wipe (no table arg);
+        // a row/link change scopes invalidation to its own table.
+        if (data && (data.table || data.op === 'schema')) {
+          scheduleRealtimeRefresh(data.op === 'schema' ? null : data.table);
+        }
       } else if (type === 'render-snapshot') {
         if (data) applyRenderSnapshot(data);
         updateRenderStatus();
