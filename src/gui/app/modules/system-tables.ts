@@ -12,6 +12,9 @@ export const systemTablesJs = `    // ──────────────
     // cached dynamic import of it, so the asset is fetched once per session.
     var schemaGraphHandle = null;
     var _forceGraphModule = null;
+    // Bumped on every schema-graph render so an in-flight progressive reveal from a
+    // previous render (or a navigation) cancels instead of feeding a stale handle.
+    var graphRevealGen = 0;
 
     /** Columns that are structurally part of every entity and shouldn't be
      * renamed or removed from the GUI. id is the primary key; deleted_at is
@@ -148,22 +151,31 @@ export const systemTablesJs = `    // ──────────────
     function renderSchemaGraph() {
       var mount = document.getElementById('graph-mount');
       if (!mount) return;
+      var myGen = ++graphRevealGen; // cancels any prior render's in-flight reveal
+      // Load the renderer module IN PARALLEL with the data fetch so the canvas can
+      // paint the instant EITHER resolves — neither waits on the other.
+      var modP = loadForceGraph();
       fetchJson('/api/graph?schema=1').then(function (graph) {
+        if (myGen !== graphRevealGen) return; // superseded
         var model = buildSchemaModel(graph);
         if (!model.nodes.length) {
           mount.innerHTML = '<div class="muted" style="padding:24px">No objects with data yet. Add files or connect a source to populate the graph.</div>';
           return;
         }
         graphModelCache = model; // baseline for the live ingest animation
-        loadForceGraph().then(function (mod) {
+        modP.then(function (mod) {
+          if (myGen !== graphRevealGen) return; // navigated away / re-rendered
           var liveMount = document.getElementById('graph-mount');
-          if (!liveMount) return; // navigated away while the renderer loaded
+          if (!liveMount) return;
           if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
           liveMount.innerHTML = '';
           var data = schemaGraphData(model);
+          // Mount EMPTY so the canvas is up instantly, then reveal the nodes in
+          // waves so they fly in progressively (the same delta animation the live
+          // file-ingest uses) instead of all appearing at once.
           schemaGraphHandle = mod.createForceGraph(liveMount, {
-            nodes: data.nodes,
-            edges: data.edges,
+            nodes: [],
+            edges: [],
             reducedMotion: graphReducedMotion(),
             onNode: function (node) {
               // In Wire/Merge mode a node click picks a source then a target (drag
@@ -182,6 +194,7 @@ export const systemTablesJs = `    // ──────────────
               }
             },
           });
+          revealGraphInWaves(data.nodes, data.edges, myGen);
           if (dmActiveTable) { dmShowEntityEditor(dmActiveTable); schemaGraphHandle.setSelected(dmActiveTable); }
         }).catch(function (err) {
           var m = document.getElementById('graph-mount');
@@ -191,6 +204,29 @@ export const systemTablesJs = `    // ──────────────
         mount.innerHTML = '<div class="muted" style="padding:24px">Failed to load schema graph: ' +
           escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // Reveal a freshly-mounted schema graph in waves: hand the live handle a growing
+    // prefix of the nodes on a short timer so each batch's new nodes fly in (setData
+    // is a diff — it animates the delta and skips edges whose endpoints aren't in
+    // yet, so passing ALL edges every wave is safe). Big hubs first (by radius) reads
+    // as the graph "building out". Reduced motion or a tiny graph → one shot.
+    function revealGraphInWaves(allNodes, allEdges, myGen) {
+      if (!schemaGraphHandle) return;
+      if (graphReducedMotion() || allNodes.length <= 8) {
+        schemaGraphHandle.setData(allNodes, allEdges);
+        return;
+      }
+      var ordered = allNodes.slice().sort(function (a, b) { return (b.radius || 0) - (a.radius || 0); });
+      var step = Math.max(3, Math.ceil(ordered.length / 10)); // ~10 waves
+      var shown = 0;
+      function wave() {
+        if (myGen !== graphRevealGen || !schemaGraphHandle) return; // superseded
+        shown = Math.min(shown + step, ordered.length);
+        schemaGraphHandle.setData(ordered.slice(0, shown), allEdges);
+        if (shown < ordered.length) window.setTimeout(wave, 90);
+      }
+      wave();
     }
 
     // Build {nodes, links} from /api/graph: table nodes (junctions already
