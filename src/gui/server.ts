@@ -1025,6 +1025,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 db: active.db,
                 outputDir: active.outputDir,
                 connectedBy,
+                feed: active.feed,
               });
             },
           },
