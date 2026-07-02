@@ -8,7 +8,7 @@ import {
   statSync,
 } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
-import { sendJson, readJson, parsePageParam } from './http.js';
+import { sendJson, readJson, parsePageParam, sendHtmlCompressed } from './http.js';
 import { Lattice } from '../lattice.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import type { GuiRequestContext } from './request-context.js';
@@ -413,14 +413,13 @@ export async function handleReadRoutes(
 
   // ── HTML + read-only data routes ──────────────────────────────────
   if (method === 'GET' && pathname === '/') {
-    deps.sendText(
+    sendHtmlCompressed(
+      req,
       res,
       deps.guiAppHtml.replace(
         '<!--LATTICE_VERSION-->',
         deps.guiVersion ? `v${deps.guiVersion}` : '',
       ),
-      200,
-      'text/html; charset=utf-8',
     );
     return true;
   }
@@ -717,11 +716,24 @@ export async function handleReadRoutes(
     // entries. Otherwise undone rows left by a PRIOR server process
     // (sessionId is regenerated per process) light up ↷ for a session
     // that has nothing of its own to redo → "Nothing to redo".
-    const sessionRows = (await active.db.query('_lattice_gui_audit', {
-      filters: [{ col: 'session_id', op: 'eq', val: ctx.sessionId }],
-    })) as Record<string, unknown>[];
-    const sessionLive = sessionRows.filter((r) => Number(r.undone) === 0).length;
-    const sessionUndone = sessionRows.length - sessionLive;
+    // canUndo/canRedo are just "does this session have ≥1 live / ≥1 undone
+    // entry?" — two COUNT(*)s that read NO row bodies. The prior code loaded the
+    // whole session audit log (incl. before_json/after_json blobs, up to ~200KB
+    // each) on every edit/nav just to derive these two booleans — unbounded
+    // egress + latency on the hottest GUI path. Backed by the (session_id, undone)
+    // index added in lifecycle.ts.
+    const sessionLive = await active.db.count('_lattice_gui_audit', {
+      filters: [
+        { col: 'session_id', op: 'eq', val: ctx.sessionId },
+        { col: 'undone', op: 'eq', val: 0 },
+      ],
+    });
+    const sessionUndone = await active.db.count('_lattice_gui_audit', {
+      filters: [
+        { col: 'session_id', op: 'eq', val: ctx.sessionId },
+        { col: 'undone', op: 'eq', val: 1 },
+      ],
+    });
     sendJson(res, { entries, canUndo: sessionLive > 0, canRedo: sessionUndone > 0 });
     return true;
   }

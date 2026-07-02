@@ -135,6 +135,35 @@ describe('Gmail connector', () => {
   });
 });
 
+describe('sync session reuses ONE transport across parent keys (#8)', () => {
+  function messagesConn() {
+    const seen: McpServerRef[] = [];
+    const t = new FakeTransport([{ name: 'get_thread' }], {
+      get_thread: { messages: [{ id: 'm1', from: 'a@x.com', subject: 'Hi', body: 'B' }] },
+    });
+    const conn = gmailConnector({ transportFactory: factoryFor(t, seen) });
+    return { conn, t, seen };
+  }
+
+  it('opens a fresh transport per listChanges when NO session is active (unchanged single-shot path)', async () => {
+    const { conn, seen } = messagesConn();
+    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't1' }));
+    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't2' }));
+    expect(seen).toHaveLength(2); // the old N+1: one connect per parent key
+  });
+
+  it('opens ONE transport for the whole session, reuses it, and closes it on endSyncSession', async () => {
+    const { conn, t, seen } = messagesConn();
+    await conn.beginSyncSession('c1');
+    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't1' }));
+    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't2' }));
+    expect(seen).toHaveLength(1); // reused across both parent keys
+    expect(t.closed).toBe(false); // not closed mid-session
+    await conn.endSyncSession('c1');
+    expect(t.closed).toBe(true); // closed exactly once, at session end
+  });
+});
+
 describe('Generic (introspective) connector', () => {
   it('calls read tools, skips write tools, and maps items into mcp_items', async () => {
     const conn = genericConnector({

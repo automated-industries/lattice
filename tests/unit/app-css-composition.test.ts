@@ -74,8 +74,13 @@ import { css } from '../../src/gui/app/css.js';
 // .fs-context-status (its inline save status).
 // Review batch A2: .mt-card gets touch-action:none so a touch drag-to-wire/merge
 // doesn't scroll the page mid-gesture.
-const ORIGINAL_LENGTH = 121989;
-const ORIGINAL_SHA256 = '655b0666aa227eb556c672599221d62a99a9d90c65eabd6c89ef2c633136248c';
+// 5.0 webview drag-hardening: .mt-card ALSO gets user-select:none (matching
+// .fs-tile) so a drag can't start a native text-selection that steals the pointer
+// stream and freezes the ghost. Plus the assistant persona: .chat-msg.assistant
+// gets a ::before avatar (the older-woman emoji) so replies read as coming from
+// Gladys. Length + hash recaptured.
+const ORIGINAL_LENGTH = 122960;
+const ORIGINAL_SHA256 = '755111c9f5af88a8af5d4cd3d7307b96fd46d612b822626ea6c81f89cdc2592f';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

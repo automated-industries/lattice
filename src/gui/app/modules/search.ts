@@ -25,8 +25,17 @@ export const searchJs = `    // ────────────────
      * any mutation that goes through the audit log: row CRUD, link/unlink,
      * undo, redo, revert.
      */
-    function afterMutation() {
-      loadedTables = {};
+    function afterMutation(changedTables) {
+      // Scoped invalidation: drop only the tables that actually changed so a
+      // collaborator's edit to one table doesn't force re-fetching every OTHER
+      // cached table this view references (the dominant cloud egress cost). A
+      // null/empty list (local mutation, schema change, or unknown table) falls
+      // back to a full cache wipe — the safe default.
+      if (changedTables && changedTables.length) {
+        for (var i = 0; i < changedTables.length; i++) delete loadedTables[changedTables[i]];
+      } else {
+        loadedTables = {};
+      }
       return Promise.all([
         fetchJson('/api/entities-summary'),
         refreshHistoryState(),

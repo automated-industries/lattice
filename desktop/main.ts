@@ -43,6 +43,25 @@ function resolveGuiAssetsDir(): string | undefined {
   return undefined; // absent → voice degrades gracefully
 }
 
+// The canonical Lattice docs (docs/*.md) power the assistant's `lattice_help`
+// tool. Embedded via `deno desktop --include docs`; deno extracts them relative
+// to this module (same model as gui-assets). Resolve EXPLICITLY — the lib's
+// findDocsDir() walks up from its own bundled module, which isn't guaranteed to
+// reach the extracted docs dir — and hand the path to the lib via
+// LATTICE_DOCS_DIR so it uses this directly. `cloud.md` is the sentinel guide.
+function resolveDocsDir(): string | undefined {
+  const candidates = ['../docs', './docs', '../../docs', '../../../docs'];
+  for (const rel of candidates) {
+    try {
+      const dir = fileURLToPath(new URL(rel, import.meta.url));
+      if (existsSync(join(dir, 'cloud.md'))) return dir;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return undefined; // absent → assistant help degrades to model-only knowledge
+}
+
 // ── Auto-update (upgrade-on-run) ─────────────────────────────────────────────
 // `deno desktop` ships a built-in updater: it polls <baseUrl>/latest.json, applies
 // the bsdiff patch, relaunches, and auto-rolls-back on a failed launch. We point
@@ -93,6 +112,12 @@ const boot = ensureRootForGui({
 });
 
 const guiAssetsDir = resolveGuiAssetsDir();
+
+// Point the lib's docs lookup at the embedded copy (if present) before the server
+// boots, so the assistant's `lattice_help` answers from the canonical docs on the
+// packaged desktop app — not just under `lattice gui` from an installed package.
+const docsDir = resolveDocsDir();
+if (docsDir) Deno.env.set('LATTICE_DOCS_DIR', docsDir);
 
 const handle = await startGuiServer({
   latticeRoot: boot.root,
