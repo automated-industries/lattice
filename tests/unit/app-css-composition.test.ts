@@ -82,8 +82,10 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 drag fix — .wm-ghost is position:fixed !important so it beats .fs-tile's
 // position:relative (equal specificity), and the ghost is appended to <body>; both
 // ensure the drag clone anchors to the cursor instead of being offset ~100px.
-const ORIGINAL_LENGTH = 123298;
-const ORIGINAL_SHA256 = '9383d822747aa4eed14cdf66bef2715c26bab2d502d499d3ff387fe23f13de85';
+// 5.0 GUI batch — the file-drag overlay is now a whole-window .file-drop-overlay
+// (replacing the Gladys-panel outline). Length + hash recaptured.
+const ORIGINAL_LENGTH = 124020;
+const ORIGINAL_SHA256 = '356f121acd99ea8ac909f141da07456966971c5fb5b7878376d56efc13425c00';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

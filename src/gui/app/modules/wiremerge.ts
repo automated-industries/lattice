@@ -57,7 +57,14 @@ export const wireMergeJs = `
         body: JSON.stringify({ left: a, right: b }),
       }).then(function (r) { return r.json().then(function (bd) { return { ok: r.ok, body: bd }; }); })
         .then(function (res) {
-          if (!res.ok) { wmToast('Link failed: ' + ((res.body && res.body.error) || 'could not link'), true); return; }
+          if (!res.ok) {
+            // "already linked" is not a failure worth surfacing — the desired end
+            // state (a link exists between the two) already holds. Fail silently;
+            // only toast a genuine error.
+            var e = (res.body && res.body.error) || '';
+            if (!/already linked/i.test(e)) wmToast('Link failed: ' + (e || 'could not link'), true);
+            return;
+          }
           wmToast('Linked ' + displayFor(a).label + ' \\u2194 ' + displayFor(b).label);
           wmAfterAct();
         }).catch(function () { wmToast('Link failed', true); });
@@ -184,7 +191,7 @@ export const wireMergeJs = `
     }
     function wmRenderButtons() {
       var w = document.getElementById('wm-wire-btn'), m = document.getElementById('wm-merge-btn');
-      if (w) { w.classList.toggle('on', wmMode === 'wire'); w.textContent = wmMode === 'wire' ? (wmPick ? 'Pick target\\u2026' : 'Pick source\\u2026') : '+ Wire'; }
+      if (w) { w.classList.toggle('on', wmMode === 'wire'); w.textContent = wmMode === 'wire' ? (wmPick ? 'Pick target\\u2026' : 'Pick source\\u2026') : 'Link'; }
       if (m) { m.classList.toggle('on', wmMode === 'merge'); m.textContent = wmMode === 'merge' ? (wmPick ? 'Pick target\\u2026' : 'Pick source\\u2026') : 'Merge'; }
     }
     function initWireMerge() {
