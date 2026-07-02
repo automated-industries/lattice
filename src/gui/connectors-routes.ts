@@ -166,7 +166,12 @@ export async function dispatchConnectorsRoute(
     // (each with its presentation + credential form so the GUI renders no per-
     // connector code).
     if (pathname === '/api/connectors' && method === 'GET') {
-      const connected = await listConnectors(db, connectedBy);
+      // External databases (db_source rows) live in the Inputs > DATABASES section
+      // via /api/db-sources — exclude them here so a connected database never ALSO
+      // appears under CONNECTORS (they were double-listed before this filter).
+      const connected = (await listConnectors(db, connectedBy)).filter(
+        (c) => c.connector !== 'db_source',
+      );
       const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
       for (const c of connectors) {
         for (const tk of c.toolkits()) toolkits.push(toolkitDescriptor(c, tk));

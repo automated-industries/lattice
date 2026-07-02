@@ -23,6 +23,8 @@ export interface DbSourcesRouteDeps {
   outputDir: string;
   /** Identity that owns connections made in this session. */
   connectedBy: string;
+  /** Test seam — substitute connector (defaults to a real DatabaseConnector). */
+  connectorOverride?: DatabaseConnector;
 }
 
 const ID_RE = /^[a-z0-9-]+$/i;
@@ -37,7 +39,7 @@ export async function dispatchDbSourcesRoute(
   if (!pathname.startsWith('/api/db-sources')) return false;
   const method = req.method ?? 'GET';
   const { db, outputDir, connectedBy } = deps;
-  const connector = new DatabaseConnector();
+  const connector = deps.connectorOverride ?? new DatabaseConnector();
 
   // List this member's connected databases (+ table count from the descriptor).
   if (pathname === '/api/db-sources' && method === 'GET') {
@@ -85,10 +87,30 @@ export async function dispatchDbSourcesRoute(
       connectionRef: connection.connectionId,
       connectedBy,
     });
-    for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-    await enableConnectorRls(db, connector, toolkit);
-    const result = await syncConnector(db, connector, connectorId);
-    sendJson(res, { connectorId, displayName: connection.displayName, result });
+    // ATOMIC connect: if the import (table definition / RLS / initial sync) fails,
+    // roll the whole connection back — registry row, stored creds, schema
+    // descriptor, imported rows, context files — so a failed connect leaves NOTHING
+    // behind (no phantom entry in the Databases list). The rollback reuses the
+    // DELETE route's teardown; a rollback failure is appended to the error rather
+    // than swallowed.
+    try {
+      for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+      await enableConnectorRls(db, connector, toolkit);
+      const result = await syncConnector(db, connector, connectorId);
+      sendJson(res, { connectorId, displayName: connection.displayName, result });
+    } catch (e) {
+      let rollbackNote = '';
+      try {
+        await disconnectConnector(db, connector, connectorId, { outputDir, mode: 'hard' });
+      } catch (re) {
+        rollbackNote = ` (cleanup also failed: ${(re as Error).message} — remove the connection from Databases manually)`;
+      }
+      sendJson(
+        res,
+        { error: `Import failed: ${(e as Error).message}${rollbackNote}` },
+        isActionable(e) ? 422 : 500,
+      );
+    }
     return true;
   }
 
