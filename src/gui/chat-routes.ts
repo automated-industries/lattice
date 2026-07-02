@@ -765,6 +765,11 @@ export async function dispatchChatRoute(
       // Give the assistant the operator's name so it addresses them and
       // resolves "me"/"my" without asking for a name it already has.
       operatorName: readIdentity().display_name,
+      // Ground the assistant in the real wall-clock (server-owned) + the viewer's
+      // timezone, so "today"/"recent"/"most recent" resolve to NOW, not its stale
+      // training cutoff. turnStartedAt is the instant this turn began.
+      nowIso: turnStartedAt,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
       ...(activeContext ? { activeContext } : {}),
       // Capture each executed tool call (capped) for cross-turn replay memory.
