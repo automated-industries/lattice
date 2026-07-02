@@ -65,6 +65,11 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     /* The brain graph fills the whole content pane. */
     .brain-graph { height: 100%; }
     .brain-graph #graph-mount { height: 100%; position: relative; }
+    /* Drilled-in entity graph (Graph section, Object Page): a breadcrumb bar on top
+       and the graph canvas filling the rest. */
+    .brain-graph.entity-graph { display: flex; flex-direction: column; }
+    .brain-graph.entity-graph #graph-mount { flex: 1 1 auto; height: auto; min-height: 0; }
+    .graph-crumbs { flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--border); }
     /* Loading spinner shown until the graph has settled + centred (no off-centre
        flash / jump). Covers the mount; removed the moment the graph is revealed. */
     .graph-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2; }
