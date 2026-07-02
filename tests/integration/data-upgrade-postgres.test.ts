@@ -116,4 +116,50 @@ describe.skipIf(!PG_URL)('postgres data upgrade — single-DO-block deleted_at n
     )) as { n: number }[];
     expect(again[0].n).toBe(1);
   });
+
+  it('backfills a deleted_at column on a user table missing it', async () => {
+    const schema = `dau_${randomBytes(4).toString('hex')}`;
+    schemas.push(schema);
+    const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    await admin.end();
+
+    const db = new Lattice(schemaUrl(schema));
+    dbs.push(db);
+    await db.init();
+
+    // A table created without the soft-delete envelope (an import / older path).
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE TABLE "canonical_types" (id TEXT PRIMARY KEY, name TEXT)`,
+    );
+    await runAsyncOrSync(
+      db.adapter,
+      `INSERT INTO "canonical_types" (id, name) VALUES ('c1', 'Person')`,
+    );
+
+    await upgradeLegacyData(db);
+
+    const cols = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT column_name AS name FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'canonical_types'`,
+    )) as { name: string }[];
+    expect(cols.map((c) => c.name)).toContain('deleted_at');
+    const row = (await getAsyncOrSync(
+      db.adapter,
+      `SELECT name, deleted_at FROM "canonical_types" WHERE id='c1'`,
+    )) as { name: string; deleted_at: string | null };
+    expect(row.name).toBe('Person'); // no data lost
+    expect(row.deleted_at).toBeNull(); // existing rows read as live
+
+    // Idempotent: a second open doesn't throw or re-add.
+    await upgradeLegacyData(db);
+    const cols2 = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT column_name AS name FROM information_schema.columns
+        WHERE table_schema = '${schema}' AND table_name = 'canonical_types' AND column_name = 'deleted_at'`,
+    )) as { name: string }[];
+    expect(cols2.length).toBe(1);
+  });
 });
