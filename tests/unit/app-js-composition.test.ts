@@ -236,8 +236,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // rows they belongsTo, labelled by name/id); clicking a node opens the record
 // (entity) page; a breadcrumb rooted at "Graph" keeps the Graph tab lit
 // (tabKeyForHash + the #/graph/<obj> route). Length + hash recaptured.
-const ORIGINAL_LENGTH = 600868;
-const ORIGINAL_SHA256 = 'a619219b0247207d776a075aab2527cc4772c10080df8818931e25f1cb80a8ba';
+// 5.0 GUI batch 8 — header: the top search box is removed (Ask Gladys is the sole
+// search surface; openSearchHit kept for the feed/wizard/onboarding), replaced by
+// Back/Forward page-nav buttons next to Undo/Redo. Graph object bubbles size on a
+// log scale by row count. The Outputs "Tables" mirror opens objects under #/tables
+// (Tables tab stays lit). Length + hash recaptured.
+const ORIGINAL_LENGTH = 600127;
+const ORIGINAL_SHA256 = 'b9a7526ec6d2fed6ec78517df22205b956c82fa5aaa82e7eaf2dcc65c77ee069';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

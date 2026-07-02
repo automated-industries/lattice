@@ -63,12 +63,10 @@ export const guiAppHtml = `<!doctype html>
       </button>
       <div class="db-menu" id="ws-menu" hidden></div>
     </div>
-    <div class="topsearch" id="topsearch">
-      <span class="topsearch-icon" aria-hidden="true">🔍</span>
-      <input type="search" id="search-input" placeholder="Ask the assistant…" autocomplete="off" spellcheck="false" aria-label="Ask the assistant" />
-      <div class="search-results" id="search-results" hidden></div>
-    </div>
     <div class="history-controls">
+      <button class="history-btn" id="nav-back-btn" title="Back" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg></button>
+      <button class="history-btn" id="nav-fwd-btn" title="Forward" aria-label="Forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
+      <span class="history-sep" aria-hidden="true"></span>
       <button class="history-btn" id="undo-btn" title="Undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
       <button class="history-btn" id="redo-btn" title="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
       <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
@@ -185,26 +183,6 @@ export const guiAppHtml = `<!doctype html>
             <span class="section-caret">▾</span><span class="section-label-text">Tables</span>
           </button>
           <div class="section-body" data-group-body="out-tables"><div id="out-tables-mount"></div></div>
-        </section>
-        <section class="out-group">
-          <button class="section-label section-toggle" data-group="out-serverdocs" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Server Docs</span>
-          </button>
-          <div class="section-body" data-group-body="out-serverdocs"><div id="out-serverdocs"><div class="out-placeholder">Coming soon.</div></div></div>
-        </section>
-        <section class="out-group">
-          <button class="section-label section-toggle" data-group="out-apidocs" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">API Docs</span>
-          </button>
-          <div class="section-body" data-group-body="out-apidocs">
-            <a class="out-link" id="out-apidocs-link" href="https://latticesql.com/docs" target="_blank" rel="noopener">Open the docs ↗</a>
-          </div>
-        </section>
-        <section class="out-group">
-          <button class="section-label section-toggle" data-group="out-mcp" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">MCP</span>
-          </button>
-          <div class="section-body" data-group-body="out-mcp"><div class="out-placeholder">Coming soon.</div></div>
         </section>
       </div>
     </aside>

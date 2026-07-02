@@ -160,7 +160,9 @@ export const outputsJs = `
         if (!ents.length) return '';
         return '<div class="out-tier"><div class="out-tier-head">' + escapeHtml(l.name) + '</div>' +
           ents.map(function (e) {
-            return '<a class="out-tier-row" href="#/fs/' + encodeURIComponent(e.name) + '">' +
+            // The Outputs "Tables" mirror opens each object in the TABLES section
+            // (#/tables/<obj>) so clicking it keeps the Tables tab highlighted.
+            return '<a class="out-tier-row" href="#/tables/' + encodeURIComponent(e.name) + '">' +
               '<span class="src-ic">' + e.icon + '</span><span class="src-name">' + escapeHtml(e.label) + '</span></a>';
           }).join('') + '</div>';
       }).join('');

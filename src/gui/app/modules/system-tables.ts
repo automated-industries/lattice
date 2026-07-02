@@ -346,7 +346,10 @@ export const systemTablesJs = `    // ──────────────
           icon: displayFor(name).icon,
           rowCount: rc,
           cols: (meta.columns || []).length,
-          r: Math.max(11, Math.min(26, 11 + Math.sqrt(rc))),
+          // Bubble size scales with row count on a LOG scale (row counts span orders
+          // of magnitude, so linear/sqrt would swamp small tables). Clamped between a
+          // min + max radius: rc≈0 → 10, rc≳5000 → 30.
+          r: Math.round(10 + 20 * Math.min(1, Math.log(rc + 1) / Math.log(5000))),
           // Share status (cloud workspaces only). ownedByMe is set by the
           // server solely on cloud workspaces, so its presence flags a cloud
           // DB; on local DBs share status is N/A (no coloring).

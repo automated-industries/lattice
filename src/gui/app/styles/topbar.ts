@@ -33,7 +33,9 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .brand:hover .brand-logo { filter: none; }
 
     /* History controls — dark variant */
-    .history-controls { display: inline-flex; gap: 4px; }
+    .history-controls { display: inline-flex; gap: 4px; align-items: center; }
+    /* Divides page-nav (Back/Forward) from data-edit (Undo/Redo) in the one group. */
+    .history-sep { width: 1px; height: 18px; background: var(--border); margin: 0 3px; }
     .history-btn {
       display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px;
