@@ -14,6 +14,7 @@ import {
   materializeJunction,
   createUserEntity,
   softDeleteUserEntity,
+  aiDeleteEntity,
 } from './schema-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import type { LatticeFieldDef } from '../config/types.js';
@@ -93,6 +94,30 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
  * it handled the request. The interleaved PUT /api/gui-meta/columns/:t/:c route
  * keeps its relative position within the block.
  */
+/**
+ * Owner-gate for a config/DDL-mutating schema route on a secured cloud. Returns
+ * true (and writes a 403) when the caller is a scoped member — postgres + RLS
+ * installed + cannot manage roles. Returns false (no response written) for
+ * local/sqlite, an unsecured cloud, or the owner, so the caller proceeds.
+ *
+ * These routes mutate the OWNER's on-disk config (saveConfigDoc is a raw
+ * writeFileSync, which several run BEFORE any DB DDL) and/or run schema DDL —
+ * neither of which Postgres RLS protects. So every config/DDL-mutating schema
+ * route must gate here, not rely on RLS alone; a scoped member could otherwise
+ * corrupt the owner's config over HTTP even though RLS blocks the DB write.
+ */
+async function denyIfNotCloudOwner(
+  db: Parameters<typeof canManageRoles>[0],
+  res: ServerResponse,
+  verb: string,
+): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return false;
+  if (!(await cloudRlsInstalled(db))) return false;
+  if (await canManageRoles(db)) return false;
+  sendJson(res, { error: `Only a cloud owner can ${verb}` }, 403);
+  return true;
+}
+
 export async function handleSchemaRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -111,6 +136,7 @@ export async function handleSchemaRoutes(
 
   // ── Create entity (additive — not in audit log, irreversible from GUI) ──
   if (method === 'POST' && pathname === '/api/schema/entities') {
+    if (await denyIfNotCloudOwner(active.db, res, 'create a table')) return true;
     const body = (await readJson<unknown>(req)) as { name?: unknown; icon?: unknown };
     const entityName = typeof body.name === 'string' ? body.name.trim() : '';
     if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(entityName)) {
@@ -159,6 +185,7 @@ export async function handleSchemaRoutes(
   // Creates a junction table with two ref columns linking `left` and
   // `right`, so it surfaces as an m2m edge in the Data Model graph.
   if (method === 'POST' && pathname === '/api/schema/junctions') {
+    if (await denyIfNotCloudOwner(active.db, res, 'create a link table')) return true;
     const body = (await readJson<unknown>(req)) as {
       left?: unknown;
       right?: unknown;
@@ -251,6 +278,9 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
       return true;
     }
+    // Owner-gate: dropping a table mutates the owner's config; RLS alone doesn't
+    // gate this DDL/config path.
+    if (await denyIfNotCloudOwner(active.db, res, 'delete tables')) return true;
     // Inbound-FK guard: refuse if another table links to this one.
     const inbound: string[] = [];
     for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
@@ -403,6 +433,7 @@ export async function handleSchemaRoutes(
   // Lattice instance so the in-memory schema matches the new config.
   // We don't audit-log schema changes (they're structural, not data).
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/rename$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, 'rename a table')) return true;
     const oldName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(oldName)) {
       sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
@@ -449,6 +480,7 @@ export async function handleSchemaRoutes(
     return true;
   }
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, "change a table's columns")) return true;
     const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(entityName)) {
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
@@ -615,6 +647,7 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
       return true;
     }
+    if (await denyIfNotCloudOwner(active.db, res, 'add a link')) return true;
     const body = (await readJson<unknown>(req)) as { target?: unknown };
     const target = typeof body.target === 'string' ? body.target.trim() : '';
     if (!active.validTables.has(target)) {
@@ -677,6 +710,54 @@ export async function handleSchemaRoutes(
     return true;
   }
 
+  // ── Merge one entity into another (move rows, then remove the source) ──
+  // Drag-to-merge in the Model → Tables explorer. Migrates every row of
+  // <source> into <target> with the SAME reversible primitive the assistant uses
+  // (aiDeleteEntity move_to): best-effort column mapping, soft-delete the
+  // originals, then soft-delete the emptied source — all through the audited
+  // mutation primitives, so the whole merge is reversible from history. The
+  // delete leg unregisters the source in place (no reopen), exactly as the chat
+  // delete_entity path does, so the bound `active` stays consistent. Owner-gated.
+  if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/merge$/.test(pathname)) {
+    const source = decodeURIComponent(pathname.split('/')[4] ?? '');
+    if (!active.validTables.has(source)) {
+      sendJson(res, { error: `Unknown entity: ${source}` }, 400);
+      return true;
+    }
+    if (await denyIfNotCloudOwner(active.db, res, 'merge tables')) return true;
+    const body = (await readJson<unknown>(req)) as { target?: unknown };
+    const target = typeof body.target === 'string' ? body.target.trim() : '';
+    if (!active.validTables.has(target)) {
+      sendJson(res, { error: 'Target entity must exist' }, 400);
+      return true;
+    }
+    if (source === target) {
+      sendJson(res, { error: 'Cannot merge an entity into itself' }, 400);
+      return true;
+    }
+    const outcome = await aiDeleteEntity(active, source, { move_to: target }, sessionId);
+    // move_to is always supplied, so `needsResolution` is unreachable here — but
+    // surface it rather than silently returning 200 if that ever changes.
+    if ('needsResolution' in outcome) {
+      sendJson(res, { error: outcome.message, rowCount: outcome.rowCount }, 400);
+      return true;
+    }
+    // An ok:false here is a precondition failure (row cap exceeded, inbound FK,
+    // native/junction target) — client-actionable, so 400, not a 500 server fault.
+    if (!outcome.ok) {
+      sendJson(res, { error: outcome.error }, 400);
+      return true;
+    }
+    sendJson(res, {
+      ok: true,
+      merged: source,
+      into: target,
+      movedRows: outcome.movedRows ?? 0,
+      rewiredLinks: outcome.rewiredLinks ?? 0,
+    });
+    return true;
+  }
+
   // ── Destroy a link (drop the FK column) ──────────────────────────
   // Links are destroy-only and owner-gated. Each link is managed
   // individually — including the legs of a (pure) junction table — and
@@ -684,6 +765,7 @@ export async function handleSchemaRoutes(
   // COLUMN), never a table. To remove a whole table, use
   // DELETE /api/schema/entities/:name.
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, 'remove a link')) return true;
     const parts = pathname.split('/');
     const entityName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[6] ?? '');
@@ -756,6 +838,7 @@ export async function handleSchemaRoutes(
   // (soft-deleted) object and reclaim space. Irreversible — after a purge,
   // the prior soft-delete can no longer be reverted (its data is gone).
   if (method === 'POST' && pathname === '/api/schema/purge') {
+    if (await denyIfNotCloudOwner(active.db, res, 'purge tables')) return true;
     const body = (await readJson<unknown>(req)) as {
       type?: unknown;
       name?: unknown;

@@ -74,6 +74,8 @@ provenance** + a **trust/verification** workflow), reliability (**`withRetry`** 
 seamless **keyless cloud file-byte access** (an in-database SigV4 presigner). All
 opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
 
+**New in 5.0 (major release — drop-in):** four things land together, and the public `Lattice` / GUI surface is unchanged — an untuned, non-cloud install behaves exactly as before. (1) A **native vector search substrate**: the pgvector / sqlite-vec index now **stays in sync with writes** (inserts/updates/deletes mirror incrementally; a freshness guard falls back to an exact scan rather than ever serving a stale index), **semantic + hybrid search work for scoped cloud members** confined to the rows they may see (via a `SECURITY DEFINER` path keyed on the member's own role — an exact scan with no over-fetch inference channel), and the index is **tunable + observable** (`embeddings.index = { m, efConstruction }`, query-time `efSearch`, an internal index registry, and `lattice reindex` / `lattice index status` / `lattice doctor --fix`), and can be stored at **16-bit half precision** (`embeddings.index.quantization = 'halfvec'`, pgvector ≥ 0.7) to roughly halve its memory while the exact-scan fallback stays full precision. All opt-in; omit the knobs and the build/query is byte-identical to before. (2) A **live force-directed brain graph** across all three GUI graph surfaces (schema, per-object, and folder) — a dependency-free physics engine + live SVG renderer with drag-to-pin, zoom, neighbor highlight, and fly-in growth. (3) **Auto-update is now visible on every surface** (npm, desktop, and dev builds — previously only the npm-supervised CLI surfaced the pill), a long-open desktop window notices new releases on its own, and a `--no-auto-update` / `LATTICE_NO_AUTO_UPDATE=1` switch (default on) pins the version for testing, air-gapped, and reproducible-demo runs. (4) **Data provenance + lineage.** Every object's page now traces where its data came from across three tiers — **raw** (files / connectors), **computed** (imports / artifacts), and **observation** (AI / learning-loop edits) — via `GET /api/provenance`, shown as a force-directed graph or a grouped source table, with a per-row provenance panel; an additive internal lineage substrate (`__lattice_lineage` + an audit `source` column) records source→object edges. Relatedly, the brain graph now shows **object↔object relationships only** (`files` is a source, not a node) and the sidebar groups are collapsible. See **[docs/retrieval.md](docs/retrieval.md)** and **[docs/desktop.md](docs/desktop.md)**.
+
 **New in 4.0 (major release — mostly drop-in):** a major version that decomposes the three largest internal modules and hardens the cloud path for many simultaneous users, while keeping the `Lattice` / GUI surface stable. **Existing 3.0+ configs and databases are migrated forward SILENTLY on open** — you usually need to do nothing. The breaking changes are auto-handled on open (or clearly documented): the per-field `ref:` shorthand is still parsed (and the GUI rewrites it to the explicit `relations:` block on disk); a legacy empty-string `deleted_at` is normalized to `NULL`; a legacy `files.path`-only row is backfilled into the reference model; the render manifest is v2-only and self-upgrades on first render. The one consumer-code change: the exported `MEMBER_GROUP` constant is replaced by **`memberGroupFor(db)`** (the member group role is now **per-cloud** — derived from the database/schema — so unrelated clouds on one Postgres cluster no longer share a group). Opening a cloud workspace is now **much faster** (one batched schema introspection instead of per-table round-trips; the owner-side RLS/grant convergence runs in the background since the owner is BYPASSRLS). See **[docs/MIGRATING-4.0.md](docs/MIGRATING-4.0.md)** for the (mostly no-op) migration and the manual steps for library/non-GUI consumers.
 
 **New in 3.4:** the browser GUI now **updates itself** — launched from an npm install it silently installs the latest published version and keeps checking in the background, relaunching on the same port while the open tab auto-reloads onto the new build (a git checkout / `npx` copy is left untouched); **file loopback** — editing a rendered `.md` context file on disk flows back into the database through the normal write path (changelog/versioned/undoable, live in the GUI), with a public [`reverseSyncFromFiles()`](docs/api-reference.md) for embedders; on a cloud, a member's **rendered context is now scoped to their own visibility** (rendered through their RLS connection + masking view, so their assistant only ever reads rows they may see); the assistant gains a **`get_row_context`** tool (reads a record's pre-joined rendered context in one call) and **`add_column`** (add a field to an existing table on request); and the cloud gets resilience + search fixes — the open-time converge is **per-table fault-isolated** (one un-manageable table no longer breaks the whole workspace), `migrate-to-cloud` now builds the full-text index (with a public [`rebuildFtsIndexes()`](docs/api-reference.md)), and a plaintext `postgres://` URL in a config is healed into an encrypted credential reference on open. New `GET /api/version`, `GET /api/update/status`, and `POST /api/workspaces/reload` endpoints. See [docs/workspaces.md](docs/workspaces.md), [docs/cloud.md](docs/cloud.md), and [docs/assistant.md](docs/assistant.md).
@@ -1088,6 +1090,25 @@ await db.delete(table: string, id: PkLookup): Promise<void>
 ```typescript
 await db.delete('tasks', 'task-001');
 await db.delete('event_seats', { event_id: 'e-1', seat_no: 3 });
+```
+
+#### `transaction()` (v5.0+)
+
+```typescript
+await db.transaction<T>(fn: () => Promise<T>): Promise<T>
+```
+
+Run `fn` inside a single database transaction. Every write `fn` performs through this Lattice (`insert` / `update` / `delete` and their audit + changelog writes) commits together, or rolls back together if `fn` throws. Reads inside `fn` see its own uncommitted writes (read-your-writes). The transaction is scoped to the async context of `fn`, so two concurrent callers never accidentally share one; a nested `transaction()` reuses the outer transaction. When the adapter cannot open a transaction, `fn` runs without one.
+
+```typescript
+// Move every row from one table to another as one atomic unit — either all
+// rows move, or (on any error) nothing does.
+await db.transaction(async () => {
+  for (const row of rows) {
+    await db.insert('archive', row);
+    await db.delete('inbox', row.id);
+  }
+});
 ```
 
 #### `get()`
@@ -2804,6 +2825,8 @@ if (result.restartRequired) {
 ```
 
 `autoUpdate()` is safe to call on every startup — it skips if already on the latest version. Pass `{ quiet: true }` to suppress console output.
+
+The **GUI and desktop app** auto-update on their own: `lattice gui` (when installed via npm) installs newer versions and relaunches in the background, and the desktop app applies updates on relaunch. Both show an "Update available" link next to the version chip when a newer release is published. To pin to the current version, pass `lattice gui --no-auto-update` or set `LATTICE_NO_AUTO_UPDATE=1` (the latter also covers the desktop app, which has no CLI flags).
 
 **`AutoUpdateResult`**
 

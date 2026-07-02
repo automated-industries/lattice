@@ -88,7 +88,11 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'list_rows',
     description:
-      'List rows in a table (paginated, max 200/page). For a large table, page through it with limit + successive offsets instead of trying to read it all at once. Omits soft-deleted rows unless includeDeleted is true.',
+      'List rows in a table (paginated, max 200/page). Returns NEWEST-FIRST by default, ordered by the ' +
+      "table's real event/date column (e.g. a meeting's start_at) when present, else created_at. Page a " +
+      'large table with limit + successive offsets. To find recent/today items, keep the default desc ' +
+      'order and/or pass a `filter` date range (e.g. start_at >= today). Omits soft-deleted rows unless ' +
+      'includeDeleted is true.',
     mutates: false,
     category: 'read',
     args: obj(
@@ -103,6 +107,23 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         offset: {
           type: 'number',
           description: 'Rows to skip from the start — combine with limit to page through a table.',
+        },
+        orderBy: str(
+          "Column to sort by. Defaults to the table's event/date column (e.g. start_at) or created_at. " +
+            "Prefer a real event-time column over created_at, which is the row's insert/sync time.",
+        ),
+        orderDir: {
+          type: 'string',
+          enum: ['asc', 'desc'],
+          description: 'Sort direction. Default "desc" (newest first); use "asc" for oldest first.',
+        },
+        filter: {
+          type: 'array',
+          description:
+            'Filter rows before sorting. Each clause is {col, op, val}; op is one of eq, ne, gt, gte, ' +
+            'lt, lte, like, in, isNull, isNotNull. Clauses are ANDed. For today only: ' +
+            '[{col:"start_at", op:"gte", val:"<today ISO date>"}].',
+          items: { type: 'object', description: 'A single {col, op, val} filter clause.' },
         },
       },
       ['table'],
@@ -447,11 +468,14 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     name: 'delete_entity',
     description:
       'Soft-delete a user table (reversible — the rows are kept and it can be ' +
-      'restored from history). Guarded: an EMPTY table is removed immediately; ' +
-      'a NON-EMPTY table is NOT deleted until you say what to do with its data — ' +
-      'the tool returns the row count and you must ask the user, then call again ' +
-      "with resolution='delete_data' (soft-delete the rows too) or move_to=<table> " +
-      '(move the rows into another table first). Never deletes built-in tables.',
+      'restored from history). Guarded: an EMPTY table is removed immediately; a ' +
+      'NON-EMPTY table is NOT removed until you say what to do with its rows. Two ' +
+      'paths: move_to=<table> MERGES the rows into another existing table and then ' +
+      'removes the emptied source — fully reversible from history, so take this path ' +
+      'WITHOUT asking the user first (use it for any merge / consolidate / combine-into ' +
+      "request). resolution='delete_data' soft-deletes the rows too (true deletion " +
+      'rather than a move) — for THAT path the tool returns the row count and you ' +
+      'must ask the user before calling again. Never deletes built-in tables.',
     mutates: true,
     category: 'schema',
     args: obj(
@@ -461,10 +485,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
           type: 'string',
           enum: ['delete_data'],
           description:
-            'For a NON-empty table: "delete_data" soft-deletes its rows too (reversible). Omit to be told the row count and asked first.',
+            'True-deletion path for a NON-empty table: "delete_data" soft-deletes its rows too (still reversible from history, but it removes the data instead of moving it — ask the user first). Omit to be told the row count. To MERGE into another table instead of deleting, use move_to (no need to ask first).',
         },
         move_to: str(
-          'For a NON-empty table: move its rows into this existing table, then delete the emptied table.',
+          'Reversible MERGE for a NON-empty table: move its rows into this existing table, then remove the emptied source. Use this for any "merge" / "consolidate" / "combine into" request — it is undoable from history, so do NOT ask the user to confirm first.',
         ),
       },
       ['name'],

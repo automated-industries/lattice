@@ -1,24 +1,22 @@
 // Auto-composed segment of the GUI client script. Verbatim substring of the original
 // appJs template literal — do not hand-edit; see modules/index.ts for composition.
 export const dataModelJs = `    // ────────────────────────────────────────────────────────────
-    // Three-step Create Database wizard. Used from the header dropdown
-    // "+ New database" button and from Lattice Settings → Add new DB.
-    // Step 1: name + kind (+ cloud credentials if cloud)
-    // Step 2: starter entities (with share-to-cloud checkbox when cloud)
-    // Step 3: review + submit
+    // Single-step Create Workspace dialog. Used from the header dropdown
+    // "+ New workspace" button and from Lattice Settings → Add new workspace.
+    // One step: name + kind (+ cloud credentials if cloud) → Create. Entities
+    // are added later from the workspace itself — there is no pre-creation step.
     // ────────────────────────────────────────────────────────────
     function showCreateDatabaseWizard() {
       var wizState = {
-        step: 1,
         name: '',
         kind: 'local',
         // Canonical cloud connection input: the SAME structured Postgres fields
         // (postgresFormHtml) used by onboarding + "Migrate to cloud". Captured as
-        // they are typed so they survive the step→review re-renders. The retired
-        // postgres:// URL input was the only divergent cloud-create methodology;
-        // every cloud-create path now shares this form + the migrate-to-cloud API.
+        // they are typed so they survive the re-render when the kind toggles. The
+        // retired postgres:// URL input was the only divergent cloud-create
+        // methodology; every cloud-create path now shares this form + the
+        // migrate-to-cloud API.
         pg: { label: '', host: '', port: 5432, dbname: '', user: '', password: '' },
-        entities: [], // { name: string, share: boolean }
       };
       openWizard();
 
@@ -27,33 +25,26 @@ export const dataModelJs = `    // ───────────────
         backdrop.className = 'modal-backdrop';
         backdrop.innerHTML =
           '<div class="modal" style="min-width:560px;max-width:640px">' +
-            '<div class="modal-head" id="wiz-head">New workspace — step 1 of 3</div>' +
+            '<div class="modal-head" id="wiz-head">New workspace</div>' +
             '<div class="modal-body" id="wiz-body"></div>' +
             '<div class="modal-foot">' +
               '<button class="btn" data-act="cancel">Cancel</button>' +
-              '<button class="btn" data-act="back">Back</button>' +
-              '<button class="btn primary" data-act="next">Next</button>' +
+              '<button class="btn primary" data-act="next">Create</button>' +
             '</div>' +
           '</div>';
         document.body.appendChild(backdrop);
         function close() { if (backdrop.parentNode) document.body.removeChild(backdrop); }
         backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
         backdrop.querySelector('[data-act="cancel"]').addEventListener('click', close);
-        backdrop.querySelector('[data-act="back"]').addEventListener('click', goBack);
         backdrop.querySelector('[data-act="next"]').addEventListener('click', goNext);
         render();
 
         function render() {
-          var head = backdrop.querySelector('#wiz-head');
           var body = backdrop.querySelector('#wiz-body');
           var nextBtn = backdrop.querySelector('[data-act="next"]');
-          var backBtn = backdrop.querySelector('[data-act="back"]');
-          head.textContent = 'New workspace — step ' + wizState.step + ' of 3';
-          backBtn.style.display = wizState.step === 1 ? 'none' : '';
-          nextBtn.textContent = wizState.step === 3 ? 'Create' : 'Next';
-          if (wizState.step === 1) body.innerHTML = renderStep1();
-          else if (wizState.step === 2) body.innerHTML = renderStep2();
-          else body.innerHTML = renderStep3();
+          // Join hands off to the invite-redeem modal; local/cloud create here.
+          nextBtn.textContent = wizState.kind === 'join' ? 'Continue' : 'Create';
+          body.innerHTML = renderStep1();
           wireStepHandlers(body);
         }
 
@@ -111,62 +102,8 @@ export const dataModelJs = `    // ───────────────
             cloudBlock;
         }
 
-        function renderStep2() {
-          var rows = wizState.entities.map(function (e, idx) {
-            var shareCol = wizState.kind === 'cloud'
-              ? '<td style="text-align:center"><input type="checkbox" data-wiz-share="' + idx + '"' + (e.share ? ' checked' : '') + ' /></td>'
-              : '';
-            return '<tr>' +
-              '<td><input type="text" data-wiz-entity="' + idx + '" value="' + escapeHtml(e.name) + '" placeholder="entity_name" style="width:100%" /></td>' +
-              shareCol +
-              '<td style="text-align:right"><button class="btn" data-wiz-remove="' + idx + '" style="font-size:11px;padding:2px 8px">Remove</button></td>' +
-            '</tr>';
-          }).join('');
-          var shareHeader = wizState.kind === 'cloud'
-            ? '<th style="text-align:center;width:80px">Share with cloud</th>'
-            : '';
-          return '<p class="lead" style="margin:0 0 10px">Optionally add starter entities. You can skip and add them later.</p>' +
-            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-              '<thead><tr style="text-align:left"><th>Entity name</th>' + shareHeader + '<th style="width:90px"></th></tr></thead>' +
-              '<tbody>' + (rows || '<tr><td colspan="3" style="padding:8px;color:var(--text-muted)">No entities yet.</td></tr>') + '</tbody>' +
-            '</table>' +
-            '<button class="btn" id="wiz-add-entity" style="margin-top:10px">+ Add entity</button>' +
-            (wizState.kind === 'cloud'
-              ? '<p style="font-size:11px;color:var(--text-muted);margin:10px 0 0">' +
-                'Entities with “Share with cloud” checked are visible to everyone on the cloud workspace. Unchecked entities live on the cloud DB but stay scoped to your own row links.' +
-                '</p>'
-              : '');
-        }
-
-        function renderStep3() {
-          var entityList = wizState.entities.length === 0
-            ? '<em style="color:var(--text-muted)">(none — you can add entities after creating)</em>'
-            : '<ul style="margin:4px 0 0 0;padding-left:18px">' +
-                wizState.entities.map(function (e) {
-                  var tag = wizState.kind === 'cloud'
-                    ? (e.share ? ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:var(--accent-soft);color:var(--accent)">shared</span>'
-                              : ' <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:rgba(15, 23, 42, 0.04);color:var(--text-muted)">local only</span>')
-                    : '';
-                  return '<li>' + escapeHtml(e.name) + tag + '</li>';
-                }).join('') +
-              '</ul>';
-          var cloudBlock = wizState.kind === 'cloud'
-            ? '<div><strong>Cloud DB</strong>:</div><div><code>' +
-                escapeHtml(wizState.pg.user) + '@' + escapeHtml(wizState.pg.host) + ':' +
-                escapeHtml(String(wizState.pg.port)) + '/' + escapeHtml(wizState.pg.dbname) +
-              '</code></div>'
-            : '';
-          return '<p class="lead" style="margin:0 0 10px">Review and create.</p>' +
-            '<div style="display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:13.5px">' +
-              '<div><strong>Name</strong>:</div><div>' + escapeHtml(wizState.name) + '</div>' +
-              '<div><strong>Kind</strong>:</div><div>' + (wizState.kind === 'cloud' ? 'Cloud (Postgres)' : 'Local (SQLite)') + '</div>' +
-            '</div>' +
-            (cloudBlock ? '<div style="margin-top:10px;display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:13.5px">' + cloudBlock + '</div>' : '') +
-            '<div style="margin-top:14px"><strong>Entities</strong>: ' + entityList + '</div>';
-        }
-
         function wireStepHandlers(scope) {
-          if (wizState.step === 1) {
+          {
             var nameInput = scope.querySelector('#wiz-name');
             if (nameInput) nameInput.addEventListener('input', function (e) { wizState.name = e.target.value; });
             scope.querySelectorAll('input[name="wiz-kind"]').forEach(function (radio) {
@@ -177,9 +114,9 @@ export const dataModelJs = `    // ───────────────
               });
             });
             // Capture the structured Postgres fields as they're typed, so they
-            // survive the step→review re-renders (the form DOM is replaced each
-            // step) and are available at submit — including the password, which
-            // postgresFormHtml never echoes back into the input on a re-render.
+            // survive the re-render when the kind toggles (the form DOM is
+            // replaced) and are available at submit — including the password,
+            // which postgresFormHtml never echoes back into the input on a re-render.
             var pgIds = {
               'w-label': 'label',
               'w-host': 'host',
@@ -196,72 +133,28 @@ export const dataModelJs = `    // ───────────────
                 wizState.pg[key] = key === 'port' ? Number(el.value) || 5432 : el.value;
               });
             });
-          } else if (wizState.step === 2) {
-            scope.querySelector('#wiz-add-entity').addEventListener('click', function () {
-              wizState.entities.push({ name: '', share: wizState.kind === 'cloud' });
-              render();
-            });
-            scope.querySelectorAll('input[data-wiz-entity]').forEach(function (input) {
-              input.addEventListener('input', function () {
-                var idx = parseInt(input.getAttribute('data-wiz-entity') || '0', 10);
-                wizState.entities[idx].name = input.value;
-              });
-            });
-            scope.querySelectorAll('input[data-wiz-share]').forEach(function (input) {
-              input.addEventListener('change', function () {
-                var idx = parseInt(input.getAttribute('data-wiz-share') || '0', 10);
-                wizState.entities[idx].share = !!input.checked;
-              });
-            });
-            scope.querySelectorAll('button[data-wiz-remove]').forEach(function (btn) {
-              btn.addEventListener('click', function () {
-                var idx = parseInt(btn.getAttribute('data-wiz-remove') || '0', 10);
-                wizState.entities.splice(idx, 1);
-                render();
-              });
-            });
           }
-        }
-
-        function goBack() {
-          if (wizState.step > 1) { wizState.step -= 1; render(); }
         }
 
         function goNext() {
-          if (wizState.step === 1) {
-            // Join a cloud: hand off to the join modal, which collects the
-            // scoped connection credentials and connects directly as a member.
-            if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
-            if (!wizState.name.trim()) { showToast('Workspace name is required'); return; }
-            // The display name is free-form (special characters allowed). The
-            // server stores it verbatim and derives a safe directory slug from it
-            // (toSafeDirName) — so the only constraint here is a sane length.
-            if (wizState.name.trim().length > 200) { showToast('Workspace name must be 200 characters or fewer'); return; }
-            if (wizState.kind === 'cloud') {
-              // A cloud is created by migrating this new workspace into a fresh
-              // Postgres DB described by the structured connection fields.
-              var pg = wizState.pg;
-              if (!pg.host.trim() || !pg.dbname.trim() || !pg.user.trim() || !pg.password) {
-                showToast('Host, database name, user, and password are required for a cloud workspace');
-                return;
-              }
+          // Join a cloud: hand off to the join modal, which collects the scoped
+          // connection credentials and connects directly as a member.
+          if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
+          if (!wizState.name.trim()) { showToast('Workspace name is required'); return; }
+          // The display name is free-form (special characters allowed). The server
+          // stores it verbatim and derives a safe directory slug from it
+          // (toSafeDirName) — so the only constraint here is a sane length.
+          if (wizState.name.trim().length > 200) { showToast('Workspace name must be 200 characters or fewer'); return; }
+          if (wizState.kind === 'cloud') {
+            // A cloud is created by migrating this new workspace into a fresh
+            // Postgres DB described by the structured connection fields.
+            var pg = wizState.pg;
+            if (!pg.host.trim() || !pg.dbname.trim() || !pg.user.trim() || !pg.password) {
+              showToast('Host, database name, user, and password are required for a cloud workspace');
+              return;
             }
-            wizState.step = 2;
-            render();
-          } else if (wizState.step === 2) {
-            // Validate entity names (if any)
-            for (var i = 0; i < wizState.entities.length; i += 1) {
-              var nm = wizState.entities[i].name.trim();
-              if (!nm) { showToast('Entity name on row ' + (i + 1) + ' is empty'); return; }
-              if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(nm)) {
-                showToast('Entity name "' + nm + '" is invalid (use a valid identifier).'); return;
-              }
-            }
-            wizState.step = 3;
-            render();
-          } else {
-            submit();
           }
+          submit();
         }
 
         function submit() {
@@ -290,14 +183,12 @@ export const dataModelJs = `    // ───────────────
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name: wizState.name.trim() }),
-          }).then(function () {
-            return createStarterEntities(wizState.entities);
           });
         }
 
         function submitCloud() {
-          // "Create a cloud" = create a fresh local workspace, add its starter
-          // entities, then migrate that workspace into the Postgres database
+          // "Create a cloud" = create a fresh local workspace, then migrate that
+          // workspace into the Postgres database
           // (installs row-level security, you become owner). Rows are
           // private-by-default and shared per-row via the eye toggle. Uses the
           // SAME structured connection fields + /api/dbconfig/migrate-to-cloud
@@ -319,8 +210,6 @@ export const dataModelJs = `    // ───────────────
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name: wizState.name.trim() }),
           }).then(function () {
-            return createStarterEntities(wizState.entities);
-          }).then(function () {
             // The new workspace is now active; migrate it into the cloud.
             return fetch('/api/dbconfig/migrate-to-cloud', {
               method: 'POST',
@@ -334,20 +223,6 @@ export const dataModelJs = `    // ───────────────
           });
         }
 
-        function createStarterEntities(entities) {
-          if (entities.length === 0) return Promise.resolve();
-          // Sequential creates — order matters for any FK refs the user
-          // adds later, and the volume is small (wizard cap is user-driven).
-          return entities.reduce(function (chain, e) {
-            return chain.then(function () {
-              return fetchJson('/api/schema/entities', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ name: e.name.trim() }),
-              });
-            });
-          }, Promise.resolve());
-        }
       }
     }
 
@@ -572,13 +447,13 @@ export const dataModelJs = `    // ───────────────
     }
 
     function renderPreferencesPanel(host) {
-      var prefs = state.preferences || { show_system_tables: false, analytics: true };
+      var prefs = state.preferences || { show_system_tables: false, analytics: false };
       host.innerHTML =
         '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
           '<h3 style="margin:0 0 10px">Preferences</h3>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
             '<input type="checkbox" id="pref-analytics"' +
-              (prefs.analytics !== false ? ' checked' : '') + '>' +
+              (prefs.analytics === true ? ' checked' : '') + '>' +
             '<span>Send anonymous analytics</span>' +
           '</label>' +
           '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
@@ -962,24 +837,9 @@ export const dataModelJs = `    // ───────────────
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
-          '<div class="dbconfig-panel" style="margin-bottom:14px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<label class="toggle" title="Advanced mode — row/table editor instead of the file workspace" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer">' +
-              '<input type="checkbox" id="advanced-toggle">' +
-              '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
-              '<span class="toggle-label">Advanced View</span>' +
-            '</label>' +
-            '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">Row/table editor instead of the file workspace.</p>' +
-          '</div>' +
           '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
           '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
         '</div>';
-      // Advanced View toggle lives here now (moved out of the sidebar). Wired on
-      // each render since renderLatticeSettings rebuilds the drawer body.
-      var advToggle = content.querySelector('#advanced-toggle');
-      if (advToggle) {
-        advToggle.checked = advancedMode();
-        advToggle.addEventListener('change', function () { setAdvancedMode(advToggle.checked); });
-      }
       var host = document.getElementById('lattice-dbs-host');
       // Single source of truth: the workspace registry (same as the header switcher).
       fetchJson('/api/workspaces').then(function (data) {
@@ -1661,12 +1521,25 @@ export const dataModelJs = `    // ───────────────
       };
     }
     function renderFeedItem(ev) {
-      // Realtime activity now surfaces as a transient TOP-RIGHT status (it flashes
-      // as it happens, then clears) — no persistent activity pills in the right
-      // rail. The rail is for the assistant conversation; the live brain-graph
+      // Realtime activity surfaces two ways: a transient TOP-RIGHT status that
+      // flashes as it happens, and a persistent entry in the header activity feed
+      // (the popover next to the version-history clock). The live brain-graph
       // animation still shows ingests landing on the graph.
       if (ev && ev.summary && typeof setStatus === 'function') {
         setStatus({ id: 'activity', kind: 'accent', text: ev.summary, priority: 30, sticky: false, ttl: 4500 });
+      }
+      if (ev && (ev.summary || ev.op) && typeof activityFeedEl === 'function') {
+        var feed = activityFeedEl();
+        if (feed) {
+          var empty = document.getElementById('activity-empty');
+          if (empty) empty.remove();
+          var card = makeFeedCard(ev);
+          // Single live event: stamp "now" (the duration form is for turn replay).
+          card.timeEl.textContent = 'now';
+          feed.insertBefore(card.item, feed.firstChild); // newest first
+          while (feed.children.length > 50) feed.removeChild(feed.lastChild); // bounded log
+          if (typeof bumpActivityCount === 'function') bumpActivityCount();
+        }
       }
     }
     // Replay a persisted assistant turn's data-change events as collapsed activity

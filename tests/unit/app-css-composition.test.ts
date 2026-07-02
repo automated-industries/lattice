@@ -12,10 +12,94 @@ import { css } from '../../src/gui/app/css.js';
 //
 // These constants were captured from the pre-split `css` value. If `css` is
 // ever changed intentionally, recapture the length + hash and update them here.
-// Most recently: the 4.3 inline-HTML-file styles (a taller `.html-frame` for a
-// live HTML file plus its `.html-badge`) in the file-preview segment.
-const ORIGINAL_LENGTH = 92788;
-const ORIGINAL_SHA256 = 'f7915d6ed3642362ddce80f8f27908bda77c1aa02de4f8bf0e1f3404f133458e';
+// 5.0 combines: the live force-graph renderer's hooks (edge stroke + arrowhead
+// fill + a warm `.gnode-hot` search-highlight accent on the data-model segment;
+// the now-unused brain-graph ingest keyframes removed since the live engine
+// animates the delta itself) AND the data-provenance styles (per-tier node
+// colors, the source table, the collapsed detail panel) plus the collapsible
+// sidebar-group rules. Pinned length + hash recomputed for the merged CSS.
+// (Bump: collapsible sidebar-group indentation fix — header gutter + body indent.)
+// 5.0 GUI reframe (right-side): the docked assistant-rail styles become a floating
+// "Ask Lattice" panel (assistant-rail.js segment repurposed); a new Outputs-column
+// segment (outputs.js); header chrome for the activity-feed popover + the Ask Lattice
+// trigger (topbar.js); the layout grid's third track + token rename to
+// --outputs-width; reduced-motion + frosted-fallback selectors retargeted off the
+// removed .assistant-rail. Step 3 adds the Model Graph|Tables toggle + the tiered
+// Tables-explorer styles (model-tables.js segment). Step 4 adds the Outputs
+// Tables-mirror tier styles + the Markdown detail slide-over (outputs.js segment).
+// Recaptured.
+// Ask Lattice polish: the floating panel becomes a depth-shadowed card offset
+// further off the top-right corner, with class-based open/close transitions
+// (animate in + out), replacing the [hidden]/keyframe approach (assistant-rail.js).
+// Markdown rework: the Outputs detail panel slides in from the right positioned
+// LEFT of the Outputs column (right: var(--outputs-width)) so the column stays
+// visible, via class-based .open transitions (outputs.js style segment).
+// Nav redesign: shared .col-header chrome for the three column headers (Inputs ·
+// Model · Outputs — same font/style, per-column accent), the center tab strip
+// restyled as seamless underline tabs sitting on the header's bottom border, and
+// the now-dead .model-toggle/.model-view/.model-body styles removed (replaced by
+// the .model-tables-view route container).
+// Live-review polish batch: Tables-explorer lineage styles (selection highlight on
+// tier cards + lineage chips + field-lineage rows + "+ Wire") replacing the dead
+// Show-tier chips; dedicated nested Markdown-tree styles (.mdt-*); the Inputs
+// column header pinned flush + full-width (aligned with Model/Outputs); a graph
+// loading spinner (.graph-loading/.graph-spinner) shown until settled.
+// Removed the dead CAVEATS styles (.mt-caveat*) and the dead provenance graph-mode
+// styles (.pv-legend/.pv-sw/.pvnode-*/.btn.pv-active/.prov-fallback) now that the
+// object page is a single table view.
+// Added .fs-files-table path-column style for the Files object page / folder
+// drill-in table view.
+// Added .fs-rows-table styles (object page = rows table); kept .pv-table which it
+// reuses.
+// Added .pvchip-related / .pvchip-created chip colors for the new provenance tiers.
+// Clickable-row cursor/hover for the object + Files rows tables (.fs-row-click).
+// Connector/db drawer form fields + buttons restyled to the Ask Lattice composer
+// aesthetic (.conn-field input/select fill + radius + accent focus; .conn-or
+// divider; .conn-form-actions button polish).
+// Tables-explorer relationship edges (svg.mt-edges + .mt-edge-fk/m2m), the tiers
+// positioning context, and the wiring affordances (.mt-wire.on / .mt-wire-hint /
+// .mt-wiring crosshair / .mt-wire-from highlight).
+// Removed the dead object-graph CSS (#fsg-mount / .fsg-more / .ognode-*) that the
+// removed focused-object-graph subsystem used.
+// Record Formatted | Markdown toggle: .fs-view-toggle segmented control on the
+// record view-header. Markdown-in-center: the Outputs slide-in drawer styles
+// (.outputs-detail*) are removed in favor of a center .md-doc render (#/md/<path>).
+// Rows-table pager: .rows-pager / .rows-pager-info + pager button sizing.
+// Tables-explorer edges restyled: solid strokes (m2m dash removed), svg.mt-edges
+// raised above the cards (z-index 2), stroke-width + opacity bumped for visibility.
+// Tables-explorer Wire/Merge: a warm-accent "Merge" toggle button, plus
+// .mt-card-disabled (greyed/undroppable invalid targets) and .mt-drag-active (the
+// card being dragged) states.
+// Record Markdown view: .fs-context-edit (the editable raw-markdown textarea) +
+// .fs-context-status (its inline save status).
+// Review batch A2: .mt-card gets touch-action:none so a touch drag-to-wire/merge
+// doesn't scroll the page mid-gesture.
+// 5.0 webview drag-hardening: .mt-card ALSO gets user-select:none (matching
+// .fs-tile) so a drag can't start a native text-selection that steals the pointer
+// stream and freezes the ghost. Plus the assistant persona: .chat-msg.assistant
+// gets a ::before avatar (the older-woman emoji) so replies read as coming from
+// Gladys. Length + hash recaptured.
+// 5.0 drag fix — .wm-ghost is position:fixed !important so it beats .fs-tile's
+// position:relative (equal specificity), and the ghost is appended to <body>; both
+// ensure the drag clone anchors to the cursor instead of being offset ~100px.
+// 5.0 GUI batch — the file-drag overlay is now a whole-window .file-drop-overlay
+// (replacing the Gladys-panel outline). Length + hash recaptured.
+// 5.0 GUI batch 2 — workspace-switch fade overlay (.ws-switch-overlay in layout),
+// and the Tables-explorer consumer-chip remove-✕ styles (.mt-lin-chip-wrap /
+// .mt-lin-x / .mt-lin-x-busy in model-tables). Length + hash recaptured.
+// 5.0 GUI batch 2a — the consumer chip's via truncates (ellipsis) and the chip
+// shrinks (min-width:0) so the remove-✕ can't be pushed off the fixed-width detail
+// panel. Length + hash recaptured.
+// 5.0 GUI batch 4 — the status pill moves to the header slot where the version was
+// (.header-status-slot) and the version moves to the Settings drawer footer
+// (.drawer-version). Length + hash recaptured.
+// 5.0 GUI batch 6 — the drilled-in entity graph (.brain-graph.entity-graph) lays a
+// breadcrumb bar (.graph-crumbs) above the graph canvas. Length + hash recaptured.
+// 5.0 GUI batch 8 — the top search box CSS is removed (.topsearch/.search-* gone;
+// .last-edited kept); a .history-sep divides Back/Forward from Undo/Redo. Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 125060;
+const ORIGINAL_SHA256 = '237dcd13ad77f9dcf239597c827d49eaf5dd53eaef831d4cd3d83610f2e8093d';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

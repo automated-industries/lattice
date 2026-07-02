@@ -123,10 +123,15 @@ export async function ensureFtsIndex(
       `CREATE TRIGGER "${fts}_trg" AFTER INSERT OR UPDATE OR DELETE ON "${table}"
        FOR EACH ROW EXECUTE FUNCTION "${fts}_sync"()`,
     );
-    // Backfill existing rows (idempotent via ON CONFLICT).
+    // Backfill existing rows ONCE — only when the FTS table is still empty. The
+    // AFTER INSERT/UPDATE/DELETE trigger above keeps it current thereafter, so a
+    // re-run on every owner open would otherwise full-scan the whole base table
+    // (incl. large connector tables like gmail_messages) for nothing. The
+    // NOT EXISTS guard turns that O(total-text-bytes) scan into an O(1) check.
     await runAsyncOrSync(
       adapter,
       `INSERT INTO "${fts}"(row_id, body) SELECT "id", ${concatExpr(cols, '')} FROM "${table}"
+       WHERE NOT EXISTS (SELECT 1 FROM "${fts}" LIMIT 1)
        ON CONFLICT (row_id) DO NOTHING`,
     );
     return;
@@ -274,6 +279,7 @@ async function likeSearchTable(
   q: string,
   limit: number,
   hasDeletedAt: boolean,
+  recencyCol: string | null,
 ): Promise<FtsGroup | null> {
   // CAST(... AS TEXT) keeps the LIKE valid across column types on both engines.
   const where = searchCols.map((c) => `CAST("${c}" AS TEXT) LIKE ? ESCAPE '\\'`).join(' OR ');
@@ -281,6 +287,11 @@ async function likeSearchTable(
   const params: unknown[] = searchCols.map(() => like);
   let sql = `SELECT * FROM "${table}" WHERE (${where})`;
   if (hasDeletedAt) sql += ` AND deleted_at IS NULL`;
+  // Without an ORDER BY this returned rows in arbitrary storage order and the LIMIT
+  // could drop the most recent ones — so a scoped cloud member's search for a recent
+  // item could silently miss it. Order NEWEST-FIRST by the table's recency column
+  // (matching the list-read default) so the LIMIT keeps the most recent matches.
+  if (recencyCol) sql += ` ORDER BY "${recencyCol}" DESC`;
   sql += ` LIMIT ${String(limit + 1)}`;
   let rows: Record<string, unknown>[];
   try {
@@ -332,6 +343,12 @@ export async function fullTextSearch(
       continue;
     }
     const hasDeletedAt = cols.includes('deleted_at');
+    // Prefer a real event-time column over created_at for recency ordering, so the
+    // LIKE fallback surfaces the most recent MATCHES (not the most recently synced).
+    const recencyCol =
+      ['start_at', 'occurred_at', 'happened_at', 'event_date', 'sent_at', 'created_at'].find((c) =>
+        cols.includes(c),
+      ) ?? null;
     let group: FtsGroup | null = null;
     try {
       if (await hasFtsIndex(adapter, table)) {
@@ -339,7 +356,15 @@ export async function fullTextSearch(
       } else {
         const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
         if (searchCols.length > 0) {
-          group = await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt);
+          group = await likeSearchTable(
+            adapter,
+            table,
+            searchCols,
+            q,
+            limit,
+            hasDeletedAt,
+            recencyCol,
+          );
         }
       }
     } catch {
@@ -353,7 +378,7 @@ export async function fullTextSearch(
         const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
         group =
           searchCols.length > 0
-            ? await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt)
+            ? await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt, recencyCol)
             : null;
       } catch {
         group = null;

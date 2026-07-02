@@ -48,42 +48,87 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
     .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
     .staging-send { flex: 1; }
-    .assistant-rail {
-      position: relative;
-      background:
-        radial-gradient(120% 60% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
-        var(--sheen),
-        rgba(255, 255, 255, 0.66);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-left: 1px solid rgba(59, 130, 246, 0.10);
-      box-shadow: inset 1px 0 0 rgba(15, 23, 42, 0.035), -16px 0 40px -24px rgba(15, 23, 42, 0.12);
+    /* ── Floating "Ask Lattice" assistant panel ────────────────────── */
+    /* A detached, 3-dimensional card floating off the top-right corner. Shown by
+       toggling the .open class (not [hidden]) so it can animate IN and OUT from
+       the corner. Closed state stays in the DOM but inert + invisible. */
+    .ask-lattice-panel {
+      position: fixed; top: 68px; right: 24px; z-index: 1200;
+      width: min(400px, calc(100vw - 48px));
+      height: min(620px, calc(100vh - 104px));
       display: flex; flex-direction: column;
-      min-width: 0; overflow: hidden;
+      background:
+        radial-gradient(120% 50% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
+        var(--sheen),
+        var(--glass-strong);
+      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
+      border: 1px solid rgba(59, 130, 246, 0.18); border-radius: 16px;
+      /* Layered shadow for real depth (a card lifted off the surface). */
+      box-shadow:
+        0 1px 2px rgba(15, 23, 42, 0.08),
+        0 8px 24px -6px rgba(15, 23, 42, 0.22),
+        0 24px 60px -12px rgba(15, 23, 42, 0.30),
+        var(--hl-top);
+      overflow: hidden;
+      transform-origin: top right;
+      opacity: 0;
+      transform: translate(12px, -12px) scale(0.96);
+      visibility: hidden;
+      pointer-events: none;
+      transition:
+        opacity 0.18s ease,
+        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+        visibility 0s linear 0.2s;
     }
-    .rail-resize {
-      position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
-      cursor: col-resize; background: transparent; z-index: 5;
-      transition: background-color 120ms;
+    .ask-lattice-panel.open {
+      opacity: 1;
+      transform: translate(0, 0) scale(1);
+      visibility: visible;
+      pointer-events: auto;
+      transition:
+        opacity 0.18s ease,
+        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    .rail-resize:hover, .rail-resize.dragging { background: var(--accent-soft); }
-    .rail-header {
-      flex: 0 0 auto; padding: 12px 14px;
+    /* Whole-window file-drop overlay (dragging a file anywhere in the window).
+       pointer-events:none so the drag/drop events still reach the document handler. */
+    .file-drop-overlay {
+      position: fixed; inset: 0; z-index: 9000; display: none;
+      align-items: center; justify-content: center; pointer-events: none;
+      background: rgba(15, 23, 42, 0.55);
+      -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+    }
+    body.dragging-file .file-drop-overlay { display: flex; }
+    .file-drop-inner {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      font-size: 20px; font-weight: 600; color: #fff;
+      border: 2px dashed rgba(255, 255, 255, 0.85); border-radius: 16px; padding: 40px 56px;
+    }
+    .file-drop-emoji { font-size: 44px; line-height: 1; }
+    .ask-lattice-panel-head {
+      flex: 0 0 auto; padding: 10px 12px;
+      display: flex; align-items: center; gap: 8px;
       background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
       border-bottom: 1px solid rgba(59, 130, 246, 0.14);
-      display: flex; align-items: center; gap: 8px;
     }
-    .rail-title {
-      font-size: 11px; font-weight: 600; color: var(--accent);
-      text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
+    .ask-lattice-panel-title {
+      font-size: 12px; font-weight: 600; color: var(--accent);
+      display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
     }
-    /* Title glows while the assistant is working (pending feed / typing) */
-    @keyframes railPulse {
-      0%, 100% { text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
-      50% { text-shadow: 0 0 18px rgba(59, 130, 246, 0.7); }
+    .ask-lattice-panel .ask-lattice-mark { color: var(--accent); }
+    .ask-lattice-close {
+      flex: 0 0 auto; width: 24px; height: 24px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
+      cursor: pointer; font-size: 13px; line-height: 1;
     }
-    .assistant-rail:has(.feed-pending) .rail-title,
-    .assistant-rail:has(.chat-typing) .rail-title { animation: railPulse 1.6s ease-in-out infinite; }
+    .ask-lattice-close:hover { background: var(--row-hover); color: var(--text); }
+    /* Title glows while the assistant is working (pending feed / typing) */
+    @keyframes askPulse {
+      0%, 100% { text-shadow: 0 0 8px rgba(59, 130, 246, 0.25); }
+      50% { text-shadow: 0 0 16px rgba(59, 130, 246, 0.6); }
+    }
+    .ask-lattice-panel:has(.feed-pending) .ask-lattice-panel-title,
+    .ask-lattice-panel:has(.chat-typing) .ask-lattice-panel-title { animation: askPulse 1.6s ease-in-out infinite; }
     .rail-threads {
       flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
       border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px;

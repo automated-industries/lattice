@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from '../gui/config-io.js';
+import { recordLineage } from '../gui/lineage-store.js';
 import { normalizeText } from '../dedup/normalize.js';
 import { parseCellDate } from './asof.js';
 import { normalizeName, sourceRecords } from './infer.js';
@@ -109,7 +110,11 @@ function persistTable(
   if (!configPath || !existsSync(configPath)) return;
   try {
     const doc = loadConfigDoc(configPath);
-    doc.setIn(['entities', name], { fields, outputFile: name.toUpperCase() + '.md' });
+    // The per-entity overview goes in the hidden .schema-only/ dir (the default
+    // used everywhere else — lattice.ts, gui/data.ts, read-routes.ts), NOT a bare
+    // <NAME>.md at the Context root. A root file is an orphan: it clutters the
+    // visible tree and duplicates the rich per-row <Entity>/ context dir.
+    doc.setIn(['entities', name], { fields, outputFile: '.schema-only/' + name + '.md' });
     saveConfigDoc(configPath, doc);
   } catch {
     // Best-effort: defineLate already made the table usable this session.
@@ -213,6 +218,19 @@ export async function materializeImport(
       });
       const n = await db.count(entity.name);
       rowsByTable[entity.name] = n;
+      // Provenance: record the import as a table-level (computed-tier) source.
+      // objectId '*' is the table-level sentinel — per-row import lineage would
+      // require an unbounded re-read of the just-seeded rows.
+      await recordLineage(db.adapter, [
+        {
+          objectTable: entity.name,
+          objectId: '*',
+          sourceKind: 'import',
+          tier: 'computed',
+          relation: 'materialized_from',
+          detailJson: JSON.stringify({ rows: n }),
+        },
+      ]);
       await report({
         phase: 'entities',
         table: entity.name,

@@ -11,6 +11,7 @@ test.afterEach(async () => {
 
 test('composer is gated until a Claude key is set', async ({ page }) => {
   await page.goto(gui.url);
+  await openAskLattice(page);
   // No key configured → the composer shows the setup prompt, not a textarea.
   await expect(page.locator('.composer-setup')).toContainText('Set a Claude API token');
   await expect(page.locator('#chat-input')).toHaveCount(0);
@@ -22,18 +23,29 @@ test('composer is gated until a Claude key is set', async ({ page }) => {
   expect(res.ok()).toBeTruthy();
 
   await page.reload();
+  await openAskLattice(page);
   // With auth present, the composer renders an input + send button.
   await expect(page.locator('#chat-input')).toBeVisible();
   await expect(page.locator('#chat-send')).toBeVisible();
   await expect(page.locator('.composer-setup')).toHaveCount(0);
 });
 
-/** Enable the composer (store a test key + reload) and return the input locator. */
+/** Open the floating "Ask Lattice" panel. In the 5.0 reframe the composer (and its
+ *  input / mic / send) lives inside this collapsed panel, so it must be opened
+ *  before any composer element is visible. */
+async function openAskLattice(page: import('@playwright/test').Page) {
+  await page.locator('#ask-lattice-trigger').click();
+  await expect(page.locator('#ask-lattice-panel')).toBeVisible();
+}
+
+/** Enable the composer (store a test key + reload), open the Ask Lattice panel,
+ *  and return the input locator. */
 async function enableComposer(page: import('@playwright/test').Page, url: string) {
   await page.request.put(`${url}/api/assistant/key`, {
     data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
   });
   await page.goto(url);
+  await openAskLattice(page);
   await expect(page.locator('#chat-input')).toBeVisible();
   return page.locator('#chat-input');
 }
@@ -79,7 +91,11 @@ test('read-only tool calls produce no activity cards (only data changes show)', 
 
 test('the composer textarea grows to fit multi-line input', async ({ page }) => {
   const input = await enableComposer(page, gui.url);
-  const heightOf = async () => (await input.boundingBox())!.height;
+  // Measure the textarea's LAYOUT height (offsetHeight), not boundingBox(): the
+  // Ask Lattice panel scales in via a CSS `transform`, which scales boundingBox's
+  // rendered rect mid-animation and made this flaky in headless CI. offsetHeight is
+  // the true laid-out height (what the auto-grow sets) and is transform-immune.
+  const heightOf = async () => input.evaluate((el) => (el as HTMLElement).offsetHeight);
 
   const oneLine = await heightOf();
   await input.fill(['line one', 'line two', 'line three', 'line four'].join('\n'));

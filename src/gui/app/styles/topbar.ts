@@ -33,7 +33,9 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .brand:hover .brand-logo { filter: none; }
 
     /* History controls — dark variant */
-    .history-controls { display: inline-flex; gap: 4px; }
+    .history-controls { display: inline-flex; gap: 4px; align-items: center; }
+    /* Divides page-nav (Back/Forward) from data-edit (Undo/Redo) in the one group. */
+    .history-sep { width: 1px; height: 18px; background: var(--border); margin: 0 3px; }
     .history-btn {
       display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px;
@@ -132,5 +134,42 @@ export const topbarCss = `    /* ── Top bar ──────────�
       border: 1px solid var(--border-strong); border-radius: 6px;
       background: var(--surface); margin-bottom: 6px;
     }
+
+    /* Live activity feed popover (next to the version-history clock) */
+    .activity { position: relative; display: inline-flex; }
+    .activity-pill { position: relative; }
+    .activity-count {
+      position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px;
+      padding: 0 3px; border-radius: 999px; background: var(--accent); color: #fff;
+      font-size: 9px; font-weight: 700; line-height: 15px; text-align: center;
+    }
+    .activity-popover {
+      position: absolute; top: 38px; right: 0; width: 320px; max-height: 60vh;
+      overflow: hidden; display: flex; flex-direction: column;
+      background: var(--glass-strong);
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      border: 1px solid rgba(15, 23, 42, 0.06); border-radius: 10px;
+      box-shadow: var(--shadow-3), var(--hl-top); z-index: 110; padding: 8px;
+    }
+    .activity-popover[hidden] { display: none; }
+    .activity-popover-head {
+      font-size: 11px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 6px 8px;
+    }
+    .activity-feed { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    .activity-empty { color: var(--text-muted); font-size: 12.5px; text-align: center; padding: 14px 8px; }
+
+    /* Floating "Ask Lattice" trigger in the top bar */
+    .ask-lattice { display: inline-flex; flex: 0 0 auto; }
+    .ask-lattice-trigger {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 32px; padding: 0 12px; cursor: pointer;
+      border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent);
+      font: inherit; font-size: 13px; font-weight: 600;
+      box-shadow: var(--glow-accent-soft);
+    }
+    .ask-lattice-trigger:hover { background: rgba(59, 130, 246, 0.18); }
+    .ask-lattice-trigger .ask-lattice-mark { font-size: 14px; line-height: 1; }
 
 `;

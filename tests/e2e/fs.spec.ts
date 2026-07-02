@@ -76,10 +76,45 @@ async function seedChain(base: string): Promise<{ authorId: string; bookId: stri
   return { authorId, bookId };
 }
 
-test('clicking an object shows its rows in the focused graph (List view shows the grid)', async ({
+test('object pages paginate: Prev/Next + "A–B of T", and Next loads the next window', async ({
   page,
 }) => {
-  await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
+  // PAGE_SIZE is 100; seed 101 tags so the object page spans two pages. Sequential
+  // batches keep the single-writer DB calm without being slow.
+  for (let b = 0; b < 101; b += 20) {
+    await Promise.all(
+      Array.from({ length: Math.min(20, 101 - b) }, (_, i) =>
+        createRow(gui.url, 'tags', { label: 'tag-' + String(b + i).padStart(3, '0') }),
+      ),
+    );
+  }
+
+  await page.goto(`${gui.url}#/fs/tags`);
+  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
+
+  // Page 1: 100 rows, "1–100 of 101", Prev disabled, Next enabled.
+  await expect(page.locator('.rows-pager-info')).toContainText('1–100 of 101');
+  await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(100);
+  await expect(page.locator('.rows-prev')).toBeDisabled();
+  await expect(page.locator('.rows-next')).toBeEnabled();
+
+  // Next → page 2: the remaining row, "101–101 of 101", Next disabled.
+  await page.locator('.rows-next').click();
+  await expect(page.locator('.rows-pager-info')).toContainText('101–101 of 101');
+  await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(1);
+  await expect(page.locator('.rows-next')).toBeDisabled();
+  await expect(page.locator('.rows-prev')).toBeEnabled();
+
+  // The whole row still opens the record (pagination didn't break row-click).
+  await page.locator('.fs-rows-table tbody tr').first().click();
+  await expect(page).toHaveURL(/#\/fs\/tags\/[^/]+$/);
+});
+
+test('an object page shows its data provenance; a row opens its detail', async ({ page }) => {
+  const author = (await createRow(gui.url, 'authors', {
+    name: 'Jane Author',
+    bio: 'A novelist.',
+  })) as { id: string };
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
@@ -88,43 +123,39 @@ test('clicking an object shows its rows in the focused graph (List view shows th
   await expect(navLink).toHaveAttribute('href', /#\/fs\//);
 
   await page.goto(`${gui.url}#/fs/authors`);
-  // The object page is a focused graph: the row shows as an entity node.
-  const entity = page.locator('.ognode-entity');
-  await expect(entity).toHaveCount(1);
-  await expect(entity.first()).toContainText('Jane Author');
+  // The object page is the table's rows (mirroring the Files file list).
+  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
 
-  // "List view" switches to the tile grid.
-  await page.locator('#fsg-view-list').click();
-  const tile = page.locator('.fs-tile:not(.fs-tile-create)');
-  await expect(tile).toHaveCount(1);
-  await expect(tile.first()).toContainText('Jane Author');
+  // Opening the row directly shows its detail (the record view header carries the name).
+  await page.goto(`${gui.url}#/fs/authors/${author.id}`);
+  await expect(page.locator('.view-header')).toContainText('Jane Author', { timeout: 5000 });
 });
 
-test('drilling a row shows a column-built preview, relationship sub-folders, and a breadcrumb', async ({
+test('drilling a row shows the record view, relationship sub-folders, and a breadcrumb', async ({
   page,
 }) => {
   const { authorId } = await seedChain(gui.url);
 
-  // Author item view: preview + a "Books" sub-folder.
+  // Author item view: the record header + a "Books" sub-folder.
   await page.goto(`${gui.url}#/fs/authors/${authorId}`);
-  await expect(page.locator('.fs-doc')).toContainText('Jane Author');
+  await expect(page.locator('.view-header')).toContainText('Jane Author');
   const booksFolder = page.locator('.fs-folder', { hasText: 'Books' });
   await expect(booksFolder).toBeVisible();
   await booksFolder.click();
 
-  // Books collection (filtered to this author) → open the book.
+  // Books collection (filtered to this author) → a rows table; open the book.
   await expect(page).toHaveURL(new RegExp(`#/fs/authors/${authorId}/books$`));
-  const bookTile = page.locator('.fs-tile', { hasText: 'Tidewater' });
-  await expect(bookTile).toBeVisible();
-  await bookTile.click();
+  const bookLink = page.locator('.fs-rows-table a', { hasText: 'Tidewater' });
+  await expect(bookLink).toBeVisible();
+  await bookLink.click();
 
   // Book item view: a Reviews (1:N) folder AND a Tags (M:N) folder.
   await expect(page.locator('.fs-folder', { hasText: 'Reviews' })).toBeVisible();
   await expect(page.locator('.fs-folder', { hasText: 'Tags' })).toBeVisible();
 
-  // Breadcrumb reflects the full clickable drill path.
+  // Breadcrumb reflects the full clickable drill path, rooted at Tables.
   const crumbs = page.locator('.fs-crumbs');
-  await expect(crumbs).toContainText('Home');
+  await expect(crumbs).toContainText('Tables');
   await expect(crumbs).toContainText('Authors');
   await expect(crumbs).toContainText('Jane Author');
   await expect(crumbs).toContainText('Books');
@@ -132,91 +163,48 @@ test('drilling a row shows a column-built preview, relationship sub-folders, and
 
   // Drill one level deeper into Reviews to prove unbounded nesting.
   await page.locator('.fs-folder', { hasText: 'Reviews' }).click();
-  await expect(page.locator('.fs-tile', { hasText: 'Luminous.' })).toBeVisible();
+  await expect(page.locator('.fs-rows-table', { hasText: 'Luminous.' })).toBeVisible();
 });
 
-test('click-to-edit a value persists via PATCH', async ({ page }) => {
+test('a record renders the Formatted | Markdown toggle and switches between the views', async ({
+  page,
+}) => {
+  // The 5.0 record view replaced the column-by-column field editor (and its inline
+  // click-to-edit) with a Formatted (rendered markdown) | Markdown (editable raw
+  // markdown that writes back via PUT …/context) toggle. The markdown write-back
+  // itself is covered at the API level by tests/integration/gui-row-context-writeback.
   const { authorId } = await seedChain(gui.url);
   await page.goto(`${gui.url}#/fs/authors/${authorId}`);
 
-  const nameCell = page.locator('.fs-field-val.ce[data-col="name"]');
-  await expect(nameCell).toContainText('Jane Author');
-  await nameCell.click();
-  const input = nameCell.locator('input');
-  await expect(input).toBeVisible();
-  await input.fill('Jane Q. Author');
-  await input.press('Enter');
+  // The record header carries the name; the Formatted | Markdown toggle is present
+  // with Formatted active by default.
+  await expect(page.locator('.view-header')).toContainText('Jane Author');
+  const toggle = page.locator('.fs-view-toggle');
+  await expect(toggle).toBeVisible();
+  await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
 
-  // The cell repaints with the new value …
-  await expect(nameCell).toContainText('Jane Q. Author');
-  // … and the change is actually persisted server-side.
-  const res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
-  expect(res.ok()).toBeTruthy();
-  const row = (await res.json()) as { name: string };
-  expect(row.name).toBe('Jane Q. Author');
+  // Switch to the editable Markdown view…
+  await toggle.locator('[data-fsview="markdown"]').click();
+  await expect(toggle.locator('[data-fsview="markdown"]')).toHaveClass('on');
+  await expect(page.locator('#fs-context')).toBeVisible();
+
+  // …and back to Formatted.
+  await toggle.locator('[data-fsview="formatted"]').click();
+  await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
 });
 
-test('a long-form field edits as a textarea and round-trips newlines losslessly (1.16.3 B)', async ({
-  page,
-}) => {
-  // `bio` is a long-form field that was NOT in the old hardcoded
-  // {body,summary,transcript} textarea set, so it used to open a single-line
-  // <input>. Focusing that input stripped the newlines, so a click+blur with
-  // no real edit fired a spurious PATCH that mangled the value (rendered as
-  // "huge text"). The fix: every FS_LONGFORM field opens a <textarea>.
-  const MULTILINE_BIO = 'Line one.\n\n## A heading\n\nLine two with **bold**.';
-  const author = await createRow(gui.url, 'authors', { name: 'Multi Line', bio: MULTILINE_BIO });
-  const authorId = String(author.id);
-  await page.goto(`${gui.url}#/fs/authors/${authorId}`);
-
-  const bioCell = page.locator('.fs-field-val.ce[data-col="bio"]');
-  await expect(bioCell).toBeVisible();
-
-  // Opens a <textarea>, never a single-line <input>.
-  await bioCell.click();
-  await expect(bioCell.locator('textarea')).toBeVisible();
-  await expect(bioCell.locator('input')).toHaveCount(0);
-
-  // No-op blur (no edit) must NOT change the stored value — the heart of the bug.
-  await bioCell.locator('textarea').blur();
-  let res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
-  expect(((await res.json()) as { bio: string }).bio).toBe(MULTILINE_BIO);
-
-  // A real edit round-trips with all newlines preserved (committed via blur —
-  // plain Enter inserts a newline in a textarea rather than committing).
-  const EDITED = MULTILINE_BIO + '\n\nAppended paragraph.';
-  await bioCell.click();
-  await bioCell.locator('textarea').fill(EDITED);
-  await bioCell.locator('textarea').blur();
-  res = await page.request.get(`${gui.url}/api/tables/authors/rows/${authorId}`);
-  expect(((await res.json()) as { bio: string }).bio).toBe(EDITED);
-});
-
-test('Advanced mode toggle restores the classic row/table editor', async ({ page }) => {
+test('object navigation always targets the file workspace (single view)', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author' });
-  // The dashboard (now reached via its own route; the graph is the default view)
-  // lists cards that point at the file-system route in default mode.
+  // There is a single view — the file workspace. Cards and the object nav both
+  // point at #/fs/… ; the former "Advanced View" toggle + classic #/objects editor
+  // were removed, and Settings → Lattice no longer carries a view toggle.
   await page.goto(`${gui.url}#/dashboard`);
-  const card = page.locator('.card').first();
-  await expect(card).toHaveAttribute('href', /#\/fs\//);
+  await expect(page.locator('.card').first()).toHaveAttribute('href', /#\/fs\//);
+  await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/fs\//);
 
-  // Advanced View now lives in Settings → Lattice (moved out of the sidebar).
-  // Open the gear → Lattice tab, then click the toggle track the way a user would.
   await page.locator('#settings-gear').click();
   await page.locator('.drawer-tab[data-tab="lattice"]').click();
-  await page.locator('#drawer-body .toggle-track').click();
-  await expect(page.locator('#advanced-toggle')).toBeChecked();
-  await page.keyboard.press('Escape'); // close the drawer to reach the sidebar
-
-  // Object navigation now targets the classic #/objects route …
-  await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/objects\//);
-  // … which renders the row table with its inline create row. Scope to the main
-  // content region: the settings drawer we just opened retains its rendered
-  // Lattice panel (which has its own workspace-list <table>), so an unscoped
-  // `table` locator is ambiguous after a hash-only navigation.
-  await page.goto(`${gui.url}#/objects/authors`);
-  await expect(page.locator('#content table')).toBeVisible();
-  await expect(page.locator('#content tr.create-row')).toBeVisible();
+  await expect(page.locator('#advanced-toggle')).toHaveCount(0);
 });
 
 test('the gear opens a settings drawer with Database / Lattice / User tabs', async ({ page }) => {
@@ -237,36 +225,4 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
   // Escape closes it.
   await page.keyboard.press('Escape');
   await expect(drawer).not.toHaveClass(/open/);
-});
-
-test('the simple-view create tile opens an inline form that makes a new object with a many-to-many link', async ({
-  page,
-}) => {
-  await createRow(gui.url, 'authors', { name: 'Jane Author', bio: 'A novelist.' });
-  await createRow(gui.url, 'tags', { label: 'fiction' });
-
-  await page.goto(gui.url);
-  await page.evaluate(() => {
-    window.location.hash = '#/fs/books';
-  });
-
-  // The "+ New" button in the object-graph header navigates to an INLINE create
-  // form (no modal), styled like the item page (#/fs/books/new).
-  await page.locator('.view-header a.btn').first().click();
-  const form = page.locator('.fs-create-form');
-  await expect(form).toBeVisible();
-  await expect(page.locator('.modal')).toHaveCount(0);
-  await form.locator('input[name="title"]').fill('Tidewater');
-  // belongsTo author + a many-to-many tag link (select by index — `tags` have
-  // no name/title so the option text is the id; index 1 is the first real row).
-  await form.locator('select[name="author_id"]').selectOption({ index: 1 });
-  await form.locator('.fs-link-select').first().selectOption({ index: 1 });
-  await page.locator('#fs-create-save').click();
-
-  // Lands on the new object's page…
-  await expect(page.locator('.view-header h1').filter({ hasText: 'Tidewater' })).toBeVisible();
-  // …and the M:N junction row was created from the staged link.
-  const res = await page.request.get(gui.url + '/api/tables/book_tags/rows');
-  const body = (await res.json()) as { rows: unknown[] };
-  expect(body.rows.length).toBe(1);
 });

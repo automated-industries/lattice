@@ -20,14 +20,17 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       background: var(--sheen), var(--surface); border: 1px solid var(--border);
       border-radius: 12px; box-shadow: var(--shadow-2), var(--hl-top); cursor: pointer;
       transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      /* Wire/Merge drag: block native text-selection + scroll/pan gestures on the
+         tile so a drag can't hand the pointer stream to the OS (which stops
+         pointermove and freezes the ghost). Chrome tolerates the omission; some
+         webviews don't. Pairs with setPointerCapture in wiremerge.ts. */
+      -webkit-user-select: none; user-select: none; touch-action: none;
     }
     /* Per-row privacy indicator in a card-tile corner (lock = private, eye =
        shared). Reuses the shared .vis-indicator component. */
     .fs-tile-vis { position: absolute; top: 8px; right: 8px; opacity: 0.55; }
     .fs-tile-vis svg { width: 13px; height: 13px; }
     .fs-tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-3); }
-    .fs-tile-create { border-style: dashed; background: transparent; }
-    .fs-tile-create .fs-tile-icon { color: var(--accent); }
     .fs-tile-icon { font-size: 40px; line-height: 1; }
     .fs-tile-label {
       font-size: 13px; font-weight: 500; color: var(--text);
@@ -36,6 +39,53 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     }
     .fs-folder-count { font-size: 11px; color: var(--text-muted); }
     .fs-empty { color: var(--text-muted); font-style: italic; padding: 28px 4px; }
+
+    /* ── Folders view (the default tab: objects as folders) ─────────── */
+    .folders-view { padding: 2px 2px 24px; }
+    .folders-crumbs {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+      font-size: 14px; color: var(--text-muted);
+    }
+    .folders-crumbs a { color: var(--accent); }
+    .folders-crumbs a:hover { text-decoration: underline; }
+    .folders-crumb-sep { color: var(--text-muted); }
+    .folders-crumb-cur { color: var(--text); font-weight: 600; }
+    .folders-rename-cur {
+      margin-left: auto; font-size: 12px; color: var(--text-muted);
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 3px 9px; cursor: pointer;
+    }
+    .folders-rename-cur:hover { color: var(--accent); border-color: var(--accent); }
+    .folders-section {
+      font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-muted); margin: 20px 2px 10px;
+    }
+    .folders-grid { max-width: none; }
+    /* Desktop-icon style: no card box — just the 📁 icon + a centered name. */
+    .folders-view .fs-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 4px; }
+    .folders-view .fs-tile {
+      background: none; border: 0; box-shadow: none; padding: 12px 6px 10px; gap: 5px;
+    }
+    .folders-view .fs-tile:hover { background: var(--surface-2); transform: none; box-shadow: none; }
+    .folders-view .fs-tile-icon { font-size: 42px; line-height: 1; }
+    .folders-view .fs-file .fs-tile-icon { font-size: 34px; }
+    .folders-view .fs-tile-label { text-align: center; }
+    /* Folder icon = 📁 with the object's emoji laid on its face. */
+    .fs-folder-icon { position: relative; display: inline-block; line-height: 1; }
+    .fs-folder-base { font-size: 46px; line-height: 1; }
+    .fs-folder-badge {
+      position: absolute; left: 50%; top: 60%; transform: translate(-50%, -50%);
+      font-size: 19px; line-height: 1; pointer-events: none;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+    }
+    /* Rename: right-click a folder tile, or click the open-folder breadcrumb name. */
+    .folders-crumb-cur .fs-tile-name { cursor: text; }
+    .folders-crumb-cur .fs-tile-name:hover { text-decoration: underline dotted; }
+    .fs-tile-name.fs-renaming {
+      outline: 1px solid var(--accent); background: var(--surface);
+      padding: 0 3px; border-radius: 4px; cursor: text; text-decoration: none;
+      -webkit-line-clamp: none; display: inline;
+    }
 
     /* Document preview (item view, built from columns) */
     .fs-doc {
@@ -58,6 +108,17 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-context-doc .md-body p { margin: 6px 0; }
     .fs-context-doc .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
     .fs-context-doc .md-body a { color: var(--accent); }
+    /* Markdown view: the editable raw-markdown textarea (writes back to the row)
+       + an inline save-status line. */
+    .fs-context-edit {
+      display: block; width: 100%; max-width: 900px; min-height: 340px; box-sizing: border-box;
+      margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.6;
+      resize: vertical; tab-size: 2;
+    }
+    .fs-context-edit:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .fs-context-status { max-width: 900px; margin-top: 6px; min-height: 16px; font-size: 12px; color: var(--text-muted); }
     .fs-field { padding: 12px 0; border-bottom: 1px solid var(--border); }
     .fs-field:last-child { border-bottom: none; }
     /* Inline create-view action row (Save / Cancel). */

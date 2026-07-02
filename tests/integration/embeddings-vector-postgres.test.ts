@@ -11,7 +11,14 @@ import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Lattice } from '../../src/lattice.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../../src/db/adapter.js';
-import { vectorIndexAvailable, hasVectorIndex } from '../../src/search/vector-index.js';
+import {
+  vectorIndexAvailable,
+  hasVectorIndex,
+  vectorIndexFresh,
+  buildVectorIndex,
+  getVectorIndexMeta,
+  vectorIndexName,
+} from '../../src/search/vector-index.js';
 import { semanticChunker } from '../../src/search/chunking.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -146,6 +153,86 @@ describe.skipIf(!PG_URL)('p6 embeddings (Postgres)', () => {
     } else {
       expect(n).toBe(0);
     }
+  });
+
+  it('keeps the native index in sync with writes — no manual rebuild (pgvector only)', async () => {
+    if (!(await vectorIndexAvailable(db.adapter))) return; // the index path requires pgvector
+    // The index was built in the previous test; a brand-new row must become
+    // searchable through the index WITHOUT anyone calling buildVectorIndex again.
+    await db.insert(table, {
+      id: 'sync1',
+      title: 'logistics',
+      body: 'logistics sync payload about shipping lanes',
+    });
+    await waitForEmbedding('sync1');
+
+    // The index mirror runs on the same fire-and-forget chain just after the store
+    // write; poll until the index is back in lock-step with the store. That it
+    // converges proves incremental maintenance updated the index itself — not just
+    // that the freshness guard fell back to the scan.
+    const deadline = Date.now() + 5000;
+    while (!(await vectorIndexFresh(db.adapter, table))) {
+      if (Date.now() > deadline) throw new Error('index did not converge to fresh after insert');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(await vectorIndexFresh(db.adapter, table)).toBe(true);
+
+    const hits = await db.search(table, 'logistics sync payload shipping', { topK: 5 });
+    expect(hits.map((h) => h.row.id)).toContain('sync1');
+
+    // Deleting the row drops it from index-backed results too.
+    await db.delete(table, 'sync1');
+    const after = await db.search(table, 'logistics sync payload shipping', { topK: 5 });
+    expect(after.map((h) => h.row.id)).not.toContain('sync1');
+  });
+
+  it('records HNSW build params in the registry and honors efSearch (pgvector only)', async () => {
+    if (!(await vectorIndexAvailable(db.adapter))) return; // the index path requires pgvector
+    // Build with explicit HNSW tuning; the registry should record exactly what was built.
+    const n = await buildVectorIndex(db.adapter, table, 8, false, { m: 8, efConstruction: 32 });
+    expect(n).toBeGreaterThan(0);
+    const meta = await getVectorIndexMeta(db.adapter, table);
+    expect(meta).not.toBeNull();
+    expect(meta?.vecDim).toBe(8);
+    expect(meta?.hnswM).toBe(8);
+    expect(meta?.hnswEfConstruction).toBe(32);
+    expect(meta?.metric).toBe('cosine');
+    expect(meta?.builtAt).toBeTruthy();
+
+    // Query-time efSearch plumbs through (SET LOCAL hnsw.ef_search) without error
+    // and still returns indexed results.
+    const hits = await db.search(table, 'logistics', { topK: 1, efSearch: 64 });
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('supports half-precision (halfvec) index storage end-to-end (pgvector only)', async () => {
+    if (!(await vectorIndexAvailable(db.adapter))) return; // halfvec needs pgvector ≥ 0.7
+    // Build a half-precision index from the same full-precision store.
+    const n = await buildVectorIndex(db.adapter, table, 8, false, { quantization: 'halfvec' });
+    expect(n).toBeGreaterThan(0);
+    // The derived index column really is halfvec (the store stays full precision).
+    const col = await allAsyncOrSync(
+      db.adapter,
+      `SELECT udt_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = $1 AND column_name = 'embedding'`,
+      [vectorIndexName(table)],
+    );
+    expect(col[0]?.udt_name).toBe('halfvec');
+    // Search returns the right row through the halfvec cast/opclass.
+    const hits = await db.search(table, 'logistics', { topK: 1 });
+    expect(hits[0]!.row.id).toBe('d1');
+    // Incremental maintenance casts to halfvec too: a new row becomes searchable
+    // without a manual rebuild (proves mirrorVectorIndexRow's type-aware cast).
+    await db.insert(table, { id: 'hv1', title: 'logistics', body: 'logistics halfvec payload' });
+    await waitForEmbedding('hv1');
+    const deadline = Date.now() + 5000;
+    while (!(await vectorIndexFresh(db.adapter, table))) {
+      if (Date.now() > deadline) throw new Error('halfvec index did not converge after insert');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const after = await db.search(table, 'logistics halfvec payload', { topK: 5 });
+    expect(after.map((h) => h.row.id)).toContain('hv1');
+    await db.delete(table, 'hv1');
   });
 });
 

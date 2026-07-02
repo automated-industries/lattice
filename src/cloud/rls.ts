@@ -3,6 +3,7 @@ import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import { pkSqlExpr } from '../db/pk.js';
+import { LINEAGE_TABLE, ensureLineageTable } from '../gui/lineage-store.js';
 // Re-exported so existing consumers (cloud/audience.ts) keep importing it from
 // here; the canonical definition now lives in the pure db/pk.ts leaf.
 export { pkSqlExpr } from '../db/pk.js';
@@ -707,6 +708,40 @@ BEGIN
   END IF;
 END $fn$;
 GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${group};
+
+-- Member-safe semantic-search source. A member has NO grant on the internal
+-- embeddings store (\`_lattice_embeddings\`) or the per-table vector index, so it
+-- reads ONLY the chunk vectors for rows it may see, through these SECURITY DEFINER
+-- functions — filtered by lattice_row_visible (keyed on session_user, the member).
+-- Scoring happens in the app; these gate row visibility only. \`p_table\` is matched
+-- as a VALUE against the table_name column — no dynamic SQL / identifier
+-- interpolation. plpgsql (not sql) so they install even before \`_lattice_embeddings\`
+-- exists: the body binds the table at call time, by which point a searchable cloud
+-- has it. lattice_row_visible runs as this definer (owner) but still keys on the
+-- caller's session_user, so a member can never read another member's vectors.
+CREATE OR REPLACE FUNCTION lattice_visible_embeddings(p_table text)
+RETURNS TABLE(row_pk text, chunk_index int, content text, embedding text, vec_dim int)
+LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+BEGIN
+  RETURN QUERY
+    SELECT e."row_pk", e."chunk_index", e."content", e."embedding", e."vec_dim"
+      FROM "_lattice_embeddings" e
+     WHERE e."table_name" = p_table
+       AND lattice_row_visible(p_table, e."row_pk");
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_visible_embeddings(text) TO ${group};
+
+CREATE OR REPLACE FUNCTION lattice_visible_embedding_count(p_table text)
+RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+DECLARE v_n bigint;
+BEGIN
+  SELECT count(*)::bigint INTO v_n
+    FROM "_lattice_embeddings" e
+   WHERE e."table_name" = p_table
+     AND lattice_row_visible(p_table, e."row_pk");
+  RETURN v_n;
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_visible_embedding_count(text) TO ${group};
 `;
 }
 
@@ -949,6 +984,28 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
 );
 DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
+`,
+  );
+}
+
+/**
+ * Defense-in-depth lock on the lineage substrate (`__lattice_lineage`). It records
+ * source→object edges (source ids/detail a non-owner shouldn't be able to
+ * enumerate). Today it is merely UNGRANTED to members; this ENABLEs + FORCEs RLS
+ * with NO member policy/grant, so even a future accidental `GRANT` can't leak
+ * cross-member lineage — RLS-with-no-policy denies every non-BYPASSRLS role while
+ * the owner's BYPASSRLS connection (where the provenance builder runs) is
+ * unaffected. Ensures the table exists first so the lock applies even before the
+ * first import creates it. Idempotent; converges on every owner open. No-op off PG.
+ */
+export async function enableLineageRls(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  await ensureLineageTable(db.adapter);
+  await runCloudBootstrapSql(
+    db,
+    `
+ALTER TABLE "${LINEAGE_TABLE}" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "${LINEAGE_TABLE}" FORCE ROW LEVEL SECURITY;
 `,
   );
 }

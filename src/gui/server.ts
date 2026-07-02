@@ -3,7 +3,9 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dirname, resolve } from 'node:path';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, sendHtmlCompressed, sendCompressed } from './http.js';
+import { chartLibJs } from './app/modules/chart-lib.js';
+import { computeBoundAuthorities, isSameOriginRequest, isLoopbackHost } from './origin-guard.js';
 import {
   type ActiveDb,
   changeVisibleToActiveRole,
@@ -25,6 +27,7 @@ import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
+import type { InstallContext } from '../update-context.js';
 import { createGuiRequestContext, type GuiRequestContext } from './request-context.js';
 import { upsertTableMeta } from './column-descriptions.js';
 import {
@@ -44,6 +47,7 @@ import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './inges
 import { dispatchSourcesRoute } from './sources-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
+import { dispatchDbSourcesRoute } from './db-sources-routes.js';
 import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
@@ -120,12 +124,23 @@ export interface StartGuiServerOptions {
    */
   realtimeWatchdogMs?: number;
   /**
-   * Run the in-process auto-update poll: while the GUI is open, check npm for a
+   * Master switch for ALL auto-update behavior (default true). When false: the
+   * in-process poll never runs (no registry/manifest fetch, no install, no
+   * relaunch), `/api/update/status` reports `autoUpdate:false` / `action:'none'`,
+   * and the desktop/CLI callers skip their own updaters too. Provided so the GUI
+   * can be run pinned to its current version (testing, air-gapped, reproducible
+   * demos). `GET /api/version` + `GET /api/update/status` still answer.
+   */
+  autoUpdate?: boolean;
+  /**
+   * Run the in-process auto-update poll: while the GUI is open, check for a
    * newer version and, when one lands on an installable copy, install it and
    * exit with the supervisor's restart code so it relaunches on the new version.
    * Set ONLY for a supervised child (`LATTICE_GUI_SUPERVISED=1`) — exiting to
-   * apply an update is safe only when a supervisor is there to respawn it.
-   * `GET /api/version` + `GET /api/update/status` are served regardless.
+   * apply an update is safe only when a supervisor is there to respawn it. This
+   * is the npm install-and-relaunch SUB-behavior; it is forced off when
+   * `autoUpdate` is false. `GET /api/version` + `GET /api/update/status` are
+   * served regardless.
    */
   selfUpdate?: boolean;
   /**
@@ -135,6 +150,29 @@ export interface StartGuiServerOptions {
    * it overrides `selfUpdate`'s default factory.
    */
   updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
+  /**
+   * Override the "is a newer version available?" probe. The desktop shell passes
+   * a function that reads its release manifest (latest.json) — the same source
+   * its bundled updater applies from — so the GUI surfaces a "restart to update"
+   * hint without coupling the desktop to the npm registry. Omitted ⇒ the default
+   * npm-registry check (web/CLI).
+   */
+  updateCheck?: (force: boolean) => Promise<string | null>;
+  /**
+   * Override the detected install context for the update service. The desktop
+   * shell passes `{ kind:'desktop', installable:false, … }` so the status route
+   * reports the desktop surface (→ `action:'restart-to-update'`) rather than
+   * "unknown / not installable".
+   */
+  updateContext?: InstallContext;
+  /**
+   * Desktop shell only: apply a pending update via the bundled binary updater
+   * (download + relaunch). Wired to `POST /api/update/apply` when the surface is
+   * the desktop app, so the "Restart to update" pill triggers the real updater
+   * instead of the npm install path (which the desktop can't use). Omitted ⇒ the
+   * apply route uses the npm path / reports "not available".
+   */
+  desktopApplyUpdate?: () => void;
   /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
@@ -265,8 +303,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // to a non-loopback address (e.g. 0.0.0.0) exposes read/write/import to the
   // network with no auth layer, so say so loudly at startup. We do not block it —
   // an operator may do it deliberately behind their own network controls.
-  const isLoopbackHost = host === 'localhost' || host === '::1' || host.startsWith('127.');
-  if (!isLoopbackHost) {
+  const hostIsLoopback = isLoopbackHost(host);
+  if (!hostIsLoopback) {
     console.warn(
       `[lattice] GUI is binding to a non-loopback address (${host}); its data ` +
         `routes are UNAUTHENTICATED and will be reachable from the network.`,
@@ -274,6 +312,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  const autoUpdate = options.autoUpdate ?? true;
   // Where the vendored GUI assets (on-device voice worker + ORT WASM) live. The
   // CLI passes this resolved against the package (it knows the package root via
   // import.meta.url). When omitted (dev/source/test runs), fall back to a sibling
@@ -292,38 +331,75 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // on close. The request handler reads it for `/api/update/status`.
   let updateService: UpdateService | null = null;
 
-  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
-  // (zero-workspace) state until the first workspace is created or joined. The
-  // request handler gates every data route behind a non-null check.
-  let activeRef: ActiveDb | null =
-    bootConfigPath && bootOutputDir
-      ? await openConfig(bootConfigPath, bootOutputDir, autoRender, options.realtimeWatchdogMs)
-      : null;
-  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
-  // the header workspace switcher can list + switch workspaces. `null` ⇒ the
-  // GUI was opened on a plain config; the switcher stays hidden. In the virgin
-  // state the root comes from the options (there's no config to discover from).
+  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so the
+  // header switcher can list + switch workspaces — and so a bad active workspace
+  // can fall through to a working one at boot. `null` ⇒ opened on a plain config
+  // (switcher hidden); in the virgin state the root comes from the options.
   const latticeRoot =
     (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null) ??
     (options.latticeRoot ? resolve(options.latticeRoot) : null);
+
+  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
+  // (zero-workspace) state until the first workspace is created or joined. The
+  // request handler gates every data route behind a non-null check.
+  let activeRef: ActiveDb | null = null;
   // Which workspace is ACTUALLY being served (the open `active` DB). The header
-  // switcher must reflect THIS, not the registry's stored activeWorkspaceId —
-  // the two can drift apart (e.g. a relaunch whose --config points at a
-  // different workspace than the last-switched one), which showed the wrong
-  // workspace label sitting over a different workspace's data. Match the
-  // launched config to its workspace and reconcile the registry to it at boot.
+  // switcher must reflect THIS, not the registry's stored activeWorkspaceId — the
+  // two can drift (a relaunch whose --config points elsewhere, or a fall-through
+  // when the stored-active workspace can't open).
   let currentWorkspaceId: string | null = null;
-  if (latticeRoot && bootConfigPath) {
-    const launched = listWorkspaces(latticeRoot).find(
-      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
-    );
-    if (launched) {
-      currentWorkspaceId = launched.id;
-      if (getActiveWorkspace(latticeRoot)?.id !== launched.id) {
-        setActiveWorkspace(latticeRoot, launched.id);
+
+  if (bootConfigPath && bootOutputDir) {
+    try {
+      activeRef = await openConfig(
+        bootConfigPath,
+        bootOutputDir,
+        autoRender,
+        options.realtimeWatchdogMs,
+      );
+      if (latticeRoot) {
+        const launched = listWorkspaces(latticeRoot).find(
+          (w) =>
+            resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
+        );
+        currentWorkspaceId = launched?.id ?? getActiveWorkspace(latticeRoot)?.id ?? null;
+        if (launched && getActiveWorkspace(latticeRoot)?.id !== launched.id) {
+          setActiveWorkspace(latticeRoot, launched.id);
+        }
       }
-    } else {
-      currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
+    } catch (err) {
+      // The stored-active workspace can't open (e.g. its DB credential is missing).
+      // Never brick the whole app: fall through to the first OTHER workspace that
+      // opens, so the user lands in real data with the switcher listing the rest —
+      // not a dead-end error dialog or a misleading zero-state welcome screen.
+      console.error(
+        `[gui] active workspace failed to open (${bootConfigPath}): ${(err as Error).message}`,
+      );
+      const launchedPath = resolve(bootConfigPath);
+      const root = latticeRoot; // narrow once so the loop body needs no cast/assertion
+      if (root) {
+        for (const w of listWorkspaces(root)) {
+          const paths = resolveWorkspacePaths(root, w);
+          if (resolve(paths.configPath) === launchedPath) continue; // the one that just failed
+          try {
+            activeRef = await openConfig(
+              paths.configPath,
+              paths.contextDir,
+              autoRender,
+              options.realtimeWatchdogMs,
+            );
+            currentWorkspaceId = w.id;
+            setActiveWorkspace(root, w.id);
+            console.error(`[gui] opened the next working workspace instead: "${w.displayName}".`);
+            break;
+          } catch {
+            // try the next workspace
+          }
+        }
+      }
+      if (!activeRef) {
+        console.error('[gui] no workspace could be opened — showing the welcome screen.');
+      }
     }
   }
 
@@ -419,11 +495,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     method: string,
   ): Promise<boolean> => {
     if (method === 'GET' && pathname === '/') {
-      sendText(
+      sendHtmlCompressed(
+        req,
         res,
         guiAppHtml.replace('<!--LATTICE_VERSION-->', guiVersion ? `v${guiVersion}` : ''),
-        200,
-        'text/html; charset=utf-8',
       );
       return true;
     }
@@ -551,12 +626,35 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     ) => boolean | Promise<boolean>;
   };
 
+  // CSRF / DNS-rebinding guard for the unauthenticated local server. A browser on
+  // the same loopback is exactly the cross-site attacker's vehicle: any site the
+  // user visits can POST to 127.0.0.1 as the local user. So every state-changing
+  // request (and the WS upgrade) must be same-origin AND carry the Host we actually
+  // bound. Set once the real port is known (below); before that no external request
+  // can arrive. This adds NO auth layer — legitimate same-origin GUI requests pass.
+  let boundAuthorities: Set<string> | null = null;
+  function requestIsSameOrigin(req: IncomingMessage): boolean {
+    const allowed = boundAuthorities;
+    if (!allowed) return true; // not yet listening → unreachable
+    return isSameOriginRequest(req.headers, allowed);
+  }
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // Reject cross-site / rebound-Host state changes before any routing. GETs
+        // are covered by the browser same-origin policy (we send no permissive
+        // CORS), except side-effecting GETs which opt in explicitly below.
+        const mutating =
+          method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+        if (mutating && !requestIsSameOrigin(req)) {
+          sendJson(res, { error: 'cross-site request blocked' }, 403);
+          return;
+        }
 
         // Version + update status — answered in BOTH virgin and active states, and
         // independent of any workspace. The browser polls `/api/version` on each
@@ -566,12 +664,33 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendJson(res, { version: guiVersion });
           return;
         }
+        // The vendored Chart.js (~275 KB) used only by the HTML-file artifact
+        // preview. Served on demand (fetched by dashboard.ts ensureChartLib) instead
+        // of inlined into the client bundle, so it no longer weighs on every
+        // startup's parse. Cacheable — a modest max-age avoids a stale-asset footgun
+        // while keeping the rare re-fetch cheap.
+        if (method === 'GET' && pathname === '/gui-assets/chart-lib.js') {
+          sendCompressed(
+            req,
+            res,
+            chartLibJs,
+            'text/javascript; charset=utf-8',
+            'public, max-age=86400',
+          );
+          return;
+        }
         // Desktop shell only: open an external URL in the OS default browser.
         // The embedded webview has no tabs, so its injected link-interceptor
         // routes `target="_blank"` clicks here. 404s unless the desktop host
         // supplied an opener, so a web-served GUI can't trigger an OS open. Only
         // http(s) URLs are honored.
         if (method === 'GET' && pathname === '/api/desktop/open') {
+          // Side-effecting GET (opens the OS browser) → same-origin only, so a
+          // cross-site <img>/navigation can't drive an OS open to an arbitrary URL.
+          if (!requestIsSameOrigin(req)) {
+            sendJson(res, { error: 'cross-site request blocked' }, 403);
+            return;
+          }
           if (!desktopOpenExternal) {
             sendJson(res, { error: 'not found' }, 404);
             return;
@@ -593,6 +712,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               latest: null,
               kind: 'unknown',
               installable: false,
+              autoUpdate,
+              action: 'none',
               checking: false,
               installing: false,
               lastError: null,
@@ -601,23 +722,33 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/update/apply') {
-          // Manual fallback to the automatic updater: force a check that, when a
-          // newer installable version exists, installs the latest and restarts
-          // the GUI onto it. The install is slow (an npm install), so kick it off
-          // without blocking the response — `checkNow(true)` logs/emits its own
-          // progress + errors (update-applied / update-error), which the client
-          // surfaces. When there is no update service (unsupervised or not
-          // installable) there is nothing to do: answer with a plain "can't",
-          // not a crash, so the client can tell the user how to upgrade by hand.
-          if (updateService) {
+          // Manual trigger behind the "update available" pill. The right action
+          // depends on the surface (reported as `status.action`):
+          //  - desktop (`restart-to-update`): run the bundled binary updater,
+          //    which downloads + relaunches — the npm install path can't touch a
+          //    compiled app.
+          //  - npm (`upgrade-in-place`): force a check that installs the latest
+          //    and restarts the GUI onto it. The install is slow (an npm
+          //    install), so kick it off without blocking — `checkNow(true)`
+          //    emits its own progress/errors (update-applied / update-error).
+          //  - anything else (no update, auto-update disabled, or a surface that
+          //    can't self-update): answer with a plain "can't", not a crash, so
+          //    the client can tell the user how to upgrade by hand.
+          const st = updateService?.status();
+          if (st?.action === 'restart-to-update' && options.desktopApplyUpdate) {
+            options.desktopApplyUpdate();
+            sendJson(res, { ok: true, status: st });
+          } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
             sendJson(res, { ok: true, status: updateService.status() });
           } else {
             sendJson(res, {
               ok: false,
               error:
-                'Automatic update is not available for this install. ' +
-                'Reinstall from https://latticesql.com to get the latest version.',
+                st && !st.autoUpdate
+                  ? 'Automatic update is disabled for this session.'
+                  : 'Automatic update is not available for this install. ' +
+                    'Reinstall from https://latticesql.com to get the latest version.',
             });
           }
           return;
@@ -881,6 +1012,23 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               });
             },
           },
+          // ── Databases as an Input: connect/list/refresh/disconnect external DBs ──
+          // An external Postgres database imported as a data source. Distinct from
+          // /api/databases (sibling Lattice config switching) — see db-sources-routes.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/db-sources')) return false;
+              const ident = readIdentity();
+              const fallback = ident.email || ident.display_name || 'local';
+              const connectedBy = await resolveConnectorIdentity(active.db, fallback);
+              return await dispatchDbSourcesRoute(req, res, {
+                db: active.db,
+                outputDir: active.outputDir,
+                connectedBy,
+                feed: active.feed,
+              });
+            },
+          },
           // ── Files: blob serving + open-in-finder ──
           {
             handle: async (req, res) => {
@@ -984,8 +1132,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   if (options.updateServiceFactory) {
     updateService = options.updateServiceFactory(broadcast);
-  } else if (options.selfUpdate && guiVersion) {
-    updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
+  } else if (guiVersion) {
+    // Build the service on EVERY surface that knows its version (not only the
+    // supervised npm child) so `/api/update/status` reports a real `latest` +
+    // `action` — that is what lets the "update available" pill appear on the
+    // desktop app and a dev build, where it was previously always invisible. The
+    // service only *installs/relaunches* on the supervised npm surface
+    // (`selfUpdate`), and does nothing at all when `autoUpdate` is off.
+    updateService = createUpdateService({
+      currentVersion: guiVersion,
+      emit: broadcast,
+      autoUpdate,
+      selfUpdate: options.selfUpdate ?? false,
+      ...(options.updateCheck ? { check: options.updateCheck } : {}),
+      ...(options.updateContext ? { context: options.updateContext } : {}),
+    });
   }
 
   // Wire one connection's subscriptions. Bound to the workspace open at connect
@@ -1112,7 +1273,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   server.on('upgrade', (req, socket, head) => {
     const { pathname } = new URL(req.url ?? '/', `http://${host}`);
-    if (pathname !== '/api/stream') {
+    // Same guard as mutating HTTP: a cross-site page must not open the realtime
+    // change feed (it's readable cross-origin, unlike a fetch response), and a
+    // rebound Host must not reach it.
+    if (pathname !== '/api/stream' || !requestIsSameOrigin(req)) {
       socket.destroy();
       return;
     }
@@ -1122,6 +1286,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   });
 
   const port = await listenWithPortFallback(server, startPort, host);
+  // Now the real port is known — arm the CSRF/rebinding guard with the exact Host
+  // authorities the server actually answers on.
+  boundAuthorities = computeBoundAuthorities(host, port, hostIsLoopback);
   // Now that the server is accepting connections, render the initial workspace's
   // context tree in the background — `/` and `/api/entities` answer instantly
   // while it churns, and a render that finishes before any tab connects is

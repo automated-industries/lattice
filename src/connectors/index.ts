@@ -39,28 +39,53 @@ export {
 } from './registry.js';
 export type { ConnectorRecord, ConnectorStatus, CreateConnectorInput } from './registry.js';
 
+export { ConnectorUnavailableError } from './errors.js';
+
+// --- MCP-backed connectors ---------------------------------------------------
+export type { McpConnector, McpServerSpec, McpBeginResult } from './types.js';
+export { isMcpConnector } from './types.js';
 export {
-  JiraConnector,
-  ConnectorUnavailableError,
-  loadJiraClient,
-  getJiraCreds,
-  setJiraCreds,
-  clearJiraCreds,
-} from './jira/connector.js';
-export type { JiraCreds, JiraClient } from './jira/connector.js';
-
-export { JIRA_MODELS, defineJiraTables } from './jira/models.js';
+  McpConnectorBase,
+  SimpleMcpConnector,
+  type McpConnectorSpec,
+  type McpConnectorDeps,
+  type McpModelBinding,
+  type McpOAuthDriver,
+} from './mcp/connector-base.js';
+export type {
+  McpTransport,
+  McpToolCall,
+  McpToolInfo,
+  McpTransportFactory,
+  McpServerRef,
+} from './mcp/transport.js';
+export { connectDirect } from './mcp/direct-transport.js';
+export { mcpModel } from './mcp/connected-model.js';
+export { gmailConnector, GMAIL_MODELS } from './gmail/connector.js';
+export { calendarConnector, CALENDAR_MODELS } from './calendar/connector.js';
+export { driveConnector, DRIVE_MODELS } from './drive/connector.js';
+export { genericConnector, introspectiveConnector } from './generic/connector.js';
+export type { IntrospectiveSpec } from './generic/connector.js';
+export { jiraConnector, trelloConnector, mondayConnector } from './providers.js';
 
 export {
-  TrelloConnector,
-  loadTrelloClient,
-  getTrelloCreds,
-  setTrelloCreds,
-  clearTrelloCreds,
-} from './trello/connector.js';
-export type { TrelloCreds, TrelloClient, TrelloPageOpts } from './trello/connector.js';
-
-export { TRELLO_MODELS, defineTrelloTables } from './trello/models.js';
+  DatabaseConnector,
+  assembleConnectionString,
+  getDbSourceCreds,
+  setDbSourceCreds,
+  clearDbSourceCreds,
+} from './db-source/connector.js';
+export { dialectFor, PostgresDialect } from './db-source/dialects.js';
+export type { SqlDialect, PageOpts, SqlQuery } from './db-source/dialects.js';
+export {
+  getSchemaDescriptor,
+  setSchemaDescriptor,
+  clearSchemaDescriptor,
+  buildModelDefs,
+  latticeTableName,
+  slugify as slugifyDbName,
+} from './db-source/schema-cache.js';
+export type { DbSchemaDescriptor, DbTableDesc, DbColumnDesc } from './db-source/schema-cache.js';
 
 export {
   syncConnector,

@@ -215,47 +215,6 @@ export const createDatabaseWizardJs = `    // ───────────�
         });
       });
     }
-    // Mobile: tapping the handle expands/collapses the bottom drawer.
-    function initRailDrawer() {
-      var handle = document.getElementById('rail-handle');
-      var rail = document.getElementById('assistant-rail');
-      if (handle && rail) handle.addEventListener('click', function () { rail.classList.toggle('expanded'); });
-    }
-    function initRailDragDrop() {
-      var rail = document.getElementById('assistant-rail'); if (!rail) return;
-      // Only react to FILE drags (not text/selection drags).
-      function isFileDrag(e) {
-        var t = e.dataTransfer && e.dataTransfer.types;
-        return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
-      }
-      // enter/leave counter: leaving via a child element fires dragleave then a
-      // dragenter, so the depth stays > 0 until the cursor actually exits the rail.
-      var depth = 0;
-      function clearOverlay() { depth = 0; rail.classList.remove('dragging-file'); }
-      rail.addEventListener('dragenter', function (e) {
-        if (!isFileDrag(e)) return;
-        e.preventDefault(); depth++; rail.classList.add('dragging-file');
-      });
-      rail.addEventListener('dragover', function (e) {
-        if (!isFileDrag(e)) return;
-        e.preventDefault(); rail.classList.add('dragging-file');
-      });
-      rail.addEventListener('dragleave', function () {
-        depth = Math.max(0, depth - 1);
-        if (depth === 0) rail.classList.remove('dragging-file');
-      });
-      rail.addEventListener('drop', function (e) {
-        e.preventDefault();
-        clearOverlay();
-        // Stage the dropped files for review (Send / ✕) rather than ingesting now.
-        if (e.dataTransfer && e.dataTransfer.files) stageFiles(e.dataTransfer.files);
-      });
-      // Backstops: a drag cancelled outside the window, or a drop anywhere, must
-      // clear the overlay — the per-element dragleave can miss those exits.
-      window.addEventListener('dragend', clearOverlay);
-      window.addEventListener('drop', clearOverlay);
-    }
-
     // Surface a notice when files/secrets aren't bound as native objects — the
     // assistant key storage + ingest need them. Normally they auto-create on
     // open; this only shows in the edge case where a pre-existing plaintext

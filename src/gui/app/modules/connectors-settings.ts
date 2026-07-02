@@ -39,6 +39,14 @@ export const connectorsSettingsJs = `
             '<div class="conn-form-actions"><button class="btn primary" data-act="connect" data-tk="' +
               escapeHtml(tk.toolkit) + '">Connect</button>' + help + '</div></div>';
         }
+        function mcpUrlForm(tk) {
+          return '<div class="conn-form">' +
+            '<label class="conn-field">MCP server URL' +
+              '<input id="mcp-url-' + escapeHtml(tk.toolkit) + '" type="text" autocomplete="off" ' +
+                'data-1p-ignore data-lpignore="true" placeholder="https://your-mcp-server/sse"></label>' +
+            '<div class="conn-form-actions"><button class="btn primary" data-act="connect" data-tk="' +
+              escapeHtml(tk.toolkit) + '">Connect</button></div></div>';
+        }
         function card(tk) {
           var c = byToolkit[tk.toolkit];
           var inner;
@@ -49,6 +57,8 @@ export const connectorsSettingsJs = `
                 '<button class="btn" data-act="disconnect" data-tk="' + escapeHtml(tk.toolkit) + '">Disconnect</button>' +
               '</div>' +
               (c.lastError ? '<div class="conn-err">' + escapeHtml(c.lastError) + '</div>' : '');
+          } else if (tk.connectVia === 'mcp' && tk.needsServerUrl) {
+            inner = mcpUrlForm(tk);
           } else {
             inner = (tk.credentialFields && tk.credentialFields.length)
               ? credForm(tk)
@@ -67,6 +77,23 @@ export const connectorsSettingsJs = `
         var msg = host.querySelector('#connectors-msg');
         function setMsg(t) { if (msg) msg.textContent = t; }
         function reload() { renderConnectorsPanel(host); }
+        // MCP OAuth: open the provider's sign-in in the browser (the desktop app
+        // routes window.open for external origins to the system browser), then poll
+        // until the loopback callback records the connection and re-render.
+        function openAuthRedirect(u, tkName) {
+          setMsg('Finish signing in in your browser, then return here…');
+          try { window.open(u, '_blank', 'noopener'); } catch (e) {}
+          var tries = 0;
+          var iv = window.setInterval(function () {
+            tries++;
+            fetchJson('/api/connectors').then(function (d) {
+              var cs = (d && d.connectors) || [];
+              var found = false;
+              for (var i = 0; i < cs.length; i++) if (cs[i].toolkit === tkName) { found = true; break; }
+              if (found || tries > 40) { window.clearInterval(iv); reload(); }
+            }).catch(function () {});
+          }, 3000);
+        }
         function postJson(url, body) {
           return fetch(url, {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}),
@@ -89,9 +116,19 @@ export const connectorsSettingsJs = `
                 body[f.key] = v;
               });
               if (missing) { setMsg('Fill in every field.'); return; }
-              setMsg('Validating + syncing…');
+              if (tk && tk.connectVia === 'mcp' && tk.needsServerUrl) {
+                var urlEl = host.querySelector('#mcp-url-' + tkName);
+                var urlV = urlEl && urlEl.value ? urlEl.value.trim() : '';
+                if (!urlV) { setMsg('Enter the MCP server URL.'); return; }
+                body.serverUrl = urlV;
+              }
+              setMsg(tk && tk.connectVia === 'mcp' ? 'Connecting…' : 'Validating + syncing…');
               postJson('/api/connectors/' + encodeURIComponent(tkName) + '/connect', body)
-                .then(function (d) { if (d.error) { setMsg('Failed: ' + d.error); return; } reload(); })
+                .then(function (d) {
+                  if (d.error) { setMsg('Failed: ' + d.error); return; }
+                  if (d.redirectUrl) { openAuthRedirect(d.redirectUrl, tkName); return; }
+                  reload();
+                })
                 .catch(function (e) { setMsg('Failed: ' + e.message); });
             } else if (act === 'refresh') {
               setMsg('Refreshing…');

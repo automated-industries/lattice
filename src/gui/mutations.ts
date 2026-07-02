@@ -120,6 +120,7 @@ const AUDIT_COLUMNS = [
   'after_json',
   'undone',
   'session_id',
+  'source',
 ] as const;
 
 /**
@@ -139,6 +140,7 @@ function buildAuditRow(
   after: unknown,
   sessionId: string | undefined,
   editTs: string | undefined,
+  source: FeedSource = 'gui',
 ): Record<string, unknown> {
   return {
     id: crypto.randomUUID(),
@@ -150,6 +152,7 @@ function buildAuditRow(
     after_json: after ? JSON.stringify(after) : null,
     undone: 0,
     session_id: sessionId ?? null,
+    source,
   };
 }
 
@@ -210,7 +213,7 @@ export async function appendAudit(
   await purgeRedoStack(db, sessionId);
   await db.insert(
     '_lattice_gui_audit',
-    buildAuditRow(table, rowId, op, before, after, sessionId, editTs),
+    buildAuditRow(table, rowId, op, before, after, sessionId, editTs, source),
   );
   publishMutationFeed(feed, table, rowId, op, before, after, source);
 }
@@ -256,6 +259,7 @@ export async function recordSchemaAudit(
     after_json: after === null || after === undefined ? null : JSON.stringify(after),
     undone: 0,
     session_id: sessionId ?? null,
+    source,
   });
   feed.publish({ table, op: 'schema', rowId: null, source, summary });
 }
@@ -672,7 +676,16 @@ async function hardDelete(
     await ctx.db.delete(table, id);
     return;
   }
-  const auditRow = buildAuditRow(table, id, 'delete', before, null, ctx.sessionId, ctx.clientTs);
+  const auditRow = buildAuditRow(
+    table,
+    id,
+    'delete',
+    before,
+    null,
+    ctx.sessionId,
+    ctx.clientTs,
+    ctx.source,
+  );
   await purgeRedoStack(ctx.db, ctx.sessionId);
   const auditCols = AUDIT_COLUMNS.map((c) => `"${c}"`).join(', ');
   const auditPlaceholders = AUDIT_COLUMNS.map(() => '?').join(', ');
@@ -815,12 +828,24 @@ async function applyForward(ctx: MutationCtx, entry: AuditEntry): Promise<void> 
   }
 }
 
-async function liveAudit(db: Lattice, undone: 0 | 1, sessionId?: string): Promise<AuditEntry[]> {
-  return (
-    (await db.query('_lattice_gui_audit', {
-      filters: sessionUndoneFilters(undone, sessionId),
-    })) as Record<string, unknown>[]
-  ).map(parseAudit);
+/**
+ * The single audit entry an undo/redo acts on: the newest LIVE entry (undone=0,
+ * DESC) or the oldest UNDONE entry (undone=1, ASC). ISO `ts` sorts lexically ==
+ * chronologically, so ORDER BY ts + LIMIT 1 in SQL picks it without loading (and
+ * before/after-JSON-transferring) the whole session log.
+ */
+async function pickAuditTarget(
+  db: Lattice,
+  undone: 0 | 1,
+  sessionId?: string,
+): Promise<AuditEntry | null> {
+  const rows = (await db.query('_lattice_gui_audit', {
+    filters: sessionUndoneFilters(undone, sessionId),
+    orderBy: 'ts',
+    orderDir: undone === 0 ? 'desc' : 'asc',
+    limit: 1,
+  })) as Record<string, unknown>[];
+  return rows[0] ? parseAudit(rows[0]) : null;
 }
 
 /** A readable feed line for an undo/redo/revert of a row or schema op. */
@@ -834,9 +859,7 @@ function reverseSummary(verb: 'Undid' | 'Redid' | 'Reverted', entry: AuditEntry)
 
 /** Undo this session's most recent live mutation. Returns the reverted entry, or null. */
 export async function undoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
-  const target = (await liveAudit(ctx.db, 0, ctx.sessionId)).sort((a, b) =>
-    b.ts.localeCompare(a.ts),
-  )[0];
+  const target = await pickAuditTarget(ctx.db, 0, ctx.sessionId);
   if (!target) return null;
   await applyInverse(ctx, target);
   await ctx.db.update('_lattice_gui_audit', target.id, { undone: 1 });
@@ -852,9 +875,7 @@ export async function undoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
 
 /** Redo this session's oldest undone mutation. Returns the re-applied entry, or null. */
 export async function redoLast(ctx: MutationCtx): Promise<AuditEntry | null> {
-  const target = (await liveAudit(ctx.db, 1, ctx.sessionId)).sort((a, b) =>
-    a.ts.localeCompare(b.ts),
-  )[0];
+  const target = await pickAuditTarget(ctx.db, 1, ctx.sessionId);
   if (!target) return null;
   await applyForward(ctx, target);
   await ctx.db.update('_lattice_gui_audit', target.id, { undone: 0 });

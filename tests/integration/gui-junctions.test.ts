@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import Database from 'better-sqlite3';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { parseConfigFile } from '../../src/config/parser.js';
 import { getGuiEntities, isJunctionTable } from '../../src/gui/data.js';
@@ -129,6 +130,174 @@ function m2mBetween(graph: Graph, a: string, b: string): boolean {
       ((e.source === 'table:' + a && e.target === 'table:' + b) ||
         (e.source === 'table:' + b && e.target === 'table:' + a)),
   );
+}
+
+/** Two first-class entities that share name+email; `leads` additionally has a
+ *  source-only `phone` (exercises the merge column-union) and BOTH carry
+ *  `deleted_at` so they are soft-deletable (required to merge reversibly).
+ *  Used by the merge-route tests. */
+async function bootMergeable(): Promise<GuiServerHandle> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-merge-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  leads:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      email: { type: text }',
+      '      phone: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: leads.md',
+      '  contacts:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      email: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: contacts.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return server;
+}
+
+/** A source `s` with a TEXT `qty` and a target `t` with an INTEGER `qty` (same
+ *  name, incompatible type) — used to test the merge's type pre-flight. */
+async function bootTyped(): Promise<GuiServerHandle> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-typed-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  s:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      qty: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: s.md',
+      '  t:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      qty: { type: integer }',
+      '      deleted_at: { type: text }',
+      '    outputFile: t.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return server;
+}
+
+/** `src` and `dst`, both soft-deletable with an `email` column — used to force a
+ *  mid-merge UNIQUE violation. Returns the SQLite file path so the test can add a
+ *  physical constraint the GUI config can't express. */
+async function bootDupTarget(): Promise<{ server: GuiServerHandle; dbPath: string }> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-dup-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  src:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      email: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: src.md',
+      '  dst:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      email: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: dst.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return { server, dbPath: join(root, 'data', 'test.db') };
+}
+
+/** `authors` (merge source) + `writers` (target), plus `posts` which has a
+ *  belongsTo INBOUND link to authors (posts.author_id). Used to test that merging
+ *  authors→writers rewires the inbound link onto the target instead of refusing.
+ *  Returns the root so the test can read the repointed relation from the config. */
+async function bootInboundLink(): Promise<{ server: GuiServerHandle; root: string }> {
+  const root = mkdtempSync(join(tmpdir(), 'lattice-inbound-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'data'), { recursive: true });
+  const configPath = join(root, 'lattice.config.yml');
+  writeFileSync(
+    configPath,
+    [
+      'db: ./data/test.db',
+      '',
+      'entities:',
+      '  authors:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: authors.md',
+      '  writers:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      deleted_at: { type: text }',
+      '    outputFile: writers.md',
+      '  posts:',
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      title: { type: text }',
+      '      author_id: { type: uuid }',
+      '    relations:',
+      '      author: { type: belongsTo, table: authors, foreignKey: author_id }',
+      '    outputFile: posts.md',
+      '',
+    ].join('\n'),
+  );
+  const server = await startGuiServer({
+    configPath,
+    outputDir: join(root, 'context'),
+    port: 0,
+    openBrowser: false,
+  });
+  servers.push(server);
+  return { server, root };
 }
 
 describe('Data Model — junction relationships', () => {
@@ -460,5 +629,296 @@ describe('Data Model — junction relationships', () => {
     // Deleting an unknown table is a 400, not a crash.
     const badDel = await fetch(`${s.url}/api/schema/entities/nope`, { method: 'DELETE' });
     expect(badDel.status).toBe(400);
+  });
+
+  it('merges one entity into another: moves the rows, removes the source, reversibly', async () => {
+    const s = await bootMergeable();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    // Seed two leads (a fresh row create is 201).
+    expect((await post('/api/tables/leads/rows', { name: 'Ada', email: 'ada@x.io' })).status).toBe(
+      201,
+    );
+    expect(
+      (await post('/api/tables/leads/rows', { name: 'Linus', email: 'linus@x.io' })).status,
+    ).toBe(201);
+
+    // Merge leads → contacts.
+    const res = await post('/api/schema/entities/leads/merge', { target: 'contacts' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok?: boolean;
+      merged?: string;
+      into?: string;
+      movedRows?: number;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.merged).toBe('leads');
+    expect(body.into).toBe('contacts');
+    expect(body.movedRows).toBe(2);
+
+    // The source is gone (soft-deleted) from the live entity list; the target stays.
+    expect(await entityNames(s)).not.toContain('leads');
+    expect(await entityNames(s)).toContain('contacts');
+
+    // The rows now live in the target, with their values mapped by column name.
+    const listed = (await (await fetch(`${s.url}/api/tables/contacts/rows`)).json()) as {
+      rows: { name: string; email: string }[];
+    };
+    expect(listed.rows.map((r) => r.name).sort()).toEqual(['Ada', 'Linus']);
+    expect(listed.rows.map((r) => r.email).sort()).toEqual(['ada@x.io', 'linus@x.io']);
+
+    // Reversible: the source's delete is captured in version history (a
+    // schema.delete_entity op that the History page replays to restore it).
+    const history = (await (await fetch(`${s.url}/api/history`)).json()) as {
+      entries: { operation: string; table_name?: string }[];
+    };
+    expect(
+      history.entries.some(
+        (h) => h.operation === 'schema.delete_entity' && h.table_name === 'leads',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects bad merges (into itself, unknown source/target) with 400 and deletes nothing', async () => {
+    const s = await bootMergeable();
+    const merge = (source: string, target: unknown) =>
+      fetch(`${s.url}/api/schema/entities/${source}/merge`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+    expect((await merge('leads', 'leads')).status).toBe(400); // into itself
+    expect((await merge('leads', 'ghosts')).status).toBe(400); // unknown target
+    expect((await merge('ghosts', 'contacts')).status).toBe(400); // unknown source
+    // None of the rejected merges removed anything.
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['leads', 'contacts']));
+  });
+
+  it('unions source-only columns into the target (no silent field drop)', async () => {
+    const s = await bootMergeable();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    // `leads` has a `phone` column that `contacts` lacks.
+    expect(
+      (await post('/api/tables/leads/rows', { name: 'Ada', email: 'a@x.io', phone: '555-0001' }))
+        .status,
+    ).toBe(201);
+
+    const res = await post('/api/schema/entities/leads/merge', { target: 'contacts' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { movedRows?: number }).movedRows).toBe(1);
+
+    // contacts GAINED the `phone` column AND the moved row keeps its phone value.
+    const ents = (await (await fetch(`${s.url}/api/entities`)).json()) as {
+      tables: { name: string; columns: string[] }[];
+    };
+    expect(ents.tables.find((t) => t.name === 'contacts')!.columns).toContain('phone');
+    const rows = (await (await fetch(`${s.url}/api/tables/contacts/rows`)).json()) as {
+      rows: { name: string; phone: string }[];
+    };
+    expect(rows.rows.find((r) => r.name === 'Ada')!.phone).toBe('555-0001');
+  });
+
+  it('refuses to merge a source whose rows are not soft-deletable (no deleted_at)', async () => {
+    const s = await boot(); // articles/tags have no deleted_at column
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    // Non-empty (an empty table would just soft-delete immediately, before move_to).
+    expect((await post('/api/tables/articles/rows', { title: 'Keep me' })).status).toBe(201);
+    const res = await post('/api/schema/entities/articles/merge', { target: 'tags' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/deleted_at|reversibly/i);
+    // Nothing was moved or deleted.
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['articles', 'tags']));
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/articles/rows`)).json()) as { rows: unknown[] })
+        .rows.length,
+    ).toBe(1);
+  });
+
+  it('merge rewires inbound-link foreign keys AND repoints the relation onto the target', async () => {
+    const { server: s, root } = await bootInboundLink();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const a1 = (
+      (await (await post('/api/tables/authors/rows', { name: 'A One' })).json()) as {
+        id: string;
+      }
+    ).id;
+    const a2 = (
+      (await (await post('/api/tables/authors/rows', { name: 'A Two' })).json()) as {
+        id: string;
+      }
+    ).id;
+    await post('/api/tables/posts/rows', { title: 'P1', author_id: a1 });
+    await post('/api/tables/posts/rows', { title: 'P2', author_id: a2 });
+
+    const res = await post('/api/schema/entities/authors/merge', { target: 'writers' });
+    expect(res.status).toBe(200); // previously 400 on the inbound link
+    const body = (await res.json()) as { movedRows: number; rewiredLinks: number };
+    expect(body.movedRows).toBe(2);
+    expect(body.rewiredLinks).toBe(1);
+
+    // authors gone; writers holds the two moved rows (with NEW ids).
+    expect(await entityNames(s)).not.toContain('authors');
+    const writers = (
+      (await (await fetch(`${s.url}/api/tables/writers/rows`)).json()) as {
+        rows: { id: string; name: string }[];
+      }
+    ).rows;
+    expect(writers.map((w) => w.name).sort()).toEqual(['A One', 'A Two']);
+    const writerIds = new Set(writers.map((w) => w.id));
+
+    // Every post's author_id was rewired to the moved row's new id in writers —
+    // the links followed the data instead of dangling at the deleted authors.
+    const posts = (
+      (await (await fetch(`${s.url}/api/tables/posts/rows`)).json()) as {
+        rows: { author_id: string }[];
+      }
+    ).rows;
+    expect(posts).toHaveLength(2);
+    for (const p of posts) {
+      expect(writerIds.has(p.author_id)).toBe(true); // points at a moved row in writers
+      expect([a1, a2]).not.toContain(p.author_id); // no longer the old authors id
+    }
+
+    // The relation itself is repointed in the config: posts.author → writers.
+    const cfg = parse(readFileSync(join(root, 'lattice.config.yml'), 'utf8')) as {
+      entities: { posts: { relations: { author: { table: string } } } };
+    };
+    expect(cfg.entities.posts.relations.author.table).toBe('writers');
+  });
+
+  it('refuses to merge when a secret source column would land in a non-secret target', async () => {
+    const s = await bootMergeable();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (await post('/api/tables/leads/rows', { name: 'Ada', email: 'secret@x.io' })).status,
+    ).toBe(201);
+    // Mark leads.email secret; contacts.email is NOT secret.
+    const marked = await fetch(`${s.url}/api/gui-meta/columns/leads/email`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: true }),
+    });
+    expect(marked.status).toBe(200);
+    const res = await post('/api/schema/entities/leads/merge', { target: 'contacts' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/secret|visible/i);
+    expect(await entityNames(s)).toContain('leads'); // nothing moved
+  });
+
+  it('rolls back the ENTIRE merge when a row fails mid-loop (no split state)', async () => {
+    // This exercises the transaction wrap end-to-end (not just the type pre-flight,
+    // which aborts before the transaction opens). Two source rows share an email;
+    // a physical UNIQUE index on the target — which the type pre-flight can't catch —
+    // makes the SECOND row's insert throw mid-loop, so the whole merge must roll back.
+    const { server: s, dbPath } = await bootDupTarget();
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post('/api/tables/src/rows', { email: 'dup@x.io' })).status).toBe(201);
+    expect((await post('/api/tables/src/rows', { email: 'dup@x.io' })).status).toBe(201);
+
+    // Add a UNIQUE constraint the GUI config can't express, via a second connection.
+    const raw = new Database(dbPath);
+    raw.exec('CREATE UNIQUE INDEX dst_email_uq ON dst(email)');
+    raw.close();
+
+    // Merge: row 1 inserts into dst OK, row 2's insert hits the UNIQUE violation
+    // mid-loop → the transaction rolls back. The route maps the throw to a 500.
+    const res = await post('/api/schema/entities/src/merge', { target: 'dst' });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+
+    // Atomic: NOTHING moved. src keeps both rows (soft-deletes rolled back), dst empty.
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/src/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(2);
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/dst/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(0);
+    // src is still a live table (the source-removal never ran — the move threw first).
+    expect(await entityNames(s)).toContain('src');
+  });
+
+  it('hands an over-cap merge back as needsResolution (400 + plain-language message)', async () => {
+    // A source larger than AI_DELETE_ROW_CAP (1000) must not hard-fail with jargon;
+    // it returns a needsResolution outcome the route maps to 400 + a plain message.
+    const { server: s, dbPath } = await bootDupTarget();
+    const raw = new Database(dbPath);
+    const stmt = raw.prepare('INSERT INTO src (id, email, deleted_at) VALUES (?, ?, NULL)');
+    const many = raw.transaction((n: number) => {
+      for (let i = 0; i < n; i++) stmt.run(`ovc-${i}`, `e${i}@x.io`);
+    });
+    many(1001); // > cap
+    raw.close();
+
+    const res = await fetch(`${s.url}/api/schema/entities/src/merge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'dst' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(
+      /too many to merge automatically/i,
+    );
+    // Nothing moved — the source is intact.
+    expect(await entityNames(s)).toContain('src');
+  });
+
+  it('type-pre-flights the merge and aborts BEFORE any write (no partial merge)', async () => {
+    const s = await bootTyped(); // s.qty is TEXT, t.qty is INTEGER
+    const post = (path: string, body: unknown) =>
+      fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post('/api/tables/s/rows', { qty: '5' })).status).toBe(201);
+    expect((await post('/api/tables/s/rows', { qty: 'N/A' })).status).toBe(201); // can't be an INTEGER
+
+    const res = await post('/api/schema/entities/s/merge', { target: 't' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not compatible/i);
+
+    // NOTHING moved: the source is intact (both rows, still a table) and the target
+    // is still empty — the merge aborted before the first write, so no split state.
+    expect(await entityNames(s)).toEqual(expect.arrayContaining(['s', 't']));
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/s/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(2);
+    expect(
+      ((await (await fetch(`${s.url}/api/tables/t/rows`)).json()) as { rows: unknown[] }).rows
+        .length,
+    ).toBe(0);
   });
 });

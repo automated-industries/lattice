@@ -4,6 +4,12 @@ export const searchJs = `    // ────────────────
     // Version history (undo / redo / log)
     // ────────────────────────────────────────────────────────────
     function wireHistoryControls() {
+      // Back / Forward move through the page-navigation (hash) history, like a
+      // browser's nav arrows. They sit next to Undo/Redo (which are for DATA edits).
+      var back = document.getElementById('nav-back-btn');
+      if (back) back.addEventListener('click', function () { window.history.back(); });
+      var fwd = document.getElementById('nav-fwd-btn');
+      if (fwd) fwd.addEventListener('click', function () { window.history.forward(); });
       document.getElementById('undo-btn').addEventListener('click', function () {
         gaTrack('history_action', { action: 'undo' });
         fetchJson('/api/history/undo', { method: 'POST' })
@@ -25,10 +31,19 @@ export const searchJs = `    // ────────────────
      * any mutation that goes through the audit log: row CRUD, link/unlink,
      * undo, redo, revert.
      */
-    function afterMutation() {
-      loadedTables = {};
+    function afterMutation(changedTables) {
+      // Scoped invalidation: drop only the tables that actually changed so a
+      // collaborator's edit to one table doesn't force re-fetching every OTHER
+      // cached table this view references (the dominant cloud egress cost). A
+      // null/empty list (local mutation, schema change, or unknown table) falls
+      // back to a full cache wipe — the safe default.
+      if (changedTables && changedTables.length) {
+        for (var i = 0; i < changedTables.length; i++) delete loadedTables[changedTables[i]];
+      } else {
+        loadedTables = {};
+      }
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         refreshHistoryState(),
       ]).then(function (r) {
         state.entities = r[0];
@@ -48,10 +63,28 @@ export const searchJs = `    // ────────────────
       }).catch(function () { /* swallow */ });
     }
 
+    // A full-app fade overlay shown while a workspace switch (or schema reload)
+    // rebuilds every column — so the Inputs/Model/Outputs panes appear to switch
+    // together instead of popping in at different speeds.
+    function wsOverlayEl() {
+      var el = document.getElementById('ws-switch-overlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'ws-switch-overlay';
+        el.className = 'ws-switch-overlay';
+        el.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function showSwitchOverlay() { wsOverlayEl().classList.add('show'); }
+    function hideSwitchOverlay() { var el = document.getElementById('ws-switch-overlay'); if (el) el.classList.remove('show'); }
+
     /** Refetch everything after a DB switch and rerender. */
     function reloadEverything() {
+      showSwitchOverlay();
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
@@ -68,6 +101,10 @@ export const searchJs = `    // ────────────────
         // <img>), else the previous workspace's logo stays until a hard refresh.
         applyWorkspaceLogo((results[5] || {}).logoEtag);
         renderSidebar();
+        // The Outputs column (Markdown context tree + Tables mirror) is
+        // per-workspace; refresh it on switch or the new workspace shows the
+        // PREVIOUS workspace's rendered context until a hard reload.
+        renderOutputs();
         // renderWsSwitcher set cloudMode from the new workspace's kind; re-render
         // the composer so the Private-mode toggle reflects local vs cloud (it is
         // forced checked+disabled on local). See #7.
@@ -85,11 +122,19 @@ export const searchJs = `    // ────────────────
         // workspace switch/reload doesn't flash the loading frame over the pane.
         else renderRoute({ soft: true });
         loadedTables = {};
+        // The Tables explorer's cached edges + any in-flight wire/merge selection
+        // are per-workspace module state — reset them so the new workspace doesn't
+        // inherit the previous one's relationship edges or picked source.
+        mtResetState();
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event
         // stream so realtime/feed/render all rebind to this workspace.
         renderProgress = {};
         startEventStream();
+      }).finally(function () {
+        // Reveal the freshly-rebuilt columns together (a short tick lets the last
+        // synchronous renders settle before the overlay fades out).
+        setTimeout(hideSwitchOverlay, 60);
       });
     }
 

@@ -116,6 +116,10 @@ export interface GuiGraphEdge {
 export interface GuiGraphPayload {
   nodes: GuiGraphNode[];
   edges: GuiGraphEdge[];
+  /** True when row/file detail nodes were capped (a large workspace). */
+  truncated?: boolean;
+  /** Total entity (row) count in the workspace, before capping. */
+  totalEntities?: number;
 }
 
 interface GuiData {
@@ -220,11 +224,19 @@ function parseConfigCached(configPath: string): ParsedConfig {
   return parsed;
 }
 
-export function loadGuiData(configPath: string, outputDir: string): GuiData {
+export function loadGuiData(
+  configPath: string,
+  outputDir: string,
+  includeEntities = true,
+): GuiData {
   const parsed = parseConfigCached(configPath);
   const manifest = readManifest(outputDir);
   const tables = parsed.tables.map(({ name, definition }) => tableToSummary(name, definition));
-  const entities = collectEntities(outputDir, manifest);
+  // The rendered-file scan (collectEntities) is O(files) on disk — only the full
+  // brain-graph detail-node path consumes it. The Objects list / Tables / the
+  // schema-only graph use just `tables`, so hot-path callers pass
+  // includeEntities=false to skip the scan and stay fast on a large workspace.
+  const entities = includeEntities ? collectEntities(outputDir, manifest) : [];
 
   return {
     parsed,
@@ -317,14 +329,45 @@ export interface BuildGuiGraphOptions {
    * owns nor has shared to them.
    */
   visibleFilter?: (tableName: string) => boolean;
+  /**
+   * Cap on the total row/file ("detail") nodes drawn over the always-present
+   * table topology. A force-directed graph can't render tens of thousands of
+   * nodes (a large cloud), so detail nodes are bounded; the table+relationship
+   * schema always renders in full. Default 1200.
+   */
+  maxDetailNodes?: number;
+  /** Per-table cap on row nodes, so one huge table can't consume the whole budget. Default 50. */
+  maxEntityNodesPerTable?: number;
+  /**
+   * Schema-only: emit the table topology (one node per table + relationship edges)
+   * with NO row/file detail nodes at all. The GUI's force graph is a data MODEL
+   * view — it only ever draws table nodes — so this skips generating the detail
+   * nodes it would otherwise discard, keeping the payload tiny + scalable no matter
+   * how many rows the workspace holds.
+   */
+  schemaOnly?: boolean;
 }
+
+/**
+ * Tables that are first-class entities everywhere else (the Objects list,
+ * /api/entities, the Sources tree) but are intentionally OMITTED from the brain
+ * graph. `files` is referenced by so many objects that it renders as a dense hub
+ * that dominates the layout and drowns out the actual object↔object
+ * relationships — and a file is a SOURCE, not an object. The Files sidebar is the
+ * canonical entry point for files. This changes the /api/graph payload CONTENT
+ * (fewer nodes/edges), never its SHAPE — no API-contract change for consumers.
+ */
+const GRAPH_HIDDEN_TABLES = new Set<string>(['files']);
 
 export function buildGuiGraph(
   configPath: string,
   outputDir: string,
   options: BuildGuiGraphOptions = {},
 ): GuiGraphPayload {
-  const data = loadGuiData(configPath, outputDir);
+  // Schema-only (the GUI's only graph mode) never draws row/file detail nodes, so
+  // it doesn't need the O(files) rendered-file scan — skip it. Markdown edges below
+  // still come from the (cheap) manifest, and `data.entities` is unused on this path.
+  const data = loadGuiData(configPath, outputDir, !options.schemaOnly);
   // Merge in runtime-registered tables (natives, team-shared) the YAML
   // doesn't carry, so the Data Model graph isn't empty for cloud DBs.
   if (options.extraTables && options.extraTables.length > 0) {
@@ -347,7 +390,9 @@ export function buildGuiGraph(
   // conversation storage. They're real tables but must never surface as nodes in
   // the Data Model graph — mirrors the Objects-list filter in entitiesWithCounts
   // (server.ts) so the visualization and the sidebar agree on what's user-facing.
-  data.tables = data.tables.filter((t) => !isInternalNativeEntity(t.name));
+  data.tables = data.tables.filter(
+    (t) => !isInternalNativeEntity(t.name) && !GRAPH_HIDDEN_TABLES.has(t.name),
+  );
   const nodes = new Map<string, GuiGraphNode>();
   const edges = new Map<string, GuiGraphEdge>();
   const fileOwners = new Map<string, GuiEntitySummary>();
@@ -421,7 +466,42 @@ export function buildGuiGraph(
     }
   }
 
+  // Schema-only (the GUI's data-model graph): return the table topology with no
+  // row/file detail nodes — tiny payload, scales to any row count. Filter edges
+  // for referential consistency, same as the full path below.
+  if (options.schemaOnly) {
+    const tableNodeIds = new Set(nodes.keys());
+    return {
+      nodes: [...nodes.values()],
+      edges: [...edges.values()].filter(
+        (e) => tableNodeIds.has(e.source) && tableNodeIds.has(e.target),
+      ),
+    };
+  }
+
+  // Bound the row/file "detail" nodes so a large workspace (a big cloud) doesn't
+  // ship + render tens of thousands of nodes — a force-directed graph can't lay
+  // those out, so the view would freeze. The table topology above always renders
+  // in full; here we cap per-table and against a global budget, and report what
+  // was dropped (truncated/totalEntities) so the GUI can say "showing N of M".
+  const maxDetailNodes = options.maxDetailNodes ?? 1200;
+  const maxEntityNodesPerTable = options.maxEntityNodesPerTable ?? 50;
+  const perTableEntityCount = new Map<string, number>();
+  let detailNodeCount = 0;
+  let truncated = false;
+  const totalEntities = data.entities.length;
+
   for (const entity of data.entities) {
+    if (detailNodeCount >= maxDetailNodes) {
+      truncated = true;
+      break;
+    }
+    const usedForTable = perTableEntityCount.get(entity.table) ?? 0;
+    if (usedForTable >= maxEntityNodesPerTable) {
+      truncated = true;
+      continue;
+    }
+    perTableEntityCount.set(entity.table, usedForTable + 1);
     const entityId = `entity:${entity.table}:${entity.slug}`;
     addNode(nodes, {
       id: entityId,
@@ -437,8 +517,13 @@ export function buildGuiGraph(
       type: 'contains',
       label: entity.table,
     });
+    detailNodeCount++;
 
     for (const file of entity.files) {
+      if (detailNodeCount >= maxDetailNodes) {
+        truncated = true;
+        break;
+      }
       const fileId = `file:${file.path}`;
       addNode(nodes, {
         id: fileId,
@@ -450,6 +535,7 @@ export function buildGuiGraph(
         status: file.exists ? 'rendered' : 'missing',
       });
       addEdge(edges, { source: entityId, target: fileId, type: 'renders', label: file.name });
+      detailNodeCount++;
 
       if (!file.exists) continue;
       const absPath = safeResolveInside(outputDir, file.path);
@@ -510,7 +596,7 @@ export function buildGuiGraph(
     (e) => presentNodeIds.has(e.source) && presentNodeIds.has(e.target),
   );
 
-  return { nodes: [...nodes.values()], edges: liveEdges };
+  return { nodes: [...nodes.values()], edges: liveEdges, truncated, totalEntities };
 }
 
 export function getGuiProject(configPath: string, outputDir: string): GuiProjectSummary {
@@ -559,6 +645,26 @@ export function isJunctionTable(table: GuiTableSummary): boolean {
  */
 export function isJunctionByColumns(columns: string[]): boolean {
   const payload = columns.filter((c) => !JUNCTION_ALLOWED_NONFK.has(c));
+  return payload.length === 2 && payload.every((c) => c.endsWith('_id'));
+}
+
+/** Allowed non-FK columns for a DISPLAY-only link table (adds a display `name`). */
+const LINK_DISPLAY_ALLOWED_NONFK = new Set([...JUNCTION_ALLOWED_NONFK, 'name']);
+
+/**
+ * DISPLAY predicate — hide pure link tables from object lists / sidebars / the
+ * Markdown + Tables panels / graph nodes. Broader than the STRICT, deletion-safe
+ * {@link isJunctionTable}: it ALSO catches a *physical* link table created WITHOUT
+ * declared relations — e.g. an AI-built `files_<entity>` shaped
+ * `(id, name, <x>_id, <y>_id, deleted_at)`. A display-only `name` label does not
+ * make a link table a first-class object. This is NEVER used for any
+ * destructive / graph-edge / auto-link path (those keep the strict rule), so the
+ * broader match can't expose a DROP-TABLE on a misclassified entity. The client
+ * mirror is `isJunction` in src/gui/app/modules/display-config.ts — keep in lockstep.
+ */
+export function isHiddenLinkTable(table: GuiTableSummary): boolean {
+  if (isJunctionTable(table)) return true;
+  const payload = table.columns.filter((c) => !LINK_DISPLAY_ALLOWED_NONFK.has(c));
   return payload.length === 2 && payload.every((c) => c.endsWith('_id'));
 }
 

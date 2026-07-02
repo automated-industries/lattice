@@ -6,6 +6,417 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.0.0] — 2026-06-28
+
+Major release. The GUI is reframed around the data-modeling story —
+**Inputs · Model · Outputs** — and gains the ability to **connect an external
+database as an Input**. Underneath, three substrate features land together: a
+self-maintaining, cloud-safe, and tunable **native vector search substrate**; a
+live **force-directed brain graph** across all GUI graph surfaces; and
+**auto-update made visible on every surface** (with an opt-out). Untuned/non-cloud
+behavior matches prior releases; the public API grows additively (a new external-
+database connector).
+
+### Security
+
+- **CSRF / DNS-rebinding hardening for the local GUI server.** State-changing
+  requests and the realtime WebSocket upgrade now require a same-origin request
+  and a `Host` header matching the bound loopback authority, so a web page you
+  visit while the GUI is running can't drive the local API as you. Binding the GUI
+  to a non-loopback address now requires an explicit `--allow-remote` opt-in.
+- **SSRF guard on the generic MCP connector.** A user-supplied MCP server URL is
+  validated (scheme + DNS resolution) and private / loopback / link-local /
+  cloud-metadata targets are refused before any request is made.
+- **Per-member connector key isolation.** Connector rows are namespaced by the
+  per-member connection, so two members connecting the same external instance no
+  longer collide on the shared primary key; connector sync errors are sanitized so
+  a conflicting key value can't leak.
+- **OAuth callback pinned to loopback** — the connector `redirect_uri` is derived
+  from the bound loopback authority, not the request `Host`.
+
+### Performance
+
+- **Instant undo/redo state.** Header undo/redo availability is computed with
+  bounded `COUNT` queries + an index instead of loading the session's entire audit
+  log (with row snapshots) on every edit and navigation.
+- **Credential key derivation is cached**, removing an event-loop stall during a
+  large connector sync; the sync reuses one MCP transport across the run instead of
+  reconnecting per parent, and prunes vanished rows in a single transaction.
+- **Scoped realtime refresh** — a collaborator's edit invalidates only the changed
+  table's cache, not the whole cache; relation chips skip heavy text columns.
+- **The GUI shell is served with brotli/gzip** content negotiation.
+
+### Added
+
+- **External databases import their relational structure.** Single-column
+  FOREIGN KEYs on the remote are introspected at connect time and materialized as
+  graph edges between the imported tables (same machinery as the other
+  connectors), so a connected database's rows arrive already linked.
+- **Per-connection table namespacing.** Imported table names now carry a short
+  connection-id suffix in addition to the database name, so two connections whose
+  databases share a name (every Supabase database is `postgres`) can never merge
+  into the same imported tables.
+- **Table imports surface like file ingests.** A successful database import (and
+  each refresh) publishes an activity-feed summary — the same live-feedback
+  contract as dropping files.
+
+- **MCP-backed connectors — connect any MCP server as an Input.** Connectors are
+  now powered by the Model Context Protocol: Lattice runs as a **local MCP client**
+  and pulls a server's read tools in as connected data types. Everything runs on
+  your machine — a remote server is reached over Streamable HTTP or SSE with that
+  server's **own OAuth** (tokens stored in the machine-local encrypted store), and a
+  local server runs as a **stdio** child process. Nothing is routed through any
+  cloud middleman. Ships with **Gmail**, **Google Calendar**, and **Google Drive**
+  (typed schemas; point them at a Google-Workspace MCP server), **Jira** (Atlassian
+  Remote MCP) and **monday.com** (both pre-pointed at their hosted endpoints),
+  **Trello**, and a **generic "custom MCP server"** connector you point at any URL.
+  Connector data keeps the same conventions as before — typed connected tables,
+  per-member `private` visibility, FTS, graph edges, and rendered context. New
+  public API: `McpConnector` / `isMcpConnector`, `McpConnectorBase` /
+  `SimpleMcpConnector`, `introspectiveConnector`, the per-provider connector
+  factories, and the `@modelcontextprotocol/sdk` optional dependency.
+- **Folders view — objects as folders (now the default center tab).** A new
+  **Folders** tab (first, and the landing view) shows the workspace's objects as a
+  grid of folders. Double-click a folder to open it: its rows appear as "files"
+  (icon by file type) and its linked objects nest as sub-folders (a linked object A
+  shows inside B and B inside A). Clicking a file opens that record's page. A folder
+  can be renamed in place (renames the object). Graph and Tables remain as sibling
+  tabs.
+- **Collapsible layout columns.** Each of the three columns — Inputs, Model,
+  Outputs — has a collapse toggle in its header that shrinks it to a thin rail
+  (state persisted in localStorage); the grid always keeps a flexible track, so you
+  can focus any column.
+- **Wire / Merge moved above the tab line and made global.** The **+ Wire** and
+  **Merge** buttons now sit on the tab strip (beside Folders / Graph / Tables) and
+  work in every view. **Drag** one object onto another to link them (many-to-many);
+  **Shift-drag** to merge one into the other — on both the Folders tiles and the
+  Tables cards. On the Graph, the buttons drive a click-to-pick flow (click a
+  source node, then a target) so it doesn't fight the graph's own node dragging. Esc
+  cancels a pick.
+- **Inputs · Model · Outputs GUI reframe.** The desktop GUI / `lattice gui` is
+  reorganized into three columns: **Inputs** (Files, Connectors, Databases),
+  **Model** (two top-level tabs — **Graph** and **Tables** — where Tables is a
+  tiered schema explorer (Source / Model / Derived / Surface) with Entity/Field
+  views, a detail panel of fields + table/field lineage, relationship edges drawn
+  between the tiers, and a **"+ Wire"** mode to link two tables), and **Outputs**
+  (Artifacts, a Markdown view of the rendered context tree, a Tables mirror of the
+  Model view, plus Server Docs / API Docs / MCP). Opening an object shows its rows
+  as a table (mirroring the file list), with breadcrumbs rooted at Tables. The
+  assistant moves from a docked rail to a floating **"Ask Lattice"** panel in the
+  upper-right, and the live activity feed moves to a header popover next to the
+  version-history clock. One shared client serves both the terminal GUI and the
+  desktop app, so the reframe lands on both at once.
+  - **Artifacts** are their own object/table view (a rows table at its own route),
+    and opening an artifact roots its breadcrumb at Artifacts rather than Files.
+  - A record has a **Formatted | Markdown** toggle: Formatted shows the rendered
+    (compiled) markdown document; Markdown shows that same markdown in an editable
+    textarea that writes round-trippable field edits straight back to the record
+    (`PUT /api/tables/:t/rows/:id/context`). The old column-by-column field dump is
+    gone, and a record now shows a single compiled document (no duplicate sections).
+  - Clicking a Markdown file in Outputs opens it in the **center pane** (with a
+    breadcrumb), replacing the slide-in detail drawer.
+  - The **+ New workspace** dialog is a single step — enter a name (and, for a
+    cloud workspace, the Postgres connection) and click **Create**; the optional
+    starter-entities and review steps are gone (entities are added from the
+    workspace itself).
+  - Tables-explorer relationship edges render as **solid** strokes drawn **above**
+    the cards (never hidden behind a table), and links between same-column tables
+    loop out into the side gutter so they read clearly.
+  - Object + Artifacts pages **paginate**: a Prev/Next pager with an "A–B of T"
+    total (rendered "T+" when the count is large). The object page fetches one
+    page at a time (server `limit`/`offset`); the total is an approximate,
+    bounded, RLS-scoped count.
+- **`Lattice.boundedCount(table, opts)`** — a new public query method: like
+  `count`, but it stops after `opts.cap + 1` matching rows (default cap 1000) so it
+  stays cheap on large tables, returning the exact count when `<= cap` or `cap + 1`
+  to signal "more than cap". Used to compute the GUI's approximate pagination total
+  without an unbounded `COUNT(*)`.
+
+- **Tables-explorer "Wire" and "Merge" interactions.** In Model → Tables, both the
+  "+ Wire" mode (link two tables many-to-many) and a new "Merge" mode work by
+  clicking a source then a target **or** by dragging one table card onto another.
+  While a source is held, invalid targets grey out (the source itself, junctions,
+  and — for Wire — already-linked pairs). Merge moves the source's rows into the
+  target and removes the emptied source via the same reversible primitive the
+  assistant uses (`POST /api/schema/entities/:source/merge` — audited and
+  restorable from history).
+
+- **Edit a record as markdown.** A record's **Markdown** view is now an editable
+  textarea; saving it writes the round-trippable fields (YAML frontmatter +
+  `key: value` body) back to the row via `PUT /api/tables/:t/rows/:id/context`,
+  using the same parser the file-watcher uses. Free-form prose that maps to no
+  column is a deliberate no-op (never guessed at), and secret columns are never
+  round-tripped (their served value is masked).
+
+- **Connect an external database as an Input.** A new credential connector imports
+  an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
+  Postgres) — by connection string or host/user/password — introspecting its schema
+  and importing its tables as connected data types via the shared sync engine, so
+  they appear under the Source tier. Credentials and the introspected schema are
+  stored only in the machine-local encrypted store; imports are bounded (keyset/
+  offset paged with a hard page cap).
+
+- **Live force-directed brain graph across all three graph surfaces.** A new,
+  dependency-free force-directed layout engine (many-body repulsion, degree-biased
+  link springs, collision resolution, weak centering, alpha-cooled integration —
+  DOM-free and fully unit-testable) drives a live SVG renderer with continuous
+  animation, drag-to-pin, pan, pinch/wheel zoom, neighbor highlight/dim,
+  zoom-to-fit, and incremental fly-in growth. It drives the schema **Graph** tab;
+  the renderer loads out of band from `/gui-assets/force-graph.mjs`, so the inline
+  host script only maps the schema model to a generic node/edge shape and wires the
+  routing. (Object and folder pages now render as tables, not graphs.) The old
+  static graph builders + hand-rolled layout simulation were removed.
+
+- **Tunable + observable native vector index.** New optional knobs (all default to
+  prior behavior): `embeddings.index = { m, efConstruction }` sets the pgvector HNSW
+  build parameters, and `search()` / `hybridSearch()` accept `efSearch` to set
+  query-time HNSW search breadth (`hnsw.ef_search`). A small internal registry
+  (`__lattice_vector_index`) records each built index's dimension, params, source
+  count, and build time; an auto-rebuild after a bulk refresh reuses the recorded
+  params. New CLI: `lattice reindex <table>` (rebuild) and `lattice index status`
+  (per-table index health), plus `lattice doctor --fix` to rebuild any index it
+  reports as stale. (Configurable distance metric is deferred to a follow-up — it
+  changes scoring semantics across the scan + both backends and warrants its own
+  per-metric recall validation.)
+- **Opt-in half-precision (`halfvec`) index storage** (pgvector ≥ 0.7) via
+  `embeddings.index.quantization = 'halfvec'`: stores the derived ANN index at
+  16-bit half precision — roughly halving its memory — while the embeddings store
+  stays full precision, so the scan fallback (and any later full-precision rebuild)
+  remains exact. Build, incremental maintenance, and query all cast to the index's
+  actual column type. Default `'none'` (full-precision `vector`) is unchanged.
+  Sharding / replication / a distributed index remain out of scope (see
+  `docs/retrieval.md` § Scale) — Lattice runs against a single Postgres/SQLite;
+  reach for a dedicated vector database when you outgrow that.
+- **Semantic + hybrid search now work for cloud members, confined to the rows
+  they may see.** A scoped cloud member has no grant on the internal embeddings
+  store or the native vector index, so `search()` / `hybridSearch()` previously
+  could not serve them. The vector arm now reaches the store only through a new
+  `SECURITY DEFINER` function (`lattice_visible_embeddings`) that returns just the
+  chunk vectors for rows the caller can see — filtered by `lattice_row_visible`,
+  keyed on the member's own role — and scores them in-process. The member scan is
+  exact (no recall loss) and has no over-fetch channel by which a member could
+  infer the existence of rows hidden from it; row materialization additionally
+  re-checks visibility via row-level security on the base relation (or the masked
+  audience view). The routing is automatic — owners and local/non-cloud callers
+  are unchanged.
+- **`--no-auto-update` (and `LATTICE_NO_AUTO_UPDATE=1`) pin the GUI/desktop to the
+  current version.** A new `autoUpdate` option on `startGuiServer` (default on) is
+  the master switch: when off, the in-process update poll never runs (no registry
+  or manifest fetch, no install, no relaunch) and `GET /api/update/status` reports
+  `autoUpdate:false`. Intended for testing, air-gapped, and reproducible-demo runs.
+- **The desktop app surfaces an "Update available — Restart to update" hint.** It
+  probes the same release manifest its bundled updater applies from — read-only, so
+  it never downloads or relaunches until you act — meaning a window left open for
+  days still notices a new version. Acting on it applies the update via the bundled
+  updater and relaunches.
+
+- **Data provenance for every object.** A new `GET /api/provenance?table=<t>` (and
+  `…/row?table=<t>&id=<id>`) traces where an object's data came from across three
+  tiers — **raw** (uploaded files, connectors), **computed** (Lattice-created
+  artifacts, imports), and **observation** (AI / learning-loop edits) — returning a
+  generic tier-typed `{ nodes, edges }` graph. In the GUI an object's page now
+  defaults to this provenance view (a force-directed graph or a grouped source
+  table), and a single row's detail view gains a collapsed, lazy-loaded "Data
+  provenance" panel. Reads are bounded (grouped aggregates / indexed lookups).
+- **Lineage substrate (additive).** A new internal `__lattice_lineage` table records
+  durable source→object edges (file-extraction, import-materialization), and a new
+  nullable `_lattice_gui_audit.source` column persists which actor (`gui`/`ai`/…)
+  produced each change — the basis for the observation tier. Both are additive (no
+  data loss); the lineage table is `__lattice_`-internal (hidden from the Objects
+  list, brain graph, and cloud-member grants).
+
+### Changed
+
+- **Source-tier tables are excluded from the Objects grid and the graph.** Files,
+  connector-synced tables, and imported database tables are raw inputs — they're
+  browsed from the Inputs column and listed under the Tables explorer's Source
+  column, never as first-class objects in the Objects/Graph views.
+
+- **The Model → Tables explorer drops the "Derived · AI loop" column.** The tiered
+  schema view is now three columns — Source · inputs, Model · entities, Surface ·
+  app. Tables that were classified as derived (embeddings, proposals, learnings,
+  observations, …) now group under Model like any other entity. The `Tier` type and
+  its `classifyTier` heuristic drop the `derived` tier accordingly.
+- **The native vector index now stays in sync with writes.** Previously
+  `buildVectorIndex` produced a point-in-time snapshot that silently went stale as
+  rows changed, so semantic search could return outdated results until the index
+  was manually rebuilt. Now, once an index exists:
+  - inserts / updates / deletes mirror the affected row into the index
+    incrementally on Postgres/pgvector (on the same background path as the
+    embedding write);
+  - `refreshEmbeddings` reconciles the index after a bulk backfill;
+  - `search()` verifies the index is in sync with the stored vectors before using
+    it (a cheap count-parity check), and otherwise falls back to the exact
+    in-process scan — so a drifted index is never silently served: at worst a
+    slower query, never a wrong result.
+
+  Backward compatible: tables without a native index are unaffected, the public
+  API is unchanged, and default behavior matches prior releases.
+
+- **`GET /api/update/status` now reports a surface-aware `action`**
+  (`upgrade-in-place` for an npm install, `restart-to-update` for the desktop app,
+  `none` otherwise) plus `autoUpdate`. The GUI's existing upgrade link uses it to
+  show the right affordance per surface, instead of appearing only for a supervised
+  npm install.
+- **A development / linked checkout is badged `vX.Y.Z (dev)`** on the version chip
+  (with an "auto-update disabled" tooltip), so a stale dev build can't be mistaken
+  for an auto-updating install.
+
+- **The brain graph shows object↔object relationships only.** `files` is a data
+  _source_, not an object, so it is no longer rendered as a node in the brain graph
+  (it remains a first-class entity everywhere else — the Objects list, the Sources
+  tree, `/api/entities`). This changes the `/api/graph` payload content, not its
+  shape.
+- **Collapsible sidebar groups.** The top-level sidebar organizers (Files, Built by
+  Lattice, Connectors, and Objects/System) are now collapsible, with state
+  persisted per group.
+- The object-type page's prominent "New &lt;object&gt;" tile is replaced by a "New"
+  header action; row browsing remains available via "List view".
+- **The assistant finishes a merge instead of leaving cleanup to you.** When you ask
+  it to consolidate / merge one object into another, it now migrates the rows with
+  the reversible `move_to` path and removes the emptied source itself — without
+  asking first, and without ending the turn by telling you that you "can now delete
+  the old object." The whole merge is recorded in version history, so it can be
+  restored. (An explicit request to delete an object's data outright is still a
+  separate, confirm-first path.)
+- **Workspace switch (and boot / post-mutation reloads) no longer block on a disk
+  scan.** The Objects list is served by a new `GET /api/entities-summary` that
+  returns the tables + row counts WITHOUT the O(files) rendered-file scan the full
+  `/api/entities` does — the GUI never read the scanned field. The schema-only
+  brain graph (`/api/graph?schema=1`, the GUI's only graph mode) likewise skips that
+  scan. Switching a large workspace now renders the sidebar / Tables / graph
+  immediately instead of hanging until the scan finishes. `/api/entities` is
+  unchanged for any consumer that wants the rendered-file list.
+
+### Fixed
+
+- **Connect-a-database works, fails atomically, and never corrupts an import.**
+  Connecting an external Postgres crashed with `no such table: __lattice_edges`
+  and left a phantom connection behind. Three defects, all fixed: (1) composite-
+  primary-key record ids were joined with a control character that the row
+  sanitizer strips at storage time, so every freshly imported composite-PK row was
+  judged vanished and soft-deleted by the same sync that inserted it — ids are now
+  a sanitizer-safe JSON array of the key parts; (2) the prune's raw edge cleanup
+  ran against a `__lattice_edges` table that a db-source workspace never creates —
+  it now self-ensures the table (and runs before the soft-delete commit, so a
+  failure can't strand hidden rows), and the exported `removeEdge` got the same
+  guard; (3) a failed initial import now rolls the whole connection back (registry
+  row, stored credentials, schema descriptor, imported rows) so a failed connect
+  leaves nothing behind. A connected database also no longer double-lists under
+  Connectors — it appears only in the Databases section.
+- **The assistant handles dates.** It was never told the current date, so "the
+  meeting I had today" resolved against the model's stale training cutoff and
+  returned months-old rows; and `list_rows` read oldest-first by the row's
+  `created_at` (insert/sync time), so "the most recent" surfaced the oldest match.
+  Now the system prompt carries a `# Current date` section (server wall-clock +
+  viewer timezone); `list_rows` returns newest-first by a real event-time column
+  (a meeting's `start_at`) in preference to `created_at`, and exposes `orderBy` /
+  `orderDir` / a date-range `filter` to the model; and the LIKE search fallback
+  (the scoped-cloud-member path) now orders newest-first so a recent match can't be
+  dropped by the row limit.
+- **Every table gets a `deleted_at` column on open.** A table created without the
+  soft-delete envelope (an import, or an older/non-standard path) had no
+  `deleted_at`, so reversible delete, merge, and undo refused it ("no `deleted_at`
+  column to reversibly remove"). The on-open data upgrade now backfills the
+  standard nullable `deleted_at` on any user table missing it — existing rows read
+  as live (NULL), no data changes — so the soft-delete envelope is universal. It's
+  self-idempotent (only alters tables that currently lack the column) and
+  fault-isolated per table. `deleted_at` was already a non-removable system column.
+- **Secret values no longer leak into a record's Markdown view.** The rendered-
+  context redaction only matched a plain `col:` line, so a secret column rendered in
+  the default `- **col:** value` bullet crossed the wire in plaintext. Redaction now
+  covers the bold-bullet, inline, and frontmatter shapes (the column name is regex-
+  escaped).
+- **Schema mutations are cloud-owner-gated.** Every config- or DDL-mutating schema
+  route — create/rename/delete a table, add/change columns, add/remove a link, merge,
+  and purge — now returns 403 for a scoped cloud member. These edit the owner's
+  on-disk config (a raw file write that Postgres RLS does not protect, and which some
+  routes perform before any DB DDL), so RLS alone can't gate them; local and
+  cloud-owner paths are unaffected.
+- **Multi-line field values now round-trip through the rendered Markdown.** The
+  default renderer inlined a value's newlines into a single `- **key:** value`
+  bullet, and the reverse-sync parser read one line per field — so a multi-line
+  value (a description, a note, a PEM key) was silently truncated to its first line
+  the next time any field on that record was saved. The renderer now writes each
+  extra line as a 2-space-indented continuation line and the parser accumulates
+  them, so a value survives a full render → parse → render cycle unchanged —
+  including interior blank lines, a value whose first line is blank, and lines that
+  look like bullets/headings/`key: value` pairs. A defense-in-depth guard still skips
+  a "value is only the stored value's first line" derivation so a stale parse can
+  never drop lines. Secret multi-line values are masked whole (every continuation
+  line, across interior blank lines), not just their first line, before the context
+  crosses the wire.
+- **The schema-only brain graph no longer runs the O(files) rendered-file scan.**
+  `GET /api/graph?schema=1` (and the table-filtered history route) gathered table
+  names via the full disk scan before building the graph; they now use the no-scan
+  loader, completing the workspace-switch speedup for the graph the ingest animation
+  depends on.
+- **The Tables explorer no longer shows a previous workspace's relationships after a
+  switch.** Its cached relationship edges and any in-flight Wire/Merge selection are
+  reset on workspace switch, so the new workspace's schema is drawn from scratch.
+- **Drag-to-wire/merge cleans up after a cancelled gesture.** A touch-scroll or OS
+  gesture-takeover (`pointercancel`) now tears down the drag (its document
+  listeners, the dragged-card highlight, and the greyed-out targets) instead of
+  leaking them across gestures; `.mt-card` sets `touch-action: none` so a touch drag
+  doesn't scroll the page mid-gesture.
+- **A record's Markdown edit can't save into a record you've navigated away from.**
+  The debounced write-back captures the render generation and bails if the view has
+  been superseded, so a pending save — or its failure notice — never lands on a
+  no-longer-visible record.
+- **Merging one object into another is now lossless, safe, atomic, and asks when it
+  can't proceed.** The merge (drag-to-merge, or the assistant's `move_to`) could drop
+  source-only fields, duplicate rows on a history restore, declassify a secret,
+  hard-fail with jargon over its size cap, and — worst — throw partway through and
+  leave rows split between the two objects. Now it: adds any missing fields to the
+  target so nothing is dropped; refuses a source whose rows aren't soft-deletable
+  (they can't be reversibly removed); refuses to move a secret field into a
+  non-secret target; over the auto-merge size limit, hands the decision back to ask
+  the user instead of dead-ending the assistant; type-checks every value against the
+  target's columns up front (so an incompatible value aborts before anything moves);
+  and runs the entire move inside a single database transaction, so it either
+  completes fully or changes nothing — it can never leave the two objects half-merged.
+  Backed by a new public `Lattice.transaction(fn)` primitive: every write `fn`
+  performs commits together or rolls back together, with read-your-writes inside the
+  transaction, scoped per async context so concurrent callers never share one.
+
+- **Merge carries inbound links across instead of dead-ending.** Merging an object
+  that another table links to used to fail with "these links point at it — remove
+  those links first," forcing you to manually unlink everything before merging. Now
+  the merge rewires those links onto the target: each linking table's foreign keys
+  are updated to the moved rows and its relation is repointed to the merged object,
+  all inside the same transaction as the move. The link table and its column keep
+  their names. (A plain delete of a linked-to table still refuses — there's no
+  target to move the links to — but now suggests merging instead.)
+
+- **Link tables are hidden from every object list, not just the graph.** Junction /
+  link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
+  Model > Tables/Entities list with apparent duplicates. They're now hidden from the
+  Markdown panel, the Tables/Entities list, the sidebar, and graph nodes — the same
+  way the brain graph draws junctions as edges, not nodes. This also catches
+  _physical_ link tables created without declared relations (e.g. an AI-built
+  `files_<entity>` shaped `(id, name, x_id, y_id)`) via a display-only column-shape
+  rule that never touches the strict, deletion-safe junction check.
+- **Outputs Markdown no longer leaks across workspaces.** Switching workspaces
+  refreshed entities, the sidebar, and the chat rail but not the Outputs column,
+  so the Markdown context tree (and Tables mirror) kept showing the _previous_
+  workspace's rendered context until a hard reload. `reloadEverything()` now
+  re-renders Outputs on every switch, scoped to the active workspace.
+- **The brain graph now populates in realtime during ingestion.** When the graph
+  was opened on an empty workspace it showed the empty-state and never created a
+  live renderer, so objects added afterward (e.g. while ingesting files) didn't
+  appear until a manual refresh. The ingest animation now does a full graph render
+  when no live handle exists yet, so the first objects fly in as they're created.
+- **The brain graph stays in the viewport.** Panning, zooming, or dragging a node
+  can no longer push the objects out of the visible window — the stage translation
+  is clamped so the graph's bounding box always remains on-screen (fully inside
+  when it fits the pane, always covering the pane when zoomed in), and a dragged
+  node is held within the visible area.
+- **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
+  single transaction, so an interrupted build can no longer leave a half-filled
+  index that looks complete.
+
+---
+
 ## [4.3.8] — 2026-06-25
 
 Patch release. Finishes the job 4.3.7 started: makes the **entire class** of

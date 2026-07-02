@@ -155,6 +155,62 @@ describe('silent data upgrade on open', () => {
     expect(f2.ref_uri).toBe('s3://b/k');
   });
 
+  it('backfills a deleted_at column on any user table missing it (universal soft-delete)', async () => {
+    const { db } = freshDb();
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', deleted_at: 'TEXT' },
+      render: () => '',
+      outputFile: 'notes.md',
+    });
+    await db.init();
+
+    // A table created WITHOUT the soft-delete envelope — the shape that made
+    // merge/delete refuse ("no deleted_at column to reversibly remove").
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE TABLE "canonical_types" (id TEXT PRIMARY KEY, name TEXT)`,
+    );
+    await runAsyncOrSync(
+      db.adapter,
+      `INSERT INTO "canonical_types" (id, name) VALUES ('c1', 'Person')`,
+    );
+    const before = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT name FROM pragma_table_info('canonical_types')`,
+    )) as { name: string }[];
+    expect(before.map((c) => c.name)).not.toContain('deleted_at');
+
+    await upgradeLegacyData(db);
+
+    // The column now exists, the existing row reads as live (NULL), data intact.
+    const after = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT name FROM pragma_table_info('canonical_types')`,
+    )) as { name: string }[];
+    expect(after.map((c) => c.name)).toContain('deleted_at');
+    const row = (await getAsyncOrSync(
+      db.adapter,
+      `SELECT name, deleted_at FROM "canonical_types" WHERE id='c1'`,
+    )) as { name: string; deleted_at: string | null };
+    expect(row.name).toBe('Person'); // no data lost
+    expect(row.deleted_at).toBeNull(); // existing rows are live
+
+    // Internal bookkeeping tables are NOT given a soft-delete column.
+    const migCols = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT name FROM pragma_table_info('__lattice_migrations')`,
+    )) as { name: string }[];
+    expect(migCols.map((c) => c.name)).not.toContain('deleted_at');
+
+    // Idempotent: a second open doesn't throw or double the column.
+    await upgradeLegacyData(db);
+    const after2 = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT name FROM pragma_table_info('canonical_types')`,
+    )) as { name: string }[];
+    expect(after2.filter((c) => c.name === 'deleted_at').length).toBe(1);
+  });
+
   it('is a no-op on a 4.0-native DB (no path column, no empty deleted_at)', async () => {
     const { db } = freshDb();
     db.define('notes', {

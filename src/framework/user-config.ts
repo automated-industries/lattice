@@ -241,7 +241,9 @@ export interface UserPreferences {
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
-  analytics: true,
+  // Telemetry is OPT-IN (default off): a local-first, "files never leave your
+  // computer" tool must not send analytics until the user explicitly turns it on.
+  analytics: false,
   // On-device is the keyless default — voice dictation works with no API key and
   // no config, and audio never leaves the machine.
   voice_provider: 'local',

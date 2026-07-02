@@ -11,6 +11,10 @@ export const sourcesJs = `
 
     function renderSources() {
       renderSourcesConnectors();
+      renderInputsDatabases();
+      // The Outputs > Tables mirror reflects the same entities; keep it fresh as
+      // the sidebar re-renders (cheap — reads in-memory state, no fetch).
+      if (typeof renderOutputsTables === 'function') renderOutputsTables();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a
@@ -24,13 +28,14 @@ export const sourcesJs = `
           rows.forEach(function (r) {
             if (r.ref_kind === 'local_ref' && r.ref_uri) sourcesFilesByPath[r.ref_uri] = r.id;
           });
-          renderSourcesArtifacts(rows.filter(function (r) { return r.artifact_type; }));
+          // Artifacts (Lattice-created files) now live in the Outputs column.
+          renderOutputsArtifacts(rows.filter(function (r) { return r.artifact_type; }));
           // Source files = everything the user ingested/uploaded (NOT Lattice-created
           // artifacts). Shown in the Files section alongside any registered on-disk
           // roots — so existing files appear even before a folder is added.
           renderSourcesFiles(rows.filter(function (r) { return !r.artifact_type; }));
         })
-        .catch(function () { renderSourcesArtifacts([]); renderSourcesFiles([]); });
+        .catch(function () { renderOutputsArtifacts([]); renderSourcesFiles([]); });
       wireSourcesButtons();
     }
 
@@ -195,24 +200,6 @@ export const sourcesJs = `
         .catch(function () {});
     }
 
-    function renderSourcesArtifacts(artifacts) {
-      var host = document.getElementById('src-artifacts-tree');
-      if (!host) return;
-      if (!artifacts.length) { host.innerHTML = '<div class="src-empty">Nothing created yet.</div>'; return; }
-      host.innerHTML = '<ul class="src-tree">' + artifacts.map(function (r) {
-        var name = r.name || r.original_name || 'Untitled';
-        var ic = r.artifact_type === 'html' ? '🌐' : '📝';
-        return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
-          '"><div class="src-row" style="padding-left:14px"><span class="src-ic">' + ic +
-          '</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
-      }).join('') + '</ul>';
-      host.querySelectorAll('.src-file > .src-row').forEach(function (row) {
-        row.addEventListener('click', function () {
-          location.hash = '#/fs/files/' + encodeURIComponent(row.parentNode.getAttribute('data-id'));
-        });
-      });
-    }
-
     function renderSourcesConnectors() {
       var host = document.getElementById('src-connectors-list');
       if (!host) return;
@@ -246,7 +233,58 @@ export const sourcesJs = `
 
     // The add buttons live in the static shell, so wire them ONCE (renderSources
     // runs on every sidebar refresh).
+    // ── Collapsible top-level sidebar groups ──────────────────────────────
+    // Each top-level group header (Files, Built by Lattice, Connectors, plus
+    // Objects/System in advanced mode) collapses its body. State persists per
+    // group in localStorage (default expanded). The Objects/System collapse
+    // toggles the inner .section-body ONLY — the #objects-section/#system-section
+    // wrapper's hidden attribute stays owned by advanced-mode (renderSidebar), so
+    // the two never fight. Reuses the chevron/hidden idiom of toggleSourceFolder.
+    function sidebarGroupKey(group) { return 'lattice.sidebar.group.' + group; }
+    function sidebarGroupCollapsed(group) {
+      try { return window.localStorage.getItem(sidebarGroupKey(group)) === '0'; }
+      catch (e) { return false; } // default expanded when storage is unavailable
+    }
+    function setSidebarGroupCollapsed(group, collapsed) {
+      try { window.localStorage.setItem(sidebarGroupKey(group), collapsed ? '0' : '1'); }
+      catch (e) { /* private mode / quota — state just won't persist */ }
+    }
+    function applySidebarGroupState(group) {
+      var btn = document.querySelector('.section-toggle[data-group="' + group + '"]');
+      var body = document.querySelector('.section-body[data-group-body="' + group + '"]');
+      if (!btn || !body) return;
+      var collapsed = sidebarGroupCollapsed(group);
+      body.hidden = collapsed;
+      var caret = btn.querySelector('.section-caret');
+      if (caret) caret.textContent = collapsed ? '▸' : '▾';
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    function applySidebarGroupStates() {
+      [
+        'files', 'connectors', 'databases',
+        'out-artifacts', 'out-markdown', 'out-tables',
+        'objects', 'system',
+      ].forEach(applySidebarGroupState);
+    }
+    function toggleSidebarGroup(group) {
+      setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
+      applySidebarGroupState(group);
+    }
+    function wireSidebarGroupToggles() {
+      var btns = document.querySelectorAll('.section-toggle[data-group]');
+      for (var i = 0; i < btns.length; i++) {
+        var btn = btns[i];
+        if (btn.__wired) continue;
+        btn.__wired = true;
+        (function (b) {
+          b.addEventListener('click', function () { toggleSidebarGroup(b.getAttribute('data-group')); });
+        })(btn);
+      }
+    }
+
     function wireSourcesButtons() {
+      wireSidebarGroupToggles();
+      applySidebarGroupStates();
       var addFolder = document.getElementById('src-add-folder');
       if (addFolder && !addFolder.__wired) {
         addFolder.__wired = true;

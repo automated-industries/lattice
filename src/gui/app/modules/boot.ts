@@ -18,18 +18,23 @@ export const bootJs = `    // ────────────────�
     }
 
     function init() {
-      // Restore the persisted rail width synchronously, before any fetch, so it's
-      // applied on the first paint (no width flash) and isn't gated behind the
-      // async bootstrap. initRailResize re-applies it (idempotent) + wires the
-      // drag handle once the app has booted.
-      var savedRail = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
-      if (!isNaN(savedRail)) applyRailWidth(savedRail);
+      // Restore the persisted Outputs-column width synchronously, before any fetch,
+      // so it's applied on the first paint (no width flash) and isn't gated behind
+      // the async bootstrap. initOutputsResize re-applies it (idempotent) + wires
+      // the drag handle once the app has booted.
+      var savedOutputs = parseInt(window.localStorage.getItem(OUT_KEY) || '', 10);
+      if (!isNaN(savedOutputs)) applyOutputsWidth(savedOutputs);
       // The version chip + manual-upgrade link live in the static shell (present
       // from first paint, in both the normal and virgin-state boots), so wire the
       // click handler and run the first availability check here — independent of
       // the async workspace bootstrap. checkServerVersion() refreshes it later.
       wireUpdateLink();
       checkUpdateAvailable();
+      // Re-poll on a slow cadence so a window left open for hours/days still
+      // surfaces a newer version. checkServerVersion() also refreshes this on
+      // every socket reconnect, but a stable connection never reconnects, so a
+      // long-open desktop/web window would otherwise never re-check.
+      setInterval(checkUpdateAvailable, 30 * 60 * 1000);
       // Failsafe: never leave the overlay up forever if a fetch hangs without
       // rejecting, or a future early-return (e.g. the virgin-state screen)
       // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.
@@ -56,7 +61,10 @@ export const bootJs = `    // ────────────────�
 
     function bootWorkspace() {
       return Promise.all([
-        fetchJson('/api/entities'),
+        // Own catch so a read-degraded active workspace (its first data read 500s)
+        // can't reject the whole boot — otherwise renderWsSwitcher below never runs
+        // and the user is BRICKED (can't switch away from the broken workspace).
+        fetchJson('/api/entities-summary').catch(function () { return { tables: [], __failed: true }; }),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
@@ -126,13 +134,24 @@ export const bootJs = `    // ────────────────�
         wireHistoryControls();
         refreshHistoryState();
         renderRoute();
+        // The active workspace opened but its data couldn't be read — the switcher
+        // is mounted (above), so surface a clear escape hatch instead of a blank pane.
+        if (results[0] && results[0].__failed) {
+          var failEl = document.getElementById('content');
+          if (failEl) failEl.innerHTML =
+            '<div class="placeholder"><h2>This workspace could not load</h2>' +
+            '<p>Its data could not be read. Pick another workspace from the switcher above, ' +
+            'or check the database connection, then reload.</p></div>';
+        }
         startEventStream();
-        initSearch();
         initLastEdited();
         initOffline();
-        initRailResize();
-        initRailDrawer();
-        initRailDragDrop();
+        initOutputsResize();
+        initColumnCollapse();
+        initWireMerge();
+        initAskLattice();
+        initActivityHeader();
+        renderOutputs();
         renderComposer();
         initThreadControls();
         // Warm up on-device voice in the background shortly after boot so dictation

@@ -24,11 +24,12 @@ import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { RealtimeBroker } from './realtime.js';
 import { FeedBus } from './feed.js';
+import { ensureLineageTable } from './lineage-store.js';
 import { createFileLoopbackWatcher } from './file-watcher.js';
 import { RenderProgressBus } from './render-progress.js';
 import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
-import { isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
+import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
@@ -184,6 +185,12 @@ export async function openConfig(
       // session. Nullable + additive (back-compat with pre-1.16 rows); added
       // idempotently to existing DBs by the schema reconcile.
       session_id: 'TEXT',
+      // Who/what triggered the mutation (gui|command|ai|ingest|cli|system|
+      // file-edit). Nullable + additive — added idempotently by the schema
+      // reconcile. Persisted from MutationCtx.source (previously recorded only
+      // on the live feed event); powers the provenance "observation" tier
+      // (rows last touched by the `ai` actor).
+      source: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
@@ -313,6 +320,27 @@ export async function openConfig(
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
+  // Provenance lineage substrate — an unregistered __lattice_ bookkeeping table
+  // (raw DDL, like __lattice_connectors) so the renderer never scans it.
+  // Owner-only: a scoped cloud member has no DDL grant. Idempotent.
+  if (!memberOpen) await ensureLineageTable(db.adapter);
+
+  // Bounded-read indexes on the audit log. `_lattice_gui_audit` grows for the life
+  // of the DB, and both the session-scoped undo/redo COUNT(*)s (/api/history, fired
+  // on every edit/nav) and the per-row history peek scan it. Without these each
+  // call is a sequential scan on a large cloud audit log. Owner-only (a scoped
+  // member has no DDL grant); idempotent. The table exists by now (db.init above).
+  if (!memberOpen) {
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_session_idx" ON "_lattice_gui_audit" ("session_id", "undone")`,
+    );
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_row_idx" ON "_lattice_gui_audit" ("table_name", "row_id")`,
+    );
+  }
+
   // Per-viewer render: on a cloud MEMBER open, route every render-time table read
   // through the member's masking view (`<table>_v`) when one exists, so the
   // rendered context tree on disk is the member's own RLS-scoped, cell-masked
@@ -388,6 +416,16 @@ export async function openConfig(
     // Member-discovered junctions (classified from the physical shape above);
     // empty for an owner/local open.
     ...discoveredJunctions,
+  ]);
+  // DISPLAY-only superset: the strict junctions PLUS physical link tables created
+  // without declared relations (e.g. an AI-built `files_<entity>` shaped
+  // (id, name, x_id, y_id)), classified by column shape. Used only to hide link
+  // tables from the lists/sidebars/Markdown panel — never any destructive path.
+  const hiddenLinkTables = new Set([
+    ...junctionTables,
+    ...parsed.tables
+      .filter((t) => isHiddenLinkTable(tableToSummary(t.name, t.definition)))
+      .map((t) => t.name),
   ]);
   // Pull entity contexts from the live Lattice — covers both YAML-declared
   // contexts (already loaded in the constructor from `parsed.entityContexts`)
@@ -487,6 +525,7 @@ export async function openConfig(
     db,
     validTables,
     junctionTables,
+    hiddenLinkTables,
     entityContextByTable,
     manifest,
     softDeletable,

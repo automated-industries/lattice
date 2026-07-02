@@ -41,19 +41,14 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .dm-graph .gnode.active .gnode-glow { opacity: 0.18; }
     .dm-graph .gnode.active .gnode-label { fill: var(--accent); }
     .dm-edge { transition: opacity 0.1s ease; }
-    /* Object page = a focused graph (entity rows + related objects). Reuses the
-       .dm-graph node primitives; #fsg-mount mirrors #graph-mount's sizing. */
-    #fsg-mount {
-      position: relative; background: var(--bg);
-      border: 1px solid var(--border); border-radius: 10px; height: 64vh; overflow: hidden;
-    }
-    /* Center object node: accented; related objects: dashed ring; entities: plain. */
-    .dm-graph .ognode-object .gnode-dot { fill: var(--accent-deep, #2563eb); stroke: var(--accent); stroke-width: 2; }
-    .dm-graph .ognode-object .gnode-label { fill: var(--accent); font-weight: 600; }
-    .dm-graph .ognode-related .gnode-dot { stroke: var(--text-muted); stroke-dasharray: 3 2; }
-    .dm-graph .ognode-related .gnode-label { fill: var(--text-muted); }
-    .dm-graph .ognode-entity .gnode-dot { fill: var(--surface); }
-    .fsg-more { position: absolute; left: 12px; bottom: 12px; z-index: 4; }
+    /* Live force-graph renderer: edges + arrowheads take their color from CSS now
+       (the renderer no longer inlines a stroke). A warm accent marks the search-
+       highlight pulse — the hybrid touch: warm focus moments over the cool
+       structural palette. */
+    svg.dm-graph { --graph-warm: #d98a3d; }
+    .dm-graph .dm-edge { stroke: var(--accent); }
+    .dm-graph .dm-arrow-fk, .dm-graph .dm-arrow-m2m { fill: var(--accent); }
+    .dm-graph .gnode-dot.gnode-hot { stroke: var(--graph-warm); stroke-width: 3; }
     .dm-legend {
       position: absolute; top: 10px; left: 12px; display: flex; gap: 14px;
       font-size: 11px; color: var(--text-muted);

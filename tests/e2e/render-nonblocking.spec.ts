@@ -20,11 +20,20 @@ test.afterEach(async () => {
 
 const ROW_DELAY_MS = 800;
 
-test('navigation paints the new view immediately even when row data is slow', async ({ page }) => {
-  for (let i = 0; i < 20; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
+test('navigation paints the new view immediately even when data is slow', async ({ page }) => {
+  let firstItemId = '';
+  for (let i = 0; i < 20; i++) {
+    const r = (await createRow(gui.url, 'items', { name: 'Item ' + String(i) })) as { id: string };
+    if (i === 0) firstItemId = r.id;
+  }
 
-  // Make every row fetch slow, to simulate a large local table / a cloud open.
-  // (Entities/dashboard are NOT delayed, so the shell still boots normally.)
+  // Slow the object-page (provenance) + row fetches, to simulate a large local
+  // table / a cloud open. (Entities/dashboard are NOT delayed, so the shell still
+  // boots normally.)
+  await page.route('**/api/provenance**', async (route) => {
+    await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
+    await route.continue();
+  });
   await page.route('**/api/tables/**/rows**', async (route) => {
     await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
     await route.continue();
@@ -33,25 +42,23 @@ test('navigation paints the new view immediately even when row data is slow', as
   await page.goto(gui.url);
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
-  // Navigate to the items collection. A loading frame must appear well before
-  // the 800ms data — the view never blocks on the fetch.
+  // Navigate to the items object page (provenance). A loading frame must appear
+  // well before the 800ms data — the view never blocks on the fetch.
   await page.evaluate(() => {
     window.location.hash = '#/fs/items';
   });
-  // A loading frame must appear well before the 800ms data — the view never
-  // blocks on the fetch.
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …then the entity nodes fill in.
-  await expect(page.locator('.ognode-entity').first()).toBeVisible({ timeout: 5000 });
+  // …then the provenance view fills in.
+  await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
-  // Click into an entity node: the graph must be REPLACED by the item frame
-  // immediately (well under the 800ms item-data delay), not persist until the
-  // item's data arrives. This is the exact freeze the user hit.
-  await page.locator('.ognode-entity').first().click();
-  await expect(page.locator('.object-graph')).toHaveCount(0, { timeout: 400 });
+  // Open a record (the row detail) directly: the nav must paint the new frame
+  // immediately (a loading state), not freeze on the slow row fetch.
+  await page.evaluate((id) => {
+    window.location.hash = '#/fs/items/' + id;
+  }, firstItemId);
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …and the item content eventually loads.
-  await expect(page.locator('.fs-doc')).toBeVisible({ timeout: 5000 });
+  // …and the item content eventually loads (the record view header).
+  await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
   // The GUI stays responsive: navigating again while data is still in flight
   // immediately repaints (no freeze, no stale view).

@@ -4,6 +4,7 @@ import {
   enableChangelogRls,
   enableChatPrivacyRls,
   enableGuiAuditRls,
+  enableLineageRls,
   ownPolyfillsByGroup,
   enableRlsForTable,
   backfillOwnership,
@@ -337,6 +338,7 @@ export async function secureCloud(db: Lattice): Promise<void> {
   await enableChangelogRls(db);
   await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables
   await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log (raw row data) — see row_id IS NULL OR lattice_row_visible
+  await enableLineageRls(db); // defense-in-depth: lock the lineage substrate (RLS, no member grant)
   // Neutralize any legacy column-audience spec BEFORE regenerating mask views
   // (secureNewCloudTable → regenerateAudienceViewFromDb compiles each audience).
   await convergeLegacyColumnAudience(db);

@@ -140,6 +140,7 @@ const BASE_SYSTEM_PROMPT = [
   '- When the user asks about LATTICE ITSELF — what a feature is or how to use it (e.g. "what is private mode", "how does sharing work", "how do I invite someone") — call lattice_help with their question and answer from what it returns. Do NOT answer such questions from memory, and do NOT search the user\'s data for them.',
   '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments, and retry.',
   '- Do what the user asks. Never refuse or hedge a request because it seems large, costly, or token-heavy, and never offer to "write a script" instead of doing it — you have bulk_update, which finishes the whole job in one step. Just do it and confirm the real count. Every change is recorded in version history and can be undone, so you do not need to ask permission first — EXCEPT before an irreversible hard delete of many rows (delete_row with hard=true), where you confirm the scope once. A normal (soft) bulk change needs no pre-confirmation.',
+  '- To CONSOLIDATE or MERGE one object into another (the user says "merge X into Y", "combine these", "fold A into B"), call delete_entity with move_to=<target> — it moves ALL of the source rows into the target, then removes the now-empty source, and the whole operation is recorded in version history and fully reversible. Because it is reversible, do NOT ask the user to confirm first, and do NOT end by telling them they can now delete the old object — just perform the merge and then tell them, in plain language, that you combined the two and that it can be restored from history if needed. (resolution=delete_data is a separate true-deletion path; a merge never needs it.) If delete_entity reports the object is too large to merge automatically, or otherwise refuses, do NOT retry the same call — relay the reason to the user in plain language and ask how they want to proceed.',
   '- Your user is NOT technical, and your replies must contain NO database or internal jargon. Do whatever they ask using your own tools — including changing who can see a record (set_visibility / set_definition) — then confirm in plain language. Never tell them to run a command, call a database function, use SQL / an API / the command line, or contact a DBA. Never surface implementation details OR internal names: no SQL, function/tool names, Postgres, RLS, schemas, or migrations, and NEVER say the words "table", "column", "junction", "foreign key", or "system table", and NEVER quote a raw internal table/column name (e.g. files, file_states, state_id) or a row id back to the user. Speak ONLY in terms they recognize: their objects by friendly name (e.g. "your Files" or "a new States list"), the fields and values inside them, files, and who can see them. Describe creating or changing structure as adding/updating an object or linking records — not as creating tables/columns. When you make a record clickable use the [label](lattice://<table>/<id>) link form (the user sees only your label, never the raw table/id). Explain the underlying mechanics only if they explicitly ask. Be concise.',
 ].join('\n');
 
@@ -223,11 +224,13 @@ export interface ReferencedRecord {
   data: unknown;
 }
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   schema: string,
   operatorName?: string,
   cloudSystemPrompt?: string,
   referencedRecords: ReferencedRecord[] = [],
+  nowIso?: string,
+  timezone?: string,
 ): string {
   // Tell the assistant who it's talking to so it can address the operator and
   // link records to "you" without asking for a name it already has access to.
@@ -258,7 +261,18 @@ function buildSystemPrompt(
           .join('\n') +
         `\n("this", "this record/file/card", "it", and a pasted link to one of these refer to the matching record above — act on it by its id.)`
       : '';
-  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}\n\n# Current database\n${schema}`;
+  // Temporal grounding — the model's training cutoff is stale, so it CANNOT know
+  // the wall-clock. Without this section "today" / "recent" / "latest" resolve
+  // against training data (the assistant returned April meetings for "today"). The
+  // instant is supplied per-turn by the caller; fall back to now so it's always set.
+  const iso = nowIso && nowIso.trim().length > 0 ? nowIso.trim() : new Date().toISOString();
+  const tz = timezone && timezone.trim().length > 0 ? ` (${timezone.trim()})` : '';
+  const dateSection =
+    `\n\n# Current date\nToday is ${iso}${tz}. Interpret "today", "yesterday", "recent", "latest", and ` +
+    `"most recent" relative to THIS instant — never your training data. When the user asks about recent ` +
+    `activity, read with orderDir="desc" on the most meaningful date column (a meeting's start time, an ` +
+    `event's date) rather than the row's created_at, and filter by a date range when they name one.`;
+  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}${dateSection}\n\n# Current database\n${schema}`;
 }
 
 /** A content block in the Anthropic message format we use. */
@@ -335,6 +349,14 @@ export interface RunChatOptions {
    * assistant takes still goes through the permission-gated tools.
    */
   activeContext?: { table: string; id: string };
+  /**
+   * The wall-clock instant this turn started (ISO-8601, server-owned) and the
+   * viewer's IANA timezone. Injected into the system prompt so the model can
+   * resolve "today"/"recent"/"most recent" against NOW instead of its stale
+   * training cutoff. Absent → buildSystemPrompt falls back to the current time.
+   */
+  nowIso?: string;
+  timezone?: string;
   /**
    * Optional sink for cross-turn tool memory: each executed tool call's id,
    * name, (capped) input, and (capped) result content. The chat route persists
@@ -419,6 +441,8 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     opts.operatorName,
     opts.cloudSystemPrompt,
     referencedRecords,
+    opts.nowIso,
+    opts.timezone,
   );
 
   let loop = 0;

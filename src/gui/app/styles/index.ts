@@ -11,6 +11,7 @@ import { dashboardCss } from './dashboard.js';
 import { tableViewCss } from './table-view.js';
 import { detailViewCss } from './detail-view.js';
 import { dataModelCss } from './data-model.js';
+import { provenanceCss } from './provenance.js';
 import { toastCss } from './toast.js';
 import { buttonsCss } from './buttons.js';
 import { renderedContextCss } from './rendered-context.js';
@@ -20,12 +21,13 @@ import { sidebarCss } from './sidebar.js';
 import { fsWorkspaceCss } from './fs-workspace.js';
 import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
+import { outputsCss } from './outputs.js';
+import { modelTablesCss } from './model-tables.js';
 import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
 import { statusIndicatorCss } from './status-indicator.js';
-import { graphIngestAnimationCss } from './graph-ingest-animation.js';
 import { fileDocCss } from './file-doc.js';
 
 export const css = [
@@ -39,6 +41,7 @@ export const css = [
   tableViewCss,
   detailViewCss,
   dataModelCss,
+  provenanceCss,
   toastCss,
   buttonsCss,
   renderedContextCss,
@@ -48,11 +51,12 @@ export const css = [
   fsWorkspaceCss,
   settingsDrawerCss,
   assistantRailCss,
+  outputsCss,
+  modelTablesCss,
   chatCss,
   inlineImportCss,
   tabsCss,
   sourcesCss,
   statusIndicatorCss,
-  graphIngestAnimationCss,
   fileDocCss,
 ].join('');

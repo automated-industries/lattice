@@ -1,7 +1,13 @@
 import { parseConfigFile } from '../config/parser.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { isNativeEntity } from '../framework/native-entities.js';
-import { recordSchemaAudit, createRow, deleteRow, type MutationCtx } from './mutations.js';
+import {
+  recordSchemaAudit,
+  createRow,
+  deleteRow,
+  updateRow,
+  type MutationCtx,
+} from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
 import type { ActiveDb } from './active-db.js';
@@ -199,7 +205,9 @@ export async function materializeJunction(
       [relA]: { type: 'belongsTo', table: refA, foreignKey: colA },
       [relB]: { type: 'belongsTo', table: refB, foreignKey: colB },
     },
-    outputFile: jName.toUpperCase() + '.md',
+    // Hidden .schema-only/ overview (the codebase default), never a root <NAME>.md
+    // orphan at the Context root.
+    outputFile: '.schema-only/' + jName + '.md',
   };
   const doc = loadConfigDoc(active.configPath);
   doc.setIn(['entities', jName], entityDef);
@@ -382,7 +390,9 @@ export async function createUserEntity(
   const fields: Record<string, unknown> = { id: { type: 'uuid', primaryKey: true } };
   for (const c of cols) fields[c] = { type: 'text' };
   fields.deleted_at = { type: 'text' };
-  const entityDef = { fields, outputFile: entity.toUpperCase() + '.md' };
+  // Hidden .schema-only/ overview (the codebase default), never a root <NAME>.md
+  // orphan at the Context root (which duplicates the per-row <Entity>/ context dir).
+  const entityDef = { fields, outputFile: '.schema-only/' + entity + '.md' };
   const doc = loadConfigDoc(active.configPath);
   doc.setIn(['entities', entity], entityDef);
   saveConfigDoc(active.configPath, doc);
@@ -542,12 +552,60 @@ export type DeleteResolution = 'delete_data' | { move_to: string };
 
 /** Outcome of {@link aiDeleteEntity}. `needsResolution` ⇒ ask the user first. */
 export type DeleteEntityOutcome =
-  | { ok: true; deleted: string; deletedRows?: number; movedRows?: number }
+  | { ok: true; deleted: string; deletedRows?: number; movedRows?: number; rewiredLinks?: number }
   | { ok: false; error: string }
   | { needsResolution: true; rowCount: number; message: string };
 
 /** Above this row count, the assistant refuses to auto-delete/move data. */
 const AI_DELETE_ROW_CAP = 1000;
+
+/** The GUI-marked secret columns for a table (read-only; empty when the workspace
+ *  has no column-meta table). Used by the merge path so it never moves a secret
+ *  value into a non-secret column. */
+async function secretColumns(active: ActiveDb, table: string): Promise<Set<string>> {
+  try {
+    const rows = (await active.db.query('_lattice_gui_column_meta', {
+      filters: [
+        { col: 'table_name', op: 'eq', val: table },
+        { col: 'secret', op: 'eq', val: 1 },
+      ],
+    })) as { column_name: string }[];
+    return new Set(rows.map((r) => r.column_name));
+  } catch {
+    return new Set(); // no column-meta table on this workspace — nothing secret
+  }
+}
+
+/** Conservative pre-flight for the merge: is `v` assignable to a column of
+ *  `sqlType`? Only rejects a CLEARLY incompatible value (a non-numeric into an
+ *  int/real/bool column) so the merge aborts BEFORE any write rather than throwing
+ *  mid-loop and leaving rows split. Text/uuid/datetime/json accept anything; null
+ *  is always allowed. */
+function isAssignableToColumn(v: unknown, sqlType: string | undefined): boolean {
+  if (v === null || v === undefined) return true;
+  const t = (sqlType ?? '').toLowerCase();
+  if (t.includes('int')) {
+    if (typeof v === 'number') return Number.isInteger(v);
+    if (typeof v === 'boolean') return true;
+    if (typeof v === 'string') return /^-?\d+$/.test(v.trim());
+    return false;
+  }
+  if (/real|floa|doub|numeric|decimal/.test(t)) {
+    if (typeof v === 'number') return Number.isFinite(v);
+    if (typeof v === 'string') {
+      const s = v.trim();
+      return s !== '' && Number.isFinite(Number(s));
+    }
+    return false;
+  }
+  if (t.includes('bool')) {
+    if (typeof v === 'boolean') return true;
+    if (typeof v === 'number') return v === 0 || v === 1;
+    if (typeof v === 'string') return ['true', 'false', '0', '1'].includes(v.trim().toLowerCase());
+    return false;
+  }
+  return true;
+}
 
 /**
  * The assistant's guarded, reversible table delete. Safeguards (so the model
@@ -573,19 +631,27 @@ export async function aiDeleteEntity(
   if (isNativeEntity(name)) {
     return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
   }
-  const inbound: string[] = [];
+  const inbound: { table: string; relName: string; foreignKey: string }[] = [];
   for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
     if (t.name === name) continue;
-    for (const rel of Object.values(t.relations)) {
+    for (const [relName, rel] of Object.entries(t.relations)) {
       if (rel.type === 'belongsTo' && rel.table === name) {
-        inbound.push(`${t.name}.${rel.foreignKey}`);
+        inbound.push({ table: t.name, relName, foreignKey: rel.foreignKey });
       }
     }
   }
-  if (inbound.length > 0) {
+  const isMove = resolution !== undefined && resolution !== 'delete_data';
+  // Inbound links block a plain delete (there's nowhere to move them), but a MERGE
+  // rewires them onto the target instead of refusing — the move_to path below
+  // updates each foreign key to the moved rows and repoints its relation.
+  if (inbound.length > 0 && !isMove) {
     return {
       ok: false,
-      error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Remove those links first.`,
+      error: `Cannot delete "${name}" — these links point at it: ${inbound
+        .map((l) => `${l.table}.${l.foreignKey}`)
+        .join(
+          ', ',
+        )}. Merge "${name}" into another table to carry the links across, or remove those links first.`,
     };
   }
 
@@ -600,8 +666,9 @@ export async function aiDeleteEntity(
     ? await active.db.count(name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
     : await active.db.count(name);
 
-  // Empty → safe to remove straight away.
-  if (rowCount === 0) {
+  // Empty → safe to remove straight away. (A merge that must also repoint inbound
+  // links falls through to the move_to path even with zero rows.)
+  if (rowCount === 0 && !(isMove && inbound.length > 0)) {
     await softDeleteUserEntity(active, name, sessionId);
     return { ok: true, deleted: name };
   }
@@ -654,31 +721,140 @@ export async function aiDeleteEntity(
   if (active.junctionTables.has(target) || isNativeEntity(target)) {
     return { ok: false, error: `Cannot move rows into "${target}".` };
   }
-  if (rowCount > AI_DELETE_ROW_CAP) {
+  // A source whose rows can't be soft-deleted (no deleted_at) can't be MERGED
+  // reversibly: the copies would land in the target while the originals stay
+  // physically present, so a history "restore" would duplicate everything. Refuse.
+  if (!softDeletable) {
     return {
       ok: false,
-      error: `"${name}" has ${String(rowCount)} rows — too many to auto-move (cap ${String(AI_DELETE_ROW_CAP)}).`,
+      error: `"${name}" can't be merged — its rows have no deleted_at column to reversibly remove. Delete or clear it manually instead.`,
     };
   }
+  // Too large to move automatically → hand it back as a decision (ask the user)
+  // rather than a hard error the assistant can't recover from.
+  if (rowCount > AI_DELETE_ROW_CAP) {
+    return {
+      needsResolution: true,
+      rowCount,
+      message:
+        `"${name}" has ${String(rowCount)} rows — too many to merge automatically (the safe ` +
+        `limit is ${String(AI_DELETE_ROW_CAP)}). Ask the user to trim it first or leave it as its ` +
+        `own object; do not retry the merge as-is.`,
+    };
+  }
+  const SKIP = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
   const targetCols = active.db.getRegisteredColumns(target);
   if (!targetCols) return { ok: false, error: `Could not read the columns of "${target}".` };
-  const rows = (await active.db.query(
-    name,
-    softDeletable
-      ? { filters: [{ col: 'deleted_at', op: 'isNull' }], limit: AI_DELETE_ROW_CAP }
-      : { limit: AI_DELETE_ROW_CAP },
-  )) as Record<string, unknown>[];
-  const SKIP = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
-  let movedRows = 0;
-  for (const r of rows) {
-    const mapped: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(r)) {
-      if (!SKIP.has(k) && k in targetCols) mapped[k] = v;
+  // Never declassify: if a secret source column would land in a non-secret target
+  // column (a new one, or an existing non-secret one), refuse rather than expose it.
+  const sourceSecret = await secretColumns(active, name);
+  if (sourceSecret.size > 0) {
+    const targetSecret = await secretColumns(active, target);
+    const exposed = [...sourceSecret].filter((c) => !SKIP.has(c) && !targetSecret.has(c));
+    if (exposed.length > 0) {
+      return {
+        ok: false,
+        error: `Cannot merge "${name}": the secret field${exposed.length === 1 ? '' : 's'} ${exposed.join(', ')} would become visible in "${target}". Unmark them as secret, or move them manually, first.`,
+      };
     }
-    await createRow(mctx, target, mapped); // new id auto-assigned
-    if (softDeletable) await deleteRow(mctx, name, String(r.id), false);
-    movedRows++;
+  }
+  // Column union: widen the target with any source column it lacks so no field is
+  // silently dropped from the merged copies (the target gains the source's fields;
+  // added columns are audited by addUserColumn, so this stays reversible).
+  const sourceCols = active.db.getRegisteredColumns(name) ?? {};
+  const toAdd = Object.keys(sourceCols).filter((c) => !SKIP.has(c) && !(c in targetCols));
+  for (const col of toAdd) {
+    const added = await addUserColumn(active, target, col, sessionId);
+    if (!added.ok) {
+      return {
+        ok: false,
+        error: `Could not add "${col}" to "${target}" for the merge: ${added.error}`,
+      };
+    }
+  }
+  // Re-read after any widening so newly-added columns are included in the mapping.
+  const cols = active.db.getRegisteredColumns(target) ?? targetCols;
+
+  const rows = (await active.db.query(name, {
+    filters: [{ col: 'deleted_at', op: 'isNull' }],
+    limit: AI_DELETE_ROW_CAP,
+  })) as Record<string, unknown>[];
+  // Pre-flight: abort BEFORE moving any row if a value can't be assigned to its
+  // target column's type (e.g. TEXT "N/A" into an INTEGER column). Without this an
+  // incompatible row mid-loop would throw INSIDE the transaction below; the type
+  // check turns that into a clean up-front refusal instead of a rolled-back write.
+  // Unioned columns are TEXT so they never trip this; only a pre-existing same-named
+  // column of a strict type can.
+  for (const r of rows) {
+    for (const [k, v] of Object.entries(r)) {
+      if (SKIP.has(k) || !(k in cols)) continue;
+      if (!isAssignableToColumn(v, cols[k])) {
+        return {
+          ok: false,
+          error: `Cannot merge "${name}" into "${target}": the value ${JSON.stringify(v)} in "${k}" is not compatible with the "${k}" column in "${target}". Fix or clear those values first.`,
+        };
+      }
+    }
+  }
+  // Move every row inside ONE transaction: each copy-into-target + soft-delete-of
+  // -source (and their audit/changelog writes) commit together, or roll back
+  // together if any row throws mid-loop. Combined with the type pre-flight above,
+  // a merge either completes fully or changes nothing — it can never leave rows
+  // split between the two tables. (The source-entity removal below is a config
+  // edit, not a DB write, so it stays outside the transaction and runs only after
+  // the row moves have committed.)
+  let movedRows = 0;
+  const idMap = new Map<string, string>(); // old source row id → new target row id
+  await active.db.transaction(async () => {
+    movedRows = 0;
+    idMap.clear();
+    for (const r of rows) {
+      const mapped: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(r)) {
+        if (!SKIP.has(k) && k in cols) mapped[k] = v;
+      }
+      const created = await createRow(mctx, target, mapped); // new id auto-assigned
+      idMap.set(String(r.id), created.id);
+      await deleteRow(mctx, name, String(r.id), false);
+      movedRows++;
+    }
+    // Carry every inbound link across with the rows: update each foreign key that
+    // pointed at a moved source row so it now points at that row's copy in the
+    // target. Same transaction as the moves → a failure rolls the whole merge back.
+    // Bounded (Rule: no unbounded reads) — only link rows referencing a moved row.
+    if (idMap.size > 0) {
+      const movedIds = [...idMap.keys()];
+      for (const link of inbound) {
+        const linkRows = (await active.db.query(link.table, {
+          filters: [{ col: link.foreignKey, op: 'in', val: movedIds }],
+        })) as Record<string, unknown>[];
+        for (const lr of linkRows) {
+          const ref = lr[link.foreignKey];
+          if (typeof ref !== 'string' && typeof ref !== 'number') continue; // FK is a uuid / int
+          const newId = idMap.get(String(ref));
+          if (newId !== undefined) {
+            await updateRow(mctx, link.table, String(lr.id), { [link.foreignKey]: newId });
+          }
+        }
+      }
+    }
+  });
+  // Repoint each inbound relation from the (now-removed) source to the target so the
+  // links reference the merged object, not a deleted one. Config edit (not a DB
+  // write) → after the transaction commits, alongside the source removal. The link
+  // table + FK column keep their names (they just point at the target now).
+  if (inbound.length > 0) {
+    const doc = loadConfigDoc(active.configPath);
+    for (const link of inbound) {
+      doc.setIn(['entities', link.table, 'relations', link.relName], {
+        type: 'belongsTo',
+        table: target,
+        foreignKey: link.foreignKey,
+      });
+    }
+    saveConfigDoc(active.configPath, doc);
   }
   await softDeleteUserEntity(active, name, sessionId);
-  return { ok: true, deleted: name, movedRows };
+  if (inbound.length > 0) syncCanonicalContexts(active); // refresh rollups for the repointed links
+  return { ok: true, deleted: name, movedRows, rewiredLinks: inbound.length };
 }

@@ -84,9 +84,16 @@ export const routerJs = `    // ────────────────
     }
 
     var loadedTables = {};
+    // loadAllRows only feeds RELATION-CHIP resolution (id + display label + FK
+    // columns) — the viewed entity itself uses fetchRows. So skip heavy content
+    // columns a chip never shows (files.extracted_text is up to ~200 KB/row).
+    // exclude (not an id/name include) keeps the FK columns junction chips need.
+    var RELATION_CHIP_EXCLUDE = 'extracted_text';
     function loadAllRows(tableName) {
       if (loadedTables[tableName]) return Promise.resolve(loadedTables[tableName]);
-      return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows').then(function (d) {
+      return fetchJson(
+        '/api/tables/' + encodeURIComponent(tableName) + '/rows?exclude=' + RELATION_CHIP_EXCLUDE,
+      ).then(function (d) {
         loadedTables[tableName] = d.rows;
         return d.rows;
       });
@@ -97,6 +104,34 @@ export const routerJs = `    // ────────────────
       var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows';
       if (deletedMode) url += '?deleted=' + encodeURIComponent(deletedMode);
       return fetchJson(url).then(function (d) { return d.rows; });
+    }
+
+    /**
+     * One PAGE of rows plus the pagination envelope: { rows, approxTotal,
+     * totalIsCapped }. approxTotal is the server's bounded (approximate) total so a
+     * caller can render an "N–M of T" / "T+" pager. This is the ONLY caller that
+     * asks for the total (?withTotal=1) — the whole-list callers (loadAllRows, the
+     * Sources sidebar) omit it so the server skips the extra count. opts:
+     * { deletedMode, artifactType, limit, offset, exclude }.
+     */
+    function fetchRowsPage(tableName, opts) {
+      opts = opts || {};
+      var url = '/api/tables/' + encodeURIComponent(tableName) + '/rows';
+      var qs = ['withTotal=1'];
+      if (opts.deletedMode) qs.push('deleted=' + encodeURIComponent(opts.deletedMode));
+      if (opts.artifactType) qs.push('artifactType=' + encodeURIComponent(opts.artifactType));
+      if (opts.limit != null) qs.push('limit=' + encodeURIComponent(opts.limit));
+      if (opts.offset != null) qs.push('offset=' + encodeURIComponent(opts.offset));
+      if (opts.exclude) qs.push('exclude=' + encodeURIComponent(opts.exclude));
+      url += '?' + qs.join('&');
+      return fetchJson(url).then(function (d) {
+        var rows = (d && d.rows) || [];
+        return {
+          rows: rows,
+          approxTotal: typeof (d && d.approxTotal) === 'number' ? d.approxTotal : rows.length,
+          totalIsCapped: !!(d && d.totalIsCapped),
+        };
+      });
     }
 
     /**
@@ -115,7 +150,7 @@ export const routerJs = `    // ────────────────
      */
     function refreshEntities() {
       return Promise.all([
-        fetchJson('/api/entities').then(function (d) { state.entities = d; }),
+        fetchJson('/api/entities-summary').then(function (d) { state.entities = d; }),
         refreshHistoryState(),
       ]);
     }
