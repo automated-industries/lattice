@@ -273,6 +273,16 @@ database connector).
 
 ### Fixed
 
+- **The assistant handles dates.** It was never told the current date, so "the
+  meeting I had today" resolved against the model's stale training cutoff and
+  returned months-old rows; and `list_rows` read oldest-first by the row's
+  `created_at` (insert/sync time), so "the most recent" surfaced the oldest match.
+  Now the system prompt carries a `# Current date` section (server wall-clock +
+  viewer timezone); `list_rows` returns newest-first by a real event-time column
+  (a meeting's `start_at`) in preference to `created_at`, and exposes `orderBy` /
+  `orderDir` / a date-range `filter` to the model; and the LIKE search fallback
+  (the scoped-cloud-member path) now orders newest-first so a recent match can't be
+  dropped by the row limit.
 - **Every table gets a `deleted_at` column on open.** A table created without the
   soft-delete envelope (an import, or an older/non-standard path) had no
   `deleted_at`, so reversible delete, merge, and undo refused it ("no `deleted_at`

@@ -224,11 +224,13 @@ export interface ReferencedRecord {
   data: unknown;
 }
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   schema: string,
   operatorName?: string,
   cloudSystemPrompt?: string,
   referencedRecords: ReferencedRecord[] = [],
+  nowIso?: string,
+  timezone?: string,
 ): string {
   // Tell the assistant who it's talking to so it can address the operator and
   // link records to "you" without asking for a name it already has access to.
@@ -259,7 +261,18 @@ function buildSystemPrompt(
           .join('\n') +
         `\n("this", "this record/file/card", "it", and a pasted link to one of these refer to the matching record above — act on it by its id.)`
       : '';
-  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}\n\n# Current database\n${schema}`;
+  // Temporal grounding — the model's training cutoff is stale, so it CANNOT know
+  // the wall-clock. Without this section "today" / "recent" / "latest" resolve
+  // against training data (the assistant returned April meetings for "today"). The
+  // instant is supplied per-turn by the caller; fall back to now so it's always set.
+  const iso = nowIso && nowIso.trim().length > 0 ? nowIso.trim() : new Date().toISOString();
+  const tz = timezone && timezone.trim().length > 0 ? ` (${timezone.trim()})` : '';
+  const dateSection =
+    `\n\n# Current date\nToday is ${iso}${tz}. Interpret "today", "yesterday", "recent", "latest", and ` +
+    `"most recent" relative to THIS instant — never your training data. When the user asks about recent ` +
+    `activity, read with orderDir="desc" on the most meaningful date column (a meeting's start time, an ` +
+    `event's date) rather than the row's created_at, and filter by a date range when they name one.`;
+  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}${dateSection}\n\n# Current database\n${schema}`;
 }
 
 /** A content block in the Anthropic message format we use. */
@@ -336,6 +349,14 @@ export interface RunChatOptions {
    * assistant takes still goes through the permission-gated tools.
    */
   activeContext?: { table: string; id: string };
+  /**
+   * The wall-clock instant this turn started (ISO-8601, server-owned) and the
+   * viewer's IANA timezone. Injected into the system prompt so the model can
+   * resolve "today"/"recent"/"most recent" against NOW instead of its stale
+   * training cutoff. Absent → buildSystemPrompt falls back to the current time.
+   */
+  nowIso?: string;
+  timezone?: string;
   /**
    * Optional sink for cross-turn tool memory: each executed tool call's id,
    * name, (capped) input, and (capped) result content. The chat route persists
@@ -420,6 +441,8 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     opts.operatorName,
     opts.cloudSystemPrompt,
     referencedRecords,
+    opts.nowIso,
+    opts.timezone,
   );
 
   let loop = 0;
