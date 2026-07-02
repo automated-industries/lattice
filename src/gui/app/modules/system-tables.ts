@@ -64,6 +64,99 @@ export const systemTablesJs = `    // ──────────────
       renderSchemaGraph();
     }
 
+    // Graph section, Object Page: the DRILLED-DOWN graph for one entity — its rows
+    // as nodes (labeled by name/id), each linked to the related rows it points at
+    // (forward belongsTo). Click a node → that record's entity page. A breadcrumb
+    // (rooted at "Graph") keeps the Graph section highlighted, mirroring the folder
+    // drill-in. Reuses the same force renderer + wave reveal as the entity graph.
+    function renderEntityGraph(content, table) {
+      if (!content) content = document.getElementById('content');
+      if (!content) return;
+      dmActiveTable = null;
+      if (!tableByName(table)) {
+        content.innerHTML = '<div class="brain-graph"><div class="muted" style="padding:24px">Unknown object: ' + escapeHtml(table) + '</div></div>';
+        return;
+      }
+      var myGen = ++graphRevealGen;
+      var d = displayFor(table);
+      content.innerHTML =
+        '<div class="brain-graph entity-graph">' +
+          '<div class="folders-crumbs graph-crumbs"><a href="#/graph">Graph</a>' +
+            '<span class="folders-crumb-sep">/</span>' +
+            '<span class="folders-crumb-cur">' + d.icon + ' ' + escapeHtml(d.label) + '</span>' +
+          '</div>' +
+          '<div id="graph-mount"><div class="graph-loading"><div class="graph-spinner"></div></div></div>' +
+        '</div>';
+      var modP = loadForceGraph();
+      var t = tableByName(table);
+      var belongs = [];
+      var rels = (t && t.relations) || {};
+      for (var k in rels) { if (Object.prototype.hasOwnProperty.call(rels, k) && rels[k] && rels[k].type === 'belongsTo' && rels[k].foreignKey) belongs.push(rels[k]); }
+      fetchRowsPage(table, { limit: 150 }).then(function (page) {
+        if (myGen !== graphRevealGen) return;
+        var rows = page.rows;
+        var mount = document.getElementById('graph-mount');
+        if (!rows.length) { if (mount) mount.innerHTML = '<div class="muted" style="padding:24px">No items yet in ' + escapeHtml(d.label) + '.</div>'; return; }
+        // This entity's rows are the primary nodes (id encodes table:rowId).
+        var nodes = rows.map(function (r) {
+          return { id: table + ':' + r.id, label: fsDisplayName(r) || String(r.id).slice(0, 8), icon: d.icon, radius: 16, cls: '', title: fsDisplayName(r) };
+        });
+        var have = {}; nodes.forEach(function (n) { have[n.id] = true; });
+        // Forward belongsTo → an edge from each row to the parent row its FK names.
+        var edges = [];
+        var parentIds = {}; // relTable → { parentId: true }
+        belongs.forEach(function (rel) {
+          rows.forEach(function (r) {
+            var pid = r[rel.foreignKey];
+            if (pid == null || pid === '') return;
+            edges.push({ source: table + ':' + r.id, target: rel.table + ':' + pid, marker: 'fk', cls: 'dm-edge-fk', title: '' });
+            (parentIds[rel.table] = parentIds[rel.table] || {})[pid] = true;
+          });
+        });
+        // Label the linked parent rows (bounded fetch per related table).
+        var relTables = Object.keys(parentIds);
+        Promise.all(relTables.map(function (rt) {
+          return fetchRowsPage(rt, { limit: 300 }).then(function (pp) { return { rt: rt, rows: pp.rows }; }).catch(function () { return { rt: rt, rows: [] }; });
+        })).then(function (pages) {
+          if (myGen !== graphRevealGen) return;
+          var labelOf = {};
+          pages.forEach(function (pg) {
+            pg.rows.forEach(function (pr) { labelOf[pg.rt + ':' + pr.id] = fsDisplayName(pr) || String(pr.id).slice(0, 8); });
+          });
+          // Add a node for each referenced parent that isn't already present.
+          var added = {};
+          edges.forEach(function (e) {
+            if (have[e.target] || added[e.target]) return;
+            added[e.target] = true;
+            var sep = e.target.indexOf(':');
+            var pt = e.target.slice(0, sep), pid = e.target.slice(sep + 1);
+            nodes.push({ id: e.target, label: labelOf[e.target] || String(pid).slice(0, 8), icon: displayFor(pt).icon, radius: 13, cls: 'gnode-linked', title: displayFor(pt).label });
+          });
+          modP.then(function (mod) {
+            if (myGen !== graphRevealGen) return;
+            var liveMount = document.getElementById('graph-mount');
+            if (!liveMount) return;
+            if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
+            liveMount.innerHTML = '';
+            schemaGraphHandle = mod.createForceGraph(liveMount, {
+              nodes: [], edges: [],
+              reducedMotion: graphReducedMotion(),
+              onNode: function (node) {
+                // Click a node → that record's entity page (shared across sections).
+                var sep = node.id.indexOf(':');
+                if (sep < 0) return;
+                location.hash = '#/fs/' + encodeURIComponent(node.id.slice(0, sep)) + '/' + encodeURIComponent(node.id.slice(sep + 1));
+              },
+            });
+            revealGraphInWaves(nodes, edges, myGen);
+          });
+        });
+      }).catch(function (err) {
+        var m = document.getElementById('graph-mount');
+        if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load graph: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+      });
+    }
+
     // The Model > Tables route: the tiered Tables explorer (Source/Model/Derived/
     // Surface). Mounted directly in #content — no toggle wrapper.
     function renderModelTablesView(content) {
@@ -179,9 +272,11 @@ export const systemTablesJs = `    // ──────────────
             reducedMotion: graphReducedMotion(),
             onNode: function (node) {
               // In Wire/Merge mode a node click picks a source then a target (drag
-              // stays off the graph, which owns node repositioning); otherwise open.
+              // stays off the graph, which owns node repositioning); otherwise DRILL
+              // DOWN into that entity's graph (its rows) — staying in the Graph
+              // section, mirroring the folder drill-in.
               if (typeof wmModeClick === 'function' && wmModeClick(node.id)) return;
-              location.hash = (advancedMode() ? '#/objects/' : '#/fs/') + encodeURIComponent(node.id);
+              location.hash = '#/graph/' + encodeURIComponent(node.id);
             },
             onEdge: function (edge) {
               // m2m → open the junction table; FK → open the child (source) table.
