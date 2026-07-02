@@ -11,6 +11,7 @@ import {
   type GroupResult,
 } from './types.js';
 import { requireString, requireTable } from './helpers.js';
+import { parseBulkFilters } from './row-mutations.js';
 
 export const SECRET_MASK = '••••••••';
 
@@ -99,30 +100,52 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
     case 'list_rows': {
       const table = requireTable(args.table, ctx.validTables);
       const includeDeleted = args.includeDeleted === true;
-      // Deterministic, reproducible order — the 200-row window is only stable
-      // if the sort is. Without an ORDER BY, two identical reads can return rows
-      // in different orders, so the assistant reads a different row each time and
-      // reports conflicting values. `created_at` gives a natural chronological
-      // order where it exists; the primary key (single-column `id` here) is the
-      // universal stable fallback. Explicit ORDER BY behaves identically on
-      // SQLite + Postgres, and composes after the soft-delete WHERE.
       const cols = ctx.db.getRegisteredColumns(table);
+      const pk = ctx.db.getPrimaryKey(table)[0] ?? 'id';
+      const hasCol = (name: string): boolean => !!cols && name in cols;
+      // Order by a real DOMAIN-time column (WHEN the event happened) in preference to
+      // the row's created_at (its INSERT/sync time): a meeting for July 2 that synced
+      // in April carries an April created_at, so created_at ordering is chronologically
+      // wrong for event data. The model can override with orderBy; otherwise fall back
+      // created_at → primary key. An explicit ORDER BY also keeps the paged window
+      // stable + reproducible (identical on SQLite + Postgres, after the soft-delete
+      // WHERE).
+      const DOMAIN_TIME = [
+        'start_at',
+        'starts_at',
+        'occurred_at',
+        'happened_at',
+        'event_date',
+        'meeting_date',
+        'sent_at',
+        'due_at',
+        'ends_at',
+        'date',
+      ];
       const orderBy =
-        cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
-      // Paginate so the model can page a large table deliberately (limit +
-      // offset) instead of pulling a 200-row blob every read. Default + max stay
-      // 200 (unchanged behavior when the model omits them); offset is new.
+        typeof args.orderBy === 'string' && hasCol(args.orderBy)
+          ? args.orderBy
+          : (DOMAIN_TIME.find(hasCol) ?? (hasCol('created_at') ? 'created_at' : pk));
+      // Newest-first by DEFAULT. The old hardcoded 'asc' meant a read of a busy table
+      // returned the OLDEST 200 rows and never reached today — "the most recent
+      // meeting" surfaced April. The model can pass orderDir:'asc' when it wants the
+      // oldest.
+      const orderDir: 'asc' | 'desc' = args.orderDir === 'asc' ? 'asc' : 'desc';
       const limit = Math.min(
         200,
         Math.max(1, typeof args.limit === 'number' ? Math.floor(args.limit) : 200),
       );
       const offset = Math.max(0, typeof args.offset === 'number' ? Math.floor(args.offset) : 0);
       // On a cloud, Postgres RLS filters reads to the rows this member may see.
-      const opts: Parameters<typeof ctx.db.query>[1] = { limit, orderBy, orderDir: 'asc' };
+      const opts: Parameters<typeof ctx.db.query>[1] = { limit, orderBy, orderDir };
       if (offset > 0) opts.offset = offset;
+      // Optional model-supplied filters (e.g. a date range: start_at >= <today>),
+      // validated against the table's columns; the soft-delete filter is appended.
+      const filters = parseBulkFilters(args.filter, table, ctx.db);
       if (ctx.softDeletable.has(table) && !includeDeleted) {
-        opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
+        filters.push({ col: 'deleted_at', op: 'isNull' });
       }
+      if (filters.length) opts.filters = filters as NonNullable<typeof opts.filters>;
       const rows: Row[] = await ctx.db.query(table, opts);
       const secretCols = await secretColumnsFor(ctx.db, table);
       return {
