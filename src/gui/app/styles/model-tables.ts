@@ -143,10 +143,17 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
     }
     .mt-lin-chip:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--row-hover); }
-    .mt-lin-via { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); }
-    /* A consumer chip pairs the (clickable) chip with a ✕ that removes the link. */
-    .mt-lin-chip-wrap { display: flex; align-items: stretch; gap: 4px; }
-    .mt-lin-chip-wrap .mt-lin-chip { flex: 1 1 auto; width: auto; }
+    .mt-lin-via {
+      margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted);
+      /* The via can be a long junction name; truncate it so it never pushes the
+         removal ✕ off the (fixed-width) detail panel. */
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* A consumer chip pairs the (clickable) chip with a ✕ that removes the link.
+       min-width:0 + overflow:hidden let the chip shrink inside the flex row so the
+       fixed-width ✕ stays visible within the panel. */
+    .mt-lin-chip-wrap { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
+    .mt-lin-chip-wrap .mt-lin-chip { flex: 1 1 auto; width: auto; min-width: 0; overflow: hidden; }
     .mt-lin-x {
       flex: none; display: inline-flex; align-items: center; justify-content: center;
       width: 24px; border: 1px solid var(--border); border-radius: 7px;

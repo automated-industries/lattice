@@ -87,8 +87,11 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 GUI batch 2 — workspace-switch fade overlay (.ws-switch-overlay in layout),
 // and the Tables-explorer consumer-chip remove-✕ styles (.mt-lin-chip-wrap /
 // .mt-lin-x / .mt-lin-x-busy in model-tables). Length + hash recaptured.
-const ORIGINAL_LENGTH = 125329;
-const ORIGINAL_SHA256 = '0cbf9c93ed98f0bbf0783763103d2995e350b7ee660c9565dbd4f2b2f8b0121c';
+// 5.0 GUI batch 2a — the consumer chip's via truncates (ellipsis) and the chip
+// shrinks (min-width:0) so the remove-✕ can't be pushed off the fixed-width detail
+// panel. Length + hash recaptured.
+const ORIGINAL_LENGTH = 125745;
+const ORIGINAL_SHA256 = '4b69973591fed44ebac49c1e9f3244447c11688acfdaf16124718761d0ccc923';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
