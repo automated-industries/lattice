@@ -66,6 +66,16 @@ export const layoutCss = `    /* ── Layout ───────────
       position: fixed !important; z-index: 3000; margin: 0; pointer-events: none; opacity: 0.85;
       transform: rotate(-2deg); filter: drop-shadow(0 8px 12px rgba(15, 23, 42, 0.35));
     }
+    /* Full-app fade over a workspace switch / reload so the columns appear to swap
+       together (see reloadEverything). Opaque, so the staggered per-column re-render
+       underneath is hidden until it settles, then it fades out. */
+    .ws-switch-overlay {
+      position: fixed; inset: 0; z-index: 8000;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--surface);
+      opacity: 0; visibility: hidden; transition: opacity 0.16s ease, visibility 0.16s;
+    }
+    .ws-switch-overlay.show { opacity: 1; visibility: visible; }
     @media (max-width: 720px) {
       #content { padding-bottom: 24px; }
     }

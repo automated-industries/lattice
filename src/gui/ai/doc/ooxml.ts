@@ -60,8 +60,8 @@ interface UnpdfLib {
   getDocumentProxy(data: Uint8Array): Promise<unknown>;
   extractText(
     pdf: unknown,
-    opts: { mergePages: boolean },
-  ): Promise<{ totalPages: number; text: string }>;
+    opts: { mergePages: false },
+  ): Promise<{ totalPages: number; text: string[] }>;
 }
 
 export async function extractPdf(path: string): Promise<string | null> {
@@ -73,8 +73,22 @@ export async function extractPdf(path: string): Promise<string | null> {
     const text = await withTimeout(
       (async () => {
         const pdf = await unpdf.getDocumentProxy(data);
-        const out = await unpdf.extractText(pdf, { mergePages: true });
-        return out.text;
+        // Per-page extraction (mergePages:false) preserves the per-line breaks
+        // pdf.js emits via each text item's hasEOL flag. unpdf's mergePages:true
+        // path collapses ALL whitespace — those newlines included — into single
+        // spaces, which flattens the document into one unreadable wall of text
+        // (the "no line breaks in View source" report). Join the pages here with
+        // a blank line and collapse only horizontal runs, so line structure lives.
+        const out = await unpdf.extractText(pdf, { mergePages: false });
+        return out.text
+          .map((page) =>
+            page
+              .replace(/[ \t]+/g, ' ')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim(),
+          )
+          .filter(Boolean)
+          .join('\n\n');
       })(),
       PDF_TIMEOUT_MS,
       'pdf extract timeout',
