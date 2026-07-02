@@ -57,8 +57,26 @@ export const searchJs = `    // ────────────────
       }).catch(function () { /* swallow */ });
     }
 
+    // A full-app fade overlay shown while a workspace switch (or schema reload)
+    // rebuilds every column — so the Inputs/Model/Outputs panes appear to switch
+    // together instead of popping in at different speeds.
+    function wsOverlayEl() {
+      var el = document.getElementById('ws-switch-overlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'ws-switch-overlay';
+        el.className = 'ws-switch-overlay';
+        el.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function showSwitchOverlay() { wsOverlayEl().classList.add('show'); }
+    function hideSwitchOverlay() { var el = document.getElementById('ws-switch-overlay'); if (el) el.classList.remove('show'); }
+
     /** Refetch everything after a DB switch and rerender. */
     function reloadEverything() {
+      showSwitchOverlay();
       return Promise.all([
         fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
@@ -107,6 +125,10 @@ export const searchJs = `    // ────────────────
         // stream so realtime/feed/render all rebind to this workspace.
         renderProgress = {};
         startEventStream();
+      }).finally(function () {
+        // Reveal the freshly-rebuilt columns together (a short tick lets the last
+        // synchronous renders settle before the overlay fades out).
+        setTimeout(hideSwitchOverlay, 60);
       });
     }
 
