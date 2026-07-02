@@ -88,7 +88,11 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'list_rows',
     description:
-      'List rows in a table (paginated, max 200/page). For a large table, page through it with limit + successive offsets instead of trying to read it all at once. Omits soft-deleted rows unless includeDeleted is true.',
+      'List rows in a table (paginated, max 200/page). Returns NEWEST-FIRST by default, ordered by the ' +
+      "table's real event/date column (e.g. a meeting's start_at) when present, else created_at. Page a " +
+      'large table with limit + successive offsets. To find recent/today items, keep the default desc ' +
+      'order and/or pass a `filter` date range (e.g. start_at >= today). Omits soft-deleted rows unless ' +
+      'includeDeleted is true.',
     mutates: false,
     category: 'read',
     args: obj(
@@ -103,6 +107,23 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         offset: {
           type: 'number',
           description: 'Rows to skip from the start — combine with limit to page through a table.',
+        },
+        orderBy: str(
+          "Column to sort by. Defaults to the table's event/date column (e.g. start_at) or created_at. " +
+            "Prefer a real event-time column over created_at, which is the row's insert/sync time.",
+        ),
+        orderDir: {
+          type: 'string',
+          enum: ['asc', 'desc'],
+          description: 'Sort direction. Default "desc" (newest first); use "asc" for oldest first.',
+        },
+        filter: {
+          type: 'array',
+          description:
+            'Filter rows before sorting. Each clause is {col, op, val}; op is one of eq, ne, gt, gte, ' +
+            'lt, lte, like, in, isNull, isNotNull. Clauses are ANDed. For today only: ' +
+            '[{col:"start_at", op:"gte", val:"<today ISO date>"}].',
+          items: { type: 'object', description: 'A single {col, op, val} filter clause.' },
         },
       },
       ['table'],
