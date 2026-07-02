@@ -123,10 +123,15 @@ export async function ensureFtsIndex(
       `CREATE TRIGGER "${fts}_trg" AFTER INSERT OR UPDATE OR DELETE ON "${table}"
        FOR EACH ROW EXECUTE FUNCTION "${fts}_sync"()`,
     );
-    // Backfill existing rows (idempotent via ON CONFLICT).
+    // Backfill existing rows ONCE — only when the FTS table is still empty. The
+    // AFTER INSERT/UPDATE/DELETE trigger above keeps it current thereafter, so a
+    // re-run on every owner open would otherwise full-scan the whole base table
+    // (incl. large connector tables like gmail_messages) for nothing. The
+    // NOT EXISTS guard turns that O(total-text-bytes) scan into an O(1) check.
     await runAsyncOrSync(
       adapter,
       `INSERT INTO "${fts}"(row_id, body) SELECT "id", ${concatExpr(cols, '')} FROM "${table}"
+       WHERE NOT EXISTS (SELECT 1 FROM "${fts}" LIMIT 1)
        ON CONFLICT (row_id) DO NOTHING`,
     );
     return;
