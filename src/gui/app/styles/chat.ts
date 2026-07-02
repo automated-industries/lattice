@@ -4,6 +4,13 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .chat-msg { display: flex; animation: feedIn 0.18s ease-out; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
+    /* Gladys, the assistant, speaks with her own avatar so replies read as coming
+       from her. One emoji glyph per assistant turn (incl. the "typing…" bubble),
+       to the left of the bubble; user turns are unaffected. */
+    .chat-msg.assistant::before {
+      content: "👵🏻"; flex: none; align-self: flex-start;
+      font-size: 18px; line-height: 1.2; margin-right: 8px;
+    }
     .chat-bubble {
       max-width: 85%; padding: 8px 12px; font-size: 13.5px; line-height: 1.45;
       white-space: pre-wrap; word-break: break-word;

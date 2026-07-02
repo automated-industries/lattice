@@ -84,9 +84,16 @@ export const routerJs = `    // ────────────────
     }
 
     var loadedTables = {};
+    // loadAllRows only feeds RELATION-CHIP resolution (id + display label + FK
+    // columns) — the viewed entity itself uses fetchRows. So skip heavy content
+    // columns a chip never shows (files.extracted_text is up to ~200 KB/row).
+    // exclude (not an id/name include) keeps the FK columns junction chips need.
+    var RELATION_CHIP_EXCLUDE = 'extracted_text';
     function loadAllRows(tableName) {
       if (loadedTables[tableName]) return Promise.resolve(loadedTables[tableName]);
-      return fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows').then(function (d) {
+      return fetchJson(
+        '/api/tables/' + encodeURIComponent(tableName) + '/rows?exclude=' + RELATION_CHIP_EXCLUDE,
+      ).then(function (d) {
         loadedTables[tableName] = d.rows;
         return d.rows;
       });

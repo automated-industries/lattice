@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dirname, resolve } from 'node:path';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, sendHtmlCompressed } from './http.js';
+import { computeBoundAuthorities, isSameOriginRequest, isLoopbackHost } from './origin-guard.js';
 import {
   type ActiveDb,
   changeVisibleToActiveRole,
@@ -301,8 +302,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // to a non-loopback address (e.g. 0.0.0.0) exposes read/write/import to the
   // network with no auth layer, so say so loudly at startup. We do not block it —
   // an operator may do it deliberately behind their own network controls.
-  const isLoopbackHost = host === 'localhost' || host === '::1' || host.startsWith('127.');
-  if (!isLoopbackHost) {
+  const hostIsLoopback = isLoopbackHost(host);
+  if (!hostIsLoopback) {
     console.warn(
       `[lattice] GUI is binding to a non-loopback address (${host}); its data ` +
         `routes are UNAUTHENTICATED and will be reachable from the network.`,
@@ -329,38 +330,75 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // on close. The request handler reads it for `/api/update/status`.
   let updateService: UpdateService | null = null;
 
-  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
-  // (zero-workspace) state until the first workspace is created or joined. The
-  // request handler gates every data route behind a non-null check.
-  let activeRef: ActiveDb | null =
-    bootConfigPath && bootOutputDir
-      ? await openConfig(bootConfigPath, bootOutputDir, autoRender, options.realtimeWatchdogMs)
-      : null;
-  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
-  // the header workspace switcher can list + switch workspaces. `null` ⇒ the
-  // GUI was opened on a plain config; the switcher stays hidden. In the virgin
-  // state the root comes from the options (there's no config to discover from).
+  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so the
+  // header switcher can list + switch workspaces — and so a bad active workspace
+  // can fall through to a working one at boot. `null` ⇒ opened on a plain config
+  // (switcher hidden); in the virgin state the root comes from the options.
   const latticeRoot =
     (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null) ??
     (options.latticeRoot ? resolve(options.latticeRoot) : null);
+
+  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
+  // (zero-workspace) state until the first workspace is created or joined. The
+  // request handler gates every data route behind a non-null check.
+  let activeRef: ActiveDb | null = null;
   // Which workspace is ACTUALLY being served (the open `active` DB). The header
-  // switcher must reflect THIS, not the registry's stored activeWorkspaceId —
-  // the two can drift apart (e.g. a relaunch whose --config points at a
-  // different workspace than the last-switched one), which showed the wrong
-  // workspace label sitting over a different workspace's data. Match the
-  // launched config to its workspace and reconcile the registry to it at boot.
+  // switcher must reflect THIS, not the registry's stored activeWorkspaceId — the
+  // two can drift (a relaunch whose --config points elsewhere, or a fall-through
+  // when the stored-active workspace can't open).
   let currentWorkspaceId: string | null = null;
-  if (latticeRoot && bootConfigPath) {
-    const launched = listWorkspaces(latticeRoot).find(
-      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
-    );
-    if (launched) {
-      currentWorkspaceId = launched.id;
-      if (getActiveWorkspace(latticeRoot)?.id !== launched.id) {
-        setActiveWorkspace(latticeRoot, launched.id);
+
+  if (bootConfigPath && bootOutputDir) {
+    try {
+      activeRef = await openConfig(
+        bootConfigPath,
+        bootOutputDir,
+        autoRender,
+        options.realtimeWatchdogMs,
+      );
+      if (latticeRoot) {
+        const launched = listWorkspaces(latticeRoot).find(
+          (w) =>
+            resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
+        );
+        currentWorkspaceId = launched?.id ?? getActiveWorkspace(latticeRoot)?.id ?? null;
+        if (launched && getActiveWorkspace(latticeRoot)?.id !== launched.id) {
+          setActiveWorkspace(latticeRoot, launched.id);
+        }
       }
-    } else {
-      currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
+    } catch (err) {
+      // The stored-active workspace can't open (e.g. its DB credential is missing).
+      // Never brick the whole app: fall through to the first OTHER workspace that
+      // opens, so the user lands in real data with the switcher listing the rest —
+      // not a dead-end error dialog or a misleading zero-state welcome screen.
+      console.error(
+        `[gui] active workspace failed to open (${bootConfigPath}): ${(err as Error).message}`,
+      );
+      const launchedPath = resolve(bootConfigPath);
+      const root = latticeRoot; // narrow once so the loop body needs no cast/assertion
+      if (root) {
+        for (const w of listWorkspaces(root)) {
+          const paths = resolveWorkspacePaths(root, w);
+          if (resolve(paths.configPath) === launchedPath) continue; // the one that just failed
+          try {
+            activeRef = await openConfig(
+              paths.configPath,
+              paths.contextDir,
+              autoRender,
+              options.realtimeWatchdogMs,
+            );
+            currentWorkspaceId = w.id;
+            setActiveWorkspace(root, w.id);
+            console.error(`[gui] opened the next working workspace instead: "${w.displayName}".`);
+            break;
+          } catch {
+            // try the next workspace
+          }
+        }
+      }
+      if (!activeRef) {
+        console.error('[gui] no workspace could be opened — showing the welcome screen.');
+      }
     }
   }
 
@@ -456,11 +494,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     method: string,
   ): Promise<boolean> => {
     if (method === 'GET' && pathname === '/') {
-      sendText(
+      sendHtmlCompressed(
+        req,
         res,
         guiAppHtml.replace('<!--LATTICE_VERSION-->', guiVersion ? `v${guiVersion}` : ''),
-        200,
-        'text/html; charset=utf-8',
       );
       return true;
     }
@@ -588,12 +625,35 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     ) => boolean | Promise<boolean>;
   };
 
+  // CSRF / DNS-rebinding guard for the unauthenticated local server. A browser on
+  // the same loopback is exactly the cross-site attacker's vehicle: any site the
+  // user visits can POST to 127.0.0.1 as the local user. So every state-changing
+  // request (and the WS upgrade) must be same-origin AND carry the Host we actually
+  // bound. Set once the real port is known (below); before that no external request
+  // can arrive. This adds NO auth layer — legitimate same-origin GUI requests pass.
+  let boundAuthorities: Set<string> | null = null;
+  function requestIsSameOrigin(req: IncomingMessage): boolean {
+    const allowed = boundAuthorities;
+    if (!allowed) return true; // not yet listening → unreachable
+    return isSameOriginRequest(req.headers, allowed);
+  }
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // Reject cross-site / rebound-Host state changes before any routing. GETs
+        // are covered by the browser same-origin policy (we send no permissive
+        // CORS), except side-effecting GETs which opt in explicitly below.
+        const mutating =
+          method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+        if (mutating && !requestIsSameOrigin(req)) {
+          sendJson(res, { error: 'cross-site request blocked' }, 403);
+          return;
+        }
 
         // Version + update status — answered in BOTH virgin and active states, and
         // independent of any workspace. The browser polls `/api/version` on each
@@ -609,6 +669,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // supplied an opener, so a web-served GUI can't trigger an OS open. Only
         // http(s) URLs are honored.
         if (method === 'GET' && pathname === '/api/desktop/open') {
+          // Side-effecting GET (opens the OS browser) → same-origin only, so a
+          // cross-site <img>/navigation can't drive an OS open to an arbitrary URL.
+          if (!requestIsSameOrigin(req)) {
+            sendJson(res, { error: 'cross-site request blocked' }, 403);
+            return;
+          }
           if (!desktopOpenExternal) {
             sendJson(res, { error: 'not found' }, 404);
             return;
@@ -1190,7 +1256,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   server.on('upgrade', (req, socket, head) => {
     const { pathname } = new URL(req.url ?? '/', `http://${host}`);
-    if (pathname !== '/api/stream') {
+    // Same guard as mutating HTTP: a cross-site page must not open the realtime
+    // change feed (it's readable cross-origin, unlike a fetch response), and a
+    // rebound Host must not reach it.
+    if (pathname !== '/api/stream' || !requestIsSameOrigin(req)) {
       socket.destroy();
       return;
     }
@@ -1200,6 +1269,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   });
 
   const port = await listenWithPortFallback(server, startPort, host);
+  // Now the real port is known — arm the CSRF/rebinding guard with the exact Host
+  // authorities the server actually answers on.
+  boundAuthorities = computeBoundAuthorities(host, port, hostIsLoopback);
   // Now that the server is accepting connections, render the initial workspace's
   // context tree in the background — `/` and `/api/entities` answer instantly
   // while it churns, and a render that finishes before any tab connects is

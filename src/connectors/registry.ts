@@ -198,6 +198,20 @@ export async function updateConnectorConnection(
   );
 }
 
+/**
+ * `last_error` is surfaced to the member via GET /api/connectors, so a raw DB error
+ * — which on a unique/PK conflict can echo the conflicting key VALUE — would leak
+ * another member's data as an existence oracle. Genericize constraint/conflict
+ * errors (no value), and bound everything else. The full error is still THROWN by
+ * the sync so server logs keep the detail.
+ */
+export function sanitizeConnectorError(raw: string): string {
+  if (/constraint|unique|duplicate|conflict|violat|primary key|SQLITE_/i.test(raw)) {
+    return 'A record could not be written during sync (possible conflict). Try reconnecting.';
+  }
+  return raw.length > 500 ? raw.slice(0, 500) + '…' : raw;
+}
+
 /** Record a sync outcome: success stamps `last_sync_at` + clears the error. */
 export async function recordSync(
   db: Lattice,
@@ -215,7 +229,7 @@ export async function recordSync(
     await runAsyncOrSync(
       db.adapter,
       `UPDATE "${CONNECTORS_TABLE}" SET "status" = 'error', "last_error" = ?, "updated_at" = ? WHERE "id" = ?`,
-      [outcome.error, now, id],
+      [sanitizeConnectorError(outcome.error), now, id],
     );
   }
 }
