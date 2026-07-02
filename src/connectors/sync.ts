@@ -17,7 +17,7 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { runAsyncOrSync } from '../db/adapter.js';
-import { addEdges } from '../search/graph.js';
+import { addEdges, ensureEdgesTable } from '../search/graph.js';
 import type { GraphEdge } from '../search/graph.js';
 import type { Connector, ConnectedModelDef, ListChangesContext } from './types.js';
 import { getConnector, listConnectors, recordSync } from './registry.js';
@@ -292,18 +292,16 @@ async function pruneVanished_(
   const existing = await collectConnectorKeys(db, m.table, m.naturalKey, connectorId);
   const vanished = existing.filter((key) => !seen.has(key));
   if (vanished.length === 0) return 0;
-  // Soft-delete via db.update (preserves the changelog entry + render hooks a raw
-  // DELETE would skip), but batch every delete into ONE transaction so the whole
-  // prune commits once instead of per row. On Postgres this collapses N commits to
-  // one; on SQLite (no withClient) db.transaction runs inline — no regression.
-  await db.transaction(async () => {
-    for (const key of vanished) {
-      await db.update(m.table, key, { deleted_at: now });
-    }
-  });
-  // Drop the pruned rows' derived graph edges in chunked IN(...) batches. Edges are
-  // derived + idempotent (no changelog), so a batched raw DELETE is safe and turns
-  // per-row round-trips into ~one per 500 keys.
+  // Drop the pruned rows' derived graph edges FIRST, in chunked IN(...) batches.
+  // Edges are derived + idempotent (no changelog), so a batched raw DELETE is safe
+  // and turns per-row round-trips into ~one per 500 keys. Two invariants here:
+  //  • ensureEdgesTable first — a workspace whose connectors emit no graphEdges
+  //    (e.g. an external-DB source) has never created the table, so the raw DELETE
+  //    would throw "no such table: __lattice_edges" and fail the whole sync.
+  //  • Edge cleanup BEFORE the soft-delete transaction — the edge delete is safe
+  //    to redo, the committed soft-delete is not; failing the redoable step first
+  //    never strands rows already hidden by a commit when the sync errors out.
+  await ensureEdgesTable(db.adapter);
   for (let i = 0; i < vanished.length; i += EDGE_DELETE_CHUNK) {
     const chunk = vanished.slice(i, i + EDGE_DELETE_CHUNK);
     const placeholders = chunk.map(() => '?').join(', ');
@@ -313,6 +311,15 @@ async function pruneVanished_(
       [m.table, ...chunk],
     );
   }
+  // Soft-delete via db.update (preserves the changelog entry + render hooks a raw
+  // DELETE would skip), but batch every delete into ONE transaction so the whole
+  // prune commits once instead of per row. On Postgres this collapses N commits to
+  // one; on SQLite (no withClient) db.transaction runs inline — no regression.
+  await db.transaction(async () => {
+    for (const key of vanished) {
+      await db.update(m.table, key, { deleted_at: now });
+    }
+  });
   return vanished.length;
 }
 

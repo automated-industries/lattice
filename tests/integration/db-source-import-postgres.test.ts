@@ -53,6 +53,17 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
       `INSERT INTO ${SCHEMA}.widgets (id, name, qty, active) VALUES
         ('w1','Alpha',3,true), ('w2','Beta',0,false), ('w3','Gamma',7,true)`,
     );
+    // Composite primary key — the shape that previously corrupted: the synthesized
+    // _pk was joined with a control char the row sanitizer strips, so the stored
+    // key never matched the sync's seen-key and every row was soft-deleted on the
+    // very sync that imported it (and the prune crashed on __lattice_edges).
+    await admin.query(
+      `CREATE TABLE ${SCHEMA}.orders (region text, num integer, item text, PRIMARY KEY (region, num))`,
+    );
+    await admin.query(
+      `INSERT INTO ${SCHEMA}.orders (region, num, item) VALUES
+        ('east', 1, 'anvil'), ('west', 1, 'rope')`,
+    );
   });
 
   afterAll(async () => {
@@ -128,6 +139,63 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
       expect(w1.qty).toBe(3);
       // The sync engine stamps connector lineage on every imported row.
       expect(w1._source_connector_id).toBeTruthy();
+    } finally {
+      await connector.disconnect(connectionId);
+    }
+  });
+
+  it('composite-PK rows survive the sync (and a re-sync) — no phantom prune, no edges crash', async () => {
+    const connector = new DatabaseConnector();
+    const { connectionId } = await connector.connect({
+      connectionString: PG_URL!,
+      schema: SCHEMA,
+    });
+    const db = new Lattice(':memory:');
+    await db.init();
+    try {
+      const toolkit = `db_source:${connectionId}`;
+      const orders = connector.models(toolkit).find((m) => m.model === 'orders')!;
+      expect(orders.naturalKey).toBe('_pk'); // synthesized for a composite PK
+      const connectorId = await createConnector(db, {
+        connector: 'db_source',
+        toolkit,
+        connectionRef: connectionId,
+        connectedBy: 'test',
+        displayName: 'test',
+      });
+      for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+
+      // FIRST sync: both rows land and STAY live. Previously the control-char-
+      // joined _pk was stripped by the sanitizer at storage time, so the prune
+      // judged every row vanished — soft-deleting the whole import (live=0) and
+      // crashing on the never-created __lattice_edges table.
+      const res1 = await syncConnector(db, connector, connectorId);
+      expect(res1.upserted[orders.table]).toBe(2);
+      expect(res1.softDeleted[orders.table] ?? 0).toBe(0);
+      const live1 = (await db.query(orders.table, {
+        filters: [{ col: 'deleted_at', op: 'isNull' }],
+      })) as Record<string, unknown>[];
+      expect(live1.length).toBe(2);
+
+      // SECOND sync: idempotent — still 2 live, nothing pruned.
+      const res2 = await syncConnector(db, connector, connectorId);
+      expect(res2.softDeleted[orders.table] ?? 0).toBe(0);
+      const live2 = (await db.query(orders.table, {
+        filters: [{ col: 'deleted_at', op: 'isNull' }],
+      })) as Record<string, unknown>[];
+      expect(live2.length).toBe(2);
+
+      // GENUINE remote delete → the prune fires on a workspace whose local DB has
+      // no __lattice_edges table (db-source models emit no graph edges, so nothing
+      // ever created it). Previously: "no such table: __lattice_edges". Now the
+      // prune self-ensures the table and soft-deletes exactly the vanished row.
+      await admin.query(`DELETE FROM ${SCHEMA}.orders WHERE region='west' AND num=1`);
+      const res3 = await syncConnector(db, connector, connectorId);
+      expect(res3.softDeleted[orders.table]).toBe(1);
+      const live3 = (await db.query(orders.table, {
+        filters: [{ col: 'deleted_at', op: 'isNull' }],
+      })) as Record<string, unknown>[];
+      expect(live3.length).toBe(1);
     } finally {
       await connector.disconnect(connectionId);
     }
