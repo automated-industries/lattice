@@ -55,6 +55,10 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         if (!soft) renderBrainGraph(content);
         return;
       }
+      // Graph drill-in: #/graph/<obj> → that entity's rows as a graph (Object Page
+      // of the Graph section). Soft refreshes skip the rebuild like #/graph.
+      var grm = /^#\\/graph\\/([^/]+)$/.exec(hash);
+      if (grm) { if (!soft) renderEntityGraph(content, decodeURIComponent(grm[1])); return; }
       // Model > Tables — the tiered explorer, a sibling tab of the graph.
       if (hash === '#/tables') { renderModelTablesView(content); return; }
 
