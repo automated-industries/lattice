@@ -224,13 +224,20 @@ import { appJs } from '../../src/gui/app/script.js';
 // first) via successive setData calls, so entities fly in progressively like the
 // live-ingest delta instead of all at once (revealGraphInWaves in system-tables).
 // Length + hash recaptured.
+// 5.0 GUI batch 7 — sticky-section navigation (section-scoped record routes
+// #/fs|#/graph|#/tables via a shared renderer + section arg; breadcrumb root + tab
+// per section); "Folders" tab renamed to "Objects" + object tiles use their own
+// emoji (no folder icon); record view "Inside" → "Connected objects" (count>0
+// only); link/merge on the brain graph updates via a live setData delta instead of
+// a full rebuild; the Tables explorer drops the "Surface" tier (Source + Tables
+// only, "Model · entities" renamed "Tables"). Length + hash recaptured.
 // 5.0 GUI batch 6 — Graph section drill-down: clicking an entity node opens
 // #/graph/<obj> → renderEntityGraph (that entity's rows as nodes, linked to the
 // rows they belongsTo, labelled by name/id); clicking a node opens the record
 // (entity) page; a breadcrumb rooted at "Graph" keeps the Graph tab lit
 // (tabKeyForHash + the #/graph/<obj> route). Length + hash recaptured.
-const ORIGINAL_LENGTH = 595453;
-const ORIGINAL_SHA256 = 'b9fe3e627381b13c21ad0537535c9299db7fbe5655512bc7ac267678d696625f';
+const ORIGINAL_LENGTH = 600868;
+const ORIGINAL_SHA256 = 'a619219b0247207d776a075aab2527cc4772c10080df8818931e25f1cb80a8ba';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

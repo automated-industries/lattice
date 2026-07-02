@@ -17,12 +17,14 @@ describe('classifyTier — generic Model/Tables tier heuristic', () => {
     );
   });
 
-  it('SURFACE: app/system plumbing + the secrets store', () => {
-    expect(classifyTier(t('user_settings'))).toBe('surface');
-    expect(classifyTier(t('oauth_tokens'))).toBe('surface');
-    expect(classifyTier(t('chat_messages'))).toBe('surface');
-    expect(classifyTier(t('todos'))).toBe('surface');
-    expect(classifyTier(t('secrets', { native: true }))).toBe('surface');
+  it('MODEL ("Tables"): the former Surface app/system plumbing now lists under Tables', () => {
+    // The "Surface · app" tier was removed as arbitrary — settings/auth/chat/todos
+    // and the secrets store all fall through to MODEL ("Tables") now.
+    expect(classifyTier(t('user_settings'))).toBe('model');
+    expect(classifyTier(t('oauth_tokens'))).toBe('model');
+    expect(classifyTier(t('chat_messages'))).toBe('model');
+    expect(classifyTier(t('todos'))).toBe('model');
+    expect(classifyTier(t('secrets', { native: true }))).toBe('model');
   });
 
   it('MODEL: first-class business entities (the default)', () => {
@@ -31,8 +33,8 @@ describe('classifyTier — generic Model/Tables tier heuristic', () => {
     expect(classifyTier(t('companies'))).toBe('model');
     // An unknown brand-new table falls through to MODEL, not a guess.
     expect(classifyTier(t('widgets_v2'))).toBe('model');
-    // Former AI-loop/embedding tables now fall through to MODEL too (the DERIVED
-    // tier was removed) unless they carry a stronger SOURCE/SURFACE signal.
+    // Former AI-loop/embedding tables fall through to MODEL too unless they carry a
+    // stronger SOURCE signal.
     expect(classifyTier(t('predictions'))).toBe('model');
     expect(classifyTier(t('observations'))).toBe('model');
     expect(classifyTier(t('note_embeddings'))).toBe('model');
@@ -41,7 +43,7 @@ describe('classifyTier — generic Model/Tables tier heuristic', () => {
 
   it('priority: explicit connector provenance wins over the name heuristic', () => {
     // A connector-synced table is a SOURCE — the toolkit is authoritative
-    // provenance, ahead of the SURFACE/MODEL name rules.
+    // provenance, ahead of the MODEL default.
     expect(classifyTier(t('insights', { connectorToolkit: 'salesforce' }))).toBe('source');
   });
 });
