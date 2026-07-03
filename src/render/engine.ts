@@ -1,5 +1,5 @@
 import { join, basename, isAbsolute, resolve, sep } from 'node:path';
-import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdirSync, existsSync, copyFileSync, readFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
@@ -22,6 +22,7 @@ import type {
   EntityContextManifestEntry,
   LatticeManifest,
   EntityFileManifestInfo,
+  TableFileManifestInfo,
 } from '../lifecycle/manifest.js';
 import { writeManifest, readManifest, TEMPLATE_VERSION } from '../lifecycle/manifest.js';
 import { computeRenderCursor } from '../lifecycle/render-cursor.js';
@@ -241,6 +242,13 @@ export class RenderEngine {
     const start = Date.now();
     const filesWritten: string[] = [];
     const counters = { skipped: 0 };
+    // Phase-1 rollup lifecycle: every table file rendered THIS pass, keyed by
+    // table, with the hash of the content Lattice produced (written or not —
+    // an atomicWrite no-op means the bytes already matched).
+    const tableFilesFresh: Record<string, TableFileManifestInfo> = {};
+    // Prior rollup hashes, for the edited-rollup notice in the loop below (the
+    // full prior manifest is re-read after phase 1 for the entity-context pass).
+    const priorTableFiles0 = readManifest(outputDir)?.tableFiles;
     const signal = opts.signal;
     const throttle = new ProgressThrottle(opts.onProgress);
 
@@ -303,7 +311,29 @@ export class RenderEngine {
         ? applyTokenBudget(rows, def.render, def.tokenBudget, def.prioritizeBy)
         : def.render(rows);
       const filePath = join(outputDir, def.outputFile);
+      // READ-ONLY artifact contract: table rollups are GENERATED files — edits to
+      // them are not reverse-synced (only per-record entity files round-trip). If
+      // the on-disk bytes differ from BOTH our last write and the fresh content,
+      // someone edited the file; say so loudly before overwriting instead of
+      // silently clobbering the edit.
+      const freshHash = contentHash(content);
+      const priorRollup = priorTableFiles0?.[name];
+      if (priorRollup?.path === def.outputFile && existsSync(filePath)) {
+        try {
+          const onDisk = contentHash(readFileSync(filePath, 'utf8'));
+          if (onDisk !== priorRollup.hash && onDisk !== freshHash) {
+            console.warn(
+              `[latticesql] ${def.outputFile} was edited on disk, but table rollups are ` +
+                `generated files — the edit is NOT imported and the render overwrites it. ` +
+                `Edit the record's own context file (or the data) instead.`,
+            );
+          }
+        } catch {
+          /* unreadable — the write below will surface real IO problems */
+        }
+      }
       const wrote = atomicWrite(filePath, content);
+      tableFilesFresh[name] = { path: def.outputFile, hash: freshHash };
       if (wrote) {
         filesWritten.push(filePath);
       } else {
@@ -397,7 +427,49 @@ export class RenderEngine {
     // only the affected tables were rendered, so MERGE their fresh entries over
     // the previous manifest — leaving every untouched table's entry intact so the
     // orphan-cleanup pass doesn't see them as removed and prune their files.
-    if (this._schema.getEntityContexts().size > 0) {
+    // Phase-1 rollups get a LIFECYCLE record. Build the new tableFiles map from
+    // the tables the schema currently registers: fresh entries win; a table this
+    // (possibly incremental) pass skipped carries its prior entry forward — but
+    // ONLY while its recorded path still matches what the table renders to. Any
+    // prior entry whose path is no longer produced (an outputFile change, a
+    // dropped table) moves to the RETIRED ledger, where it persists across
+    // renders until the reconciliation pass actually deletes the file
+    // (hash-guarded) or the file disappears — so a crash between this manifest
+    // write and the cleanup can never orphan a file permanently.
+    const priorTableFiles = priorManifest?.tableFiles ?? {};
+    const currentOutputFiles = new Map<string, string>();
+    for (const [name, def] of this._schema.getTables())
+      currentOutputFiles.set(name, def.outputFile);
+    const tableFiles: Record<string, TableFileManifestInfo> = {};
+    for (const [name] of this._schema.getTables()) {
+      const fresh = tableFilesFresh[name];
+      if (fresh) {
+        tableFiles[name] = fresh;
+        continue;
+      }
+      const prior = priorTableFiles[name];
+      if (prior && prior.path === currentOutputFiles.get(name)) tableFiles[name] = prior;
+    }
+    const producedPaths = new Set(Object.values(tableFiles).map((t) => t.path));
+    const retiredFiles: TableFileManifestInfo[] = [];
+    const retiredSeen = new Set<string>();
+    const retire = (e: TableFileManifestInfo): void => {
+      if (retiredSeen.has(e.path) || producedPaths.has(e.path)) return;
+      if (!existsSync(join(outputDir, e.path))) return; // already gone — drop the entry
+      retiredSeen.add(e.path);
+      retiredFiles.push(e);
+    };
+    for (const e of priorManifest?.retiredFiles ?? []) retire(e);
+    for (const [table, e] of Object.entries(priorTableFiles)) {
+      if (tableFiles[table]?.path === e.path) continue;
+      retire(e);
+    }
+
+    if (
+      this._schema.getEntityContexts().size > 0 ||
+      Object.keys(tableFiles).length > 0 ||
+      retiredFiles.length > 0
+    ) {
       // LOAD-BEARING INVARIANT — keep this commit block fully SYNCHRONOUS (no await /
       // setImmediate between the readManifest and the writeManifest). It is what makes
       // two concurrent same-`outputDir` renders safe WITHOUT a per-dir lock: the
@@ -425,6 +497,8 @@ export class RenderEngine {
         version: 2,
         generated_at: new Date().toISOString(),
         entityContexts,
+        tableFiles,
+        retiredFiles,
         templateVersion: TEMPLATE_VERSION,
         cursor,
       });

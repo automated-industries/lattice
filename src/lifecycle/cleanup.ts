@@ -1,7 +1,8 @@
 import { join } from 'node:path';
-import { existsSync, readdirSync, unlinkSync, rmdirSync, statSync } from 'node:fs';
-import type { LatticeManifest } from './manifest.js';
+import { existsSync, readdirSync, unlinkSync, rmdirSync, statSync, readFileSync } from 'node:fs';
+import type { LatticeManifest, EntityFileManifestInfo } from './manifest.js';
 import { entityFileNames } from './manifest.js';
+import { contentHash } from '../render/writer.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 
 export interface CleanupOptions {
@@ -40,6 +41,55 @@ export interface CleanupResult {
  * Custom `directory()` entity contexts are skipped for directory cleanup
  * since their paths cannot be derived from slug alone.
  */
+/**
+ * The recorded render hash for one managed file, or null when the manifest entry
+ * predates per-file hashes (legacy bare-array entries).
+ */
+function recordedHashOf(
+  filesVal: Record<string, EntityFileManifestInfo> | readonly string[],
+  filename: string,
+): string | null {
+  if (Array.isArray(filesVal)) return null;
+  const info = (filesVal as Record<string, EntityFileManifestInfo>)[filename];
+  // An empty hash (legacy v1 entry) is "no baseline", same as a missing entry.
+  if (!info?.hash) return null;
+  return info.hash;
+}
+
+/**
+ * SAFE-PRUNE GUARD — the reconciliation invariant: never delete a file whose
+ * on-disk content differs from Lattice's own last write. `expectedHash` null
+ * (legacy manifest entry with no hash) keeps the pre-guard behavior (delete),
+ * because those entries predate manual-edit tracking and blocking on them would
+ * leave every legacy workspace permanently unpruned. Returns true when the file
+ * was removed (or no longer exists).
+ */
+function guardedUnlink(
+  filePath: string,
+  expectedHash: string | null,
+  dryRun: boolean | undefined,
+  warnings: string[],
+): boolean {
+  if (!existsSync(filePath)) return true;
+  if (expectedHash !== null) {
+    let onDisk: string | null = null;
+    try {
+      onDisk = contentHash(readFileSync(filePath, 'utf8'));
+    } catch {
+      onDisk = null;
+    }
+    if (onDisk !== expectedHash) {
+      warnings.push(
+        `${filePath}: left in place — its content differs from what Lattice last ` +
+          `rendered (a manual edit?). Not deleted; review or remove it yourself.`,
+      );
+      return false;
+    }
+  }
+  if (!dryRun) unlinkSync(filePath);
+  return true;
+}
+
 export function cleanupEntityContexts(
   outputDir: string,
   entityContexts: Map<string, EntityContextDefinition>,
@@ -70,7 +120,15 @@ export function cleanupEntityContexts(
   // conservative stance as Step 1).
   if (options.removeOrphanedDirectories !== false) {
     for (const [table, entry] of Object.entries(manifest.entityContexts)) {
-      if (entityContexts.has(table)) continue; // still a current context → Step 1 handles it
+      // Still a current context AND still rendering to the same root → the
+      // per-context Steps 1-2 handle it. A context whose directoryRoot CHANGED
+      // (a rename) falls through: its PRIOR root tree is now orphaned and is
+      // pruned here exactly like a collapsed context — previously a renamed
+      // root left the whole old tree behind forever.
+      const currentDef = entityContexts.get(table);
+      const currentRoot =
+        newManifest?.entityContexts[table]?.directoryRoot ?? currentDef?.directoryRoot;
+      if (currentDef && currentRoot === entry.directoryRoot) continue;
 
       const directoryRoot = entry.directoryRoot;
       const rootPath = join(outputDir, directoryRoot);
@@ -88,7 +146,16 @@ export function cleanupEntityContexts(
           if (globalProtected.has(filename)) continue;
           const filePath = join(entityDir, filename);
           if (!existsSync(filePath)) continue;
-          if (!options.dryRun) unlinkSync(filePath);
+          if (
+            !guardedUnlink(
+              filePath,
+              recordedHashOf(files, filename),
+              options.dryRun,
+              result.warnings,
+            )
+          ) {
+            continue; // user-edited → left in place, loudly
+          }
           options.onOrphan?.(filePath, 'file');
           result.filesRemoved.push(filePath);
         }
@@ -184,7 +251,10 @@ export function cleanupEntityContexts(
           if (globalProtected.has(filename)) continue;
           const filePath = join(entityDir, filename);
           if (!existsSync(filePath)) continue;
-          if (!options.dryRun) unlinkSync(filePath);
+          const expected = recordedHashOf(entry.entities[dirName] ?? [], filename);
+          if (!guardedUnlink(filePath, expected, options.dryRun, result.warnings)) {
+            continue; // user-edited → left in place, loudly
+          }
           options.onOrphan?.(filePath, 'file');
           result.filesRemoved.push(filePath);
         }
@@ -251,11 +321,32 @@ export function cleanupEntityContexts(
 
           const filePath = join(entityDir, filename);
           if (!existsSync(filePath)) continue;
-          if (!options.dryRun) unlinkSync(filePath);
+          const expected = recordedHashOf(entry.entities[slug] ?? [], filename);
+          if (!guardedUnlink(filePath, expected, options.dryRun, result.warnings)) {
+            continue; // user-edited → left in place, loudly
+          }
           options.onOrphan?.(filePath, 'file');
           result.filesRemoved.push(filePath);
         }
       }
+    }
+  }
+
+  // === Step 3: prune RETIRED rollup files ===
+  // The manifest's retiredFiles ledger records rendered files whose path is no
+  // longer produced (an outputFile change, a dropped table — e.g. a legacy
+  // root-level STATES.md re-homed to .schema-only/ by the config upgrade).
+  // Each is deleted ONLY when its on-disk bytes still hash to Lattice's own
+  // last write; a user-edited file is left in place with a loud warning. An
+  // entry persists in the ledger until its file is actually gone, so a crash
+  // anywhere in this pass simply retries on the next render.
+  if (options.removeOrphanedFiles !== false) {
+    for (const e of newManifest?.retiredFiles ?? manifest.retiredFiles ?? []) {
+      const filePath = join(outputDir, e.path);
+      if (!existsSync(filePath)) continue;
+      if (!guardedUnlink(filePath, e.hash, options.dryRun, result.warnings)) continue;
+      options.onOrphan?.(filePath, 'file');
+      result.filesRemoved.push(filePath);
     }
   }
 

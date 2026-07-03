@@ -300,6 +300,28 @@ database connector).
 
 ### Fixed
 
+- **The rendered Context/ tree reconciles itself — safely.** Table rollup files
+  finally have a lifecycle record: the manifest now tracks every phase-1 rollup
+  (`tableFiles`) and keeps a `retiredFiles` ledger of paths no longer produced
+  (an `outputFile` change, a dropped table — e.g. the legacy root-level rollup a
+  config upgrade re-homed). Reconciliation prunes retired files and stale
+  entity trees under one hard rule: **a file whose content differs from
+  Lattice's own last write is never deleted** — it is left in place with a loud
+  warning, and the ledger retries only after it is gone. A renamed entity
+  directory root now sweeps its old tree (previously orphaned forever), the
+  ledger survives crashes between render and cleanup (entries persist until the
+  file is actually removed), and reconciliation runs at workspace OPEN as well
+  as after mutations — so rows deleted or un-shared while the app was closed no
+  longer linger. A pre-upgrade manifest with no rollup history prunes nothing
+  it cannot prove.
+- **Manual file edits can no longer be lost to a render.** Every auto/background
+  render first DRAINS pending manual edits into the database (changelog-
+  versioned, marked `file-edit`) before rewriting any file — previously an edit
+  made within the file watcher's debounce of a mutation-triggered render was
+  overwritten on disk and vanished without a trace. Edits to generated table
+  rollups (which do not round-trip by design) now produce a loud notice before
+  the render restores them, instead of a silent clobber.
+
 - **Junction tables no longer render their own context folders.** The canonical
   context derivation now excludes link tables on every surface (owner, member,
   openWorkspace) via one shared classifier — previously the member path excluded
