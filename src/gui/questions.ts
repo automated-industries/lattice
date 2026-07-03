@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
+import { linkMaterializedRows, type MaterializedLinkSpec } from '../import/materialize.js';
 import type { FeedBus, FeedSource } from './feed.js';
 import { updateRow, linkRows, type MutationCtx } from './mutations.js';
 import { upsertColumnMeta, upsertTableMeta } from './column-descriptions.js';
@@ -61,7 +62,14 @@ export type DeferredAction =
   /** Record the answer text as the definition of a table (or one column). */
   | { kind: 'set_definition'; table: string; column?: string }
   /** Insert a junction row (the audited `linkRows` path). */
-  | { kind: 'link_rows'; junction: string; values: Record<string, unknown> };
+  | { kind: 'link_rows'; junction: string; values: Record<string, unknown> }
+  /**
+   * Create + populate the junction for a marginal import link the user
+   * confirmed. Runs ONLY when the answer exactly matches `confirm` (the
+   * affirmative option) — any other answer, including a free-form reply,
+   * resolves the question without touching the schema.
+   */
+  | ({ kind: 'import_link'; confirm: string } & MaterializedLinkSpec);
 
 /**
  * Where the ANSWER TEXT is additionally persisted (enrichment, not just
@@ -172,6 +180,18 @@ export interface QuestionsCtx {
   softDeletable: Set<string>;
   /** GUI session id, so executed writes share the user's undo/redo stack. */
   sessionId?: string;
+  /**
+   * Workspace config path — schema-creating actions (a confirmed import
+   * link's junction table) persist their definition here, like the importer
+   * itself does. Absent ⇒ the table lives for the session only.
+   */
+  configPath?: string | null;
+  /**
+   * The active workspace's servable-table set. A schema-creating action adds
+   * its new table here so the HTTP layer serves it without a reopen (the same
+   * bookkeeping the import-apply route does for the tables it creates).
+   */
+  validTables?: Set<string>;
 }
 
 /** What answering a question actually did (returned to the card). */
@@ -246,6 +266,27 @@ async function executeAction(
         ...action.values,
       });
       return;
+    case 'import_link': {
+      // Only the explicit confirmation connects the tables; "No" (or a
+      // free-form reply, which the enrichment targets persist) is a no-op.
+      if (answer.trim() !== action.confirm) return;
+      const { created } = await linkMaterializedRows(
+        { db: ctx.db, configPath: ctx.configPath ?? null },
+        action,
+      );
+      ctx.validTables?.add(action.junction);
+      // The junction rows are import-style bulk writes (lineage-tracked, not
+      // per-row audited) — publish one summary event so the change is visible
+      // in the activity feed like the import's own link pass.
+      ctx.feed.publish({
+        table: action.junction,
+        op: 'link',
+        rowId: null,
+        source: 'gui',
+        summary: `Connected ${action.fromTable} to ${action.toTable} (${String(created)} links)`,
+      });
+      return;
+    }
     default: {
       // A context written by a newer build names an action this build can't
       // run. Fail loudly — the question stays pending rather than half-done.

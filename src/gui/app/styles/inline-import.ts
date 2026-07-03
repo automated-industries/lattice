@@ -38,6 +38,12 @@ export const inlineImportCss = `
       margin: 8px 0 0; cursor: pointer; color: var(--text-dim, #64748b);
     }
     .imp-percol input { margin-top: 2px; }
+    .imp-computed {
+      display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4;
+      margin: 6px 0 0; cursor: pointer; color: var(--text-dim, #64748b);
+    }
+    .imp-computed input { margin-top: 2px; }
+    .imp-computed b { color: var(--text, #0f172a); }
     .imp-match { border-left: 3px solid var(--accent, #7dd3fc); font-weight: 500; }
     .feed-item.import-confirm .imp-confirm-body { margin-top: 4px; }
 
