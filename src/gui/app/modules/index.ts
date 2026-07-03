@@ -19,6 +19,7 @@ import { toastJs } from './toast.js';
 import { versionHistoryUndoJs } from './version-history-undo.js';
 import { workspaceSwitchProgressJs } from './workspace-switch-progress.js';
 import { tabsJs } from './tabs.js';
+import { analyticsTabsJs } from './analytics-tabs.js';
 import { sidebarJs } from './sidebar.js';
 import { routerJs } from './router.js';
 import { dashboardJs } from './dashboard.js';
@@ -43,6 +44,7 @@ import { inputsJs } from './inputs.js';
 import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
+import { analyticsViewJs } from './analytics-view.js';
 import { modelTablesJs } from './model-tables.js';
 import { foldersJs } from './folders.js';
 import { columnCollapseJs } from './column-collapse.js';
@@ -64,6 +66,7 @@ export const appJs = [
   versionHistoryUndoJs,
   workspaceSwitchProgressJs,
   tabsJs,
+  analyticsTabsJs,
   sidebarJs,
   routerJs,
   dashboardJs,
@@ -83,6 +86,7 @@ export const appJs = [
   outputsJs,
   activityHeaderJs,
   askLatticeJs,
+  analyticsViewJs,
   modelTablesJs,
   foldersJs,
   columnCollapseJs,

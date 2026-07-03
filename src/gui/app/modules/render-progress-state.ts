@@ -6,6 +6,14 @@ export const renderProgressStateJs = `    // ───────────�
     // removed — the assistant, "Ask Gladys", is the single search surface.)
     // ────────────────────────────────────────────────────────────
     function openSearchHit(table, id) {
+      // Dashboards open in the Analytics view (their record page is only a
+      // deep-link fallback) — every other table opens its Configure record page.
+      // This is the single mapping the assistant's open events, lattice:// link
+      // pills, and activity-card clicks all route through.
+      if (table === 'dashboards') {
+        location.hash = '#/analytics/' + encodeURIComponent(id);
+        return;
+      }
       location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(id);
     }
 
