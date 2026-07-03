@@ -589,14 +589,17 @@ export class Lattice {
     const compiledDef: CompiledTableDef = {
       ...def,
       columns,
-      render: def.render
-        ? compileRender(
-            def as TableDefinition & { render: RenderSpec },
-            table,
-            this._schema,
-            this._adapter,
-          )
-        : NOOP_RENDER,
+      // Identity-preserve NOOP_RENDER so the engine can detect spec-less
+      // tables (def.render === NOOP_RENDER) and skip their full-table read.
+      render:
+        def.render && def.render !== NOOP_RENDER
+          ? compileRender(
+              def as TableDefinition & { render: RenderSpec },
+              table,
+              this._schema,
+              this._adapter,
+            )
+          : NOOP_RENDER,
       outputFile: def.outputFile ?? `.schema-only/${table}.md`,
       ...(renderTemplateName ? { _renderTemplateName: renderTemplateName } : {}),
     };

@@ -61,6 +61,9 @@ export const outputsJs = `
           // reports them for diagnostics.
           host.innerHTML = html + (data && data.truncated ? '<div class="src-note">\u2026more not shown</div>' : '');
           wireMdTree(host);
+          // The rebuild wiped any in-flight render overlays; repaint them from
+          // the client-global render state.
+          if (typeof reapplyTreeProgress === 'function') reapplyTreeProgress();
           host.querySelectorAll('.mdt-artifact > .mdt-row').forEach(function (row) {
             if (row.__wired) return;
             row.__wired = true;

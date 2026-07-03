@@ -103,8 +103,10 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 GUI batch 16 — the settings drawer restyles as the full-workspace
 // takeover (below-header, fade/slide, [hidden] display:none guard, trigger
 // highlight).
-const ORIGINAL_LENGTH = 125635;
-const ORIGINAL_SHA256 = '3647c14e66578dd5479a181f2e700a70f20e40ed5d74937f1819673e01eb74f6';
+// 5.0 GUI batch 17 — .mdt-render-pending fade + .mdt-render-fill bar in the
+// Markdown tree; the .card-render overlay CSS is deleted.
+const ORIGINAL_LENGTH = 125000;
+const ORIGINAL_SHA256 = 'b658e61895f9e821bda103ef25496031a39efbafe72a6dc4827613f6691279c9';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

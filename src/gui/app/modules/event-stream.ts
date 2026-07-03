@@ -2,87 +2,115 @@
 // appJs template literal — do not hand-edit; see modules/index.ts for composition.
 export const eventStreamJs = `    // ────────────────────────────────────────────────────────────
     // Background-render progress — render events arrive over the multiplexed
-    // /api/stream WebSocket (render-snapshot + render-progress). A workspace
-    // opens/switches instantly and renders its context tree in the background;
-    // this paints a per-table % overlay on the dashboard cards (bottom-edge bar +
-    // ⟳ pill) and dims the row count until each table completes. Row COUNTS come
-    // only from /api/entities — the render events drive only the transient overlay
-    // and one reconciling refetch on completion.
+    // /api/stream WebSocket (render-snapshot + render-progress). The per-table
+    // display lives in the MARKDOWN column tree: while a render runs, table
+    // nodes not yet rendered this pass FADE; the node currently rendering shows
+    // an in-node progress bar (determinate when per-entity counts exist);
+    // table-done un-fades that node in place. Row COUNTS come only from
+    // /api/entities — render events drive the overlay + ONE reconciling refetch
+    // on completion (never per table: that refetch storm was the flashing-div
+    // bug). The aggregate "Rendering N%" pill stays in the header — it is the
+    // only feedback when the Markdown column is hidden.
     // ────────────────────────────────────────────────────────────
     // { [table]: { pct, rendered, total, done, error } } — the live render state,
-    // re-applied to cards after every dashboard rebuild (drawDashboard wipes the
-    // DOM overlays but not this map).
+    // re-applied to tree nodes after every tree rebuild (renderOutputsMarkdown
+    // wipes the DOM overlays but not this map).
     var renderProgress = {};
-    // Apply one table's render % to its matching card only (no full rebuild).
-    function applyCardProgress(table, pct) {
-      if (!table) return;
-      var sel = '.card[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"]';
-      var card = document.querySelector(sel);
-      if (!card) return;
+    // Whether a workspace render is currently in flight. Drives the fade: a
+    // table with NO entry in renderProgress while running is "not rendered yet"
+    // — unchanged tables may emit ZERO events (deferred progress), and a
+    // skipped-fresh open emits only the single terminal done, so fades must
+    // derive from phase + map absence, never from waiting on per-table events.
+    var renderPhaseRunning = false;
+    function treeNodeRow(table) {
+      var sel = '.mdt-node[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"] > .mdt-row';
+      return document.querySelector(sel);
+    }
+    function applyNodeProgress(table) {
+      var row = treeNodeRow(table);
+      if (!row) return;
       var st = renderProgress[table];
+      row.classList.remove('mdt-render-pending');
       if (st && st.error) {
-        card.classList.remove('is-rendering');
-        card.classList.add('is-render-error');
-        var perr = card.querySelector('.card-render-pct');
-        if (perr) perr.textContent = 'error';
+        row.classList.remove('is-rendering');
+        row.classList.add('is-render-error');
         return;
       }
-      card.classList.remove('is-render-error');
-      var clamped = Math.max(0, Math.min(100, Math.round(pct || 0)));
-      card.classList.add('is-rendering');
-      var fill = card.querySelector('.card-render-fill');
-      if (fill) fill.style.width = clamped + '%';
-      var pctEl = card.querySelector('.card-render-pct');
-      if (pctEl) pctEl.textContent = 'Rendering ' + clamped + '%...';
+      row.classList.remove('is-render-error');
+      row.classList.add('is-rendering');
+      var fill = row.querySelector('.mdt-render-fill');
+      if (!fill) {
+        fill = document.createElement('div');
+        fill.className = 'mdt-render-fill';
+        row.appendChild(fill);
+      }
+      var determinate = st && st.total > 0;
+      fill.classList.toggle('indet', !determinate);
+      if (determinate) fill.style.width = Math.max(0, Math.min(100, Math.round(st.pct || 0))) + '%';
     }
-    // Clear the overlay for a finished/aborted table.
-    function clearCardProgress(table) {
-      if (!table) return;
-      var sel = '.card[data-table="' + (window.CSS && CSS.escape ? CSS.escape(table) : table) + '"]';
-      var card = document.querySelector(sel);
-      if (!card) return;
-      card.classList.remove('is-rendering', 'is-render-error');
+    function clearNodeProgress(table) {
+      var row = treeNodeRow(table);
+      if (!row) return;
+      row.classList.remove('is-rendering', 'is-render-error', 'mdt-render-pending');
+      var fill = row.querySelector('.mdt-render-fill');
+      if (fill) fill.remove();
     }
-    // Repaint every still-in-flight card from the renderProgress map. Called at
-    // the end of drawDashboard so overlays survive a feed-triggered rebuild.
-    function reapplyRenderOverlays() {
-      Object.keys(renderProgress).forEach(function (table) {
+    // Repaint the whole tree from the render state: fades for not-yet-rendered
+    // nodes, bars for in-flight ones, nothing for finished ones. Called on every
+    // render event AND at the end of renderOutputsMarkdown so overlays survive a
+    // tree rebuild. No-op when nothing is rendering.
+    function reapplyTreeProgress() {
+      var nodes = document.querySelectorAll('#out-markdown-tree .mdt-node[data-table]');
+      nodes.forEach(function (node) {
+        var table = node.getAttribute('data-table');
+        var row = node.querySelector(':scope > .mdt-row');
+        if (!row) return;
         var st = renderProgress[table];
-        if (!st) return;
-        if (st.done && !st.error) { clearCardProgress(table); return; }
-        applyCardProgress(table, st.pct);
+        if (!renderPhaseRunning) {
+          row.classList.remove('mdt-render-pending', 'is-rendering', 'is-render-error');
+          var f0 = row.querySelector('.mdt-render-fill');
+          if (f0) f0.remove();
+          return;
+        }
+        if (!st) {
+          // Running, no events for this table yet → not rendered this pass.
+          row.classList.add('mdt-render-pending');
+          return;
+        }
+        if (st.done && !st.error) { clearNodeProgress(table); return; }
+        applyNodeProgress(table);
       });
     }
-    // Fold one render event into the renderProgress map + paint the card.
+    // Fold one render event into the renderProgress map + repaint the tree.
     function onRenderEvent(e) {
       if (!e) return;
       if (e.kind === 'error') {
+        renderPhaseRunning = false;
         var t = e.table;
         if (t) {
           renderProgress[t] = { pct: e.pct || 0, rendered: 0, total: 0, done: false, error: true };
-          applyCardProgress(t, e.pct || 0);
         }
+        reapplyTreeProgress();
         return;
       }
       if (e.kind === 'done') {
-        // Whole-render completion: clear every overlay and refetch so counts +
-        // the open record's rendered context snap to their real values.
+        // Whole-render completion: un-fade EVERYTHING unconditionally (the only
+        // guaranteed terminal — an abort emits no per-table events at all),
+        // refresh the tree data (nodes that went empty→populated re-query), and
+        // do the single reconciling refetch.
+        renderPhaseRunning = false;
         Object.keys(renderProgress).forEach(function (table) {
           var s = renderProgress[table];
           if (s) s.done = true;
-          clearCardProgress(table);
         });
-        // Force the refresh now that the render is COMPLETE — the rendered context
-        // files are fresh on disk. Bypass scheduleRealtimeRefresh's leading-edge
-        // coalescing: the originating change's feed event already fired a refresh
-        // BEFORE the render finished, which would otherwise leave an open card's
-        // rendered-context panel showing the pre-change markdown until a manual
-        // reload (the "card context updated only after I refreshed" bug).
+        reapplyTreeProgress();
+        if (typeof renderOutputs === 'function') renderOutputs();
         if (realtimePending) { clearTimeout(realtimePending); realtimePending = null; }
         afterMutation().catch(function () { /* swallow — next action retries */ });
         return;
       }
       if (!e.table) return;
+      renderPhaseRunning = true;
       var done = e.kind === 'table-done';
       renderProgress[e.table] = {
         pct: e.pct,
@@ -91,23 +119,17 @@ export const eventStreamJs = `    // ──────────────�
         done: done,
         error: false,
       };
-      if (done) {
-        // This table finished: clear its overlay IN PLACE. Do NOT reconcile the
-        // whole view here — a 23-table render fired ~23 refetch+re-renders of the
-        // middle pane (one per table-done), which is the flashing-div symptom the
-        // user saw. The single whole-render done event below does one reconcile to
-        // snap every count; until then the per-card overlay communicates progress.
-        clearCardProgress(e.table);
-      } else {
-        applyCardProgress(e.table, e.pct);
-      }
+      // Per-table events repaint DOM ONLY — no refetches (a 23-table render must
+      // not fire 23 reconciles; the single terminal done does the one refresh).
+      reapplyTreeProgress();
     }
     // Paint from a full snapshot (initial connect / status fetch): the snapshot
     // carries { phase, tables: { [t]: { pct, entitiesRendered, entitiesTotal,
-    // done } } }. Fold each table in and paint.
+    // done } } }. Fold each table in and repaint.
     function applyRenderSnapshot(snap) {
-      if (!snap || !snap.tables) return;
-      Object.keys(snap.tables).forEach(function (table) {
+      if (!snap) return;
+      renderPhaseRunning = snap.phase === 'running';
+      Object.keys(snap.tables || {}).forEach(function (table) {
         var s = snap.tables[table];
         if (!s) return;
         renderProgress[table] = {
@@ -117,22 +139,16 @@ export const eventStreamJs = `    // ──────────────�
           done: !!s.done,
           error: false,
         };
-        if (s.done) clearCardProgress(table);
-        else applyCardProgress(table, s.pct);
       });
-      if (snap.phase === 'error') {
-        // A whole-render failure with no table attribution still surfaces on the
-        // currently-rendering card if we know one.
-        if (snap.currentTable) {
-          renderProgress[snap.currentTable] = renderProgress[snap.currentTable] || { pct: 0 };
-          renderProgress[snap.currentTable].error = true;
-          applyCardProgress(snap.currentTable, renderProgress[snap.currentTable].pct);
-        }
+      if (snap.phase === 'error' && snap.currentTable) {
+        renderProgress[snap.currentTable] = renderProgress[snap.currentTable] || { pct: 0 };
+        renderProgress[snap.currentTable].error = true;
       }
+      reapplyTreeProgress();
     }
     // Aggregate the per-table render progress into the single top-right status:
     // "Rendering N%…" while any table is mid-render, cleared once all are done.
-    // The per-card progress bars stay (card-scoped, complementary).
+    // (Header-level feedback; the per-node display lives in the Markdown tree.)
     function updateRenderStatus() {
       var active = Object.keys(renderProgress).filter(function (t) {
         var s = renderProgress[t];

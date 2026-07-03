@@ -8,8 +8,11 @@ import { guiAppHtml } from '../../src/gui/app.js';
  */
 describe('3.2 GUI regression guards', () => {
   it('#2 render indicator reads "Rendering NN%…" (initial + dynamic)', () => {
-    expect(guiAppHtml).toContain('Rendering 0%...'); // initial pill text
-    expect(guiAppHtml).toContain("'Rendering ' + clamped + '%...'"); // dynamic update
+    // The per-table display lives in the Markdown tree (fade + in-node bar);
+    // the aggregate header pill keeps the dynamic "Rendering N%…" text.
+    expect(guiAppHtml).toContain('mdt-render-pending'); // per-node fade
+    expect(guiAppHtml).toContain('mdt-render-fill'); // per-node bar
+    expect(guiAppHtml).toContain("'Rendering ' + Math.round(sum / active.length) + '%"); // header pill
   });
 
   it('#3 the top bar gets an explicit stacking context (dropdowns above cards)', () => {
