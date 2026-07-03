@@ -93,8 +93,18 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
             !n.startsWith('__lattice_') &&
             !ASSISTANT_HIDDEN_TABLES.has(n),
         );
-      const out: { name: string; rowCount: number }[] = [];
-      for (const t of tables) out.push({ name: t, rowCount: await ctx.db.count(t) });
+      const out: { name: string; rowCount: number; computed?: true; readOnly?: true }[] = [];
+      for (const t of tables) {
+        out.push({
+          name: t,
+          rowCount: await ctx.db.count(t),
+          // Tag computed views so the model never targets one with a row write
+          // (their rows are projections — edit the source records instead).
+          ...(ctx.computedTables?.has(t)
+            ? { computed: true as const, readOnly: true as const }
+            : {}),
+        });
+      }
       return { ok: true, result: out };
     }
     case 'list_rows': {
