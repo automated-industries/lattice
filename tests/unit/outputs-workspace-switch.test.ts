@@ -38,6 +38,9 @@ describe('workspace switch refreshes the Outputs column (no cross-workspace mark
       // Defined in the model-tables module (same IIFE in the real bundle); stub it
       // here so this isolated searchJs eval doesn't ReferenceError on the switch-reset.
       'mtResetState',
+      // Same for the analytics view's per-workspace resets (analytics-tabs /
+      // analytics-view modules).
+      'anResetTabs',
     ]) {
       w[name] = vi.fn();
     }
