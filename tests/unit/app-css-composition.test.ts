@@ -105,8 +105,10 @@ import { css } from '../../src/gui/app/css.js';
 // highlight).
 // 5.0 GUI batch 17 — .mdt-render-pending fade + .mdt-render-fill bar in the
 // Markdown tree; the .card-render overlay CSS is deleted.
-const ORIGINAL_LENGTH = 125000;
-const ORIGINAL_SHA256 = 'b658e61895f9e821bda103ef25496031a39efbafe72a6dc4827613f6691279c9';
+// 5.0 GUI batch 19 — the takeover panel + backdrop sit BELOW the topbar so the
+// header triggers stay clickable (collapse works); was intercepting on CI.
+const ORIGINAL_LENGTH = 125184;
+const ORIGINAL_SHA256 = 'c04ee0ab6fc96a394d32e3f054da18594507396494131ea6c9c64fc5287b1e5f';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
