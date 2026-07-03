@@ -27,6 +27,18 @@ export interface GuiTableSummary {
    * Drives the "Connected" badge in the Objects list. Set by the server.
    */
   connectorToolkit?: string;
+  /**
+   * True for saved computed tables (live, read-only projections defined over
+   * other tables). Drives the Tables explorer's "Computed Tables" tier. Set by
+   * the server when the computed-tables engine stamps it.
+   */
+  computedTable?: boolean;
+  /**
+   * Provenance classification: 'source' = ingested/connected data; 'derived' =
+   * materialized from ingested data (per the lineage store). Drives the Tables
+   * explorer's Inputs/Derived split. Set by the server.
+   */
+  origin?: 'source' | 'derived';
   /** Team cloud only: this table is shared to the whole team. Set by the server. */
   shared?: boolean;
   /** Team cloud only: the operator owns this table. Set by the server. */

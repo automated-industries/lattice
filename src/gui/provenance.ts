@@ -8,11 +8,13 @@ import { LINEAGE_TABLE } from './lineage-store.js';
 /**
  * Data-provenance / lineage graph for an object table (or a single row).
  *
- * Surfaces, for any object, WHERE its data came from across three tiers — `raw`
- * (uploaded files, connectors, future SQL-warehouse sources), `computed`
- * (Lattice-created artifacts, imports, calculations), and `observation`
- * (AI / learning-loop edits). Computed from four substrates that already exist
- * (or are added additively by this feature):
+ * Surfaces, for any object, WHERE its data came from across four tiers — `raw`
+ * (uploaded files, connectors, future SQL-warehouse sources), `derived`
+ * (tables materialized from ingested data, e.g. structured imports), `computed`
+ * (computed tables — live read-only projections — plus Lattice-created
+ * artifacts and calculations), and `observation` (AI / learning-loop edits).
+ * Computed from four substrates that already exist (or are added additively by
+ * this feature):
  *   1. connector-stamped rows (`_source_connector_id` — set by connectors/sync)
  *   2. the additive `__lattice_lineage` table (file-extraction / import edges)
  *   3. audit rows authored by the `ai` actor (`_lattice_gui_audit.source='ai'`)
@@ -23,8 +25,8 @@ import { LINEAGE_TABLE } from './lineage-store.js';
  * are computed in the database via grouped `aggregate(...)`; the only row reads
  * are bounded by `limit` (the small lineage table) or a single-row PK lookup.
  *
- * The vocabulary is deliberately generic (object / raw / computed / observation)
- * — there is no domain coupling to any particular dataset.
+ * The vocabulary is deliberately generic (object / raw / derived / computed /
+ * observation) — there is no domain coupling to any particular dataset.
  */
 
 // `related` = a belongsTo parent row this object references; `created` = the
@@ -32,6 +34,7 @@ import { LINEAGE_TABLE } from './lineage-store.js';
 export type ProvenanceNodeType =
   | 'object'
   | 'raw'
+  | 'derived'
   | 'computed'
   | 'observation'
   | 'related'
@@ -293,7 +296,7 @@ export async function buildProvenanceGraph(
     }
   }
 
-  // ── RAW / COMPUTED / OBSERVATION: explicit `__lattice_lineage` rows ──────────
+  // ── RAW / DERIVED / COMPUTED / OBSERVATION: explicit `__lattice_lineage` rows ─
   // `__lattice_lineage` is an unregistered raw-DDL table → read it with raw SQL.
   // Tolerate its absence (no lineage written yet) or a missing grant (a scoped
   // cloud member): provenance is a best-effort enrichment, so degrade to no
