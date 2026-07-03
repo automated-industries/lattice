@@ -255,8 +255,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // markdown surface — the read-only #/md viewer is deleted); belongsTo-nested
 // tables indent under their parent in the Tables explorer (link lines are m2m
 // only); exclusivity client guards. Length + hash recaptured.
-const ORIGINAL_LENGTH = 603883;
-const ORIGINAL_SHA256 = 'ca593a3990694f1db8a27231e07de2873b29ebba13f3b4b1d57a5c4d0f4042cb';
+// 5.0 GUI batch 12 — Back/Forward operate on an app-managed, PER-WORKSPACE
+// hash-history stack (window.history spans workspace switches); a switch lands
+// on the new workspace's own last location, never the old one's hash.
+const ORIGINAL_LENGTH = 607032;
+const ORIGINAL_SHA256 = '90113453bf7ce85126d723d2d675fe72037592d4f0fd88788496c5e92da4ede4';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

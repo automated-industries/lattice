@@ -21,6 +21,11 @@ test.beforeAll(async () => {
   base = mkdtempSync(join(tmpdir(), 'lattice-e2e-ws-'));
   process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-e2e-ws-home-'));
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // Pin the registry root to THIS spec's temp dir BEFORE any root resolution:
+  // findLatticeRoot's env override wins everywhere (ensureLatticeRoot included),
+  // so a developer shell exporting LATTICE_ROOT=~/.lattice would otherwise send
+  // every registry read/WRITE in this spec into the real workspace registry.
+  process.env.LATTICE_ROOT = join(base, '.lattice');
   const root = ensureLatticeRoot(base);
   const alpha = addWorkspace(root, { displayName: 'Alpha' });
   const beta = addWorkspace(root, { displayName: 'Beta' });
@@ -30,8 +35,8 @@ test.beforeAll(async () => {
     db.close();
   }
   const pa = resolveWorkspacePaths(root, alpha);
-  // The server discovers the root by walking up from the workspace config —
-  // no LATTICE_ROOT env needed, so this spec can't leak into other specs.
+  // (Root pinned above; walk-up discovery alone is NOT safe under a shell that
+  // exports LATTICE_ROOT.)
   server = await startGuiServer({
     configPath: pa.configPath,
     outputDir: pa.contextDir,
@@ -88,4 +93,27 @@ test('switching paints a loading frame immediately and never freezes on the prev
   await expect(page.locator('#content .route-loading')).toBeVisible({ timeout: 400 });
   // …and the switch still completes (the active workspace changes).
   await expect(page.locator('#ws-name')).not.toHaveText(startName, { timeout: 5000 });
+});
+
+test('Back/Forward history is per-workspace: a switch never carries the old hash or history', async ({
+  page,
+}) => {
+  await page.goto(server.url);
+  await expect(page.locator('#ws-name')).toBeVisible();
+
+  // Build some history in the current workspace: Objects → Tables.
+  await page.locator('.tab[data-key="tables"]').click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
+  await expect(page.locator('#nav-back-btn')).toBeEnabled();
+
+  // Switch workspaces (whichever is not current).
+  await page.locator('#ws-button').click();
+  const other = page.locator('#ws-menu button.db-item:not(:has(.db-item-current))').first();
+  await other.click();
+  await expect.poll(() => page.evaluate(() => location.hash), { timeout: 15000 }).toBe('#/');
+
+  // The new workspace starts with ITS OWN history: Back is disabled — the old
+  // workspace's #/tables (or any of its records) is unreachable from here.
+  await expect(page.locator('#nav-back-btn')).toBeDisabled();
+  await expect(page.locator('#nav-fwd-btn')).toBeDisabled();
 });

@@ -77,6 +77,10 @@ export const bootJs = `    // ────────────────�
         state.columnMeta = results[2] || {};
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
+        // Key the per-workspace navigation history to the booted workspace.
+        if (results[5] && results[5].current && typeof navSetWorkspace === 'function') {
+          navSetWorkspace(results[5].current, true);
+        }
         state.analyticsEffective = !!(results[4] && results[4].analytics_effective);
         // local_open defaults true (the server defaults it on) — drives whether the
         // file view offers "Open in Finder". Treat a missing field as enabled.
