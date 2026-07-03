@@ -150,6 +150,76 @@ export interface LatticeEntityDef {
   primaryKey?: string | string[];
 }
 
+// ---------------------------------------------------------------------------
+// Computed tables — config-defined, read-only SQL projections
+// ---------------------------------------------------------------------------
+
+/**
+ * A single field of a computed table. Every field has a direct computation:
+ *
+ * - `alias` — project a base column (`'status'`) or a dotted belongsTo path
+ *   (`'assignee.team.name'`, resolved through declared relations).
+ * - `calc` — a sandboxed calculation expression over base columns / belongsTo
+ *   paths (see `schema/calc-expr.ts` for the grammar). `type` is the display
+ *   type; defaults to `text`.
+ * - `ai_classify` — a model-assigned label for the field's `input` value,
+ *   constrained to `labels`. Model outputs are materialized once into the
+ *   `__lattice_ai_map` bookkeeping table and LEFT JOINed by the view — the
+ *   model is never re-run at read time.
+ * - `ai_transform` — a model-derived free-form value over `inputs` (order is
+ *   part of the cache identity). Materialized into `__lattice_ai_cell` per
+ *   row and LEFT JOINed; a changed source row makes the join miss, so the
+ *   field reads NULL until the next fill pass — never a stale value.
+ * - `aggregate` — fold many junction rows into one scalar per base row via a
+ *   correlated subquery. `via` is `'<junctionTable>.<remoteRelationOrTable>'`
+ *   (e.g. `'ticket_tags.tag'`); `column` names the remote column to aggregate
+ *   (required for every `fn` except `count`).
+ */
+export type ComputedFieldDef =
+  | { kind: 'alias'; source: string }
+  | { kind: 'calc'; expr: string; type?: LatticeFieldType }
+  | {
+      kind: 'ai_classify';
+      input: string;
+      prompt: string;
+      labels: string[];
+      model?: 'default' | 'cheapest';
+    }
+  | { kind: 'ai_transform'; inputs: string[]; prompt: string; model?: 'default' | 'cheapest' }
+  | {
+      kind: 'aggregate';
+      via: string;
+      fn: 'count' | 'sum' | 'avg' | 'min' | 'max' | 'concat';
+      column?: string;
+    };
+
+/**
+ * A computed table: a live, read-only SQL VIEW defined over one base table
+ * (a declared entity or another computed table). The view always projects the
+ * base primary key as `id` first, then each field in declaration order.
+ * Registered at init as a queryable, non-writable table.
+ *
+ * @example
+ * ```yaml
+ * computed:
+ *   ticket_summary:
+ *     base: ticket
+ *     fields:
+ *       title:     { kind: alias, source: title }
+ *       team:      { kind: alias, source: assignee.team.name }
+ *       is_urgent: { kind: calc, expr: "priority >= 3", type: boolean }
+ *       tag_count: { kind: aggregate, via: ticket_tags.tag, fn: count }
+ * ```
+ */
+export interface ComputedTableDef {
+  /** Base table: a declared entity or another computed table. */
+  base: string;
+  /** Optional human description (display metadata only). */
+  description?: string;
+  /** Field definitions, projected in declaration order. */
+  fields: Record<string, ComputedFieldDef>;
+}
+
 /**
  * The top-level `lattice.config.yml` document.
  *
@@ -172,6 +242,8 @@ export interface LatticeConfig {
   entities: Record<string, LatticeEntityDef>;
   /** Entity context directory definitions */
   entityContexts?: Record<string, LatticeEntityContextDef>;
+  /** Computed-table (read-only SQL projection) definitions */
+  computed?: Record<string, ComputedTableDef>;
 }
 
 // ---------------------------------------------------------------------------
