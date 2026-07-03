@@ -150,6 +150,10 @@ export const toastJs = `    // ────────────────�
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ id: id }),
               }).then(function () {
+                // Swap to THIS workspace's own navigation history (and land on
+                // its last location / home) BEFORE the reload renders — the old
+                // workspace's hash must never render against the new DB.
+                if (typeof navSetWorkspace === 'function') navSetWorkspace(id);
                 // Keep the menu OPEN with the item's spinner through the reload —
                 // for a CLOUD workspace the slow part (connecting + fetching
                 // against the remote DB) happens here in reloadEverything, AFTER
