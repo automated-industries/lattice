@@ -390,6 +390,12 @@ function computedSchemaFromTables(
  * checked; then each definition is compiled (in topological base order, with
  * cycle detection) against the declared entities, so unresolved references,
  * malformed expressions, and bad aggregate specs all throw here.
+ *
+ * Scope of the parse-time check: STRUCTURE (references, expression grammar,
+ * aggregate shape), not dialect semantics. Parse compiles for one dialect and
+ * never executes DDL, so an error only the live engine can raise (e.g.
+ * Postgres rejecting an expression's operand types) surfaces at OPEN instead —
+ * fault-isolated there, never bricking it. See the inline note below.
  */
 function parseComputedTables(
   rawComputed: unknown,
@@ -417,11 +423,17 @@ function parseComputedTables(
   }
   if (declared.length === 0) return [];
 
-  // Semantic validation: compile every definition (dependencies first) against
-  // the declared entities. The compiler is the single owner of reference /
-  // expression / aggregate semantics, so parse-time and open-time validation
-  // can never disagree. Compiled output is discarded — the real compile runs
-  // at init against the live schema.
+  // Structural validation: compile every definition (dependencies first)
+  // against the declared entities, reusing the compiler as the single owner of
+  // reference / expression / aggregate SHAPE checks. This is deliberately NOT
+  // equivalent to the open-time compile: parse compiles for the 'sqlite'
+  // dialect only and never executes DDL, so a dialect-semantic failure (e.g.
+  // Postgres refusing an integer column as a boolean operand in AND) passes
+  // parse and surfaces at open — where it is fault-isolated per table, never
+  // bricking the open. Parse is also STRICTER about columns: it sees only the
+  // declared fields, while the open also sees introspected physical columns.
+  // Compiled output is discarded — the real compile runs at init against the
+  // live schema.
   let order: string[];
   try {
     order = computedTableOrder(defs);
@@ -446,8 +458,13 @@ function parseComputedTables(
   return declared;
 }
 
-/** Narrow one raw YAML computed-table entry to a typed definition. */
-function narrowComputedDef(name: string, raw: unknown): ComputedTableDef {
+/**
+ * Narrow one raw computed-table entry to a typed definition. Owns the
+ * definition's SHAPE validation (kinds, required keys, model tier) for both a
+ * YAML `computed:` entry and a definition arriving over the GUI's HTTP layer —
+ * one validator, so the two paths can never accept different shapes.
+ */
+export function narrowComputedDef(name: string, raw: unknown): ComputedTableDef {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(
       `Lattice: computed table "${name}" must be an object { base, fields, description? }`,

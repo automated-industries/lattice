@@ -82,6 +82,10 @@ export const markdownJs = `    // ───────────────�
         case 'schema.add_link': return 'Added a link to ' + t;
         case 'schema.create_junction': return 'Added a link from ' + t;
         case 'schema.delete_link': return 'Deleted a link on ' + t + ' <span class="muted">(restorable)</span>';
+        case 'schema.create_computed': return 'Created computed table ' + t;
+        case 'schema.update_computed': return 'Updated computed table ' + t;
+        case 'schema.delete_computed': return 'Deleted computed table ' + t + ' <span class="muted">(restorable)</span>';
+        case 'schema.refresh_computed': return 'Refreshed computed table ' + t;
         case 'schema.purge': return 'Permanently purged ' + t;
         default: return 'Schema change on ' + t;
       }
@@ -89,12 +93,13 @@ export const markdownJs = `    // ───────────────�
 
     function historyEntryHtml(e) {
       // Schema/data-model entries get a one-line description (no row diff). A
-      // purge is permanent, so it carries no Revert button.
+      // purge is permanent, and a computed-table refresh only fills AI cells
+      // (nothing to restore) — neither carries a Revert button.
       if (isSchemaHistoryOp(e.operation)) {
         var sActions = e.undone
           ? '<span class="muted" style="font-size:11px;">undone</span>'
-          : (e.operation === 'schema.purge'
-              ? '<span class="muted" style="font-size:11px;">permanent</span>'
+          : (e.operation === 'schema.purge' || e.operation === 'schema.refresh_computed'
+              ? '<span class="muted" style="font-size:11px;">' + (e.operation === 'schema.purge' ? 'permanent' : 'not revertible') + '</span>'
               : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>');
         return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
           '<div class="history-meta">' +

@@ -87,9 +87,14 @@ database connector).
   the field reads NULL until the next fill pass, never a stale value. The fill
   engine takes an injected LLM interface, sends only never-seen distinct values
   to the classifier, validates every label against the allowed set, and records
-  per-field status in `__lattice_computed_state`. Views register at open in
+  per-field status in `__lattice_computed_state`. The stored `prompt_hash` is
+  load-bearing: a field definition changed through ANY path (the builder, a
+  hand-edited config) auto-purges its materialized cache at the next open, so
+  stale labels or transforms are never served. Views register at open in
   dependency order (SQLite drops + recreates; Postgres guards the DDL behind a
-  content-hash migration version so a converged open issues none); a definition
+  content-hash migration version so a converged open issues none, and a
+  changed definition drops + force-recreates its dependent computed views in
+  order); a definition
   that fails to compile is fault-isolated — recorded, reported, never bricking
   the open — and direct writes are refused (a computed table is a read-only
   projection; edit its source tables or its definition). New public API:
@@ -98,7 +103,19 @@ database connector).
   (`ensureAiTables`, `runComputedFill`, `purgeAiField`, `readComputedState`,
   `FillLlm`), the expression language (`parseCalcExpr` / `emitCalcExpr`), and
   `Lattice.isComputedTable` / `getComputedTableNames` /
-  `getComputedRegistration`.
+  `getComputedRegistration`. On top of the engine, the GUI server ships the
+  full runtime surface: audited, revertible create/update/delete ops (no
+  reopen; persisted to the config YAML; undo/redo round-trips them; deleting
+  or renaming a source table is refused while a computed table reads from
+  it), a dry-run preview, a field picker, and an AI-fill refresh with
+  streamed per-field progress — over `GET/POST/PUT/DELETE
+/api/computed-tables[...]` (+ `/preview`, `/fields?base=`, and
+  `/:name/refresh` as NDJSON). Computed tables are flagged in the entities
+  payload (the Tables explorer's "Computed Tables" tier), row writes against
+  them get a friendly refusal, and on a team cloud the view compiles with
+  per-viewer row-visibility predicates, members are granted SELECT (re-issued
+  on every owner reconcile), and definitions publish through the shared
+  schema so members hydrate them like entities.
 - **External databases import their relational structure.** Single-column
   FOREIGN KEYs on the remote are introspected at connect time and materialized as
   graph edges between the imported tables (same machinery as the other
@@ -277,7 +294,6 @@ database connector).
   list, brain graph, and cloud-member grants).
 
 ### Changed
-
 
 - **Settings and Version history are one full-workspace takeover.** Clicking
   the header clock or gear opens a single panel that replaces everything below
