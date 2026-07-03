@@ -22,6 +22,18 @@ export function extractSourceTables(html: string): string[] | null {
     const name = (m[2] ?? '').trim();
     if (name) seen.add(name);
   }
+  // lattice.sql reads: scan each SQL string literal for FROM/JOIN table
+  // identifiers (best-effort — a parenthesized subquery source is recursed
+  // into by the same scan since the whole literal is searched).
+  const sqlRe = /\blattice\s*\.\s*sql\s*\(\s*(['"`])([\s\S]*?)\1/g;
+  for (const m of html.matchAll(sqlRe)) {
+    const sql = m[2] ?? '';
+    const idRe = /\b(?:from|join)\s+("?)([a-zA-Z_][a-zA-Z0-9_]*)\1/gi;
+    for (const t of sql.matchAll(idRe)) {
+      const name = (t[2] ?? '').trim();
+      if (name) seen.add(name);
+    }
+  }
   return seen.size > 0 ? [...seen] : null;
 }
 

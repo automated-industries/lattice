@@ -153,6 +153,8 @@ export interface ActiveDb {
    * called by createUserEntity. No-op without Claude auth.
    */
   onColumnsAdded?: (table: string, columns: string[]) => void;
+  /** Auto-repairs dashboards after breaking model changes; disposed with the workspace. */
+  dashboardRepair?: { dispose: () => void };
   generateTableDescription?: (table: string, columns: string[]) => void;
 }
 
