@@ -3,13 +3,76 @@
 export const searchJs = `    // ────────────────────────────────────────────────────────────
     // Version history (undo / redo / log)
     // ────────────────────────────────────────────────────────────
+    // ── Page-navigation history — PER WORKSPACE ──────────────────
+    // Back/Forward operate on an app-managed hash-history stack keyed by the
+    // active workspace, NOT window.history: the browser history spans workspace
+    // switches (a switch is a soft reload, no page load), so its Back walked into
+    // hashes from the PREVIOUS workspace — records/tables the new workspace does
+    // not even have. Each workspace keeps its own stack for the session;
+    // switching swaps stacks and lands on the NEW workspace's last location
+    // (home for a first visit), never the old one's.
+    var navStacks = {};
+    var navKey = '_';
+    var navSuppress = false;
+    function navStack() {
+      if (!navStacks[navKey]) navStacks[navKey] = { entries: [location.hash || '#/'], index: 0 };
+      return navStacks[navKey];
+    }
+    function navUpdateButtons() {
+      var st = navStack();
+      var b = document.getElementById('nav-back-btn');
+      var f = document.getElementById('nav-fwd-btn');
+      if (b) b.disabled = st.index <= 0;
+      if (f) f.disabled = st.index >= st.entries.length - 1;
+    }
+    function navRecord() {
+      if (navSuppress) { navSuppress = false; navUpdateButtons(); return; }
+      var st = navStack();
+      var h = location.hash || '#/';
+      if (st.entries[st.index] === h) { navUpdateButtons(); return; }
+      st.entries = st.entries.slice(0, st.index + 1);
+      st.entries.push(h);
+      if (st.entries.length > 100) st.entries.shift(); // bounded
+      st.index = st.entries.length - 1;
+      navUpdateButtons();
+    }
+    function navGo(delta) {
+      var st = navStack();
+      var ni = st.index + delta;
+      if (ni < 0 || ni >= st.entries.length) return;
+      st.index = ni;
+      if ((location.hash || '#/') === st.entries[ni]) { navUpdateButtons(); return; }
+      navSuppress = true;
+      location.hash = st.entries[ni];
+      navUpdateButtons();
+    }
+    function navSetWorkspace(id, initOnly) {
+      navKey = String(id || '_');
+      if (!navStacks[navKey]) {
+        // A first visit seeds HOME on a switch (the old workspace's hash must not
+        // leak in), but seeds the current hash at boot (deep links keep working).
+        navStacks[navKey] = { entries: [initOnly ? (location.hash || '#/') : '#/'], index: 0 };
+      }
+      if (!initOnly) {
+        var st = navStack();
+        var target = st.entries[st.index] || '#/';
+        if ((location.hash || '#/') !== target) {
+          navSuppress = true;
+          location.hash = target;
+        }
+      }
+      navUpdateButtons();
+    }
+    window.addEventListener('hashchange', navRecord);
+
     function wireHistoryControls() {
-      // Back / Forward move through the page-navigation (hash) history, like a
-      // browser's nav arrows. They sit next to Undo/Redo (which are for DATA edits).
+      // Back / Forward move through the app-managed, per-workspace page history
+      // (see above). They sit next to Undo/Redo (which are for DATA edits).
       var back = document.getElementById('nav-back-btn');
-      if (back) back.addEventListener('click', function () { window.history.back(); });
+      if (back) back.addEventListener('click', function () { navGo(-1); });
       var fwd = document.getElementById('nav-fwd-btn');
-      if (fwd) fwd.addEventListener('click', function () { window.history.forward(); });
+      if (fwd) fwd.addEventListener('click', function () { navGo(1); });
+      navUpdateButtons();
       document.getElementById('undo-btn').addEventListener('click', function () {
         gaTrack('history_action', { action: 'undo' });
         fetchJson('/api/history/undo', { method: 'POST' })

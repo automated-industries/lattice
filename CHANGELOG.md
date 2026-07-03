@@ -320,6 +320,14 @@ database connector).
 
 ### Fixed
 
+- **Back/Forward history is per-workspace.** The header navigation buttons now
+  walk an app-managed history scoped to the active workspace — previously they
+  used the browser history, which spans workspace switches (a switch is a soft
+  reload), so Back could land on a record from the PREVIOUS workspace and render
+  "Unknown object". A switch now lands on the new workspace's own last location
+  (home on first visit), each workspace keeps its own stack for the session, and
+  the buttons disable when there is nowhere to go.
+
 - **The rendered Context/ tree reconciles itself — safely.** Table rollup files
   finally have a lifecycle record: the manifest now tracks every phase-1 rollup
   (`tableFiles`) and keeps a `retiredFiles` ledger of paths no longer produced
