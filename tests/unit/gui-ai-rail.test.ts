@@ -54,11 +54,15 @@ describe('floating Ask Lattice + Outputs markup + wiring', () => {
     expect(guiAppHtml).toContain('initActivityHeader();');
   });
 
-  it('moves Artifacts out of the left Inputs sidebar into the Outputs column', () => {
-    expect(guiAppHtml).toContain('id="out-artifacts-tree"');
-    expect(guiAppHtml).toContain('function renderOutputsArtifacts');
-    // The old left-sidebar artifacts tree is gone.
+  it('artifacts live in the Markdown column tree (no sidebar tree, no separate section)', () => {
+    // ONE Markdown view: artifacts are a category inside the markdown tree.
+    expect(guiAppHtml).toContain('id="out-markdown-tree"');
+    expect(guiAppHtml).toContain('mdt-artifact');
+    // The old left-sidebar artifacts tree AND the separate Outputs sections are gone.
     expect(guiAppHtml).not.toContain('id="src-artifacts-tree"');
+    expect(guiAppHtml).not.toContain('id="out-artifacts-tree"');
+    expect(guiAppHtml).not.toContain('renderOutputsArtifacts');
+    expect(guiAppHtml).not.toContain('id="out-tables-mount"');
   });
 
   it('wires chat threading (new chat + conversation switcher)', () => {
