@@ -31,6 +31,13 @@ export interface FileLoopbackWatcherDeps {
 export interface FileLoopbackWatcher {
   start(): void;
   stop(): void;
+  /**
+   * Run a reverse-sync pass NOW (bypassing the debounce), awaiting completion.
+   * Wired as the auto-render drain so pending manual edits are ingested through
+   * the full GUI mutation path (changelog + feed + undo) before a render
+   * rewrites the files.
+   */
+  flush(): Promise<void>;
 }
 
 export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLoopbackWatcher {
@@ -127,6 +134,13 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
   };
 
   return {
+    async flush(): Promise<void> {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      await run();
+    },
     start(): void {
       if (watcher) return;
       try {
