@@ -110,8 +110,14 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 Tables taxonomy — .mt-card-flag (the computed-table ƒ badge on a Tables-
 // explorer card) and .pvchip-derived (the provenance chip for the new 'derived'
 // tier). Length + hash recaptured.
-const ORIGINAL_LENGTH = 125447;
-const ORIGINAL_SHA256 = '895cbb37819432bfa9fcab49619922c842a74e016c6f4a4b445501fecb7d1f15';
+// Computed-table builder — a new computed-builder segment: the builder page
+// (.computed-builder cards, field rows, chips, preview table, SQL details,
+// refresh log, error strip), the "Computed" badge + read-only note + field
+// list on record/collection pages, the Tables explorer's computed-tier "+ New"
+// button + detail-panel actions, and the dashed base→view projection connector
+// (.mt-edge-computes). Length + hash recaptured.
+const ORIGINAL_LENGTH = 131853;
+const ORIGINAL_SHA256 = '28456b681f114e388386ce483797deaedbb3f7fc27b2704cbcc08bbeb4622a91';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

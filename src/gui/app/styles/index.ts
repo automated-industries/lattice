@@ -23,6 +23,7 @@ import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
 import { outputsCss } from './outputs.js';
 import { modelTablesCss } from './model-tables.js';
+import { computedBuilderCss } from './computed-builder.js';
 import { chatCss } from './chat.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
@@ -53,6 +54,7 @@ export const css = [
   assistantRailCss,
   outputsCss,
   modelTablesCss,
+  computedBuilderCss,
   chatCss,
   inlineImportCss,
   tabsCss,

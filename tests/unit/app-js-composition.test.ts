@@ -291,8 +291,23 @@ import { appJs } from '../../src/gui/app/script.js';
 // ops, and a schema.refresh_computed entry shows "not revertible" instead of a
 // Revert button — a refresh only fills AI cells, so (like a purge) it has no
 // inverse (markdown segment). Length + hash recaptured.
-const ORIGINAL_LENGTH = 593676;
-const ORIGINAL_SHA256 = '5b172e28abc8897037b744b4a159d69ae1a22354bd7f9e5df545fccb08da82b7';
+// Computed-table builder + read-only surfaces: a new computed-builder segment
+// renders the full-page builder at #/computed/new | #/computed/<name> (base
+// picker over /api/computed-tables/fields, per-kind field rows with labeled
+// kinds, dry-run preview with per-field ✓/✕ marks + the compiled SQL, save
+// through POST/PUT /api/computed-tables, NDJSON refresh via iiStreamNdjson,
+// delete); renderRoute dispatches the route and tabKeyForHash keeps the Tables
+// tab lit. The Tables explorer gains a computed-tier "+ New" header button, a
+// computed detail panel (sub-line, Edit definition →, streamed Refresh status,
+// lazy Definition (SQL) block), lineage over the new 'computes' graph edge
+// (base upstream → view downstream; chips not removable), and a dashed
+// projection connector. Record + collection pages for computedTable entities
+// go read-only: a "Computed" badge, a where-values-come-from note, no
+// Formatted|Markdown toggle or actions menu, and a read-only field list
+// (loadComputedContext); paintRowsTable takes an optional noteHtml. Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 630637;
+const ORIGINAL_SHA256 = 'b60fa938e5a9891e6b2e5a415c91394d8a16fe95191c74ee3f8746d7992689e1';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
