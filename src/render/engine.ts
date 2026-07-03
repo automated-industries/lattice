@@ -168,6 +168,19 @@ export class RenderEngine {
    */
   private readonly _batchBelongsTo: boolean;
 
+  /** Non-error render notices (e.g. an edited generated file being restored). */
+  private _onNotice: ((message: string) => void) | null = null;
+
+  /** Route render notices somewhere visible (the GUI wires its activity feed). */
+  setNoticeHandler(handler: ((message: string) => void) | null): void {
+    this._onNotice = handler;
+  }
+
+  private _notice(message: string): void {
+    if (this._onNotice) this._onNotice(message);
+    else console.warn(`[latticesql] ${message}`);
+  }
+
   constructor(
     schema: SchemaManager,
     adapter: StorageAdapter,
@@ -249,6 +262,8 @@ export class RenderEngine {
     // Prior rollup hashes, for the edited-rollup notice in the loop below (the
     // full prior manifest is re-read after phase 1 for the entity-context pass).
     const priorTableFiles0 = readManifest(outputDir)?.tableFiles;
+    // Phase-2 multi-output lifecycle: paths each multi produced THIS pass.
+    const multiFilesFresh: Record<string, Record<string, string>> = {};
     const signal = opts.signal;
     const throttle = new ProgressThrottle(opts.onProgress);
 
@@ -322,8 +337,8 @@ export class RenderEngine {
         try {
           const onDisk = contentHash(readFileSync(filePath, 'utf8'));
           if (onDisk !== priorRollup.hash && onDisk !== freshHash) {
-            console.warn(
-              `[latticesql] ${def.outputFile} was edited on disk, but table rollups are ` +
+            this._notice(
+              `${def.outputFile} was edited on disk, but table rollups are ` +
                 `generated files — the edit is NOT imported and the render overwrites it. ` +
                 `Edit the record's own context file (or the data) instead.`,
             );
@@ -376,9 +391,12 @@ export class RenderEngine {
       }
 
       let wroteAny = false;
+      const producedByThisMulti: Record<string, string> = {};
       for (const key of keys) {
         const content = def.render(key, tables);
-        const filePath = join(outputDir, def.outputFile(key));
+        const rel = def.outputFile(key);
+        const filePath = join(outputDir, rel);
+        producedByThisMulti[rel] = contentHash(content);
         if (atomicWrite(filePath, content)) {
           filesWritten.push(filePath);
           wroteAny = true;
@@ -386,6 +404,7 @@ export class RenderEngine {
           counters.skipped++;
         }
       }
+      multiFilesFresh[name] = producedByThisMulti;
       // Content-hash backstop: emit only when at least one file actually changed,
       // so a forced-but-no-op render of an unchanged multi paints no card.
       if (wroteAny) {
@@ -450,7 +469,21 @@ export class RenderEngine {
       const prior = priorTableFiles[name];
       if (prior && prior.path === currentOutputFiles.get(name)) tableFiles[name] = prior;
     }
+    // Multi-output files: fresh entries win; a multi this incremental pass
+    // skipped carries its prior map forward. A prior path a re-rendered multi no
+    // longer produced (its key vanished) — or a dropped multi's whole map —
+    // retires into the same ledger as rollups.
+    const priorMultiFiles = priorManifest?.multiFiles ?? {};
+    const multiFiles: Record<string, Record<string, string>> = {};
+    for (const [name] of this._schema.getMultis()) {
+      const fresh = multiFilesFresh[name];
+      const prior = priorMultiFiles[name];
+      multiFiles[name] = fresh ?? prior ?? {};
+    }
     const producedPaths = new Set(Object.values(tableFiles).map((t) => t.path));
+    for (const m of Object.values(multiFiles)) {
+      for (const rel of Object.keys(m)) producedPaths.add(rel);
+    }
     const retiredFiles: TableFileManifestInfo[] = [];
     const retiredSeen = new Set<string>();
     const retire = (e: TableFileManifestInfo): void => {
@@ -464,10 +497,18 @@ export class RenderEngine {
       if (tableFiles[table]?.path === e.path) continue;
       retire(e);
     }
+    for (const [name, priorMap] of Object.entries(priorMultiFiles)) {
+      const currentMap = multiFiles[name] ?? {};
+      for (const [rel, hash] of Object.entries(priorMap)) {
+        if (rel in currentMap) continue;
+        retire({ path: rel, hash });
+      }
+    }
 
     if (
       this._schema.getEntityContexts().size > 0 ||
       Object.keys(tableFiles).length > 0 ||
+      Object.keys(multiFiles).length > 0 ||
       retiredFiles.length > 0
     ) {
       // LOAD-BEARING INVARIANT — keep this commit block fully SYNCHRONOUS (no await /
@@ -498,6 +539,7 @@ export class RenderEngine {
         generated_at: new Date().toISOString(),
         entityContexts,
         tableFiles,
+        multiFiles,
         retiredFiles,
         templateVersion: TEMPLATE_VERSION,
         cursor,

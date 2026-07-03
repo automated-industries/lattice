@@ -2126,6 +2126,28 @@ export class Lattice {
     return this._queryCoreInstance;
   }
 
+  /** Optional host-supplied replacement for the pre-render reverse-sync drain. */
+  private _autoRenderDrainOverride: ((outputDir: string) => Promise<void>) | null = null;
+
+  /**
+   * Route non-error render notices (e.g. an edited generated rollup being
+   * restored) somewhere visible. Default: console.warn. The GUI wires its
+   * activity feed here.
+   */
+  setRenderNoticeHandler(handler: ((message: string) => void) | null): void {
+    this._render.setNoticeHandler(handler);
+  }
+
+  /**
+   * Replace the pre-render manual-edit drain (see the auto-render scheduler's
+   * drain dep). The GUI wires its file-loopback watcher here so drained edits go
+   * through the full mutation path (changelog + activity feed + undo) instead of
+   * the core changelog-only apply.
+   */
+  setAutoRenderDrain(drain: ((outputDir: string) => Promise<void>) | null): void {
+    this._autoRenderDrainOverride = drain;
+  }
+
   /** Lazily-constructed auto-render scheduler (see src/render/auto-render.ts). */
   private get _autoRender(): AutoRenderScheduler {
     this._autoRenderScheduler ??= new AutoRenderScheduler({
@@ -2140,8 +2162,14 @@ export class Lattice {
       },
       isInitialized: () => this._initialized,
       // Drain manual file edits into the DB (changelog-versioned, marked
-      // file-edit) before every auto/background render — see the dep's doc.
+      // file-edit) before every auto/background render — see the dep's doc. A
+      // host can override with a richer pass (the GUI wires its file-loopback
+      // watcher here so drained edits also carry the feed + undo trail).
       drain: async (dir) => {
+        if (this._autoRenderDrainOverride) {
+          await this._autoRenderDrainOverride(dir);
+          return;
+        }
         await this.reverseSyncFromFiles(dir, {
           useDefault: true,
           apply: async (u) => {
