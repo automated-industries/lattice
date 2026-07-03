@@ -1,20 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import { guiAppHtml } from '../../src/gui/app.js';
 
-describe('floating Ask Lattice + Outputs markup + wiring', () => {
-  it('includes the floating assistant + Outputs DOM hooks (rail retired)', () => {
-    // The chat moved from a docked rail to a floating "Ask Lattice" panel; the
-    // right column is now the Outputs panel. The chat element IDs are reused inside
-    // the floating panel so the chat client code is unchanged.
-    expect(guiAppHtml).toContain('id="ask-lattice-panel"');
+describe('assistant dock + Outputs markup + wiring', () => {
+  it('houses the assistant in the Analytics dock (floating panel retired)', () => {
+    // The chat lives in the Analytics view's docked right column. The chat
+    // element IDs are reused inside the dock so the chat client code is
+    // unchanged; the old floating upper-right panel is gone.
+    expect(guiAppHtml).toContain('id="ask-dock"');
+    expect(guiAppHtml).toContain('id="analytics-layout"');
+    expect(guiAppHtml).toContain('id="dash-list"');
+    expect(guiAppHtml).toContain('id="antabstrip-tabs"');
     expect(guiAppHtml).toContain('id="ask-lattice-trigger"');
+    expect(guiAppHtml).toContain('id="configure-trigger"');
     expect(guiAppHtml).toContain('id="rail-feed"');
     expect(guiAppHtml).toContain('id="outputs-rail"');
     expect(guiAppHtml).toContain('id="outputs-resize"');
     expect(guiAppHtml).toContain('class="outputs"');
-    // The docked rail is gone.
+    // The docked rail AND the floating panel are gone.
     expect(guiAppHtml).not.toContain('id="assistant-rail"');
     expect(guiAppHtml).not.toContain('class="assistant-rail"');
+    expect(guiAppHtml).not.toContain('id="ask-lattice-panel"');
   });
 
   it('drives the layout grid off the --outputs-width variable', () => {
@@ -147,11 +152,14 @@ describe('floating Ask Lattice + Outputs markup + wiring', () => {
     expect(guiAppHtml).toContain('Workspace name must be 200 characters or fewer');
   });
 
-  it('opens/closes the floating Ask Lattice panel from the header trigger', () => {
-    expect(guiAppHtml).toContain('function openAskLattice');
-    expect(guiAppHtml).toContain('function closeAskLattice');
-    expect(guiAppHtml).toContain('function toggleAskLattice');
-    // The retired mobile bottom-drawer is gone (the floating panel replaces it).
+  it('switches views from the header triggers (no floating panel logic)', () => {
+    expect(guiAppHtml).toContain('function initAnalyticsView');
+    expect(guiAppHtml).toContain('function applyAppView');
+    expect(guiAppHtml).toContain('function renderAnalyticsRoute');
+    // The floating panel machinery is gone.
+    expect(guiAppHtml).not.toContain('function openAskLattice');
+    expect(guiAppHtml).not.toContain('function toggleAskLattice');
+    // The retired mobile bottom-drawer is gone too.
     expect(guiAppHtml).not.toContain('id="rail-handle"');
     expect(guiAppHtml).not.toContain('function initRailDrawer');
   });

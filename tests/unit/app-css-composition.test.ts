@@ -110,8 +110,12 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 Tables taxonomy — .mt-card-flag (the computed-table ƒ badge on a Tables-
 // explorer card) and .pvchip-derived (the provenance chip for the new 'derived'
 // tier). Length + hash recaptured.
-const ORIGINAL_LENGTH = 125447;
-const ORIGINAL_SHA256 = '895cbb37819432bfa9fcab49619922c842a74e016c6f4a4b445501fecb7d1f15';
+// 5.0 Analytics view — analytics layout grid + Dashboards sidebar + dashboard
+// page/canvas + dock status line; the floating assistant panel's styles became
+// the .ask-dock column (feed/composer/staging rules unchanged). Length + hash
+// recaptured.
+const ORIGINAL_LENGTH = 128610;
+const ORIGINAL_SHA256 = 'c95cebf497ee079fbe4995613e58de5c2f7e4cac797478d2ccaada2706c6086e';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

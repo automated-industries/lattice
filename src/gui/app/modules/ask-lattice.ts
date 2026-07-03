@@ -1,67 +1,21 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// floating "Ask Lattice" assistant: a header trigger drops down a chat panel in the
-// upper-right. The chat composer/feed/threads inside the panel reuse the same
-// element IDs the old docked rail used, so renderComposer/sendChat/initThreadControls
-// (defined elsewhere) work unchanged — this segment only opens/closes the panel and
-// re-houses the file drag-drop onto it. Must stay INSIDE the client IIFE (uses
-// stageFiles); inserted before createDatabaseWizardJs.
+// assistant lives in the ANALYTICS view's docked panel (see analytics-view.ts);
+// the old floating upper-right panel is gone. This segment keeps two things:
+// the boot hook that wires the header view-toggle buttons (initAskLattice, kept
+// under its historical name so boot.ts is untouched) and the whole-window file
+// drag-drop, which now switches to Analytics before staging the drop — the chat
+// composer is there. Must stay INSIDE the client IIFE (uses stageFiles +
+// analytics-view.ts helpers); inserted before createDatabaseWizardJs.
 export const askLatticeJs = `
-    function askLatticePanel() { return document.getElementById('ask-lattice-panel'); }
-    function askLatticeOpen() { var p = askLatticePanel(); return !!p && p.classList.contains('open'); }
-    function openAskLattice() {
-      var panel = askLatticePanel(); if (!panel) return;
-      panel.classList.add('open'); // CSS animates it in from the top-right
-      var trig = document.getElementById('ask-lattice-trigger');
-      if (trig) trig.setAttribute('aria-expanded', 'true');
-      var input = document.getElementById('chat-input');
-      if (input) setTimeout(function () { input.focus(); }, 0);
-    }
-    function closeAskLattice() {
-      var panel = askLatticePanel(); if (panel) panel.classList.remove('open'); // animates out
-      var trig = document.getElementById('ask-lattice-trigger');
-      if (trig) trig.setAttribute('aria-expanded', 'false');
-    }
-    function toggleAskLattice() {
-      if (askLatticeOpen()) closeAskLattice(); else openAskLattice();
-    }
-
     function initAskLattice() {
-      var trig = document.getElementById('ask-lattice-trigger');
-      if (trig && !trig.__wired) {
-        trig.__wired = true;
-        trig.addEventListener('click', function (e) { e.stopPropagation(); toggleAskLattice(); });
-      }
-      var close = document.getElementById('ask-lattice-close');
-      if (close && !close.__wired) {
-        close.__wired = true;
-        close.addEventListener('click', closeAskLattice);
-      }
-      // Esc closes the panel when it's open.
-      if (!window.__askLatticeEsc) {
-        window.__askLatticeEsc = true;
-        document.addEventListener('keydown', function (e) {
-          if (e.key === 'Escape' && askLatticeOpen()) closeAskLattice();
-        });
-      }
-      // Clicking anywhere outside the panel (and not on the trigger) collapses it.
-      if (!window.__askLatticeOutside) {
-        window.__askLatticeOutside = true;
-        document.addEventListener('pointerdown', function (e) {
-          if (!askLatticeOpen()) return;
-          var panel = askLatticePanel();
-          var trigEl = document.getElementById('ask-lattice-trigger');
-          if (panel && panel.contains(e.target)) return;
-          if (trigEl && trigEl.contains(e.target)) return;
-          closeAskLattice();
-        });
-      }
+      initAnalyticsView();
       initFileDropZone();
     }
 
     // File drag-drop over the WHOLE WINDOW — a full-window overlay ("Drop a file to
     // ingest it") appears wherever you drag a file, and the drop stages it into
-    // Gladys for review + ingest (opening her panel if it's closed). Not scoped to
-    // the Gladys panel anymore.
+    // Gladys for review + ingest, switching to the Analytics view (where the chat
+    // dock lives) if the user was in Configure.
     function initFileDropZone() {
       if (window.__fileDropWired) return;
       window.__fileDropWired = true;
@@ -93,7 +47,10 @@ export const askLatticeJs = `
         e.preventDefault();
         hide();
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-          if (typeof openAskLattice === 'function' && !askLatticeOpen()) openAskLattice();
+          // The #rail-* nodes are static shell DOM, so staging works regardless
+          // of which view is showing — the switch is so the user SEES the staged
+          // file in the dock.
+          if (!isAnalyticsHash(location.hash)) location.hash = lastAnalyticsHash;
           stageFiles(e.dataTransfer.files);
         }
       });
