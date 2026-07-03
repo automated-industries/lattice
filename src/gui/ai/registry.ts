@@ -288,6 +288,35 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'ask_user',
+    description:
+      'Show the user ONE short multiple-choice question and end your turn; their answer arrives ' +
+      "as the next message. Use this when you are genuinely uncertain about the user's intent or " +
+      'about what a data object means or is for — roughly: when you are less than 60% confident. ' +
+      'At or above that confidence, proceed without asking. The question must be information-' +
+      'seeking about what the data MEANS or IS FOR (e.g. "Is this meant to track suppliers?"), ' +
+      'never about storage mechanics. A free-form "Other" answer is always offered alongside your ' +
+      "options. If the user's answer teaches you what data means or is for, persist it with " +
+      'set_definition so the knowledge is not lost when the conversation ends.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        question: str('The single short, information-seeking question to show the user.'),
+        options: {
+          type: 'array',
+          description: 'Two to four short answer choices (a free-form "Other" is added for you).',
+          items: { type: 'string', description: 'One short answer choice.' },
+        },
+        allow_other: {
+          type: 'boolean',
+          description: 'Offer a free-form "Other" answer. Default true.',
+        },
+      },
+      ['question', 'options'],
+    ),
+  },
+  {
     name: 'set_definition',
     description:
       'Set the one-line definition of a TABLE or a COLUMN — what it holds / means. ' +

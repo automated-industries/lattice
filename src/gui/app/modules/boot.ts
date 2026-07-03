@@ -164,6 +164,9 @@ export const bootJs = `    // ────────────────�
         renderOutputs();
         renderComposer();
         initThreadControls();
+        // Pending clarification questions: render any waiting cards + the
+        // trigger dot. Best-effort by construction (its fetch self-catches).
+        initQuestions();
         // Warm up on-device voice in the background shortly after boot so dictation
         // is ready on first use — no visible model-loading step, ever.
         if (typeof voicePreload === 'function') setTimeout(voicePreload, 1500);

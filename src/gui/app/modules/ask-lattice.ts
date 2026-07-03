@@ -15,11 +15,16 @@ export const askLatticeJs = `
       if (trig) trig.setAttribute('aria-expanded', 'true');
       var input = document.getElementById('chat-input');
       if (input) setTimeout(function () { input.focus(); }, 0);
+      // The dot means "questions are waiting and the panel is closed" — an open
+      // panel shows the cards themselves, so opening clears it.
+      if (typeof updateQuestionDot === 'function') updateQuestionDot();
     }
     function closeAskLattice() {
       var panel = askLatticePanel(); if (panel) panel.classList.remove('open'); // animates out
       var trig = document.getElementById('ask-lattice-trigger');
       if (trig) trig.setAttribute('aria-expanded', 'false');
+      // Closing with questions still pending re-arms the trigger dot.
+      if (typeof updateQuestionDot === 'function') updateQuestionDot();
     }
     function toggleAskLattice() {
       if (askLatticeOpen()) closeAskLattice(); else openAskLattice();
