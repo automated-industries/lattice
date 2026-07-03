@@ -66,17 +66,22 @@ jobs:
             echo "$NOTARY_KEY_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
             export NOTARY_KEY="$RUNNER_TEMP/AuthKey.p8"
           fi
-          npm run desktop:build:mac        # → dist-desktop/Lattice.dmg
-          npm run desktop:build:mac:pkg    # → dist-desktop/Lattice.pkg (signs the .app + .pkg)
-          # Sign + notarize the .dmg itself (its inner .app is signed by the pkg step's
-          # inside-out pass). Only when a signing identity is present.
+          npm run desktop:build:mac:pkg    # → dist-desktop/Lattice.app + .pkg (signs + notarizes both)
           if [ -n "$SIGN_APP_IDENTITY" ]; then
+            # Build the .dmg FROM the signed+notarized+stapled .app. The desktop
+            # runtime's own dmg embeds its AD-HOC-signed app, and signing a dmg
+            # file does NOT sign its contents — the notary rejects the inner app.
+            hdiutil create -volname Lattice -srcfolder dist-desktop/Lattice.app \
+              -ov -format UDZO dist-desktop/Lattice.dmg
             codesign --force --sign "$SIGN_APP_IDENTITY" --options runtime --timestamp dist-desktop/Lattice.dmg
             if [ -n "$NOTARY_KEY" ]; then
               xcrun notarytool submit dist-desktop/Lattice.dmg --key "$NOTARY_KEY" \
                 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
               xcrun stapler staple dist-desktop/Lattice.dmg
             fi
+          else
+            # Unsigned fallback: the runtime's own dmg build.
+            npm run desktop:build:mac      # → dist-desktop/Lattice.dmg
           fi
       - uses: actions/upload-artifact@v4
         with:
