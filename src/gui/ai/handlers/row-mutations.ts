@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../../../lattice.js';
 import type { Row } from '../../../types.js';
 import { createRow, updateRow, deleteRow, linkRows, unlinkRows } from '../../mutations.js';
-import { artifactFileRow, htmlArtifactFileRow } from '../../file-row.js';
+import { artifactFileRow } from '../../file-row.js';
+import { dashboardRow, extractSourceTables } from '../../dashboard-row.js';
 import { FetchBudget } from '../../../ai/fetch-policy.js';
 import {
   findTableDuplicates,
@@ -151,65 +152,75 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
       const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
       return { ok: true, result: { id, table: 'files', open: true } };
     }
-    case 'create_html_file': {
-      // Author a standalone HTML file (a `files` row flagged artifact_type='html',
-      // HTML inline in extracted_text — see htmlArtifactFileRow) via the delegated
-      // authoring sub-call. Same createRow path as create_artifact, so private mode
-      // forces it private atomically. open:true tells the chat route to open it in
-      // the main view, where it renders in a sandboxed inline frame.
+    case 'create_dashboard': {
+      // Author a live dashboard (a `dashboards` row; the standalone HTML page
+      // lives in the reserved `html` column — see dashboardRow) via the
+      // delegated authoring sub-call. Same createRow path as create_artifact,
+      // so private mode forces it private atomically. open:true tells the chat
+      // route to open it, where it renders in a sandboxed inline frame.
       if (!ctx.htmlAuthor) {
-        return { ok: false, error: 'HTML authoring is unavailable (no model client configured).' };
+        return {
+          ok: false,
+          error: 'Dashboard authoring is unavailable (no model client configured).',
+        };
       }
-      const table = requireTable('files', ctx.validTables);
+      const table = requireTable('dashboards', ctx.validTables);
       const title = requireString(args.title, 'title');
       const spec = requireString(args.spec, 'spec');
       const html = await ctx.htmlAuthor(spec);
-      const { row } = await htmlArtifactFileRow(ctx.db, title, html);
-      // allowReservedFileCols: this is the trusted authoring path, so it may set the
-      // executable artifact_type='html' marker that createRow refuses from every
-      // other caller (guardReservedFileColumns).
+      const { row } = dashboardRow(title, html, spec);
+      // allowReservedFileCols: this is the trusted authoring path, so it may write
+      // the executable `html` page that createRow refuses from every other caller
+      // (guardReservedColumns).
       const { id } = await createRow(
         { ...mctx, allowReservedFileCols: true },
         table,
         row,
         ctx.privateMode ? 'private' : undefined,
       );
-      return { ok: true, result: { id, table: 'files', open: true } };
+      return { ok: true, result: { id, table: 'dashboards', open: true } };
     }
-    case 'edit_html_file': {
-      // Re-author an existing HTML file in place. Targets the file the user is
-      // viewing (ctx.activeHtmlFileId) unless an explicit id is given. The new HTML
-      // replaces extracted_text via updateRow on the SAME row, so the open view
-      // refreshes to the edited file with no new file created. Fails loud when
-      // there's no resolvable target or the row isn't an html artifact.
+    case 'edit_dashboard': {
+      // Re-author an existing dashboard in place. Targets the dashboard the user
+      // is viewing (ctx.activeDashboardId) unless an explicit id is given. The new
+      // page replaces `html` via updateRow on the SAME row, so the open view
+      // refreshes with no new dashboard created. Fails loud when there's no
+      // resolvable target or the row isn't a dashboard.
       if (!ctx.htmlAuthor) {
-        return { ok: false, error: 'HTML editing is unavailable (no model client configured).' };
+        return {
+          ok: false,
+          error: 'Dashboard editing is unavailable (no model client configured).',
+        };
       }
-      const table = requireTable('files', ctx.validTables);
+      const table = requireTable('dashboards', ctx.validTables);
       const targetId =
-        typeof args.id === 'string' && args.id.trim() ? args.id.trim() : ctx.activeHtmlFileId;
+        typeof args.id === 'string' && args.id.trim() ? args.id.trim() : ctx.activeDashboardId;
       if (!targetId) {
         return {
           ok: false,
-          error: 'No HTML file is open to edit. Open the HTML file first, or pass its id as `id`.',
+          error: 'No dashboard is open to edit. Open the dashboard first, or pass its id as `id`.',
         };
       }
       const instruction = requireString(args.instruction, 'instruction');
-      const existing = (await ctx.db.get('files', targetId)) as {
-        extracted_text?: string;
-        artifact_type?: string;
+      const existing = (await ctx.db.get('dashboards', targetId)) as {
+        html?: string;
+        spec?: string;
       } | null;
-      if (existing?.artifact_type !== 'html') {
-        return { ok: false, error: `Row "${targetId}" is not an HTML file.` };
+      if (existing === null) {
+        return { ok: false, error: `No dashboard with id "${targetId}".` };
       }
-      const html = await ctx.htmlAuthor(instruction, existing.extracted_text ?? '');
+      const html = await ctx.htmlAuthor(instruction, existing.html ?? '');
       // allowReservedFileCols: the trusted authoring path may rewrite an executable
-      // artifact's body, which updateRow refuses from every other caller.
+      // page body, which updateRow refuses from every other caller. The spec keeps
+      // an append-only trail of what was asked; source_tables is re-derived from
+      // the new page.
+      const sources = extractSourceTables(html);
       await updateRow({ ...mctx, allowReservedFileCols: true }, table, targetId, {
-        extracted_text: html,
-        size_bytes: Buffer.byteLength(html, 'utf8'),
+        html,
+        spec: existing.spec ? `${existing.spec}\n\n${instruction}` : instruction,
+        source_tables: sources ? JSON.stringify(sources) : null,
       });
-      return { ok: true, result: { id: targetId, table: 'files', open: true } };
+      return { ok: true, result: { id: targetId, table: 'dashboards', open: true } };
     }
     case 'ingest_url': {
       // Fetch a USER-PROVIDED web URL, save its readable text as a `files` row

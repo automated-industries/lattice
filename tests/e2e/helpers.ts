@@ -89,3 +89,20 @@ export async function createRow(
   if (!res.ok) throw new Error(`createRow ${table} failed: ${res.status} ${await res.text()}`);
   return (await res.json()) as Record<string, unknown>;
 }
+
+/** Navigate to a CONFIGURE route and wait for the Configure layout to show.
+ * The app boots into the Analytics view, so specs that exercise Configure
+ * surfaces (sources, tabs, folders, outputs) enter through a concrete
+ * Configure hash instead of the boot landing. */
+export async function gotoConfigure(
+  page: import('@playwright/test').Page,
+  url: string,
+  hash = '#/folders',
+): Promise<void> {
+  await page.goto(url + hash);
+  // A same-page hash change doesn't reload; force the route either way.
+  await page.evaluate((h) => {
+    if (location.hash !== h) location.hash = h;
+  }, hash);
+  await page.waitForSelector('.layout', { state: 'visible' });
+}
