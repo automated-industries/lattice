@@ -149,13 +149,16 @@ test('drilling a row shows the record view, relationship sub-folders, and a brea
   await expect(bookLink).toBeVisible();
   await bookLink.click();
 
-  // Book item view: a Reviews (1:N) folder AND a Tags (M:N) folder.
+  // Book item view: "Connected objects" lists only relations with rows — the
+  // Reviews (1:N) folder shows (a review exists); the empty Tags (M:N) relation
+  // is hidden entirely (count-0 tiles are removed, not shown as "0 items").
   await expect(page.locator('.fs-folder', { hasText: 'Reviews' })).toBeVisible();
-  await expect(page.locator('.fs-folder', { hasText: 'Tags' })).toBeVisible();
+  await expect(page.locator('.fs-folder', { hasText: 'Tags' })).toHaveCount(0);
 
-  // Breadcrumb reflects the full clickable drill path, rooted at Tables.
+  // Breadcrumb reflects the full clickable drill path, rooted at the section the
+  // record was opened in (#/fs/* = the Objects section).
   const crumbs = page.locator('.fs-crumbs');
-  await expect(crumbs).toContainText('Tables');
+  await expect(crumbs).toContainText('Objects');
   await expect(crumbs).toContainText('Authors');
   await expect(crumbs).toContainText('Jane Author');
   await expect(crumbs).toContainText('Books');

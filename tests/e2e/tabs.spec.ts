@@ -2,12 +2,12 @@ import { test, expect } from '@playwright/test';
 import { bootGui, createRow, type BootedGui } from './helpers.js';
 
 /**
- * 5.0 — the center "Model" header has exactly two permanent (non-closable) tabs:
- * Graph and Tables. They switch the Model view between the force-directed brain
- * graph (#/graph) and the tiered Tables explorer (#/tables). Records and object
- * pages are NOT tabs — they render in the content area below (reached by drilling
- * a node), keep the Tables tab highlighted, and an object page's breadcrumb
- * returns to the Tables explorer. The non-empty filter shows objects with rows.
+ * 5.0 — the center "Model" header has exactly three permanent (non-closable)
+ * tabs: Objects (#/ — the default), Graph (#/graph), and Tables (#/tables).
+ * Records and object pages are NOT tabs — they render in the content area below,
+ * and the SECTION you drilled in from stays highlighted (the section is encoded
+ * in the hash prefix: #/fs/* = Objects, #/graph/* = Graph, #/tables/* = Tables).
+ * The non-empty filter shows objects with rows.
  */
 
 let gui: BootedGui;
@@ -22,19 +22,25 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('Graph + Tables are the only tabs; both permanent; Graph is the default', async ({ page }) => {
+test('Objects + Graph + Tables are the only tabs; all permanent; Objects is the default', async ({
+  page,
+}) => {
   await page.goto(gui.url + '#/');
+  const objectsTab = page.locator('.tab[data-key="folders"]');
   const graphTab = page.locator('.tab[data-key="graph"]');
   const tablesTab = page.locator('.tab[data-key="tables"]');
-  await expect(graphTab).toBeVisible({ timeout: 5000 });
+  await expect(objectsTab).toBeVisible({ timeout: 5000 });
+  await expect(graphTab).toBeVisible();
   await expect(tablesTab).toBeVisible();
-  await expect(graphTab).toHaveClass(/active/);
-  // Exactly two tabs, neither closable.
-  await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(2);
+  await expect(objectsTab).toHaveText(/objects/i); // "Folders" was renamed
+  await expect(objectsTab).toHaveClass(/active/); // the landing view
+  // Exactly three tabs, none closable.
+  await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(3);
   await expect(page.locator('.tab .tab-close')).toHaveCount(0);
   // The Model header carries the "Model" column label.
   await expect(page.locator('#tabstrip .col-header-text')).toHaveText(/model/i);
-  // The graph itself renders into the center.
+  // Graph renders into the center when its tab is clicked.
+  await graphTab.click();
   await expect(page.locator('.brain-graph #graph-mount')).toBeVisible();
 });
 
@@ -58,32 +64,39 @@ test('the non-empty filter shows objects with rows', async ({ page }) => {
   await expect(page.locator('g.gnode[data-id="items"]')).toHaveCount(1, { timeout: 10000 });
 });
 
-test('object + record pages are not tabs but keep the Tables tab highlighted', async ({ page }) => {
+test('object + record pages are not tabs; the drill-in SECTION stays highlighted', async ({
+  page,
+}) => {
   await page.goto(gui.url + '#/graph');
-  // Clicking an object node navigates into the object's page — no extra tab, and
-  // the object page belongs to the Tables view (Tables tab stays lit).
+  // Clicking an object node drills into that entity's GRAPH (#/graph/<obj>) —
+  // no extra tab, and the GRAPH section stays lit (sticky sections).
   await page.locator('g.gnode[data-id="items"]').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/items/);
-  await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(2);
-  await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
-  // Opening the record (row detail) renders in the content; still only the two
-  // model tabs, and the Tables tab stays highlighted.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/graph/items');
+  await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(3);
+  await expect(page.locator('.tab[data-key="graph"]')).toHaveClass(/active/);
+  // A record opened under the Objects namespace (#/fs/*) lights Objects…
   await page.evaluate((id) => {
     window.location.hash = '#/fs/items/' + id;
   }, itemId);
   await expect.poll(() => page.evaluate(() => location.hash)).toContain(itemId);
-  await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(2);
+  await expect(page.locator('#tabstrip-tabs .tab')).toHaveCount(3);
+  await expect(page.locator('.tab[data-key="folders"]')).toHaveClass(/active/);
+  // …and the SAME record under the Tables namespace (#/tables/*) lights Tables.
+  await page.evaluate((id) => {
+    window.location.hash = '#/tables/items/' + id;
+  }, itemId);
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain(itemId);
   await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
 });
 
-// Regression: the object page's back breadcrumb returns to the Tables explorer
-// (the object page is the single table view reached from Tables).
-test('back from an object page returns to the Tables explorer', async ({ page }) => {
-  await page.goto(gui.url + '#/graph');
-  // Into the object page — the table's rows.
-  await page.locator('g.gnode[data-id="items"]').click();
+// Regression: a Tables-section object page (the "Open object" target) is rooted
+// at Tables — its breadcrumb returns to the Tables explorer.
+test('back from a Tables object page returns to the Tables explorer', async ({ page }) => {
+  await page.goto(gui.url + '#/tables/items');
+  // The object page — the table's rows, Tables tab lit.
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
-  // Click the "Tables" crumb (the breadcrumb is rooted at Tables).
+  await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
+  // Click the "Tables" crumb (the breadcrumb is rooted at the Tables section).
   await page.locator('.fs-crumbs a', { hasText: 'Tables' }).first().click();
   // It must land on the Tables explorer.
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
