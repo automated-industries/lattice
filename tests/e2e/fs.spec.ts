@@ -229,3 +229,38 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
   await page.keyboard.press('Escape');
   await expect(drawer).not.toHaveClass(/open/);
 });
+
+test('Version history + Settings are full-panel takeovers with highlighted, toggling triggers', async ({
+  page,
+}) => {
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.sidebar')).toBeVisible();
+
+  // Clock opens the takeover on the Version history tab, highlighted.
+  await page.locator('#history-link').click();
+  const drawer = page.locator('#settings-drawer');
+  await expect(drawer).toBeVisible();
+  await expect(page.locator('.drawer-tab[data-tab="history"]')).toHaveClass(/active/);
+  await expect(page.locator('#history-link')).toHaveClass(/on/);
+  // The panel spans the workspace below the header (full-bleed left+right).
+  const box = await drawer.boundingBox();
+  const vw = await page.evaluate(() => window.innerWidth);
+  expect(box?.width).toBeGreaterThan(vw - 4);
+  // Clicking the clock again collapses.
+  await page.locator('#history-link').click();
+  await expect(drawer).toBeHidden();
+  await expect(page.locator('#history-link')).not.toHaveClass(/on/);
+
+  // The gear uses the exact same takeover: open + highlight, toggle to close.
+  await page.locator('#settings-gear').click();
+  await expect(drawer).toBeVisible();
+  await expect(page.locator('#settings-gear')).toHaveClass(/on/);
+  await expect(page.locator('.drawer-tab[data-tab="history"]')).not.toHaveClass(/active/);
+  // Switching to the clock swaps the content in place (still one panel).
+  await page.locator('#history-link').click();
+  await expect(page.locator('.drawer-tab[data-tab="history"]')).toHaveClass(/active/);
+  await expect(page.locator('#history-link')).toHaveClass(/on/);
+  await expect(page.locator('#settings-gear')).not.toHaveClass(/on/);
+  await page.locator('#history-link').click();
+  await expect(drawer).toBeHidden();
+});

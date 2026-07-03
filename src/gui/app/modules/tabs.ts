@@ -52,7 +52,7 @@ export const tabsJs = `
     // overlays (except history) float over the current view and must NOT change
     // the active tab; every other non-model route deselects both tabs.
     function reconcileTab(hash) {
-      if (hash.indexOf('#/settings/') === 0 && hash !== '#/settings/history') return;
+      if (hash.indexOf('#/settings/') === 0) return; // settings + history are takeovers, not pages
       activeTabKey = tabKeyForHash(hash) || '';
     }
 

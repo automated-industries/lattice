@@ -1,22 +1,30 @@
 // Auto-composed section of the GUI stylesheet. Verbatim substring of the original
 // css template literal — do not hand-edit; see styles/index.ts for composition.
-export const settingsDrawerCss = `    /* ── Settings drawer (slide-over) ───────────────────── */
+export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEOVER panel ─────────────
+       One full-workspace panel below the header (Settings and Version history
+       share it): only the topbar stays visible; the trigger button highlights
+       while open and clicking it again collapses. */
     .drawer-backdrop {
-      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
-      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.15);
       z-index: 120; opacity: 0; transition: opacity 0.2s ease;
     }
     .drawer-backdrop.open { opacity: 1; }
     .settings-drawer {
-      position: fixed; top: 0; right: 0; height: 100vh;
-      width: min(620px, 94vw); background: rgba(255, 255, 255, 0.82);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-left: 1px solid rgba(15, 23, 42, 0.04);
-      box-shadow: -12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
+      position: fixed; left: 0; right: 0; bottom: 0; top: 49px; /* refined by JS to the real header height */
+      background: var(--surface, #fff);
+      border-top: 1px solid rgba(15, 23, 42, 0.06);
       z-index: 130; display: flex; flex-direction: column;
-      transform: translateX(100%); transition: transform 0.22s ease;
+      opacity: 0; transform: translateY(-6px);
+      transition: transform 0.18s ease, opacity 0.18s ease;
     }
-    .settings-drawer.open { transform: translateX(0); }
+    .settings-drawer.open { transform: translateY(0); opacity: 1; }
+    /* display:flex above would override the hidden attribute's display:none —
+       and an invisible full-workspace panel would swallow every click. */
+    .settings-drawer[hidden] { display: none; }
+    .settings-drawer:not(.open) { pointer-events: none; }
+    .settings-drawer .drawer-body { max-width: 980px; width: 100%; margin: 0 auto; }
+    /* Highlight the header trigger whose takeover is open. */
+    .history-btn.on, #settings-gear.on { background: var(--accent-soft, rgba(79,70,229,0.12)); color: var(--accent, #4f46e5); }
     .drawer-head {
       flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
       padding: 14px 18px; border-bottom: 1px solid var(--border);
