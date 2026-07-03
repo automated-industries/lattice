@@ -922,3 +922,61 @@ describe('Data Model — junction relationships', () => {
     ).toBe(0);
   });
 });
+
+describe('exclusivity: nesting (belongsTo) and relationships (m2m) never coexist', () => {
+  it('a junction between a nested pair is refused, both directions (400, distinct wording)', async () => {
+    const s = await bootWithTasks(); // tasks belongsTo people AND articles
+    for (const body of [
+      { left: 'tasks', right: 'people' },
+      { left: 'people', right: 'tasks' },
+    ]) {
+      const r = await fetch(`${s.url}/api/schema/junctions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(r.status).toBe(400);
+      const err = ((await r.json()) as { error: string }).error;
+      // The wording must NOT match the clients' duplicate-swallow patterns
+      // (/already link/i) — this failure has to SURFACE, not vanish.
+      expect(err).toMatch(/nested inside/);
+      expect(err.toLowerCase()).not.toContain('already link');
+    }
+  });
+
+  it('mutual nesting is refused: the target already nests inside the entity (400)', async () => {
+    const s = await bootWithTasks(); // tasks belongsTo people
+    // people → tasks would make each contain the other.
+    const r = await fetch(`${s.url}/api/schema/entities/people/links`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'tasks' }),
+    });
+    expect(r.status).toBe(400);
+    const err = ((await r.json()) as { error: string }).error;
+    expect(err).toMatch(/cannot be nested into each other/);
+  });
+
+  it('nesting a pair already connected by a relationship is refused (400)', async () => {
+    const s = await boot(); // articles + tags, unrelated
+    const mk = await fetch(`${s.url}/api/schema/junctions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ left: 'articles', right: 'tags' }),
+    });
+    expect(mk.status).toBe(200);
+    for (const [ent, target] of [
+      ['articles', 'tags'],
+      ['tags', 'articles'],
+    ] as const) {
+      const r = await fetch(`${s.url}/api/schema/entities/${ent}/links`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+      expect(r.status).toBe(400);
+      const err = ((await r.json()) as { error: string }).error;
+      expect(err).toMatch(/connected by a relationship/);
+    }
+  });
+});

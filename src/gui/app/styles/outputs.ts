@@ -44,8 +44,6 @@ export const outputsCss = `    /* ── Outputs column ────────
     .out-tier-row .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* Outputs detail slide-over — the rendered .md when a Markdown entry is opened. */
-    /* A context Markdown file opens in the CENTER pane (#/md/<path>), not a drawer. */
-    .md-doc { max-width: 900px; }
 
     /* ── Markdown context tree (lazy, nested) ──────────────────────────────── */
     /* One consistent row style at every depth; the per-level indent is applied

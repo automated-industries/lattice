@@ -182,6 +182,28 @@ export async function materializeJunction(
   summary: string,
   sessionId: string,
 ): Promise<void> {
+  // EXCLUSIVITY: between any two tables, a many-to-many junction and a
+  // belongsTo nesting cannot coexist — they are two different, conflicting
+  // claims about the relationship. Guarded HERE (the single shared write path)
+  // so the HTTP route, the assistant's create_relationship, and ingest
+  // auto-linking all agree. Wording deliberately does NOT match the clients'
+  // duplicate-swallow patterns, so this failure SURFACES.
+  if (refA !== refB) {
+    const cfgDoc = loadConfigDoc(active.configPath).toJSON() as {
+      entities?: Record<string, { relations?: Record<string, { type?: string; table?: string }> }>;
+    };
+    const nests = (child: string, parent: string): boolean =>
+      Object.values(cfgDoc.entities?.[child]?.relations ?? {}).some(
+        (r) => r.type === 'belongsTo' && r.table === parent,
+      );
+    if (nests(refA, refB) || nests(refB, refA)) {
+      const child = nests(refA, refB) ? refA : refB;
+      const parent = child === refA ? refB : refA;
+      throw new Error(
+        `"${child}" is nested inside "${parent}" — un-nest it before creating a relationship between them`,
+      );
+    }
+  }
   await execSql(
     active.db,
     `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${colA}" TEXT, "${colB}" TEXT)`,

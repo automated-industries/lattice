@@ -98,8 +98,10 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 GUI batch 8 — the top search box CSS is removed (.topsearch/.search-* gone;
 // .last-edited kept); a .history-sep divides Back/Forward from Undo/Redo. Length +
 // hash recaptured.
-const ORIGINAL_LENGTH = 125060;
-const ORIGINAL_SHA256 = '237dcd13ad77f9dcf239597c827d49eaf5dd53eaef831d4cd3d83610f2e8093d';
+// 5.0 GUI batch 11 — .md-doc (the deleted #/md viewer) removed; .mt-nest indent
+// for belongsTo-nested tables; .mt-edge-fk dead (lines are m2m-only). Recaptured.
+const ORIGINAL_LENGTH = 125034;
+const ORIGINAL_SHA256 = '60932333393f2af48e4efc77d35fd0e7e0524093eaad23cb8a6bc2ae0a1a7ccf';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

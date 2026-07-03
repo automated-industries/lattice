@@ -53,7 +53,6 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
        keeps the cards clickable. Solid strokes (no dashes). */
     svg.mt-edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible; }
     .mt-edge { fill: none; stroke-width: 1.75; }
-    .mt-edge-fk { stroke: var(--accent); opacity: 0.6; }
     .mt-edge-m2m { stroke: #7c3aed; opacity: 0.6; }
     .mt-tier { min-width: 0; position: relative; z-index: 1; }
     /* Wiring / merging affordances. */
@@ -73,6 +72,8 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px;
       background: var(--surface-2); color: var(--text-muted); font-weight: 600;
     }
+    /* A belongsTo-nested table indents under its parent (line = m2m only). */
+    .mt-nest { border-left: 2px solid var(--border); padding-left: 8px; }
     .mt-tier-body { display: flex; flex-direction: column; gap: 8px; }
     .mt-tier-empty { color: var(--text-muted); font-size: 12px; padding: 4px 2px; }
 

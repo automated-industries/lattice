@@ -58,19 +58,30 @@ const getJson = async (s: GuiServerHandle, path: string) => {
 
 type TreeEntry = { name: string; path: string; kind: string };
 
-describe('GET /api/context/tree (lazy top level)', () => {
-  it('lists the top level (files + lazy folders) and skips internal dot-dirs', async () => {
+describe('GET /api/context/tree (typed table nodes)', () => {
+  it('returns one node per table (same set as the Tables mirror) + ungrouped strays', async () => {
     const { s } = await bootWithContext();
     const { status, body } = await getJson(s, '/api/context/tree');
     expect(status).toBe(200);
+    const tables = body.tables as { table: string; kind: string; tier: string; dir?: string }[];
+    const tasks = tables.find((t) => t.table === 'tasks');
+    expect(tasks).toBeDefined();
+    expect(tasks?.kind).toBe('table');
+    expect(typeof tasks?.tier).toBe('string');
+    // Internal dot-dirs never appear anywhere in the payload.
+    const ungrouped = body.ungrouped as TreeEntry[];
+    expect(ungrouped.map((e) => e.name)).not.toContain('.lattice');
+    // A root file no table claims trails as an ungrouped stray.
+    expect(ungrouped.map((e) => e.name)).toContain('TASKS.md');
+  });
+
+  it('table-scoped list returns the rollup + per-record folders', async () => {
+    const { s } = await bootWithContext();
+    const { status, body } = await getJson(s, '/api/context/list?table=tasks');
+    expect(status).toBe(200);
     const entries = body.entries as TreeEntry[];
-    const names = entries.map((e) => e.name);
-    expect(names).toContain('TASKS.md');
-    expect(names).toContain('Tasks');
-    // Internal dot-dir is excluded; children are NOT inlined (lazy).
-    expect(names).not.toContain('.lattice');
-    expect(entries.find((e) => e.name === 'Tasks')?.kind).toBe('dir');
-    expect(entries.find((e) => e.name === 'TASKS.md')?.kind).toBe('file');
+    // The per-record dir listing comes from the table's directory root.
+    expect(entries.some((e) => e.path.startsWith('Tasks/'))).toBe(true);
   });
 });
 
@@ -96,23 +107,42 @@ describe('GET /api/context/list (lazy folder expand)', () => {
   });
 });
 
-describe('GET /api/context/file', () => {
-  it('reads a single context .md by relative path', async () => {
+describe('GET /api/context/resolve', () => {
+  // The Outputs tree click resolves a rendered .md to the record (or table) it
+  // belongs to — the record page is the single markdown surface (the old
+  // read-only /api/context/file viewer is gone).
+  it('resolves a per-record file to {record, table, rowId} via its frontmatter', async () => {
+    const { s, outputDir } = await bootWithContext();
+    mkdirSync(join(outputDir, 'Tasks', 'my-task'), { recursive: true });
+    writeFileSync(
+      join(outputDir, 'Tasks', 'my-task', 'TASK.md'),
+      '---\ngenerated_at: "2026-07-03T00:00:00.000Z"\ntasks_id: "row-42"\n---\n\n# My task\n',
+    );
+    const { status, body } = await getJson(
+      s,
+      '/api/context/resolve?path=' + encodeURIComponent('Tasks/my-task/TASK.md'),
+    );
+    expect(status).toBe(200);
+    expect(body.kind).toBe('record');
+    expect(body.table).toBe('tasks');
+    expect(body.rowId).toBe('row-42');
+  });
+
+  it('resolves a stray user file to {none} (inert)', async () => {
     const { s } = await bootWithContext();
     const { status, body } = await getJson(
       s,
-      '/api/context/file?path=' + encodeURIComponent('Tasks/task-1.md'),
+      '/api/context/resolve?path=' + encodeURIComponent('TASKS.md'),
     );
     expect(status).toBe(200);
-    expect(body.name).toBe('task-1.md');
-    expect(String(body.content)).toContain('A single task.');
+    expect(body.kind).toBe('none');
   });
 
   it('rejects path traversal out of the output dir (containment guard)', async () => {
     const { s } = await bootWithContext();
     const { status } = await getJson(
       s,
-      '/api/context/file?path=' + encodeURIComponent('../../../../etc/passwd'),
+      '/api/context/resolve?path=' + encodeURIComponent('../../../../etc/passwd'),
     );
     expect(status).toBe(404);
   });
@@ -121,7 +151,7 @@ describe('GET /api/context/file', () => {
     const { s } = await bootWithContext();
     const { status } = await getJson(
       s,
-      '/api/context/file?path=' + encodeURIComponent('.lattice/manifest.json'),
+      '/api/context/resolve?path=' + encodeURIComponent('.lattice/manifest.json'),
     );
     expect(status).toBe(404);
   });
@@ -177,10 +207,12 @@ describe('GET /api/context/tree (junction filtering)', () => {
     servers.push(s);
     const { status, body } = await getJson(s, '/api/context/tree');
     expect(status).toBe(200);
-    const names = (body.entries as TreeEntry[]).map((e) => e.name);
-    expect(names).toContain('Tasks');
-    expect(names).toContain('Projects');
-    expect(names).not.toContain('Tasks_projects'); // junction hidden
+    const tableNames = (body.tables as { table: string }[]).map((t) => t.table);
+    expect(tableNames).toContain('tasks');
+    expect(tableNames).toContain('projects');
+    expect(tableNames).not.toContain('tasks_projects'); // junction hidden
+    // …and its rendered DIR never leaks in through the ungrouped strays either.
+    expect((body.ungrouped as TreeEntry[]).map((e) => e.name)).not.toContain('Tasks_projects');
   });
 
   it('hides a physical link table with no declared relations (AI-built files_<entity>)', async () => {
@@ -218,8 +250,9 @@ describe('GET /api/context/tree (junction filtering)', () => {
     servers.push(s);
     const { status, body } = await getJson(s, '/api/context/tree');
     expect(status).toBe(200);
-    const names = (body.entries as TreeEntry[]).map((e) => e.name);
-    expect(names).toContain('Documents');
-    expect(names).not.toContain('Files_documents'); // physical link table hidden
+    const tableNames = (body.tables as { table: string }[]).map((t) => t.table);
+    expect(tableNames).toContain('documents');
+    expect(tableNames).not.toContain('files_documents'); // physical link table hidden
+    expect((body.ungrouped as TreeEntry[]).map((e) => e.name)).not.toContain('Files_documents');
   });
 });
