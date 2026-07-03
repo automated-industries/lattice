@@ -19,6 +19,16 @@ database connector).
 
 ### Security
 
+- **External-database connections are read-only, enforced in depth.** A
+  connected database is a data source — Lattice must never be able to write to
+  it. Every pooled connection now starts with
+  `default_transaction_read_only = on` (the server itself refuses writes), and
+  the connection wrapper additionally refuses any non-read statement
+  (SELECT/WITH/SHOW/EXPLAIN only) before it touches the network. The connect
+  dialog takes host/port/user/password/database fields only — raw connection
+  strings are no longer accepted (pasting an owner/admin URL wholesale was the
+  risk), and the UI recommends a read-only database user.
+
 - **CSRF / DNS-rebinding hardening for the local GUI server.** State-changing
   requests and the realtime WebSocket upgrade now require a same-origin request
   and a `Host` header matching the bound loopback authority, so a web page you

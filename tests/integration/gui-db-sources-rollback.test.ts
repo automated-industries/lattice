@@ -112,7 +112,7 @@ describe('db-source connect failure semantics', () => {
     const r = await fetch(`${base}/api/db-sources/connect`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ connectionString: 'postgres://user:pass@example.invalid:5432/db' }),
+      body: JSON.stringify({ host: 'example.invalid', user: 'reader', database: 'db' }),
     });
     expect(r.status).toBeGreaterThanOrEqual(400);
     const body = (await r.json()) as { error: string };
