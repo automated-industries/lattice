@@ -8,7 +8,7 @@
  * lets us inspect parsed args. Since parseArgs() is internal, we test via the
  * observable effects: help text output and command recognition.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -318,8 +318,26 @@ describe('parseArgs() — global flags', () => {
   });
 
   it('auto-update defaults on', () => {
-    const args = parseArgs(['gui']);
-    expect(args.autoUpdate).toBe(true);
+    // Hermetic: the default must be asserted with the machine's ambient
+    // LATTICE_NO_AUTO_UPDATE opt-out cleared, or the test fails on any
+    // machine that exports it (the env opt-out has its own test below).
+    vi.stubEnv('LATTICE_NO_AUTO_UPDATE', '');
+    try {
+      const args = parseArgs(['gui']);
+      expect(args.autoUpdate).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('LATTICE_NO_AUTO_UPDATE=1 disables auto-update', () => {
+    vi.stubEnv('LATTICE_NO_AUTO_UPDATE', '1');
+    try {
+      const args = parseArgs(['gui']);
+      expect(args.autoUpdate).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('--no-auto-update disables auto-update', () => {

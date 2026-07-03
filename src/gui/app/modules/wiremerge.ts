@@ -41,8 +41,17 @@ export const wireMergeJs = `
       for (var i = 0; i < ents.length; i++) if (ents[i].name === table) return isJunction(ents[i]);
       return false;
     }
+    function wmIsComputed(table) {
+      var ents = (state.entities && state.entities.tables) || [];
+      for (var i = 0; i < ents.length; i++) if (ents[i].name === table) return !!ents[i].computedTable;
+      return false;
+    }
+    // Junctions aren't objects, and computed tables are read-only projections —
+    // neither can be wired or merged, as source or as target.
     function wmValidTarget(source, target) {
-      return !!source && !!target && source !== target && !wmIsJunction(source) && !wmIsJunction(target);
+      return !!source && !!target && source !== target &&
+        !wmIsJunction(source) && !wmIsJunction(target) &&
+        !wmIsComputed(source) && !wmIsComputed(target);
     }
     function wmToast(msg, err) { if (typeof showToast === 'function') showToast(msg, err ? { type: 'error' } : {}); }
     function wmAfterAct() {

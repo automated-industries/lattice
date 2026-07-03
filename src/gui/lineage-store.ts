@@ -45,6 +45,17 @@ export async function ensureLineageTable(adapter: StorageAdapter): Promise<void>
     adapter,
     `CREATE INDEX IF NOT EXISTS "${LINEAGE_TABLE}_table_kind_idx" ON "${LINEAGE_TABLE}" ("object_table", "source_kind")`,
   );
+  // One-time relabel of historical import edges: imported tables used to be
+  // recorded under tier 'computed'; that tier is now reserved for computed
+  // tables (live read-only SQL projections) and imports carry tier 'derived'.
+  // Rewriting the old rows here matters because `recordLineage`'s dedup tuple
+  // includes `tier` — without the relabel, re-importing the same table would
+  // insert a duplicate edge under the new label instead of matching the old
+  // one. Idempotent: once relabeled, the WHERE clause matches nothing.
+  await runAsyncOrSync(
+    adapter,
+    `UPDATE "${LINEAGE_TABLE}" SET "tier" = 'derived' WHERE "source_kind" = 'import' AND "tier" = 'computed'`,
+  );
 }
 
 export interface LineageEdge {
@@ -56,7 +67,7 @@ export interface LineageEdge {
   sourceKind: string;
   sourceTable?: string | null;
   sourceId?: string | null;
-  /** raw | computed | observation */
+  /** raw | derived | computed | observation */
   tier: string;
   relation: string;
   detailJson?: string | null;
