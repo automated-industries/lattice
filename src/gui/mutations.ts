@@ -194,6 +194,42 @@ async function purgeRedoStack(db: Lattice, sessionId?: string): Promise<void> {
 }
 
 /**
+ * A schema change one or more dashboards may be consuming. Fired from
+ * {@link recordSchemaAudit} for the BREAKING operations (rename/delete of
+ * tables, columns, links) — additive changes can't break an authored page.
+ */
+export interface SchemaChangeEvent {
+  table: string;
+  operation: string;
+  before: unknown;
+  after: unknown;
+  summary: string;
+}
+
+/** Schema ops that can break a page authored against the previous model. */
+const BREAKING_SCHEMA_OPS = new Set([
+  'schema.rename_entity',
+  'schema.rename_column',
+  'schema.delete_entity',
+  'schema.delete_link',
+  'schema.purge',
+]);
+
+// Per-Lattice schema-change listener (the dashboard auto-repair service).
+// A WeakMap registration — not an import — so this shared mutation module
+// never depends on the repair module (which pulls in the model client).
+const schemaChangeListeners = new WeakMap<Lattice, (ev: SchemaChangeEvent) => void>();
+
+/** Install (or replace) the workspace's schema-change listener. */
+export function setSchemaChangeListener(
+  db: Lattice,
+  listener: ((ev: SchemaChangeEvent) => void) | null,
+): void {
+  if (listener) schemaChangeListeners.set(db, listener);
+  else schemaChangeListeners.delete(db);
+}
+
+/**
  * Append an audit-log entry for a mutation and publish it to the activity
  * feed. `source` tags who triggered it (defaults to the GUI). AuditOp is a
  * subset of FeedOp, so the cast is safe.
@@ -262,6 +298,13 @@ export async function recordSchemaAudit(
     source,
   });
   feed.publish({ table, op: 'schema', rowId: null, source, summary });
+  // A breaking model change may orphan dashboards built on this table — hand
+  // it to the workspace's repair listener (fire-and-forget; the listener
+  // debounces and does its own error surfacing).
+  if (BREAKING_SCHEMA_OPS.has(operation)) {
+    const listener = schemaChangeListeners.get(db);
+    if (listener) listener({ table, operation, before, after, summary });
+  }
 }
 
 /** Context shared by every mutation primitive. */
