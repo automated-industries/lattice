@@ -17,6 +17,34 @@ live **force-directed brain graph** across all GUI graph surfaces; and
 behavior matches prior releases; the public API grows additively (a new external-
 database connector).
 
+### Analytics view — ask your company anything
+
+- **The app splits into two views.** **Analytics** is the new landing surface:
+  a Dashboards sidebar, a tab strip of open dashboards, and the assistant
+  docked on the right. **Configure** is the existing Inputs · Model · Outputs
+  workspace. The top-right header button toggles between them, and each side
+  remembers its last location; boot and workspace switches land on Analytics.
+- **Dashboards are a first-class object.** The assistant's HTML-page tools
+  became `create_dashboard` / `edit_dashboard`: a dashboard is a live visual
+  page (charts, tables, key numbers) authored from a plain-language spec,
+  stored in a native `dashboards` table, rendered in the same sandboxed
+  no-network frame as before, and shareable per-row exactly like any record.
+  The page body is writable only by the authoring tools — no other write path
+  can plant executable content — and is redacted from assistant reads.
+- **Dynamic dashboard tabs.** Each open dashboard is a closable, deduped tab;
+  closing falls back to the right neighbor, then left, then the Analytics
+  home; when the strip can't fit, trailing tabs collapse into a "⋯ N" menu
+  that always keeps the active tab visible.
+- **A quieter assistant for non-technical users.** The assistant discusses only
+  what goes into a dashboard and what it shows; structural/data work happens
+  silently with a single transient status line ("Building your dashboard…"),
+  and a plain-text answer with no dashboard is a first-class outcome.
+- **One-time migration.** Existing assistant-authored HTML pages move from
+  `files` into `dashboards` on the next open (same id — sharing grants and
+  ownership are preserved, including member-owned private pages on a cloud);
+  markdown artifacts stay in the Markdown tree. The old floating assistant
+  panel is retired in favor of the Analytics dock.
+
 ### Security
 
 - **External-database connections are read-only, enforced in depth.** A

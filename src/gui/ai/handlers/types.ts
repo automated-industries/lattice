@@ -99,17 +99,17 @@ export interface DispatchCtx {
    * Author or edit a complete standalone HTML file via a focused model sub-call
    * (a stronger model than the chat default). Supplied by the chat route, closed
    * over the resolved Claude auth + this turn's schema. Absent → the
-   * `create_html_file` / `edit_html_file` tools report they're unavailable (fail
-   * loud, never silent). `currentHtml` is passed when editing an existing file.
+   * `create_dashboard` / `edit_dashboard` tools report they're unavailable (fail
+   * loud, never silent). `currentHtml` is passed when editing an existing page.
    */
   htmlAuthor?: (spec: string, currentHtml?: string) => Promise<string>;
   /**
-   * The id of the HTML-artifact file the user is currently viewing (resolved from
-   * `activeContext` when that row is an html artifact), so `edit_html_file` edits
-   * the file on screen when the user doesn't name one. Absent → the edit tool
+   * The id of the dashboard the user is currently viewing (resolved from
+   * `activeContext` when that row is a dashboards row), so `edit_dashboard` edits
+   * the one on screen when the user doesn't name one. Absent → the edit tool
    * requires an explicit id.
    */
-  activeHtmlFileId?: string;
+  activeDashboardId?: string;
   /**
    * The current turn's user message text. `ingest_url` only fetches a URL that
    * literally appears here — so the model can't be talked into fetching a URL it

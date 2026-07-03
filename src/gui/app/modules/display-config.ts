@@ -65,6 +65,7 @@ export const displayConfigJs = `
         return /^[a-z0-9_-]+$/.test(sub) ? 'settings_' + sub : 'settings_root';
       }
       if (top === 'fs' || top === 'objects' || top === 'system') return top;
+      if (top === 'analytics') return 'analytics'; // coarse segment only — never the dashboard id
       return 'other';
     }
 
