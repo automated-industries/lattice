@@ -40,6 +40,10 @@ describe('inline HTML-file rendering (client script)', () => {
     // window (any iframe.html-frame — file preview or dashboard canvas).
     expect(appJs).toContain("querySelectorAll('iframe.html-frame')");
     expect(appJs).toContain('e.source === frames[fi].contentWindow');
+    // The injected bridge exposes the read-only SQL surface, and the broker
+    // routes it to the server-enforced endpoint (never a raw DB path).
+    expect(appJs).toContain('sql:function(q){return __lreq("sql",{sql:q});}');
+    expect(appJs).toContain("'/api/analytics/sql'");
     // Read-only: it refuses credential/system tables and exposes no write path.
     expect(appJs).toContain('forbidden table');
   });
