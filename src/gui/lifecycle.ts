@@ -518,6 +518,15 @@ export async function openConfig(
   const fileWatcher = autoRender
     ? createFileLoopbackWatcher({ db, feed, softDeletable, outputDir })
     : null;
+  // The watcher's immediate pass replaces the core pre-render drain, so manual
+  // edits ingested right before a render carry the full GUI trail (changelog +
+  // activity feed + undo) — not just the changelog-only core apply.
+  if (fileWatcher) db.setAutoRenderDrain(() => fileWatcher.flush());
+  // Render notices (e.g. "edited rollup restored") land in the activity feed —
+  // visible in the GUI, not just a server console line.
+  db.setRenderNoticeHandler((message) => {
+    feed.publish({ table: 'files', op: 'update', rowId: null, source: 'system', summary: message });
+  });
 
   const active: ActiveDb = {
     configPath,
@@ -880,9 +889,11 @@ export async function disposeActive(
   teardownTimeoutMs: number = DISPOSE_TEARDOWN_TIMEOUT_MS,
 ): Promise<void> {
   // Stop the file loopback watcher FIRST so no on-disk edit can fire a write
-  // against a DB that's about to close.
+  // against a DB that's about to close — and detach it from the pre-render
+  // drain so a late render can't call a stopped watcher.
   try {
     active.fileWatcher?.stop();
+    active.db.setAutoRenderDrain(null);
   } catch {
     // best-effort
   }
