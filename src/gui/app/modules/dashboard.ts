@@ -1344,34 +1344,42 @@ export const dashboardJs = `    // ───────────────
       });
     }
 
-    // Item view — one row as a document (click-to-edit) + its relationship folders.
-    // Record view mode: 'formatted' (the structured fields) | 'markdown' (the row's
-    // rendered context). B (clicking a Markdown file) deep-links into 'markdown'.
-    var fsItemView = 'formatted';
+    // Item view — ONE record page for every row (regular, file, artifact): the
+    // same chrome everywhere — Formatted|Markdown toggle, visibility/sharing,
+    // Data provenance, Connected objects, and the record actions menu. View mode
+    // is PER RECORD: 'formatted' (the rendered doc / file preview) | 'markdown'
+    // (the editable raw markdown, or a file's source) | 'history' (the version
+    // trail, entered from the actions menu, exited via the toggle).
+    var recordViewMode = {};
+    var currentRecordId = null;
     function setFsItemView(v) {
-      fsItemView = v === 'markdown' ? 'markdown' : 'formatted';
+      if (currentRecordId == null) return;
+      recordViewMode[currentRecordId] =
+        v === 'markdown' ? 'markdown' : v === 'history' ? 'history' : 'formatted';
       applyFsItemView();
     }
     function applyFsItemView() {
-      var md = fsItemView === 'markdown';
+      var mode = (currentRecordId != null && recordViewMode[currentRecordId]) || 'formatted';
+      var md = mode === 'markdown';
+      var hist = mode === 'history';
       var ctx = document.getElementById('fs-context');
-      // Formatted = the rendered (compiled) markdown (.fs-context-doc); Markdown =
-      // the editable raw-markdown textarea (+ its save status). loadFsContext builds
-      // both inside #fs-context; here we just toggle which one shows.
       var rendered = ctx && ctx.querySelector('.fs-context-doc');
       var editor = ctx && ctx.querySelector('.fs-context-edit');
       var status = ctx && ctx.querySelector('.fs-context-status');
       var relT = document.querySelector('#content .fs-rel-title');
       var relF = document.querySelector('#content .fs-rel-folders');
       var prov = document.getElementById('row-provenance');
+      var histEl = document.getElementById('record-history');
       // The relationship folders + provenance belong to the Formatted (reading)
-      // view; hide them while editing the raw markdown.
-      [relT, relF, prov].forEach(function (el) { if (el) el.style.display = md ? 'none' : ''; });
+      // view; hide them while editing the raw markdown or reading history.
+      [relT, relF, prov].forEach(function (el) { if (el) el.style.display = (md || hist) ? 'none' : ''; });
+      if (ctx) ctx.style.display = hist ? 'none' : '';
       if (rendered) rendered.style.display = md ? 'none' : '';
       if (editor) editor.style.display = md ? '' : 'none';
       if (status) status.style.display = md ? '' : 'none';
+      if (histEl) histEl.hidden = !hist;
       document.querySelectorAll('#content .fs-view-toggle [data-fsview]').forEach(function (b) {
-        b.classList.toggle('on', b.getAttribute('data-fsview') === fsItemView);
+        b.classList.toggle('on', !hist && b.getAttribute('data-fsview') === mode);
       });
     }
 
@@ -1401,10 +1409,11 @@ export const dashboardJs = `    // ───────────────
             setTabTitle(fsItemKey, fsDisplayName(row) || d.label);
           }
         }
-        // Files + artifacts get the two-view document layout (formatted display +
-        // a View Source toggle) with a Version History + Delete dropdown — not the
-        // column-by-column field dump or the "Inside" grid.
-        if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d, section); return; }
+        // ONE record page for every row: files + artifacts flow through the same
+        // chrome as regular records (toggle, sharing, provenance, connected
+        // objects) — only the CONTENT section differs (preview/source vs the
+        // rendered row context).
+        var isFile = table === 'files';
         var rels = fsRelations(table);
         if (myGen !== renderGen) return; // superseded by a newer navigation while fsWalk resolved
         var base = sectionHref(section, segs);
@@ -1417,32 +1426,53 @@ export const dashboardJs = `    // ───────────────
             '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
           '</a>';
         }).join('');
+        currentRecordId = id;
         content.innerHTML =
           fsBreadcrumb(segs, crumbs, section) +
           '<div class="view-header">' +
-            '<span class="entity-icon">' + d.icon + '</span>' +
+            '<span class="entity-icon">' + (isFile ? fileEmoji(row) : d.icon) + '</span>' +
             '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
-            // Formatted = the rendered (compiled) markdown; Markdown = the editable
-            // raw markdown that writes back to this record. The toggle shows one.
+            // Formatted = the rendered doc (or file preview); Markdown = the
+            // editable raw markdown (or a file's source). The toggle shows one.
             '<div class="fs-view-toggle">' +
               '<button type="button" data-fsview="formatted">Formatted</button>' +
               '<button type="button" data-fsview="markdown">Markdown</button>' +
             '</div>' +
+            '<div class="actions file-menu-wrap">' +
+              '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\u22ef</button>' +
+              '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+                '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
+                '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
+              '</div>' +
+            '</div>' +
           '</div>' +
           detailVisLineEl(row) +
           // #fs-context holds BOTH the rendered doc (.fs-context-doc) and the
-          // editable raw-markdown textarea (.fs-context-edit); loadFsContext fills
-          // it and applyFsItemView toggles which one shows.
+          // editable raw view (.fs-context-edit); the fillers below build them and
+          // applyFsItemView toggles which one shows.
           '<div class="fs-context" id="fs-context" hidden></div>' +
+          '<div class="file-history-view" id="record-history" hidden></div>' +
           // "Connected objects" — the related objects, shown only when they actually
           // have rows (count > 0). Rendered hidden; revealed once the counts resolve.
           (rels.length ? '<h3 class="fs-rel-title" hidden>Connected objects</h3><div class="fs-grid fs-rel-folders" hidden>' + folderTiles + '</div>' : '') +
           '<div id="row-provenance"></div>';
-        loadFsContext(table, id);
+        if (isFile) loadFileContext(content, segs, row); else loadFsContext(table, id);
         content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
           bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
         });
+        wireRecordMenu(content, segs, table, id, row);
+        if (((recordViewMode[id]) || 'formatted') === 'history') loadRowHistoryInto(content, table, id);
         applyFsItemView();
+        // A file under a registered folder root upgrades the breadcrumb to its
+        // real folder path.
+        if (isFile && row.ref_uri) {
+          var crumbGen = renderGen;
+          fetchJson('/api/sources/roots').then(function (data) {
+            if (crumbGen !== renderGen) return;
+            var nav = content.querySelector('.fs-crumbs');
+            if (nav) nav.outerHTML = folderBreadcrumb(fsDirname(row.ref_uri), (data && data.roots) || [], fsDisplayName(row) || d.label);
+          }).catch(function () { /* keep the default breadcrumb */ });
+        }
         // Collapsed, lazy-loaded "Data provenance" panel for this row.
         renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
         // Per-row sharing controls — same affordance as the advanced detail view.
@@ -1483,81 +1513,37 @@ export const dashboardJs = `    // ───────────────
       });
     }
 
-    // ── File / artifact document view (two-view: Display ↔ Source) ──────
-    // Per-open-item view state (display | source), so each tab toggles
-    // independently and re-renders in place without navigating.
-    var fileViewMode = {};
+    // ── File/artifact CONTENT filler for the unified record page ─────────
+    // Files and artifacts use the same page chrome as every other record; only
+    // the #fs-context filler differs: Formatted = the inline preview (image /
+    // PDF / sandboxed HTML / description banner, with Open in Finder), Markdown
+    // = the source (an artifact edits in place; an ingested file's extracted
+    // text is read-only).
     function sourceTextOf(row) {
       return row && typeof row.extracted_text === 'string' ? row.extracted_text : '';
     }
-    function renderFsDocItem(content, segs, crumbs, id, row, d, section) {
-      section = section || 'folders';
-      // The tab shows the FILE's name (e.g. "Properties Dashboard"), not the
-      // object name ("Files").
-      if (typeof setTabTitle === 'function') {
-        var fsDocKey = tabKeyForHash(location.hash);
-        if (fsDocKey && fsDocKey.indexOf('item:') === 0) {
-          setTabTitle(fsDocKey, fsDisplayName(row) || d.label);
-        }
-      }
-      var mode = fileViewMode[id] || 'display';
-      // Actions live in a dropdown menu next to the title; View source / Version
-      // history are full-page modes (they replace the body, not overlay it).
-      content.innerHTML =
-        fsBreadcrumb(segs, crumbs, section) +
-        '<div class="view-header">' +
-          '<span class="entity-icon">' + fileEmoji(row) + '</span>' +
-          '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
-          '<div class="actions file-menu-wrap">' +
-            '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">⋯</button>' +
-            '<div class="file-menu" id="file-menu" role="menu" hidden>' +
-              (mode !== 'display' ? '<button class="file-menu-item" data-act="display" role="menuitem">Formatted view</button>' : '') +
-              (mode !== 'source' ? '<button class="file-menu-item" data-act="source" role="menuitem">View source</button>' : '') +
-              (mode !== 'history' ? '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' : '') +
-              '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-        '<div id="file-body">' + fileBodyHtml(mode, row) + '</div>';
-      if (mode === 'display') renderFilePreview(row);
-      else if (mode === 'history') loadFileHistoryInto(content, id);
-      wireFsDocToolbar(content, segs, id, row);
-      // Upgrade the breadcrumb to the file's FOLDER path (Home ▸ Files ▸ Downloads
-      // ▸ <file>) when it lives under a registered folder root.
-      if (row.ref_uri) {
-        var crumbGen = renderGen;
-        fetchJson('/api/sources/roots').then(function (data) {
-          if (crumbGen !== renderGen) return;
-          var nav = content.querySelector('.fs-crumbs');
-          if (nav) nav.outerHTML = folderBreadcrumb(fsDirname(row.ref_uri), (data && data.roots) || [], fsDisplayName(row) || d.label);
-        }).catch(function () { /* keep the default breadcrumb */ });
-      }
+    function loadFileContext(content, segs, row) {
+      var ctx = content.querySelector('#fs-context');
+      if (!ctx) return;
+      var src = sourceTextOf(row);
+      var editHtml = row.artifact_type
+        ? '<div class="fs-context-edit" style="display:none"><div class="file-source">' +
+            '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
+            '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
+            '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
+          '</div></div>'
+        : '<div class="fs-context-edit" style="display:none"><pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre></div>';
+      ctx.innerHTML =
+        '<div class="fs-context-doc"><div class="file-preview" id="file-preview"></div></div>' + editHtml;
+      ctx.hidden = false;
+      renderFilePreview(row);
+      var save = ctx.querySelector('#file-source-save');
+      if (save) save.addEventListener('click', function () { saveFileSource(content, segs, row.id); });
     }
 
-    // The body for the current view mode (display | source | history).
-    function fileBodyHtml(mode, row) {
-      if (mode === 'source') {
-        var src = sourceTextOf(row);
-        // An artifact (Lattice-created) edits in place; an ingested file's source
-        // is read-only extracted text.
-        return row.artifact_type
-          ? '<div class="file-source">' +
-              '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
-              '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
-              '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
-            '</div>'
-          : '<pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre>';
-      }
-      if (mode === 'history') {
-        return '<div class="file-history-view" id="file-history-view"><div class="muted" style="padding:8px">Loading history…</div></div>';
-      }
-      return '<div class="file-preview" id="file-preview"></div>';
-    }
-
-    // ONE document-level outside-click closer for the file-actions menu. The menu
-    // + button are re-created with stable ids on every renderFsDocItem, so a
-    // per-render listener would leak (stale closures accumulating on document and
-    // firing on every click). Registered exactly once; reads the current nodes by id.
+    // ONE document-level outside-click closer for the record actions menu. The
+    // menu + button are re-created with stable ids on every record render, so a
+    // per-render listener would leak. Registered exactly once; reads by id.
     var fileMenuDocWired = false;
     function wireFileMenuGlobal() {
       if (fileMenuDocWired) return;
@@ -1570,7 +1556,8 @@ export const dashboardJs = `    // ───────────────
         menu.hidden = true; if (btn) btn.setAttribute('aria-expanded', 'false');
       });
     }
-    function wireFsDocToolbar(content, segs, id, row) {
+    // The record actions menu (every record page): Version history + Delete.
+    function wireRecordMenu(content, segs, table, id, row) {
       var btn = content.querySelector('#file-menu-btn');
       var menu = content.querySelector('#file-menu');
       if (btn && menu) {
@@ -1585,21 +1572,21 @@ export const dashboardJs = `    // ───────────────
       content.querySelectorAll('.file-menu-item').forEach(function (it) {
         it.addEventListener('click', function (e) {
           e.stopPropagation();
+          if (menu) menu.hidden = true;
           var act = it.getAttribute('data-act');
-          if (act === 'delete') { removeFile(segs, id, row); return; }
-          fileViewMode[id] = act; // display | source | history
-          renderFsItem(content, segs, sectionOfHash()); // re-render this item in the new mode
+          if (act === 'delete') { removeRow(table, segs, id, row); return; }
+          loadRowHistoryInto(content, table, id);
+          setFsItemView('history');
         });
       });
-      var save = content.querySelector('#file-source-save');
-      if (save) save.addEventListener('click', function () { saveFileSource(content, segs, id); });
     }
 
-    // Load the row's version history into the full-page history view.
-    function loadFileHistoryInto(content, id) {
-      var host = content.querySelector('#file-history-view');
+    // Load the row's version history into the record page's history block.
+    function loadRowHistoryInto(content, table, id) {
+      var host = content.querySelector('#record-history');
       if (!host) return;
-      fetchJson('/api/tables/files/rows/' + encodeURIComponent(id) + '/history')
+      host.innerHTML = '<div class="muted" style="padding:8px">Loading history\u2026</div>';
+      fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id) + '/history')
         .then(function (data) {
           var hist = (data && data.history) || [];
           if (!hist.length) { host.innerHTML = '<div class="muted" style="padding:8px">No prior versions yet.</div>'; return; }
@@ -1612,7 +1599,7 @@ export const dashboardJs = `    // ───────────────
                 '<button class="btn fh-revert" data-rev="' + escapeHtml(h.id) + '">Revert</button></li>';
             }).join('') + '</ul>';
           host.querySelectorAll('.fh-revert').forEach(function (b) {
-            b.addEventListener('click', function () { revertFileVersion(b.getAttribute('data-rev')); });
+            b.addEventListener('click', function () { revertRowVersion(table, b.getAttribute('data-rev')); });
           });
         })
         .catch(function (e) {
@@ -1620,10 +1607,10 @@ export const dashboardJs = `    // ───────────────
         });
     }
 
-    function revertFileVersion(auditId) {
+    function revertRowVersion(table, auditId) {
       fetch('/api/history/revert/' + encodeURIComponent(auditId), { method: 'POST' })
         .then(function (r) { if (!r.ok) throw new Error('revert failed (' + r.status + ')'); return r.json(); })
-        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () { invalidate(table); return refreshEntities(); })
         .then(function () { showToast('Reverted', { undo: undoLast }); renderRoute({ soft: true }); })
         .catch(function (e) { showToast('Revert failed: ' + e.message, {}); });
     }
@@ -1639,30 +1626,29 @@ export const dashboardJs = `    // ───────────────
         .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
         .then(function () { invalidate('files'); return refreshEntities(); })
         .then(function () {
-          fileViewMode[id] = 'display'; // back to the formatted view
+          setFsItemView('formatted'); // back to the formatted view
           showToast('Saved', { undo: undoLast });
           renderFsItem(content, segs, sectionOfHash());
         })
         .catch(function (e) { showToast('Save failed: ' + e.message, {}); });
     }
 
-    // Soft-delete (Delete): recoverable, and NEVER touches the on-disk file — it
-    // only soft-deletes the Lattice record. Closes the item's tab afterward.
-    function removeFile(segs, id, row) {
-      fetch('/api/tables/files/rows/' + encodeURIComponent(id), {
+    // Soft-delete (Delete): recoverable, and for a file NEVER touches the
+    // on-disk bytes — it only soft-deletes the Lattice record.
+    function removeRow(table, segs, id, row) {
+      fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
         body: '{}',
       })
         .then(function (r) { if (!r.ok) throw new Error('delete failed (' + r.status + ')'); return r.json(); })
-        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () { invalidate(table); return refreshEntities(); })
         .then(function () {
-          showToast('Deleted "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
-          // Navigate to the Files collection in the SAME section the record was
-          // opened from (Folders/Graph/Tables) — a hard-coded #/fs would yank the
-          // user out of Graph/Tables into Folders. The old closable-tab dismissal is
-          // a no-op under the permanent-tab model and would strand the deleted record.
-          location.hash = sectionHref(sectionOfHash(), ['files']);
+          showToast('Deleted "' + (fsDisplayName(row) || 'record') + '"', { undo: undoLast });
+          // Navigate to the collection in the SAME section the record was opened
+          // from (Folders/Graph/Tables) — a hard-coded #/fs would yank the user
+          // out of Graph/Tables into Folders.
+          location.hash = sectionHref(sectionOfHash(), [table]);
         })
         .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }

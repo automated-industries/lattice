@@ -261,8 +261,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // 5.0 GUI batch 13 — the right column is ONE Markdown view: header renamed, the
 // separate Artifacts + Tables sections deleted, artifacts render as a category
 // inside the markdown tree. Length + hash recaptured.
-const ORIGINAL_LENGTH = 605098;
-const ORIGINAL_SHA256 = 'aab3abd4b68192c12730f3669a1108212e81dd4f81f711da286120d6b9b140e4';
+// 5.0 GUI batch 14 — ONE record page for every row: files/artifacts flow through
+// the same chrome as regular records (toggle, sharing, provenance, connected
+// objects, actions menu); the separate doc renderer is deleted; view mode is a
+// single per-record map (formatted/markdown/history). Length + hash recaptured.
+const ORIGINAL_LENGTH = 604405;
+const ORIGINAL_SHA256 = '57c169fbfb71d636510f2add19e3ef296ab1c76a354e987809f1e42ecc1beb91';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
