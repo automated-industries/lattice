@@ -67,14 +67,27 @@ describe('/api/db-sources', () => {
     const s = await boot();
     const r = await post(s, '/api/db-sources/connect', {});
     expect(r.status).toBe(422);
-    expect(((await r.json()) as { error: string }).error).toMatch(/connection string|host/i);
+    expect(((await r.json()) as { error: string }).error).toMatch(/host \+ user \+ database/i);
   });
 
-  it('rejects a non-Postgres connection string (422)', async () => {
+  it('rejects a pasted connection string — host must be a bare host name (422)', async () => {
     const s = await boot();
-    const r = await post(s, '/api/db-sources/connect', { connectionString: 'mysql://h/db' });
+    // Raw connection strings were removed from the connect surface; a URL pasted
+    // into the Host field is refused with a clear message, and a connectionString
+    // body key is simply not a recognized credential field anymore.
+    const r = await post(s, '/api/db-sources/connect', {
+      host: 'postgres://user:pass@h:5432/db',
+      user: 'u',
+      database: 'db',
+    });
     expect(r.status).toBe(422);
-    expect(((await r.json()) as { error: string }).error).toMatch(/Postgres-family/);
+    expect(((await r.json()) as { error: string }).error).toMatch(/host name only/i);
+
+    const r2 = await post(s, '/api/db-sources/connect', {
+      connectionString: 'postgres://user:pass@h:5432/db',
+    });
+    expect(r2.status).toBe(422);
+    expect(((await r2.json()) as { error: string }).error).toMatch(/host \+ user \+ database/i);
   });
 
   it('404s an unknown connection on tables / refresh / delete', async () => {

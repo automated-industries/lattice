@@ -75,7 +75,8 @@ export const inputsJs = `
 
     // Connect-a-database — the SAME left side-drawer + form styling as Add a
     // Connector (the connector dialog chrome + .conn-form/.conn-field classes), so
-    // the two dialogs look identical. Connection string OR host/user/password.
+    // the two dialogs look identical. Host/port/user/password/database fields only
+    // (no raw connection string) — the connection is read-only by contract.
     var dbDrawerWired = false;
     function closeDbConnectDrawer() {
       var dlg = document.getElementById('db-connect-dialog');
@@ -96,10 +97,10 @@ export const inputsJs = `
           ' autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true"></label>';
       }
       body.innerHTML =
-        '<div class="conn-lead">Connect an external Postgres database (AWS RDS, Supabase, or generic Postgres). Its tables are imported as a data source.</div>' +
+        '<div class="conn-lead">Connect an external Postgres database (AWS RDS, Supabase, or generic Postgres). ' +
+          'Its tables are imported as a READ-ONLY data source \\u2014 Lattice never writes to it. ' +
+          'Use a read-only database user where possible.</div>' +
         '<div class="conn-card"><div class="conn-form">' +
-          field('Connection string', 'db-cs', 'password', 'postgres://user:pass@host:5432/db') +
-          '<div class="conn-or">— or —</div>' +
           field('Host', 'db-host', 'text', 'db.example.com') +
           field('Port', 'db-port', 'text', '5432') +
           field('User', 'db-user', 'text', '') +
@@ -132,12 +133,11 @@ export const inputsJs = `
       function setMsg(t) { var m = document.getElementById('db-msg'); if (m) m.textContent = t; }
       okBtn.addEventListener('click', function () {
         var payload = {
-          connectionString: val('db-cs'),
           host: val('db-host'), port: val('db-port'), user: val('db-user'),
           password: val('db-pass'), database: val('db-name'), schema: val('db-schema'),
         };
-        if (!payload.connectionString && !(payload.host && payload.user && payload.database)) {
-          setMsg('Enter a connection string, or host + user + database.');
+        if (!(payload.host && payload.user && payload.database)) {
+          setMsg('Enter host + user + database.');
           return;
         }
         okBtn.disabled = true;

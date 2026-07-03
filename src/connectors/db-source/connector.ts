@@ -1,7 +1,8 @@
 /**
  * The external-database connector — a {@link CredentialConnector} that connects to
  * an external Postgres-family database (AWS RDS Postgres, Supabase, generic
- * Postgres) the user supplies via a connection string OR host/user/password, and
+ * Postgres) the user supplies via host/user/password fields (read-only by
+ * contract — see external-pool.ts; raw connection strings are not accepted), and
  * IMPORTS its tables into Lattice as connected data types (so they land in the
  * SOURCE·INPUTS tier and sync via the shared connector sync engine).
  *
@@ -72,18 +73,23 @@ function connectionIdFromToolkit(toolkit: string): string {
 }
 
 /**
- * Assemble a Postgres connection string from the submitted credentials — either a
- * full `connectionString`, OR host + user + database (+ optional port/password).
- * Throws loudly when neither form is complete — never a silent default.
+ * Assemble a Postgres connection string from host + user + database (+ optional
+ * port/password). Raw connection strings are deliberately NOT accepted: pasting a
+ * full URL invites reusing an owner/admin connection wholesale, and the read-only
+ * data-source contract wants the credentials entered deliberately (ideally a
+ * read-only database user). Throws loudly when incomplete — never a silent default.
  */
 export function assembleConnectionString(creds: Record<string, string>): string {
-  const cs = (creds.connectionString ?? '').trim();
-  if (cs) return cs;
   const host = (creds.host ?? '').trim();
   const user = (creds.user ?? '').trim();
   const database = (creds.database ?? '').trim();
   const password = (creds.password ?? '').trim();
   const port = (creds.port ?? '').trim() || '5432';
+  if (host.includes('://')) {
+    throw new ConnectorUnavailableError(
+      'Enter the host name only (e.g. db.example.com) — connection strings are not accepted.',
+    );
+  }
   if (host && user && database) {
     const auth = password
       ? `${encodeURIComponent(user)}:${encodeURIComponent(password)}`
@@ -91,7 +97,7 @@ export function assembleConnectionString(creds: Record<string, string>): string 
     return `postgres://${auth}@${host}:${port}/${encodeURIComponent(database)}`;
   }
   throw new ConnectorUnavailableError(
-    'Provide a connection string, or host + user + database (port and password optional).',
+    'Provide host + user + database (port and password optional).',
   );
 }
 
@@ -221,18 +227,15 @@ export class DatabaseConnector implements CredentialConnector {
   }
 
   credentialFields(): CredentialField[] {
+    // Host/port/user/password/database ONLY — no raw connection-string field.
+    // The connection is read-only by contract (see external-pool.ts); entering
+    // the parts deliberately nudges toward a dedicated read-only DB user rather
+    // than pasting an owner/admin URL.
     return [
-      {
-        key: 'connectionString',
-        label: 'Connection string',
-        type: 'password',
-        placeholder: 'postgres://user:pass@host:5432/db',
-        required: false,
-      },
-      { key: 'host', label: 'Host', type: 'text', required: false },
+      { key: 'host', label: 'Host', type: 'text', required: true },
       { key: 'port', label: 'Port', type: 'text', placeholder: '5432', required: false },
-      { key: 'database', label: 'Database', type: 'text', required: false },
-      { key: 'user', label: 'User', type: 'text', required: false },
+      { key: 'database', label: 'Database', type: 'text', required: true },
+      { key: 'user', label: 'User', type: 'text', required: true },
       { key: 'password', label: 'Password', type: 'password', required: false },
     ];
   }
