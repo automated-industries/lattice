@@ -5,11 +5,28 @@ export const tableViewJs = `    // ───────────────
     // settings render functions, one per tab, plus the Advanced toggle.
     // ────────────────────────────────────────────────────────────
     var drawerTab = 'user';
+    function drawerIsOpen() {
+      var d = document.getElementById('settings-drawer');
+      return !!(d && !d.hidden);
+    }
+    // Highlight the header trigger whose takeover is open: the clock for the
+    // Version-history tab, the gear for everything else.
+    function updateTakeoverTriggers() {
+      var open = drawerIsOpen();
+      var hist = document.getElementById('history-link');
+      var gear = document.getElementById('settings-gear');
+      if (hist) hist.classList.toggle('on', open && drawerTab === 'history');
+      if (gear) gear.classList.toggle('on', open && drawerTab !== 'history');
+    }
     function openSettingsDrawer(section) {
       drawerTab = section || drawerTab || 'user';
       var drawer = document.getElementById('settings-drawer');
       var backdrop = document.getElementById('drawer-backdrop');
       if (!drawer || !backdrop) return;
+      // The panel fills the workspace BELOW the header — measure the real
+      // topbar height (the CSS default is a fallback).
+      var bar = document.querySelector('header.topbar');
+      if (bar) drawer.style.top = bar.offsetHeight + 'px';
       backdrop.hidden = false;
       drawer.hidden = false;
       // Allow the elements to lay out before transitioning in.
@@ -26,6 +43,11 @@ export const tableViewJs = `    // ───────────────
       drawer.classList.remove('open');
       backdrop.classList.remove('open');
       window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 220);
+      updateTakeoverTriggers();
+      var hist = document.getElementById('history-link');
+      var gear = document.getElementById('settings-gear');
+      if (hist) hist.classList.remove('on');
+      if (gear) gear.classList.remove('on');
       // Keep the URL in sync with what's actually on screen. A settings hash
       // (#/settings/..., e.g. from a "User Settings" link) opens this drawer over
       // the dashboard, and renderRoute REOPENS the drawer for that hash — so if the
@@ -49,13 +71,28 @@ export const tableViewJs = `    // ───────────────
       });
       var body = document.getElementById('drawer-body');
       if (!body) return;
-      if (tab === 'database') renderDatabaseSettings(body);
+      var title = document.querySelector('#settings-drawer .drawer-title');
+      if (title) title.textContent = tab === 'history' ? 'Version history' : 'Settings';
+      if (tab === 'history') renderHistory(body);
+      else if (tab === 'database') renderDatabaseSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
+      updateTakeoverTriggers();
     }
     function wireSettingsDrawer() {
+      // Both header triggers TOGGLE the takeover: click to open (highlighted),
+      // click the same trigger again to collapse. Clicking the other trigger
+      // switches the panel's content in place.
       var gear = document.getElementById('settings-gear');
-      if (gear) gear.addEventListener('click', function () { openSettingsDrawer('user'); });
+      if (gear) gear.addEventListener('click', function () {
+        if (drawerIsOpen() && drawerTab !== 'history') { closeSettingsDrawer(); return; }
+        openSettingsDrawer(drawerTab === 'history' ? 'user' : drawerTab || 'user');
+      });
+      var histBtn = document.getElementById('history-link');
+      if (histBtn) histBtn.addEventListener('click', function () {
+        if (drawerIsOpen() && drawerTab === 'history') { closeSettingsDrawer(); return; }
+        openSettingsDrawer('history');
+      });
       var closeBtn = document.getElementById('drawer-close');
       if (closeBtn) closeBtn.addEventListener('click', closeSettingsDrawer);
       var backdrop = document.getElementById('drawer-backdrop');
