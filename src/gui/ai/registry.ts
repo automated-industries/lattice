@@ -231,31 +231,31 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
-    name: 'create_html_file',
+    name: 'create_dashboard',
     description:
-      "Create an HTML file and save it as a file artifact, then open it in the viewer where it renders live. Use this when the user wants a visual page, an interactive view, a report, or a chart/graph of their data — anything richer than a plain markdown document. You do NOT write the HTML; you provide a clear `spec` and a stronger model authors a complete standalone HTML page (it can read the user's live data and draw charts). Follows the same sharing rules as any file (private mode → private).",
+      "Create a live dashboard — a visual page of charts, tables, and key numbers that answers a question about the user's data — and open it for them. Use this whenever the user asks a question best answered visually, or asks for a dashboard, report, chart, metric, or overview. You do NOT write the page yourself: provide a short `title` and a clear `spec` (what to show, from which data) and a stronger model authors a complete standalone page that reads the user's live data and draws charts. Follows the same sharing rules as any record (private mode → private).",
     mutates: true,
     category: 'row',
     args: obj(
       {
-        title: str('Short human-readable title for the page (no file extension needed).'),
+        title: str('Short human-readable title for the dashboard.'),
         spec: str(
-          'A clear, specific description of what the HTML page should contain and which data it should show (tables/columns, the kind of chart or layout, any filters). The fuller the spec, the better the result.',
+          'A clear, specific description of what the dashboard should contain and which data it should show (tables/columns, the kind of chart or layout, any filters). The fuller the spec, the better the result.',
         ),
       },
       ['title', 'spec'],
     ),
   },
   {
-    name: 'edit_html_file',
+    name: 'edit_dashboard',
     description:
-      'Change an existing HTML file. By default this edits the HTML file the user is currently viewing, so use it when they ask to tweak, restyle, or extend the page on screen ("make it a pie chart", "add a column", "use blue"). You provide the `instruction`; a stronger model re-authors the page in place and the open view refreshes — no new file is created. Pass `id` only to target a specific HTML file other than the open one.',
+      'Change an existing dashboard. By default this edits the dashboard the user is currently viewing, so use it when they ask to tweak, restyle, or extend the one on screen ("make it a pie chart", "add a column", "use blue"). You provide the `instruction`; a stronger model re-authors the page in place and the open view refreshes — no new dashboard is created. Pass `id` only to target a specific dashboard other than the open one.',
     mutates: true,
     category: 'row',
     args: obj(
       {
-        instruction: str('What to change about the HTML page, in plain language.'),
-        id: str('Optional id of the HTML file to edit. Omit to edit the file the user is viewing.'),
+        instruction: str('What to change about the dashboard, in plain language.'),
+        id: str('Optional id of the dashboard to edit. Omit to edit the one the user is viewing.'),
       },
       ['instruction'],
     ),

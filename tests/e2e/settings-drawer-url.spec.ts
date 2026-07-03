@@ -49,7 +49,7 @@ test('a live refresh updates the middle pane in place without flashing a loading
   page,
 }) => {
   for (let i = 0; i < 8; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
   // Land on the items object page (a stable view to refresh).
   await page.evaluate(() => {

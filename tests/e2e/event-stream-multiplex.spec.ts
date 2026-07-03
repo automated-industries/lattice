@@ -43,7 +43,7 @@ test('a tab opens exactly ONE persistent event stream — a WebSocket, not three
     }
   });
 
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Exactly one persistent stream, and it is the multiplexed WebSocket.
@@ -65,7 +65,7 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
   const extraTabs = await Promise.all([context.newPage(), context.newPage(), context.newPage()]);
   for (const t of extraTabs) {
     await t.goto(gui.url);
-    await expect(t.locator('nav.sidebar')).toBeVisible();
+    await expect(t.locator('#ask-dock')).toBeVisible();
   }
 
   // Slow the object-page (provenance) + row fetches in the active tab to simulate
@@ -79,7 +79,7 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
     await route.continue();
   });
 
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Rapidly bounce between the collection and home while row data is still in

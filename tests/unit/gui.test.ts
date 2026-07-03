@@ -1015,6 +1015,7 @@ describe('GUI server — native entities + table allowlist', () => {
     expect(res.bindings.map((b) => b.entity).sort()).toEqual([
       'chat_messages',
       'chat_threads',
+      'dashboards',
       'files',
       'notes',
       'secrets',

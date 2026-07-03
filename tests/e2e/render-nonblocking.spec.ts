@@ -39,7 +39,7 @@ test('navigation paints the new view immediately even when data is slow', async 
     await route.continue();
   });
 
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Navigate to the items object page (provenance). A loading frame must appear

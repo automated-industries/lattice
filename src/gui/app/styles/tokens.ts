@@ -50,7 +50,7 @@ export const tokensCss = `
     }
     /* Keep frosted surfaces opaque where backdrop-filter is unsupported */
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-      header.topbar, .outputs, .ask-lattice-panel, .modal, .settings-drawer,
+      header.topbar, .outputs, .ask-dock, .modal, .settings-drawer,
       .db-menu, .search-results, .emoji-grid { background: var(--surface); }
     }
     * { box-sizing: border-box; }
