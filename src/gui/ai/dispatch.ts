@@ -3,6 +3,7 @@ import type { MutationCtx } from '../mutations.js';
 import { handleRead } from './handlers/read.js';
 import { handleRowMutations } from './handlers/row-mutations.js';
 import { handleCollaboration } from './handlers/collaboration.js';
+import { handleComputed } from './handlers/computed.js';
 import { handleHistory } from './handlers/history.js';
 import {
   NOT_HANDLED,
@@ -22,6 +23,7 @@ export {
   type DispatchCtx,
   type DispatchResult,
   type AssistantJunction,
+  type ComputedOps,
   type HandlerDeps,
 } from './handlers/types.js';
 export { visibilityDenialReason } from './handlers/permission.js';
@@ -41,11 +43,13 @@ export {
 
 /**
  * Registry function names the dispatcher can execute. This is the data-and-
- * history surface — reads, row writes, junction links, undo/redo/revert, and the
+ * history surface — reads, row writes, junction links, undo/redo/revert, the
  * NO-REOPEN schema mutations (create_entity, add_column, create_relationship,
  * delete_entity) that register live via defineLate so the assistant can shape the
- * workspace on request. Only database LIFECYCLE (switch/create a whole database),
- * which re-opens the active connection, stays UI-driven and excluded.
+ * workspace on request, and the computed-table tools (preview / create / update /
+ * refresh — same no-reopen property via the live registration path). Only
+ * database LIFECYCLE (switch/create a whole database), which re-opens the active
+ * connection, stays UI-driven and excluded.
  */
 export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_entities',
@@ -73,6 +77,10 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'add_column',
   'create_relationship',
   'delete_entity',
+  'preview_computed_table',
+  'create_computed_table',
+  'update_computed_table',
+  'refresh_computed_table',
   'undo',
   'redo',
   'revert',
@@ -119,15 +127,22 @@ export async function executeFunction(
   };
 
   try {
-    // The 25 dispatchable names partition disjointly across the four group
+    // The dispatchable names partition disjointly across the five group
     // handlers; each returns NOT_HANDLED for a name it doesn't own. Try them in
     // source first-appearance order (read → row-mutations → collaboration →
-    // history) and return the first real result. The SAME ctx reference is
-    // threaded to every group, so in-turn ctx.validTables / ctx.junctionTables
-    // mutations stay visible to later cases. The single try/catch below maps any
-    // group throw to { ok: false, error } exactly as the prior switch did.
+    // computed → history) and return the first real result. The SAME ctx
+    // reference is threaded to every group, so in-turn ctx.validTables /
+    // ctx.junctionTables mutations stay visible to later cases. The single
+    // try/catch below maps any group throw to { ok: false, error } exactly as
+    // the prior switch did.
     const deps: HandlerDeps = { ctx, mctx, name, args };
-    for (const group of [handleRead, handleRowMutations, handleCollaboration, handleHistory]) {
+    for (const group of [
+      handleRead,
+      handleRowMutations,
+      handleCollaboration,
+      handleComputed,
+      handleHistory,
+    ]) {
       const r = await group(deps);
       if (r !== NOT_HANDLED) return r;
     }

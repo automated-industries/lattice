@@ -251,6 +251,53 @@ describe('chat tool loop', () => {
     expect(capturedSystem).toMatch(/do NOT retry the same call/i);
   });
 
+  it('teaches the derived-vs-new decision for "make me a table of X" (computed views)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'make me a table of urgent tickets' }));
+
+    // A "table of X" over data that already exists must go preview-first through
+    // the computed-table tools — not create_entity — and be described to the
+    // user as "a computed view" in plain language.
+    expect(capturedSystem).toContain('preview_computed_table');
+    expect(capturedSystem).toContain('create_computed_table');
+    expect(capturedSystem).toContain('a computed view');
+    expect(capturedSystem).toMatch(/check every field's status/i);
+    expect(capturedSystem).toMatch(/ask ONE short question/);
+    // The no-jargon rule extends to the computed vocabulary.
+    expect(capturedSystem).toMatch(/never say SQL or JOIN/);
+  });
+
+  it('tags computed views in the schema context so the model treats them as read-only', async () => {
+    await db.defineLate('people_summary', {
+      columns: { id: 'TEXT PRIMARY KEY', who: 'TEXT' },
+      render: () => '',
+      outputFile: 'people_summary.md',
+    });
+    const d: DispatchCtx = {
+      ...dispatch,
+      validTables: new Set(['people', 'people_summary']),
+      computedTables: new Set(['people_summary']),
+    };
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch: d, userMessage: 'what do I have?' }));
+
+    expect(capturedSystem).toContain('people_summary [computed view — read-only]');
+    // Ordinary tables carry no computed tag.
+    expect(capturedSystem).not.toContain('people [computed view');
+  });
+
   it("injects the cloud owner's workspace system prompt when provided", async () => {
     let capturedSystem = '';
     const client: LlmClient = {

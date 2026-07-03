@@ -3,6 +3,9 @@ import type { FeedBus } from '../../feed.js';
 import type { MutationCtx } from '../../mutations.js';
 import type { FetchBudget } from '../../../ai/fetch-policy.js';
 import type { DeleteResolution, DeleteEntityOutcome } from '../../schema-ops.js';
+import type { ComputedTableDef } from '../../../config/types.js';
+import type { ComputedPreview } from '../../computed-ops.js';
+import type { FieldFillResult } from '../../../schema/computed-fill.js';
 
 /**
  * Native tables the assistant must NEVER read, write, or be told about. The
@@ -33,6 +36,26 @@ export interface AssistantJunction {
   bFk: string;
 }
 
+/**
+ * The computed-table operations the assistant's computed tools run through —
+ * the same audited, revertible, no-reopen primitives behind the GUI's
+ * computed-table builder routes. Injected by the server as closures over the
+ * active workspace (mirroring `createEntity` and friends below); absent → the
+ * computed-table tools report they're unavailable.
+ */
+export interface ComputedOps {
+  /** Current computed-table definitions, in declaration order. */
+  list(): Promise<{ name: string; def: ComputedTableDef }[]>;
+  /** Dry-run a definition: compile + run with a row cap. No DDL, no persist. */
+  preview(def: ComputedTableDef, limit?: number): Promise<ComputedPreview>;
+  create(name: string, def: ComputedTableDef): Promise<void>;
+  update(name: string, def: ComputedTableDef): Promise<void>;
+  /** Run the AI fill for the table's AI fields (aliases/calcs are always live). */
+  refresh(name: string): Promise<FieldFillResult[]>;
+  /** Drop the definition (refused while other computed tables are built on it). */
+  delete(name: string): Promise<void>;
+}
+
 export interface DispatchCtx {
   db: Lattice;
   feed: FeedBus;
@@ -48,6 +71,13 @@ export interface DispatchCtx {
   validTables: Set<string>;
   /** Junction tables eligible for link/unlink. */
   junctionTables: Set<string>;
+  /**
+   * Names of the registered computed tables (live, read-only projections).
+   * Used to tag them in the schema context and `list_entities` (so the model
+   * never targets one with a row write) and to route `delete_entity` on a
+   * computed name to the definition delete. Absent → treated as empty.
+   */
+  computedTables?: Set<string>;
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
   /**
@@ -95,6 +125,12 @@ export interface DispatchCtx {
    * the assistant asks the user, then re-calls with a resolution.
    */
   deleteEntity?: (name: string, resolution?: DeleteResolution) => Promise<DeleteEntityOutcome>;
+  /**
+   * Computed-table primitives (list / preview / create / update / refresh /
+   * delete) — audited + revertible, no reopen. Supplied by the server; absent →
+   * the computed-table tools report they're unavailable.
+   */
+  computedOps?: ComputedOps;
   /**
    * Author or edit a complete standalone HTML file via a focused model sub-call
    * (a stronger model than the chat default). Supplied by the chat route, closed

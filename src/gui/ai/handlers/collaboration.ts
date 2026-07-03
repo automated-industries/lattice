@@ -120,10 +120,25 @@ export async function handleCollaboration(deps: HandlerDeps): Promise<GroupResul
       };
     }
     case 'delete_entity': {
+      const target = requireString(args.name, 'name');
+      // A computed table is a stored DEFINITION, not data — deleting one drops
+      // the definition (its source rows are untouched), so there is no row
+      // count to resolve and no needsResolution round-trip: route straight to
+      // the computed delete, which refuses while other computed tables are
+      // built on it.
+      if (ctx.computedTables?.has(target)) {
+        if (!ctx.computedOps) {
+          return { ok: false, error: 'Deleting computed tables is not available in this context' };
+        }
+        await ctx.computedOps.delete(target);
+        // Keep the in-turn allowlists consistent with the deletion.
+        ctx.validTables.delete(target);
+        ctx.computedTables.delete(target);
+        return { ok: true, result: { deleted: target, computed: true } };
+      }
       if (!ctx.deleteEntity) {
         return { ok: false, error: 'Deleting tables is not available in this context' };
       }
-      const target = requireString(args.name, 'name');
       // Optional resolution for a NON-empty table: delete its data too, or move
       // it into another table. Omitted → the tool reports the table isn't empty
       // and the assistant must ask the user before retrying.

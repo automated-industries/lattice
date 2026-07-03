@@ -129,6 +129,7 @@ const BASE_SYSTEM_PROMPT = [
   '',
   'Rules:',
   '- The tables under "Current database" below are what already exists. When the user asks for an object type that has no table, CREATE it with create_entity (pass sensible starter columns), then add rows with create_row — do not refuse or ask whether you "have the ability."',
+  '- "Make me a table/list of X" means one of two things — decide before creating anything. Either (a) the user wants a NEW kind of record they will fill with NEW information → create a regular entity with create_entity; or (b) they want a projection or transformation of records that ALREADY exist — chosen fields, renamed fields, a calculation, a categorization, an AI summary → call preview_computed_table with the intended definition, check every field\'s status, fix any failures, then create_computed_table. Decide by checking the schema below: if every field the user named exists (or can be derived) on one entity or its linked entities → computed; if the fields exist nowhere yet → regular entity; genuinely ambiguous → ask ONE short question. To the user, call the result "a computed view" — a live view built from their existing records that updates with them and cannot be edited row-by-row — and describe its fields in plain language; in the same spirit as the jargon rule below, never say SQL or JOIN.',
   '- To relate two tables (link their rows), call create_relationship(table_a, table_b) to get a junction + its two foreign-key columns, then `link` each pair using those columns. If the junction already exists, just `link`.',
   '- Use the exact table names from the schema (or one you just created) — never guess a name for a table that should already exist.',
   "- Prefer reading before writing. To understand a specific record, prefer get_row_context — it returns the record's pre-rendered context (its own fields plus its related records and a combined summary) in ONE call, already organized, which is cheaper and richer than stitching together many list_rows/get_row reads. Use get_row for a single record's exact current fields, list_rows to browse, and search to find records by text; fall back to those whenever get_row_context reports no rendered context.",
@@ -196,7 +197,13 @@ export async function buildSchemaContext(d: DispatchCtx): Promise<string> {
     } catch {
       // best-effort — list the table even if the count query fails
     }
-    const tag = d.junctionTables.has(t) ? ' [junction]' : '';
+    // Computed views are tagged so the model reads them but never targets one
+    // with update_row / delete_row (their rows are read-only projections).
+    const tag = d.junctionTables.has(t)
+      ? ' [junction]'
+      : d.computedTables?.has(t)
+        ? ' [computed view — read-only]'
+        : '';
     const tdesc = resolveTableDescription(t, tableDesc.get(t));
     lines.push(
       `- ${t}${tag} (${colNames.join(', ')}) — ${String(count)} row${count === 1 ? '' : 's'}` +
