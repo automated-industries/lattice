@@ -121,8 +121,11 @@ import { css } from '../../src/gui/app/css.js';
 // #question-cards strip between the chat feed and the composer, the in-turn
 // .q-inline sizing, and the .has-question notification dot on the Ask trigger.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 134680;
-const ORIGINAL_SHA256 = 'eff27856501baaa1ea0d6d61c8e2ff4cc189b592b284235d00b729193faf0d92';
+// Import computed proposals — .imp-computed checkbox rows for the confirm
+// card's opt-in "Computed tables" section (inline-import segment). Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 134968;
+const ORIGINAL_SHA256 = '8c668a7bd6e3af421a1c19476474a73cae2f61979572b0172c4e533fbc1f0d7c';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

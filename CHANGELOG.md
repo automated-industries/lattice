@@ -8,7 +8,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **Marginal import links now ask instead of auto-creating.** Link inference
+  in the structured importer is governed by the clarify threshold (default
+  0.6): a reference field whose values resolve to another table at or above
+  the threshold is linked exactly as before, but candidates between the floor
+  (threshold/2 — 0.3 by default) and the threshold — which previously
+  auto-created a junction — are **no longer created**. The referencing column
+  imports as a plain scalar column and a short clarification question is
+  queued instead (at most 5 per import, highest confidence first): answering
+  "Yes, connect them" creates and fills the junction from the already-imported
+  rows (idempotent, snapshot-aware); "No" or dismissing does nothing; a
+  free-form answer is saved as the column's definition. Below the floor,
+  candidates are dropped as noise, as before. The confirm card echoes the
+  threshold its proposal was inferred under, so apply bands links identically
+  even if the preference changes between upload and confirm.
+
 ### Added
+
+- **Excel formula capture.** Reading a workbook now also summarizes each
+  column's formulas (per-sheet, per-column normalized-pattern counts + an
+  example), including same-column shared-formula runs. Cell values still
+  import from the cached formula results exactly as before — the formula text
+  feeds only the computed-table proposals below.
+- **Opt-in computed-table proposals on import.** A new-dataset import proposal
+  can now carry a "Computed tables" section on the confirm card, unchecked by
+  default:
+  - a **calc field** when a spreadsheet column is computed by one dominant
+    row-local formula (≥ 90% of the column's rows) that translates into the
+    sandboxed calc expression grammar — literals, same-row references,
+    `+ - *`, zero-guarded `/`, text-only `&`/`CONCATENATE`, `IF` →
+    `CASE WHEN`, `AND`/`OR`/`NOT`, comparisons, `ROUND`, `ABS`, and `SUM`
+    over a same-row range; anything else simply isn't proposed;
+  - sparingly, a **classifier field** (no model calls at proposal time) for a
+    category-named text column that missed dimension extraction only on
+    cardinality, seeded with a starter label set drawn from the most frequent
+    values (at most 1 per table and 3 per import).
+
+  Checked fields are created after materialize as live computed tables named
+  `<entity>_computed` (deterministic `_2`/`_3` suffix on collision) through
+  the same audited path as the computed-table builder; the raw source columns
+  import as plain values regardless, and a computed-create failure warns
+  without failing the import. The apply route re-derives the proposals from
+  the stored bytes and honors the opt-in by name — the card's payload is
+  never trusted as a definition.
 
 - **Clarification questions — ask when marginal, act when confident.** One
   threshold (the machine-local `clarify_threshold` preference, default 0.6,

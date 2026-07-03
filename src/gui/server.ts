@@ -955,6 +955,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // Stamp this GUI session so answer-driven writes share the
                 // user's undo/redo stack (same as the chat route).
                 sessionId,
+                // Schema-creating answers (a confirmed import link's junction)
+                // persist their table definition like the importer does, and
+                // register it as servable without a reopen.
+                configPath: active.configPath,
+                validTables: active.validTables,
                 pathname,
                 method,
               });
@@ -1034,6 +1039,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 latticeRoot: dirname(active.configPath),
                 validTables: active.validTables,
                 softDeletable: active.softDeletable,
+                feed: active.feed,
+                // Opt-in computed-table proposals create through the same
+                // audited op as the builder UI (view DDL + YAML + undo/redo).
+                createComputed: (name, def) => createComputedTable(active, name, def, sessionId),
               });
             },
           },

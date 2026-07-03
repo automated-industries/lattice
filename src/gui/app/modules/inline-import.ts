@@ -59,7 +59,8 @@ export const inlineImportJs = `
     // Render the confirm card for a structured drop the server flagged as
     // needing confirmation. autoImport is the upload response's proposal:
     // { reason, fileId, plan:{entities,dimensions,linkages}, views, asOf,
-    //   asOfCandidates, asOfColumns, schemaMatch, matchedCount, totalEntities }.
+    //   asOfCandidates, asOfColumns, schemaMatch, matchedCount, totalEntities,
+    //   linkConfidence, computedProposals }.
     function renderInlineImportCard(autoImport) {
       if (!autoImport || !autoImport.fileId) return;
       var plan = autoImport.plan || {};
@@ -70,6 +71,7 @@ export const inlineImportJs = `
       var candidates = autoImport.asOfCandidates || [];
       var asOfColumns = autoImport.asOfColumns || [];
       var schemaMatch = autoImport.schemaMatch || {};
+      var computed = autoImport.computedProposals || [];
       var headerText = autoImport.reason === 'needs-confirm'
         ? 'Add a dated snapshot'
         : 'Import as a new dataset';
@@ -142,6 +144,25 @@ export const inlineImportJs = `
         '<label><input type="radio" name="ii-mode" value="schema"> <span><b>Data model / schema only</b> — tables, dimension values, and views. No rows.</span></label>' +
         '<label><input type="radio" name="ii-mode" value="contents"> <span><b>Contents only</b> — the rows and their links, into tables that already exist.</span></label>' +
       '</div>');
+      if (computed.length) {
+        // Opt-in computed-table proposals: unchecked by default; the raw
+        // source columns import as plain values either way.
+        parts.push('<h4 class="imp-sub">Computed tables</h4>');
+        parts.push('<p class="cd-sub">Optional — formulas and categories detected in the source. ' +
+          'Checked fields become live computed tables; the raw values import either way.</p>');
+        computed.forEach(function (t) {
+          (t.fields || []).forEach(function (f) {
+            var evidence = f.kind === 'calc'
+              ? (f.example ? 'formula =' + f.example : 'formula')
+              : 'classify by ' + (f.input || '');
+            parts.push('<label class="imp-computed"><input type="checkbox" class="ii-computed"' +
+              ' data-table="' + escapeHtml(t.table) + '" data-field="' + escapeHtml(f.name) + '"> ' +
+              '<span><b>' + escapeHtml(t.table) + '.' + escapeHtml(f.name) + '</b> &mdash; ' +
+              escapeHtml(evidence) + ' &middot; ' + Math.round((f.confidence || 0) * 100) +
+              '% of rows</span></label>');
+          });
+        });
+      }
       parts.push('<div class="cd-row"><button class="cd-btn cd-primary" id="ii-apply" type="button">Import into Lattice</button></div>');
       parts.push('<div class="imp-card-log" id="ii-log"></div>');
 
@@ -170,14 +191,15 @@ export const inlineImportJs = `
 
       var applyBtn = document.getElementById('ii-apply');
       if (applyBtn) applyBtn.addEventListener('click', function () {
-        runInlineImport(autoImport.fileId, title, content);
+        runInlineImport(autoImport, title, content);
       });
     }
 
     // POST the confirmed proposal to /api/import/apply and stream the pipeline
     // live into the card's log. On 'done' show a success summary + refresh the
     // Objects nav in place; on 'error' show the message.
-    function runInlineImport(fileId, title, content) {
+    function runInlineImport(autoImport, title, content) {
+      var fileId = autoImport.fileId;
       var sel = content.querySelector('input[name="ii-mode"]:checked');
       var mode = sel ? sel.value : 'both';
       var asofEl = document.getElementById('ii-asof');
@@ -185,6 +207,18 @@ export const inlineImportJs = `
       var perColEl = document.getElementById('ii-asof-percol');
       var colSel = document.getElementById('ii-asof-col');
       var asOfColumn = (perColEl && perColEl.checked && colSel) ? colSel.value : '';
+      // Checked computed-table fields, grouped per proposed table.
+      var computedByTable = {};
+      content.querySelectorAll('.ii-computed').forEach(function (cb) {
+        if (!cb.checked) return;
+        var t = cb.getAttribute('data-table');
+        var f = cb.getAttribute('data-field');
+        if (!t || !f) return;
+        (computedByTable[t] = computedByTable[t] || []).push(f);
+      });
+      var computedSel = Object.keys(computedByTable).map(function (t) {
+        return { table: t, fields: computedByTable[t] };
+      });
       var applyBtn = document.getElementById('ii-apply');
       if (applyBtn) applyBtn.disabled = true;
 
@@ -204,7 +238,16 @@ export const inlineImportJs = `
       title.textContent = 'Importing your data…';
       addLine('Starting…');
 
-      iiStreamNdjson('/api/import/apply', { fileId: fileId, mode: mode, asOf: asOf, asOfColumn: asOfColumn }, function (evt) {
+      iiStreamNdjson('/api/import/apply', {
+        fileId: fileId,
+        mode: mode,
+        asOf: asOf,
+        asOfColumn: asOfColumn,
+        // Echo the threshold the proposal was inferred under so apply's
+        // re-derivation bands links identically.
+        linkConfidence: autoImport.linkConfidence,
+        computed: computedSel,
+      }, function (evt) {
         if (!evt) return;
         if (evt.phase === 'done') {
           var r = evt.result || {};

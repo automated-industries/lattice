@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import type { CellValue, Worksheet } from 'exceljs';
+import { columnLetter, normalizeRowFormula, type ColumnFormulaStats } from './formula.js';
 
 /**
  * Convert an Excel workbook into the record-array shape the importer consumes
@@ -39,11 +40,41 @@ function isFilled(v: unknown): boolean {
   return v !== null && v !== undefined && v !== '';
 }
 
-/** Detect the single primary table in a worksheet and return its rows as records. */
-function sheetToRecords(ws: Worksheet): Record<string, unknown>[] {
+/** Per-sheet formula summary: the header layout plus each column's formula usage. */
+export interface SheetFormulaSummary {
+  /** Sheet column letter → detected header name (the record key), for mapping
+   *  a formula's cell references back onto the imported columns. */
+  columnLetters: Record<string, string>;
+  /** Header name → formula stats. Only columns with ≥ 1 formula cell appear. */
+  columns: Record<string, ColumnFormulaStats>;
+}
+
+/** Workbook formula summary: sheet name → per-column formula usage. */
+export type WorkbookFormulaSummary = Record<string, SheetFormulaSummary>;
+
+/** One sheet's extraction: the records plus the formula summary gathered
+ *  during the same single pass over the cells. */
+interface SheetExtract {
+  records: Record<string, unknown>[];
+  summary: SheetFormulaSummary;
+}
+
+/** The parts of an exceljs formula cell value the summary reads. */
+interface FormulaCell {
+  formula?: unknown;
+  /** On a shared-formula slave: the MASTER cell's address (e.g. `"F2"`). */
+  sharedFormula?: unknown;
+}
+
+/** Detect the single primary table in a worksheet and return its rows as
+ *  records, capturing each column's formula usage along the way. Values are
+ *  read from the cached formula RESULTS exactly as before — the formula text
+ *  feeds only the summary. */
+function extractSheet(ws: Worksheet): SheetExtract {
+  const empty: SheetExtract = { records: [], summary: { columnLetters: {}, columns: {} } };
   const rowCount = ws.rowCount;
   const colCount = ws.columnCount;
-  if (rowCount < 2 || colCount < 2) return []; // empty or single-cell nav sheet
+  if (rowCount < 2 || colCount < 2) return empty; // empty or single-cell nav sheet
 
   const nonEmpty = (r: number): number => {
     let n = 0;
@@ -60,7 +91,7 @@ function sheetToRecords(ws: Worksheet): Record<string, unknown>[] {
       break;
     }
   }
-  if (headerRow < 0) return []; // no table detected (prose / navigation sheet)
+  if (headerRow < 0) return empty; // no table detected (prose / navigation sheet)
 
   // Column map: only header cells that carry a name; de-dup repeated names.
   const cols: { c: number; name: string }[] = [];
@@ -76,15 +107,46 @@ function sheetToRecords(ws: Worksheet): Record<string, unknown>[] {
     seen.add(name);
     cols.push({ c, name });
   }
-  if (cols.length === 0) return [];
+  if (cols.length === 0) return empty;
+  const columnLetters: Record<string, string> = {};
+  for (const { c, name } of cols) columnLetters[columnLetter(c)] = name;
+
+  // Formula bookkeeping. Masters of shared formulas are registered by address
+  // so a slave (`{ sharedFormula: '<masterAddr>' }`) can reuse the master's
+  // pattern — valid only when the slave sits in the SAME COLUMN (a shared
+  // formula shifts references by the cell offset, so a same-column slave keeps
+  // the master's column tokens; a horizontal share does not and is counted as
+  // an unsupported formula row).
+  const masters = new Map<string, { c: number; r: number; formula: string }>();
+  const stats = new Map<string, ColumnFormulaStats>();
+  const MAX_PATTERNS = 8;
+  const noteFormula = (name: string, pattern: string | null, example: string | null): void => {
+    let st = stats.get(name);
+    if (!st) {
+      st = { total: 0, formulaRows: 0, patterns: {}, example: '' };
+      stats.set(name, st);
+    }
+    st.formulaRows++;
+    if (example && !st.example) st.example = example;
+    if (pattern !== null) {
+      if (pattern in st.patterns) st.patterns[pattern] = (st.patterns[pattern] ?? 0) + 1;
+      else if (Object.keys(st.patterns).length < MAX_PATTERNS) st.patterns[pattern] = 1;
+      // Past the cap a new pattern is not tracked — with > 8 distinct patterns
+      // no single one can dominate the column anyway.
+    }
+  };
 
   // Data rows until the first fully-blank row (table boundary); drop totals rows.
   const records: Record<string, unknown>[] = [];
+  const filledRows = new Map<string, number>(); // column → rows carrying anything
   for (let r = headerRow + 1; r <= rowCount; r++) {
     const row: Record<string, unknown> = {};
+    const cells: { c: number; name: string; raw: CellValue; v: unknown }[] = [];
     let any = false;
     for (const { c, name } of cols) {
-      const v = cellValue(ws.getCell(r, c).value);
+      const raw = ws.getCell(r, c).value;
+      const v = cellValue(raw);
+      cells.push({ c, name, raw, v });
       if (isFilled(v)) {
         row[name] = v;
         any = true;
@@ -93,9 +155,40 @@ function sheetToRecords(ws: Worksheet): Record<string, unknown>[] {
     if (!any) break; // blank row ends the table
     const first = cols[0] ? row[cols[0].name] : undefined;
     if (typeof first === 'string' && /^total\b/i.test(first.trim())) continue; // totals row
+    for (const { c, name, raw, v } of cells) {
+      const cell = raw !== null && typeof raw === 'object' ? (raw as unknown as FormulaCell) : null;
+      const formula = typeof cell?.formula === 'string' ? cell.formula : null;
+      const sharedRef = typeof cell?.sharedFormula === 'string' ? cell.sharedFormula : null;
+      if (formula !== null) {
+        masters.set(columnLetter(c) + String(r), { c, r, formula });
+        noteFormula(name, normalizeRowFormula(formula, r), formula);
+      } else if (sharedRef !== null) {
+        const master = masters.get(sharedRef);
+        const reusable = master?.c === c ? master : null; // same-column shares only
+        noteFormula(
+          name,
+          reusable ? normalizeRowFormula(reusable.formula, reusable.r) : null,
+          reusable ? reusable.formula : null,
+        );
+      }
+      if (isFilled(v) || formula !== null || sharedRef !== null) {
+        filledRows.set(name, (filledRows.get(name) ?? 0) + 1);
+      }
+    }
     records.push(row);
   }
-  return records;
+
+  const columns: Record<string, ColumnFormulaStats> = {};
+  for (const { name } of cols) {
+    const st = stats.get(name);
+    if (st) columns[name] = { ...st, total: filledRows.get(name) ?? 0 };
+  }
+  return { records, summary: { columnLetters, columns } };
+}
+
+/** Detect the single primary table in a worksheet and return its rows as records. */
+function sheetToRecords(ws: Worksheet): Record<string, unknown>[] {
+  return extractSheet(ws).records;
 }
 
 // The dropped title/preamble text of the last-parsed workbook, keyed by absolute
@@ -107,6 +200,19 @@ const preambleCache = new Map<string, string>();
  *  workbook last read by {@link excelToRecords}, for as-of date detection. */
 export function excelPreambleText(absPath: string): string {
   return preambleCache.get(resolve(absPath)) ?? '';
+}
+
+// Per-column formula summaries of the last-parsed workbook, keyed by absolute
+// path exactly like the preamble cache — gathered during the single read so the
+// computed-table proposer never re-opens the file. Derived purely from the
+// bytes, so the proposal-time read (of the upload's temp path) and the
+// apply-time read (of the retained blob) produce identical summaries.
+const formulaCache = new Map<string, WorkbookFormulaSummary>();
+
+/** The per-sheet, per-column formula summary of a workbook last read by
+ *  {@link excelToRecords}, for computed-table (calc field) proposals. */
+export function excelFormulaSummary(absPath: string): WorkbookFormulaSummary {
+  return formulaCache.get(resolve(absPath)) ?? {};
 }
 
 /** First few rows of a sheet as text, for preamble/title scanning. */
@@ -141,16 +247,21 @@ export async function excelToRecords(absPath: string): Promise<Record<string, un
   await wb.xlsx.readFile(absPath);
   const out: Record<string, unknown[]> = {};
   const preamble: string[] = [];
+  const formulas: WorkbookFormulaSummary = {};
   const props = wb.properties as { title?: string } | undefined;
   if (props?.title) preamble.push(props.title);
   for (const ws of wb.worksheets) {
     preamble.push(ws.name, sheetPreamble(ws));
-    const records = sheetToRecords(ws);
-    if (records.length > 0) out[ws.name] = records;
+    const { records, summary } = extractSheet(ws);
+    if (records.length > 0) {
+      out[ws.name] = records;
+      formulas[ws.name] = summary;
+    }
   }
   preambleCache.set(resolve(absPath), preamble.filter(Boolean).join('\n'));
+  formulaCache.set(resolve(absPath), formulas);
   return out;
 }
 
 /** Exposed for tests: detect + extract one sheet's records (pure, no file I/O). */
-export const __test = { sheetToRecords, cellValue };
+export const __test = { sheetToRecords, extractSheet, cellValue };
