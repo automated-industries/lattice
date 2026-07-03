@@ -31,10 +31,11 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('renderEntityEditorInto');
     expect(guiAppHtml).toContain('renderBrainGraph');
 
-    // The file-system workspace + classic table editor both ship.
+    // The file-system workspace is the single view (the classic table editor
+    // was absorbed into the unified record page and retired).
     expect(guiAppHtml).toContain('renderFsCollection');
     expect(guiAppHtml).toContain('renderFsItem');
-    expect(guiAppHtml).toContain('renderTable');
+    expect(guiAppHtml).toContain('loadFieldsEditor'); // the absorbed structured editor
 
     // Branding
     expect(guiAppHtml).toContain('Lattice');
