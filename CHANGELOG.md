@@ -363,6 +363,12 @@ database connector).
 
 ### Fixed
 
+- **Clicking a table's markdown file shows markdown.** A whole-table rollup
+  `.md` in the Markdown tree previously landed on the table's rows view. The
+  collection page now carries the same Formatted | Markdown toggle records
+  have — Markdown shows the rendered rollup (read-only; rollups are generated
+  files) — and a rollup click lands directly in that mode.
+
 - **Back/Forward history is per-workspace.** The header navigation buttons now
   walk an app-managed history scoped to the active workspace — previously they
   used the browser history, which spans workspace switches (a switch is a soft

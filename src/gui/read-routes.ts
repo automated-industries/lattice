@@ -1110,11 +1110,26 @@ export async function handleReadRoutes(
       return true;
     }
     const relNorm = rel.replace(/\\/g, '/');
+    // ?content=1 additionally returns the file's text — ONLY for paths that
+    // resolve to a Lattice-claimed artifact (a table rollup or a record file);
+    // strays stay unreadable through the API.
+    const wantContent = url.searchParams.get('content') === '1';
+    const readContent = (): string | null => {
+      try {
+        return readFileSync(target, 'utf8');
+      } catch {
+        return null;
+      }
+    };
     // (1) A table's whole-table rollup → the table's object page.
     const guiTables = loadGuiData(active.configPath, active.outputDir, false).tables;
     const byRollup = guiTables.find((t) => t.outputFile === relNorm);
     if (byRollup && !active.hiddenLinkTables.has(byRollup.name)) {
-      sendJson(res, { kind: 'table', table: byRollup.name });
+      sendJson(res, {
+        kind: 'table',
+        table: byRollup.name,
+        ...(wantContent ? { content: readContent() } : {}),
+      });
       return true;
     }
     // (2) A per-record file: [directoryRoot]/[slug]/[file.md] → map the root to
@@ -1164,7 +1179,12 @@ export async function handleReadRoutes(
             const head = readFileSync(cand, 'utf8').slice(0, 2000);
             const m = fm.exec(head);
             if (m?.[1]) {
-              sendJson(res, { kind: 'record', table, rowId: m[1] });
+              sendJson(res, {
+                kind: 'record',
+                table,
+                rowId: m[1],
+                ...(wantContent ? { content: readContent() } : {}),
+              });
               return true;
             }
           } catch {
@@ -1173,7 +1193,7 @@ export async function handleReadRoutes(
         }
         // The dir maps to a table but no row id was recoverable — at least land
         // on the table.
-        sendJson(res, { kind: 'table', table });
+        sendJson(res, { kind: 'table', table, ...(wantContent ? { content: readContent() } : {}) });
         return true;
       }
     }
