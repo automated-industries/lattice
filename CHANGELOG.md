@@ -237,6 +237,26 @@ database connector).
 
 ### Changed
 
+- **The Outputs Markdown tree mirrors the Tables list exactly.** One node per
+  (non-junction) table, grouped in the same Source/Tables categories as the
+  Tables mirror; each expands to the table's rollup + per-record folders.
+  Junction context never appears (by construction), and stray root files no
+  table claims trail under "Other files". Tables with no rendered context are
+  listed with an empty state so the two lists never disagree.
+- **One markdown surface.** Clicking a rendered .md in the Outputs tree now
+  resolves it to its record and opens the record page (with its editable
+  Formatted | Markdown toggle) — the separate read-only markdown viewer and its
+  raw file-read endpoint are removed.
+- **Nested tables indent under their parent in the Tables explorer.** A
+  belongsTo (1:N) child renders indented to its nesting depth; the connector
+  LINES between cards now mean many-to-many only.
+- **Nesting and relationships are mutually exclusive.** Between any two tables,
+  a belongsTo nesting and a many-to-many relationship can no longer coexist —
+  and two tables can never nest into each other. Enforced in the shared
+  junction-creation primitive (covering the assistant and auto-linking too),
+  both schema routes, and mirrored in the pickers/drag targets with clear,
+  surfaced errors.
+
 - **Source-tier tables are excluded from the Objects grid and the graph.** Files,
   connector-synced tables, and imported database tables are raw inputs — they're
   browsed from the Inputs column and listed under the Tables explorer's Source

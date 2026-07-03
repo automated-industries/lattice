@@ -249,8 +249,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // database fields ONLY (the raw connection-string input is removed; the connection
 // is read-only by contract) and its lead copy states the read-only guarantee.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 600642;
-const ORIGINAL_SHA256 = '46a19be43b93acb18358a2f3bc8e8099abb8509201c25598f3fd149f2bdf09b6';
+// 5.0 GUI batch 11 — the Outputs Markdown tree lists ONE node per table in the
+// same tier categories as the Tables mirror (junctions excluded by construction;
+// strays under Other files); .md clicks resolve to the record page (the single
+// markdown surface — the read-only #/md viewer is deleted); belongsTo-nested
+// tables indent under their parent in the Tables explorer (link lines are m2m
+// only); exclusivity client guards. Length + hash recaptured.
+const ORIGINAL_LENGTH = 603883;
+const ORIGINAL_SHA256 = 'ca593a3990694f1db8a27231e07de2873b29ebba13f3b4b1d57a5c4d0f4042cb';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

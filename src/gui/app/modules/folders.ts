@@ -208,6 +208,18 @@ export const foldersJs = `
     // parent). A completed folder-on-folder drag calls this.
     function foldersNestDrop(source, target) {
       if (!source || !target || source === target) return;
+      // Nesting and a many-to-many relationship are mutually exclusive between
+      // the same two objects — the server refuses too; pre-check for a clear toast.
+      var m2m = (typeof mtEdgesCache !== 'undefined' && mtEdgesCache || []).some(function (e) {
+        if (e.type !== 'manyToMany') return false;
+        var s = String(e.source).replace(/^table:/, '');
+        var t = String(e.target).replace(/^table:/, '');
+        return (s === source && t === target) || (s === target && t === source);
+      });
+      if (m2m) {
+        if (typeof showToast === 'function') showToast('These objects are linked by a relationship - remove the link before nesting one inside the other', { type: 'error' });
+        return;
+      }
       // A folder can't be nested into its own descendant (would loop the tree).
       if (foldersIsAncestor(source, target)) {
         if (typeof showToast === 'function') showToast("Can't nest a folder inside its own child", { type: 'error' });
