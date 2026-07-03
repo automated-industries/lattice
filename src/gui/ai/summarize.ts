@@ -184,9 +184,12 @@ const EXTRACT_SYSTEM =
   'entity with a short snake_case PLURAL name and 2-6 simple snake_case columns. ' +
   'Extract only objects the document is genuinely about — prefer 1-3, never more ' +
   'than 3, and never invent data not in the document. Return ONLY a JSON array of ' +
-  'objects {"entity","isNew","columns","values","label"}, where "values" is an ' +
-  'OBJECT mapping each column name to its value — e.g. ' +
-  '{"invoice_number":"INV-114","total":"6400"} — in a ```json fenced block.';
+  'objects {"entity","isNew","columns","values","label","confidence"}, where ' +
+  '"values" is an OBJECT mapping each column name to its value — e.g. ' +
+  '{"invoice_number":"INV-114","total":"6400"} — and "confidence" is a number 0-1: ' +
+  'how confident you are in the TARGET-ENTITY decision (that this entity is where ' +
+  'these records belong, or that creating it is warranted) — 1 when the fit is ' +
+  'obvious, lower when you are guessing. All in a ```json fenced block.';
 
 function buildSchemaBlock(existing: SchemaEntity[]): string {
   if (existing.length === 0) return '(no entities yet — propose new ones)';

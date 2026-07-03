@@ -6,6 +6,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Clarification questions — ask when marginal, act when confident.** One
+  threshold (the machine-local `clarify_threshold` preference, default 0.6,
+  settable via `PUT /api/assistant/clarify-threshold`) now governs when an
+  automated inference asks the user instead of guessing: at or above the
+  threshold it acts silently; between the floor (threshold/2) and the threshold
+  it asks a short, information-seeking multiple-choice question (always with a
+  free-form "Other"); below the floor it drops the inference as noise.
+  Questions are always about what the data _means or is for_, never about
+  storage mechanics — and answers are **enrichment, not just disambiguation**:
+  an informative (free-form) answer is also persisted onto the object it
+  describes (as a table/column definition, a row value, or lineage detail), so
+  the knowledge outlives the conversation.
+  - All questions surface in one place — the assistant chat panel — as
+    interactive cards above the composer. A new pending question auto-opens the
+    panel; while the panel is closed with questions waiting, the panel trigger
+    carries a notification dot. Backed by a new question store
+    (`GET /api/questions/pending`, `POST /api/questions/:id/answer`,
+    `POST /api/questions/:id/dismiss`); answering executes the question's
+    deferred action + enrichment writes through the audited mutation paths, and
+    a failed execution leaves the question pending with the error shown on the
+    card.
+  - The assistant gains an in-turn `ask_user` tool: when it is genuinely
+    uncertain about intent or a data object's meaning, it shows one short
+    multiple-choice question inline in the chat and ends its turn; the pick (or
+    free-form reply) is sent as the next message.
+  - First background producer: file-ingest object extraction now reports a
+    confidence for its target-entity decision. Marginal decisions create
+    nothing and ask instead (at most 2 questions per ingested file); confident
+    or confidence-less extractions behave exactly as before.
+
+---
+
 ## [5.0.0] — 2026-06-28
 
 Major release. The GUI is reframed around the data-modeling story —

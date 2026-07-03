@@ -116,8 +116,13 @@ import { css } from '../../src/gui/app/css.js';
 // list on record/collection pages, the Tables explorer's computed-tier "+ New"
 // button + detail-panel actions, and the dashed base→view projection connector
 // (.mt-edge-computes). Length + hash recaptured.
-const ORIGINAL_LENGTH = 131853;
-const ORIGINAL_SHA256 = '28456b681f114e388386ce483797deaedbb3f7fc27b2704cbcc08bbeb4622a91';
+// Clarification questions — a new questions segment: the .q-card question
+// cards (accent-tinted head/options/other-input/error/resolved states), the
+// #question-cards strip between the chat feed and the composer, the in-turn
+// .q-inline sizing, and the .has-question notification dot on the Ask trigger.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 134680;
+const ORIGINAL_SHA256 = 'eff27856501baaa1ea0d6d61c8e2ff4cc189b592b284235d00b729193faf0d92';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

@@ -43,6 +43,7 @@ import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
@@ -934,6 +935,25 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 outputDir: active.outputDir,
                 // Stamp this GUI session so the assistant's writes share the user's
                 // undo/redo stack (the user can undo what they asked it to do).
+                sessionId,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Clarification questions ──
+          // Pending marginal-inference questions surfaced as cards in the chat
+          // panel: list / answer / dismiss. Answering executes the deferred
+          // action + enrichment writes through the shared mutation chokepoint.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/questions')) return false;
+              return await dispatchQuestionRoute(req, res, {
+                db: active.db,
+                feed: active.feed,
+                softDeletable: active.softDeletable,
+                // Stamp this GUI session so answer-driven writes share the
+                // user's undo/redo stack (same as the chat route).
                 sessionId,
                 pathname,
                 method,
