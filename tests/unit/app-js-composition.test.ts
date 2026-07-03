@@ -269,8 +269,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // structured fields editor + junction manager were absorbed into the unified
 // record page (actions menu > Edit fields); #/objects/* redirects; strays group
 // hidden in the Markdown tree. Length + hash recaptured.
-const ORIGINAL_LENGTH = 585888;
-const ORIGINAL_SHA256 = '8c623753384fabef876cbc4f2054d3803c517a4006c29098b0e406fcaea17b98';
+// 5.0 GUI batch 16 — Settings + Version history are ONE full-workspace takeover
+// panel below the header: triggers highlight while open and toggle closed;
+// history is a drawer tab; #/settings/history opens the takeover.
+const ORIGINAL_LENGTH = 587913;
+const ORIGINAL_SHA256 = '3d48fcd1abba50198c7ca182f12c0e9606b7acbf3582a0d2534efd7cff0818ff';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

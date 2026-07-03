@@ -69,7 +69,7 @@ export const guiAppHtml = `<!doctype html>
       <span class="history-sep" aria-hidden="true"></span>
       <button class="history-btn" id="undo-btn" title="Undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
       <button class="history-btn" id="redo-btn" title="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
-      <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
+      <button class="history-btn" id="history-link" type="button" title="Version history">🕐</button>
     </div>
     <div class="activity" id="activity">
       <button class="history-btn activity-pill" id="activity-pill" title="Recent activity" aria-haspopup="true" aria-expanded="false">
@@ -185,6 +185,7 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
+      <button class="drawer-tab" data-tab="history">Version history</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
     <div class="drawer-version" title="Lattice version">Lattice <span class="app-version" id="app-version"><!--LATTICE_VERSION--></span></div>
