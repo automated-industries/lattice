@@ -39,6 +39,24 @@ export async function publishSharedSchema(db: Lattice, configPath: string): Prom
   };
   const entities = cfg.entities ?? {};
   if (Object.keys(entities).length === 0) return;
+  // Sanitize the published layout: a not-yet-upgraded owner config can carry
+  // legacy ROOT-level outputFile values (STATES.md at the Context root — the
+  // orphan-rollup bug). Members hydrate this spec verbatim, so publish the
+  // healed shape (same rewrite as the config upgrade) rather than replicating
+  // the breakage into every member's workspace.
+  for (const [name, def] of Object.entries(entities)) {
+    if (def && typeof def === 'object') {
+      const d = def as { outputFile?: unknown };
+      if (
+        typeof d.outputFile === 'string' &&
+        !d.outputFile.includes('/') &&
+        !d.outputFile.includes('\\') &&
+        d.outputFile.toLowerCase().endsWith('.md')
+      ) {
+        d.outputFile = `.schema-only/${name}.md`;
+      }
+    }
+  }
   await runAsyncOrSync(
     db.adapter,
     `INSERT INTO "__lattice_shared_schema" ("id","entities_json","contexts_json","updated_at")
