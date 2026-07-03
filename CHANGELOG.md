@@ -237,6 +237,14 @@ database connector).
 
 ### Changed
 
+- **One record page for everything.** Regular records, files, and artifacts now
+  share a single page: the Formatted | Markdown toggle (a file's Markdown view
+  shows its source; an artifact edits in place), visibility/privacy/sharing
+  controls, the collapsible Data provenance panel, Connected objects, and a
+  record actions menu (Version history + Delete) — on every record. Files and
+  artifacts are sharable exactly like other rows. The separate file/artifact
+  document renderer and its parallel view-mode state are deleted.
+
 - **The right column is one Markdown view.** Renamed from Outputs; the separate
   Artifacts and Tables sections (which listed the same content as the markdown
   tree) are gone. The single tree lists every entity as a folder — same emojis
