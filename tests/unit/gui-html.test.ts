@@ -248,4 +248,40 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('Connected with Claude');
     expect(guiAppHtml).toContain('asst-oauth-disconnect');
   });
+
+  it('computed-table builder: routed under Tables and wired to the HTTP surface', () => {
+    // The full-page builder renders at #/computed/new | #/computed/<name>
+    // (renderRoute dispatch) and the Tables tab stays lit (tabKeyForHash).
+    expect(guiAppHtml).toContain('function renderComputedBuilder(');
+    expect(guiAppHtml).toContain("hash.indexOf('#/computed/') === 0");
+    // The builder drives the computed-tables HTTP surface: field picker,
+    // dry-run preview, create/save, and the NDJSON refresh stream.
+    expect(guiAppHtml).toContain('/api/computed-tables/fields?base=');
+    expect(guiAppHtml).toContain("'/api/computed-tables/preview'");
+    expect(guiAppHtml).toContain("'/api/computed-tables'");
+    expect(guiAppHtml).toContain("+ '/refresh'");
+    // The five kinds carry user-facing labels in the kind <select>.
+    expect(guiAppHtml).toContain('Copy a field');
+    expect(guiAppHtml).toContain('AI category');
+    expect(guiAppHtml).toContain('Total across links');
+    // The Tables explorer offers the builder entry point + computed detail
+    // actions, and lineage understands the computes edge.
+    expect(guiAppHtml).toContain('id="mt-computed-new"');
+    expect(guiAppHtml).toContain('function mtWireComputedDetail(');
+    expect(guiAppHtml).toContain("ed.type === 'computes'");
+  });
+
+  it('computed tables render read-only on record + collection pages', () => {
+    // A computedTable entity gets a badge + a where-values-come-from note, and
+    // the record page swaps the editable context for a read-only field list.
+    expect(guiAppHtml).toContain('fs-computed-badge');
+    expect(guiAppHtml).toContain('its values come from the records');
+    expect(guiAppHtml).toContain('function loadComputedContext(');
+    // The styles for the badge/note/read-only list ship in the stylesheet.
+    expect(guiAppHtml).toContain('.fs-computed-note');
+    expect(guiAppHtml).toContain('.fs-computed-fields');
+    // The projection connector draws dashed, distinct from the m2m links.
+    expect(guiAppHtml).toContain('.mt-edge-computes');
+    expect(guiAppHtml).toContain('mt-edge mt-edge-computes');
+  });
 });

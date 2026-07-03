@@ -44,6 +44,7 @@ import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
 import { modelTablesJs } from './model-tables.js';
+import { computedBuilderJs } from './computed-builder.js';
 import { foldersJs } from './folders.js';
 import { columnCollapseJs } from './column-collapse.js';
 import { wireMergeJs } from './wiremerge.js';
@@ -84,6 +85,7 @@ export const appJs = [
   activityHeaderJs,
   askLatticeJs,
   modelTablesJs,
+  computedBuilderJs,
   foldersJs,
   columnCollapseJs,
   wireMergeJs,
