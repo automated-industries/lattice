@@ -220,6 +220,29 @@ export async function handleSchemaRoutes(
       );
       return true;
     }
+    // EXCLUSIVITY: a belongsTo nesting between the pair (either direction)
+    // conflicts with a many-to-many — refuse with a distinct wording so the
+    // client surfaces it (the duplicate-junction swallow must not eat this).
+    const allTables = getGuiEntities(active.configPath, active.outputDir).tables;
+    const nestsIn = (child: string, parent: string): boolean => {
+      const t = allTables.find((x) => x.name === child);
+      return (
+        t !== undefined &&
+        Object.values(t.relations).some((r) => r.type === 'belongsTo' && r.table === parent)
+      );
+    };
+    if (left !== right && (nestsIn(left, right) || nestsIn(right, left))) {
+      const child = nestsIn(left, right) ? left : right;
+      const parent = child === left ? right : left;
+      sendJson(
+        res,
+        {
+          error: `"${child}" is nested inside "${parent}" — un-nest it before creating a relationship between them`,
+        },
+        400,
+      );
+      return true;
+    }
     const requested = typeof body.name === 'string' ? body.name.trim() : '';
     const jName = requested || `${left}_${right}`;
     if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(jName)) {
@@ -670,6 +693,43 @@ export async function handleSchemaRoutes(
       Object.values(summary.relations).some((r) => r.type === 'belongsTo' && r.table === target);
     if (alreadyLinked) {
       sendJson(res, { error: `"${entityName}" already links to "${target}"` }, 400);
+      return true;
+    }
+    // EXCLUSIVITY (mutual nesting): the target must not already nest inside this
+    // entity — two tables can never contain each other.
+    const allForLink = getGuiEntities(active.configPath, active.outputDir).tables;
+    const targetSummary = allForLink.find((t) => t.name === target);
+    const reverseNested =
+      targetSummary !== undefined &&
+      Object.values(targetSummary.relations).some(
+        (r) => r.type === 'belongsTo' && r.table === entityName,
+      );
+    if (reverseNested) {
+      sendJson(
+        res,
+        {
+          error: `"${target}" is nested inside "${entityName}" — tables cannot be nested into each other`,
+        },
+        400,
+      );
+      return true;
+    }
+    // EXCLUSIVITY (m2m vs nesting): a many-to-many junction between the pair
+    // conflicts with a belongsTo nesting.
+    const junctionBetween = allForLink.find((j) => {
+      if (!active.junctionTables.has(j.name)) return false;
+      const bt = Object.values(j.relations).filter((r) => r.type === 'belongsTo');
+      const tables = new Set(bt.map((r) => r.table));
+      return bt.length === 2 && tables.has(entityName) && tables.has(target);
+    });
+    if (junctionBetween) {
+      sendJson(
+        res,
+        {
+          error: `"${entityName}" and "${target}" are connected by a relationship (${junctionBetween.name}) — remove it before nesting one inside the other`,
+        },
+        400,
+      );
       return true;
     }
     // Name the FK <target>_id, de-duplicating against existing columns.

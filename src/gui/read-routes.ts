@@ -37,6 +37,8 @@ import { countManyPostgres, exactCountMany } from './count-many.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { getAllTablePolicies } from '../cloud/table-policy.js';
 import { buildRowContextLocator, readRowContext } from './row-context.js';
+import { readManifest } from '../lifecycle/manifest.js';
+import { classifyTier } from './tier-classify.js';
 import { CONTEXT_PATH, ROW_HISTORY_PATH, LAST_EDITED_PATH } from './route-paths.js';
 
 /**
@@ -953,22 +955,100 @@ export async function handleReadRoutes(
   // (so a workspace with tens of thousands of context files never ships a huge
   // payload), and /file reads ONE .md. All three are read-only + path-containment-
   // guarded (normalize + prefix + realpath), internal dot-dirs skipped.
+  // Where a table's rendered per-record tree lives: the manifest's record, the
+  // registered entity context, or — for an externally rendered tree with neither
+  // (plain --config serving) — the canonical TitleCase convention, accepted only
+  // when that directory actually exists on disk.
+  const contextDirRootOf = (
+    manifest: ReturnType<typeof readManifest>,
+    table: string,
+  ): string | undefined => {
+    const declared =
+      manifest?.entityContexts[table]?.directoryRoot ??
+      active.entityContextByTable.get(table)?.directoryRoot;
+    if (typeof declared === 'string') return declared;
+    const canonical = table.charAt(0).toUpperCase() + table.slice(1);
+    return existsSync(join(active.outputDir, canonical)) ? canonical : undefined;
+  };
+
   if (method === 'GET' && pathname === '/api/context/tree') {
-    const r = listContextChildren(active.outputDir, '');
-    // Hide pure link tables from the Markdown panel — an implementation detail, not
-    // user-facing documents (same as the brain graph, which draws them as edges,
-    // not nodes). active.hiddenLinkTables (precomputed at workspace open) covers
-    // BOTH relation-declared junctions AND physical link tables created without
-    // declared relations (e.g. an AI-built `files_<entity>`). Junction folders are
-    // the TitleCase form of the snake_case table name; match case-insensitively.
-    const entries = (r?.entries ?? []).filter(
-      (e) => !(e.kind === 'dir' && active.hiddenLinkTables.has(e.name.toLowerCase())),
+    // TYPED tree: one node per non-junction table — the SAME set + tier
+    // categories as the Outputs Tables mirror — each carrying where its rendered
+    // context lives. Junction/link tables are excluded by construction
+    // (hiddenLinkTables covers relation-declared junctions AND physical link
+    // tables). Tables with no rendered context (the natives) still get a node
+    // with empty=true so the Markdown and Tables lists stay identical. Residual
+    // root-level entries no table claims (stray user .md files) trail as
+    // `ungrouped`, after the same link-table filter — now covering FILES too (a
+    // junction ROLLUP at the root is equally an implementation detail).
+    const base = loadGuiData(active.configPath, active.outputDir, false).tables.filter(
+      (t) => !active.hiddenLinkTables.has(t.name),
     );
-    sendJson(res, { entries, truncated: r?.truncated ?? false });
+    const manifest = readManifest(active.outputDir);
+    const claimed = new Set<string>();
+    const tables = base.map((t) => {
+      const dir = contextDirRootOf(manifest, t.name);
+      const rollup = typeof t.outputFile === 'string' ? t.outputFile : undefined;
+      if (dir) claimed.add(dir.split('/')[0] ?? dir);
+      if (rollup) claimed.add(rollup);
+      const hasDir = !!dir && existsSync(join(active.outputDir, dir));
+      const hasRollup = !!rollup && existsSync(join(active.outputDir, rollup));
+      const connected = active.db.getConnectedSource(t.name);
+      return {
+        kind: 'table' as const,
+        table: t.name,
+        tier: classifyTier({
+          name: t.name,
+          columns: t.columns,
+          ...(connected ? { connectorToolkit: connected.toolkit } : {}),
+        }),
+        ...(dir && hasDir ? { dir } : {}),
+        ...(rollup && hasRollup ? { rollup } : {}),
+        empty: !hasDir && !hasRollup,
+      };
+    });
+    const r = listContextChildren(active.outputDir, '');
+    const isHiddenName = (name: string): boolean =>
+      active.hiddenLinkTables.has(name.toLowerCase().replace(/\.md$/, '').replace(/-/g, '_'));
+    const ungrouped = (r?.entries ?? []).filter(
+      (e) => !claimed.has(e.name) && !claimed.has(e.path) && !isHiddenName(e.name),
+    );
+    sendJson(res, { tables, ungrouped, truncated: r?.truncated ?? false });
     return true;
   }
 
   if (method === 'GET' && pathname === '/api/context/list') {
+    // Table-scoped mode: ?table=<t> returns the table's rendered context — the
+    // whole-table rollup .md (synthesized explicitly: it usually lives under a
+    // dot-dir the path scan hides) followed by its per-record folders. ?path=
+    // stays the lazy deeper-level listing.
+    const tableParam = (url.searchParams.get('table') ?? '').trim();
+    if (tableParam) {
+      if (!active.validTables.has(tableParam) || active.hiddenLinkTables.has(tableParam)) {
+        sendJson(res, { error: 'unknown table' }, 404);
+        return true;
+      }
+      const manifest = readManifest(active.outputDir);
+      const t = loadGuiData(active.configPath, active.outputDir, false).tables.find(
+        (x) => x.name === tableParam,
+      );
+      const entries: { name: string; path: string; kind: 'dir' | 'file' }[] = [];
+      const rollup = typeof t?.outputFile === 'string' ? t.outputFile : undefined;
+      if (rollup && existsSync(join(active.outputDir, rollup))) {
+        entries.push({ name: rollup.split('/').pop() ?? rollup, path: rollup, kind: 'file' });
+      }
+      const dirRoot = contextDirRootOf(manifest, tableParam);
+      let truncated = false;
+      if (typeof dirRoot === 'string') {
+        const rr = listContextChildren(active.outputDir, dirRoot);
+        if (rr) {
+          entries.push(...rr.entries);
+          truncated = rr.truncated;
+        }
+      }
+      sendJson(res, { entries, truncated });
+      return true;
+    }
     const rel = decodeURIComponent(url.searchParams.get('path') ?? '');
     const r = rel ? listContextChildren(active.outputDir, rel) : null;
     if (!r) {
@@ -979,22 +1059,19 @@ export async function handleReadRoutes(
     return true;
   }
 
-  if (method === 'GET' && pathname === '/api/context/file') {
+  if (method === 'GET' && pathname === '/api/context/resolve') {
+    // Resolve a rendered context .md path to the RECORD (or table) it belongs
+    // to, so the Outputs tree opens files in the record page (the single
+    // markdown surface) instead of a separate raw viewer. Replaces the old
+    // /api/context/file raw-disk read (whose only caller was that viewer).
     const rel = decodeURIComponent(url.searchParams.get('path') ?? '');
     const base = active.outputDir.replace(/[/\\]+$/, '');
     const target = normalize(join(base, rel));
     const within = target === base || target.startsWith(base + sep);
-    if (
-      !rel ||
-      !within ||
-      !target.toLowerCase().endsWith('.md') ||
-      !existsSync(target) ||
-      !statSync(target).isFile()
-    ) {
+    if (!rel || !within || !target.toLowerCase().endsWith('.md')) {
       sendJson(res, { error: 'context file not found' }, 404);
       return true;
     }
-    // Defense-in-depth against symlinks (mirrors the /gui-assets guard).
     try {
       const real = realpathSync(target);
       const realBase = realpathSync(base);
@@ -1006,11 +1083,76 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'context file not found' }, 404);
       return true;
     }
-    sendJson(res, {
-      name: rel.split('/').pop() ?? rel,
-      path: rel,
-      content: readFileSync(target, 'utf8'),
-    });
+    const relNorm = rel.replace(/\\/g, '/');
+    // (1) A table's whole-table rollup → the table's object page.
+    const guiTables = loadGuiData(active.configPath, active.outputDir, false).tables;
+    const byRollup = guiTables.find((t) => t.outputFile === relNorm);
+    if (byRollup && !active.hiddenLinkTables.has(byRollup.name)) {
+      sendJson(res, { kind: 'table', table: byRollup.name });
+      return true;
+    }
+    // (2) A per-record file: [directoryRoot]/[slug]/[file.md] → map the root to
+    // its table, then read the rendered frontmatter's `<table>_id` for the row.
+    const segs = relNorm.split('/');
+    if (segs.length >= 3) {
+      const manifest = readManifest(active.outputDir);
+      const root = segs[0] ?? '';
+      let table: string | null = null;
+      for (const [t, entry] of Object.entries(manifest?.entityContexts ?? {})) {
+        if (entry.directoryRoot === root) {
+          table = t;
+          break;
+        }
+      }
+      if (!table) {
+        for (const [t, def] of active.entityContextByTable) {
+          if (def.directoryRoot === root) {
+            table = t;
+            break;
+          }
+        }
+      }
+      if (!table) {
+        // Canonical-convention fallback (externally rendered trees): the dir is
+        // the TitleCase of the table name.
+        const guess = root.charAt(0).toLowerCase() + root.slice(1);
+        if (active.validTables.has(guess) && !active.hiddenLinkTables.has(guess)) table = guess;
+      }
+      if (table && active.validTables.has(table) && !active.hiddenLinkTables.has(table)) {
+        // The requested file first; if its frontmatter lacks the id (relation
+        // rollups), fall back to the dir's other rendered files.
+        const dir = join(base, segs.slice(0, -1).join('/'));
+        const candidates = [target];
+        try {
+          for (const f of readdirSync(dir)) {
+            const p2 = join(dir, f);
+            if (p2 !== target && f.toLowerCase().endsWith('.md')) candidates.push(p2);
+          }
+        } catch {
+          /* dir unreadable → fall through */
+        }
+        const idKey = `${table}_id`;
+        const fm = new RegExp(`^${idKey}:\\s*"?([^"\\n]+)"?\\s*$`, 'm');
+        for (const cand of candidates) {
+          try {
+            const head = readFileSync(cand, 'utf8').slice(0, 2000);
+            const m = fm.exec(head);
+            if (m?.[1]) {
+              sendJson(res, { kind: 'record', table, rowId: m[1] });
+              return true;
+            }
+          } catch {
+            /* unreadable candidate — try the next */
+          }
+        }
+        // The dir maps to a table but no row id was recoverable — at least land
+        // on the table.
+        sendJson(res, { kind: 'table', table });
+        return true;
+      }
+    }
+    // (3) A stray/user file no table claims.
+    sendJson(res, { kind: 'none' });
     return true;
   }
 

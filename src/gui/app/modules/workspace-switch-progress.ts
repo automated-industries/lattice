@@ -83,9 +83,6 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         return;
       }
 
-      // #/md/<path> — a context Markdown file opened in the center pane.
-      var mdm = /^#\\/md\\/(.+)$/.exec(hash);
-      if (mdm) { renderMarkdownDoc(content, decodeURIComponent(mdm[1])); return; }
       if (hash === '#/dashboard') { renderDashboard(content); return; }
 
       // Folder drill-in (the Files object's on-disk hierarchy): #/folder/<abs path>.
