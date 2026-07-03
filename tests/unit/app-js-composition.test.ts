@@ -287,8 +287,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // rejects computed tables as source and target (read-only projections); the
 // per-row provenance PROV_TIERS gains 'derived' (model-tables / wiremerge /
 // provenance segments). Length + hash recaptured.
-const ORIGINAL_LENGTH = 593129;
-const ORIGINAL_SHA256 = '54ccc4276a7033c10e6bee5dffe7208c26805525f387669f947c8e9aba66fb5f';
+// Computed-table history: schemaEntryLabel gains the four schema.*_computed
+// ops, and a schema.refresh_computed entry shows "not revertible" instead of a
+// Revert button — a refresh only fills AI cells, so (like a purge) it has no
+// inverse (markdown segment). Length + hash recaptured.
+const ORIGINAL_LENGTH = 593676;
+const ORIGINAL_SHA256 = '5b172e28abc8897037b744b4a159d69ae1a22354bd7f9e5df545fccb08da82b7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

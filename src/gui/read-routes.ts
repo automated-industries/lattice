@@ -195,6 +195,12 @@ async function enrichEntityTables(
           : await db.count(t.name);
       }
       const base: GuiTableSummary = { ...t, rowCount, native: isNativeEntity(t.name) };
+      // Computed tables (live read-only projections) — the authoritative flag
+      // the Tables explorer's "Computed Tables" tier keys on. Stamped from the
+      // live registry (they reach this list via registeredExtraTables: the
+      // config's computed: section is not part of the YAML entity tables, so
+      // there is no double-listing to reconcile).
+      if (db.isComputedTable(t.name)) base.computedTable = true;
       // Connected data type → expose its toolkit so the Objects list can badge it.
       const connectedSource = db.getConnectedSource(t.name);
       if (connectedSource) base.connectorToolkit = connectedSource.toolkit;

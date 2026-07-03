@@ -16,6 +16,7 @@ import {
   softDeleteUserEntity,
   aiDeleteEntity,
 } from './schema-ops.js';
+import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import type { LatticeFieldDef } from '../config/types.js';
 import { isNativeEntity } from '../framework/native-entities.js';
@@ -106,7 +107,7 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
  * route must gate here, not rely on RLS alone; a scoped member could otherwise
  * corrupt the owner's config over HTTP even though RLS blocks the DB write.
  */
-async function denyIfNotCloudOwner(
+export async function denyIfNotCloudOwner(
   db: Parameters<typeof canManageRoles>[0],
   res: ServerResponse,
   verb: string,
@@ -301,6 +302,24 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
       return true;
     }
+    if (active.computedTables.has(name)) {
+      sendJson(
+        res,
+        {
+          error: `"${name}" is a computed table — delete it via DELETE /api/computed-tables/${name}`,
+        },
+        400,
+      );
+      return true;
+    }
+    // Computed-source guard: refuse (naming the dependents, no cascade) while
+    // any computed table still reads from this one.
+    try {
+      assertNotComputedSource(active, name);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
     // Owner-gate: dropping a table mutates the owner's config; RLS alone doesn't
     // gate this DDL/config path.
     if (await denyIfNotCloudOwner(active.db, res, 'delete tables')) return true;
@@ -464,6 +483,18 @@ export async function handleSchemaRoutes(
     }
     if (isNativeEntity(oldName)) {
       sendJson(res, { error: `"${oldName}" is a built-in entity and cannot be modified` }, 400);
+      return true;
+    }
+    if (active.computedTables.has(oldName)) {
+      sendJson(res, { error: `"${oldName}" is a computed table and cannot be renamed` }, 400);
+      return true;
+    }
+    // A computed table's compiled SQL references its sources by name — a rename
+    // would break those projections, so refuse while any depend on this table.
+    try {
+      assertNotComputedSource(active, oldName);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
       return true;
     }
     const body = (await readJson<unknown>(req)) as { to?: unknown };

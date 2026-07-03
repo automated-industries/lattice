@@ -52,6 +52,7 @@ import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
+import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
 import {
   handleWorkspacesRoutes,
@@ -605,6 +606,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText, guiAssetsDir };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
+  const computedDeps: ComputedRoutesDeps = { host };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
   const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
@@ -816,6 +818,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           { handle: (req, res, ctx) => handleReadRoutes(req, res, ctx, readDeps) },
           // ── Schema create/alter/delete (extracted leaf — schema-routes.ts) ──
           { handle: (req, res, ctx) => handleSchemaRoutes(req, res, ctx, schemaDeps) },
+          // ── Computed tables: CRUD + preview + refresh (computed-routes.ts) ──
+          { handle: (req, res, ctx) => handleComputedRoutes(req, res, ctx, computedDeps) },
           // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
           { handle: (req, res, ctx) => handleHistoryRoutes(req, res, ctx, historyDeps) },
           // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
