@@ -11,6 +11,8 @@ import {
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { inferSchema } from '../../src/import/infer.js';
 import { materializeImport } from '../../src/import/materialize.js';
+import { allAsyncOrSync } from '../../src/db/adapter.js';
+import { LINEAGE_TABLE } from '../../src/gui/lineage-store.js';
 
 const dirs: string[] = [];
 const dbs: Lattice[] = [];
@@ -98,6 +100,64 @@ describe('import: infer → materialize → query (canonical)', () => {
     const invFunds = result.links.find((l) => l.junction === 'investments_funds')!;
     expect(invFunds.created).toBe(12);
     expect(invFunds.unresolved).toBe(0);
+  });
+
+  it("records table-level 'derived' lineage for entities, dimensions, junctions, and views", async () => {
+    const base = mkdtempSync(join(tmpdir(), 'lattice-import-lineage-'));
+    dirs.push(base);
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    const root = ensureLatticeRoot(base);
+    const ws = addWorkspace(root, { displayName: 'Lineage' });
+    const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
+    dbs.push(db);
+    const configPath = resolveWorkspacePaths(root, ws).configPath;
+
+    const data = fixture();
+    const plan = inferSchema(data);
+    const views = [
+      {
+        name: 'company_zero',
+        master: 'investments',
+        filterColumn: 'company',
+        filterValue: 'Company 0',
+        matchedRows: 2,
+      },
+    ];
+    await materializeImport({ db, configPath }, data, plan, views);
+
+    const edges = await allAsyncOrSync(
+      db.adapter,
+      `SELECT "object_table", "object_id", "tier", "relation" FROM "${LINEAGE_TABLE}" WHERE "source_kind" = 'import'`,
+    );
+    const byTable = new Map(edges.map((e) => [String(e.object_table), e]));
+    // EVERY materialized table gets a table-level ('*') edge under tier 'derived'
+    // ('computed' is reserved for computed tables): the entities, the dimension
+    // tables (taxonomy), the junctions (links), and the reconstructed views.
+    for (const name of [
+      'funds', // entity
+      'investments', // entity
+      'gross_deploy', // entity
+      'industry', // dimension
+      'region', // dimension
+      'investments_funds', // junction
+      'company_zero', // view
+    ]) {
+      const e = byTable.get(name);
+      expect(e, `missing lineage edge for ${name}`).toBeDefined();
+      expect(e?.object_id).toBe('*');
+      expect(e?.tier).toBe('derived');
+      expect(e?.relation).toBe('materialized_from');
+    }
+    // No edge escaped the relabel — nothing import-sourced remains 'computed'.
+    expect(edges.every((e) => e.tier === 'derived')).toBe(true);
+
+    // Re-applying the import must not duplicate any edge (dedup by tuple).
+    await materializeImport({ db, configPath }, data, plan, views);
+    const recount = await allAsyncOrSync(
+      db.adapter,
+      `SELECT COUNT(*) AS n FROM "${LINEAGE_TABLE}" WHERE "source_kind" = 'import'`,
+    );
+    expect(Number(recount[0]?.n)).toBe(edges.length);
   });
 
   it('is idempotent on re-apply (no duplicate rows or edges)', async () => {

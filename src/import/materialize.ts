@@ -218,15 +218,17 @@ export async function materializeImport(
       });
       const n = await db.count(entity.name);
       rowsByTable[entity.name] = n;
-      // Provenance: record the import as a table-level (computed-tier) source.
-      // objectId '*' is the table-level sentinel — per-row import lineage would
-      // require an unbounded re-read of the just-seeded rows.
+      // Provenance: record the import as a table-level (derived-tier) source —
+      // the table is materialized from the ingested file ('computed' is reserved
+      // for computed tables, i.e. live read-only SQL projections). objectId '*'
+      // is the table-level sentinel — per-row import lineage would require an
+      // unbounded re-read of the just-seeded rows.
       await recordLineage(db.adapter, [
         {
           objectTable: entity.name,
           objectId: '*',
           sourceKind: 'import',
-          tier: 'computed',
+          tier: 'derived',
           relation: 'materialized_from',
           detailJson: JSON.stringify({ rows: n }),
         },
@@ -253,6 +255,17 @@ export async function materializeImport(
       value: { type: 'text' },
       deleted_at: { type: 'text' },
     });
+    // Provenance: a dimension table is materialized by the import just like an
+    // entity — record its table-level edge so it doesn't read as sourceless.
+    await recordLineage(db.adapter, [
+      {
+        objectTable: dim.name,
+        objectId: '*',
+        sourceKind: 'import',
+        tier: 'derived',
+        relation: 'materialized_from',
+      },
+    ]);
 
     // Dimension VALUES are the taxonomy / "dictionary" — part of the schema, so
     // they seed in `schema` and `both`, not in `contents`.
@@ -342,6 +355,17 @@ export async function materializeImport(
     if (!db.getRegisteredTableNames().includes(jName)) tablesCreated.push(jName);
     await db.defineLate(jName, { columns: jCols, primaryKey: 'id' });
     persistTable(configPath, jName, jCfg);
+    // Provenance: junction tables are materialized by the import too — record
+    // their table-level edge so link tables don't read as sourceless.
+    await recordLineage(db.adapter, [
+      {
+        objectTable: jName,
+        objectId: '*',
+        sourceKind: 'import',
+        tier: 'derived',
+        relation: 'materialized_from',
+      },
+    ]);
 
     // Links are contents (they connect rows), so they seed in `contents`/`both`.
     if (!doContents) continue;
@@ -420,6 +444,17 @@ export async function materializeImport(
       const rows = await db.count(v.name);
       rowsByTable[v.name] = rows;
       viewResults.push({ name: v.name, master: v.master, rows });
+      // Provenance: the reconstructed view is materialized by the import.
+      await recordLineage(db.adapter, [
+        {
+          objectTable: v.name,
+          objectId: '*',
+          sourceKind: 'import',
+          tier: 'derived',
+          relation: 'materialized_from',
+          detailJson: JSON.stringify({ master: v.master }),
+        },
+      ]);
       await report({
         phase: 'views',
         table: v.name,
