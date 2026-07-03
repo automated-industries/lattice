@@ -32,6 +32,7 @@ import {
   listNativeBindings,
   isNativeEntity,
   isInternalNativeEntity,
+  isAnalyticsNativeEntity,
   NATIVE_INTERNAL_NAMES,
 } from '../framework/native-entities.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -116,8 +117,11 @@ async function enrichEntityTables(
   // conversation storage — they're real tables but must never surface in the
   // Objects list / dashboard cards. Drop them from the display payload here
   // (they stay registered + queryable for the chat route).
+  // Analytics natives (dashboards) live in the Analytics view, not the
+  // Configure Objects list — same drop, different reason (they stay shareable
+  // and assistant-visible; only the Configure display surfaces exclude them).
   const allTables = [...baseTables, ...registeredExtraTables(db, yamlNames)].filter(
-    (t) => !isInternalNativeEntity(t.name),
+    (t) => !isInternalNativeEntity(t.name) && !isAnalyticsNativeEntity(t.name),
   );
 
   // Postgres: collapse the per-table COUNT(*) fan-out to one query against
@@ -565,7 +569,12 @@ export async function handleReadRoutes(
     // Conversation storage + secrets must never appear in search results
     // (mirrors the assistant's own table allowlist). Same source of truth
     // as the chat dispatcher so search and assistant stay in lockstep.
-    let tables = [...active.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t));
+    // Dashboards are excluded too: their html column is chart boilerplate that
+    // would match countless queries, and dashboards are found by name in the
+    // Analytics sidebar, not workspace search.
+    let tables = [...active.validTables].filter(
+      (t) => !ASSISTANT_HIDDEN_TABLES.has(t) && !isAnalyticsNativeEntity(t),
+    );
     if (requested) {
       const want = new Set(
         requested
@@ -1026,6 +1035,7 @@ export async function handleReadRoutes(
           active.validTables.has(n) &&
           n !== 'secrets' &&
           !isInternalNativeEntity(n) &&
+          !isAnalyticsNativeEntity(n) &&
           !n.startsWith('_lattice') &&
           !n.startsWith('__lattice'),
       )
@@ -1039,7 +1049,8 @@ export async function handleReadRoutes(
       (t) =>
         !active.hiddenLinkTables.has(t.name) &&
         t.name !== 'secrets' &&
-        !isInternalNativeEntity(t.name),
+        !isInternalNativeEntity(t.name) &&
+        !isAnalyticsNativeEntity(t.name),
     );
     const manifest = readManifest(active.outputDir);
     const claimed = new Set<string>();
