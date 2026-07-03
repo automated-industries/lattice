@@ -162,6 +162,57 @@ describe('render reconciliation (retired rollups + hash guard)', () => {
     expect(existsSync(join(ctxDir, 'STRAY.md'))).toBe(true);
     expect(res.filesRemoved.some((p) => p.endsWith('STRAY.md'))).toBe(false);
   });
+
+  it('a vanished multi-output key retires + prunes its file (edited one survives)', async () => {
+    // Render 1: a multi produces one file per key.
+    const mkDb = async (keys: string[]): Promise<Lattice> => {
+      const db = new Lattice(dbPath);
+      db.define('anchor', {
+        columns: { id: 'TEXT PRIMARY KEY', deleted_at: 'TEXT' },
+        render: () => 'anchor\n',
+        outputFile: '.schema-only/anchor.md',
+      });
+      db.defineMulti('per_key', {
+        keys: () => Promise.resolve(keys),
+        outputFile: (k: string) => `Keys/${k}.md`,
+        render: (k: string) => `# ${k}\n`,
+      });
+      await db.init();
+      return db;
+    };
+    const db1 = await mkDb(['a', 'b']);
+    await db1.render(ctxDir);
+    db1.close();
+    expect(existsSync(join(ctxDir, 'Keys', 'a.md'))).toBe(true);
+    expect(existsSync(join(ctxDir, 'Keys', 'b.md'))).toBe(true);
+
+    // The user edits b's file; then key b vanishes.
+    writeFileSync(join(ctxDir, 'Keys', 'b.md'), '# b\nMY NOTE\n');
+    const db2 = await mkDb(['a']);
+    const prev = readManifest(ctxDir);
+    await db2.render(ctxDir);
+    const next = readManifest(ctxDir);
+    expect((next?.retiredFiles ?? []).map((e) => e.path)).toContain('Keys/b.md');
+    const res = await db2.reconcileRenderedTree(ctxDir, prev, next);
+    db2.close();
+
+    // Edited b survives with a warning; a is untouched.
+    expect(existsSync(join(ctxDir, 'Keys', 'b.md'))).toBe(true);
+    expect(res.warnings.some((w) => w.includes('b.md'))).toBe(true);
+    expect(existsSync(join(ctxDir, 'Keys', 'a.md'))).toBe(true);
+
+    // A PRISTINE vanished key is pruned: re-render with b restored then removed.
+    const db3 = await mkDb(['a', 'c']);
+    await db3.render(ctxDir);
+    db3.close();
+    const db4 = await mkDb(['a']);
+    const prev4 = readManifest(ctxDir);
+    await db4.render(ctxDir);
+    const next4 = readManifest(ctxDir);
+    await db4.reconcileRenderedTree(ctxDir, prev4, next4);
+    db4.close();
+    expect(existsSync(join(ctxDir, 'Keys', 'c.md'))).toBe(false);
+  });
 });
 
 describe('reverse-sync drain (the lost-edit race)', () => {

@@ -128,6 +128,12 @@ export interface LatticeManifest {
    */
   tableFiles?: Record<string, TableFileManifestInfo>;
   /**
+   * Phase-2 multi-output files, keyed by multi name: every path the multi
+   * produced on its last render, with content hashes. A key that disappears (a
+   * deleted row) retires its path into `retiredFiles` on the next render.
+   */
+  multiFiles?: Record<string, Record<string, string>>;
+  /**
    * Rendered files whose path is no longer produced by the current schema (an
    * outputFile change, a dropped table). Each entry persists here until the
    * reconciliation pass actually deletes it (only when the on-disk content still

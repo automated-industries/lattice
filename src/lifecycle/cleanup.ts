@@ -185,6 +185,25 @@ export function cleanupEntityContexts(
         }
       }
 
+      // The context's INDEX file (recorded in the manifest) is Lattice-written
+      // too — previously it orphaned on collapse because only per-slug files
+      // were removed. No hash is recorded for it (legacy entry shape), so it is
+      // removed as a manifest-proven Lattice artifact.
+      if (entry.indexFile) {
+        const indexPath = join(outputDir, entry.indexFile);
+        if (existsSync(indexPath)) {
+          if (!options.dryRun) {
+            try {
+              unlinkSync(indexPath);
+            } catch {
+              /* best-effort */
+            }
+          }
+          options.onOrphan?.(indexPath, 'file');
+          result.filesRemoved.push(indexPath);
+        }
+      }
+
       // Finally, remove the now-collapsed table's root dir if it is empty (all its
       // managed per-row dirs were removed and nothing else lives there).
       let rootRemaining: string[];
