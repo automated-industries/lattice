@@ -275,8 +275,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // 5.0 GUI batch 17 — per-table render progress lives in the Markdown tree
 // (fade until rendered, in-node bar, un-fade on done; card overlays removed,
 // header pill kept); boot kicks the stale connector/db-source syncs.
-const ORIGINAL_LENGTH = 588374;
-const ORIGINAL_SHA256 = '6fd1cd2b3a8270c52ebee2049e576b1a652242511177214e9f63ad6e1d2263c5';
+// 5.0 GUI batch 18 — collection pages gain the Formatted | Markdown toggle:
+// markdown shows the table's whole-table rollup (read-only); a rollup .md click
+// in the Markdown tree lands in markdown mode, not the rows view.
+const ORIGINAL_LENGTH = 591943;
+const ORIGINAL_SHA256 = '3f52c8f697ecc19b25e048ff38a0fc16e404c16f7b27e85e6bf4ce5dc645fc32';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
