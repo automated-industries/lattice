@@ -112,6 +112,12 @@ export const modelTablesJs = `
         } else if (ed.type === 'manyToMany') {
           downstream[s].push({ table: t, field: via, kind: 'manyToMany', junction: via });
           downstream[t].push({ table: s, field: via, kind: 'manyToMany', junction: via });
+        } else if (ed.type === 'computes') {
+          // base → computed view: the base is the view's (upstream) source, the
+          // view is the base's (downstream) consumer. Not removable from a chip —
+          // the projection is edited/deleted through the computed-table builder.
+          upstream[t].push({ table: s, field: via, kind: 'computes' });
+          downstream[s].push({ table: t, field: via, kind: 'computes' });
         }
       });
       return { upstream: upstream, downstream: downstream, byName: byName };
@@ -229,8 +235,14 @@ export const modelTablesJs = `
                 : html;
             }).join('')
           : '<div class="mt-tier-empty">\\u2014</div>';
+        // The Computed Tables tier header carries the "+ New" entry point to
+        // the computed-table builder (computed views are created there, not
+        // through the entity wizard).
+        var newBtn = l.id === 'computed'
+          ? '<button type="button" class="mt-tier-new" id="mt-computed-new" title="New computed view">+ New</button>'
+          : '';
         return '<div class="mt-tier mt-tier-' + l.id + '">' +
-          '<div class="mt-tier-head">' + escapeHtml(l.name) + ' <span class="mt-tier-count">' + ents.length + '</span></div>' +
+          '<div class="mt-tier-head">' + escapeHtml(l.name) + ' <span class="mt-tier-count">' + ents.length + '</span>' + newBtn + '</div>' +
           '<div class="mt-tier-body">' + cards + '</div></div>';
       }).join('');
 
@@ -252,6 +264,8 @@ export const modelTablesJs = `
       host.querySelectorAll('.mt-seg-btn').forEach(function (b) {
         b.addEventListener('click', function () { mtSetLevel(b.getAttribute('data-mt-level')); renderModelTables(host); });
       });
+      var newComputed = document.getElementById('mt-computed-new');
+      if (newComputed) newComputed.addEventListener('click', function () { location.hash = '#/computed/new'; });
       host.querySelectorAll('.mt-card').forEach(function (b) {
         b.addEventListener('click', function () {
           if (wmSuppressClick) return; // a wire/merge drag just completed — ignore the trailing click
@@ -469,9 +483,10 @@ export const modelTablesJs = `
       svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
       var sx = tiers.scrollLeft, sy = tiers.scrollTop;
       (mtEdgesCache || []).forEach(function (e) {
-        // Connector LINES are for many-to-many relationships ONLY — a belongsTo
-        // (1:N) shows as nesting/indentation in the tier list, not a line.
-        if (e.type !== 'manyToMany') return;
+        // Connector LINES are for many-to-many links plus computed-table
+        // projections (drawn dashed) — a belongsTo (1:N) shows as
+        // nesting/indentation in the tier list, not a line.
+        if (e.type !== 'manyToMany' && e.type !== 'computes') return;
         var s = String(e.source).replace(/^table:/, '');
         var t = String(e.target).replace(/^table:/, '');
         if (s === t) return;
@@ -518,7 +533,7 @@ export const modelTablesJs = `
         }
         var path = document.createElementNS(SVGNS, 'path');
         path.setAttribute('d', d);
-        path.setAttribute('class', 'mt-edge mt-edge-m2m');
+        path.setAttribute('class', e.type === 'computes' ? 'mt-edge mt-edge-computes' : 'mt-edge mt-edge-m2m');
         svg.appendChild(path);
       });
     }
@@ -576,7 +591,9 @@ export const modelTablesJs = `
           rm + '</span>';
       }
       var upHtml = up.length ? '<div class="mt-detail-sec"><h4>Upstream \\u00b7 sources</h4><div class="mt-lin">' + up.map(function (x) { return linChip(x, false); }).join('') + '</div></div>' : '';
-      var downHtml = down.length ? '<div class="mt-detail-sec"><h4>Downstream \\u00b7 consumers</h4><div class="mt-lin">' + down.map(function (x) { return linChip(x, true); }).join('') + '</div></div>' : '';
+      // A computes chip has no ✕ — the projection is edited or deleted through
+      // the computed-table builder, not unlinked like a relationship.
+      var downHtml = down.length ? '<div class="mt-detail-sec"><h4>Downstream \\u00b7 consumers</h4><div class="mt-lin">' + down.map(function (x) { return linChip(x, x.kind !== 'computes'); }).join('') + '</div></div>' : '';
 
       // Field-level lineage edges (this.<fk> → parent.id ; child.<fk> → this.id).
       var fl = [];
@@ -593,15 +610,32 @@ export const modelTablesJs = `
         : (focusField ? '<div class="mt-detail-sec"><h4>Field lineage \\u00b7 ' + escapeHtml(focusField) + '</h4><div class="mt-fl mt-fl-none">No upstream/downstream links for this field.</div></div>' : '');
 
       var rows = e.rowCount === null ? '\\u2014' : String(e.rowCount);
+      // Computed entities: a builder-specific sub-line + actions (edit the
+      // definition, run the AI refresh, inspect the compiled SQL lazily).
+      var sub = e.computedTable
+        ? 'computed view \\u00b7 ' + e.fields.length + (e.fields.length === 1 ? ' field' : ' fields')
+        : 'table \\u00b7 ' + e.fields.length + ' fields \\u00b7 ' + rows + ' rows';
+      var computedHtml = e.computedTable
+        ? '<div class="mt-detail-sec mt-computed-sec">' +
+            '<a class="mt-detail-open" href="#/computed/' + encodeURIComponent(e.name) + '">Edit definition \\u2192</a>' +
+            '<div class="mt-computed-refresh-row">' +
+              '<button type="button" class="btn" id="mt-computed-refresh">Refresh</button>' +
+              '<span class="mt-computed-refresh-status" id="mt-computed-refresh-status" aria-live="polite"></span>' +
+            '</div>' +
+            '<details id="mt-computed-sql"><summary>Definition (SQL)</summary><pre class="mt-computed-sqlpre" id="mt-computed-sqlpre"></pre></details>' +
+          '</div>'
+        : '';
       panel.innerHTML =
         '<div class="mt-detail-head"><span class="mt-card-ic">' + e.icon + '</span>' +
           '<span class="mt-detail-title">' + escapeHtml(e.label) + '</span>' +
           '<button type="button" class="mt-detail-close" id="mt-detail-close" aria-label="Close">\\u2715</button></div>' +
-        '<div class="mt-detail-sub">table \\u00b7 ' + e.fields.length + ' fields \\u00b7 ' + rows + ' rows</div>' +
+        '<div class="mt-detail-sub">' + sub + '</div>' +
+        computedHtml +
         flHtml + upHtml + downHtml +
         '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>' +
         '<a class="mt-detail-open" href="#/tables/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>';
       panel.hidden = false;
+      if (e.computedTable) mtWireComputedDetail(e.name);
       var close = document.getElementById('mt-detail-close');
       if (close) close.addEventListener('click', function () { panel.hidden = true; mtHighlight(null, lineage); });
       // Lineage chips navigate the detail panel to the linked table.
@@ -647,6 +681,46 @@ export const modelTablesJs = `
       }).catch(function (err) {
         x.classList.remove('mt-lin-x-busy');
         if (typeof showToast === 'function') showToast(err.message, { type: 'error' });
+      });
+    }
+
+    // Detail-panel wiring for a computed entity: "Refresh" streams the AI fill's
+    // per-field NDJSON progress into the one-line status, and the "Definition
+    // (SQL)" details block fetches the compiled SELECT lazily on first open.
+    function mtWireComputedDetail(name) {
+      var btn = document.getElementById('mt-computed-refresh');
+      var status = document.getElementById('mt-computed-refresh-status');
+      if (btn && status) btn.addEventListener('click', function () {
+        btn.disabled = true;
+        status.textContent = 'Refreshing\\u2026';
+        iiStreamNdjson('/api/computed-tables/' + encodeURIComponent(name) + '/refresh', {}, function (evt) {
+          if (evt.phase === 'field') status.textContent = evt.message || ('Filling ' + evt.field + '\\u2026');
+          else if (evt.phase === 'field-done') {
+            status.textContent = evt.error
+              ? evt.field + ' failed \\u2014 ' + evt.error
+              : evt.field + ': filled ' + (evt.filled || 0);
+          } else if (evt.phase === 'error') {
+            status.textContent = 'Refresh failed: ' + (evt.message || 'error');
+            btn.disabled = false;
+          } else if (evt.done) {
+            status.textContent = 'Refreshed';
+            btn.disabled = false;
+          }
+        });
+      });
+      var details = document.getElementById('mt-computed-sql');
+      var pre = document.getElementById('mt-computed-sqlpre');
+      var sqlLoaded = false;
+      if (details && pre) details.addEventListener('toggle', function () {
+        if (!details.open || sqlLoaded) return;
+        sqlLoaded = true;
+        pre.textContent = 'Loading\\u2026';
+        fetchJson('/api/computed-tables/' + encodeURIComponent(name))
+          .then(function (d) { pre.textContent = (d && d.sql) || 'No compiled SQL \\u2014 the definition may have failed to register.'; })
+          .catch(function (err) {
+            sqlLoaded = false; // allow a retry on the next open
+            pre.textContent = 'Failed to load: ' + err.message;
+          });
       });
     }
 `;
