@@ -1,7 +1,8 @@
 // Auto-composed section of the GUI stylesheet (see styles/index.ts). The Model
-// "Tables" explorer: the four tier columns, the entity/field cards, the field
-// tints, and the detail panel. (Graph vs Tables is now a top-level tab/route,
-// not an in-pane toggle — so the old toggle styles are gone.)
+// "Tables" explorer: the tier columns (Inputs / Derived Tables / Computed
+// Tables), the entity/field cards, the field tints, and the detail panel.
+// (Graph vs Tables is now a top-level tab/route, not an in-pane toggle — so the
+// old toggle styles are gone.)
 export const modelTablesCss = `    /* ── Model "Tables" route container ────────────────────── */
     .model-tables-view { height: 100%; min-height: 0; }
 
@@ -92,6 +93,8 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-card:hover { border-color: rgba(59, 130, 246, 0.4); box-shadow: var(--shadow-2); transform: translateY(-1px); }
     .mt-card-ic { flex: none; font-size: 15px; }
     .mt-card-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13.5px; font-weight: 500; }
+    /* Computed-table flag (a live read-only projection) on a card. */
+    .mt-card-flag { flex: none; font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--accent); }
     .mt-card-meta { flex: none; font-size: 11px; color: var(--text-muted); }
     .mt-fields { list-style: none; margin: 4px 0 2px; padding: 0 0 0 6px; display: flex; flex-direction: column; gap: 2px; }
     .mt-field {
