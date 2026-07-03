@@ -73,6 +73,32 @@ database connector).
   rendering visible separately in the tree. The old per-card dashboard
   overlays are gone; the aggregate header pill stays.
 
+- **Computed tables — config-defined, read-only SQL projections (engine).** A
+  new top-level `computed:` section in `lattice.config.yml` declares live SQL
+  views over a base table: `alias` fields (base columns or dotted belongsTo
+  paths), sandboxed `calc` expressions (a dedicated tokenizer + parser is the
+  injection boundary — raw config text never reaches the SQL string),
+  `aggregate` fields folding junction rows to one scalar per base row
+  (`count`/`sum`/`avg`/`min`/`max`/`concat`), and AI-derived fields
+  (`ai_classify`, `ai_transform`). AI fields never re-run a model at read time:
+  outputs are **materialized once** into the `__lattice_ai_map` /
+  `__lattice_ai_cell` bookkeeping tables the view LEFT JOINs, so reads are
+  always deterministic SQL — and a changed source row makes the join miss, so
+  the field reads NULL until the next fill pass, never a stale value. The fill
+  engine takes an injected LLM interface, sends only never-seen distinct values
+  to the classifier, validates every label against the allowed set, and records
+  per-field status in `__lattice_computed_state`. Views register at open in
+  dependency order (SQLite drops + recreates; Postgres guards the DDL behind a
+  content-hash migration version so a converged open issues none); a definition
+  that fails to compile is fault-isolated — recorded, reported, never bricking
+  the open — and direct writes are refused (a computed table is a read-only
+  projection; edit its source tables or its definition). New public API:
+  `ComputedTableDef` / `ComputedFieldDef`, `compileComputedTable`,
+  `computedTableOrder`, `registerComputedTables`, the fill engine
+  (`ensureAiTables`, `runComputedFill`, `purgeAiField`, `readComputedState`,
+  `FillLlm`), the expression language (`parseCalcExpr` / `emitCalcExpr`), and
+  `Lattice.isComputedTable` / `getComputedTableNames` /
+  `getComputedRegistration`.
 - **External databases import their relational structure.** Single-column
   FOREIGN KEYs on the remote are introspected at connect time and materialized as
   graph edges between the imported tables (same machinery as the other
@@ -252,7 +278,6 @@ database connector).
 
 ### Changed
 
-<<<<<<< HEAD
 
 - **Settings and Version history are one full-workspace takeover.** Clicking
   the header clock or gear opens a single panel that replaces everything below
