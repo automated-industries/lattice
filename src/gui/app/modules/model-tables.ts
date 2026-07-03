@@ -1,17 +1,19 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The Model
-// "Tables" view — a tiered schema explorer (Source · inputs / Model · entities /
-// Surface · app) with an Entity/Field toggle and a click-to-open
+// "Tables" view — a tiered schema explorer (Inputs / Derived Tables / Computed
+// Tables) with an Entity/Field toggle and a click-to-open
 // detail panel (fields + table/field lineage). Built from state.entities + the
 // server graph edges (/api/graph?schema=1). Must stay INSIDE the
 // client IIFE (uses state/displayFor/isJunction/escapeHtml); inserted before
 // createDatabaseWizardJs. renderModelTables(host) is called from the Model view's
 // Graph|Tables toggle (system-tables segment).
 export const modelTablesJs = `
-    // The two tiers: Source (ingested/connected) → Tables (mirrors the data-model
-    // layering). The former "Surface · app" tier was removed as arbitrary.
+    // The three tiers: Inputs (ingested/connected) → Derived Tables (materialized/
+    // authored) → Computed Tables (live read-only projections; empty until the
+    // computed-tables feature lands).
     var MT_LAYERS = [
-      { id: 'source', name: 'Source \\u00b7 inputs', short: 'Source' },
-      { id: 'model', name: 'Tables', short: 'Tables' },
+      { id: 'source', name: 'Inputs', short: 'Inputs' },
+      { id: 'model', name: 'Derived Tables', short: 'Derived' },
+      { id: 'computed', name: 'Computed Tables', short: 'Computed' },
     ];
     // Field-tint concept → colour class (CSS .mt-c-<class>).
     var MT_CONCEPTS = {
@@ -21,13 +23,15 @@ export const modelTablesJs = `
       metric: 'measure', status: 'state', flag: 'state',
       timestamp: 'time', credential: 'secret',
     };
-    // MIRROR of src/gui/tier-classify.ts \`classifyTier\` — keep the two in sync (the
-    // TS file is the unit-tested source of truth; this is its client copy). Two
-    // tiers only: Source (authoritative provenance) → Tables (everything else; the
-    // former "Surface" tier was removed).
+    // MIRROR of src/gui/tier-classify.ts \`classifyTier\` — keep the two in sync
+    // (the TS file is the unit-tested source of truth; this is its client copy).
+    // Same checks, same order: computed (authoritative — a projection may surface
+    // provenance columns from its base) → source (explicit provenance) → model.
     function mtClassifyTier(t) {
       var name = String((t && t.name) || '').toLowerCase();
       var cols = (t && t.columns) || [];
+      if (t && t.computedTable) return 'computed';
+      if (t && t.origin === 'source') return 'source';
       if (t && t.connectorToolkit) return 'source';
       if (name === 'files') return 'source';
       if (cols.indexOf('_source_connector_id') !== -1) return 'source';
@@ -52,12 +56,13 @@ export const modelTablesJs = `
       return 'status';
     }
 
-    // Build the tiered model from the entities already loaded at boot. Junctions are
-    // excluded (they're relationship edges, not first-class tables) to mirror the
-    // brain graph's node set.
+    // Build the tiered model from the entities already loaded at boot. Junctions
+    // are excluded (they're relationship edges, not first-class tables) to mirror
+    // the brain graph's node set, and so is the native \`secrets\` table (a
+    // credentials store, not user data).
     function mtBuildModel() {
       var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
-        return !isJunction(t);
+        return !isJunction(t) && t.name !== 'secrets';
       });
       return tables.map(function (t) {
         var d = displayFor(t.name);
@@ -69,6 +74,7 @@ export const modelTablesJs = `
           icon: d.icon,
           rowCount: typeof t.rowCount === 'number' ? t.rowCount : null,
           neverShare: !!t.neverShare,
+          computedTable: !!t.computedTable,
           fields: cols.map(function (col) {
             var concept = mtConceptFor(col);
             var ftype = (t.fieldTypes && t.fieldTypes[col]) || (t.columnTypes && t.columnTypes[col]) || '';
@@ -268,15 +274,16 @@ export const modelTablesJs = `
 
     // ── Wire / Merge interaction (click flow + drag flow + grey-out) ─────────
     // A target is INVALID while a source is held if it is the source itself, a
-    // junction (not normally rendered as a card), or — in WIRE mode — already
-    // linked to the source (an existing many-to-many edge, mirroring the server's
-    // duplicate-junction guard). MERGE accepts any other non-junction table; the
-    // server still enforces row caps / inbound-FK and reports them.
+    // junction (not normally rendered as a card), a computed table (a read-only
+    // projection — it can be neither linked nor merged into), or — in WIRE mode —
+    // already linked to the source (an existing many-to-many edge, mirroring the
+    // server's duplicate-junction guard). MERGE accepts any other non-junction
+    // table; the server still enforces row caps / inbound-FK and reports them.
     function mtInvalidTarget(source, table) {
       if (table === source) return true;
       var ents = (state.entities && state.entities.tables) || [];
       for (var i = 0; i < ents.length; i++) {
-        if (ents[i].name === table && isJunction(ents[i])) return true;
+        if (ents[i].name === table && (isJunction(ents[i]) || ents[i].computedTable)) return true;
       }
       if (mtMode === 'wire') {
         // Invalid when the pair is ALREADY connected — by a many-to-many OR a
@@ -521,6 +528,8 @@ export const modelTablesJs = `
         '<button type="button" class="mt-card" data-table="' + escapeHtml(e.name) + '">' +
           '<span class="mt-card-ic">' + e.icon + '</span>' +
           '<span class="mt-card-label">' + escapeHtml(e.label) + '</span>' +
+          // Computed tables (live read-only projections) carry a small \\u0192 flag.
+          (e.computedTable ? '<span class="mt-card-flag" title="Computed">\\u0192</span>' : '') +
           '<span class="mt-card-meta">' + e.fields.length + (e.fields.length === 1 ? ' field' : ' fields') + '</span>' +
         '</button>';
       if (level !== 'field') return head;
