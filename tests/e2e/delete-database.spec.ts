@@ -19,6 +19,11 @@ test.beforeAll(async () => {
   base = mkdtempSync(join(tmpdir(), 'lattice-e2e-del-'));
   process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-e2e-del-home-'));
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // Pin the registry root to THIS spec's temp dir BEFORE any root resolution:
+  // findLatticeRoot's env override wins everywhere (ensureLatticeRoot included),
+  // so a developer shell exporting LATTICE_ROOT=~/.lattice would otherwise send
+  // every registry read/WRITE in this spec into the real workspace registry.
+  process.env.LATTICE_ROOT = join(base, '.lattice');
   const root = ensureLatticeRoot(base);
   const alpha = addWorkspace(root, { displayName: 'Alpha' });
   // A second workspace so deleting the active one can switch away to it.
