@@ -38,7 +38,7 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       assignee_id: { type: uuid, ref: users }
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
 `,
     );
 
@@ -68,7 +68,7 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       assignee_id: { type: uuid, ref: users }
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
 `;
     // In-memory tolerance: the parser derives the belongsTo straight from `ref:`.
     const fromRef = parseConfigString(yamlWithRef, dir).tables[0]!.definition.relations?.assignee;
@@ -92,7 +92,7 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       assignee_id: { type: uuid, ref: users }
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
 `,
     );
 
@@ -114,7 +114,7 @@ entities:
       assignee_id: { type: uuid }
     relations:
       assignee: { type: belongsTo, table: users, foreignKey: assignee_id }
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
 `;
     const path = write('lattice.config.yml', original);
 
@@ -129,7 +129,7 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       body: { type: text }
-    outputFile: notes.md
+    outputFile: .schema-only/notes.md
 `;
     const path = write('lattice.config.yml', original);
 
@@ -146,7 +146,7 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       owner: { type: uuid, ref: people }
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
 `,
     );
 
@@ -173,12 +173,12 @@ entities:
     fields:
       id: { type: uuid, primaryKey: true }
       assignee_id: { type: uuid, ref: users } # field comment
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
   note:
     fields:
       id: { type: uuid, primaryKey: true }
       body: { type: text }
-    outputFile: notes.md
+    outputFile: .schema-only/notes.md
 `,
     );
 
@@ -215,7 +215,7 @@ entities:
       assignee_id: { type: uuid, ref: users }
     relations:
       assignee: { type: belongsTo, table: people, foreignKey: assignee_id }
-    outputFile: tickets.md
+    outputFile: .schema-only/tickets.md
 `,
     );
 
@@ -229,5 +229,53 @@ entities:
       table: 'people',
       foreignKey: 'assignee_id',
     });
+  });
+
+  it('rewrites a legacy ROOT-level outputFile to .schema-only/ (the STATES.md orphan class)', () => {
+    const path = write(
+      'legacy-root.yml',
+      [
+        'entities:',
+        '  states:',
+        '    outputFile: STATES.md',
+        '    fields:',
+        '      name: text',
+        '  files_certificate_holders:',
+        '    outputFile: FILES_CERTIFICATE_HOLDERS.md',
+        '    fields:',
+        '      file_id: uuid',
+        '',
+      ].join('\n'),
+    );
+    expect(upgradeConfigShape(path)).toBe(true);
+    const out = readFileSync(path, 'utf8');
+    // Both legacy root-level rollups are re-homed to the hidden .schema-only dir,
+    // so renders stop re-creating orphan files at the Context root.
+    expect(out).toContain('outputFile: .schema-only/states.md');
+    expect(out).toContain('outputFile: .schema-only/files_certificate_holders.md');
+    expect(out).not.toContain('outputFile: STATES.md');
+    // Idempotent: a second run is a no-op.
+    expect(upgradeConfigShape(path)).toBe(false);
+  });
+
+  it('never touches an outputFile that already lives in a directory', () => {
+    const path = write(
+      'homed.yml',
+      [
+        'entities:',
+        '  tasks:',
+        '    outputFile: .schema-only/tasks.md',
+        '    fields:',
+        '      title: text',
+        '  notes:',
+        '    outputFile: custom/notes-rollup.md',
+        '    fields:',
+        '      body: text',
+        '',
+      ].join('\n'),
+    );
+    const before = readFileSync(path, 'utf8');
+    expect(upgradeConfigShape(path)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe(before);
   });
 });

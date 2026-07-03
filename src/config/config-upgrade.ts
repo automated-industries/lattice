@@ -48,8 +48,39 @@ function upgradeRefShorthand(doc: ReturnType<typeof parseDocument>): boolean {
   return changed;
 }
 
+/**
+ * Rewrite legacy ROOT-LEVEL `outputFile` values to the hidden `.schema-only/`
+ * home. Early create paths persisted `outputFile: <NAME>.md` (upper-cased, at the
+ * Context root) for GUI-created entities and junctions; the writers were fixed to
+ * default `.schema-only/<name>.md`, but existing configs were never migrated — so
+ * every render kept re-creating a root-level rollup (e.g. STATES.md) right next
+ * to the table's per-record folder (States/), an orphan the user can't delete
+ * (it reappears on the next render). A root-level rollup is always an anomaly:
+ * the compiled default has been `.schema-only/<table>.md` since the fix, so any
+ * bare `<X>.md` (no directory) is rewritten. Idempotent — values containing a
+ * path separator are never touched.
+ */
+function upgradeLegacyRootOutputFile(doc: ReturnType<typeof parseDocument>): boolean {
+  const entities: unknown = doc.get('entities');
+  if (!isMap(entities)) return false;
+  let changed = false;
+  for (const entItem of entities.items) {
+    const entityName = String(entItem.key);
+    const val: unknown = doc.getIn(['entities', entityName, 'outputFile']);
+    if (typeof val !== 'string') continue;
+    if (val.includes('/') || val.includes('\\')) continue; // already homed somewhere
+    if (!val.toLowerCase().endsWith('.md')) continue;
+    doc.setIn(['entities', entityName, 'outputFile'], `.schema-only/${entityName}.md`);
+    changed = true;
+  }
+  return changed;
+}
+
 /** Every config-shape upgrade, applied in order. Add future ones here. */
-const UPGRADES: ((doc: ReturnType<typeof parseDocument>) => boolean)[] = [upgradeRefShorthand];
+const UPGRADES: ((doc: ReturnType<typeof parseDocument>) => boolean)[] = [
+  upgradeRefShorthand,
+  upgradeLegacyRootOutputFile,
+];
 
 /**
  * Silently upgrade an on-disk config to the current shape, preserving comments

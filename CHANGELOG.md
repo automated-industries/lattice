@@ -300,6 +300,23 @@ database connector).
 
 ### Fixed
 
+- **Junction tables no longer render their own context folders.** The canonical
+  context derivation now excludes link tables on every surface (owner, member,
+  openWorkspace) via one shared classifier — previously the member path excluded
+  them and the owner path did not, so `Context/<Junction>/` trees and raw
+  `<JUNCTION>.md` dumps appeared on some machines. A junction's content still
+  renders where it belongs: as the many-to-many rollup inside each endpoint's
+  context. Payload columns added to a junction later no longer silently promote
+  it to a first-class entity.
+- **Legacy root-level rollup files stop regenerating.** Early create paths
+  persisted `outputFile: <NAME>.md` at the Context root into the config; the
+  writer fix never migrated existing configs, so orphan rollups (e.g. a table
+  rollup next to its own per-record folder) re-appeared on every render and
+  could not be deleted. Opening a workspace now silently rewrites those values
+  to the hidden `.schema-only/` home (idempotent, comment-preserving), and the
+  owner-published cloud layout is sanitized the same way so members never
+  hydrate the legacy shape.
+
 - **Connect-a-database works, fails atomically, and never corrupts an import.**
   Connecting an external Postgres crashed with `no such table: __lattice_edges`
   and left a phantom connection behind. Three defects, all fixed: (1) composite-
