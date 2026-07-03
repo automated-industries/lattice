@@ -190,7 +190,16 @@ export function readManifest(outputDir: string): LatticeManifest | null {
   const path = manifestPath(outputDir);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as LatticeManifest;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<LatticeManifest>;
+    // Normalize at the boundary: a hand-made or truncated manifest (e.g. '{}')
+    // must still satisfy the declared shape, so no caller needs to re-guard the
+    // required fields the type promises.
+    return {
+      version: parsed.version ?? 2,
+      generated_at: parsed.generated_at ?? '',
+      ...parsed,
+      entityContexts: parsed.entityContexts ?? {},
+    };
   } catch {
     return null;
   }

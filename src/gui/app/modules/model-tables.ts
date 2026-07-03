@@ -189,8 +189,39 @@ export const modelTablesJs = `
 
       var tiers = MT_LAYERS.map(function (l) {
         var ents = entities.filter(function (e) { return e.tier === l.id; });
-        var cards = ents.length
-          ? ents.map(function (e) { return mtCardHtml(e, level); }).join('')
+        // NESTED (belongsTo) tables render INDENTED under their parent — depth
+        // per nesting level, parent-first, cycle-safe. A table whose belongsTo
+        // parent is outside this tier (or graph-hidden) stays a root. Link LINES
+        // are for many-to-many only (mtDrawEdges); nesting shows containment.
+        var inTier = {};
+        ents.forEach(function (e) { inTier[e.name] = e; });
+        var childrenIn = {};
+        var isChild = {};
+        ents.forEach(function (e) {
+          (lineage.upstream[e.name] || []).forEach(function (u) {
+            if (u.kind === 'belongsTo' && inTier[u.table] && u.table !== e.name) {
+              (childrenIn[u.table] = childrenIn[u.table] || []).push(e.name);
+              isChild[e.name] = 1;
+            }
+          });
+        });
+        var seenNest = {};
+        var ordered = [];
+        function mtWalk(name, depth) {
+          if (seenNest[name]) return; // first parent wins; cycles terminate
+          seenNest[name] = 1;
+          ordered.push({ e: inTier[name], depth: depth });
+          (childrenIn[name] || []).sort().forEach(function (c) { mtWalk(c, depth + 1); });
+        }
+        ents.forEach(function (e) { if (!isChild[e.name]) mtWalk(e.name, 0); });
+        ents.forEach(function (e) { if (!seenNest[e.name]) mtWalk(e.name, 0); }); // pure-cycle leftovers
+        var cards = ordered.length
+          ? ordered.map(function (o) {
+              var html = mtCardHtml(o.e, level);
+              return o.depth > 0
+                ? '<div class="mt-nest" style="margin-left:' + (o.depth * 16) + 'px">' + html + '</div>'
+                : html;
+            }).join('')
           : '<div class="mt-tier-empty">\\u2014</div>';
         return '<div class="mt-tier mt-tier-' + l.id + '">' +
           '<div class="mt-tier-head">' + escapeHtml(l.name) + ' <span class="mt-tier-count">' + ents.length + '</span></div>' +
@@ -248,8 +279,10 @@ export const modelTablesJs = `
         if (ents[i].name === table && isJunction(ents[i])) return true;
       }
       if (mtMode === 'wire') {
+        // Invalid when the pair is ALREADY connected — by a many-to-many OR a
+        // belongsTo nesting (either direction): the two are mutually exclusive.
         var already = (mtEdgesCache || []).some(function (e) {
-          if (e.type !== 'manyToMany') return false;
+          if (e.type !== 'manyToMany' && e.type !== 'belongsTo') return false;
           var s = String(e.source).replace(/^table:/, '');
           var t = String(e.target).replace(/^table:/, '');
           return (s === source && t === table) || (s === table && t === source);
@@ -429,6 +462,9 @@ export const modelTablesJs = `
       svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
       var sx = tiers.scrollLeft, sy = tiers.scrollTop;
       (mtEdgesCache || []).forEach(function (e) {
+        // Connector LINES are for many-to-many relationships ONLY — a belongsTo
+        // (1:N) shows as nesting/indentation in the tier list, not a line.
+        if (e.type !== 'manyToMany') return;
         var s = String(e.source).replace(/^table:/, '');
         var t = String(e.target).replace(/^table:/, '');
         if (s === t) return;
@@ -475,7 +511,7 @@ export const modelTablesJs = `
         }
         var path = document.createElementNS(SVGNS, 'path');
         path.setAttribute('d', d);
-        path.setAttribute('class', e.type === 'manyToMany' ? 'mt-edge mt-edge-m2m' : 'mt-edge mt-edge-fk');
+        path.setAttribute('class', 'mt-edge mt-edge-m2m');
         svg.appendChild(path);
       });
     }
