@@ -1,11 +1,12 @@
 // Data-provenance: the single-ROW "Data provenance" panel (where one record's
-// data came from, across the raw / computed / observation tiers) + the shared
-// provenanceTableHtml renderer. The full-page object provenance view was removed
-// — an object page now shows the table's rows. Vocabulary is generic (raw /
-// computed / observation) — no domain coupling to any dataset.
+// data came from, across the raw / derived / computed / observation tiers) + the
+// shared provenanceTableHtml renderer. The full-page object provenance view was
+// removed — an object page now shows the table's rows. Vocabulary is generic
+// (raw / derived / computed / observation) — no domain coupling to any dataset.
 export const provenanceJs = `
     var PROV_TIERS = [
       { type: 'raw', label: 'Raw sources' },
+      { type: 'derived', label: 'Derived' },
       { type: 'computed', label: 'Computed' },
       { type: 'observation', label: 'AI observations' },
       { type: 'related', label: 'Related' },

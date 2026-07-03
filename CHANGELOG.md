@@ -252,6 +252,7 @@ database connector).
 
 ### Changed
 
+<<<<<<< HEAD
 - **Settings and Version history are one full-workspace takeover.** Clicking
   the header clock or gear opens a single panel that replaces everything below
   the header; the trigger highlights while open and clicking it again
@@ -299,6 +300,24 @@ database connector).
   junction-creation primitive (covering the assistant and auto-linking too),
   both schema routes, and mirrored in the pickers/drag targets with clear,
   surfaced errors.
+=======
+- **The Model → Tables explorer is reorganized into three provenance columns —
+  Inputs / Derived Tables / Computed Tables.** "Source · inputs" is renamed
+  **Inputs**, the "Tables" column becomes **Derived Tables**, and a new
+  **Computed Tables** column is groundwork for upcoming computed tables (live,
+  read-only SQL projections defined over other tables) — it stays empty until
+  that feature lands. Classification is now server-informed: the entities routes
+  stamp each table's `origin` (`'source'` = ingested/connected data, `'derived'`
+  = materialized from ingested data, per the lineage store) and the classifier
+  honors a `computedTable` flag ahead of every other signal. The native
+  `secrets` table (a credentials store, not user data) no longer appears in the
+  explorer, and computed tables can't be wired or merged — they're read-only
+  projections. Underneath, import lineage edges are recorded under tier
+  **`derived`** (`computed` is reserved for computed tables; historical rows are
+  relabeled once, automatically), imports now record table-level lineage for the
+  dimensions, junctions, and views they materialize — not just the entities —
+  and the per-row provenance panel gains a matching **Derived** tier.
+>>>>>>> eb50a5f8 (feat(gui): reshape the Tables explorer into Inputs / Derived Tables / Computed Tables)
 
 - **Source-tier tables are excluded from the Objects grid and the graph.** Files,
   connector-synced tables, and imported database tables are raw inputs — they're

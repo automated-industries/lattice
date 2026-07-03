@@ -278,8 +278,17 @@ import { appJs } from '../../src/gui/app/script.js';
 // 5.0 GUI batch 18 — collection pages gain the Formatted | Markdown toggle:
 // markdown shows the table's whole-table rollup (read-only); a rollup .md click
 // in the Markdown tree lands in markdown mode, not the rows view.
-const ORIGINAL_LENGTH = 591943;
-const ORIGINAL_SHA256 = '3f52c8f697ecc19b25e048ff38a0fc16e404c16f7b27e85e6bf4ce5dc645fc32';
+// 5.0 Tables taxonomy — the Tables explorer becomes three columns: Inputs /
+// Derived Tables / Computed Tables (MT_LAYERS + the mtClassifyTier mirror gain
+// the 'computed' tier and read the server-stamped t.computedTable + t.origin);
+// mtBuildModel excludes the native `secrets` table (a credentials store) and
+// carries computedTable onto the built entities; mtCardHtml flags a computed
+// card with a small ƒ; wire/merge validity (wmValidTarget + mtInvalidTarget)
+// rejects computed tables as source and target (read-only projections); the
+// per-row provenance PROV_TIERS gains 'derived' (model-tables / wiremerge /
+// provenance segments). Length + hash recaptured.
+const ORIGINAL_LENGTH = 593129;
+const ORIGINAL_SHA256 = '54ccc4276a7033c10e6bee5dffe7208c26805525f387669f947c8e9aba66fb5f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

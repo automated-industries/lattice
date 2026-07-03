@@ -24,6 +24,7 @@ export const provenanceCss = `
       border: 1px solid var(--border-strong);
     }
     .pvchip-raw { color: var(--signal); border-color: var(--signal); }
+    .pvchip-derived { color: #0891b2; border-color: #0891b2; }
     .pvchip-computed { color: var(--warn); border-color: var(--warn); }
     .pvchip-observation { color: var(--text-muted); }
     .pvchip-related { color: #7c3aed; border-color: #7c3aed; }

@@ -7,14 +7,16 @@ import { createConnector } from '../../src/connectors/registry.js';
 import {
   ensureLineageTable,
   recordLineage,
+  LINEAGE_TABLE,
   type LineageEdge,
 } from '../../src/gui/lineage-store.js';
+import { allAsyncOrSync, runAsyncOrSync } from '../../src/db/adapter.js';
 import { buildProvenanceGraph, labelForSource, relFor } from '../../src/gui/provenance.js';
 
 /**
- * Data-provenance builder: traces an object's sources across the raw / computed
- * / observation tiers from connector lineage, the __lattice_lineage table, and
- * AI-authored audit rows — with bounded reads.
+ * Data-provenance builder: traces an object's sources across the raw / derived
+ * / computed / observation tiers from connector lineage, the __lattice_lineage
+ * table, and AI-authored audit rows — with bounded reads.
  */
 describe('provenance graph (SQLite)', () => {
   let db: Lattice | undefined;
@@ -141,14 +143,52 @@ describe('provenance graph (SQLite)', () => {
         sourceKind: 'import',
         sourceTable: null,
         sourceId: null,
-        tier: 'computed',
+        tier: 'derived',
         relation: 'materialized_from',
       }),
     ]);
     const tableG = await buildProvenanceGraph(d, 'contracts');
-    expect(tableG.nodes.some((n) => n.kind === 'import' && n.type === 'computed')).toBe(true);
+    expect(tableG.nodes.some((n) => n.kind === 'import' && n.type === 'derived')).toBe(true);
     const rowG = await buildProvenanceGraph(d, 'contracts', { rowId: 'c1' });
     expect(rowG.nodes.some((n) => n.kind === 'import')).toBe(false);
+  });
+
+  it('ensureLineageTable relabels historical import edges (idempotently) so re-imports dedup', async () => {
+    const d = await setup();
+    // Pre-seed an OLD-style row: imports used to be recorded under tier
+    // 'computed' (now reserved for computed tables); new writes use 'derived'.
+    await runAsyncOrSync(
+      d.adapter,
+      `INSERT INTO "${LINEAGE_TABLE}"
+         ("id","object_table","object_id","source_kind","source_table","source_id","tier","relation","detail_json","created_at")
+       VALUES ('old-1','contracts','*','import',NULL,NULL,'computed','materialized_from',NULL,'2026-01-01T00:00:00.000Z')`,
+    );
+    // Run the ensure twice — the relabel must be idempotent.
+    await ensureLineageTable(d.adapter);
+    await ensureLineageTable(d.adapter);
+    const rows = await allAsyncOrSync(
+      d.adapter,
+      `SELECT "tier" FROM "${LINEAGE_TABLE}" WHERE "object_table" = 'contracts' AND "source_kind" = 'import'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.tier).toBe('derived');
+    // …and a re-import writing the NEW label matches the relabeled row instead
+    // of inserting a duplicate edge (the dedup tuple includes `tier`).
+    await recordLineage(d.adapter, [
+      lineageEdge({
+        objectId: '*',
+        sourceKind: 'import',
+        sourceTable: null,
+        sourceId: null,
+        tier: 'derived',
+        relation: 'materialized_from',
+      }),
+    ]);
+    const after = await allAsyncOrSync(
+      d.adapter,
+      `SELECT "tier" FROM "${LINEAGE_TABLE}" WHERE "object_table" = 'contracts' AND "source_kind" = 'import'`,
+    );
+    expect(after).toHaveLength(1);
   });
 
   it('counts only AI-authored audit rows as the observation tier', async () => {
