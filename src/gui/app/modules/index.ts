@@ -43,6 +43,7 @@ import { inputsJs } from './inputs.js';
 import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
+import { questionsJs } from './questions.js';
 import { modelTablesJs } from './model-tables.js';
 import { computedBuilderJs } from './computed-builder.js';
 import { foldersJs } from './folders.js';
@@ -84,6 +85,10 @@ export const appJs = [
   outputsJs,
   activityHeaderJs,
   askLatticeJs,
+  // Clarification-question cards + trigger dot. Uses wrapper-scoped helpers
+  // (fetchJson, askLatticeOpen/openAskLattice, railFeedEl, sendChat) so it too
+  // must stay INSIDE the main client IIFE, next to the panel it extends.
+  questionsJs,
   modelTablesJs,
   computedBuilderJs,
   foldersJs,

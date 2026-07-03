@@ -224,6 +224,10 @@ export const guiAppHtml = `<!doctype html>
     <div class="rail-feed" id="rail-feed">
       <div class="rail-empty" id="rail-empty">Ask anything about your workspace.</div>
     </div>
+    <!-- Pending clarification questions (questions client segment): interactive
+         cards the user answers or dismisses — above the composer, visually
+         distinct from the conversation bubbles. -->
+    <div class="question-cards" id="question-cards"></div>
     <div class="rail-composer" id="rail-composer"></div>
   </div>
 
