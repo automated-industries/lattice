@@ -253,6 +253,7 @@ database connector).
 ### Changed
 
 <<<<<<< HEAD
+
 - **Settings and Version history are one full-workspace takeover.** Clicking
   the header clock or gear opens a single panel that replaces everything below
   the header; the trigger highlights while open and clicking it again
@@ -300,7 +301,7 @@ database connector).
   junction-creation primitive (covering the assistant and auto-linking too),
   both schema routes, and mirrored in the pickers/drag targets with clear,
   surfaced errors.
-=======
+  =======
 - **The Model → Tables explorer is reorganized into three provenance columns —
   Inputs / Derived Tables / Computed Tables.** "Source · inputs" is renamed
   **Inputs**, the "Tables" column becomes **Derived Tables**, and a new
@@ -317,7 +318,8 @@ database connector).
   relabeled once, automatically), imports now record table-level lineage for the
   dimensions, junctions, and views they materialize — not just the entities —
   and the per-row provenance panel gains a matching **Derived** tier.
->>>>>>> eb50a5f8 (feat(gui): reshape the Tables explorer into Inputs / Derived Tables / Computed Tables)
+
+  > > > > > > > eb50a5f8 (feat(gui): reshape the Tables explorer into Inputs / Derived Tables / Computed Tables)
 
 - **Source-tier tables are excluded from the Objects grid and the graph.** Files,
   connector-synced tables, and imported database tables are raw inputs — they're
