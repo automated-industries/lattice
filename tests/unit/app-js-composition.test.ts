@@ -306,8 +306,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // Formatted|Markdown toggle or actions menu, and a read-only field list
 // (loadComputedContext); paintRowsTable takes an optional noteHtml. Length +
 // hash recaptured.
-const ORIGINAL_LENGTH = 630637;
-const ORIGINAL_SHA256 = 'b60fa938e5a9891e6b2e5a415c91394d8a16fe95191c74ee3f8746d7992689e1';
+// Clarification questions: a new questions segment (pending-question cards
+// above the composer — option buttons, free-form "Other", dismiss; the shared
+// card renderer also serves the in-turn ask_user event; refreshQuestions
+// reconciles cards + the trigger notification dot, auto-opening the panel on a
+// new question); ask-lattice's open/close refresh the dot; onboarding's SSE
+// handler renders the 'question' chat event; dispatchStreamMessage routes
+// op:'question' feed events to the reconciler; boot calls initQuestions().
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 640630;
+const ORIGINAL_SHA256 = '1ed7e77805e0221c46d88404654af19792bdf577f4dc72d512fd5fddea3e694d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

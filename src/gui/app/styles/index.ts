@@ -25,6 +25,7 @@ import { outputsCss } from './outputs.js';
 import { modelTablesCss } from './model-tables.js';
 import { computedBuilderCss } from './computed-builder.js';
 import { chatCss } from './chat.js';
+import { questionsCss } from './questions.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
@@ -56,6 +57,7 @@ export const css = [
   modelTablesCss,
   computedBuilderCss,
   chatCss,
+  questionsCss,
   inlineImportCss,
   tabsCss,
   sourcesCss,

@@ -58,6 +58,10 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'get_row_context',
   'search',
   'lattice_help',
+  // Handled by the chat loop itself (it emits a `question` SSE event and ends
+  // the turn) — listed here so the tool is offered to the model; see the
+  // executeFunction guard below.
+  'ask_user',
   'get_history',
   'create_row',
   'create_artifact',
@@ -112,6 +116,11 @@ export async function executeFunction(
   if (!getFunction(name)) return { ok: false, error: `Unknown function: ${name}` };
   if (!DISPATCHABLE.has(name)) {
     return { ok: false, error: `Function "${name}" is not available to the assistant yet` };
+  }
+  // ask_user never reaches the dispatcher: the chat loop intercepts it (emits a
+  // `question` stream event and ends the turn). A direct call has no user to ask.
+  if (name === 'ask_user') {
+    return { ok: false, error: 'ask_user is delivered through the chat stream, not dispatched' };
   }
 
   const mctx: MutationCtx = {
