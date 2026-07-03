@@ -10,7 +10,8 @@ import {
 import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, readJson, parsePageParam, sendHtmlCompressed } from './http.js';
 import { Lattice } from '../lattice.js';
-import type { StorageAdapter } from '../db/adapter.js';
+import { allAsyncOrSync, type StorageAdapter } from '../db/adapter.js';
+import { LINEAGE_TABLE } from './lineage-store.js';
 import type { GuiRequestContext } from './request-context.js';
 import {
   buildGuiGraph,
@@ -131,6 +132,28 @@ async function enrichEntityTables(
   // that tables with a `deleted_at` column now include soft-deleted rows
   // in this number; per-table drill-in still shows the filtered count.
   const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
+
+  // Provenance origin: ONE bounded query over the (small) lineage table per
+  // request — which tables were materialized FROM ingested data (a structured
+  // import or a file extraction). Those get stamped `origin: 'derived'` below;
+  // tables carrying a direct ingestion signal get `origin: 'source'` instead.
+  // `__lattice_lineage` is an unregistered raw-DDL table → read it with raw SQL.
+  let derivedTables = new Set<string>();
+  try {
+    const lin = await allAsyncOrSync(
+      adapter,
+      `SELECT DISTINCT "object_table" FROM "${LINEAGE_TABLE}" WHERE "source_kind" IN ('import','file')`,
+    );
+    derivedTables = new Set(lin.map((r) => String(r.object_table)));
+  } catch (err) {
+    // A fresh workspace has no lineage table yet, and a scoped cloud member has
+    // no SELECT grant on `__lattice_*` bookkeeping tables — neither may fail the
+    // entities route (origin is an enrichment; the tables simply stay unstamped).
+    // A genuine fault (syntax, dropped connection) still surfaces.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/no such table|does not exist|permission denied/i.test(msg)) throw err;
+  }
+
   const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
   const approxCounts = useBatched
     ? await countManyPostgres(
@@ -175,6 +198,14 @@ async function enrichEntityTables(
       // Connected data type → expose its toolkit so the Objects list can badge it.
       const connectedSource = db.getConnectedSource(t.name);
       if (connectedSource) base.connectorToolkit = connectedSource.toolkit;
+      // Provenance origin: ingested/connected data is a SOURCE; a table the
+      // lineage store says was materialized from ingested data is DERIVED.
+      // Tables with neither signal (authored in Lattice) carry no origin.
+      if (connectedSource || t.name === 'files' || t.columns.includes('_source_connector_id')) {
+        base.origin = 'source';
+      } else if (derivedTables.has(t.name)) {
+        base.origin = 'derived';
+      }
       // Column → SQL type, for the Data Model schema cards (name : type).
       const colTypes = db.getRegisteredColumns(t.name);
       if (colTypes) base.columnTypes = colTypes;

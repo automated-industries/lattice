@@ -107,8 +107,11 @@ import { css } from '../../src/gui/app/css.js';
 // Markdown tree; the .card-render overlay CSS is deleted.
 // 5.0 GUI batch 19 — the takeover panel + backdrop sit BELOW the topbar so the
 // header triggers stay clickable (collapse works); was intercepting on CI.
-const ORIGINAL_LENGTH = 125184;
-const ORIGINAL_SHA256 = 'c04ee0ab6fc96a394d32e3f054da18594507396494131ea6c9c64fc5287b1e5f';
+// 5.0 Tables taxonomy — .mt-card-flag (the computed-table ƒ badge on a Tables-
+// explorer card) and .pvchip-derived (the provenance chip for the new 'derived'
+// tier). Length + hash recaptured.
+const ORIGINAL_LENGTH = 125447;
+const ORIGINAL_SHA256 = '895cbb37819432bfa9fcab49619922c842a74e016c6f4a4b445501fecb7d1f15';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

@@ -106,14 +106,18 @@ describe('GUI server — SQLite read routes', () => {
     // User-facing native entities (files/notes/secrets) appear in the Objects
     // list, but the assistant's internal conversation storage must NOT — it's
     // an implementation detail of the chat rail, not a data object.
-    const entityNames = (
-      (entities.body.tables ?? entities.body.entities ?? []) as {
-        name: string;
-      }[]
-    ).map((t) => t.name);
+    const entityTables = (entities.body.tables ?? entities.body.entities ?? []) as {
+      name: string;
+      origin?: string;
+    }[];
+    const entityNames = entityTables.map((t) => t.name);
     expect(entityNames).toContain('files'); // a user-facing native entity is present…
     expect(entityNames).not.toContain('chat_threads'); // …but conversation storage is hidden
     expect(entityNames).not.toContain('chat_messages');
+    // Provenance origin is stamped: ingested data (files) is a 'source'; a
+    // config-declared table with no ingestion or lineage signal is unstamped.
+    expect(entityTables.find((t) => t.name === 'files')?.origin).toBe('source');
+    expect(entityTables.find((t) => t.name === 'items')?.origin).toBeUndefined();
 
     for (const route of [
       '/api/graph',

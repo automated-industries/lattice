@@ -57,7 +57,14 @@ describe('client provenance module', () => {
     const cssTiers = new Set([...provenanceCss.matchAll(/pvchip-([a-z]+)/g)].map((m) => m[1]));
     // All generic tiers (source tiers + the universal created/related traceback) —
     // no domain dataset vocabulary.
-    expect([...cssTiers].sort()).toEqual(['computed', 'created', 'observation', 'raw', 'related']);
+    expect([...cssTiers].sort()).toEqual([
+      'computed',
+      'created',
+      'derived',
+      'observation',
+      'raw',
+      'related',
+    ]);
   });
 
   it('provenanceTableHtml groups sources by tier and renders chips + counts', () => {
