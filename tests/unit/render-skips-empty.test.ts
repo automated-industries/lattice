@@ -39,7 +39,7 @@ const scannedTables = (spy: ReturnType<typeof vi.spyOn>): string[] =>
   spy.mock.calls.map((c) => c[1] as string);
 
 describe('renderSkipsEmpty', () => {
-  it('default (off): spec-less table is still scanned and writes an empty schema-only file', async () => {
+  it('default (off): spec-less table writes its empty schema-only file WITHOUT a table scan', async () => {
     const { db, out } = await makeDb();
     await db.insert('notes', { id: 'n1', body: 'hi' });
     const spy = vi.spyOn(
@@ -51,7 +51,11 @@ describe('renderSkipsEmpty', () => {
 
     expect(existsSync(join(out, 'NOTES.md'))).toBe(true); // real render written
     expect(existsSync(join(out, '.schema-only', 'note_tags.md'))).toBe(true); // empty file still written
-    expect(scannedTables(spy)).toContain('note_tags'); // and it WAS scanned
+    // A no-op render's output is empty REGARDLESS of rows — pulling the whole
+    // table off the wire just to discard it was pure cost, and is skipped
+    // unconditionally (not gated on renderSkipsEmpty, which only controls
+    // whether the empty FILE is written at all).
+    expect(scannedTables(spy)).not.toContain('note_tags');
     db.close();
   });
 

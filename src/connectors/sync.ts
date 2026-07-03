@@ -18,6 +18,7 @@ import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { runAsyncOrSync } from '../db/adapter.js';
 import { addEdges, ensureEdgesTable } from '../search/graph.js';
+import { ensureRuntimeEntityContexts } from '../framework/canonical-context.js';
 import type { GraphEdge } from '../search/graph.js';
 import type { Connector, ConnectedModelDef, ListChangesContext } from './types.js';
 import { getConnector, listConnectors, recordSync } from './registry.js';
@@ -68,6 +69,10 @@ export async function syncConnector(
   const models = connector.models(toolkit);
   // Ensure all connected tables exist (idempotent; parents before children).
   for (const m of models) await db.defineLate(m.table, m.definition);
+  // Runtime tables render as markdown too: give each model the same canonical
+  // per-record context a config table gets at open (idempotent; junctions and
+  // the hard-excluded internals are skipped inside the derivation).
+  ensureRuntimeEntityContexts(db, models);
 
   const result: SyncConnectorResult = {
     connectorId,

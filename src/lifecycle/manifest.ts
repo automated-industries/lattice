@@ -77,8 +77,13 @@ export interface EntityContextManifestEntry {
  *    retired path survives (and keeps being retried) until it is actually
  *    pruned — a crash between manifest write and cleanup can no longer orphan a
  *    file permanently.
+ *  - 4 → 5: files, connector-model, and imported-database tables gained REAL
+ *    per-record canonical contexts ("all data renders as markdown"; files
+ *    bounded — no extracted_text, capped self file), and spec-less rollups
+ *    skip their table read. Existing workspaces must do a one-time full
+ *    re-render so the new trees materialize.
  */
-export const TEMPLATE_VERSION = 4;
+export const TEMPLATE_VERSION = 5;
 
 /**
  * Monotonic cursor the rendered tree was produced FROM, recorded in the manifest
