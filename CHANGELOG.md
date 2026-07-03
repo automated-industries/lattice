@@ -237,6 +237,12 @@ database connector).
 
 ### Changed
 
+- **Settings and Version history are one full-workspace takeover.** Clicking
+  the header clock or gear opens a single panel that replaces everything below
+  the header; the trigger highlights while open and clicking it again
+  collapses. Version history is a tab of the same panel; the old slide-in
+  drawer and the separate center-pane history page are gone.
+
 - **The legacy table/detail editor is absorbed and retired.** The record page's
   actions menu gains "Edit fields" — the structured typed-field editor plus the
   inline relationship manager (chips unlink, the picker links, both atomic) that

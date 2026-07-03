@@ -100,8 +100,11 @@ import { css } from '../../src/gui/app/css.js';
 // hash recaptured.
 // 5.0 GUI batch 11 — .md-doc (the deleted #/md viewer) removed; .mt-nest indent
 // for belongsTo-nested tables; .mt-edge-fk dead (lines are m2m-only). Recaptured.
-const ORIGINAL_LENGTH = 125034;
-const ORIGINAL_SHA256 = '60932333393f2af48e4efc77d35fd0e7e0524093eaad23cb8a6bc2ae0a1a7ccf';
+// 5.0 GUI batch 16 — the settings drawer restyles as the full-workspace
+// takeover (below-header, fade/slide, [hidden] display:none guard, trigger
+// highlight).
+const ORIGINAL_LENGTH = 125635;
+const ORIGINAL_SHA256 = '3647c14e66578dd5479a181f2e700a70f20e40ed5d74937f1819673e01eb74f6';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

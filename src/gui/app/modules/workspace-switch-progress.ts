@@ -116,7 +116,7 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       // Settings live in a slide-over drawer (gear icon, top-right). The legacy
       // hashes open the drawer to the matching tab over the dashboard, so deep
       // links and existing bookmarks keep working. Version history stays a page.
-      if (hash === '#/settings/history') { renderHistory(content); return; }
+      if (hash === '#/settings/history') { renderDashboard(content); openSettingsDrawer('history'); return; }
       if (hash === '#/settings/lattice') { renderDashboard(content); openSettingsDrawer('lattice'); return; }
       if (hash === '#/settings/database' || hash === '#/settings/project-config' || hash === '#/settings/data-model') {
         renderDashboard(content); openSettingsDrawer('database'); return;
