@@ -39,6 +39,23 @@ async function collect(it: AsyncIterable<ExternalRecord>): Promise<ExternalRecor
   return out;
 }
 
+/**
+ * The connector accepts host/port/user/password/database FIELDS only (raw
+ * connection strings were removed — the read-only data-source contract wants
+ * deliberate credentials). Split the test cluster's URL into those fields.
+ */
+function connectParts(schema: string): Record<string, string> {
+  const u = new URL(PG_URL!);
+  return {
+    host: u.hostname,
+    port: u.port || '5432',
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    database: u.pathname.replace(/^\//, ''),
+    schema,
+  };
+}
+
 describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
   let admin: PgPool;
 
@@ -79,12 +96,21 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
     await admin.end().catch(() => undefined);
   });
 
+  it('external-pool sessions are read-only at the wire (default_transaction_read_only=on)', async () => {
+    const { withExternalPool } = await import('../../src/connectors/db-source/external-pool.js');
+    const flag = await withExternalPool(PG_URL!, async (pool) => {
+      const r = await pool.query('SHOW default_transaction_read_only');
+      return r.rows[0]?.default_transaction_read_only;
+    });
+    // The startup parameter reached the server: every transaction on this pool
+    // defaults to read-only, so the SOURCE database refuses writes even if a
+    // statement somehow slipped past the query-shape guard.
+    expect(flag).toBe('on');
+  });
+
   it('connects, introspects, and imports rows with mapped types', async () => {
     const connector = new DatabaseConnector();
-    const { connectionId, displayName } = await connector.connect({
-      connectionString: PG_URL!,
-      schema: SCHEMA,
-    });
+    const { connectionId, displayName } = await connector.connect(connectParts(SCHEMA));
     expect(connectionId).toBeTruthy();
     expect(displayName).toBeTruthy();
     try {
@@ -115,10 +141,7 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
 
   it('imports rows into a Lattice table via the sync engine, stamped with lineage', async () => {
     const connector = new DatabaseConnector();
-    const { connectionId } = await connector.connect({
-      connectionString: PG_URL!,
-      schema: SCHEMA,
-    });
+    const { connectionId } = await connector.connect(connectParts(SCHEMA));
     const db = new Lattice(':memory:');
     await db.init();
     try {
@@ -154,10 +177,7 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
 
   it('composite-PK rows survive the sync (and a re-sync) — no phantom prune, no edges crash', async () => {
     const connector = new DatabaseConnector();
-    const { connectionId } = await connector.connect({
-      connectionString: PG_URL!,
-      schema: SCHEMA,
-    });
+    const { connectionId } = await connector.connect(connectParts(SCHEMA));
     const db = new Lattice(':memory:');
     await db.init();
     try {
@@ -211,10 +231,7 @@ describe.skipIf(!PG_URL)('db-source import (Postgres integration)', () => {
 
   it('imports remote FOREIGN KEYs as graph edges + namespaces tables per connection', async () => {
     const connector = new DatabaseConnector();
-    const { connectionId } = await connector.connect({
-      connectionString: PG_URL!,
-      schema: SCHEMA,
-    });
+    const { connectionId } = await connector.connect(connectParts(SCHEMA));
     const db = new Lattice(':memory:');
     await db.init();
     try {
