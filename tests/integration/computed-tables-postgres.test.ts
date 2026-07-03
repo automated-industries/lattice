@@ -198,3 +198,112 @@ computed:
     await expect(db.delete(summary, 'any')).rejects.toThrow(/read-only projection/);
   });
 });
+
+describe.skipIf(!PG_URL)('computed-on-computed re-registration (Postgres)', () => {
+  const runId = randomBytes(4).toString('hex');
+  const note = `cd_${runId}_note`;
+  const sum = `cd_${runId}_sum`;
+  const board = `cd_${runId}_board`;
+  let dir: string;
+  let configPath: string;
+  let db: Lattice;
+
+  const configYaml = (urgentExpr: string) => `
+db: "${PG_URL!}"
+entities:
+  ${note}:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      title: { type: text }
+      priority: { type: integer }
+    outputFile: notes.md
+computed:
+  ${sum}:
+    base: ${note}
+    fields:
+      title: { kind: alias, source: title }
+      urgent: { kind: calc, expr: "${urgentExpr}", type: boolean }
+  ${board}:
+    base: ${sum}
+    fields:
+      headline: { kind: alias, source: title }
+      hot: { kind: alias, source: urgent }
+`;
+
+  const versionsFor = async (name: string): Promise<string[]> => {
+    const rows = await allAsyncOrSync(
+      db.adapter,
+      `SELECT version FROM __lattice_migrations WHERE version LIKE ? ORDER BY version`,
+      [`internal:computed-table:${name}:%`],
+    );
+    return rows.map((r) => String(r.version));
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'lattice-computed-dep-pg-'));
+    configPath = join(dir, 'lattice.config.yml');
+    writeFileSync(configPath, configYaml('priority >= 3'));
+    db = new Lattice({ config: configPath });
+    await db.init();
+  });
+
+  afterAll(async () => {
+    try {
+      await runAsyncOrSync(db.adapter, `DROP VIEW IF EXISTS "${board}"`);
+      await runAsyncOrSync(db.adapter, `DROP VIEW IF EXISTS "${sum}"`);
+      await runAsyncOrSync(db.adapter, `DROP TABLE IF EXISTS "${note}" CASCADE`);
+      for (const name of [sum, board]) {
+        await runAsyncOrSync(db.adapter, `DELETE FROM __lattice_migrations WHERE version LIKE ?`, [
+          `internal:computed-table:${name}:%`,
+        ]);
+        await runAsyncOrSync(
+          db.adapter,
+          `DELETE FROM "__lattice_computed_state" WHERE table_name = ?`,
+          [name],
+        );
+      }
+    } catch {
+      /* best effort */
+    }
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('changing a base view definition re-registers BOTH views healthy on the next open', async () => {
+    // First open: both registered, dependent reads through its computed base.
+    expect(db.getComputedRegistration()?.errors).toEqual([]);
+    const id = await db.insert(note, { title: 'Renew contract', priority: 2 });
+    expect(await db.get(board, id)).toMatchObject({ headline: 'Renew contract', hot: false });
+    expect(await versionsFor(sum)).toHaveLength(1);
+    expect(await versionsFor(board)).toHaveLength(1);
+
+    // Change the BASE view's definition. Postgres refuses `DROP VIEW` while a
+    // dependent view exists, so the re-open must drop the dependent first and
+    // force-recreate it afterwards — even though the dependent's own content
+    // hash (and recorded migration) did not change.
+    writeFileSync(configPath, configYaml('priority >= 2'));
+    db.close();
+    db = new Lattice({ config: configPath });
+    await db.init();
+
+    expect(db.getComputedRegistration()?.errors).toEqual([]);
+    expect(db.isComputedTable(sum)).toBe(true);
+    expect(db.isComputedTable(board)).toBe(true);
+    // The change flows through the dependent — priority 2 is urgent now.
+    expect(await db.get(board, id)).toMatchObject({ headline: 'Renew contract', hot: true });
+    // The base recorded its new hash; the dependent was recreated DIRECTLY
+    // (its already-applied version must not be re-run — and must not be
+    // skipped either, which would have left the view missing).
+    expect(await versionsFor(sum)).toHaveLength(2);
+    expect(await versionsFor(board)).toHaveLength(1);
+
+    // A converged re-open stays healthy and issues no new versions.
+    db.close();
+    db = new Lattice({ config: configPath });
+    await db.init();
+    expect(db.getComputedRegistration()?.errors).toEqual([]);
+    expect((await db.get(board, id))?.hot).toBe(true);
+    expect(await versionsFor(sum)).toHaveLength(2);
+    expect(await versionsFor(board)).toHaveLength(1);
+  });
+});

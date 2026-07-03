@@ -252,8 +252,72 @@ export async function purgeAiField(adapter: StorageAdapter, fieldKey: string): P
   }
 }
 
-/** Count the items a field's pending query would still return. */
-async function countPending(adapter: StorageAdapter, field: CompiledAiField): Promise<number> {
+/**
+ * Auto-invalidate materialized AI values whose stored `prompt_hash` no longer
+ * matches the field's CURRENT definition hash — the safety net that makes the
+ * stored hash load-bearing. A definition can change through ANY path (the GUI
+ * ops layer, a hand-edited YAML, a member-hydrated config); whichever path it
+ * took, the next registration calls this and the stale field's whole cache is
+ * purged (map + cell + fill state), so its values re-pend instead of serving
+ * outputs derived from a prompt/labels/model/inputs that no longer exist.
+ *
+ * Batched for pooled-connection opens: ONE probe query covers every field at
+ * once, and — only when something is stale — three keyed DELETEs follow. The
+ * common converged open pays a single round-trip. Purging is whole-field
+ * (mirrors {@link purgeAiField}): a key with ANY mismatched row drops all its
+ * rows, so a fill interrupted mid-definition-change can never leave a mixed
+ * cache. Returns the purged field keys.
+ */
+export async function purgeStaleAiFields(
+  adapter: StorageAdapter,
+  fields: readonly CompiledAiField[],
+): Promise<string[]> {
+  if (fields.length === 0) return [];
+  const where = fields.map(() => `("field_key" = ? AND "prompt_hash" <> ?)`).join(' OR ');
+  const params = fields.flatMap((f) => [f.key, promptHash(f)]);
+  const staleRows = await allAsyncOrSync(
+    adapter,
+    `SELECT DISTINCT "field_key" FROM "${AI_MAP_TABLE}" WHERE ${where}
+     UNION
+     SELECT DISTINCT "field_key" FROM "${AI_CELL_TABLE}" WHERE ${where}`,
+    [...params, ...params],
+  );
+  const staleKeys = staleRows.map((r) => String(r.field_key));
+  if (staleKeys.length === 0) return [];
+  const inList = staleKeys.map(() => '?').join(', ');
+  await runAsyncOrSync(
+    adapter,
+    `DELETE FROM "${AI_MAP_TABLE}" WHERE "field_key" IN (${inList})`,
+    staleKeys,
+  );
+  await runAsyncOrSync(
+    adapter,
+    `DELETE FROM "${AI_CELL_TABLE}" WHERE "field_key" IN (${inList})`,
+    staleKeys,
+  );
+  const pairs = staleKeys.map((key) => {
+    const dot = key.indexOf('.');
+    return [key.slice(0, dot), key.slice(dot + 1)];
+  });
+  await runAsyncOrSync(
+    adapter,
+    `DELETE FROM "${COMPUTED_STATE_TABLE}" WHERE ${pairs
+      .map(() => `("table_name" = ? AND "field" = ?)`)
+      .join(' OR ')}`,
+    pairs.flat(),
+  );
+  return staleKeys;
+}
+
+/**
+ * Count the items a field's pending query would still return. Used internally
+ * after each fill pass, and by the ops layer's dry-run preview to report how
+ * much AI work a definition would enqueue before anything is materialized.
+ */
+export async function countPending(
+  adapter: StorageAdapter,
+  field: CompiledAiField,
+): Promise<number> {
   const row = await getAsyncOrSync(
     adapter,
     `SELECT COUNT(*) AS "n" FROM (${field.pendingSql}) AS "p"`,
