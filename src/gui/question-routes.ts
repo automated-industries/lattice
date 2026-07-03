@@ -23,6 +23,10 @@ export interface QuestionRoutesContext {
   softDeletable: Set<string>;
   /** GUI session id — answer-driven writes join the user's undo/redo stack. */
   sessionId?: string;
+  /** Workspace config path — schema-creating answers persist definitions here. */
+  configPath?: string;
+  /** Servable-table set — schema-creating answers register new tables here. */
+  validTables?: Set<string>;
   pathname: string;
   method: string;
 }
@@ -52,6 +56,8 @@ export async function dispatchQuestionRoute(
     feed: ctx.feed,
     softDeletable: ctx.softDeletable,
     ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    ...(ctx.configPath ? { configPath: ctx.configPath } : {}),
+    ...(ctx.validTables ? { validTables: ctx.validTables } : {}),
   };
 
   if (method === 'GET' && pathname === '/api/questions/pending') {
