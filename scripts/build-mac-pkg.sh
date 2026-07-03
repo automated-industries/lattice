@@ -63,16 +63,36 @@ notarize() {
 
 if [ -n "$SIGN_APP_IDENTITY" ]; then
   echo "signing $APPNAME with Developer ID (inside-out)…"
-  # The auto-update runtime marker must not be sealed into the signature.
-  rm -f "$APP/Contents/MacOS/Lattice.dylib.update-ok"
-  # Sign nested Mach-Os FIRST (the V8 dylib needs the JIT entitlements), bundle LAST.
-  [ -f "$APP/Contents/MacOS/Lattice.dylib" ] && codesign --force --sign "$SIGN_APP_IDENTITY" \
-    --options runtime --timestamp --entitlements "$ENTS" "$APP/Contents/MacOS/Lattice.dylib"
-  [ -f "$APP/Contents/MacOS/laufey_webview" ] && codesign --force --sign "$SIGN_APP_IDENTITY" \
-    --options runtime --timestamp --entitlements "$ENTS" "$APP/Contents/MacOS/laufey_webview"
+  # The auto-update runtime marker must not be sealed into the signature. (Its
+  # name derives from the runtime dylib's, which varies — match the suffix.)
+  rm -f "$APP/Contents/MacOS/"*.update-ok
+  # Sign EVERY nested Mach-O first, bundle LAST. The runtime dylib's NAME varies
+  # across desktop-runtime versions (Lattice.dylib, libruntime.dylib, …), so
+  # hardcoding filenames silently leaves a binary ad-hoc-signed — which passes
+  # `codesign --verify --deep` (integrity only) but fails notarization with
+  # "not signed with a valid Developer ID certificate". Enumerate instead.
+  # The main executable is skipped here: signing the bundle (below) signs it,
+  # with the entitlements applied.
+  MAIN_EXE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  find "$APP/Contents/MacOS" -type f | while IFS= read -r f; do
+    [ -n "$MAIN_EXE_NAME" ] && [ "$(basename "$f")" = "$MAIN_EXE_NAME" ] && continue
+    file "$f" | grep -q 'Mach-O' || continue
+    codesign --force --sign "$SIGN_APP_IDENTITY" \
+      --options runtime --timestamp --entitlements "$ENTS" "$f"
+  done
   codesign --force --sign "$SIGN_APP_IDENTITY" --options runtime --timestamp \
     --entitlements "$ENTS" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
+  # Notary-parity gate: deep-verify accepts ad-hoc NESTED signatures, the notary
+  # does not. Assert every Mach-O actually carries a Developer ID signature so a
+  # missed binary fails HERE (seconds) instead of at Apple (minutes, opaque).
+  find "$APP/Contents/MacOS" -type f | while IFS= read -r f; do
+    file "$f" | grep -q 'Mach-O' || continue
+    if ! codesign -dvv "$f" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+      echo "error: $f is not Developer-ID signed (would fail notarization)" >&2
+      exit 1
+    fi
+  done
   notarize "$APP"
   # Signed component pkg that installs the app to /Applications.
   if [ -n "$SIGN_INSTALLER_IDENTITY" ]; then
