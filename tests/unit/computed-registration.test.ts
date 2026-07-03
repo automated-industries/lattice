@@ -4,7 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { allAsyncOrSync } from '../../src/db/adapter.js';
-import { COMPUTED_STATE_TABLE } from '../../src/schema/computed-fill.js';
+import { registerComputedTables } from '../../src/schema/computed-table.js';
+import {
+  AI_CELL_TABLE,
+  AI_MAP_TABLE,
+  COMPUTED_STATE_TABLE,
+  countPending,
+  recordComputedTableError,
+  runComputedFill,
+  type FillLlm,
+} from '../../src/schema/computed-fill.js';
+import type { ComputedTableDef } from '../../src/config/types.js';
 
 const CONFIG_YAML = `
 db: ./data.db
@@ -155,6 +165,16 @@ describe('computed tables — SQLite registration end-to-end', () => {
       refusal,
     );
     await expect(db.insertReturning('ticket_summary', { title: 'x' })).rejects.toThrow(refusal);
+    // The junction + sync write paths refuse identically — never a raw driver
+    // error surfaced from writing into a view.
+    await expect(db.link('ticket_summary', { ticket_id: 'x' })).rejects.toThrow(refusal);
+    await expect(db.unlink('ticket_summary', { title: 'x' })).rejects.toThrow(refusal);
+    await expect(db.enrichByNaturalKey('ticket_summary', 'title', 'x', {})).rejects.toThrow(
+      refusal,
+    );
+    await expect(db.softDeleteMissing('ticket_summary', 'title', 'src.csv', ['k'])).rejects.toThrow(
+      refusal,
+    );
   });
 
   it('re-registers on re-open (drop + recreate is idempotent)', async () => {
@@ -255,6 +275,190 @@ computed:
       // The rest of the database is fully usable.
       const id = await db.insert('ticket', { title: 'still works' });
       expect((await db.get('ok_view', id))?.t).toBe('still works');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('computed tables — config edits invalidate stale AI values (prompt_hash)', () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'lattice-computed-stale-'));
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const config = (labels: string, transformPrompt: string) => `
+db: ./data.db
+entities:
+  ticket:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      title: { type: text }
+      status: { type: text }
+    outputFile: tickets.md
+computed:
+  summary:
+    base: ticket
+    fields:
+      title: { kind: alias, source: title }
+      category: { kind: ai_classify, input: status, prompt: Categorize., labels: [${labels}] }
+      brief: { kind: ai_transform, inputs: [title], prompt: ${transformPrompt} }
+`;
+
+  /** Deterministic model: classifiers get a null (declined) per value, transforms a constant. */
+  class FakeLlm implements FillLlm {
+    async complete(opts: { system: string; user: string; model: string }): Promise<string> {
+      const line = opts.user.split('\n').find((l) => l.startsWith('Input values: '));
+      if (line) {
+        const values = JSON.parse(line.slice('Input values: '.length)) as string[];
+        return JSON.stringify(Object.fromEntries(values.map((v) => [v, null])));
+      }
+      return 'a brief';
+    }
+  }
+
+  const mapRows = (db: Lattice) =>
+    allAsyncOrSync(
+      db.adapter,
+      `SELECT * FROM "${AI_MAP_TABLE}" WHERE "field_key" = 'summary.category'`,
+    );
+  const cellRows = (db: Lattice) =>
+    allAsyncOrSync(
+      db.adapter,
+      `SELECT * FROM "${AI_CELL_TABLE}" WHERE "field_key" = 'summary.brief'`,
+    );
+
+  it("purges exactly the changed field's cache on the next open — no matter which path edited the definition", async () => {
+    const cfg = join(dir, 'lattice.config.yml');
+    writeFileSync(cfg, config('open, closed', 'Summarize.'));
+    let db = new Lattice({ config: cfg });
+    await db.init();
+    await db.insert('ticket', { title: 'A', status: 'open' });
+    await db.insert('ticket', { title: 'B', status: 'closed' });
+    const compiled = db.getComputedRegistration()?.compiled.get('summary');
+    expect(compiled).toBeDefined();
+    await runComputedFill(db.adapter, new FakeLlm(), compiled!);
+    expect(await mapRows(db)).toHaveLength(2);
+    expect(await cellRows(db)).toHaveLength(2);
+    db.close();
+
+    // 1) The classifier's LABELS change via a hand-edited config (no ops-layer
+    //    involvement). The stored prompt_hash no longer matches → the map is
+    //    purged and the values re-pend; the untouched transform keeps its cache.
+    writeFileSync(cfg, config('open, closed, blocked', 'Summarize.'));
+    db = new Lattice({ config: cfg });
+    await db.init();
+    expect(db.getComputedRegistration()?.errors).toEqual([]);
+    expect(await mapRows(db)).toHaveLength(0);
+    expect(await cellRows(db)).toHaveLength(2);
+    const category = db
+      .getComputedRegistration()!
+      .compiled.get('summary')!
+      .aiFields.find((f) => f.field === 'category')!;
+    expect(await countPending(db.adapter, category)).toBe(2); // re-pending, not stale-serving
+    db.close();
+
+    // 2) The transform's PROMPT changes → its per-row cells are purged too.
+    writeFileSync(cfg, config('open, closed, blocked', 'Summarize BRIEFLY.'));
+    db = new Lattice({ config: cfg });
+    await db.init();
+    expect(db.getComputedRegistration()?.errors).toEqual([]);
+    expect(await cellRows(db)).toHaveLength(0);
+    const brief = db
+      .getComputedRegistration()!
+      .compiled.get('summary')!
+      .aiFields.find((f) => f.field === 'brief')!;
+    expect(await countPending(db.adapter, brief)).toBe(2);
+    db.close();
+
+    // 3) A converged re-open (nothing changed) purges nothing.
+    db = new Lattice({ config: cfg });
+    await db.init();
+    const compiled3 = db.getComputedRegistration()?.compiled.get('summary');
+    await runComputedFill(db.adapter, new FakeLlm(), compiled3!);
+    expect(await cellRows(db)).toHaveLength(2);
+    db.close();
+    db = new Lattice({ config: cfg });
+    await db.init();
+    expect(await cellRows(db)).toHaveLength(2); // survived the re-open
+    db.close();
+  });
+});
+
+describe('computed tables — registration IO is batched (pooled-connection cost)', () => {
+  it('issues no state DELETE when no error was recorded, and one batched DELETE when one was', async () => {
+    const db = new Lattice(':memory:');
+    db.define('note', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT' },
+      render: () => '',
+      outputFile: 'notes.md',
+    });
+    await db.init();
+    try {
+      // Statement-logging wrapper over the live adapter — every read/write the
+      // registration issues is observable, sync and async surfaces alike.
+      const statements: string[] = [];
+      const real = db.adapter;
+      const logged = new Set(['run', 'get', 'all', 'runAsync', 'getAsync', 'allAsync']);
+      const adapter = new Proxy(real, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (typeof prop === 'string' && logged.has(prop) && typeof value === 'function') {
+            return (sql: string, params?: unknown[]) => {
+              statements.push(sql);
+              return (value as (s: string, p?: unknown[]) => unknown).call(target, sql, params);
+            };
+          }
+          return typeof value === 'function' ? (value as () => unknown).bind(target) : value;
+        },
+      });
+      const host = {
+        adapter,
+        migrate: async () => {
+          /* sqlite path never migrates */
+        },
+        introspectColumns: (t: string) => db.introspectColumns(t),
+        register: () => {
+          /* live registration is the Lattice host's job — not under test */
+        },
+      };
+      const defs: Record<string, ComputedTableDef> = {
+        board: { base: 'note', fields: { headline: { kind: 'alias', source: 'title' } } },
+      };
+
+      const first = await registerComputedTables(host, defs, {
+        schema: db.computedSchemaLookup(),
+        dialect: 'sqlite',
+      });
+      expect(first.errors).toEqual([]);
+      // Nothing was ever recorded → success cleanup must not issue any DELETE.
+      expect(statements.filter((s) => s.includes(`DELETE FROM "${COMPUTED_STATE_TABLE}"`))).toEqual(
+        [],
+      );
+
+      // A prior open recorded a registration error → cleared by ONE batched,
+      // keyed DELETE (never an unconditional per-table statement).
+      await recordComputedTableError(real, 'board', 'boom');
+      statements.length = 0;
+      const second = await registerComputedTables(host, defs, {
+        schema: db.computedSchemaLookup(),
+        dialect: 'sqlite',
+      });
+      expect(second.errors).toEqual([]);
+      const deletes = statements.filter((s) => s.includes(`DELETE FROM "${COMPUTED_STATE_TABLE}"`));
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]).toContain('IN (');
+      expect(
+        await allAsyncOrSync(
+          real,
+          `SELECT * FROM "${COMPUTED_STATE_TABLE}" WHERE "table_name" = 'board'`,
+        ),
+      ).toEqual([]);
     } finally {
       db.close();
     }

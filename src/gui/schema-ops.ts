@@ -10,6 +10,7 @@ import {
 } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { getGuiEntities, type FileJunction } from './data.js';
+import { assertNotComputedSource } from './computed-ops.js';
 import type { ActiveDb } from './active-db.js';
 import { secureNewCloudTable } from '../cloud/setup.js';
 import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
@@ -461,6 +462,12 @@ export async function addUserColumn(
   sessionId: string,
 ): Promise<{ ok: true; column: string } | { ok: false; error: string }> {
   if (!active.validTables.has(table)) return { ok: false, error: `Unknown table "${table}".` };
+  if (active.computedTables.has(table)) {
+    return {
+      ok: false,
+      error: `"${table}" is a computed view — its fields come from its definition, so add the new field there instead.`,
+    };
+  }
   if (
     active.junctionTables.has(table) ||
     table.startsWith('_lattice_') ||
@@ -548,6 +555,16 @@ export async function softDeleteUserEntity(
   sessionId: string,
   summary?: string,
 ): Promise<void> {
+  // A computed table is not an entity — it is deleted through its own
+  // definition path (deleteComputedTable), never soft-deleted like a table.
+  if (active.computedTables.has(name)) {
+    throw new Error(
+      `"${name}" is a computed table — delete it from its computed-table definition instead.`,
+    );
+  }
+  // Fail loudly (naming the dependents, no cascade) while any computed table
+  // still reads from this one — deleting a source would break live projections.
+  assertNotComputedSource(active, name);
   const doc = loadConfigDoc(active.configPath);
   const entityDef = (doc.toJS() as { entities?: Record<string, unknown> }).entities?.[name];
   doc.deleteIn(['entities', name]);
@@ -652,6 +669,19 @@ export async function aiDeleteEntity(
   if (!active.validTables.has(name)) return { ok: false, error: `Unknown table: ${name}` };
   if (isNativeEntity(name)) {
     return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
+  }
+  if (active.computedTables.has(name)) {
+    return {
+      ok: false,
+      error: `"${name}" is a computed view — remove its definition instead of deleting it like a table.`,
+    };
+  }
+  // Refuse BEFORE any data moves: a computed table reading from this one would
+  // break, and the merge path must never fail after rows have been relocated.
+  try {
+    assertNotComputedSource(active, name);
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
   }
   const inbound: { table: string; relName: string; foreignKey: string }[] = [];
   for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {

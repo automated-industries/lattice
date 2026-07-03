@@ -32,6 +32,8 @@ import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest
 import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
+import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
+import { buildComputedFillLlm } from './computed-llm.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
 import type { AuditEntry } from './mutations.js';
 import { retireLegacyPreferenceSecrets } from './assistant-routes.js';
@@ -534,6 +536,8 @@ export async function openConfig(
     db,
     validTables,
     junctionTables,
+    // Registered computed tables (config-declared; runtime ops keep it current).
+    computedTables: new Set(db.getComputedTableNames()),
     hiddenLinkTables,
     entityContextByTable,
     manifest,
@@ -551,6 +555,9 @@ export async function openConfig(
     maskedReadViews,
     onColumnsAdded: columnDescriptionHook(db),
     generateTableDescription: tableDescriptionHook(db),
+    // Real model adapter for computed-table AI fills (auth resolved per call;
+    // "not configured" surfaces through the fill engine's per-field state).
+    computedFillLlm: () => buildComputedFillLlm(db),
   };
 
   // Owner-side convergence (native-entity adopt + the cloud RLS/grant/settings/
@@ -1072,6 +1079,15 @@ export async function applySchemaConfig(
   direction: 'inverse' | 'forward',
   autoRender: boolean,
 ): Promise<ActiveDb> {
+  // Computed-table ops replay through their own live appliers (create⁻¹ =
+  // delete, delete⁻¹ = create(before), update⁻¹ = update(before)) — the same
+  // no-reopen primitives the ops layer mutates with, so the SAME ActiveDb is
+  // returned. A refresh entry is informational and throws (nothing to revert),
+  // which the route maps to a 400 like any other non-revertible entry.
+  if (isComputedSchemaOp(entry.operation)) {
+    await applyComputedSchemaOp(active, entry, direction);
+    return active;
+  }
   const before = entry.before_json
     ? (JSON.parse(entry.before_json) as Record<string, unknown>)
     : null;

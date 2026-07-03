@@ -32,7 +32,7 @@
 import type { ComputedTableDef, ComputedFieldDef } from '../config/types.js';
 import type { BelongsToRelation, Migration, TableDefinition } from '../types.js';
 import type { StorageAdapter } from '../db/adapter.js';
-import { runAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { assertExternalIdentifier } from './identifier.js';
 import { pkSqlExpr } from '../db/pk.js';
 import { parseCalcExpr, emitCalcExpr } from './calc-expr.js';
@@ -40,9 +40,10 @@ import type { CalcExpr } from './calc-expr.js';
 import {
   AI_MAP_TABLE,
   AI_CELL_TABLE,
+  COMPUTED_STATE_TABLE,
   ensureAiTables,
   recordComputedTableError,
-  clearComputedTableError,
+  purgeStaleAiFields,
 } from './computed-fill.js';
 
 // ---------------------------------------------------------------------------
@@ -722,6 +723,14 @@ export interface RegisterComputedTablesOptions {
   introspectOnly?: boolean;
   /** Compile per-relation `lattice_row_visible` predicates into the views. */
   cloud?: { rowVisible: true };
+  /**
+   * Runtime (ops-layer) registration: execute the view DDL directly (drop +
+   * recreate) on Postgres too, instead of the content-hash migration the open
+   * path uses. A runtime edit can be REVERTED to a prior definition whose
+   * content hash was already applied once — a version-guarded migration would
+   * skip that DDL and silently leave the view on the newer definition.
+   */
+  directDdl?: boolean;
 }
 
 export interface ComputedRegistrationResult {
@@ -735,22 +744,59 @@ export interface ComputedRegistrationResult {
   compiled: Map<string, CompiledComputedTable>;
 }
 
+/** The content-hash migration version guarding one table's view DDL. */
+function migrationVersion(name: string, compiled: CompiledComputedTable): string {
+  return `internal:computed-table:${name}:v1:${compiled.contentHash}`;
+}
+
+/**
+ * Which of `versions` are already recorded in the migrations ledger — ONE
+ * round-trip for the whole batch, so a converged pooled-Postgres open never
+ * pays a per-table migrate call just to discover there is nothing to do.
+ */
+async function appliedMigrationVersions(
+  adapter: StorageAdapter,
+  versions: readonly string[],
+): Promise<Set<string>> {
+  if (versions.length === 0) return new Set();
+  const rows = await allAsyncOrSync(
+    adapter,
+    `SELECT version FROM __lattice_migrations WHERE version IN (${versions
+      .map(() => '?')
+      .join(', ')})`,
+    [...versions],
+  );
+  return new Set(rows.map((r) => String(r.version)));
+}
+
 /**
  * Compile every computed-table definition in topological order, execute the
  * view DDL, introspect the result, and register it with the host.
  *
- * - SQLite: unconditional `DROP VIEW IF EXISTS` + `CREATE VIEW` — cheap and
- *   idempotent.
- * - Postgres: the DDL runs as a migration versioned by the compile's content
- *   hash, so a converged open issues no DDL, and a changed definition
- *   drops + recreates the view. (`CREATE OR REPLACE VIEW` is deliberately not
- *   used — it fails whenever the column list changes.)
+ * DDL is planned dependency-aware: when a table's view must be (re)created —
+ * SQLite and the runtime `directDdl` path always recreate; Postgres recreates
+ * when the definition's content-hash migration has not been applied — every
+ * TRANSITIVE dependent (a computed table based on it) is dropped first in
+ * reverse-topological order and force-recreated afterwards in topological
+ * order. Postgres refuses `DROP VIEW` while dependents exist, so without the
+ * plan a changed base failed to re-register AND took its dependents with it
+ * on the next open; and a dependent whose own hash is unchanged must be
+ * recreated DIRECTLY (its migration version is already recorded — a
+ * version-guarded migrate would skip the CREATE and leave the view missing).
+ * (`CREATE OR REPLACE VIEW` is deliberately not used — it fails whenever the
+ * column list changes.)
  *
  * A definition that fails to compile (or whose DDL fails) must NOT brick the
  * open: it is skipped, recorded under field `'*'` in
  * `__lattice_computed_state`, reported in the returned result, and the
  * remaining tables continue. This function itself never throws for a
  * per-table failure.
+ *
+ * After registration, stored AI outputs whose `prompt_hash` no longer matches
+ * the current definition are purged ({@link purgeStaleAiFields}), so a
+ * definition changed through ANY path (ops layer, hand-edited YAML,
+ * member-hydrated config) never keeps serving values derived from a prompt or
+ * label set that no longer exists.
  */
 export async function registerComputedTables(
   host: ComputedTableHost,
@@ -768,9 +814,33 @@ export async function registerComputedTables(
   const introspectOnly = opts.introspectOnly === true;
   const schema = new Map<string, ComputedSchemaTable>(opts.schema);
 
+  /** Record one table's failure — in the result and (owner paths) the state table. */
+  const recordFailure = async (name: string, e: unknown): Promise<void> => {
+    let message = (e as Error).message;
+    if (!introspectOnly) {
+      try {
+        await recordComputedTableError(host.adapter, name, message);
+      } catch (stateErr) {
+        // The failure itself is still surfaced through the returned report;
+        // note the bookkeeping write's failure alongside it.
+        message = `${message} (state record also failed: ${(stateErr as Error).message})`;
+      }
+    }
+    result.errors.push({ table: name, error: message });
+  };
+
+  let erroredBefore = new Set<string>();
   if (!introspectOnly) {
     // The state table must exist before any per-table failure can be recorded.
     await ensureAiTables(host.adapter);
+    // Which tables carry a recorded registration error from a PRIOR open — one
+    // bounded read for all of them, so the per-table success cleanup below
+    // never issues an unconditional DELETE per table (pooled-connection cost).
+    const errorRows = await allAsyncOrSync(
+      host.adapter,
+      `SELECT "table_name" FROM "${COMPUTED_STATE_TABLE}" WHERE "field" = '*'`,
+    );
+    erroredBefore = new Set(errorRows.map((r) => String(r.table_name)));
   }
 
   // Tolerant ordering: config parsing already rejects cycles, but a caller
@@ -797,28 +867,108 @@ export async function registerComputedTables(
     }
   }
 
+  // ── Pass 1: compile everything (dependencies first). A compile failure is
+  // recorded and the table drops out of the DDL plan; its dependents still
+  // compile against the projected columns, so one bad definition never takes
+  // the whole chain down at this stage.
+  const compiledByName = new Map<string, CompiledComputedTable>();
   for (const name of order) {
     const def = defs[name];
     if (!def) continue;
     try {
       const compiled = compileComputedTable(name, def, schema, opts.dialect, opts.cloud);
+      compiledByName.set(name, compiled);
+      // Later computed tables may use this one as their base.
+      schema.set(name, {
+        columns: new Set(compiled.columns),
+        relations: {},
+        primaryKey: ['id'],
+        hasDeletedAt: false,
+        fieldTypes: compiled.fieldTypes,
+      });
+    } catch (e) {
+      await recordFailure(name, e);
+    }
+  }
 
-      if (!introspectOnly) {
-        if (opts.dialect === 'sqlite') {
-          // Unconditional drop + recreate: SQLite view DDL is cheap, and this
-          // guarantees the view always matches the current definition.
-          await runAsyncOrSync(host.adapter, `DROP VIEW IF EXISTS ${q(compiled.viewName)}`);
+  // ── DDL plan: which views must be (re)created this open, expanded to every
+  // transitive dependent of a changed table (their views go down with the
+  // base's drop, so they must be recreated even when their own hash is
+  // unchanged). `applied` is consulted again in pass 2 to decide migrate
+  // (record the new version) vs direct CREATE (version already recorded).
+  const needsDdl = new Set<string>();
+  let applied = new Set<string>();
+  if (!introspectOnly) {
+    if (opts.dialect === 'sqlite' || opts.directDdl === true) {
+      // Unconditional recreate: SQLite view DDL is cheap (and SQLite always
+      // takes this path); the runtime ops path takes it on Postgres too — see
+      // {@link RegisterComputedTablesOptions.directDdl}.
+      for (const name of compiledByName.keys()) needsDdl.add(name);
+    } else {
+      applied = await appliedMigrationVersions(
+        host.adapter,
+        [...compiledByName.entries()].map(([n, c]) => migrationVersion(n, c)),
+      );
+      for (const [name, compiled] of compiledByName) {
+        if (!applied.has(migrationVersion(name, compiled))) needsDdl.add(name);
+      }
+      // Dependent closure over base edges within this batch.
+      for (;;) {
+        let grew = false;
+        for (const name of compiledByName.keys()) {
+          const base = defs[name]?.base;
+          if (base !== undefined && !needsDdl.has(name) && needsDdl.has(base)) {
+            needsDdl.add(name);
+            grew = true;
+          }
+        }
+        if (!grew) break;
+      }
+    }
+
+    // ── Drop phase: dependents before bases, so Postgres never refuses a
+    // base's DROP over a dependent view. A failed drop (e.g. a user-created
+    // view we don't manage still depends on it) is recorded for THAT table,
+    // which then drops out of the create phase — never aborting the rest.
+    for (const name of [...order].reverse()) {
+      if (!needsDdl.has(name)) continue;
+      try {
+        await runAsyncOrSync(host.adapter, `DROP VIEW IF EXISTS ${q(name)}`);
+      } catch (e) {
+        await recordFailure(name, e);
+        needsDdl.delete(name);
+        compiledByName.delete(name);
+      }
+    }
+  }
+
+  // ── Pass 2: create (per the plan), introspect, and register — per table in
+  // topological order, each fault-isolated.
+  const clearedErrors: string[] = [];
+  for (const name of order) {
+    const def = defs[name];
+    const compiled = compiledByName.get(name);
+    if (!def || !compiled) continue;
+    try {
+      if (!introspectOnly && needsDdl.has(name)) {
+        if (
+          opts.dialect === 'sqlite' ||
+          opts.directDdl === true ||
+          applied.has(migrationVersion(name, compiled))
+        ) {
+          // Direct CREATE: the drop phase already ran. The `applied` branch is
+          // a dependent dropped by the plan whose own hash is unchanged — its
+          // migration version is already recorded, so a migrate would SKIP the
+          // CREATE and leave the view missing.
           await runAsyncOrSync(
             host.adapter,
             `CREATE VIEW ${q(compiled.viewName)} AS\n${compiled.selectSql}`,
           );
         } else {
-          // Content-hash-guarded migration: a converged open issues no DDL.
+          // Changed definition: run + record the content-hash migration (its
+          // embedded DROP is a no-op — the drop phase already ran).
           await host.migrate([
-            {
-              version: `internal:computed-table:${name}:v1:${compiled.contentHash}`,
-              sql: compiled.createSql,
-            },
+            { version: migrationVersion(name, compiled), sql: compiled.createSql },
           ]);
         }
       }
@@ -845,30 +995,32 @@ export async function registerComputedTables(
         cols,
       );
 
-      // Later computed tables may use this one as their base.
-      schema.set(name, {
-        columns: new Set(compiled.columns),
-        relations: {},
-        primaryKey: ['id'],
-        hasDeletedAt: false,
-        fieldTypes: compiled.fieldTypes,
-      });
       result.compiled.set(name, compiled);
       result.registered.push(name);
-      if (!introspectOnly) await clearComputedTableError(host.adapter, name);
+      if (!introspectOnly && erroredBefore.has(name)) clearedErrors.push(name);
     } catch (e) {
-      let message = (e as Error).message;
-      if (!introspectOnly) {
-        try {
-          await recordComputedTableError(host.adapter, name, message);
-        } catch (stateErr) {
-          // The failure itself is still surfaced through the returned report;
-          // note the bookkeeping write's failure alongside it.
-          message = `${message} (state record also failed: ${(stateErr as Error).message})`;
-        }
-      }
-      result.errors.push({ table: name, error: message });
+      await recordFailure(name, e);
     }
+  }
+
+  if (!introspectOnly) {
+    // Clear prior registration errors for every table that succeeded — one
+    // batched DELETE, and only when something was actually recorded.
+    if (clearedErrors.length > 0) {
+      await runAsyncOrSync(
+        host.adapter,
+        `DELETE FROM "${COMPUTED_STATE_TABLE}" WHERE "field" = '*' AND "table_name" IN (${clearedErrors
+          .map(() => '?')
+          .join(', ')})`,
+        clearedErrors,
+      );
+    }
+    // Definition-hash invalidation: purge materialized AI values whose stored
+    // prompt_hash no longer matches the (possibly config-edited) definition.
+    await purgeStaleAiFields(
+      host.adapter,
+      result.registered.flatMap((n) => result.compiled.get(n)?.aiFields ?? []),
+    );
   }
 
   return result;
