@@ -981,8 +981,34 @@ export async function handleReadRoutes(
     // root-level entries no table claims (stray user .md files) trail as
     // `ungrouped`, after the same link-table filter — now covering FILES too (a
     // junction ROLLUP at the root is equally an implementation detail).
-    const base = loadGuiData(active.configPath, active.outputDir, false).tables.filter(
-      (t) => !active.hiddenLinkTables.has(t.name),
+    // Node source = config tables UNION runtime-registered tables (connector
+    // models, imported database tables — defineLate'd, absent from the parsed
+    // config). Hard-filtered: link tables, internal natives (chat), secrets,
+    // and bookkeeping prefixes never appear.
+    const cfgTables = loadGuiData(active.configPath, active.outputDir, false).tables;
+    const cfgNames = new Set(cfgTables.map((t) => t.name));
+    const runtime = active.db
+      .getRegisteredTableNames()
+      .filter(
+        (n) =>
+          !cfgNames.has(n) &&
+          active.validTables.has(n) &&
+          n !== 'secrets' &&
+          !isInternalNativeEntity(n) &&
+          !n.startsWith('_lattice') &&
+          !n.startsWith('__lattice'),
+      )
+      .map((n) => ({
+        name: n,
+        columns: Object.keys(active.db.getRegisteredColumns(n) ?? {}),
+        outputFile: `.schema-only/${n}.md`,
+        relations: {},
+      }));
+    const base = [...cfgTables, ...runtime].filter(
+      (t) =>
+        !active.hiddenLinkTables.has(t.name) &&
+        t.name !== 'secrets' &&
+        !isInternalNativeEntity(t.name),
     );
     const manifest = readManifest(active.outputDir);
     const claimed = new Set<string>();

@@ -148,6 +148,12 @@ export const bootJs = `    // ────────────────�
             'or check the database connection, then reload.</p></div>';
         }
         startEventStream();
+        // Kick the stale-connector sync (fire-and-forget): in a fresh process
+        // connector/database tables only exist after their first sync registers
+        // them — without this they stay invisible until a manual refresh. The
+        // server no-ops when nothing is stale.
+        fetch('/api/connectors/sync-if-stale', { method: 'POST' }).catch(function () {});
+        fetch('/api/db-sources/sync-if-stale', { method: 'POST' }).catch(function () {});
         initLastEdited();
         initOffline();
         initOutputsResize();

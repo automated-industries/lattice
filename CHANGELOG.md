@@ -58,6 +58,21 @@ database connector).
 
 ### Added
 
+- **All data renders as markdown.** The files table, connector-synced tables,
+  and imported-database tables now get real per-record markdown contexts (on
+  owner and member opens alike) and appear populated in the Markdown column. A
+  file's context is bounded — the extracted text and raw source JSON never
+  enter the markdown, and the self file is capped — while `secrets` and the
+  conversation tables are hard-excluded from rendering at the derivation
+  itself. Spec-less rollups no longer read their whole table just to write an
+  empty file.
+- **Render progress lives in the Markdown column, per file.** While a
+  workspace renders, not-yet-rendered tables appear faded, the one currently
+  rendering carries an in-node progress bar (real percentages when per-entity
+  counts exist), and each un-fades as it completes — the status of all
+  rendering visible separately in the tree. The old per-card dashboard
+  overlays are gone; the aggregate header pill stays.
+
 - **External databases import their relational structure.** Single-column
   FOREIGN KEYs on the remote are introspected at connect time and materialized as
   graph edges between the imported tables (same machinery as the other

@@ -1,4 +1,6 @@
 import type { Lattice } from '../lattice.js';
+import { boundedSelfContext } from './canonical-context.js';
+import { NOOP_RENDER } from '../render/engine.js';
 import type { TableDefinition } from '../types.js';
 
 /**
@@ -35,7 +37,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       deleted_at: 'TEXT',
     },
     encrypted: { columns: ['value'] },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/secrets.md',
   },
   files: {
@@ -77,7 +79,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/files.md',
   },
   notes: {
@@ -94,7 +96,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/notes.md',
   },
   chat_threads: {
@@ -114,7 +116,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/chat-threads.md',
   },
   chat_messages: {
@@ -138,7 +140,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/chat-messages.md',
   },
 };
@@ -194,6 +196,23 @@ export function registerNativeEntities(db: Lattice): void {
     if (existing.has(name)) continue;
     db.define(name, def);
   }
+  // The files table gets a REAL rendered per-record context ("all data renders
+  // as markdown") — bounded: the multi-megabyte extracted_text and raw
+  // source_json never enter the markdown, and the self file is capped. secrets
+  // and the chat tables stay unrendered by design (hard-excluded in the
+  // canonical derivation). Registered here so owner opens, member opens, and
+  // openWorkspace all get it path-independently; never overrides an explicit
+  // context.
+  const filesDef = NATIVE_ENTITY_DEFS.files;
+  if (filesDef && !db.entityContexts().has('files')) {
+    db.defineEntityContext(
+      'files',
+      boundedSelfContext('files', filesDef, {
+        excludeColumns: new Set(['extracted_text', 'source_json']),
+        budget: 8000,
+      }),
+    );
+  }
 }
 
 /** Bookkeeping table that records which physical table is bound to each
@@ -210,7 +229,7 @@ const NATIVE_REGISTRY_DEF: TableDefinition = {
     origin: 'TEXT NOT NULL',
   },
   primaryKey: 'entity',
-  render: () => '',
+  render: NOOP_RENDER,
   outputFile: '.lattice-native/native-entities.md',
 };
 
