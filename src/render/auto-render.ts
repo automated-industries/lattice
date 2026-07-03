@@ -25,6 +25,15 @@ export interface AutoRenderDeps {
   emitRender: (result: RenderResult) => void;
   /** Fan-out a render error to the owning Lattice's error handlers. */
   emitError: (error: Error) => void;
+  /**
+   * REVERSE-SYNC DRAIN — ingest pending manual file edits into the DB BEFORE any
+   * render rewrites the files. Without this, an edit made within the file
+   * watcher's debounce of a mutation-triggered render was overwritten on disk,
+   * the following watcher pass saw the fresh render's hash as an echo, and the
+   * edit vanished silently. A drain failure aborts the cycle (the edit stays on
+   * disk, unrendered-over) and surfaces through the normal error channel.
+   */
+  drain?: (outputDir: string) => Promise<void>;
   /** Live getter (NOT a snapshot) for the owning Lattice's `_initialized` flag. */
   isInitialized: () => boolean;
 }
@@ -158,8 +167,17 @@ export class AutoRenderScheduler {
     }
     this._inFlight = true;
     try {
+      // Ingest pending manual edits before this render can overwrite them.
+      await this.deps.drain?.(outputDir);
+      // Same drain→render→reconcile sequence as the mutation-driven _run, so
+      // deletions/renames/un-shares that happened while the app was closed are
+      // swept at OPEN time too — reconciliation previously only ran after
+      // mutation-driven renders.
+      const prevManifest = this.deps.readManifest(outputDir);
       const result = await this.deps.render(outputDir, opts);
       this.deps.emitRender(result);
+      const newManifest = this.deps.readManifest(outputDir);
+      await this.deps.cleanup(outputDir, prevManifest, {}, newManifest);
       return result;
     } finally {
       this._inFlight = false;
@@ -190,6 +208,10 @@ export class AutoRenderScheduler {
     this._pendingTables = new Set();
     this._inFlight = true;
     try {
+      // Ingest pending manual edits before this render can overwrite them (see
+      // the drain dep note above). A failure lands in the catch below: the cycle
+      // aborts loudly and the edit stays on disk for the next attempt.
+      await this.deps.drain?.(dir);
       // Read the prior manifest BEFORE render so cleanup can detect orphans.
       const prevManifest = this.deps.readManifest(dir);
       // Incremental when we know exactly which tables changed; full otherwise.
