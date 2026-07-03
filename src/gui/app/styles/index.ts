@@ -21,6 +21,7 @@ import { sidebarCss } from './sidebar.js';
 import { fsWorkspaceCss } from './fs-workspace.js';
 import { settingsDrawerCss } from './settings-drawer.js';
 import { assistantRailCss } from './assistant-rail.js';
+import { analyticsViewCss } from './analytics-view.js';
 import { outputsCss } from './outputs.js';
 import { modelTablesCss } from './model-tables.js';
 import { chatCss } from './chat.js';
@@ -51,6 +52,7 @@ export const css = [
   fsWorkspaceCss,
   settingsDrawerCss,
   assistantRailCss,
+  analyticsViewCss,
   outputsCss,
   modelTablesCss,
   chatCss,

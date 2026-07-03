@@ -91,9 +91,15 @@ export const guiAppHtml = `<!doctype html>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
     </button>
+    <!-- The top-right slot toggles the app's two views: in Configure it shows
+         "Ask Gladys" (→ Analytics, where the chat lives); in Analytics it shows
+         "Configure" (→ the workspace-builder view). CSS shows exactly one. -->
     <div class="ask-lattice" id="ask-lattice">
-      <button class="ask-lattice-trigger" id="ask-lattice-trigger" title="Ask Gladys" aria-haspopup="dialog" aria-expanded="false">
+      <button class="ask-lattice-trigger" id="ask-lattice-trigger" title="Ask Gladys" aria-label="Open Analytics">
         <span class="ask-lattice-mark" aria-hidden="true">👵🏻</span><span class="ask-lattice-label">Ask Gladys</span>
+      </button>
+      <button class="configure-trigger" id="configure-trigger" title="Configure this workspace" aria-label="Open Configure">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
       </button>
     </div>
   </header>
@@ -175,6 +181,35 @@ export const guiAppHtml = `<!doctype html>
     </aside>
   </div>
 
+  <!-- Analytics view — the app's landing surface. A sibling of .layout, toggled
+       by body.view-analytics (CSS only; both stay mounted so neither view loses
+       state when the user flips). Left: the Dashboards list. Center: dynamic
+       dashboard tabs + canvas. Right: the assistant dock — the chat feed,
+       thread controls, and composer live HERE (the chat client resolves the
+       #rail-* ids at call time, so the housing is the only thing that moved). -->
+  <div class="analytics-layout" id="analytics-layout">
+    <nav class="dash-sidebar">
+      <div class="col-header col-dashboards"><span class="col-header-text">Dashboards</span></div>
+      <div id="dash-list"></div>
+    </nav>
+    <main class="analytics-content-wrap">
+      <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
+      <div id="analytics-content"></div>
+    </main>
+    <aside class="ask-dock" id="ask-dock" aria-label="Ask Gladys">
+      <div class="ask-dock-head">
+        <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
+        <select class="rail-threads" id="rail-threads" title="Conversations"></select>
+        <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
+      </div>
+      <div class="rail-feed" id="rail-feed">
+        <div class="rail-empty" id="rail-empty">Ask your company anything.</div>
+      </div>
+      <div class="ask-status" id="ask-status" role="status" aria-live="polite" hidden></div>
+      <div class="rail-composer" id="rail-composer"></div>
+    </aside>
+  </div>
+
   <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
   <aside class="settings-drawer" id="settings-drawer" hidden aria-label="Settings">
     <div class="drawer-head">
@@ -209,23 +244,6 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <div class="drawer-body" id="db-connect-body"></div>
   </aside>
-
-  <!-- Floating assistant. The chat composer/feed/thread controls reuse the same
-       element IDs the docked rail used (#rail-feed/#rail-composer/#rail-threads/
-       #rail-newchat/#rail-empty), so the chat client code is unchanged — only its
-       housing moved to this upper-right floating panel. -->
-  <div class="ask-lattice-panel" id="ask-lattice-panel" role="dialog" aria-label="Ask Gladys">
-    <div class="ask-lattice-panel-head">
-      <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
-      <select class="rail-threads" id="rail-threads" title="Conversations"></select>
-      <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
-      <button class="ask-lattice-close" id="ask-lattice-close" title="Close" aria-label="Close">✕</button>
-    </div>
-    <div class="rail-feed" id="rail-feed">
-      <div class="rail-empty" id="rail-empty">Ask anything about your workspace.</div>
-    </div>
-    <div class="rail-composer" id="rail-composer"></div>
-  </div>
 
   <script>${analyticsJs}</script>
   <script>${appJs}</script>

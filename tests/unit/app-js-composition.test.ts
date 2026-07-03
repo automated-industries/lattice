@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { appJs } from '../../src/gui/app/script.js';
+import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 
 // `src/gui/app/script.ts` (a single 7319-line template literal) was split into
 // per-subsystem segments under `src/gui/app/modules/`, composed back into `appJs`
@@ -287,8 +288,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // rejects computed tables as source and target (read-only projections); the
 // per-row provenance PROV_TIERS gains 'derived' (model-tables / wiremerge /
 // provenance segments). Length + hash recaptured.
-const ORIGINAL_LENGTH = 593129;
-const ORIGINAL_SHA256 = '54ccc4276a7033c10e6bee5dffe7208c26805525f387669f947c8e9aba66fb5f';
+// 5.0 Analytics view — the app splits into two hash-driven views: Analytics
+// (the landing surface: Dashboards sidebar, dynamic dashboard tabs, docked
+// assistant) and Configure (the existing three-column workspace). The floating
+// assistant panel is retired — the chat's #rail-* nodes live in the Analytics
+// dock; dashboards open as closable, deduped tabs with the width-based "⋯ N"
+// overflow; assistant-created dashboards route to #/analytics/<id> everywhere
+// a record would open; a transient plain-language status line acknowledges
+// tool work. Length + hash recaptured.
+const ORIGINAL_LENGTH = 614011;
+const ORIGINAL_SHA256 = '884cf04df41193b7a2a8bcb7f081eea309bcabe230b66d922fee6fe7c962f009';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
@@ -310,5 +319,43 @@ describe('appJs composition', () => {
     // in the browser. Parse it here to catch that at build time.
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- intentional: parse-only syntax check of the internally-composed bundle
     expect(() => new Function(normalized)).not.toThrow();
+  });
+});
+
+describe('analytics tab strip isolation', () => {
+  // The Analytics strip was recovered from the original dynamic tab machinery,
+  // whose identifiers still exist in tabs.ts for the Configure strip. Both
+  // segments live in ONE IIFE, and a duplicate function declaration is legal
+  // JS — the later one would silently REPLACE the Configure implementation
+  // with every unit test still green. Assert the recovered copy carries no
+  // bare legacy identifier (all its symbols/element ids are an-/antab-prefixed).
+  it('redeclares no identifier from the Configure tab strip', () => {
+    // Match against CODE only: comments and string literals legitimately
+    // mention tab words (prose, CSS classes, element ids), but an IDENTIFIER
+    // collision is what would shadow the Configure implementation.
+    const code = analyticsTabsJs.replace(/\/\/[^\n]*/g, '').replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+    const legacy = [
+      'tabs',
+      'activeTabKey',
+      'tabKeyForHash',
+      'reconcileTab',
+      'renderTabStrip',
+      'closeTab',
+      'setTabTitle',
+      'findTab',
+      'tabBtnHtml',
+      'tabOverflowWired',
+      'wireTabOverflowGlobal',
+      'TAB_MIN_W',
+      'GRAPH_HASH',
+    ];
+    for (const name of legacy) {
+      const re = new RegExp('(?<![A-Za-z0-9_$])' + name + '(?![A-Za-z0-9_$])');
+      expect(re.test(code), name + ' must not appear bare in analyticsTabsJs code').toBe(false);
+    }
+    // The Configure strip's mount + overflow element ids must not be targeted.
+    expect(analyticsTabsJs.includes("getElementById('tabstrip-tabs')")).toBe(false);
+    expect(analyticsTabsJs.includes("getElementById('tab-overflow-btn')")).toBe(false);
+    expect(analyticsTabsJs.includes("getElementById('tab-overflow-menu')")).toBe(false);
   });
 });

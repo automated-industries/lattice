@@ -48,46 +48,16 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
     .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
     .staging-send { flex: 1; }
-    /* ── Floating "Ask Lattice" assistant panel ────────────────────── */
-    /* A detached, 3-dimensional card floating off the top-right corner. Shown by
-       toggling the .open class (not [hidden]) so it can animate IN and OUT from
-       the corner. Closed state stays in the DOM but inert + invisible. */
-    .ask-lattice-panel {
-      position: fixed; top: 68px; right: 24px; z-index: 1200;
-      width: min(400px, calc(100vw - 48px));
-      height: min(620px, calc(100vh - 104px));
-      display: flex; flex-direction: column;
+    /* ── The assistant dock (Analytics view, right column) ─────────── */
+    /* The chat's permanent home: a full-height column docked to the right of
+       the Analytics layout. Same feed/composer internals as always — only the
+       housing changed (the old floating corner panel is gone). */
+    .ask-dock {
+      display: flex; flex-direction: column; min-width: 0; min-height: 0;
       background:
-        radial-gradient(120% 50% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
-        var(--sheen),
-        var(--glass-strong);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border: 1px solid rgba(59, 130, 246, 0.18); border-radius: 16px;
-      /* Layered shadow for real depth (a card lifted off the surface). */
-      box-shadow:
-        0 1px 2px rgba(15, 23, 42, 0.08),
-        0 8px 24px -6px rgba(15, 23, 42, 0.22),
-        0 24px 60px -12px rgba(15, 23, 42, 0.30),
-        var(--hl-top);
-      overflow: hidden;
-      transform-origin: top right;
-      opacity: 0;
-      transform: translate(12px, -12px) scale(0.96);
-      visibility: hidden;
-      pointer-events: none;
-      transition:
-        opacity 0.18s ease,
-        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-        visibility 0s linear 0.2s;
-    }
-    .ask-lattice-panel.open {
-      opacity: 1;
-      transform: translate(0, 0) scale(1);
-      visibility: visible;
-      pointer-events: auto;
-      transition:
-        opacity 0.18s ease,
-        transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        radial-gradient(120% 30% at 100% 0%, rgba(59, 130, 246, 0.08), rgba(59, 130, 246, 0) 60%),
+        var(--surface);
+      border-left: 1px solid var(--border);
     }
     /* Whole-window file-drop overlay (dragging a file anywhere in the window).
        pointer-events:none so the drag/drop events still reach the document handler. */
@@ -104,7 +74,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       border: 2px dashed rgba(255, 255, 255, 0.85); border-radius: 16px; padding: 40px 56px;
     }
     .file-drop-emoji { font-size: 44px; line-height: 1; }
-    .ask-lattice-panel-head {
+    .ask-dock-head {
       flex: 0 0 auto; padding: 10px 12px;
       display: flex; align-items: center; gap: 8px;
       background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
@@ -115,20 +85,14 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
     }
-    .ask-lattice-panel .ask-lattice-mark { color: var(--accent); }
-    .ask-lattice-close {
-      flex: 0 0 auto; width: 24px; height: 24px; border: 1px solid var(--border);
-      border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
-      cursor: pointer; font-size: 13px; line-height: 1;
-    }
-    .ask-lattice-close:hover { background: var(--row-hover); color: var(--text); }
+    .ask-dock .ask-lattice-mark { color: var(--accent); }
     /* Title glows while the assistant is working (pending feed / typing) */
     @keyframes askPulse {
       0%, 100% { text-shadow: 0 0 8px rgba(59, 130, 246, 0.25); }
       50% { text-shadow: 0 0 16px rgba(59, 130, 246, 0.6); }
     }
-    .ask-lattice-panel:has(.feed-pending) .ask-lattice-panel-title,
-    .ask-lattice-panel:has(.chat-typing) .ask-lattice-panel-title { animation: askPulse 1.6s ease-in-out infinite; }
+    .ask-dock:has(.feed-pending) .ask-lattice-panel-title,
+    .ask-dock:has(.chat-typing) .ask-lattice-panel-title { animation: askPulse 1.6s ease-in-out infinite; }
     .rail-threads {
       flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
       border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px;

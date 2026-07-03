@@ -233,7 +233,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'create_dashboard',
     description:
-      'Create a live dashboard — a visual page of charts, tables, and key numbers that answers a question about the user\'s data — and open it for them. Use this whenever the user asks a question best answered visually, or asks for a dashboard, report, chart, metric, or overview. You do NOT write the page yourself: provide a short `title` and a clear `spec` (what to show, from which data) and a stronger model authors a complete standalone page that reads the user\'s live data and draws charts. Follows the same sharing rules as any record (private mode → private).',
+      "Create a live dashboard — a visual page of charts, tables, and key numbers that answers a question about the user's data — and open it for them. Use this whenever the user asks a question best answered visually, or asks for a dashboard, report, chart, metric, or overview. You do NOT write the page yourself: provide a short `title` and a clear `spec` (what to show, from which data) and a stronger model authors a complete standalone page that reads the user's live data and draws charts. Follows the same sharing rules as any record (private mode → private).",
     mutates: true,
     category: 'row',
     args: obj(
