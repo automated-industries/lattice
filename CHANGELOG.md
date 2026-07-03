@@ -126,6 +126,16 @@ database connector).
   explorer and listed as upstream/downstream lineage); and computed rows
   render read-only everywhere — a "Computed" badge, a note saying where the
   values come from, and no edit affordances on record or collection pages.
+  The assistant drives the same loop through four chat tools —
+  `preview_computed_table`, `create_computed_table`, `update_computed_table`,
+  `refresh_computed_table` — preview-first by prompt (it checks per-field
+  status and fixes failing fields before creating), with the system prompt
+  teaching the derived-vs-new decision ("a table OF existing data" → computed
+  view; "a new kind of record" → entity) and `delete_entity` routing a
+  computed name straight to the definition delete. Computed views are tagged
+  read-only in the assistant's schema context and entity listing so it never
+  edits their rows, and every assistant computed-table mutation is audited and
+  undoable exactly like a builder action.
   Documented in `docs/computed-tables.md`.
 - **External databases import their relational structure.** Single-column
   FOREIGN KEYs on the remote are introspected at connect time and materialized as
