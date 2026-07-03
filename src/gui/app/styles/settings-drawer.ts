@@ -6,14 +6,17 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        while open and clicking it again collapses. */
     .drawer-backdrop {
       position: fixed; inset: 0; background: rgba(15, 23, 42, 0.15);
-      z-index: 120; opacity: 0; transition: opacity 0.2s ease;
+      /* BELOW the topbar (z 100): the takeover replaces the workspace, but the
+         header and its triggers must stay clickable — the clock/gear COLLAPSE
+         the open panel. */
+      z-index: 90; opacity: 0; transition: opacity 0.2s ease;
     }
     .drawer-backdrop.open { opacity: 1; }
     .settings-drawer {
       position: fixed; left: 0; right: 0; bottom: 0; top: 49px; /* refined by JS to the real header height */
       background: var(--surface, #fff);
       border-top: 1px solid rgba(15, 23, 42, 0.06);
-      z-index: 130; display: flex; flex-direction: column;
+      z-index: 95; display: flex; flex-direction: column;
       opacity: 0; transform: translateY(-6px);
       transition: transform 0.18s ease, opacity 0.18s ease;
     }
@@ -85,7 +88,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
       border-right: 1px solid rgba(15, 23, 42, 0.04);
       box-shadow: 12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
-      z-index: 130; display: flex; flex-direction: column;
+      z-index: 95; display: flex; flex-direction: column;
       transform: translateX(-100%); transition: transform 0.22s ease;
     }
     .connectors-dialog.open { transform: translateX(0); }
