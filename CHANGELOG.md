@@ -115,7 +115,18 @@ database connector).
   them get a friendly refusal, and on a team cloud the view compiles with
   per-viewer row-visibility predicates, members are granted SELECT (re-issued
   on every owner reconcile), and definitions publish through the shared
-  schema so members hydrate them like entities.
+  schema so members hydrate them like entities. The GUI completes the story:
+  a full-page builder at `#/computed/new` / `#/computed/<name>` (base picker,
+  per-kind field rows — Copy a field / Calculation / AI category / AI text /
+  Total across links — a dry-run Preview with per-field ✓/✕ marks + the
+  compiled SQL, a streamed "Refresh values" log, and Remove), reached from a
+  "+ New" button on the Computed Tables tier; the computed card's detail panel
+  gains Edit definition / Refresh / a lazy Definition (SQL) block; the schema
+  graph emits a `computes` edge (base → view, drawn dashed in the Tables
+  explorer and listed as upstream/downstream lineage); and computed rows
+  render read-only everywhere — a "Computed" badge, a note saying where the
+  values come from, and no edit affordances on record or collection pages.
+  Documented in `docs/computed-tables.md`.
 - **External databases import their relational structure.** Single-column
   FOREIGN KEYs on the remote are introspected at connect time and materialized as
   graph edges between the imported tables (same machinery as the other
