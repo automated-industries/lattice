@@ -35,24 +35,30 @@ async function ingestFile(page: import('@playwright/test').Page): Promise<string
   return body.result.id;
 }
 
-test('doc view: actions dropdown + View source mode', async ({ page }) => {
+test('a file gets the UNIFIED record page: toggle + sharing + provenance + menu', async ({
+  page,
+}) => {
   const id = await ingestFile(page);
   await page.goto(gui.url + '#/fs/files/' + id);
-  // Formatted view by default (the field dump is suppressed).
+  // Formatted view by default: the inline preview inside the shared chrome.
   await expect(page.locator('#file-preview')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-doc')).toHaveCount(0);
-  // The actions live in a dropdown beside the title.
+  // The SAME chrome as every record page: the Formatted|Markdown toggle, the
+  // visibility/sharing line, and the collapsible Data provenance panel.
+  await expect(page.locator('.fs-view-toggle')).toBeVisible();
+  await expect(page.locator('#row-provenance')).toContainText('Data provenance');
+  // The actions dropdown carries history + delete (source moved to the toggle).
   await expect(page.locator('#file-menu-btn')).toBeVisible();
   await page.locator('#file-menu-btn').click();
-  await expect(page.locator('.file-menu-item[data-act="source"]')).toBeVisible();
   await expect(page.locator('.file-menu-item[data-act="history"]')).toBeVisible();
   await expect(page.locator('.file-menu-item[data-act="delete"]')).toBeVisible();
-  // View source → the raw text shows (full-page mode replaces the body).
-  await page.locator('.file-menu-item[data-act="source"]').click();
+  await expect(page.locator('.file-menu-item[data-act="source"]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  // Markdown (source) mode enters via the shared toggle…
+  await page.locator('.fs-view-toggle [data-fsview="markdown"]').click();
   await expect(page.locator('.file-source-pre')).toContainText('original body', { timeout: 5000 });
-  // Back to the formatted view via the dropdown.
-  await page.locator('#file-menu-btn').click();
-  await page.locator('.file-menu-item[data-act="display"]').click();
+  // …and Formatted returns to the preview.
+  await page.locator('.fs-view-toggle [data-fsview="formatted"]').click();
   await expect(page.locator('#file-preview')).toBeVisible();
 });
 
