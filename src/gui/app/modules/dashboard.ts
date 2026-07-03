@@ -137,6 +137,7 @@ export const dashboardJs = `    // ───────────────
       'window.lattice={' +
       'query:function(t,o){o=o||{};return __lreq("query",{table:t,limit:o.limit,offset:o.offset});},' +
       'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
+      'sql:function(q){return __lreq("sql",{sql:q});},' +
       'search:function(q){return __lreq("search",{query:q});}};';
 
     // Parent-side broker: the ONLY bridge between the isolated frame and the data
@@ -163,6 +164,19 @@ export const dashboardJs = `    // ───────────────
         var off = Math.max(parseInt(msg.offset, 10) || 0, 0);
         return fetch('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + lim + '&offset=' + off)
           .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      if (op === 'sql') {
+        // Read-only aggregation surface: the server enforces the SELECT-only
+        // shape, protected-table deny-list, row cap, and (Postgres) a READ
+        // ONLY transaction; RLS scopes a cloud member as on any read.
+        return fetch('/api/analytics/sql', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sql: String((msg && msg.sql) || '') }),
+        }).then(function (r) { return r.json(); }).then(function (j) {
+          if (j && j.error) return { ok: false, error: String(j.error) };
+          return { ok: true, data: j };
+        });
       }
       if (op === 'get') {
         return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(String(msg.id || '')))
