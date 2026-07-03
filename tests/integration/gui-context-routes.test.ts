@@ -138,6 +138,29 @@ describe('GET /api/context/resolve', () => {
     expect(body.kind).toBe('none');
   });
 
+  it('?content=1 returns the text for CLAIMED artifacts only (rollups/records; strays get none)', async () => {
+    const { s, outputDir } = await bootWithContext();
+    mkdirSync(join(outputDir, 'Tasks', 'ct'), { recursive: true });
+    writeFileSync(
+      join(outputDir, 'Tasks', 'ct', 'TASK.md'),
+      '---\ntasks_id: "r9"\n---\n\n# CT\n\n- **title:** hello-content\n',
+    );
+    const rec = await getJson(
+      s,
+      '/api/context/resolve?content=1&path=' + encodeURIComponent('Tasks/ct/TASK.md'),
+    );
+    expect(rec.status).toBe(200);
+    expect(rec.body.kind).toBe('record');
+    expect(String(rec.body.content)).toContain('hello-content');
+    // A stray user file never returns content.
+    const stray = await getJson(
+      s,
+      '/api/context/resolve?content=1&path=' + encodeURIComponent('TASKS.md'),
+    );
+    expect(stray.body.kind).toBe('none');
+    expect(stray.body.content).toBeUndefined();
+  });
+
   it('rejects path traversal out of the output dir (containment guard)', async () => {
     const { s } = await bootWithContext();
     const { status } = await getJson(

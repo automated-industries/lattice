@@ -124,7 +124,11 @@ export const outputsJs = `
               if (r && r.kind === 'record') {
                 location.hash = '#/tables/' + encodeURIComponent(r.table) + '/' + encodeURIComponent(r.rowId);
               } else if (r && r.kind === 'table') {
+                // A .md file click means "show me the MARKDOWN": land the
+                // collection page in markdown (rollup) mode, not the rows view.
+                if (typeof collectionViewMode !== 'undefined') collectionViewMode[r.table] = 'markdown';
                 location.hash = '#/tables/' + encodeURIComponent(r.table);
+                if (typeof renderRoute === 'function') renderRoute({ soft: true });
               }
             })
             .catch(function () {});
