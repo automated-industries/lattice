@@ -310,7 +310,7 @@ export interface MutationCtx {
    * Absent/false on every other path (generic create_row/update_row, bulk_update,
    * the HTTP row-CRUD routes, ingest), so an untrusted caller — or a prompt
    * injection — cannot forge an executable artifact for another viewer to render.
-   * See {@link guardReservedFileColumns}.
+   * See {@link guardReservedColumns}.
    */
   allowReservedFileCols?: boolean;
 }
@@ -430,15 +430,25 @@ export function deriveRowIdFromEditId(editId: string): string {
  * caller (or a prompt injection) cannot plant an executable HTML artifact that
  * another user would render. Fails loud rather than silently dropping the field.
  */
-export function guardReservedFileColumns(
+export function guardReservedColumns(
   ctx: MutationCtx,
   table: string,
   values: Partial<Row> | undefined,
 ): void {
-  if (table !== 'files' || ctx.allowReservedFileCols) return;
-  if (values && (values as Record<string, unknown>).artifact_type === 'html') {
+  if (ctx.allowReservedFileCols || !values) return;
+  if (table === 'files' && (values as Record<string, unknown>).artifact_type === 'html') {
     throw new Error(
       "artifact_type='html' marks an executable inline HTML file and may only be set by the create_html_file / edit_html_file tools",
+    );
+  }
+  // dashboards.html IS the executable document body (rendered in a sandboxed
+  // iframe for every viewer), so unlike files there is no marker value to
+  // check: ANY write that touches the column outside the trusted authoring
+  // tools is refused — set and change alike, which is why no post-read body
+  // guard is needed for dashboards.
+  if (table === 'dashboards' && Object.prototype.hasOwnProperty.call(values, 'html')) {
+    throw new Error(
+      'a dashboard page may only be written by the create_dashboard / edit_dashboard tools',
     );
   }
 }
@@ -450,7 +460,7 @@ export async function createRow(
   forceVisibility?: 'private' | 'everyone',
   editId?: string,
 ): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
-  guardReservedFileColumns(ctx, table, values);
+  guardReservedColumns(ctx, table, values);
   // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
   // (the GUI row-write path; the assistant/ingest paths pass none and keep their
   // prior behaviour untouched). When the table uses the default single-column
@@ -533,7 +543,7 @@ export async function updateRow(
   id: string,
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
-  guardReservedFileColumns(ctx, table, values);
+  guardReservedColumns(ctx, table, values);
   const before = await ctx.db.get(table, id);
   // Never silently "succeed" against a row that doesn't exist. A
   // missing row means the caller (e.g. the assistant) used a stale/wrong id;
@@ -546,7 +556,7 @@ export async function updateRow(
   // that is ALREADY an html artifact is as security-sensitive as creating one — it
   // changes what executes when a viewer re-opens it — so a body edit is likewise
   // limited to the trusted edit_html_file tool (which passes allowReservedFileCols).
-  // (guardReservedFileColumns above only reserves SETTING the artifact_type marker;
+  // (guardReservedColumns above only reserves SETTING the artifact_type marker;
   // it can't see the existing row, which is why this lives here, after `before`.)
   if (
     table === 'files' &&

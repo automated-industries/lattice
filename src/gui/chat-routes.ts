@@ -650,15 +650,10 @@ export async function dispatchChatRoute(
       ...(currentHtml !== undefined ? { currentHtml } : {}),
     });
   };
-  if (activeContext?.table === 'files') {
-    try {
-      const open = (await ctx.db.get('files', activeContext.id)) as {
-        artifact_type?: string;
-      } | null;
-      if (open?.artifact_type === 'html') dispatch.activeHtmlFileId = activeContext.id;
-    } catch {
-      // Best-effort: a stale/invisible id just means no default edit target.
-    }
+  if (activeContext?.table === 'dashboards') {
+    // The user is looking at a dashboard — make it edit_dashboard's default
+    // target. No existence probe needed: the handler verifies the row itself.
+    dispatch.activeDashboardId = activeContext.id;
   }
 
   // When the assistant started working on this request — persisted so a reloaded
