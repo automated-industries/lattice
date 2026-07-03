@@ -35,8 +35,7 @@ export const outputsJs = `
           var data = both[0];
           var artifacts = both[1];
           var tables = (data && data.tables) || [];
-          var ungrouped = (data && data.ungrouped) || [];
-          if (!tables.length && !ungrouped.length && !artifacts.length) {
+          if (!tables.length && !artifacts.length) {
             host.innerHTML = '<div class="src-empty">No rendered context yet.</div>';
             return;
           }
@@ -56,10 +55,10 @@ export const outputsJs = `
                   '</span><span class="src-name">' + escapeHtml(nm) + '</span></div></li>';
               }).join('') + '</ul></div>';
           }
-          if (ungrouped.length) {
-            html += '<div class="out-tier"><div class="out-tier-head">Other files</div>' +
-              '<ul class="src-tree">' + ungrouped.map(function (e) { return mdNodeHtml(e, 0); }).join('') + '</ul></div>';
-          }
+          // Unclaimed root entries (junction leftovers, system dirs, stale
+          // cruft) are deliberately NOT displayed — they are implementation
+          // detail, not user documents, and only confuse. The server still
+          // reports them for diagnostics.
           host.innerHTML = html + (data && data.truncated ? '<div class="src-note">\u2026more not shown</div>' : '');
           wireMdTree(host);
           host.querySelectorAll('.mdt-artifact > .mdt-row').forEach(function (row) {

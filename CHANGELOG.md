@@ -237,6 +237,14 @@ database connector).
 
 ### Changed
 
+- **The legacy table/detail editor is absorbed and retired.** The record page's
+  actions menu gains "Edit fields" — the structured typed-field editor plus the
+  inline relationship manager (chips unlink, the picker links, both atomic) that
+  previously lived only in the legacy `#/objects` view. `#/objects/*` now
+  redirects to the unified pages, and the old table + detail renderers are
+  deleted. Junction/system leftovers ("Other files") no longer display in the
+  Markdown column.
+
 - **One record page for everything.** Regular records, files, and artifacts now
   share a single page: the Formatted | Markdown toggle (a file's Markdown view
   shows its source; an artifact edits in place), visibility/privacy/sharing

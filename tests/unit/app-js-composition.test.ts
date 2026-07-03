@@ -265,8 +265,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // the same chrome as regular records (toggle, sharing, provenance, connected
 // objects, actions menu); the separate doc renderer is deleted; view mode is a
 // single per-record map (formatted/markdown/history). Length + hash recaptured.
-const ORIGINAL_LENGTH = 604405;
-const ORIGINAL_SHA256 = '57c169fbfb71d636510f2add19e3ef296ab1c76a354e987809f1e42ecc1beb91';
+// 5.0 GUI batch 15 — the legacy #/objects table/detail views are RETIRED: the
+// structured fields editor + junction manager were absorbed into the unified
+// record page (actions menu > Edit fields); #/objects/* redirects; strays group
+// hidden in the Markdown tree. Length + hash recaptured.
+const ORIGINAL_LENGTH = 585888;
+const ORIGINAL_SHA256 = '8c623753384fabef876cbc4f2054d3803c517a4006c29098b0e406fcaea17b98';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
