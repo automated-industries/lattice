@@ -463,7 +463,13 @@ export class Lattice {
     await db.init();
     if (opts.autoRender !== false) {
       db.enableAutoRender(paths.contextDir);
+      const prevManifest = readManifest(paths.contextDir);
       await db.render(paths.contextDir);
+      // Open-time reconciliation: sweep files whose rows/layout changed while
+      // the workspace was closed (same prev→render→cleanup the auto-render
+      // does), instead of leaving them stale until the first mutation.
+      const newManifest = readManifest(paths.contextDir);
+      await db.reconcileRenderedTree(paths.contextDir, prevManifest, newManifest);
       // Guarantee a manifest exists even for an empty workspace, so there is
       // never a "no rendered context available" state.
       if (!existsSync(manifestPath(paths.contextDir))) {
@@ -2133,6 +2139,16 @@ export class Lattice {
         for (const h of this._errorHandlers) h(e);
       },
       isInitialized: () => this._initialized,
+      // Drain manual file edits into the DB (changelog-versioned, marked
+      // file-edit) before every auto/background render — see the dep's doc.
+      drain: async (dir) => {
+        await this.reverseSyncFromFiles(dir, {
+          useDefault: true,
+          apply: async (u) => {
+            await this.update(u.table, u.pk, u.set, { reason: 'file-edit' });
+          },
+        });
+      },
     });
     return this._autoRenderScheduler;
   }
@@ -2975,6 +2991,23 @@ export class Lattice {
    * `reverseSync`. Compares file hashes against the current manifest, so a
    * render-written file is recognized as an echo and skipped.
    */
+  /**
+   * The post-render reconciliation pass: prune files the prior manifest managed
+   * that the new render no longer produces (deleted rows, renamed roots, retired
+   * rollups) — hash-guarded so a manually edited file is never deleted. Runs
+   * automatically after auto/background renders and at workspace open; exposed
+   * for callers that drive `render()` themselves.
+   */
+  async reconcileRenderedTree(
+    outputDir: string,
+    prevManifest: import('./lifecycle/manifest.js').LatticeManifest | null,
+    newManifest: import('./lifecycle/manifest.js').LatticeManifest | null,
+  ): Promise<import('./lifecycle/cleanup.js').CleanupResult> {
+    const notInit = this._notInitError<import('./lifecycle/cleanup.js').CleanupResult>();
+    if (notInit) return notInit;
+    return this._render.cleanup(outputDir, prevManifest, {}, newManifest);
+  }
+
   async reverseSyncFromFiles(
     outputDir: string,
     opts: import('./reverse-sync/engine.js').ReverseSyncProcessOptions = {},
