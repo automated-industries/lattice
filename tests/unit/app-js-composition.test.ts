@@ -314,8 +314,15 @@ import { appJs } from '../../src/gui/app/script.js';
 // handler renders the 'question' chat event; dispatchStreamMessage routes
 // op:'question' feed events to the reconciler; boot calls initQuestions().
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 640630;
-const ORIGINAL_SHA256 = '1ed7e77805e0221c46d88404654af19792bdf577f4dc72d512fd5fddea3e694d';
+// Import computed proposals: the inline import confirm card gains an opt-in
+// "Computed tables" section (unchecked .ii-computed checkboxes, one per
+// proposed field with its formula/classifier evidence line); the apply payload
+// grows computed:[{table,fields}] for the checked ones and echoes the
+// proposal's linkConfidence so apply re-derives with the same threshold
+// (inline-import segment; runInlineImport now takes the whole autoImport).
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 642692;
+const ORIGINAL_SHA256 = '024621ea95dac6767fa268bd629990bbdd5ee014652aaabb50c004525aa1f415';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

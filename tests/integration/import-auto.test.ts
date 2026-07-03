@@ -120,6 +120,46 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     expect(r?.imported).toBe(false);
     expect(r?.reason).toBe('needs-confirm');
     expect(r?.plan?.entities.length).toBeGreaterThan(0); // full proposal present
+    expect(r?.linkConfidence).toBe(0.6); // apply echoes this back
+    expect(r?.computedProposals).toBeUndefined(); // new-dataset flows only
     expect(await db.count('funds')).toBe(2); // untouched — no silent overwrite
+  });
+
+  it('attaches computed proposals to a new-dataset drop, never to a known re-import', async () => {
+    const { db, configPath, base } = await freshWorkspace();
+    // A classifier-eligible column: 150 rows, 75 distinct category values.
+    const tickets = {
+      tickets: Array.from({ length: 150 }, (_, i) => ({
+        ref: 'T-' + String(i),
+        category: 'Cat ' + String(i % 75),
+      })),
+    };
+    const p = join(base, 'tickets.json');
+    writeFileSync(p, JSON.stringify(tickets));
+    const r = await autoImportStructured(db, configPath, p, 'tickets.json');
+    expect(r?.reason).toBe('new-dataset');
+    expect(r?.linkConfidence).toBe(0.6);
+    expect(r?.computedProposals).toHaveLength(1);
+    expect(r?.computedProposals?.[0]).toMatchObject({
+      entity: 'tickets',
+      table: 'tickets_computed',
+    });
+    expect(r?.computedProposals?.[0]?.fields[0]).toMatchObject({
+      name: 'category_class',
+      kind: 'ai_classify',
+      input: 'category',
+    });
+
+    // Once materialized, the SAME file re-dropped with a dated name is a known
+    // document — the silent snapshot path never carries proposals.
+    await materializeImport({ db, configPath }, tickets, inferSchema(tickets), [], {
+      asOf: '2025-06-30',
+    });
+    const p2 = join(base, 'tickets 12.31.2025.json');
+    writeFileSync(p2, JSON.stringify(tickets));
+    const r2 = await autoImportStructured(db, configPath, p2, 'tickets 12.31.2025.json');
+    expect(r2?.imported).toBe(true);
+    expect(r2?.computedProposals).toBeUndefined();
+    expect(r2?.linkConfidence).toBeUndefined();
   });
 });
