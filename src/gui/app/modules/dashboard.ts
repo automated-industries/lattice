@@ -802,9 +802,10 @@ export const dashboardJs = `    // ───────────────
         '<div class="view-header">' +
           '<span class="entity-icon">' + o.icon + '</span>' +
           '<h1>' + escapeHtml(o.label) + '</h1>' +
-          pager +
+          (o.headerExtraHtml || '') +
+          (o.bodyOverrideHtml ? '' : pager) +
         '</div>' +
-        tableHtml;
+        (o.bodyOverrideHtml || tableHtml);
 
       content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
         tr.addEventListener('click', function (ev) {
@@ -837,6 +838,10 @@ export const dashboardJs = `    // ───────────────
     // Collection view — a folder of tiles for a NESTED relation path
     // (#/fs/<table>/<id>/<rel>). The top-level object page (#/fs/<table>) is the
     // data-provenance view (graph or table — how this object's rows are sourced).
+    // Per-table collection view mode: 'formatted' (the rows) | 'markdown' (the
+    // whole-table rollup file, read-only). Set to markdown when a rollup .md is
+    // clicked in the Markdown tree.
+    var collectionViewMode = {};
     function renderFsCollection(content, segs, section) {
       section = section || 'folders';
       var myGen = renderGen;
@@ -885,12 +890,27 @@ export const dashboardJs = `    // ───────────────
             if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs, section); return; }
           }
           var d = displayFor(table);
+          // The collection has the SAME Formatted | Markdown duality as records:
+          // Formatted = the rows; Markdown = the table's whole-table rollup file
+          // (read-only — rollups are generated). Clicking a rollup .md in the
+          // Markdown tree lands here in markdown mode.
+          var colMode = topLevel ? (collectionViewMode[table] || 'formatted') : 'formatted';
+          var toggleHtml = topLevel
+            ? '<div class="fs-view-toggle">' +
+                '<button type="button" data-colview="formatted"' + (colMode === 'formatted' ? ' class="on"' : '') + '>Formatted</button>' +
+                '<button type="button" data-colview="markdown"' + (colMode === 'markdown' ? ' class="on"' : '') + '>Markdown</button>' +
+              '</div>'
+            : '';
           // The object view is the table's ROWS in a table (mirroring the Files file
           // list), one page at a time with a Prev/Next pager. One consistent view.
           paintRowsTable(content, {
             breadcrumbHtml: fsBreadcrumb(segs, crumbs, section),
             icon: d.icon,
             label: d.label,
+            headerExtraHtml: toggleHtml,
+            bodyOverrideHtml: colMode === 'markdown'
+              ? '<div class="fs-context"><div class="fs-context-doc" id="collection-rollup-doc"><div class="muted" style="padding:12px">Loading\u2026</div></div></div>'
+              : '',
             table: table,
             cols: objRowCols(tableByName(table)),
             rows: view.rows,
@@ -902,6 +922,38 @@ export const dashboardJs = `    // ───────────────
             // Bump renderGen so a slow prior-page fetch can't paint over this one.
             onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs, section); },
           });
+          // Formatted | Markdown toggle (top-level collections): markdown shows
+          // the table's rollup file, fetched through the resolver (claimed
+          // artifacts only). Rollups are generated files — read-only here.
+          if (topLevel) {
+            content.querySelectorAll('.fs-view-toggle [data-colview]').forEach(function (bb) {
+              bb.addEventListener('click', function () {
+                collectionViewMode[table] = bb.getAttribute('data-colview') === 'markdown' ? 'markdown' : 'formatted';
+                renderFsCollection(content, segs, section);
+              });
+            });
+            if (colMode === 'markdown') {
+              fetchJson('/api/context/list?table=' + encodeURIComponent(table))
+                .then(function (d) {
+                  var entries = (d && d.entries) || [];
+                  var rollup = entries.filter(function (e) { return e.kind === 'file'; })[0];
+                  if (!rollup) throw new Error('no rollup rendered yet');
+                  return fetchJson('/api/context/resolve?content=1&path=' + encodeURIComponent(rollup.path));
+                })
+                .then(function (r) {
+                  var host = document.getElementById('collection-rollup-doc');
+                  if (!host) return;
+                  var md = stripFrontmatter((r && r.content) || '');
+                  host.innerHTML = md.trim()
+                    ? mdToHtml(md)
+                    : '<div class="src-empty">This table has no rendered markdown yet.</div>';
+                })
+                .catch(function () {
+                  var host = document.getElementById('collection-rollup-doc');
+                  if (host) host.innerHTML = '<div class="src-empty">This table has no rendered markdown yet.</div>';
+                });
+            }
+          }
         });
       }).catch(function (err) {
         if (myGen !== renderGen) return; // a stale error must not clobber a newer view
