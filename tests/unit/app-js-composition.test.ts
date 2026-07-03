@@ -245,8 +245,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // databases) are raw inputs, excluded from the Objects grid (foldersModel) and the
 // schema graph (buildSchemaModel); they appear only in the Inputs column + the
 // Tables explorer's Source column. Length + hash recaptured.
-const ORIGINAL_LENGTH = 600681;
-const ORIGINAL_SHA256 = '1c84702505165c91139527fd4533f97086d25be0c9b64eed0e54a04c071c82e2';
+// 5.0 GUI batch 10 — the Connect-a-database dialog takes host/port/user/password/
+// database fields ONLY (the raw connection-string input is removed; the connection
+// is read-only by contract) and its lead copy states the read-only guarantee.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 600642;
+const ORIGINAL_SHA256 = '46a19be43b93acb18358a2f3bc8e8099abb8509201c25598f3fd149f2bdf09b6';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
