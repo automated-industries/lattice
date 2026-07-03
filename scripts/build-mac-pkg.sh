@@ -54,11 +54,14 @@ notarize() {
       --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
   else
     echo "note: no notary credentials — skipping notarization of $(basename "$_path")" >&2
-    [ -n "$_zip" ] && rm -f "$_zip"
+    if [ -n "$_zip" ]; then rm -f "$_zip"; fi
     return 0
   fi
   xcrun stapler staple "$_path"
-  [ -n "$_zip" ] && rm -f "$_zip"
+  # NOT `[ -n … ] && rm`: for a .pkg/.dmg (no zip) the test is FALSE, that form
+  # makes it the function's exit status (1), and set -e aborts the build right
+  # AFTER a successful staple.
+  if [ -n "$_zip" ]; then rm -f "$_zip"; fi
 }
 
 if [ -n "$SIGN_APP_IDENTITY" ]; then
