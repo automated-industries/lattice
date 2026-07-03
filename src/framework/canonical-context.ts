@@ -37,6 +37,19 @@ export function deriveCanonicalContexts(
 
   const out: { table: string; definition: EntityContextDefinition }[] = [];
   for (const { name, definition } of tables) {
+    // HARD exclusions, fail-closed: never derive a context for the encrypted
+    // secrets store (rendering would dump ciphertext), the conversation tables,
+    // or internal bookkeeping — regardless of what a caller feeds in. Runtime
+    // derivation call sites depend on this being enforced HERE.
+    if (
+      name === 'secrets' ||
+      name === 'chat_threads' ||
+      name === 'chat_messages' ||
+      name.startsWith('_lattice') ||
+      name.startsWith('__lattice')
+    ) {
+      continue;
+    }
     // LINK tables (junctions) never get their OWN canonical context — they are
     // relationship plumbing, not documents. Their content still surfaces: each
     // endpoint's context renders the junction as a manyToMany rollup of the
@@ -237,17 +250,77 @@ export function renderFieldBullet(k: string, v: unknown): string {
   return `- **${k}:** ${first}\n${cont}`;
 }
 
-/** Render a single entity row as a titled, frontmatter-tagged detail block. */
-function renderSelf(table: string): (rows: Row[]) => string {
+/**
+ * Give RUNTIME-registered tables (connector models, imported database tables —
+ * registered via defineLate, so never in the parsed config) the same canonical
+ * per-record contexts config tables get at open. Pure over {name, definition};
+ * idempotent (existing contexts are never overridden); the hard exclusions
+ * inside deriveCanonicalContexts (secrets/chat/internal) apply by construction.
+ */
+export function ensureRuntimeEntityContexts(
+  db: {
+    entityContexts(): Map<string, EntityContextDefinition>;
+    defineEntityContext(table: string, definition: EntityContextDefinition): unknown;
+  },
+  models: readonly { table: string; definition: TableDefinition }[],
+): void {
+  const existing = db.entityContexts();
+  const derived = deriveCanonicalContexts(
+    models.map((m) => ({ name: m.table, definition: m.definition })),
+  );
+  for (const { table, definition } of derived) {
+    if (!existing.has(table)) db.defineEntityContext(table, definition);
+  }
+}
+
+/**
+ * A minimal, single-table canonical context: the per-record self file only,
+ * with a column-exclusion set and a character budget. Used for tables whose
+ * rows carry columns too heavy to dump into markdown (a file's extracted
+ * text) but that still deserve a rendered per-record context.
+ */
+export function boundedSelfContext(
+  name: string,
+  definition: TableDefinition,
+  opts: { excludeColumns?: Set<string>; budget?: number } = {},
+): EntityContextDefinition {
+  return {
+    directoryRoot: titleCase(name),
+    slug: canonicalSlug(definition),
+    files: {
+      [`${singularUpper(name)}.md`]: {
+        source: { type: 'self' } satisfies EntityFileSource,
+        render: renderSelf(name, opts),
+      },
+    },
+  };
+}
+
+/**
+ * Render a single entity row as a titled, frontmatter-tagged detail block.
+ * `opts.excludeColumns` drops columns from the rendered output entirely (e.g. a
+ * file's multi-megabyte extracted_text — the markdown context is a summary, not
+ * a dump), and `opts.budget` caps the whole self block's character length.
+ */
+function renderSelf(
+  table: string,
+  opts?: { excludeColumns?: Set<string>; budget?: number },
+): (rows: Row[]) => string {
+  const exclude = opts?.excludeColumns;
+  const budget = opts?.budget;
   return (rows: Row[]): string => {
     const row = rows[0];
     if (!row) return '';
     const title = rowLabel(row) || singularUpper(table);
     const fields = Object.entries(row)
-      .filter(([k, v]) => !HIDDEN_COLS.has(k) && v != null && toText(v).length > 0)
+      .filter(
+        ([k, v]) => !HIDDEN_COLS.has(k) && !exclude?.has(k) && v != null && toText(v).length > 0,
+      )
       .map(([k, v]) => renderFieldBullet(k, v))
       .join('\n');
-    return `${frontmatter({ [`${table}_id`]: toText(row.id) })}# ${title}\n\n${fields}\n`;
+    let out = `${frontmatter({ [`${table}_id`]: toText(row.id) })}# ${title}\n\n${fields}\n`;
+    if (budget && out.length > budget) out = out.slice(0, budget) + '\n\u2026\n';
+    return out;
   };
 }
 

@@ -60,4 +60,17 @@ export const outputsCss = `    /* ── Outputs column ────────
     .mdt-row .src-ic { width: 16px; flex: none; text-align: center; font-size: 13px; }
     .mdt-row .src-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+    /* ── Per-node render progress (the Markdown tree) ─────
+       While a workspace render runs: not-yet-rendered table nodes fade; the
+       node currently rendering carries a bottom-edge bar (determinate width
+       when per-entity counts exist, sweeping otherwise); done nodes un-fade. */
+    .mdt-row { position: relative; }
+    .mdt-row.mdt-render-pending { opacity: 0.38; }
+    .mdt-render-fill {
+      position: absolute; left: 0; bottom: 0; height: 2px; width: 0%;
+      background: var(--accent); transition: width 0.2s ease; pointer-events: none;
+    }
+    .mdt-render-fill.indet { width: 30%; animation: mdt-indet 1.1s linear infinite; }
+    @keyframes mdt-indet { from { left: -30%; } to { left: 100%; } }
+    .mdt-row.is-render-error { color: #ef4444; }
 `;

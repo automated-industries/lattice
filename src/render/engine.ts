@@ -284,10 +284,17 @@ export class RenderEngine {
       // avoiding pulling a whole (possibly large) table off the wire for an
       // empty file. Default-off path below is unchanged.
       if (this._skipEmpty && def.render === NOOP_RENDER) continue;
+      // A spec-less (no-op render) table produces an EMPTY rollup regardless of
+      // its rows — never pull the whole table off the wire just to discard it.
+      // The write still happens (and is manifest-tracked) so the rollup path
+      // stays consistent; only the pointless read is skipped.
+      const isNoopRender = def.render === NOOP_RENDER;
       // Incremental: a single-table file renders from its OWN rows only, so it is
       // affected iff that table changed.
       if (opts.changedTables && !opts.changedTables.has(name)) continue;
-      let rows = await this._schema.queryTable(this._adapter, name, this._schema.readRel);
+      let rows = isNoopRender
+        ? []
+        : await this._schema.queryTable(this._adapter, name, this._schema.readRel);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
         rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
