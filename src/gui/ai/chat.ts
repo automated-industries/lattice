@@ -414,7 +414,8 @@ export async function resolveReferencedRecords(
   // Analytics deep links (`/#/analytics/<id>`) are dashboards rows.
   for (const m of message.matchAll(LOCAL_GUI_DASHBOARD_RE)) {
     const id = decodeURIComponent((m[1] ?? '').replace(/[?#].*$/, ''));
-    if (id && ctx.validTables.has('dashboards')) refs.set(`dashboards\t${id}`, { table: 'dashboards', id });
+    if (id && ctx.validTables.has('dashboards'))
+      refs.set(`dashboards\t${id}`, { table: 'dashboards', id });
   }
   const out: ReferencedRecord[] = [];
   for (const ref of refs.values()) {
