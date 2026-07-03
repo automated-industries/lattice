@@ -75,7 +75,7 @@ test('the header workspace switcher lists workspaces and switches the active one
 test('switching paints a loading frame immediately and never freezes on the previous workspace', async ({
   page,
 }) => {
-  await page.goto(server.url);
+  await page.goto(server.url + '#/folders');
   const startName = (await page.locator('#ws-name').textContent()) ?? '';
 
   // Simulate a slow (cloud-like) open by delaying the switch POST.
@@ -98,7 +98,7 @@ test('switching paints a loading frame immediately and never freezes on the prev
 test('Back/Forward history is per-workspace: a switch never carries the old hash or history', async ({
   page,
 }) => {
-  await page.goto(server.url);
+  await page.goto(server.url + '#/folders');
   await expect(page.locator('#ws-name')).toBeVisible();
 
   // Build some history in the current workspace: Objects → Tables.
@@ -110,7 +110,9 @@ test('Back/Forward history is per-workspace: a switch never carries the old hash
   await page.locator('#ws-button').click();
   const other = page.locator('#ws-menu button.db-item:not(:has(.db-item-current))').first();
   await other.click();
-  await expect.poll(() => page.evaluate(() => location.hash), { timeout: 15000 }).toBe('#/');
+  await expect
+    .poll(() => page.evaluate(() => location.hash), { timeout: 15000 })
+    .toBe('#/analytics');
 
   // The new workspace starts with ITS OWN history: Back is disabled — the old
   // workspace's #/tables (or any of its records) is unreachable from here.

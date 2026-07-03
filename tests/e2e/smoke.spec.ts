@@ -11,7 +11,7 @@ test.afterEach(async () => {
 });
 
 test('GUI boots and renders the Sources sidebar', async ({ page }) => {
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
   // The default sidebar is now Sources (Files / Artifacts / Connectors).
   await expect(page.locator('#sources-nav').getByText('Files', { exact: true })).toBeVisible();

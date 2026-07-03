@@ -20,7 +20,7 @@ test.afterEach(async () => {
 test('the header has no search box — the assistant is the single search surface', async ({
   page,
 }) => {
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
   await expect(page.locator('#search-input')).toHaveCount(0);
   await expect(page.locator('#search-results')).toHaveCount(0);
@@ -31,7 +31,7 @@ test('the header has no search box — the assistant is the single search surfac
 test('Back / Forward buttons walk the page-navigation history, next to Undo/Redo', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
   const back = page.locator('#nav-back-btn');
   const fwd = page.locator('#nav-fwd-btn');
@@ -45,7 +45,7 @@ test('Back / Forward buttons walk the page-navigation history, next to Undo/Redo
   await page.locator('.tab[data-key="tables"]').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
   await back.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/folders');
   await fwd.click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
 });

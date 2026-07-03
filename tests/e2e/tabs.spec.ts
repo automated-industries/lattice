@@ -25,7 +25,7 @@ test.afterEach(async () => {
 test('Objects + Graph + Tables are the only tabs; all permanent; Objects is the default', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   const objectsTab = page.locator('.tab[data-key="folders"]');
   const graphTab = page.locator('.tab[data-key="graph"]');
   const tablesTab = page.locator('.tab[data-key="tables"]');
@@ -45,7 +45,7 @@ test('Objects + Graph + Tables are the only tabs; all permanent; Objects is the 
 });
 
 test('the Tables tab switches the Model view to the tiered explorer', async ({ page }) => {
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   await page.locator('.tab[data-key="tables"]').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
   await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
