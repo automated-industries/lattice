@@ -1,47 +1,13 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// Outputs column (right side): Artifacts (Lattice-created files, moved here from
-// the left Inputs sidebar), plus Markdown / Tables / Server Docs / API Docs / MCP
-// sections wired in later steps. Must stay INSIDE the client IIFE (uses
-// fetchJson/escapeHtml), inserted before createDatabaseWizardJs.
+// MARKDOWN column (right side): ONE tree of every entity's rendered markdown,
+// grouped in the same tier categories as the model, with Artifacts as another
+// category. Must stay INSIDE the client IIFE (uses fetchJson/escapeHtml),
+// inserted before createDatabaseWizardJs.
 export const outputsJs = `
-    // Paint the Artifacts list into the Outputs column. renderSources() passes the
-    // already-fetched artifact rows (so we never double-fetch /api/tables/files);
-    // a direct call with no argument self-fetches (bounded — projects out the heavy
-    // text columns) for callers that don't have the rows in hand.
-    function renderOutputsArtifacts(artifacts) {
-      var host = document.getElementById('out-artifacts-tree');
-      if (!host) return;
-      if (artifacts) { paintOutputsArtifacts(host, artifacts); return; }
-      fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
-        .then(function (data) {
-          var rows = ((data && data.rows) || []).filter(function (r) { return !r.deleted_at && r.artifact_type; });
-          paintOutputsArtifacts(host, rows);
-        })
-        .catch(function () { paintOutputsArtifacts(host, []); });
-    }
-
-    function paintOutputsArtifacts(host, artifacts) {
-      if (!artifacts || !artifacts.length) { host.innerHTML = '<div class="src-empty">Nothing created yet.</div>'; return; }
-      host.innerHTML = '<ul class="src-tree">' + artifacts.map(function (r) {
-        var name = r.name || r.original_name || 'Untitled';
-        var ic = r.artifact_type === 'html' ? '🌐' : '📝';
-        return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
-          '"><div class="src-row" style="padding-left:14px"><span class="src-ic">' + ic +
-          '</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
-      }).join('') + '</ul>';
-      host.querySelectorAll('.src-file > .src-row').forEach(function (row) {
-        row.addEventListener('click', function () {
-          location.hash = '#/fs/files/' + encodeURIComponent(row.parentNode.getAttribute('data-id'));
-        });
-      });
-    }
-
-    // Orchestrator for the parts of the Outputs column that aren't fed by
-    // renderSources (Artifacts is). Called at boot. Markdown self-fetches the
-    // rendered context tree; the Tables mirror reads the in-memory entities.
+    // Orchestrator for the Markdown column (the single Outputs view). Called at
+    // boot and by refresh hooks; self-fetches everything it shows.
     function renderOutputs() {
       renderOutputsMarkdown();
-      renderOutputsTables();
     }
 
     // ── Outputs > Markdown ────────────────────────────────────────────────
@@ -55,11 +21,22 @@ export const outputsJs = `
     function renderOutputsMarkdown() {
       var host = document.getElementById('out-markdown-tree');
       if (!host) return;
-      fetchJson('/api/context/tree')
-        .then(function (data) {
+      Promise.all([
+        fetchJson('/api/context/tree'),
+        // Artifacts (Lattice-created markdown/html) are just another category of
+        // markdown here — files rows carrying artifact_type, bounded projection.
+        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
+          .then(function (d) {
+            return ((d && d.rows) || []).filter(function (r) { return !r.deleted_at && r.artifact_type; });
+          })
+          .catch(function () { return []; }),
+      ])
+        .then(function (both) {
+          var data = both[0];
+          var artifacts = both[1];
           var tables = (data && data.tables) || [];
           var ungrouped = (data && data.ungrouped) || [];
-          if (!tables.length && !ungrouped.length) {
+          if (!tables.length && !ungrouped.length && !artifacts.length) {
             host.innerHTML = '<div class="src-empty">No rendered context yet.</div>';
             return;
           }
@@ -69,12 +46,29 @@ export const outputsJs = `
             return '<div class="out-tier"><div class="out-tier-head">' + escapeHtml(l.name) + '</div>' +
               '<ul class="src-tree">' + ts.map(function (t) { return mdTableNodeHtml(t); }).join('') + '</ul></div>';
           }).join('');
+          if (artifacts.length) {
+            html += '<div class="out-tier"><div class="out-tier-head">Artifacts</div>' +
+              '<ul class="src-tree">' + artifacts.map(function (r) {
+                var nm = r.name || r.original_name || 'Untitled';
+                var ic = r.artifact_type === 'html' ? '\ud83c\udf10' : '\ud83d\udcdd';
+                return '<li class="mdt-node mdt-artifact" data-id="' + escapeHtml(r.id) +
+                  '"><div class="mdt-row" style="padding-left:14px"><span class="src-ic">' + ic +
+                  '</span><span class="src-name">' + escapeHtml(nm) + '</span></div></li>';
+              }).join('') + '</ul></div>';
+          }
           if (ungrouped.length) {
             html += '<div class="out-tier"><div class="out-tier-head">Other files</div>' +
               '<ul class="src-tree">' + ungrouped.map(function (e) { return mdNodeHtml(e, 0); }).join('') + '</ul></div>';
           }
-          host.innerHTML = html + (data.truncated ? '<div class="src-note">\u2026more not shown</div>' : '');
+          host.innerHTML = html + (data && data.truncated ? '<div class="src-note">\u2026more not shown</div>' : '');
           wireMdTree(host);
+          host.querySelectorAll('.mdt-artifact > .mdt-row').forEach(function (row) {
+            if (row.__wired) return;
+            row.__wired = true;
+            row.addEventListener('click', function () {
+              location.hash = '#/tables/files/' + encodeURIComponent(row.parentNode.getAttribute('data-id'));
+            });
+          });
         })
         .catch(function () { host.innerHTML = '<div class="src-empty">No rendered context yet.</div>'; });
     }
@@ -162,26 +156,4 @@ export const outputsJs = `
         .catch(function () {});
     }
 
-    // ── Outputs > Tables (mirror) ─────────────────────────────────────────
-    // The same tiered model as the center Model > Tables view, compacted into the
-    // narrow Outputs column (tiers stacked; each table links to its object). Reuses
-    // mtBuildModel from the model-tables segment so the classification is identical.
-    function renderOutputsTables() {
-      var host = document.getElementById('out-tables-mount');
-      if (!host || typeof mtBuildModel !== 'function') return;
-      var entities = mtBuildModel();
-      if (!entities.length) { host.innerHTML = '<div class="src-empty">No tables yet.</div>'; return; }
-      var html = MT_LAYERS.map(function (l) {
-        var ents = entities.filter(function (e) { return e.tier === l.id; });
-        if (!ents.length) return '';
-        return '<div class="out-tier"><div class="out-tier-head">' + escapeHtml(l.name) + '</div>' +
-          ents.map(function (e) {
-            // The Outputs "Tables" mirror opens each object in the TABLES section
-            // (#/tables/<obj>) so clicking it keeps the Tables tab highlighted.
-            return '<a class="out-tier-row" href="#/tables/' + encodeURIComponent(e.name) + '">' +
-              '<span class="src-ic">' + e.icon + '</span><span class="src-name">' + escapeHtml(e.label) + '</span></a>';
-          }).join('') + '</div>';
-      }).join('');
-      host.innerHTML = html || '<div class="src-empty">No tables yet.</div>';
-    }
 `;

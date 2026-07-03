@@ -32,8 +32,9 @@ test('the sidebar shows the three Inputs sections', async ({ page }) => {
   await expect(src.getByText('Files', { exact: true })).toBeVisible({ timeout: 5000 });
   await expect(src.getByText('Connectors', { exact: true })).toBeVisible();
   await expect(src.getByText('Databases', { exact: true })).toBeVisible();
-  // Artifacts moved to the Outputs column; empty on a fresh workspace.
-  await expect(page.locator('#out-artifacts-tree')).toContainText('Nothing created yet');
+  // The right column is the single Markdown tree (artifacts are a category
+  // inside it once any exist; a fresh workspace shows the tree's own state).
+  await expect(page.locator('#out-markdown-tree')).toBeVisible();
 });
 
 test('a registered folder renders as a tree and lazily expands one level', async ({ page }) => {

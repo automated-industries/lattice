@@ -258,8 +258,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // 5.0 GUI batch 12 — Back/Forward operate on an app-managed, PER-WORKSPACE
 // hash-history stack (window.history spans workspace switches); a switch lands
 // on the new workspace's own last location, never the old one's hash.
-const ORIGINAL_LENGTH = 607032;
-const ORIGINAL_SHA256 = '90113453bf7ce85126d723d2d675fe72037592d4f0fd88788496c5e92da4ede4';
+// 5.0 GUI batch 13 — the right column is ONE Markdown view: header renamed, the
+// separate Artifacts + Tables sections deleted, artifacts render as a category
+// inside the markdown tree. Length + hash recaptured.
+const ORIGINAL_LENGTH = 605098;
+const ORIGINAL_SHA256 = 'aab3abd4b68192c12730f3669a1108212e81dd4f81f711da286120d6b9b140e4';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

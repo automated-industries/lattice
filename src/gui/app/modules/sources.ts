@@ -14,7 +14,7 @@ export const sourcesJs = `
       renderInputsDatabases();
       // The Outputs > Tables mirror reflects the same entities; keep it fresh as
       // the sidebar re-renders (cheap — reads in-memory state, no fetch).
-      if (typeof renderOutputsTables === 'function') renderOutputsTables();
+      if (typeof renderOutputsMarkdown === 'function') renderOutputsMarkdown();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a
@@ -29,13 +29,12 @@ export const sourcesJs = `
             if (r.ref_kind === 'local_ref' && r.ref_uri) sourcesFilesByPath[r.ref_uri] = r.id;
           });
           // Artifacts (Lattice-created files) now live in the Outputs column.
-          renderOutputsArtifacts(rows.filter(function (r) { return r.artifact_type; }));
           // Source files = everything the user ingested/uploaded (NOT Lattice-created
           // artifacts). Shown in the Files section alongside any registered on-disk
           // roots — so existing files appear even before a folder is added.
           renderSourcesFiles(rows.filter(function (r) { return !r.artifact_type; }));
         })
-        .catch(function () { renderOutputsArtifacts([]); renderSourcesFiles([]); });
+        .catch(function () { renderSourcesFiles([]); });
       wireSourcesButtons();
     }
 
@@ -262,7 +261,7 @@ export const sourcesJs = `
     function applySidebarGroupStates() {
       [
         'files', 'connectors', 'databases',
-        'out-artifacts', 'out-markdown', 'out-tables',
+        'out-markdown',
         'objects', 'system',
       ].forEach(applySidebarGroupState);
     }
