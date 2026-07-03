@@ -34,6 +34,15 @@ export async function bootGui(opts: { yaml?: string; version?: string } = {}): P
   const dir = mkdtempSync(join(tmpdir(), 'lattice-e2e-'));
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-e2e-home-'));
   process.env.LATTICE_CONFIG_DIR = cfgDir;
+  // Isolate the workspace-registry ROOT too. A lattice install exports
+  // LATTICE_ROOT pointing at the real ~/.lattice, and root resolution treats it
+  // as an always-wins override — so on a dev machine the booted GUI would READ
+  // the developer's real workspace list and the workspace-lifecycle specs would
+  // WRITE their throwaway workspaces (Alpha/Beta/…) into the real registry.json.
+  // A fresh per-boot root keeps every spec hermetic (CI is unaffected either way).
+  const rootDir = join(cfgDir, '.lattice');
+  mkdirSync(join(rootDir, '.config'), { recursive: true });
+  process.env.LATTICE_ROOT = rootDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
   mkdirSync(join(dir, 'data'), { recursive: true });
   const outputDir = join(dir, 'context');
