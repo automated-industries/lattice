@@ -58,7 +58,8 @@ function namesFrom(ev: SchemaChangeEvent): string[] {
     if (side && typeof side === 'object') {
       const o = side as Record<string, unknown>;
       for (const k of ['table', 'name', 'from', 'to', 'renamed_from', 'renamed_to']) {
-        if (typeof o[k] === 'string' && o[k]) out.add(o[k] as string);
+        const v = o[k];
+        if (typeof v === 'string' && v) out.add(v);
       }
     }
   }
@@ -118,7 +119,7 @@ export function createDashboardRepair(deps: DashboardRepairDeps): DashboardRepai
     const author = await resolveAuthor();
     if (!author) {
       console.warn(
-        `[lattice] the data model changed but ${affected.length} dashboard(s) could not be auto-updated (no assistant model configured) — they may need a manual edit`,
+        `[lattice] the data model changed but ${String(affected.length)} dashboard(s) could not be auto-updated (no assistant model configured) — they may need a manual edit`,
       );
       return;
     }
@@ -131,7 +132,6 @@ export function createDashboardRepair(deps: DashboardRepairDeps): DashboardRepai
       'exist, and keep the layout, charts, and intent of the page unchanged. Continue to read all data live.';
 
     for (const dash of affected) {
-      if (disposed) return;
       try {
         const html = await author(instruction, String(dash.html));
         const sources = extractSourceTables(html);
