@@ -8,6 +8,8 @@ export type {
   LatticeEntityDef,
   LatticeEntityRenderSpec,
   LatticeConfig,
+  ComputedTableDef,
+  ComputedFieldDef,
 } from './config/types.js';
 export type {
   Row,
@@ -177,6 +179,42 @@ export type {
   MaterializedRollupSpec,
   RollupFunction,
 } from './schema/computed.js';
+
+// Computed tables — config-defined, read-only SQL projections with optional
+// AI-derived fields materialized once and joined deterministically.
+export {
+  compileComputedTable,
+  computedTableOrder,
+  registerComputedTables,
+  ComputedTableCycleError,
+} from './schema/computed-table.js';
+export type {
+  CompiledComputedTable,
+  CompiledAiField,
+  ComputedSchema,
+  ComputedSchemaTable,
+  ComputedTableHost,
+  RegisterComputedTablesOptions,
+  ComputedRegistrationResult,
+} from './schema/computed-table.js';
+export {
+  ensureAiTables,
+  runComputedFill,
+  purgeAiField,
+  readComputedState,
+  AI_MAP_TABLE,
+  AI_CELL_TABLE,
+  COMPUTED_STATE_TABLE,
+} from './schema/computed-fill.js';
+export type {
+  FillLlm,
+  ComputedFillOptions,
+  ComputedFillReport,
+  FieldFillResult,
+  ComputedFieldState,
+} from './schema/computed-fill.js';
+export { parseCalcExpr, emitCalcExpr, CalcExprError } from './schema/calc-expr.js';
+export type { CalcExpr, CalcNode, CalcEmitContext, CalcRefResolver } from './schema/calc-expr.js';
 
 // v4.1 — data governance: immutable provenance + trust/verification workflow.
 export {
