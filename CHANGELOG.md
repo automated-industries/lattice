@@ -39,6 +39,15 @@ database connector).
   what goes into a dashboard and what it shows; structural/data work happens
   silently with a single transient status line ("Building your dashboard…"),
   and a plain-text answer with no dashboard is a first-class outcome.
+- **Dashboards are live and self-healing.** A page reads its data at load
+  time through the sandboxed bridge — now including `lattice.sql(...)`, a
+  read-only, capped, single-SELECT surface for aggregations — so a dashboard
+  always shows the current data, never a snapshot. And when the data model
+  changes underneath one (a rename, a delete, a merge — from the assistant or
+  the schema tools), every consuming dashboard is re-authored against the new
+  schema automatically in the background: each repair lands as an ordinary
+  activity-feed update and the open page live-reloads; a repair that cannot
+  run keeps the previous page and says so.
 - **One-time migration.** Existing assistant-authored HTML pages move from
   `files` into `dashboards` on the next open (same id — sharing grants and
   ownership are preserved, including member-owned private pages on a cloud);
