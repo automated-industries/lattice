@@ -101,10 +101,12 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         return;
       }
 
+      // Legacy #/objects/* routes redirect to the unified record/collection
+      // pages (the old table editor + detail view were absorbed: the fields
+      // editor + junction manager live in the record page's actions menu).
       var m = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
       if (m) {
-        if (m[2]) renderDetail(content, m[1], m[2]);
-        else      renderTable(content, m[1]);
+        location.replace('#/fs/' + m[1] + (m[2] ? '/' + m[2] : ''));
         return;
       }
 

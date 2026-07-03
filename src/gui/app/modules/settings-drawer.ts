@@ -3,34 +3,6 @@
 export const settingsDrawerJs = `    // ────────────────────────────────────────────────────────────
     // Row context (Lattice-rendered markdown files)
     // ────────────────────────────────────────────────────────────
-    function loadRowContext(tableName, id) {
-      var mount = document.getElementById('row-context');
-      if (!mount) return;
-      fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' +
-                encodeURIComponent(id) + '/context').then(function (data) {
-        if (!data.files || data.files.length === 0) {
-          mount.innerHTML = '<div class="context-block"><div class="context-empty">' +
-            'No rendered context for this row — define an entityContext for "' +
-            escapeHtml(tableName) + '" in lattice.config.yml or run \`lattice render\`.' +
-            '</div></div>';
-          return;
-        }
-        var blocks = data.files.map(function (f) {
-          var body = f.content
-            ? '<pre>' + escapeHtml(f.content) + '</pre>'
-            : '<div class="context-empty">File not rendered yet (run \`lattice render\`).</div>';
-          return '<div class="context-file">' +
-            '<div class="context-file-head">' +
-              '<span class="context-file-name">' + escapeHtml(f.name) + '</span>' +
-              '<span>· ' + escapeHtml(f.path) + '</span>' +
-            '</div>' + body + '</div>';
-        }).join('');
-        mount.innerHTML = '<div class="context-block">' + blocks + '</div>';
-      }).catch(function (err) {
-        mount.innerHTML = '<div class="context-block"><div class="context-empty">' +
-          'Failed to load rendered context: ' + escapeHtml(err.message) + '</div></div>';
-      });
-    }
 
     // Single-record view: build the record's ONE compiled document — the primary
     // (first non-empty) rendered file, NOT every per-section file concatenated

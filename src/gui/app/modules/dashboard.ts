@@ -539,232 +539,15 @@ export const dashboardJs = `    // ───────────────
         }
       }
     }
-    function renderDetail(content, tableName, id) {
-      var myGen = renderGen;
-      var t = tableByName(tableName);
-      if (!t) {
-        // The entity/table was removed (e.g. the assistant dropped it) — return to
-        // the dashboard rather than painting a dead "Unknown entity" view.
-        location.hash = '#/';
-        return;
-      }
-      var d = displayFor(tableName);
-      var intrinsic = intrinsicColumns(t);
-      var belongsTo = belongsToColumns(t);
-      var junctions = junctionsFor(tableName);
-
-      var fetches = [
-        fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id)),
-      ];
-      belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
-      junctions.forEach(function (j) {
-        fetches.push(loadAllRows(j.junction));
-        fetches.push(loadAllRows(j.remoteRel.table));
-      });
-
-      Promise.all(fetches).then(function (results) {
-        if (myGen !== renderGen) return; // superseded by a newer navigation
-        var row = results[0];
-
-        // The open record was deleted out from under the view (assistant, another
-        // client, or a hard delete) — don't repaint a tombstone. Fall back to the
-        // parent table, unless the user is intentionally browsing this table's trash.
-        if (!row || (row.deleted_at && tableViewMode[tableName] !== 'trash')) {
-          location.hash = '#/objects/' + encodeURIComponent(tableName);
-          return;
-        }
-
-        function paint(editing) {
-          var rows = [];
-          intrinsic.forEach(function (c) {
-            var secret = isSecretColumn(tableName, c) || looksEncrypted(row[c]);
-            var dd;
-            if (editing) {
-              dd = fieldFor(c, row[c], t);
-            } else if (row[c] == null || row[c] === '') {
-              dd = '<span class="muted">—</span>';
-            } else if (secret) {
-              dd = '<span class="muted">' + SECRET_MASK + '</span>';
-            } else {
-              dd = escapeHtml(row[c]);
-            }
-            rows.push('<dt' + titleAttr(colDesc(tableName, c)) + '>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + dd + '</dd>');
-          });
-          belongsTo.forEach(function (b) {
-            var dd;
-            if (editing) {
-              dd = fieldFor(b.rel.foreignKey, row[b.rel.foreignKey], t);
-            } else {
-              var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-              dd = chipLink(b.rel.table, ref);
-            }
-            rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + dd + '</dd>');
-          });
-          // Junctions: always editable inline. Click × on a chip to unlink,
-          // pick from the dropdown to link. Mutations are atomic — no Save.
-          junctions.forEach(function (j) {
-            var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
-            var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
-            var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) { return !linkedIds.has(o.id); });
-            var chips = matches.map(function (jr) {
-              var remoteId = jr[j.remoteRel.foreignKey];
-              var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
-              if (!ref) return '';
-              return '<span class="chip-removable"' +
-                ' data-junction="' + escapeHtml(j.junction) + '"' +
-                ' data-localfk="' + escapeHtml(j.localFk) + '"' +
-                ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
-                ' data-local="' + escapeHtml(row.id) + '"' +
-                ' data-remote="' + escapeHtml(remoteId) + '">' +
-                '<a class="chip-link" href="#/objects/' + encodeURIComponent(j.remoteRel.table) +
-                  '/' + encodeURIComponent(remoteId) + '">' + escapeHtml(displayNameFor(ref)) + '</a>' +
-                ' <button class="remove-link" title="Unlink">×</button></span>';
-            }).join(' ');
-            var picker = available.length
-              ? '<select class="dm-add"' +
-                  ' data-junction="' + escapeHtml(j.junction) + '"' +
-                  ' data-localfk="' + escapeHtml(j.localFk) + '"' +
-                  ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
-                  ' data-local="' + escapeHtml(row.id) + '">' +
-                '<option value="">+ Add link…</option>' +
-                available.map(function (o) {
-                  return '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(displayNameFor(o)) + '</option>';
-                }).join('') +
-                '</select>'
-              : '';
-            rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
-                      '<dd>' + (chips || '<span class="muted">None yet</span>') + ' ' + picker + '</dd>');
-          });
-
-          var actions = editing
-            ? '<button class="btn primary" id="save-row">Save</button>' +
-              '<button class="btn" id="cancel-edit">Cancel</button>'
-            : '<button class="btn" id="edit-row">Edit</button>' +
-              '<button class="btn danger" id="del-row">Delete</button>';
-
-          content.innerHTML =
-            '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
-              '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
-              '<div class="actions">' + actions + '</div>' +
-            '</div>' +
-            detailVisLineEl(row) +
-            lastEditedLineEl(tableName, id) +
-            (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
-            '<div id="row-context"></div>' +
-            (editing ? '' : '<div id="row-provenance"></div>');
-
-          // Seed "last edited by" for this table (cloud only; no-op locally).
-          if (!editing) seedLastEdited(tableName);
-          // Skip the context fetch while editing — the just-PATCHed row may
-          // not have re-rendered yet, so we'd flash stale content.
-          if (!editing) loadRowContext(tableName, id);
-          // Collapsed, lazy-loaded "Data provenance" panel for this row.
-          if (!editing) renderProvenancePanel(content.querySelector('#row-provenance'), tableName, id);
-          if (!editing && tableName === 'files') renderFilePreview(row);
-
-          // Per-row sharing controls (shared with the simple fs-item view).
-          wireRowSharing(content, tableName, id, row, function () {
-            renderDetail(content, tableName, id);
-          });
-
-          // Junction link/unlink handlers (active in both read and edit modes).
-          content.querySelectorAll('.remove-link').forEach(function (btn) {
-            btn.addEventListener('click', function (e) {
-              e.preventDefault();
-              e.stopPropagation();
-              var chip = btn.closest('[data-junction]');
-              var body = {};
-              body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
-              body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
-              fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(body),
-              }).then(function () {
-                invalidate(chip.getAttribute('data-junction'));
-                return refreshEntities();
-              }).then(function () {
-                renderDetail(content, tableName, id);
-                showToast('Link removed', { undo: undoLast });
-              }).catch(function (err) { showToast('Unlink failed: ' + err.message, {}); });
-            });
-          });
-          content.querySelectorAll('select.dm-add').forEach(function (sel) {
-            sel.addEventListener('change', function () {
-              if (!sel.value) return;
-              var body = {};
-              body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
-              body[sel.getAttribute('data-remotefk')] = sel.value;
-              fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(body),
-              }).then(function () {
-                invalidate(sel.getAttribute('data-junction'));
-                return refreshEntities();
-              }).then(function () {
-                renderDetail(content, tableName, id);
-                showToast('Linked', { undo: undoLast });
-              }).catch(function (err) { showToast('Link failed: ' + err.message, {}); });
-            });
-          });
-
-          if (editing) {
-            document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
-            document.getElementById('save-row').addEventListener('click', function () {
-              var values = collectFormValues(content.querySelector('.detail dl'));
-              rowWrite('PATCH', '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), values).then(function (r) {
-                if (r && r.queued) { renderDetail(content, tableName, id); return; }
-                invalidate(tableName);
-                return refreshEntities().then(function () {
-                  renderDetail(content, tableName, id);
-                  showToast(d.label.replace(/s$/, '') + ' modified', { undo: undoLast });
-                });
-              }).catch(function (err) {
-                showToast('Save failed: ' + err.message, {});
-              });
-            });
-          } else {
-            document.getElementById('edit-row').addEventListener('click', function () { paint(true); });
-            document.getElementById('del-row').addEventListener('click', function () {
-              rowWrite('DELETE', '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), null).then(function (r) {
-                if (r && r.queued) { location.hash = '#/objects/' + tableName; return; }
-                invalidate(tableName);
-                return refreshEntities().then(function () {
-                  location.hash = '#/objects/' + tableName;
-                  showToast(d.label.replace(/s$/, '') + ' deleted', { undo: undoLast });
-                });
-              }).catch(function (err) {
-                showToast('Delete failed: ' + err.message, {});
-              });
-            });
-          }
-        }
-
-        paint(false);
-      }).catch(function (err) {
-        // A 404 means the row was hard-deleted out from under the view — go to the
-        // parent table instead of a dead "Failed" pane. Other errors still surface.
-        if (/not found|404|no row|does not exist/i.test(err.message || '')) {
-          location.hash = '#/objects/' + encodeURIComponent(tableName);
-          return;
-        }
-        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
-      });
-    }
-
     // ════════════════════════════════════════════════════════════
-    // File-system workspace (default view) + settings drawer
+    // File-system workspace (the single view) + settings drawer
     //
-    // The default GUI presents each object as a folder of file/folder
-    // tiles; clicking a tile opens an "item view" that renders the row
-    // as a document (built from its columns, click-to-edit) plus its
-    // relationships as sub-folders you can drill into. The classic
-    // row/table editor (renderTable / renderDetail) is preserved behind
-    // an "Advanced mode" toggle in the settings drawer.
+    // Each object is a folder of tiles; clicking one opens the unified
+    // record page (rendered doc / preview, click-to-edit, sharing,
+    // provenance, connected objects, and the actions menu with the
+    // structured fields editor + junction manager). The legacy classic
+    // row/table editor was absorbed into that page and removed;
+    // #/objects/* redirects here.
     // ════════════════════════════════════════════════════════════
     // The GUI has a SINGLE view: the file workspace. The former "Advanced View"
     // (classic row/table editor) and its Settings toggle were removed. advancedMode()
@@ -1355,13 +1138,14 @@ export const dashboardJs = `    // ───────────────
     function setFsItemView(v) {
       if (currentRecordId == null) return;
       recordViewMode[currentRecordId] =
-        v === 'markdown' ? 'markdown' : v === 'history' ? 'history' : 'formatted';
+        v === 'markdown' || v === 'history' || v === 'fields' ? v : 'formatted';
       applyFsItemView();
     }
     function applyFsItemView() {
       var mode = (currentRecordId != null && recordViewMode[currentRecordId]) || 'formatted';
       var md = mode === 'markdown';
       var hist = mode === 'history';
+      var flds = mode === 'fields';
       var ctx = document.getElementById('fs-context');
       var rendered = ctx && ctx.querySelector('.fs-context-doc');
       var editor = ctx && ctx.querySelector('.fs-context-edit');
@@ -1370,16 +1154,18 @@ export const dashboardJs = `    // ───────────────
       var relF = document.querySelector('#content .fs-rel-folders');
       var prov = document.getElementById('row-provenance');
       var histEl = document.getElementById('record-history');
+      var fldsEl = document.getElementById('record-fields');
       // The relationship folders + provenance belong to the Formatted (reading)
-      // view; hide them while editing the raw markdown or reading history.
-      [relT, relF, prov].forEach(function (el) { if (el) el.style.display = (md || hist) ? 'none' : ''; });
-      if (ctx) ctx.style.display = hist ? 'none' : '';
+      // view; hide them while editing (raw markdown or fields) or reading history.
+      [relT, relF, prov].forEach(function (el) { if (el) el.style.display = (md || hist || flds) ? 'none' : ''; });
+      if (ctx) ctx.style.display = (hist || flds) ? 'none' : '';
       if (rendered) rendered.style.display = md ? 'none' : '';
       if (editor) editor.style.display = md ? '' : 'none';
       if (status) status.style.display = md ? '' : 'none';
       if (histEl) histEl.hidden = !hist;
+      if (fldsEl) fldsEl.hidden = !flds;
       document.querySelectorAll('#content .fs-view-toggle [data-fsview]').forEach(function (b) {
-        b.classList.toggle('on', !hist && b.getAttribute('data-fsview') === mode);
+        b.classList.toggle('on', !hist && !flds && b.getAttribute('data-fsview') === mode);
       });
     }
 
@@ -1441,6 +1227,7 @@ export const dashboardJs = `    // ───────────────
             '<div class="actions file-menu-wrap">' +
               '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\u22ef</button>' +
               '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+                '<button class="file-menu-item" data-act="fields" role="menuitem">Edit fields</button>' +
                 '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
                 '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
               '</div>' +
@@ -1452,6 +1239,7 @@ export const dashboardJs = `    // ───────────────
           // applyFsItemView toggles which one shows.
           '<div class="fs-context" id="fs-context" hidden></div>' +
           '<div class="file-history-view" id="record-history" hidden></div>' +
+          '<div class="detail" id="record-fields" hidden></div>' +
           // "Connected objects" — the related objects, shown only when they actually
           // have rows (count > 0). Rendered hidden; revealed once the counts resolve.
           (rels.length ? '<h3 class="fs-rel-title" hidden>Connected objects</h3><div class="fs-grid fs-rel-folders" hidden>' + folderTiles + '</div>' : '') +
@@ -1461,7 +1249,9 @@ export const dashboardJs = `    // ───────────────
           bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
         });
         wireRecordMenu(content, segs, table, id, row);
-        if (((recordViewMode[id]) || 'formatted') === 'history') loadRowHistoryInto(content, table, id);
+        var rvm = recordViewMode[id] || 'formatted';
+        if (rvm === 'history') loadRowHistoryInto(content, table, id);
+        if (rvm === 'fields') loadFieldsEditor(content, segs, table, id, row, section);
         applyFsItemView();
         // A file under a registered folder root upgrades the breadcrumb to its
         // real folder path.
@@ -1510,6 +1300,131 @@ export const dashboardJs = `    // ───────────────
       }).catch(function (err) {
         if (myGen !== renderGen) return; // a stale error must not clobber a newer view
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
+      });
+    }
+
+    // ── Structured FIELDS editor (absorbed from the legacy detail view) ────
+    // The record actions menu's "Edit fields": every column as a typed input
+    // (fieldFor), belongsTo pickers, and the junction manager — chips unlink
+    // with x, the dropdown links, both atomic (no Save needed); scalar fields
+    // save with the Save button. Renders into #record-fields inside the
+    // unified page; Cancel returns to the Formatted view.
+    function loadFieldsEditor(content, segs, table, id, row, section) {
+      var host = content.querySelector('#record-fields');
+      if (!host) return;
+      host.innerHTML = '<div class="muted" style="padding:8px">Loading\u2026</div>';
+      var t = tableByName(table);
+      if (!t) return;
+      var intrinsic = intrinsicColumns(t);
+      var belongsTo = belongsToColumns(t);
+      var junctions = junctionsFor(table);
+      var fetches = [];
+      belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
+      junctions.forEach(function (j) {
+        fetches.push(loadAllRows(j.junction));
+        fetches.push(loadAllRows(j.remoteRel.table));
+      });
+      Promise.all(fetches).then(function () {
+        var rows = [];
+        intrinsic.forEach(function (c) {
+          rows.push('<dt' + titleAttr(colDesc(table, c)) + '>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + fieldFor(c, row[c], t) + '</dd>');
+        });
+        belongsTo.forEach(function (b) {
+          rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + fieldFor(b.rel.foreignKey, row[b.rel.foreignKey], t) + '</dd>');
+        });
+        junctions.forEach(function (j) {
+          var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
+          var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
+          var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) { return !linkedIds.has(o.id); });
+          var chips = matches.map(function (jr) {
+            var remoteId = jr[j.remoteRel.foreignKey];
+            var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
+            if (!ref) return '';
+            return '<span class="chip-removable"' +
+              ' data-junction="' + escapeHtml(j.junction) + '"' +
+              ' data-localfk="' + escapeHtml(j.localFk) + '"' +
+              ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
+              ' data-local="' + escapeHtml(row.id) + '"' +
+              ' data-remote="' + escapeHtml(remoteId) + '">' +
+              '<a class="chip-link" href="#/fs/' + encodeURIComponent(j.remoteRel.table) +
+                '/' + encodeURIComponent(remoteId) + '">' + escapeHtml(displayNameFor(ref)) + '</a>' +
+              ' <button class="remove-link" title="Unlink">\u00d7</button></span>';
+          }).join(' ');
+          var picker = available.length
+            ? '<select class="dm-add"' +
+                ' data-junction="' + escapeHtml(j.junction) + '"' +
+                ' data-localfk="' + escapeHtml(j.localFk) + '"' +
+                ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
+                ' data-local="' + escapeHtml(row.id) + '">' +
+              '<option value="">+ Add link\u2026</option>' +
+              available.map(function (o) {
+                return '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(displayNameFor(o)) + '</option>';
+              }).join('') +
+              '</select>'
+            : '';
+          rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
+                    '<dd>' + (chips || '<span class="muted">None yet</span>') + ' ' + picker + '</dd>');
+        });
+        host.innerHTML =
+          '<dl class="editing">' + rows.join('') + '</dl>' +
+          '<div class="fs-fields-actions">' +
+            '<button class="btn primary" id="save-row">Save</button>' +
+            '<button class="btn" id="cancel-edit">Cancel</button>' +
+          '</div>';
+        var rerender = function () { renderFsItem(content, segs, section); };
+        host.querySelectorAll('.remove-link').forEach(function (btn) {
+          btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var chip = btn.closest('[data-junction]');
+            var body = {};
+            body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
+            body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
+            fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).then(function () {
+              invalidate(chip.getAttribute('data-junction'));
+              return refreshEntities();
+            }).then(function () { rerender(); showToast('Link removed', { undo: undoLast }); })
+              .catch(function (err) { showToast('Unlink failed: ' + err.message, {}); });
+          });
+        });
+        host.querySelectorAll('select.dm-add').forEach(function (sel) {
+          sel.addEventListener('change', function () {
+            if (!sel.value) return;
+            var body = {};
+            body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
+            body[sel.getAttribute('data-remotefk')] = sel.value;
+            fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).then(function () {
+              invalidate(sel.getAttribute('data-junction'));
+              return refreshEntities();
+            }).then(function () { rerender(); showToast('Linked', { undo: undoLast }); })
+              .catch(function (err) { showToast('Link failed: ' + err.message, {}); });
+          });
+        });
+        var cancel = host.querySelector('#cancel-edit');
+        if (cancel) cancel.addEventListener('click', function () { setFsItemView('formatted'); });
+        var save = host.querySelector('#save-row');
+        if (save) save.addEventListener('click', function () {
+          var values = collectFormValues(host.querySelector('dl'));
+          rowWrite('PATCH', '/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), values).then(function (r) {
+            recordViewMode[id] = 'formatted';
+            if (r && r.queued) { rerender(); return; }
+            invalidate(table);
+            return refreshEntities().then(function () {
+              rerender();
+              showToast('Saved', { undo: undoLast });
+            });
+          }).catch(function (err) { showToast('Save failed: ' + err.message, {}); });
+        });
+      }).catch(function (e) {
+        host.innerHTML = '<div class="muted" style="padding:8px">Failed: ' + escapeHtml(e.message) + '</div>';
       });
     }
 
@@ -1575,6 +1490,11 @@ export const dashboardJs = `    // ───────────────
           if (menu) menu.hidden = true;
           var act = it.getAttribute('data-act');
           if (act === 'delete') { removeRow(table, segs, id, row); return; }
+          if (act === 'fields') {
+            loadFieldsEditor(content, segs, table, id, row, sectionOfHash());
+            setFsItemView('fields');
+            return;
+          }
           loadRowHistoryInto(content, table, id);
           setFsItemView('history');
         });
@@ -1654,5 +1574,5 @@ export const dashboardJs = `    // ───────────────
     }
 
     // Click-to-edit on rendered values. Reuses fieldFor() for the input and the
-    // same PATCH → invalidate → refreshEntities chain as renderDetail's save.
+    // same PATCH → invalidate → refreshEntities chain as the fields editor's save.
 `;
