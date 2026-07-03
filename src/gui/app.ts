@@ -164,26 +164,13 @@ export const guiAppHtml = `<!doctype html>
     </main>
     <aside class="outputs" id="outputs-rail" aria-label="Outputs">
       <div class="outputs-resize" id="outputs-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="outputs-head col-header col-outputs"><span class="col-header-text">Outputs</span><button class="col-collapse" data-col="outputs" type="button" title="Collapse Outputs" aria-label="Collapse Outputs">›</button></div>
+      <div class="outputs-head col-header col-outputs"><span class="col-header-text">Markdown</span><button class="col-collapse" data-col="outputs" type="button" title="Collapse Outputs" aria-label="Collapse Outputs">›</button></div>
       <div class="outputs-body" id="outputs-body">
-        <section class="out-group">
-          <button class="section-label section-toggle" data-group="out-artifacts" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Artifacts</span>
-          </button>
-          <div class="section-body" data-group-body="out-artifacts"><div id="out-artifacts-tree"></div></div>
-        </section>
-        <section class="out-group">
-          <button class="section-label section-toggle" data-group="out-markdown" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Markdown</span>
-          </button>
-          <div class="section-body" data-group-body="out-markdown"><div id="out-markdown-tree"></div></div>
-        </section>
-        <section class="out-group">
-          <button class="section-label section-toggle" data-group="out-tables" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Tables</span>
-          </button>
-          <div class="section-body" data-group-body="out-tables"><div id="out-tables-mount"></div></div>
-        </section>
+        <!-- ONE view: every entity as a folder (same emojis as the Objects grid),
+             its markdown files inside, grouped by tier — with Artifacts as just
+             another category. The former separate Artifacts + Tables sections
+             showed the same content and were removed. -->
+        <div id="out-markdown-tree"></div>
       </div>
     </aside>
   </div>

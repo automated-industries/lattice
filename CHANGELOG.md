@@ -237,6 +237,12 @@ database connector).
 
 ### Changed
 
+- **The right column is one Markdown view.** Renamed from Outputs; the separate
+  Artifacts and Tables sections (which listed the same content as the markdown
+  tree) are gone. The single tree lists every entity as a folder — same emojis
+  as the Objects grid — with its markdown files inside, and Artifacts as just
+  another category.
+
 - **The Outputs Markdown tree mirrors the Tables list exactly.** One node per
   (non-junction) table, grouped in the same Source/Tables categories as the
   Tables mirror; each expands to the table's rollup + per-record folders.
