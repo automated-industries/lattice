@@ -5,7 +5,7 @@ export const versionHistoryUndoJs = `    // ────────────
     // ────────────────────────────────────────────────────────────
     function renderSidebar() {
       var ul = document.getElementById('object-nav');
-      var prefix = advancedMode() ? '#/objects/' : '#/fs/';
+      var prefix = '#/fs/'; // single view — the legacy #/objects route redirects here
       var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
       // Objects list is ordered alphabetically by display label (case-insensitive).
       firstClass.sort(function (a, b) {

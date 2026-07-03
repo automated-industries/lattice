@@ -115,19 +115,7 @@ export const bootInterstitialJs = `    // ────────────�
     }
     // Seed last-edited info for one table's rows (edits before this session),
     // then refresh any visible "last edited" line.
-    function seedLastEdited(table) {
-      fetchJson('/api/tables/' + encodeURIComponent(table) + '/last-edited').then(function (d) {
-        var edits = (d && d.edits) || {};
-        Object.keys(edits).forEach(function (pk) {
-          lastEditedByPk[leKey(table, pk)] = { userId: edits[pk].ownerUserId, at: edits[pk].at };
-        });
-        var el = document.getElementById('last-edited');
-        if (el && el.getAttribute('data-table') === table) {
-          el.outerHTML = lastEditedLineEl(table, el.getAttribute('data-pk'));
-        }
-      }).catch(function () { /* ignore */ });
-    }
-    // A keyed wrapper so seedLastEdited can replace the element in place.
+    // A keyed wrapper so the last-edited refresh can replace the element in place.
     function lastEditedLineEl(table, pk) {
       var inner = lastEditedHtml(table, pk);
       return '<div id="last-edited" data-table="' + escapeHtml(table) + '" data-pk="' +

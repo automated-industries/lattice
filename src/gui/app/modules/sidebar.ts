@@ -42,7 +42,7 @@ export const sidebarJs = `    // ───────────────�
       // No overview stat tiles — the per-entity cards already show counts, and
       // the "stale" indicator was removed (relative "updated" time is signal
       // enough, without flagging anything as stale or coloring it).
-      var cardPrefix = advancedMode() ? '#/objects/' : '#/fs/';
+      var cardPrefix = '#/fs/'; // single view — the legacy #/objects route redirects here
       var cards = ents.map(function (e) {
         var disp = displayFor(e.name);
         var count = (e.rowCount != null) ? e.rowCount : 0;
