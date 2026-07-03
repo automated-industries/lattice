@@ -38,7 +38,10 @@ test('a persistent /api/version mismatch reloads a bounded number of times, neve
 
   let navigations = 0;
   page.on('framenavigated', (frame) => {
-    if (frame === page.mainFrame()) navigations += 1;
+    // Count HARD loads only: boot performs a same-document hash redirect to
+    // the Analytics landing (#/analytics), which also fires framenavigated —
+    // it is not a reload and must not count against the cap.
+    if (frame === page.mainFrame() && !frame.url().includes('#')) navigations += 1;
   });
 
   await page.goto(gui.url, { waitUntil: 'domcontentloaded' });

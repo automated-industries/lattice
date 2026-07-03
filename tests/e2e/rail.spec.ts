@@ -15,23 +15,27 @@ function outputsWidth(page: import('@playwright/test').Page): Promise<number> {
   );
 }
 
-test('the header trigger opens and closes the floating Ask Lattice panel', async ({ page }) => {
+test('the header triggers switch between the Analytics dock and Configure', async ({ page }) => {
   await page.goto(gui.url);
-  const panel = page.locator('#ask-lattice-panel');
-  await expect(panel).toBeHidden();
+  // Boot lands in Analytics: the assistant dock is visible, Configure hidden.
+  await expect(page.locator('#ask-dock')).toBeVisible();
+  await expect(page.locator('.layout')).toBeHidden();
+
+  await page.locator('#configure-trigger').click();
+  await expect(page.locator('.layout')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeHidden();
 
   await page.locator('#ask-lattice-trigger').click();
-  await expect(panel).toBeVisible();
-
-  await page.locator('#ask-lattice-close').click();
-  await expect(panel).toBeHidden();
+  await expect(page.locator('#ask-dock')).toBeVisible();
+  await expect(page.locator('.layout')).toBeHidden();
 });
 
 test('desktop: dragging the resize handle changes and persists the Outputs width', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
+  await expect(page.locator('.layout')).toBeVisible();
   const before = await outputsWidth(page);
 
   const handle = page.locator('#outputs-resize');

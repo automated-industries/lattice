@@ -12,7 +12,7 @@ test.afterEach(async () => {
 test('a server-side mutation flashes a transient status and logs to the activity popover (not rail pills)', async ({
   page,
 }) => {
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
   // The (removed) right rail never showed pills; the header activity popover
   // starts empty before any mutation.
@@ -29,7 +29,7 @@ test('a server-side mutation flashes a transient status and logs to the activity
 });
 
 test('a server-side new entity appears in the sidebar without a reload', async ({ page }) => {
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // The entity does not exist yet — its nav item is absent.

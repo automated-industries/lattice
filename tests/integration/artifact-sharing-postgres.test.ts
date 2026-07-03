@@ -157,9 +157,7 @@ describe.skipIf(!PG_URL)('artifact sharing follows file visibility', () => {
     await provisionMemberRole(o, member, memberPw);
     const M = memberPool(schema, member, memberPw);
 
-    const visible = (await M.query('SELECT id FROM dashboards')).rows.map(
-      (r) => r.id as string,
-    );
+    const visible = (await M.query('SELECT id FROM dashboards')).rows.map((r) => r.id as string);
     expect(visible).toContain(sharedId);
     expect(visible).not.toContain(privId);
   });
@@ -194,8 +192,12 @@ describe.skipIf(!PG_URL)('artifact sharing follows file visibility', () => {
     await upgradeLegacyData(o);
 
     // Moved: same id, files row hard-deleted.
-    expect((await ownerPool.query(`SELECT count(*)::int n FROM files WHERE id = 'mine'`)).rows[0].n).toBe(0);
-    expect((await ownerPool.query(`SELECT count(*)::int n FROM dashboards WHERE id = 'mine'`)).rows[0].n).toBe(1);
+    expect(
+      (await ownerPool.query(`SELECT count(*)::int n FROM files WHERE id = 'mine'`)).rows[0].n,
+    ).toBe(0);
+    expect(
+      (await ownerPool.query(`SELECT count(*)::int n FROM dashboards WHERE id = 'mine'`)).rows[0].n,
+    ).toBe(1);
     // Ownership preserved — the dashboards ownership trigger's owner-stamp was
     // overwritten with the source row's member owner + private visibility.
     const own = (
