@@ -13,8 +13,8 @@ test.afterEach(async () => {
  *  mic / send) lives inside this collapsed panel, so it must be opened before any
  *  composer element is visible. */
 async function openAskLattice(page: import('@playwright/test').Page) {
-  await page.locator('#ask-lattice-trigger').click();
-  await expect(page.locator('#ask-lattice-panel')).toBeVisible();
+  // The app boots into Analytics with the assistant dock (and composer) visible.
+  await expect(page.locator('#ask-dock')).toBeVisible();
 }
 
 /** Enable the composer (store a test Claude key + reload), open the Ask Lattice
