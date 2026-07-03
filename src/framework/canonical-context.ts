@@ -37,6 +37,14 @@ export function deriveCanonicalContexts(
 
   const out: { table: string; definition: EntityContextDefinition }[] = [];
   for (const { name, definition } of tables) {
+    // LINK tables (junctions) never get their OWN canonical context — they are
+    // relationship plumbing, not documents. Their content still surfaces: each
+    // endpoint's context renders the junction as a manyToMany rollup of the
+    // REMOTE rows (via childrenOf below). Gating HERE — inside the derivation —
+    // keeps every caller (owner open, member open, openWorkspace) consistent by
+    // construction; previously the member path excluded junctions and the owner
+    // path did not, so Context/<Junction>/ trees rendered on one surface only.
+    if (isLinkTable(name, definition)) continue;
     const files: EntityContextDefinition['files'] = {};
 
     // The entity's own context.
@@ -65,7 +73,7 @@ export function deriveCanonicalContexts(
       const childDef = byName.get(child.table);
       const childBt = childDef ? belongsToRelations(childDef) : [];
       const [rel0, rel1] = childBt;
-      if (childDef && rel0 && rel1 && isRenderJunction(childDef, childBt)) {
+      if (childDef && rel0 && rel1 && isRenderJunction(child.table, childDef, childBt)) {
         // localKey = the FK pointing back at THIS entity; remoteKey = the other.
         const localRel = rel0.foreignKey === child.foreignKey ? rel0 : rel1;
         const remoteRel = localRel === rel0 ? rel1 : rel0;
@@ -125,7 +133,21 @@ export function deriveCanonicalContexts(
  * its own `id` PK + content columns and renders its own rows (`hasMany`), never
  * collapsed into the remote side.
  */
-function isRenderJunction(def: TableDefinition, bt: BelongsToRelation[]): boolean {
+function isRenderJunction(name: string, def: TableDefinition, bt: BelongsToRelation[]): boolean {
+  return isLinkTableWith(name, def, bt);
+}
+
+/**
+ * THE shared link-table classifier — the one predicate deciding whether a table
+ * is relationship plumbing (renders as manyToMany into its endpoints, never gets
+ * its own context) or a first-class entity. Exported so the GUI lifecycle and any
+ * other classification site can agree with the render derivation by construction.
+ */
+export function isLinkTable(name: string, def: TableDefinition): boolean {
+  return isLinkTableWith(name, def, belongsToRelations(def));
+}
+
+function isLinkTableWith(name: string, def: TableDefinition, bt: BelongsToRelation[]): boolean {
   if (bt.length !== 2) return false;
   const fks = new Set(bt.map((r) => r.foreignKey));
   if (fks.size !== 2) return false; // the two FKs must be distinct columns
@@ -138,7 +160,13 @@ function isRenderJunction(def: TableDefinition, bt: BelongsToRelation[]): boolea
   if (pk.length === 2 && pk.every((c) => fks.has(c))) return true;
   // (b) pure junction: every column is one of the two FKs or a system column.
   const SYSTEM = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
-  return Object.keys(def.columns).every((c) => fks.has(c) || SYSTEM.has(c));
+  if (Object.keys(def.columns).every((c) => fks.has(c) || SYSTEM.has(c))) return true;
+  // (c) a GUI-created junction keeps the `<a>_<b>` naming of its two endpoints.
+  // Payload columns added later (auto-added enrichment columns) must not silently
+  // promote it to a first-class entity — that flip is what turned clean m2m
+  // rollups into raw <JUNCTION>.md dumps and gave junctions their own folders.
+  const [a, b] = bt.map((r) => r.table);
+  return name === `${String(a)}_${String(b)}` || name === `${String(b)}_${String(a)}`;
 }
 
 function belongsToRelations(def: TableDefinition): BelongsToRelation[] {
