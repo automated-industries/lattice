@@ -107,6 +107,11 @@ jobs:
 
   release:
     needs: [build-macos, build-windows]
+    # Publish ONLY on a version tag. A workflow_dispatch (manual rebuild against a
+    # branch) must stop after the signed build artifacts — publishing a Release
+    # named after a branch ref would also ship a latest.json that live auto-update
+    # clients could pick up.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create/update the GitHub Release + upload assets
