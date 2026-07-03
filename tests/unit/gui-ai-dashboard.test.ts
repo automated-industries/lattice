@@ -297,4 +297,14 @@ describe('extractSourceTables', () => {
   it('returns null when the page reads no tables', () => {
     expect(extractSourceTables('<html><body>static</body></html>')).toBeNull();
   });
+
+  it('collects FROM/JOIN tables out of lattice.sql statements', () => {
+    const html = `
+      <script>
+        const agg = await lattice.sql("SELECT status, COUNT(*) FROM orders GROUP BY status");
+        const joined = await lattice.sql('SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id');
+        const rows = await lattice.query('widgets');
+      </script>`;
+    expect(extractSourceTables(html)).toEqual(['widgets', 'orders', 'customers']);
+  });
 });
