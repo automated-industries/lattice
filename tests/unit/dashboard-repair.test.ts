@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { FeedBus, type FeedEvent } from '../../src/gui/feed.js';
 import { registerNativeEntities } from '../../src/framework/native-entities.js';
-import { recordSchemaAudit, setSchemaChangeListener } from '../../src/gui/mutations.js';
+import { recordSchemaAudit } from '../../src/gui/mutations.js';
 import {
   createDashboardRepair,
   installDashboardRepair,
@@ -76,7 +76,7 @@ describe('dashboard auto-repair', () => {
   it('re-authors ONLY the dashboards that read a changed table', async () => {
     await seedDashboard('consumer', ['orders', 'widgets']);
     await seedDashboard('bystander', ['customers']);
-    const author = vi.fn((instruction: string) =>
+    const author = vi.fn((_instruction: string) =>
       Promise.resolve(
         `<!doctype html><html><body>repaired<script>lattice.sql("SELECT status, COUNT(*) FROM sales GROUP BY status")</scr` +
           `ipt></body></html>`,

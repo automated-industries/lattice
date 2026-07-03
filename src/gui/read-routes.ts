@@ -573,7 +573,7 @@ export async function handleReadRoutes(
   //  4. the result is wrapped + capped server-side (no unbounded egress).
   if (method === 'POST' && pathname === '/api/analytics/sql') {
     const body = (await readJson<unknown>(req)) as { sql?: unknown };
-    const raw = typeof body?.sql === 'string' ? body.sql.trim().replace(/;+\s*$/, '') : '';
+    const raw = typeof body.sql === 'string' ? body.sql.trim().replace(/;+\s*$/, '') : '';
     if (!raw) {
       sendJson(res, { error: 'sql (string) is required' }, 400);
       return true;
@@ -598,7 +598,7 @@ export async function handleReadRoutes(
       return true;
     }
     const CAP = 1000;
-    const wrapped = `SELECT * FROM (${raw}) AS __lattice_sql LIMIT ${CAP + 1}`;
+    const wrapped = `SELECT * FROM (${raw}) AS __lattice_sql LIMIT ${String(CAP + 1)}`;
     try {
       let rows: unknown[];
       const adapter = active.db.adapter;
