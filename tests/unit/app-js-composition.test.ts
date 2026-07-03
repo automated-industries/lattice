@@ -296,8 +296,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // overflow; assistant-created dashboards route to #/analytics/<id> everywhere
 // a record would open; a transient plain-language status line acknowledges
 // tool work. Length + hash recaptured.
-const ORIGINAL_LENGTH = 614011;
-const ORIGINAL_SHA256 = '884cf04df41193b7a2a8bcb7f081eea309bcabe230b66d922fee6fe7c962f009';
+// 5.0 live dashboards — the sandboxed page bridge gains a read-only SQL
+// surface (window.lattice.sql → the parent broker → the server-enforced
+// /api/analytics/sql endpoint), so dashboards aggregate live data in one
+// portable SELECT instead of fetching whole tables. Length + hash recaptured.
+const ORIGINAL_LENGTH = 614728;
+const ORIGINAL_SHA256 = '36701d3a0d72cff1672650dbf9cafb9df9987349dfd1d2352f61b0cc3a972215';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
