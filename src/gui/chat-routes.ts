@@ -51,6 +51,10 @@ interface ChatContext {
   ) => Promise<{ ok: true; column: string } | { ok: false; error: string }>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   deleteEntity?: DispatchCtx['deleteEntity'];
+  /** Registered computed tables — tagged read-only in the assistant's schema context. */
+  computedTables?: Set<string>;
+  /** Computed-table primitives for the assistant's computed-table tools. */
+  computedOps?: DispatchCtx['computedOps'];
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
   configPath?: string;
   outputDir?: string;
@@ -629,6 +633,11 @@ export async function dispatchChatRoute(
     ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
+    // Copied like validTables so in-turn additions (create_computed_table)
+    // stay visible to later tool calls without mutating the server's set —
+    // the audited op updates the workspace-level set itself.
+    ...(ctx.computedTables ? { computedTables: new Set(ctx.computedTables) } : {}),
+    ...(ctx.computedOps ? { computedOps: ctx.computedOps } : {}),
   };
 
   // Delegated HTML-file authoring: create_html_file / edit_html_file call this to

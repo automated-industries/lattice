@@ -54,6 +54,18 @@ const obj = (
 
 const str = (description: string): JsonSchemaProperty => ({ type: 'string', description });
 
+// The computed-table field shapes, as prose. This minimal JSON-schema helper
+// has no nested object properties (array `items` carry only a description), so
+// every tool that takes a `fields` array documents the per-kind shapes here
+// and shares the exact same wording.
+const COMPUTED_FIELD_SHAPE =
+  'Each item is {name, kind, ...}: kind "alias" needs {source: "<field path>"} (a straight copy of ' +
+  'that field); kind "calc" needs {expr: "<expression over field paths>"}; kind "ai_classify" needs ' +
+  '{input: "<field path>", prompt, labels: [...]} (the model picks one label per row); kind ' +
+  '"ai_transform" needs {inputs: ["<field path>", ...], prompt} (a model-written value per row); kind ' +
+  '"aggregate" needs {via: "<junctionTable>.<relation>", fn: count|sum|avg|min|max|concat, column?}. ' +
+  'A field path is a column on the base ("status") or on a directly linked entity ("company.name").';
+
 export const REGISTRY: readonly LatticeFunctionDef[] = [
   // ── Reads ───────────────────────────────────────────────────────────────
   {
@@ -432,7 +444,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   // ── Schema mutations ──────────────────────────────────────────────────────
   {
     name: 'create_entity',
-    description: 'Create a new entity (table) with an optional icon and starter columns.',
+    description:
+      'Create a new entity (table) with an optional icon and starter columns. Use this for a NEW ' +
+      'kind of record the user will fill with new data; if the user wants a table/list/view built ' +
+      'OUT OF data that already exists, use preview_computed_table + create_computed_table instead.',
     mutates: true,
     category: 'schema',
     args: obj(
@@ -553,6 +568,93 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     mutates: true,
     category: 'schema',
     args: obj({ table: str('Table name.'), icon: str('Emoji icon.') }, ['table', 'icon']),
+  },
+
+  // ── Computed tables ───────────────────────────────────────────────────────
+  {
+    name: 'preview_computed_table',
+    description:
+      'Dry-run a computed-table definition and see the result WITHOUT creating anything. A computed ' +
+      'table is a live READ-ONLY projection of ONE existing base entity: each field is a copy ' +
+      '(alias) of a reachable field, a calculation, or an AI transformation of values that already ' +
+      'exist. ALWAYS preview before create_computed_table or update_computed_table and fix failing ' +
+      'fields first. Returns the columns and sample rows (AI fields read as empty until the table ' +
+      'is created and refreshed), or per-field errors when the definition does not compile.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        base: str('Base entity (table) the computed table projects from.'),
+        fields: {
+          type: 'array',
+          description: 'Field definitions, in display order. ' + COMPUTED_FIELD_SHAPE,
+          items: { type: 'object', description: 'One {name, kind, ...} field definition.' },
+        },
+        limit: { type: 'integer', description: 'Sample rows to return (1–50, default 10).' },
+      },
+      ['base', 'fields'],
+    ),
+  },
+  {
+    name: 'create_computed_table',
+    description:
+      'Create a computed table — a live, read-only view built OUT OF data that already exists. Use ' +
+      'this — NOT create_entity — when the user asks for a table/list/view whose contents already ' +
+      'exist in their data: picked, renamed, calculated, categorized, or summarized fields from one ' +
+      'entity and its linked entities. ALWAYS run preview_computed_table first and fix failing ' +
+      'fields. Its rows update with the source records and cannot be edited directly.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        name: str('Name for the new computed table.'),
+        base: str('Base entity (table) the computed table projects from.'),
+        fields: {
+          type: 'array',
+          description: 'Field definitions, in display order. ' + COMPUTED_FIELD_SHAPE,
+          items: { type: 'object', description: 'One {name, kind, ...} field definition.' },
+        },
+      },
+      ['name', 'base', 'fields'],
+    ),
+  },
+  {
+    name: 'update_computed_table',
+    description:
+      "Change an existing computed table's fields. set_fields adds new fields or replaces existing " +
+      'ones by field name (declaration order is preserved); remove_fields drops fields by name. The ' +
+      'base entity can NEVER change — to project from a different base, create a new computed ' +
+      'table. Preview the intended definition with preview_computed_table first.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        name: str('Computed table to update.'),
+        set_fields: {
+          type: 'array',
+          description:
+            'Fields to add, or to replace matched by field name. ' + COMPUTED_FIELD_SHAPE,
+          items: { type: 'object', description: 'One {name, kind, ...} field definition.' },
+        },
+        remove_fields: {
+          type: 'array',
+          description: 'Names of existing fields to remove.',
+          items: { type: 'string' },
+        },
+      },
+      ['name'],
+    ),
+  },
+  {
+    name: 'refresh_computed_table',
+    description:
+      'Recompute the stored AI values (ai_classify / ai_transform fields) of a computed table. ' +
+      'Alias and calculation fields are always live and never need a refresh; only AI-derived ' +
+      'values are materialized. Reports, per AI field, how many values were filled and how many are ' +
+      'still pending.',
+    mutates: true,
+    category: 'row',
+    args: obj({ name: str('Computed table to refresh.') }, ['name']),
   },
 
   // ── History ───────────────────────────────────────────────────────────────

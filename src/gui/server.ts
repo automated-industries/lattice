@@ -53,6 +53,14 @@ import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
+import {
+  createComputedTable,
+  updateComputedTable,
+  deleteComputedTable,
+  previewComputedTable,
+  refreshComputedTable,
+  listComputedTables,
+} from './computed-ops.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
 import {
   handleWorkspacesRoutes,
@@ -910,6 +918,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // non-empty ones come back as `needsResolution` so the assistant asks.
                 deleteEntity: (name: string, resolution?: DeleteResolution) =>
                   aiDeleteEntity(active, name, resolution, sessionId),
+                // Computed tables: tagged read-only in the schema context, and
+                // driven by the assistant's computed-table tools through the
+                // same audited, revertible primitives as the builder routes.
+                computedTables: active.computedTables,
+                computedOps: {
+                  list: () => listComputedTables(active),
+                  preview: (def, limit) => previewComputedTable(active, def, limit),
+                  create: (name, def) => createComputedTable(active, name, def, sessionId),
+                  update: (name, def) => updateComputedTable(active, name, def, sessionId),
+                  refresh: (name) => refreshComputedTable(active, name, { sessionId }),
+                  delete: (name) => deleteComputedTable(active, name, sessionId),
+                },
                 configPath: active.configPath,
                 outputDir: active.outputDir,
                 // Stamp this GUI session so the assistant's writes share the user's
