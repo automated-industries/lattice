@@ -129,6 +129,7 @@ const BASE_SYSTEM_PROMPT = [
   '',
   'Rules:',
   '- The tables under "Current database" below are what already exists. When the user asks for an object type that has no table, CREATE it with create_entity (pass sensible starter columns), then add rows with create_row — do not refuse or ask whether you "have the ability."',
+  '- "Make me a table/list of X" means one of two things — decide before creating anything. Either (a) the user wants a NEW kind of record they will fill with NEW information → create a regular entity with create_entity; or (b) they want a projection or transformation of records that ALREADY exist — chosen fields, renamed fields, a calculation, a categorization, an AI summary → call preview_computed_table with the intended definition, check every field\'s status, fix any failures, then create_computed_table. Decide by checking the schema below: if every field the user named exists (or can be derived) on one entity or its linked entities → computed; if the fields exist nowhere yet → regular entity; genuinely ambiguous → ask ONE short question. To the user, call the result "a computed view" — a live view built from their existing records that updates with them and cannot be edited row-by-row — and describe its fields in plain language; in the same spirit as the jargon rule below, never say SQL or JOIN.',
   '- To relate two tables (link their rows), call create_relationship(table_a, table_b) to get a junction + its two foreign-key columns, then `link` each pair using those columns. If the junction already exists, just `link`.',
   '- Use the exact table names from the schema (or one you just created) — never guess a name for a table that should already exist.',
   "- Prefer reading before writing. To understand a specific record, prefer get_row_context — it returns the record's pre-rendered context (its own fields plus its related records and a combined summary) in ONE call, already organized, which is cheaper and richer than stitching together many list_rows/get_row reads. Use get_row for a single record's exact current fields, list_rows to browse, and search to find records by text; fall back to those whenever get_row_context reports no rendered context.",
@@ -139,6 +140,7 @@ const BASE_SYSTEM_PROMPT = [
   '- When the user asks a question best answered visually — or asks for a dashboard, report, chart, metric, or overview — call create_dashboard (give it a short title and a clear `spec` describing what to show and from which data). It is saved as a dashboard and opened for them. To change the dashboard they are already looking at, call edit_dashboard with the `instruction` (it targets the open one). Do NOT write the page yourself in your reply — these tools author it; you describe what is wanted. Not every question needs a dashboard: when a short plain answer serves better, just answer.',
   '- When the user asks about LATTICE ITSELF — what a feature is or how to use it (e.g. "what is private mode", "how does sharing work", "how do I invite someone") — call lattice_help with their question and answer from what it returns. Do NOT answer such questions from memory, and do NOT search the user\'s data for them.',
   '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments, and retry.',
+  '- When your confidence about the user\'s intent, or about what a data object means or is for, is below roughly 60%, do not guess: call ask_user with ONE short multiple-choice question (2-4 options; a free-form "Other" is offered automatically). Keep it information-seeking, about what the data MEANS or IS FOR — never about storage mechanics. At or above that confidence, proceed without asking. When an answer teaches you what data means or is for, persist it with set_definition so the knowledge outlives this chat.',
   '- Do what the user asks. Never refuse or hedge a request because it seems large, costly, or token-heavy, and never offer to "write a script" instead of doing it — you have bulk_update, which finishes the whole job in one step. Just do it and confirm the real count. Every change is recorded in version history and can be undone, so you do not need to ask permission first — EXCEPT before an irreversible hard delete of many rows (delete_row with hard=true), where you confirm the scope once. A normal (soft) bulk change needs no pre-confirmation.',
   '- To CONSOLIDATE or MERGE one object into another (the user says "merge X into Y", "combine these", "fold A into B"), call delete_entity with move_to=<target> — it moves ALL of the source rows into the target, then removes the now-empty source, and the whole operation is recorded in version history and fully reversible. Because it is reversible, do NOT ask the user to confirm first, and do NOT end by telling them they can now delete the old object — just perform the merge and then tell them, in plain language, that you combined the two and that it can be restored from history if needed. (resolution=delete_data is a separate true-deletion path; a merge never needs it.) If delete_entity reports the object is too large to merge automatically, or otherwise refuses, do NOT retry the same call — relay the reason to the user in plain language and ask how they want to proceed.',
   '- Your user is NOT technical, and your replies must contain NO database or internal jargon. Do whatever they ask using your own tools — including changing who can see a record (set_visibility / set_definition) — then confirm in plain language. Never tell them to run a command, call a database function, use SQL / an API / the command line, or contact a DBA. Never surface implementation details OR internal names: no SQL, function/tool names, Postgres, RLS, schemas, or migrations, and NEVER say the words "table", "column", "junction", "foreign key", or "system table", and NEVER quote a raw internal table/column name (e.g. files, file_states, state_id) or a row id back to the user. Speak ONLY in terms they recognize: their objects by friendly name (e.g. "your Files" or "a new States list"), the fields and values inside them, files, and who can see them. Describe creating or changing structure as adding/updating an object or linking records — not as creating tables/columns. When you make a record clickable use the [label](lattice://<table>/<id>) link form (the user sees only your label, never the raw table/id). Explain the underlying mechanics only if they explicitly ask. Be concise.',
@@ -197,7 +199,13 @@ export async function buildSchemaContext(d: DispatchCtx): Promise<string> {
     } catch {
       // best-effort — list the table even if the count query fails
     }
-    const tag = d.junctionTables.has(t) ? ' [junction]' : '';
+    // Computed views are tagged so the model reads them but never targets one
+    // with update_row / delete_row (their rows are read-only projections).
+    const tag = d.junctionTables.has(t)
+      ? ' [junction]'
+      : d.computedTables?.has(t)
+        ? ' [computed view — read-only]'
+        : '';
     const tdesc = resolveTableDescription(t, tableDesc.get(t));
     lines.push(
       `- ${t}${tag} (${colNames.join(', ')}) — ${String(count)} row${count === 1 ? '' : 's'}` +
@@ -378,6 +386,33 @@ function dispatchableTools(): AnthropicTool[] {
   return buildAnthropicTools().filter((t) => DISPATCHABLE.has(t.name));
 }
 
+/** The tool_result text fed back to the model after a valid ask_user call. */
+const ASK_USER_RESULT = 'Question shown to the user; their answer will arrive as the next message.';
+
+/** A validated ask_user call, or the validation error to hand back as a tool_result. */
+type AskUserInput =
+  | { question: string; options: string[]; allowOther: boolean }
+  | { error: string };
+
+/**
+ * Validate an ask_user tool call's input. Enforced here (not just in the tool
+ * schema) because a malformed call must come back as a recoverable tool_result
+ * error — never end the turn on a question the user can't actually answer.
+ */
+export function parseAskUserInput(input: Record<string, unknown>): AskUserInput {
+  const question = typeof input.question === 'string' ? input.question.trim() : '';
+  if (!question) return { error: 'question must be a non-empty string' };
+  const raw = Array.isArray(input.options) ? input.options : null;
+  const options = (raw ?? [])
+    .filter((o): o is string => typeof o === 'string')
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
+  if (!raw || options.length < 2 || options.length > 4) {
+    return { error: 'options must be an array of 2-4 short strings' };
+  }
+  return { question, options, allowOther: input.allow_other !== false };
+}
+
 /** A LOCAL Lattice GUI link to a record: `http://127.0.0.1:4317/#/fs/<table>/<id>`
  *  (or `/#/objects/<table>/<id>`). Captures table + id. */
 const LOCAL_GUI_RECORD_RE =
@@ -508,8 +543,53 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       const resultBlocks: ContentBlock[] = [];
       let turnAllFailed = true; // reaches here only when toolUses.length > 0
       let lastToolError = '';
+      // Set when a valid ask_user was shown: the turn ends after this round —
+      // the user's answer arrives as the NEXT chat message, so continuing the
+      // loop would have the model talking past its own open question.
+      let askedUser = false;
       for (const tu of turn.toolUses) {
         yield { type: 'tool_use', id: tu.id, name: tu.name };
+        // ask_user is answered by a human, not the dispatcher: emit the typed
+        // question event for the client to render inline, feed a canned
+        // tool_result back so the tool_use stays paired, and stop the turn. A
+        // malformed call is a recoverable tool_result error instead (the model
+        // corrects and retries; the turn does NOT stop).
+        if (tu.name === 'ask_user') {
+          const parsed = parseAskUserInput(tu.input);
+          let content: string;
+          let isError: boolean;
+          if ('error' in parsed) {
+            lastToolError = parsed.error;
+            content = JSON.stringify({ error: parsed.error });
+            isError = true;
+          } else {
+            yield {
+              type: 'question',
+              question: parsed.question,
+              options: parsed.options,
+              allowOther: parsed.allowOther,
+            };
+            askedUser = true;
+            turnAllFailed = false;
+            content = ASK_USER_RESULT;
+            isError = false;
+          }
+          yield { type: 'tool_result', toolUseId: tu.id, isError };
+          resultBlocks.push({
+            type: 'tool_result',
+            tool_use_id: tu.id,
+            content,
+            is_error: isError,
+          });
+          opts.onToolRecord?.({
+            id: tu.id,
+            name: tu.name,
+            input: capToolInput(tu.input),
+            content,
+            isError,
+          });
+          continue;
+        }
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
         if (res.ok) turnAllFailed = false;
         else if (res.error) lastToolError = res.error;
@@ -562,6 +642,9 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         consecutiveAllFailed = 0;
       }
       messages.push({ role: 'user', content: resultBlocks });
+      // A question is on screen — end the turn cleanly. The answer comes back
+      // as the next user message (a fresh /api/chat request).
+      if (askedUser) break;
     }
     // Loop exited via the `for` condition (not the `break`) ⇒ the last turn
     // still wanted to call tools but hit the step cap ⇒ the task is likely

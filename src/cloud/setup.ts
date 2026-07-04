@@ -160,6 +160,20 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
     });
   }
 
+  // (2b) Computed tables are read-only VIEWS: RLS cannot attach to a view, so
+  // they are excluded from the relkind='r' loop above, and row filtering is
+  // compiled INTO each view via lattice_row_visible predicates instead. The
+  // ops layer grants member SELECT when it creates a view, but the view is
+  // dropped + recreated whenever its definition changes (including the open
+  // path's content-hash migration) — which destroys its grants. Re-issue the
+  // member-group SELECT here so members keep reading computed tables across
+  // reopens and redefinitions.
+  for (const view of db.getComputedTableNames()) {
+    await tryTable(view, async () => {
+      await runAsyncOrSync(db.adapter, `GRANT SELECT ON "${view.replace(/"/g, '""')}" TO ${group}`);
+    });
+  }
+
   // (3) Bookkeeping tables a member reads/writes DIRECTLY (not via an RLS-secured
   // user table, so the loop above skips them) — GUI meta/audit, the identity row,
   // and the per-viewer-filtered changelog. Without these the member's GUI silently

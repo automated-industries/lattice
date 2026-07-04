@@ -43,6 +43,7 @@ import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
 import { dispatchImportRoute } from './import-routes.js';
@@ -52,6 +53,15 @@ import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
+import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
+import {
+  createComputedTable,
+  updateComputedTable,
+  deleteComputedTable,
+  previewComputedTable,
+  refreshComputedTable,
+  listComputedTables,
+} from './computed-ops.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
 import {
   handleWorkspacesRoutes,
@@ -605,6 +615,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText, guiAssetsDir };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
+  const computedDeps: ComputedRoutesDeps = { host };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
   const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
@@ -816,6 +827,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           { handle: (req, res, ctx) => handleReadRoutes(req, res, ctx, readDeps) },
           // ── Schema create/alter/delete (extracted leaf — schema-routes.ts) ──
           { handle: (req, res, ctx) => handleSchemaRoutes(req, res, ctx, schemaDeps) },
+          // ── Computed tables: CRUD + preview + refresh (computed-routes.ts) ──
+          { handle: (req, res, ctx) => handleComputedRoutes(req, res, ctx, computedDeps) },
           // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
           { handle: (req, res, ctx) => handleHistoryRoutes(req, res, ctx, historyDeps) },
           // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
@@ -906,11 +919,47 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // non-empty ones come back as `needsResolution` so the assistant asks.
                 deleteEntity: (name: string, resolution?: DeleteResolution) =>
                   aiDeleteEntity(active, name, resolution, sessionId),
+                // Computed tables: tagged read-only in the schema context, and
+                // driven by the assistant's computed-table tools through the
+                // same audited, revertible primitives as the builder routes.
+                computedTables: active.computedTables,
+                computedOps: {
+                  list: () => listComputedTables(active),
+                  preview: (def, limit) => previewComputedTable(active, def, limit),
+                  create: (name, def) => createComputedTable(active, name, def, sessionId),
+                  update: (name, def) => updateComputedTable(active, name, def, sessionId),
+                  refresh: (name) => refreshComputedTable(active, name, { sessionId }),
+                  delete: (name) => deleteComputedTable(active, name, sessionId),
+                },
                 configPath: active.configPath,
                 outputDir: active.outputDir,
                 // Stamp this GUI session so the assistant's writes share the user's
                 // undo/redo stack (the user can undo what they asked it to do).
                 sessionId,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Clarification questions ──
+          // Pending marginal-inference questions surfaced as cards in the chat
+          // panel: list / answer / dismiss. Answering executes the deferred
+          // action + enrichment writes through the shared mutation chokepoint.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/questions')) return false;
+              return await dispatchQuestionRoute(req, res, {
+                db: active.db,
+                feed: active.feed,
+                softDeletable: active.softDeletable,
+                // Stamp this GUI session so answer-driven writes share the
+                // user's undo/redo stack (same as the chat route).
+                sessionId,
+                // Schema-creating answers (a confirmed import link's junction)
+                // persist their table definition like the importer does, and
+                // register it as servable without a reopen.
+                configPath: active.configPath,
+                validTables: active.validTables,
                 pathname,
                 method,
               });
@@ -990,6 +1039,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 latticeRoot: dirname(active.configPath),
                 validTables: active.validTables,
                 softDeletable: active.softDeletable,
+                feed: active.feed,
+                // Opt-in computed-table proposals create through the same
+                // audited op as the builder UI (view DDL + YAML + undo/redo).
+                createComputed: (name, def) => createComputedTable(active, name, def, sessionId),
               });
             },
           },

@@ -1122,10 +1122,41 @@ interface LatticeEntityDef {
 interface LatticeConfig {
   db: string;
   entities: Record<string, LatticeEntityDef>;
+  computed?: Record<string, ComputedTableDef>;
 }
+
+// Computed tables — config-defined, read-only SQL projections (the `computed:`
+// section). See computed-tables.md for the full guide, the GUI builder, and
+// the /api/computed-tables HTTP surface.
+interface ComputedTableDef {
+  base: string; // a declared entity or another computed table
+  description?: string;
+  fields: Record<string, ComputedFieldDef>; // projected in declaration order
+}
+
+type ComputedFieldDef =
+  | { kind: 'alias'; source: string }
+  | { kind: 'calc'; expr: string; type?: LatticeFieldType }
+  | {
+      kind: 'ai_classify';
+      input: string;
+      prompt: string;
+      labels: string[];
+      model?: 'default' | 'cheapest';
+    }
+  | { kind: 'ai_transform'; inputs: string[]; prompt: string; model?: 'default' | 'cheapest' }
+  | {
+      kind: 'aggregate';
+      via: string; // '<junctionTable>.<remoteRelation>'
+      fn: 'count' | 'sum' | 'avg' | 'min' | 'max' | 'concat';
+      column?: string; // required for every fn except count
+    };
 ```
 
-See [Configuration Guide](./configuration.md) for the complete YAML reference.
+See [Configuration Guide](./configuration.md) for the complete YAML reference,
+and [Computed tables](./computed-tables.md) for the computed-table guide (field
+kinds, the GUI builder, AI-value refresh, and the `/api/computed-tables` HTTP
+routes).
 
 ---
 

@@ -102,6 +102,13 @@ function contentKey(record: Row): string {
   return createHash('sha256').update(parts.join('|')).digest('hex');
 }
 
+/** Map key for resolving a reference within its snapshot: as-of + a `|`
+ *  separator + the normalized value. normalizeText strips punctuation, so `|`
+ *  cannot appear in a value. */
+function scopedKey(asOf: unknown, keyVal: unknown): string {
+  return (typeof asOf === 'string' ? asOf : '') + '|' + normalizeText(keyVal);
+}
+
 function persistTable(
   configPath: string | null | undefined,
   name: string,
@@ -154,10 +161,6 @@ export async function materializeImport(
     const a = rowAsOf(entity, record);
     return a ? contentKey({ ...record, __as_of: a }) : contentKey(record);
   };
-  // Map key for resolving a reference within its snapshot: as-of + a
-  // `|` separator + the key. normalizeText strips punctuation, so `|` cannot appear in a value.
-  const scopedKey = (a: string | null, keyVal: unknown): string =>
-    (a ?? '') + '|' + normalizeText(keyVal);
   const report = async (p: ImportProgress): Promise<void> => {
     await opts.onProgress?.(p);
   };
@@ -466,4 +469,102 @@ export async function materializeImport(
 
   await report({ phase: 'done', message: 'Import complete' });
   return { mode, asOf, asOfColumn, tablesCreated, rowsByTable, links, views: viewResults };
+}
+
+/** A user-confirmed link between two already-materialized tables. */
+export interface MaterializedLinkSpec {
+  /** Junction table to create/populate (`<from>_<to>` by convention). */
+  junction: string;
+  fromTable: string;
+  /** Column on `fromTable` holding the reference text. */
+  fromColumn: string;
+  toTable: string;
+  /** Column on `toTable` a reference value resolves against (its natural key). */
+  toKey: string;
+}
+
+/**
+ * Create and populate a junction between two MATERIALIZED tables — the
+ * deferred half of a marginal link the user has confirmed. Unlike
+ * {@link materializeImport}'s link pass this reads the live rows (the source
+ * file is long gone by answer time): each `fromTable` row's `fromColumn` value
+ * is resolved against `toTable`'s `toKey`, within its own `as_of` snapshot
+ * when both sides are dated. Idempotent — existing edges are never duplicated,
+ * so a retried answer is safe. Throws loudly when either side is missing the
+ * named column (the question surfaces the error and stays pending).
+ */
+export async function linkMaterializedRows(
+  ctx: MaterializeCtx,
+  spec: MaterializedLinkSpec,
+): Promise<{ junction: string; created: number; unresolved: number }> {
+  const { db, configPath } = ctx;
+  const fromCols = db.getRegisteredColumns(spec.fromTable);
+  const toCols = db.getRegisteredColumns(spec.toTable);
+  if (!fromCols || !(spec.fromColumn in fromCols)) {
+    throw new Error(`No column "${spec.fromColumn}" on table "${spec.fromTable}" to link from`);
+  }
+  if (!toCols || !(spec.toKey in toCols)) {
+    throw new Error(`No column "${spec.toKey}" on table "${spec.toTable}" to link to`);
+  }
+  // Mirror the import's dating: a dated import stamped `as_of` on its entity
+  // rows, so the junction is dated too and references resolve per snapshot.
+  const dated = 'as_of' in fromCols;
+  const toDated = 'as_of' in toCols;
+  const fromFk = `${spec.fromTable}_id`;
+  const toFk = `${spec.toTable}_id`;
+  const columns: Record<string, string> = {
+    id: 'TEXT PRIMARY KEY',
+    [fromFk]: 'TEXT',
+    [toFk]: 'TEXT',
+  };
+  const cfgFields: Record<string, unknown> = {
+    id: { type: 'uuid', primaryKey: true },
+    [fromFk]: { type: 'uuid', ref: spec.fromTable },
+    [toFk]: { type: 'uuid', ref: spec.toTable },
+  };
+  if (dated) {
+    columns.as_of = 'TEXT';
+    cfgFields.as_of = { type: 'text' };
+  }
+  await db.defineLate(spec.junction, { columns, primaryKey: 'id' });
+  persistTable(configPath, spec.junction, cfgFields);
+  await recordLineage(db.adapter, [
+    {
+      objectTable: spec.junction,
+      objectId: '*',
+      sourceKind: 'import',
+      tier: 'derived',
+      relation: 'materialized_from',
+    },
+  ]);
+
+  const toMap = new Map<string, string>();
+  for (const r of await db.query(spec.toTable)) {
+    const k = r[spec.toKey];
+    if (k === null || k === undefined) continue;
+    toMap.set(toDated ? scopedKey(r.as_of, k) : normalizeText(k), String(r.id));
+  }
+  const seen = new Set<string>();
+  for (const r of await db.query(spec.junction)) {
+    seen.add(String(r[fromFk]) + '|' + String(r[toFk]));
+  }
+  const unresolved = new Set<string>();
+  let created = 0;
+  for (const r of await db.query(spec.fromTable)) {
+    const ref = r[spec.fromColumn];
+    if (ref === null || ref === undefined || ref === '') continue;
+    const toId = toMap.get(toDated && dated ? scopedKey(r.as_of, ref) : normalizeText(ref));
+    if (!toId) {
+      unresolved.add(normalizeText(ref));
+      continue;
+    }
+    const edge = String(r.id) + '|' + toId;
+    if (seen.has(edge)) continue;
+    seen.add(edge);
+    const row: Row = { [fromFk]: r.id, [toFk]: toId };
+    if (dated) row.as_of = r.as_of ?? null;
+    await db.insert(spec.junction, row);
+    created++;
+  }
+  return { junction: spec.junction, created, unresolved: unresolved.size };
 }

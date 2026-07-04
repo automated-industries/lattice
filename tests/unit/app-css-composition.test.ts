@@ -110,12 +110,30 @@ import { css } from '../../src/gui/app/css.js';
 // 5.0 Tables taxonomy — .mt-card-flag (the computed-table ƒ badge on a Tables-
 // explorer card) and .pvchip-derived (the provenance chip for the new 'derived'
 // tier). Length + hash recaptured.
+// Computed-table builder — a new computed-builder segment: the builder page
+// (.computed-builder cards, field rows, chips, preview table, SQL details,
+// refresh log, error strip), the "Computed" badge + read-only note + field
+// list on record/collection pages, the Tables explorer's computed-tier "+ New"
+// button + detail-panel actions, and the dashed base→view projection connector
+// (.mt-edge-computes). Length + hash recaptured.
+// Clarification questions — a new questions segment: the .q-card question
+// cards (accent-tinted head/options/other-input/error/resolved states), the
+// #question-cards strip between the chat feed and the composer, the in-turn
+// .q-inline sizing, and the .has-question notification dot on the Ask trigger.
+// Length + hash recaptured.
+// Import computed proposals — .imp-computed checkbox rows for the confirm
+// card's opt-in "Computed tables" section (inline-import segment). Length +
+// hash recaptured.
 // 5.0 Analytics view — analytics layout grid + Dashboards sidebar + dashboard
 // page/canvas + dock status line; the floating assistant panel's styles became
 // the .ask-dock column (feed/composer/staging rules unchanged). Length + hash
 // recaptured.
-const ORIGINAL_LENGTH = 128610;
-const ORIGINAL_SHA256 = 'c95cebf497ee079fbe4995613e58de5c2f7e4cac797478d2ccaada2706c6086e';
+// 5.0 merge — the questions segment's #question-cards strip now lives in the
+// .ask-dock (between the status line and the composer); its rules are
+// container-agnostic, so only the dot comment changed. Length + hash
+// recaptured for the merged stylesheet.
+const ORIGINAL_LENGTH = 138201;
+const ORIGINAL_SHA256 = '31fb8f9a4ac6c6120a48d7d8ebad79f67ab33d7e192470dd9535e8d203233588';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
