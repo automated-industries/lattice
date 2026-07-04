@@ -132,8 +132,23 @@ import { css } from '../../src/gui/app/css.js';
 // .ask-dock (between the status line and the composer); its rules are
 // container-agnostic, so only the dot comment changed. Length + hash
 // recaptured for the merged stylesheet.
-const ORIGINAL_LENGTH = 138201;
-const ORIGINAL_SHA256 = '31fb8f9a4ac6c6120a48d7d8ebad79f67ab33d7e192470dd9535e8d203233588';
+// Dead-CSS removal (markup retired in the 5.0 refactors): the whole
+// rendered-context segment (.context-block/.context-file*/.context-empty — its
+// import + array entry dropped from styles/index.ts and the file deleted);
+// provenance's .prov-mount (object page is a table view); table-view's
+// td .cell-clip + .empty-row; chat's retired floating-assistant-rail block
+// (.assistant-rail.dragging-file overlay, .rail-handle, and the mobile-drawer
+// @media — the real drop overlay is .file-drop-overlay in assistant-rail, and
+// layout.ts owns the current mobile #content rule); buttons' legacy
+// renderTable row-action controls (.row-actions/.row-delete/.row-restore/
+// tr.row-deleted); outputs' abandoned multi-group classes (.out-group/.out-link/
+// .out-placeholder); settings-drawer's Advanced-View toggle-switch
+// (.toggle/.toggle-track/.toggle-thumb/.toggle-label); and fs-workspace's
+// retired .fs-doc detail card. (.fs-tile-vis was KEPT — the shared vis() helper
+// still emits it and gui-visibility-indicators.test.ts exercises it.) Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 132512;
+const ORIGINAL_SHA256 = '6f37a4fe5db451bbfa32e62e0fbd988a5ff3a35582177e4f3e65f85ae0eb3d65';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

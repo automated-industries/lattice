@@ -174,9 +174,11 @@ test('edit mode: loads the definition, saves, and Remove returns to Tables', asy
   await page.locator('#cb-save-btn').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/fs/item_summary');
 
-  // Remove deletes the view and returns to the Tables explorer.
+  // Remove deletes the view and returns to the Tables explorer. It now confirms
+  // first (guarding against a stray click) — accept the dialog.
   await page.goto(gui.url + '#/computed/item_summary');
   await expect(page.locator('#cb-delete-btn')).toBeVisible({ timeout: 5000 });
+  page.once('dialog', (d) => void d.accept());
   await page.locator('#cb-delete-btn').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
   await expect(page.locator('.mt-card[data-table="item_summary"]')).toHaveCount(0);

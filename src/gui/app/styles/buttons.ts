@@ -23,18 +23,6 @@ export const buttonsCss = `    /* ── Buttons ──────────�
     .btn.ghost:hover { background: var(--row-hover); color: var(--text); }
     .view-header .actions { margin-left: auto; display: flex; gap: 8px; }
 
-    /* Row delete / restore controls */
-    .row-actions { width: 88px; text-align: center; white-space: nowrap; }
-    .row-delete, .row-restore {
-      background: transparent; border: none; color: var(--text-muted);
-      font-size: 16px; cursor: pointer; padding: 4px 6px;
-      border-radius: 4px;
-    }
-    tr:hover .row-delete { color: var(--warn); }
-    .row-delete:hover { background: rgba(251, 146, 60, 0.12); }
-    .row-restore:hover { background: var(--accent-soft); color: var(--accent); }
-    tr.row-deleted td { background: rgba(251, 146, 60, 0.08); color: var(--text-muted); }
-    tr.row-deleted:hover td { background: #fcf5e3; }
     /* Per-row visibility indicator (2.2). Reuses the team share colour
        language — yellow (#eab308) = visible to everyone, red (#ef4444) =
        private — matching the .sw-shared / .sw-private swatches. Owner =
