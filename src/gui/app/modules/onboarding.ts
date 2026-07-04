@@ -262,19 +262,22 @@ export const onboardingJs = `    // ──────────────�
         var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
         function pump() {
           return reader.read().then(function (res) {
-            if (res.done) return;
+            if (res.done) { anToolStatus(null); return; }
             buf += dec.decode(res.value, { stream: true });
             buf = parseSse(buf, function (ev) {
               if (ev.type === 'assistant_message_start') { finalizeBubble(actx); actx = newAssistantBubble(); assembled = ''; }
-              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
-              // tool_use / tool_result are no longer painted as inline pills — the
+              else if (ev.type === 'text_delta' && actx) { anToolStatus(null); assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
+              // tool_use / tool_result are not painted as inline pills — the
               // assistant's data changes stream in as activity cards over the feed
-              // SSE (renderFeedItem), which sit above the typing bubble. Reads emit
-              // no card by design (only data changes show).
+              // SSE (renderFeedItem). The only in-chat acknowledgement is ONE
+              // transient plain-language status line ("Building your dashboard…"),
+              // cleared as soon as the reply text starts.
+              else if (ev.type === 'tool_use') { anToolStatus(ev.name); }
               // The model asked a clarification question (ask_user): render the
-              // interactive card inline; the turn ends right after, and the
-              // user's pick/free-form reply goes out as the next chat message.
-              else if (ev.type === 'question') { finalizeBubble(actx); actx = null; if (typeof renderChatQuestion === 'function') renderChatQuestion(ev); }
+              // interactive card inline; the turn ends right after (so the status
+              // line clears now), and the user's pick/free-form reply goes out as
+              // the next chat message.
+              else if (ev.type === 'question') { finalizeBubble(actx); actx = null; anToolStatus(null); if (typeof renderChatQuestion === 'function') renderChatQuestion(ev); }
               else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
               else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
               // A tool (e.g. create_artifact) asked the GUI to open the row it

@@ -627,7 +627,7 @@ export const dataModelJs = `    // ───────────────
                 body: JSON.stringify({ id: target.id }),
               }).then(function () { return reloadEverything(); })
             : reloadEverything();
-          return p.then(function () { location.hash = '#/'; renderRoute(); });
+          return p.then(function () { location.hash = '#/analytics'; renderRoute(); });
         };
 
         if (cfg.state === 'cloud-owner' || cfg.state === 'cloud-member') {

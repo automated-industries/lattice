@@ -202,6 +202,42 @@ async function purgeRedoStack(db: Lattice, sessionId?: string): Promise<void> {
 }
 
 /**
+ * A schema change one or more dashboards may be consuming. Fired from
+ * {@link recordSchemaAudit} for the BREAKING operations (rename/delete of
+ * tables, columns, links) — additive changes can't break an authored page.
+ */
+export interface SchemaChangeEvent {
+  table: string;
+  operation: string;
+  before: unknown;
+  after: unknown;
+  summary: string;
+}
+
+/** Schema ops that can break a page authored against the previous model. */
+const BREAKING_SCHEMA_OPS = new Set([
+  'schema.rename_entity',
+  'schema.rename_column',
+  'schema.delete_entity',
+  'schema.delete_link',
+  'schema.purge',
+]);
+
+// Per-Lattice schema-change listener (the dashboard auto-repair service).
+// A WeakMap registration — not an import — so this shared mutation module
+// never depends on the repair module (which pulls in the model client).
+const schemaChangeListeners = new WeakMap<Lattice, (ev: SchemaChangeEvent) => void>();
+
+/** Install (or replace) the workspace's schema-change listener. */
+export function setSchemaChangeListener(
+  db: Lattice,
+  listener: ((ev: SchemaChangeEvent) => void) | null,
+): void {
+  if (listener) schemaChangeListeners.set(db, listener);
+  else schemaChangeListeners.delete(db);
+}
+
+/**
  * Append an audit-log entry for a mutation and publish it to the activity
  * feed. `source` tags who triggered it (defaults to the GUI). AuditOp is a
  * subset of FeedOp, so the cast is safe.
@@ -270,6 +306,13 @@ export async function recordSchemaAudit(
     source,
   });
   feed.publish({ table, op: 'schema', rowId: null, source, summary });
+  // A breaking model change may orphan dashboards built on this table — hand
+  // it to the workspace's repair listener (fire-and-forget; the listener
+  // debounces and does its own error surfacing).
+  if (BREAKING_SCHEMA_OPS.has(operation)) {
+    const listener = schemaChangeListeners.get(db);
+    if (listener) listener({ table, operation, before, after, summary });
+  }
 }
 
 /** Context shared by every mutation primitive. */
@@ -318,7 +361,7 @@ export interface MutationCtx {
    * Absent/false on every other path (generic create_row/update_row, bulk_update,
    * the HTTP row-CRUD routes, ingest), so an untrusted caller — or a prompt
    * injection — cannot forge an executable artifact for another viewer to render.
-   * See {@link guardReservedFileColumns}.
+   * See {@link guardReservedColumns}.
    */
   allowReservedFileCols?: boolean;
 }
@@ -453,15 +496,25 @@ export function deriveRowIdFromEditId(editId: string): string {
  * caller (or a prompt injection) cannot plant an executable HTML artifact that
  * another user would render. Fails loud rather than silently dropping the field.
  */
-export function guardReservedFileColumns(
+export function guardReservedColumns(
   ctx: MutationCtx,
   table: string,
   values: Partial<Row> | undefined,
 ): void {
-  if (table !== 'files' || ctx.allowReservedFileCols) return;
-  if (values && (values as Record<string, unknown>).artifact_type === 'html') {
+  if (ctx.allowReservedFileCols || !values) return;
+  if (table === 'files' && (values as Record<string, unknown>).artifact_type === 'html') {
     throw new Error(
       "artifact_type='html' marks an executable inline HTML file and may only be set by the create_html_file / edit_html_file tools",
+    );
+  }
+  // dashboards.html IS the executable document body (rendered in a sandboxed
+  // iframe for every viewer), so unlike files there is no marker value to
+  // check: ANY write that touches the column outside the trusted authoring
+  // tools is refused — set and change alike, which is why no post-read body
+  // guard is needed for dashboards.
+  if (table === 'dashboards' && Object.prototype.hasOwnProperty.call(values, 'html')) {
+    throw new Error(
+      'a dashboard page may only be written by the create_dashboard / edit_dashboard tools',
     );
   }
 }
@@ -474,7 +527,7 @@ export async function createRow(
   editId?: string,
 ): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
   assertNotComputedTable(ctx.db, table);
-  guardReservedFileColumns(ctx, table, values);
+  guardReservedColumns(ctx, table, values);
   // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
   // (the GUI row-write path; the assistant/ingest paths pass none and keep their
   // prior behaviour untouched). When the table uses the default single-column
@@ -558,7 +611,7 @@ export async function updateRow(
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
   assertNotComputedTable(ctx.db, table);
-  guardReservedFileColumns(ctx, table, values);
+  guardReservedColumns(ctx, table, values);
   const before = await ctx.db.get(table, id);
   // Never silently "succeed" against a row that doesn't exist. A
   // missing row means the caller (e.g. the assistant) used a stale/wrong id;
@@ -571,7 +624,7 @@ export async function updateRow(
   // that is ALREADY an html artifact is as security-sensitive as creating one — it
   // changes what executes when a viewer re-opens it — so a body edit is likewise
   // limited to the trusted edit_html_file tool (which passes allowReservedFileCols).
-  // (guardReservedFileColumns above only reserves SETTING the artifact_type marker;
+  // (guardReservedColumns above only reserves SETTING the artifact_type marker;
   // it can't see the existing row, which is why this lives here, after `before`.)
   if (
     table === 'files' &&

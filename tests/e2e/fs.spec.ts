@@ -115,7 +115,7 @@ test('an object page shows its data provenance; a row opens its detail', async (
     name: 'Jane Author',
     bio: 'A novelist.',
   })) as { id: string };
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Default mode: the sidebar object link points at the file-system route.
@@ -233,7 +233,7 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
 test('Version history + Settings are full-panel takeovers with highlighted, toggling triggers', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Clock opens the takeover on the Version history tab, highlighted.

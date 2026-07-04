@@ -30,12 +30,11 @@ test('composer is gated until a Claude key is set', async ({ page }) => {
   await expect(page.locator('.composer-setup')).toHaveCount(0);
 });
 
-/** Open the floating "Ask Lattice" panel. In the 5.0 reframe the composer (and its
- *  input / mic / send) lives inside this collapsed panel, so it must be opened
- *  before any composer element is visible. */
+/** The composer lives in the Analytics view's always-visible assistant dock;
+ *  the app boots into Analytics, so there is nothing to open — just wait for
+ *  the dock. */
 async function openAskLattice(page: import('@playwright/test').Page) {
-  await page.locator('#ask-lattice-trigger').click();
-  await expect(page.locator('#ask-lattice-panel')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeVisible();
 }
 
 /** Enable the composer (store a test key + reload), open the Ask Lattice panel,
