@@ -24,6 +24,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   candidates are dropped as noise, as before. The confirm card echoes the
   threshold its proposal was inferred under, so apply bands links identically
   even if the preference changes between upload and confirm.
+- **A background clarification question no longer interrupts active work.** A
+  realtime `question` event used to force the app to the Analytics view to show
+  the pending card — which, mid-build in the computed-table builder
+  (`#/computed/*`), discarded the in-progress form. New questions arriving while
+  you are in the builder now surface via the assistant trigger's notification
+  dot plus a dismissible toast instead of navigating; when you are idle, the
+  assistant still opens automatically as before.
+- **Deleting a computed table or a dashboard now asks first.** Both the
+  computed-table builder's "Remove" action and a dashboard's ⋯ → Delete prompt
+  for confirmation ("… You can undo this from history.") before issuing the
+  delete. The after-the-fact undo toast is unchanged.
+- **Clarification questions are more accessible.** The assistant trigger's
+  accessible name now reflects the number of pending questions (e.g. "… — 2
+  questions waiting") and a polite live region announces new questions, so the
+  waiting state is no longer signalled by the visual dot alone. Dismissing a
+  question now confirms first so a stray click can't discard it.
+- **Freshly-created computed views hint that AI columns are still filling.** A
+  computed view whose definition has AI-derived fields (AI category / AI text)
+  now shows an unobtrusive banner on its collection page while those cells fill
+  in the background, so momentarily-blank AI columns don't read as broken.
+
+### Removed
+
+- **Dead GUI stylesheet rules.** Removed CSS whose markup was retired during the
+  5.0 GUI refactors: the rendered-context block, the provenance graph mount, the
+  legacy table cell-clip/empty-row and row-action controls, the retired mobile
+  assistant-rail drawer, the abandoned multi-group Outputs classes, the
+  Advanced-View toggle switch, and the old record detail card. No visual change
+  — every removed selector was verified to have no remaining markup.
 
 ### Added
 

@@ -124,36 +124,4 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     }
     .rail-composer .composer-clip:hover { color: var(--text); border-color: var(--accent); }
     .rail-composer .composer-clip svg { width: 17px; height: 17px; display: block; }
-    .assistant-rail.dragging-file::after {
-      content: 'Drop to ingest'; position: absolute; inset: 0; z-index: 10;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(59, 130, 246, 0.10);
-      -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-      border: 2px dashed var(--accent);
-      box-shadow: inset 0 0 60px rgba(59, 130, 246, 0.25);
-      color: var(--accent); font-weight: 600; pointer-events: none;
-      text-shadow: 0 0 12px rgba(59, 130, 246, 0.6);
-    }
-    .rail-handle { display: none; }
-    @media (max-width: 720px) {
-      /* The assistant rail becomes a bottom drawer: composer always reachable,
-         tap the handle to expand the feed/chat to ~62svh. */
-      .layout { grid-template-columns: 220px minmax(0, 1fr); }
-      .assistant-rail {
-        position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-        border-left: none; border-top: 1px solid var(--border);
-        max-height: 62svh; box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.08);
-      }
-      .rail-resize { display: none; }
-      .rail-handle {
-        display: block; flex: 0 0 auto; height: 22px; cursor: pointer; position: relative;
-      }
-      .rail-handle::after {
-        content: ''; position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
-        width: 40px; height: 4px; border-radius: 2px; background: var(--border-strong);
-      }
-      .assistant-rail:not(.expanded) { max-height: none; }
-      .assistant-rail:not(.expanded) .rail-feed { display: none; }
-      main#content { padding-bottom: 96px; }
-    }
   `;

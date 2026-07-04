@@ -58,23 +58,6 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     }
     .drawer-version .app-version { color: var(--text); }
 
-    /* Toggle switch (advanced mode) */
-    .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-    .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
-    .toggle-track {
-      position: relative; flex: 0 0 auto; width: 38px; height: 22px;
-      background: var(--border-strong); border-radius: 999px; transition: background 0.15s ease;
-    }
-    .toggle-thumb {
-      position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
-      background: #fff; border-radius: 50%; transition: transform 0.15s ease;
-      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
-    }
-    .toggle input:checked + .toggle-track { background: var(--accent); }
-    .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(16px); }
-    .toggle-label { font-size: 13.5px; color: var(--text); }
-    .toggle-label small { display: block; font-size: 11px; color: var(--text-muted); }
-
     /* ── Connectors dialog (slides in from the LEFT) ────── */
     .connectors-backdrop {
       position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
