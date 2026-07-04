@@ -234,6 +234,29 @@ export function aggressivenessToTemperature(aggressiveness: number): number {
   return Math.min(1, Math.max(0, aggressiveness));
 }
 
+/** Default clarify threshold (see {@link getClarifyThreshold}). */
+export const DEFAULT_CLARIFY_THRESHOLD = 0.6;
+
+/**
+ * The user's "clarify threshold" — the single confidence bar that decides when
+ * an automated inference asks the user instead of guessing: confidence ≥ the
+ * threshold → act silently; between the floor (threshold / 2, derived by each
+ * consumer via {@link clarifyFloor}) and the threshold → ask a short
+ * multiple-choice question; below the floor → drop the inference as noise.
+ * A USER preference (machine-local `preferences.json`), same model as
+ * {@link getAggressiveness}. Falls back to {@link DEFAULT_CLARIFY_THRESHOLD}.
+ */
+export function getClarifyThreshold(): number {
+  const n = readPreferences().clarify_threshold;
+  if (!Number.isFinite(n)) return DEFAULT_CLARIFY_THRESHOLD;
+  return Math.min(1, Math.max(0, n));
+}
+
+/** The "drop as noise" floor derived from a clarify threshold. */
+export function clarifyFloor(threshold: number): number {
+  return threshold / 2;
+}
+
 export async function getVoiceCredential(db: Lattice | null): Promise<VoiceCredential | null> {
   const openai =
     (await readMachineCredential(db, CREDENTIALS.openai.kind)) ??
@@ -412,6 +435,7 @@ export async function dispatchAssistantRoute(
       // step is fail-soft, so the GUI also feature-detects the Worker at runtime.
       localVoiceAvailable: true,
       aggressiveness: getAggressiveness(),
+      clarifyThreshold: getClarifyThreshold(),
       oauthEnabled: oauthConfigured(),
     });
     return true;
@@ -433,6 +457,27 @@ export async function dispatchAssistantRoute(
     }
     // User preference, machine-local — not a workspace secret.
     writePreferences({ ...readPreferences(), aggressiveness: value });
+    sendJson(res, { ok: true, value });
+    return true;
+  }
+
+  // PUT /api/assistant/clarify-threshold { value } — clarify threshold 0..1
+  // (see getClarifyThreshold). Mirrors the aggressiveness route above.
+  if (method === 'PUT' && pathname === '/api/assistant/clarify-threshold') {
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const value = Number(body.value);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      sendJson(res, { error: 'value must be a number in [0, 1]' }, 400);
+      return true;
+    }
+    // User preference, machine-local — not a workspace secret.
+    writePreferences({ ...readPreferences(), clarify_threshold: value });
     sendJson(res, { ok: true, value });
     return true;
   }

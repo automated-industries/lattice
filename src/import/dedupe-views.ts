@@ -163,6 +163,9 @@ export function dedupeAndDetectViews(
   const nextPlan: ProposedSchema = {
     entities: plan.entities.filter((e) => !asView.has(e.name)),
     linkages: plan.linkages.filter((l) => !asView.has(l.fromEntity)),
+    marginalLinks: plan.marginalLinks.filter(
+      (l) => !asView.has(l.fromEntity) && !asView.has(l.toEntity),
+    ),
     dimensions: plan.dimensions
       .map((d) => ({ ...d, fromEntities: d.fromEntities.filter((n) => !asView.has(n)) }))
       .filter((d) => d.fromEntities.length > 0),

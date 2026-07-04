@@ -7,8 +7,11 @@ import { recordLineage } from '../lineage-store.js';
 import {
   resolveClaudeAuth,
   aggressivenessToTemperature,
+  clarifyFloor,
+  getClarifyThreshold,
   DEFAULT_AGGRESSIVENESS,
 } from '../assistant-routes.js';
+import { enqueueQuestion } from '../questions.js';
 import { createAnthropicClient } from './chat.js';
 import {
   summarizeText,
@@ -30,6 +33,9 @@ import {
  */
 
 const LABEL_PREF = ['name', 'title', 'slug', 'label'];
+
+/** At most this many clarification questions may be enqueued per ingested file. */
+const MAX_QUESTIONS_PER_FILE = 2;
 
 /** True for tables that look like pure many-to-many junctions (only FKs). */
 function isLikelyJunction(cols: Record<string, string>): boolean {
@@ -257,7 +263,41 @@ export async function enrichWithLlm(
         );
         const allowNewEntity = aggressiveness >= 0.5;
         const existing = new Set(db.getRegisteredTableNames().filter((t) => !isNativeEntity(t)));
+        // Ask-when-marginal gate: each extracted object carries the model's 0-1
+        // confidence in its target-entity decision. At or above the clarify
+        // threshold the object is materialized exactly as before; in
+        // [floor, threshold) nothing is created — a short question is enqueued
+        // instead (capped per file); below the floor the object is dropped
+        // silently, like the low-aggressiveness paths. A MISSING confidence is
+        // treated as 1.0, so a model that never emits the field (and every
+        // pre-existing flow) behaves identically to before.
+        const clarifyThreshold = getClarifyThreshold();
+        const floor = clarifyFloor(clarifyThreshold);
+        let questionsAsked = 0;
         for (const obj of proposed) {
+          const confidence = obj.confidence ?? 1;
+          if (confidence < clarifyThreshold) {
+            if (confidence >= floor && questionsAsked < MAX_QUESTIONS_PER_FILE) {
+              questionsAsked++;
+              // v1 is deliberately conservative: the answer RECORDS the user's
+              // intent — no deferred action re-triggers the skipped extraction
+              // automatically — and only a free-form answer is persisted, as
+              // the (already existing) target entity's definition.
+              await enqueueQuestion(mctx.db, mctx.feed, {
+                source: 'enrich',
+                question: `Is "${name}" meant to add records to ${obj.entity}?`,
+                options: ['Yes, add them', 'No, keep it as just a file'],
+                context: {
+                  action: { kind: 'none' },
+                  enrich: existing.has(obj.entity)
+                    ? [{ target: 'table_definition', table: obj.entity }]
+                    : [],
+                },
+                feedSource: mctx.source,
+              });
+            }
+            continue; // marginal or noise — never create/act on this decision
+          }
           // Resolve the target entity: reuse an existing one, else create it.
           let entity: string | null = existing.has(obj.entity) ? obj.entity : null;
           if (!entity && allowNewEntity) {

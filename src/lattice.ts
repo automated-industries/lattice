@@ -37,6 +37,7 @@ import type {
   ChangelogOptions,
   ChangeEntry,
   ChangeProvenance,
+  BelongsToRelation,
 } from './types.js';
 import { foldEntity, observationsFromChange, type Observation } from './cloud/fold.js';
 import {
@@ -149,6 +150,13 @@ import {
   allComputedDeps,
 } from './schema/computed.js';
 import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
+import { registerComputedTables } from './schema/computed-table.js';
+import type {
+  ComputedRegistrationResult,
+  ComputedSchemaTable,
+  ComputedTableHost,
+} from './schema/computed-table.js';
+import type { ComputedTableDef } from './config/types.js';
 import {
   installFilePresigner,
   setCloudS3Secret,
@@ -337,6 +345,15 @@ export class Lattice {
   >();
   /** table → materialized rollup specs (P-VIEW). */
   private readonly _rollups = new Map<string, Record<string, MaterializedRollupSpec>>();
+  /** Computed-table (read-only view) definitions from the YAML config. */
+  private readonly _configComputedTables: { name: string; definition: ComputedTableDef }[] = [];
+  /**
+   * Names of the computed tables registered by this instance — the single
+   * source of truth the write-refusal guard and {@link isComputedTable} share.
+   */
+  private readonly _computedTables = new Set<string>();
+  /** Outcome of the init-time computed-table registration (see accessor). */
+  private _computedRegistration: ComputedRegistrationResult | null = null;
   /** source table → parents whose rollup it feeds (for incremental recompute). */
   private readonly _rollupSources = new Map<
     string,
@@ -381,6 +398,10 @@ export class Lattice {
       dbPath = parsed.dbPath;
       configTables = [...parsed.tables];
       configEntityContexts = [...parsed.entityContexts];
+      // Computed tables register late (after schema application in init) —
+      // their views are derived FROM the entity tables, so only the parsed
+      // definitions are kept here.
+      this._configComputedTables = [...parsed.computedTables];
       // Config-level options merge under any explicit options passed in
       if (pathOrConfig.options) {
         options = { ...pathOrConfig.options, ...options };
@@ -728,6 +749,9 @@ export class Lattice {
       }
       await this._encryption.finalizeSetup();
       this._initialized = true;
+      // Computed tables: the owner already created the views; this role can't
+      // DDL, so register purely by introspection (invisible views are skipped).
+      await this._registerConfigComputedTables(true);
       return;
     }
     // One whole-schema introspection up front (one query on Postgres vs. a
@@ -781,6 +805,207 @@ export class Lattice {
     }
 
     this._initialized = true;
+
+    // Computed tables register LAST — their views are projections of the
+    // entity tables the schema application above just converged.
+    await this._registerConfigComputedTables(false);
+  }
+
+  /**
+   * Register the config-declared computed tables (read-only SQL views) in
+   * topological order: compile, execute the view DDL (SQLite drops +
+   * recreates unconditionally; Postgres guards the DDL behind a content-hash
+   * migration version so a converged open issues none), introspect, and
+   * register each view as a queryable table. A definition that fails to
+   * compile never bricks the open — it is recorded under field `'*'` in
+   * `__lattice_computed_state`, surfaced via {@link getComputedRegistration},
+   * and the remaining tables continue.
+   */
+  private async _registerConfigComputedTables(introspectOnly: boolean): Promise<void> {
+    if (this._configComputedTables.length === 0) return;
+    const defs: Record<string, ComputedTableDef> = {};
+    for (const { name, definition } of this._configComputedTables) defs[name] = definition;
+
+    const cloud = await this._computedCloudOption();
+    const result = await registerComputedTables(this._computedTableHost(), defs, {
+      schema: this.computedSchemaLookup(),
+      dialect: this.getDialect(),
+      ...(introspectOnly ? { introspectOnly } : {}),
+      ...(cloud ? { cloud } : {}),
+    });
+
+    for (const table of result.registered) this._computedTables.add(table);
+    this._computedRegistration = result;
+  }
+
+  /**
+   * The registration host over THIS instance — shared by the init-time
+   * registration and {@link registerComputedTablesLive} so both register
+   * through the identical seam.
+   */
+  private _computedTableHost(): ComputedTableHost {
+    return {
+      adapter: this._adapter,
+      // Direct migration application — Lattice.migrate() would re-introspect
+      // every registered table per computed table, which the post-registration
+      // column-cache write below already covers for the only table that changed.
+      migrate: (migrations) => this._schema.applyMigrationsAsync(this._adapter, migrations),
+      introspectColumns: (table) => introspectColumnsAsyncOrSync(this._adapter, table),
+      register: (table, def, columns) => {
+        if (!this._schema.getTables().has(table)) this._registerTable(table, def);
+        this._columnCache.set(table, new Set(columns));
+      },
+    };
+  }
+
+  /**
+   * On a secured team cloud, computed views must compile with per-relation
+   * `lattice_row_visible(...)` predicates: a Postgres view executes with its
+   * OWNER's rights, so without the predicates a member granted SELECT on the
+   * view would read every base row, bypassing RLS. The predicate helper only
+   * exists once the cloud RLS bootstrap has run — detected by its
+   * `__lattice_owners` bookkeeping table (same tell `probeCloud` uses). A probe
+   * failure propagates: silently compiling without the predicates on a cloud
+   * would be a row-visibility hole, and a connection broken enough to fail this
+   * one SELECT fails the open anyway.
+   */
+  private async _computedCloudOption(): Promise<{ rowVisible: true } | undefined> {
+    if (this.getDialect() !== 'postgres') return undefined;
+    const row = (await getAsyncOrSync(
+      this._adapter,
+      `SELECT to_regclass('__lattice_owners') AS reg`,
+    )) as { reg?: string | null } | undefined;
+    return row?.reg != null ? { rowVisible: true } : undefined;
+  }
+
+  /**
+   * Table lookup for the computed-table compiler: every registered table's
+   * declared + introspected columns, belongsTo relations, and normalized
+   * primary key. Shared by the init-time registration and the runtime ops
+   * layer (create/preview/field pickers), so the two can never disagree about
+   * what a definition may reference.
+   */
+  computedSchemaLookup(): Map<string, ComputedSchemaTable> {
+    const schema = new Map<string, ComputedSchemaTable>();
+    for (const [table, def] of this._schema.getTables()) {
+      const columns = new Set<string>(Object.keys(def.columns));
+      for (const c of this._columnCache.get(table) ?? []) columns.add(c);
+      const relations: Record<string, BelongsToRelation> = {};
+      for (const [relName, rel] of Object.entries(def.relations ?? {})) {
+        if (rel.type === 'belongsTo') relations[relName] = rel;
+      }
+      schema.set(table, {
+        columns,
+        relations,
+        primaryKey: this._schema.getPrimaryKey(table),
+        hasDeletedAt: columns.has('deleted_at'),
+        ...(def.fieldTypes ? { fieldTypes: def.fieldTypes } : {}),
+      });
+    }
+    return schema;
+  }
+
+  /**
+   * Register computed-table definitions at RUNTIME — the live counterpart of
+   * the init-time registration, used by the GUI ops layer (create/update). It
+   * runs the SAME registration path as the open (compile in topological order,
+   * bookkeeping-table ensure, view DDL, introspect, live-register) with one
+   * deliberate difference: the view DDL executes directly (drop + recreate)
+   * rather than through the open path's content-hash migration, because a
+   * runtime edit can be reverted to a PRIOR definition whose hash was already
+   * applied once — a version-guarded migration would skip that DDL. Successful
+   * registrations join {@link isComputedTable} / {@link getComputedTableNames}
+   * (so the write-refusal guard covers them immediately) and their compiled
+   * artifacts merge into {@link getComputedRegistration}. Per-definition
+   * failures are RETURNED in `errors`, never thrown — the caller decides
+   * whether a failure aborts its operation.
+   */
+  async registerComputedTablesLive(
+    defs: Record<string, ComputedTableDef>,
+  ): Promise<ComputedRegistrationResult> {
+    if (!this._initialized) {
+      throw new Error('Lattice: not initialized — call init() first');
+    }
+    const cloud = await this._computedCloudOption();
+    const result = await registerComputedTables(this._computedTableHost(), defs, {
+      schema: this.computedSchemaLookup(),
+      dialect: this.getDialect(),
+      directDdl: true,
+      ...(cloud ? { cloud } : {}),
+    });
+    this._computedRegistration ??= {
+      registered: [],
+      skipped: [],
+      errors: [],
+      compiled: new Map(),
+    };
+    for (const table of result.registered) {
+      this._computedTables.add(table);
+      if (!this._computedRegistration.registered.includes(table)) {
+        this._computedRegistration.registered.push(table);
+      }
+    }
+    for (const [table, compiled] of result.compiled) {
+      this._computedRegistration.compiled.set(table, compiled);
+    }
+    return result;
+  }
+
+  /**
+   * Remove a computed table from the live registry — the inverse of
+   * {@link registerComputedTablesLive} for one table. Unregisters the view
+   * from the schema registry (it stops being listed/queryable) and from the
+   * computed-table set (the write-refusal guard no longer names it). Issues NO
+   * DDL — the caller owns dropping the view. Throws for a name that is not a
+   * registered computed table, so a plain entity can never be unregistered
+   * through this path.
+   */
+  unregisterComputedTable(name: string): void {
+    if (!this._computedTables.has(name)) {
+      throw new Error(`Lattice: "${name}" is not a registered computed table`);
+    }
+    this.unregisterTable(name);
+    this._computedTables.delete(name);
+    if (this._computedRegistration) {
+      this._computedRegistration.compiled.delete(name);
+      this._computedRegistration.registered = this._computedRegistration.registered.filter(
+        (t) => t !== name,
+      );
+    }
+  }
+
+  /**
+   * True when `name` is a computed table registered by this instance —
+   * a read-only projection that refuses direct writes.
+   */
+  isComputedTable(name: string): boolean {
+    return this._computedTables.has(name);
+  }
+
+  /** Names of the computed tables registered by this instance. */
+  getComputedTableNames(): string[] {
+    return [...this._computedTables];
+  }
+
+  /**
+   * Outcome of the init-time computed-table registration: what registered,
+   * what was skipped (introspect-only member opens), per-table errors, and
+   * the compiled artifacts (view SQL + AI fill queries) for downstream
+   * consumers such as the fill engine. Null when the config declares no
+   * computed tables or init has not run.
+   */
+  getComputedRegistration(): ComputedRegistrationResult | null {
+    return this._computedRegistration;
+  }
+
+  /** Refuse writes against a computed table — it is a read-only projection. */
+  private _assertNotComputedTable(table: string, op: string): void {
+    if (this._computedTables.has(table)) {
+      throw new Error(
+        `Lattice: ${op}() on "${table}" — a computed table is a read-only projection; ` +
+          `edit its source tables or its definition`,
+      );
+    }
   }
 
   /**
@@ -1149,6 +1374,7 @@ export class Lattice {
     row: Row,
   ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'insert');
     const sanitized = this._applyComputedColumns(
       table,
       this._applyConnectedDefaults(
@@ -1275,6 +1501,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'upsert');
     this._assertRowSize(table, row);
 
     // Apply governance + connector-lineage defaults so a direct upsert into a
@@ -1349,6 +1576,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table, col);
+    this._assertNotComputedTable(table, 'upsertBy');
 
     const existing = await getAsyncOrSync(
       this._exec(),
@@ -1377,6 +1605,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'update');
     this._assertRowSize(table, row as Row);
 
     const baseSanitized = this._filterToSchemaColumns(
@@ -1615,6 +1844,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'delete');
 
     const { clause, params } = this._pkWhere(table, id);
 
@@ -1812,6 +2042,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table, naturalKeyCol);
+    this._assertNotComputedTable(table, 'upsertByNaturalKey');
 
     const cols = this._ensureColumnCache(table);
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
@@ -1887,6 +2118,7 @@ export class Lattice {
     const notInit = this._notInitError<boolean>();
     if (notInit) return notInit;
     this._assertIdent(table, naturalKeyCol);
+    this._assertNotComputedTable(table, 'enrichByNaturalKey');
 
     const existing = await getAsyncOrSync(
       this._exec(),
@@ -1933,6 +2165,7 @@ export class Lattice {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
     this._assertIdent(table, naturalKeyCol);
+    this._assertNotComputedTable(table, 'softDeleteMissing');
 
     if (currentKeys.length === 0) return 0;
 
@@ -2004,6 +2237,7 @@ export class Lattice {
   ): Promise<void> {
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
+    this._assertNotComputedTable(junctionTable, 'link');
 
     const filtered = this._filterToSchemaColumns(junctionTable, data);
     const colNames = Object.keys(filtered)
@@ -2029,6 +2263,7 @@ export class Lattice {
   async unlink(junctionTable: string, conditions: Row): Promise<void> {
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
+    this._assertNotComputedTable(junctionTable, 'unlink');
 
     const entries = Object.entries(conditions);
     if (entries.length === 0) return;

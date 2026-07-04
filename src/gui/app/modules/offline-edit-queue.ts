@@ -169,6 +169,14 @@ export const offlineEditQueueJs = `    // ────────────�
         // table falls back to a full wipe (unchanged behavior).
         scheduleRealtimeRefresh(data && data.table);
       } else if (type === 'feed') {
+        // A clarification-question lifecycle event (enqueued / answered /
+        // dismissed) is a signal, not a data change: reconcile the pending
+        // cards + trigger dot (auto-opening the panel on a new question) and
+        // skip the activity-card/refresh handling below.
+        if (data && data.op === 'question') {
+          try { onQuestionFeedEvent(); } catch (_) { /* best-effort */ }
+          return;
+        }
         // renderFeedItem now flashes each change as a transient top-right status
         // (the realtime update) — no rail pills.
         try { renderFeedItem(data); } catch (_) { /* best-effort */ }

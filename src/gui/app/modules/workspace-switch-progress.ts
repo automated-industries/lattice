@@ -93,6 +93,11 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         return;
       }
 
+      // Computed-table builder: #/computed/new creates, #/computed/<name> edits.
+      // Lives under the Tables section (tabKeyForHash keeps the Tables tab lit).
+      var cbm = /^#\\/computed\\/([^/]+)$/.exec(hash);
+      if (cbm) { renderComputedBuilder(content, decodeURIComponent(cbm[1])); return; }
+
       if (hash === '#/dashboard') { renderDashboard(content); return; }
 
       // Folder drill-in (the Files object's on-disk hierarchy): #/folder/<abs path>.

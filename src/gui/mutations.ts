@@ -88,6 +88,14 @@ export function feedSummary(op: string, table: string, row?: unknown): string {
       return `Added a link to ${table}`;
     case 'schema.delete_link':
       return `Deleted a link on ${table}`;
+    case 'schema.create_computed':
+      return `Created computed table ${table}`;
+    case 'schema.update_computed':
+      return `Updated computed table ${table}`;
+    case 'schema.delete_computed':
+      return `Deleted computed table ${table}`;
+    case 'schema.refresh_computed':
+      return `Refreshed computed table ${table}`;
     case 'schema.purge':
       return `Purged ${table}`;
     default:
@@ -385,6 +393,21 @@ export function writeConflict(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: 'row_write_conflict' });
 }
 
+/**
+ * Friendly write guard for the mutation chokepoint: a computed table is a live,
+ * read-only projection, so a row write against it can never be honored (the
+ * core refuses too, but with library-facing wording). Thrown as a write
+ * conflict (HTTP 409) so an offline client dead-letters the edit instead of
+ * retrying it forever.
+ */
+function assertNotComputedTable(db: Lattice, table: string): void {
+  if (db.isComputedTable(table)) {
+    throw writeConflict(
+      `"${table}" is a computed view and can't be edited directly — change its underlying records or its definition instead.`,
+    );
+  }
+}
+
 /** Infer a column type for an auto-created column from its first written value. */
 function inferColumnType(v: unknown): string {
   if (typeof v === 'number') return Number.isInteger(v) ? 'INTEGER' : 'REAL';
@@ -503,6 +526,7 @@ export async function createRow(
   forceVisibility?: 'private' | 'everyone',
   editId?: string,
 ): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
+  assertNotComputedTable(ctx.db, table);
   guardReservedColumns(ctx, table, values);
   // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
   // (the GUI row-write path; the assistant/ingest paths pass none and keep their
@@ -586,6 +610,7 @@ export async function updateRow(
   id: string,
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
+  assertNotComputedTable(ctx.db, table);
   guardReservedColumns(ctx, table, values);
   const before = await ctx.db.get(table, id);
   // Never silently "succeed" against a row that doesn't exist. A
@@ -652,6 +677,7 @@ export async function deleteRow(
   id: string,
   hard: boolean,
 ): Promise<void> {
+  assertNotComputedTable(ctx.db, table);
   const before = await ctx.db.get(table, id);
   // Deleting a non-existent row is a no-op that would still record a
   // bogus audit/feed entry. Surface the bad id instead of faking success.
@@ -773,6 +799,7 @@ export async function linkRows(
   body: Row,
   forceVisibility?: 'private' | 'everyone',
 ): Promise<void> {
+  assertNotComputedTable(ctx.db, table);
   if (forceVisibility !== undefined) {
     // Route through the GUC-scoped insert so the junction row carries the forced
     // visibility from the moment it exists (no create-then-demote window). A
@@ -786,6 +813,7 @@ export async function linkRows(
 }
 
 export async function unlinkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
+  assertNotComputedTable(ctx.db, table);
   await ctx.db.unlink(table, body);
   await appendAudit(ctx.db, ctx.feed, table, null, 'unlink', body, null, ctx.source, ctx.sessionId);
 }
