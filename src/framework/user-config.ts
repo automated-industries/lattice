@@ -237,6 +237,15 @@ export interface UserPreferences {
    * A user preference, machine-local (see `voice_provider`).
    */
   aggressiveness: number;
+  /**
+   * Clarify threshold (0..1) — the single confidence bar that decides when an
+   * automated inference asks the user instead of guessing. At or above the
+   * threshold the system acts silently; between the floor (threshold / 2,
+   * derived where consumed) and the threshold it asks a short multiple-choice
+   * question; below the floor it drops the inference as noise. A user
+   * preference, machine-local (see `voice_provider`).
+   */
+  clarify_threshold: number;
 }
 
 const DEFAULT_PREFERENCES: UserPreferences = {
@@ -248,6 +257,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   // no config, and audio never leaves the machine.
   voice_provider: 'local',
   aggressiveness: 0.85,
+  clarify_threshold: 0.6,
 };
 
 /**
@@ -263,6 +273,7 @@ export function readPreferences(): UserPreferences {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UserPreferences>;
     const agg = typeof parsed.aggressiveness === 'number' ? parsed.aggressiveness : NaN;
+    const clarify = typeof parsed.clarify_threshold === 'number' ? parsed.clarify_threshold : NaN;
     return {
       show_system_tables:
         typeof parsed.show_system_tables === 'boolean'
@@ -280,6 +291,9 @@ export function readPreferences(): UserPreferences {
       aggressiveness: Number.isFinite(agg)
         ? Math.min(1, Math.max(0, agg))
         : DEFAULT_PREFERENCES.aggressiveness,
+      clarify_threshold: Number.isFinite(clarify)
+        ? Math.min(1, Math.max(0, clarify))
+        : DEFAULT_PREFERENCES.clarify_threshold,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -300,6 +314,7 @@ export function writePreferences(prefs: UserPreferences): void {
       analytics: prefs.analytics,
       voice_provider: prefs.voice_provider,
       aggressiveness: prefs.aggressiveness,
+      clarify_threshold: prefs.clarify_threshold,
     },
     null,
     2,

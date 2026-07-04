@@ -45,7 +45,9 @@ import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
 import { analyticsViewJs } from './analytics-view.js';
+import { questionsJs } from './questions.js';
 import { modelTablesJs } from './model-tables.js';
+import { computedBuilderJs } from './computed-builder.js';
 import { foldersJs } from './folders.js';
 import { columnCollapseJs } from './column-collapse.js';
 import { wireMergeJs } from './wiremerge.js';
@@ -87,7 +89,13 @@ export const appJs = [
   activityHeaderJs,
   askLatticeJs,
   analyticsViewJs,
+  // Clarification-question cards + trigger dot. Uses wrapper-scoped helpers
+  // (fetchJson, isAnalyticsHash/lastAnalyticsHash, railFeedEl, sendChat) so it
+  // too must stay INSIDE the main client IIFE, right after the Analytics view
+  // whose assistant dock hosts the cards.
+  questionsJs,
   modelTablesJs,
+  computedBuilderJs,
   foldersJs,
   columnCollapseJs,
   wireMergeJs,

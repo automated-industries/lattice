@@ -8,6 +8,9 @@ import type {
   LatticeFieldDef,
   LatticeEntityContextDef,
   LatticeEntityContextSourceDef,
+  ComputedTableDef,
+  ComputedFieldDef,
+  LatticeFieldType,
 } from './types.js';
 import type {
   TableDefinition,
@@ -17,6 +20,13 @@ import type {
   Row,
 } from '../types.js';
 import type { EntityContextDefinition, EntityFileSource } from '../schema/entity-context.js';
+import { assertExternalIdentifier } from '../schema/identifier.js';
+import {
+  compileComputedTable,
+  computedTableOrder,
+  ComputedTableCycleError,
+} from '../schema/computed-table.js';
+import type { ComputedSchemaTable } from '../schema/computed-table.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -36,6 +46,8 @@ export interface ParsedConfig {
   tables: readonly { name: string; definition: TableDefinition }[];
   /** Entity context definitions in declaration order */
   entityContexts: readonly { table: string; definition: EntityContextDefinition }[];
+  /** Computed-table (read-only SQL projection) definitions in declaration order */
+  computedTables: readonly { name: string; definition: ComputedTableDef }[];
 }
 
 /**
@@ -123,9 +135,11 @@ function buildParsedConfig(raw: unknown, sourceName: string, configDir: string):
 
   const entityContexts = parseEntityContexts(config.entityContexts);
 
+  const computedTables = parseComputedTables(cfg.computed, tables);
+
   return name !== undefined
-    ? { dbPath, name, tables, entityContexts }
-    : { dbPath, tables, entityContexts };
+    ? { dbPath, name, tables, entityContexts, computedTables }
+    : { dbPath, tables, entityContexts, computedTables };
 }
 
 /**
@@ -320,6 +334,250 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     ...(primaryKey !== undefined ? { primaryKey } : {}),
     ...(Object.keys(relations).length > 0 ? { relations } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Computed tables (`computed:` section)
+// ---------------------------------------------------------------------------
+
+const COMPUTED_FIELD_KINDS = ['alias', 'calc', 'ai_classify', 'ai_transform', 'aggregate'] as const;
+
+const AGGREGATE_FNS = new Set(['count', 'sum', 'avg', 'min', 'max', 'concat']);
+
+const FIELD_TYPE_NAMES: ReadonlySet<string> = new Set([
+  'uuid',
+  'text',
+  'integer',
+  'int',
+  'real',
+  'float',
+  'boolean',
+  'bool',
+  'datetime',
+  'date',
+  'blob',
+]);
+
+/** Build the compiler's table lookup from the parsed entity definitions. */
+function computedSchemaFromTables(
+  tables: readonly { name: string; definition: TableDefinition }[],
+): Map<string, ComputedSchemaTable> {
+  const schema = new Map<string, ComputedSchemaTable>();
+  for (const { name, definition } of tables) {
+    const columns = new Set(Object.keys(definition.columns));
+    const relations: Record<string, BelongsToRelation> = {};
+    for (const [relName, rel] of Object.entries(definition.relations ?? {})) {
+      if (rel.type === 'belongsTo') relations[relName] = rel;
+    }
+    const pk = definition.primaryKey;
+    const primaryKey = pk === undefined ? ['id'] : Array.isArray(pk) ? pk : [pk];
+    schema.set(name, {
+      columns,
+      relations,
+      primaryKey,
+      hasDeletedAt: columns.has('deleted_at'),
+      ...(definition.fieldTypes ? { fieldTypes: definition.fieldTypes } : {}),
+    });
+  }
+  return schema;
+}
+
+/**
+ * Parse + validate the `computed:` section. Validation is LOUD and happens at
+ * parse time — the same failure contract as a malformed relation: names must
+ * pass the external-identifier grammar (reserved `__lattice_` prefixes
+ * rejected) and not collide with entities; every field kind and shape is
+ * checked; then each definition is compiled (in topological base order, with
+ * cycle detection) against the declared entities, so unresolved references,
+ * malformed expressions, and bad aggregate specs all throw here.
+ *
+ * Scope of the parse-time check: STRUCTURE (references, expression grammar,
+ * aggregate shape), not dialect semantics. Parse compiles for one dialect and
+ * never executes DDL, so an error only the live engine can raise (e.g.
+ * Postgres rejecting an expression's operand types) surfaces at OPEN instead —
+ * fault-isolated there, never bricking it. See the inline note below.
+ */
+function parseComputedTables(
+  rawComputed: unknown,
+  tables: readonly { name: string; definition: TableDefinition }[],
+): readonly { name: string; definition: ComputedTableDef }[] {
+  if (rawComputed === undefined || rawComputed === null) return [];
+  if (typeof rawComputed !== 'object' || Array.isArray(rawComputed)) {
+    throw new Error(
+      `Lattice: config.computed must be an object mapping computed-table names to definitions`,
+    );
+  }
+
+  const entityNames = new Set(tables.map((t) => t.name));
+  const defs: Record<string, ComputedTableDef> = {};
+  const declared: { name: string; definition: ComputedTableDef }[] = [];
+
+  for (const [name, rawDef] of Object.entries(rawComputed as Record<string, unknown>)) {
+    assertExternalIdentifier(name, 'table');
+    if (entityNames.has(name)) {
+      throw new Error(`Lattice: computed table "${name}" collides with entity "${name}"`);
+    }
+    const definition = narrowComputedDef(name, rawDef);
+    defs[name] = definition;
+    declared.push({ name, definition });
+  }
+  if (declared.length === 0) return [];
+
+  // Structural validation: compile every definition (dependencies first)
+  // against the declared entities, reusing the compiler as the single owner of
+  // reference / expression / aggregate SHAPE checks. This is deliberately NOT
+  // equivalent to the open-time compile: parse compiles for the 'sqlite'
+  // dialect only and never executes DDL, so a dialect-semantic failure (e.g.
+  // Postgres refusing an integer column as a boolean operand in AND) passes
+  // parse and surfaces at open — where it is fault-isolated per table, never
+  // bricking the open. Parse is also STRICTER about columns: it sees only the
+  // declared fields, while the open also sees introspected physical columns.
+  // Compiled output is discarded — the real compile runs at init against the
+  // live schema.
+  let order: string[];
+  try {
+    order = computedTableOrder(defs);
+  } catch (e) {
+    if (e instanceof ComputedTableCycleError) throw new Error(`Lattice: ${e.message}`);
+    throw e;
+  }
+  const schema = computedSchemaFromTables(tables);
+  for (const name of order) {
+    const definition = defs[name];
+    if (!definition) continue;
+    const compiled = compileComputedTable(name, definition, schema, 'sqlite');
+    schema.set(name, {
+      columns: new Set(compiled.columns),
+      relations: {},
+      primaryKey: ['id'],
+      hasDeletedAt: false,
+      fieldTypes: compiled.fieldTypes,
+    });
+  }
+
+  return declared;
+}
+
+/**
+ * Narrow one raw computed-table entry to a typed definition. Owns the
+ * definition's SHAPE validation (kinds, required keys, model tier) for both a
+ * YAML `computed:` entry and a definition arriving over the GUI's HTTP layer —
+ * one validator, so the two paths can never accept different shapes.
+ */
+export function narrowComputedDef(name: string, raw: unknown): ComputedTableDef {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      `Lattice: computed table "${name}" must be an object { base, fields, description? }`,
+    );
+  }
+  const d = raw as Record<string, unknown>;
+  if (typeof d.base !== 'string' || d.base.trim().length === 0) {
+    throw new Error(`Lattice: computed table "${name}" must name a non-empty "base" table`);
+  }
+  if (d.description !== undefined && typeof d.description !== 'string') {
+    throw new Error(`Lattice: computed table "${name}" has a non-string "description"`);
+  }
+  if (!d.fields || typeof d.fields !== 'object' || Array.isArray(d.fields)) {
+    throw new Error(`Lattice: computed table "${name}" must have a "fields" object`);
+  }
+  const fields: Record<string, ComputedFieldDef> = {};
+  for (const [fieldName, rawField] of Object.entries(d.fields as Record<string, unknown>)) {
+    fields[fieldName] = narrowComputedField(name, fieldName, rawField);
+  }
+  return {
+    base: d.base,
+    fields,
+    ...(d.description !== undefined ? { description: d.description } : {}),
+  };
+}
+
+/** Narrow one raw YAML field entry, rejecting unknown kinds and wrong shapes. */
+function narrowComputedField(table: string, field: string, raw: unknown): ComputedFieldDef {
+  const where = `computed field "${table}.${field}"`;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`Lattice: ${where} must be an object with a "kind"`);
+  }
+  const f = raw as Record<string, unknown>;
+  const requireString = (key: string): string => {
+    const v = f[key];
+    if (typeof v !== 'string' || v.trim().length === 0) {
+      throw new Error(`Lattice: ${where} must have a non-empty string "${key}"`);
+    }
+    return v;
+  };
+  const model = (): { model?: 'default' | 'cheapest' } => {
+    if (f.model === undefined) return {};
+    if (f.model !== 'default' && f.model !== 'cheapest') {
+      throw new Error(`Lattice: ${where} has invalid model — must be "default" or "cheapest"`);
+    }
+    return { model: f.model };
+  };
+
+  switch (f.kind) {
+    case 'alias':
+      return { kind: 'alias', source: requireString('source') };
+    case 'calc': {
+      const expr = requireString('expr');
+      if (f.type !== undefined && (typeof f.type !== 'string' || !FIELD_TYPE_NAMES.has(f.type))) {
+        throw new Error(`Lattice: ${where} has invalid calc type ${JSON.stringify(f.type)}`);
+      }
+      return {
+        kind: 'calc',
+        expr,
+        ...(f.type !== undefined ? { type: f.type as LatticeFieldType } : {}),
+      };
+    }
+    case 'ai_classify': {
+      const input = requireString('input');
+      const prompt = requireString('prompt');
+      const labels = f.labels;
+      if (
+        !Array.isArray(labels) ||
+        labels.length === 0 ||
+        labels.some((l) => typeof l !== 'string' || l.trim().length === 0)
+      ) {
+        throw new Error(
+          `Lattice: ${where} must have "labels": a non-empty array of non-empty strings`,
+        );
+      }
+      return { kind: 'ai_classify', input, prompt, labels: labels as string[], ...model() };
+    }
+    case 'ai_transform': {
+      const prompt = requireString('prompt');
+      const inputs = f.inputs;
+      if (
+        !Array.isArray(inputs) ||
+        inputs.length === 0 ||
+        inputs.some((i) => typeof i !== 'string' || i.trim().length === 0)
+      ) {
+        throw new Error(
+          `Lattice: ${where} must have "inputs": a non-empty array of column references`,
+        );
+      }
+      return { kind: 'ai_transform', inputs: inputs as string[], prompt, ...model() };
+    }
+    case 'aggregate': {
+      const via = requireString('via');
+      if (typeof f.fn !== 'string' || !AGGREGATE_FNS.has(f.fn)) {
+        throw new Error(
+          `Lattice: ${where} has invalid fn — must be one of count, sum, avg, min, max, concat`,
+        );
+      }
+      if (f.column !== undefined && typeof f.column !== 'string') {
+        throw new Error(`Lattice: ${where} has a non-string "column"`);
+      }
+      return {
+        kind: 'aggregate',
+        via,
+        fn: f.fn as 'count' | 'sum' | 'avg' | 'min' | 'max' | 'concat',
+        ...(f.column !== undefined ? { column: f.column } : {}),
+      };
+    }
+    default:
+      throw new Error(
+        `Lattice: ${where} has unknown kind ${JSON.stringify(f.kind)} — must be one of ${COMPUTED_FIELD_KINDS.join(', ')}`,
+      );
+  }
 }
 
 // ---------------------------------------------------------------------------

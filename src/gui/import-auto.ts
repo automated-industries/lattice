@@ -2,10 +2,15 @@ import { readFileSync } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
-import { excelToRecords } from '../import/excel.js';
+import { excelFormulaSummary, excelToRecords } from '../import/excel.js';
+import {
+  buildComputedProposals,
+  type ComputedTableProposal,
+} from '../import/computed-proposals.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import { materializeImport } from '../import/materialize.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
+import { getClarifyThreshold } from './assistant-routes.js';
 import { detectImportAsOf } from './import-detect.js';
 import { detectAsOfColumns } from '../import/asof-columns.js';
 
@@ -45,6 +50,15 @@ export interface AutoImportResult {
   asOfCandidates?: Awaited<ReturnType<typeof detectImportAsOf>>;
   asOfColumns?: ReturnType<typeof detectAsOfColumns>;
   schemaMatch?: ReturnType<typeof matchSchemaToExisting>;
+  /**
+   * The clarify threshold link inference ran under. The card echoes it back on
+   * apply so both sides band marginal links identically even if the preference
+   * changes between upload and confirm.
+   */
+  linkConfidence?: number;
+  /** Opt-in computed-table proposals (new-dataset flows only; display-only —
+   *  the apply route re-derives them and intersects with the user's picks). */
+  computedProposals?: ComputedTableProposal[];
 }
 
 function existingDataTables(db: Lattice): ExistingTable[] {
@@ -79,13 +93,17 @@ export async function autoImportStructured(
   } catch {
     return null; // not structured data we can model — leave it as a reference file
   }
+  // The user's clarify threshold decides which inferred links are created vs
+  // asked about; carried on the proposal so apply uses the same bar.
+  const linkConfidence = getClarifyThreshold();
   const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
-    inferSchema(data),
+    inferSchema(data, { minLinkConfidence: linkConfidence }),
     data,
   );
   if (inferredPlan.entities.length === 0) return null;
 
-  const schemaMatch = matchSchemaToExisting(existingDataTables(db), inferredPlan);
+  const existing = existingDataTables(db);
+  const schemaMatch = matchSchemaToExisting(existing, inferredPlan);
   const asOfCandidates = await detectImportAsOf(db, data, { abs, fileName: name });
   const asOf = asOfCandidates[0]?.date ?? null;
   const asOfColumns = detectAsOfColumns(data, inferredPlan);
@@ -100,12 +118,22 @@ export async function autoImportStructured(
     totalEntities: schemaMatch.totalEntities,
     tables: [],
     rows: 0,
+    linkConfidence,
   };
 
   // Brand-new structured data: never silently create from a chat drop — surface
-  // a 'new-dataset' card; tables are created only on Apply.
+  // a 'new-dataset' card (with any opt-in computed-table proposals); tables are
+  // created only on Apply.
   if (!schemaMatch.isKnownDocument) {
-    return { imported: false, reason: 'new-dataset', asOf, ...proposal };
+    const computedProposals = buildComputedProposals({
+      data,
+      plan: inferredPlan,
+      rename: schemaMatch.rename,
+      // The formula summary was cached by the excelToRecords read above.
+      formulaSummary: /\.xlsx?$/i.test(name) ? excelFormulaSummary(abs) : null,
+      existingTables: existing.map((t) => t.name),
+    });
+    return { imported: false, reason: 'new-dataset', asOf, ...proposal, computedProposals };
   }
   // Recognized as a known dataset but no confident date — importing undated would
   // overwrite the prior snapshot, so surface a 'needs-confirm' card.
