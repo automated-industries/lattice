@@ -463,4 +463,61 @@ describe('computed tables — registration IO is batched (pooled-connection cost
       db.close();
     }
   });
+
+  it('introspects all computed views in ONE batched round-trip, not one per table', async () => {
+    const db = new Lattice(':memory:');
+    db.define('note', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', body: 'TEXT' },
+      render: () => '',
+      outputFile: 'notes.md',
+    });
+    await db.init();
+    try {
+      let batchCalls = 0;
+      const batchTables: string[][] = [];
+      let perTableCalls = 0;
+      const host = {
+        adapter: db.adapter,
+        migrate: async () => {
+          /* sqlite path never migrates */
+        },
+        introspectColumns: (t: string) => {
+          perTableCalls++;
+          return db.introspectColumns(t);
+        },
+        introspectAllColumns: async (tables: string[]) => {
+          batchCalls++;
+          batchTables.push([...tables]);
+          const map = new Map<string, Set<string>>();
+          for (const t of tables) {
+            const cols = await db.introspectColumns(t);
+            if (cols.length > 0) map.set(t, new Set(cols));
+          }
+          return map;
+        },
+        register: () => {
+          /* not under test */
+        },
+      };
+      const defs: Record<string, ComputedTableDef> = {
+        a: { base: 'note', fields: { x: { kind: 'alias', source: 'title' } } },
+        b: { base: 'note', fields: { y: { kind: 'alias', source: 'body' } } },
+        c: { base: 'note', fields: { z: { kind: 'alias', source: 'title' } } },
+      };
+
+      const res = await registerComputedTables(host, defs, {
+        schema: db.computedSchemaLookup(),
+        dialect: 'sqlite',
+      });
+      expect(res.errors).toEqual([]);
+      expect([...res.registered].sort()).toEqual(['a', 'b', 'c']);
+      // The batch primitive was called exactly ONCE, covering all three views —
+      // NOT one serial introspect per table (the pooled-cloud round-trip cost).
+      expect(batchCalls).toBe(1);
+      expect(batchTables[0]?.slice().sort()).toEqual(['a', 'b', 'c']);
+      expect(perTableCalls).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
 });

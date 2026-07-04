@@ -150,6 +150,43 @@ function err(table: string, message: string): Error {
   return new Error(`Lattice: computed table "${table}": ${message}`);
 }
 
+/**
+ * Cloud-compile options. On a secured team cloud a Postgres view executes with
+ * its OWNER's rights, so a computed view must (a) row-filter per viewer with
+ * `lattice_row_visible(...)` predicates and (b) read every source column THROUGH
+ * that table's cell-masking view when one exists — otherwise the computed view
+ * exposes the RAW value of a column the owner masked from this member's role, a
+ * column-level cross-tenant leak that the normal `<t>_v` masked read path would
+ * have caught.
+ */
+export interface CloudCompileOptions {
+  rowVisible: true;
+  /**
+   * Source tables that carry a cell-masking view (`<t>_v`, generated from
+   * `__lattice_column_policy`; see cloud/audience.ts). A computed field reading a
+   * column of such a table is compiled to read it through `<t>_v`, which encodes
+   * BOTH per-column masking (a masked cell reads NULL for a member) AND row
+   * visibility — so a table read through its masking view needs no separate
+   * `lattice_row_visible` predicate (the view already applies it).
+   */
+  maskedTables?: ReadonlySet<string>;
+}
+
+/** True when `table` has a cell-masking `<t>_v` view we must read through. */
+function isMaskedTable(cloud: CloudCompileOptions | undefined, table: string): boolean {
+  return cloud?.maskedTables?.has(table) ?? false;
+}
+
+/**
+ * The relation a source table is read through: its `<t>_v` masking view when the
+ * table has one (row visibility + column masking, both keyed on the member via
+ * SECURITY DEFINER helpers, so nesting inside an owner-owned computed view still
+ * binds to the real viewer), else the base table.
+ */
+function sourceRelation(cloud: CloudCompileOptions | undefined, table: string): string {
+  return isMaskedTable(cloud, table) ? q(`${table}_v`) : q(table);
+}
+
 // ---------------------------------------------------------------------------
 // Topological ordering
 // ---------------------------------------------------------------------------
@@ -260,7 +297,7 @@ export function compileComputedTable(
   def: ComputedTableDef,
   schema: ComputedSchema,
   dialect: 'sqlite' | 'postgres',
-  cloud?: { rowVisible: true },
+  cloud?: CloudCompileOptions,
 ): CompiledComputedTable {
   assertExternalIdentifier(name, 'table');
   if (schema.has(name)) {
@@ -392,16 +429,23 @@ export function compileComputedTable(
       `${q(alias)}.${q(refCol)} = ${q(aliasForKey(parentKey))}.${q(rel.foreignKey)}`,
     ];
     if (child.hasDeletedAt) on.push(`${q(alias)}."deleted_at" IS NULL`);
-    if (cloud) on.push(rowVisible(rel.table, child.primaryKey, alias));
-    relationJoins.push(`LEFT JOIN ${q(rel.table)} ${q(alias)} ON ${on.join(' AND ')}`);
+    // A masked table is read through its `<t>_v` view, which already row-filters —
+    // so the predicate would be redundant (and double-filtering). Only add it when
+    // reading the base table directly.
+    if (cloud && !isMaskedTable(cloud, rel.table)) {
+      on.push(rowVisible(rel.table, child.primaryKey, alias));
+    }
+    relationJoins.push(
+      `LEFT JOIN ${sourceRelation(cloud, rel.table)} ${q(alias)} ON ${on.join(' AND ')}`,
+    );
   }
 
   // Base filters — shared by the view WHERE and the AI pending queries.
   const baseFilters: string[] = [];
   if (base.hasDeletedAt) baseFilters.push(`"b"."deleted_at" IS NULL`);
-  if (cloud) baseFilters.push(rowVisible(def.base, pkCols, 'b'));
+  if (cloud && !isMaskedTable(cloud, def.base)) baseFilters.push(rowVisible(def.base, pkCols, 'b'));
 
-  const fromLines = [`FROM ${q(def.base)} "b"`, ...relationJoins];
+  const fromLines = [`FROM ${sourceRelation(cloud, def.base)} "b"`, ...relationJoins];
   const rowIdSql = `CAST("b".${q(basePk)} AS TEXT)`;
   const usSql = dialect === 'sqlite' ? 'CHAR(31)' : 'CHR(31)';
 
@@ -579,7 +623,7 @@ function compileAggregate(
   basePk: string,
   schema: ComputedSchema,
   dialect: 'sqlite' | 'postgres',
-  cloud?: { rowVisible: true },
+  cloud?: CloudCompileOptions,
 ): { sql: string; junction: string; remote: string; remoteColumnType: string } {
   const what = `field "${field}"`;
   const [junctionName = '', remotePart = '', ...extra] = fdef.via.split('.');
@@ -667,22 +711,24 @@ function compileAggregate(
 
   const joinOn: string[] = [`"x2".${q(remoteRef)} = "x1".${q(remoteRel.foreignKey)}`];
   if (remote.hasDeletedAt) joinOn.push(`"x2"."deleted_at" IS NULL`);
-  if (cloud) {
+  // A masked source is read through its `<t>_v` view (column masking + row
+  // visibility), so its `lattice_row_visible` predicate would be redundant.
+  if (cloud && !isMaskedTable(cloud, remoteRel.table)) {
     joinOn.push(
       `lattice_row_visible(${sqlString(remoteRel.table)}, ${pkSqlExpr(remote.primaryKey, '"x2".')})`,
     );
   }
   const where: string[] = [`"x1".${q(baseFk)} = "b".${q(basePk)}`];
   if (junction.hasDeletedAt) where.push(`"x1"."deleted_at" IS NULL`);
-  if (cloud) {
+  if (cloud && !isMaskedTable(cloud, junctionName)) {
     where.push(
       `lattice_row_visible(${sqlString(junctionName)}, ${pkSqlExpr(junction.primaryKey, '"x1".')})`,
     );
   }
 
   const sql =
-    `(SELECT ${agg} FROM ${q(junctionName)} "x1" ` +
-    `JOIN ${q(remoteRel.table)} "x2" ON ${joinOn.join(' AND ')} ` +
+    `(SELECT ${agg} FROM ${sourceRelation(cloud, junctionName)} "x1" ` +
+    `JOIN ${sourceRelation(cloud, remoteRel.table)} "x2" ON ${joinOn.join(' AND ')} ` +
     `WHERE ${where.join(' AND ')})`;
 
   return {
@@ -707,6 +753,14 @@ export interface ComputedTableHost {
   /** Apply version-guarded migrations (the Postgres DDL path). */
   migrate(migrations: Migration[]): Promise<void>;
   introspectColumns(table: string): Promise<string[]>;
+  /**
+   * Batch-introspect several tables' columns in ONE round-trip (table → ordered
+   * columns). Optional: when absent, registration falls back to a per-table
+   * {@link introspectColumns} loop. Providing it collapses the post-create
+   * introspection of K computed views into a single `information_schema` query,
+   * so a pooled-cloud open never pays K serial round-trips just to read columns.
+   */
+  introspectAllColumns?(tables: string[]): Promise<Map<string, Set<string>>>;
   /** Register the already-existing view in the live schema registry. Issues NO DDL. */
   register(table: string, def: TableDefinition, columns: readonly string[]): void;
 }
@@ -721,8 +775,12 @@ export interface RegisterComputedTablesOptions {
    * this member cannot see is skipped rather than treated as a failure.
    */
   introspectOnly?: boolean;
-  /** Compile per-relation `lattice_row_visible` predicates into the views. */
-  cloud?: { rowVisible: true };
+  /**
+   * Cloud compile: emit per-relation `lattice_row_visible` predicates and read
+   * masked source tables through their cell-masking `<t>_v` view (see
+   * {@link CloudCompileOptions}).
+   */
+  cloud?: CloudCompileOptions;
   /**
    * Runtime (ops-layer) registration: execute the view DDL directly (drop +
    * recreate) on Postgres too, instead of the content-hash migration the open
@@ -767,6 +825,31 @@ async function appliedMigrationVersions(
     [...versions],
   );
   return new Set(rows.map((r) => String(r.version)));
+}
+
+/**
+ * Introspect every created view's columns in as few round-trips as the host
+ * allows: ONE batched `information_schema` query when it exposes
+ * {@link ComputedTableHost.introspectAllColumns}, else a per-table fallback. The
+ * result maps each view name to its ordered column list (a view absent from the
+ * catalog — e.g. one this role can't see — is simply missing from the map).
+ */
+async function introspectComputedColumns(
+  host: ComputedTableHost,
+  viewNames: readonly string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (viewNames.length === 0) return out;
+  if (host.introspectAllColumns) {
+    const all = await host.introspectAllColumns([...viewNames]);
+    for (const name of viewNames) {
+      const cols = all.get(name);
+      if (cols) out.set(name, [...cols]);
+    }
+    return out;
+  }
+  for (const name of viewNames) out.set(name, await host.introspectColumns(name));
+  return out;
 }
 
 /**
@@ -942,15 +1025,17 @@ export async function registerComputedTables(
     }
   }
 
-  // ── Pass 2: create (per the plan), introspect, and register — per table in
-  // topological order, each fault-isolated.
+  // ── Pass 2a: create the views (per the plan), per table in topological order,
+  // each fault-isolated. A create failure is recorded for THAT table and drops it
+  // from the register phase; the rest continue.
   const clearedErrors: string[] = [];
+  const toRegister: string[] = []; // survived DDL, still in topological order
   for (const name of order) {
     const def = defs[name];
     const compiled = compiledByName.get(name);
     if (!def || !compiled) continue;
-    try {
-      if (!introspectOnly && needsDdl.has(name)) {
+    if (!introspectOnly && needsDdl.has(name)) {
+      try {
         if (
           opts.dialect === 'sqlite' ||
           opts.directDdl === true ||
@@ -971,9 +1056,29 @@ export async function registerComputedTables(
             { version: migrationVersion(name, compiled), sql: compiled.createSql },
           ]);
         }
+      } catch (e) {
+        await recordFailure(name, e);
+        continue;
       }
+    }
+    toRegister.push(name);
+  }
 
-      const cols = await host.introspectColumns(compiled.viewName);
+  // ── Pass 2b: introspect EVERY surviving view's columns in as few round-trips
+  // as the host allows (one batched information_schema query on the cloud path),
+  // instead of one serial introspect per table.
+  const introspected = await introspectComputedColumns(
+    host,
+    toRegister.map((n) => compiledByName.get(n)?.viewName ?? n),
+  );
+
+  // ── Pass 2c: register — per table in topological order, each fault-isolated.
+  for (const name of toRegister) {
+    const def = defs[name];
+    const compiled = compiledByName.get(name);
+    if (!def || !compiled) continue;
+    try {
+      const cols = introspected.get(compiled.viewName) ?? [];
       if (cols.length === 0) {
         if (introspectOnly) {
           // The member's role can't see this view (grants are issued by the

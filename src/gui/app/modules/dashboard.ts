@@ -842,6 +842,31 @@ export const dashboardJs = `    // ───────────────
       if (nextBtn && hasNext) nextBtn.addEventListener('click', function () { o.onPage(page + 1); });
     }
 
+    // A freshly-created computed view fills its AI-derived cells (ai_classify /
+    // ai_transform) in the background, so those columns read blank for a moment.
+    // When the definition actually has AI fields, drop an unobtrusive banner
+    // under the "computed view" note so the blanks read as "still filling", not
+    // "broken". Pure alias/calc/aggregate views fill synchronously and get no
+    // banner. One small metadata GET (computed tables only); best-effort — a
+    // failed hint must never break the collection view.
+    function fsComputedAiBanner(content, table, gen) {
+      fetchJson('/api/computed-tables/' + encodeURIComponent(table)).then(function (d) {
+        if (gen !== renderGen) return; // superseded by a newer navigation
+        var fields = (d && d.def && d.def.fields) || {};
+        var hasAi = Object.keys(fields).some(function (k) {
+          var kind = fields[k] && fields[k].kind;
+          return kind === 'ai_classify' || kind === 'ai_transform';
+        });
+        if (!hasAi) return;
+        var anchor = content.querySelector('.fs-computed-note');
+        if (!anchor || content.querySelector('.fs-ai-pending-note')) return;
+        var note = document.createElement('div');
+        note.className = 'fs-computed-note fs-ai-pending-note';
+        note.textContent = 'AI-derived fields fill in the background and may be blank briefly \\u2014 use Refresh values to update.';
+        anchor.parentNode.insertBefore(note, anchor.nextSibling);
+      }).catch(function () { /* best-effort hint — never break the collection view */ });
+    }
+
     // Turn a server page envelope into paintRowsTable terms. env.rows was fetched
     // with limit PAGE_SIZE + 1 (a sentinel over-fetch): if the extra row came back
     // there IS a next page — a precise signal that works even when the count is
@@ -956,6 +981,9 @@ export const dashboardJs = `    // ───────────────
             // Bump renderGen so a slow prior-page fetch can't paint over this one.
             onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs, section); },
           });
+          // Computed views with AI-derived fields fill those cells in the
+          // background — hint at that so blank AI columns don't read as broken.
+          if (isComputed) fsComputedAiBanner(content, table, myGen);
           // Formatted | Markdown toggle (top-level collections): markdown shows
           // the table's rollup file, fetched through the resolver (claimed
           // artifacts only). Rollups are generated files — read-only here.

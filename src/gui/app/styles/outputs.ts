@@ -1,7 +1,7 @@
 // Auto-composed section of the GUI stylesheet (see styles/index.ts). The Outputs
-// column (right side of the Inputs/Model/Outputs layout): Artifacts, Markdown,
-// Tables, Server Docs, API Docs, MCP. Reuses the collapsible .section-* idiom from
-// the left sidebar for each out-group.
+// column (right side of the Inputs/Model/Outputs layout): the Markdown context
+// tree + the compact Tables mirror. Reuses the collapsible .section-* idiom from
+// the left sidebar.
 export const outputsCss = `    /* ── Outputs column ────────────────────────────────── */
     .outputs {
       position: relative;
@@ -24,10 +24,6 @@ export const outputsCss = `    /* ── Outputs column ────────
        only its sizing within the column track is set here. */
     .outputs-head { flex: 0 0 auto; padding: 0 12px; }
     .outputs-body { flex: 1 1 auto; overflow-y: auto; padding: 14px 10px; }
-    .out-group + .out-group { margin-top: 6px; }
-    .out-link { display: inline-block; padding: 6px 12px; color: var(--accent); font-size: 13px; text-decoration: none; }
-    .out-link:hover { text-decoration: underline; }
-    .out-placeholder { color: var(--text-muted); font-size: 12.5px; padding: 6px 12px; }
 
     /* Outputs > Tables mirror — tiers stacked compactly in the narrow column. */
     .out-tier + .out-tier { margin-top: 10px; }

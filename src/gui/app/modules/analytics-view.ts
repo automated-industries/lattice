@@ -207,6 +207,9 @@ export const analyticsViewJs = `
             hist.hidden = false;
             loadRowHistoryInto(host, 'dashboards', id);
           } else if (act === 'delete') {
+            // Confirm before the immediate DELETE (the undo toast still lets the
+            // user recover, but the delete shouldn't fire on a single stray click).
+            if (!window.confirm('Remove "' + (row.title || 'dashboard') + '"? You can undo this from history.')) return;
             fetch('/api/tables/dashboards/rows/' + encodeURIComponent(id), {
               method: 'DELETE',
               headers: { 'content-type': 'application/json' },
