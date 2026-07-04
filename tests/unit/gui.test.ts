@@ -298,6 +298,64 @@ describe('GUI graph builder', () => {
     }
   });
 
+  it('emits a computes edge (base → computed view) for each computed definition', () => {
+    // Computed tables live in the config's `computed:` section (not `entities:`),
+    // so the builder reads them from the parsed config and emits one edge per
+    // definition. The view's node normally arrives via extraTables (the live
+    // registry); the builder also adds it itself so the edge is never dangling.
+    const root = tempDir();
+    const outputDir = join(root, 'context');
+    mkdirSync(outputDir, { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  tickets:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '      priority: { type: integer }',
+        '    render: default-list',
+        '    outputFile: tickets.md',
+        '',
+        'computed:',
+        '  ticket_summary:',
+        '    base: tickets',
+        '    fields:',
+        '      title: { kind: alias, source: title }',
+        '      is_urgent: { kind: calc, expr: "priority >= 3", type: boolean }',
+      ].join('\n'),
+    );
+
+    const graph = buildGuiGraph(configPath, outputDir, { schemaOnly: true });
+    const nodeIds = graph.nodes.map((n) => n.id);
+    expect(nodeIds).toContain('table:tickets');
+    expect(nodeIds).toContain('table:ticket_summary');
+    expect(
+      graph.edges.some(
+        (e) =>
+          e.type === 'computes' &&
+          e.source === 'table:tickets' &&
+          e.target === 'table:ticket_summary',
+      ),
+    ).toBe(true);
+
+    // The full (non-schemaOnly) payload carries the same edge.
+    const full = buildGuiGraph(configPath, outputDir);
+    expect(full.edges.some((e) => e.type === 'computes')).toBe(true);
+
+    // A visibility filter that hides the computed view drops its node + edge.
+    const filtered = buildGuiGraph(configPath, outputDir, {
+      schemaOnly: true,
+      visibleFilter: (t) => t !== 'ticket_summary',
+    });
+    expect(filtered.nodes.map((n) => n.id)).not.toContain('table:ticket_summary');
+    expect(filtered.edges.some((e) => e.type === 'computes')).toBe(false);
+  });
+
   it('returns an empty entity list when the manifest is missing', () => {
     const root = tempDir();
     const { configPath } = writeFixture(root);

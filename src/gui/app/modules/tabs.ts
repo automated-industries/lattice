@@ -32,6 +32,8 @@ export const tabsJs = `
       if (hash === GRAPH_HASH || hash.indexOf('#/graph/') === 0) return 'graph';
       // #/tables and its Object Page / record drill-ins #/tables/<obj>[/<id>…].
       if (hash === '#/tables' || hash.indexOf('#/tables/') === 0) return 'tables';
+      // The computed-table builder is part of the Tables section.
+      if (hash.indexOf('#/computed/') === 0) return 'tables';
       if (
         hash.indexOf('#/folders/') === 0 ||
         hash.indexOf('#/fs/') === 0 ||

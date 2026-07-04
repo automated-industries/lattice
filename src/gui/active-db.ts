@@ -3,6 +3,7 @@ import type { Row } from '../types.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 import type { LatticeManifest } from '../lifecycle/manifest.js';
 import type { RealtimeBroker, RealtimePayload } from './realtime.js';
+import type { FillLlm } from '../schema/computed-fill.js';
 import type { FeedBus } from './feed.js';
 import type { FileLoopbackWatcher } from './file-watcher.js';
 import type { RenderProgressBus } from './render-progress.js';
@@ -45,6 +46,14 @@ export interface ActiveDb {
   db: Lattice;
   validTables: Set<string>;
   junctionTables: Set<string>;
+  /**
+   * Names of the registered computed tables (live, read-only SQL projections
+   * from the config's `computed:` section plus any created at runtime).
+   * Populated at open from the Lattice instance's registration and kept
+   * current by the computed-table ops. Row writes against these are refused
+   * with a friendly error before the core refusal fires.
+   */
+  computedTables: Set<string>;
   /**
    * DISPLAY-only link tables to hide from object lists / sidebars / the Markdown
    * panel: the strict {@link ActiveDb.junctionTables} PLUS physical link tables
@@ -156,6 +165,14 @@ export interface ActiveDb {
   /** Auto-repairs dashboards after breaking model changes; disposed with the workspace. */
   dashboardRepair?: { dispose: () => void };
   generateTableDescription?: (table: string, columns: string[]) => void;
+  /**
+   * Builds the model adapter the computed-table AI fill runs with (attached by
+   * openConfig; the real adapter resolves Claude auth per call and reports
+   * "not configured" through the fill engine's per-field error state, so no
+   * auth is required to attach it). Tests substitute a fake to drive fills
+   * deterministically.
+   */
+  computedFillLlm?: () => FillLlm;
 }
 
 /**

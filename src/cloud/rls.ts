@@ -283,6 +283,11 @@ CREATE TABLE IF NOT EXISTS "__lattice_shared_schema" (
   "contexts_json" TEXT,
   "updated_at" TEXT
 );
+-- Owner-published computed-table definitions (the config's computed: block), so
+-- a joined member hydrates computed tables the same way it hydrates entities.
+-- Added via ALTER so clouds created before this column converge to it on the
+-- owner's next open (same pattern as __lattice_member_invites.email above).
+ALTER TABLE "__lattice_shared_schema" ADD COLUMN IF NOT EXISTS "computed_json" TEXT;
 
 -- #3.1 — one-time-use + revocation enforcement. After a member authenticates to
 -- the cloud with their minted credential, the join path calls this to CLAIM the

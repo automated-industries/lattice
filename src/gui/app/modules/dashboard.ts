@@ -782,7 +782,7 @@ export const dashboardJs = `    // ───────────────
     // totalLabel ("123" or "1000+") + hasNext, so each caller owns its own
     // server-capped vs client-side paging semantics.
     // o = { breadcrumbHtml, icon, label, table, cols, rows, hrefFor, page,
-    //       pageSize, totalLabel, hasNext, onPage }
+    //       pageSize, totalLabel, hasNext, onPage, noteHtml }
     function paintRowsTable(content, o) {
       var rows = o.rows || [];
       var cols = o.cols;
@@ -826,6 +826,7 @@ export const dashboardJs = `    // ───────────────
           (o.headerExtraHtml || '') +
           (o.bodyOverrideHtml ? '' : pager) +
         '</div>' +
+        (o.noteHtml || '') +
         (o.bodyOverrideHtml || tableHtml);
 
       content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
@@ -911,16 +912,27 @@ export const dashboardJs = `    // ───────────────
             if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs, section); return; }
           }
           var d = displayFor(table);
+          // Computed tables are live, read-only projections: badge the header,
+          // say where the values come from, and skip the Markdown toggle (a
+          // computed view renders no rollup and offers nothing to edit).
+          var tMeta = tableByName(table);
+          var isComputed = !!(tMeta && tMeta.computedTable);
           // The collection has the SAME Formatted | Markdown duality as records:
           // Formatted = the rows; Markdown = the table's whole-table rollup file
           // (read-only — rollups are generated). Clicking a rollup .md in the
           // Markdown tree lands here in markdown mode.
-          var colMode = topLevel ? (collectionViewMode[table] || 'formatted') : 'formatted';
-          var toggleHtml = topLevel
+          var colMode = topLevel && !isComputed ? (collectionViewMode[table] || 'formatted') : 'formatted';
+          var toggleHtml = topLevel && !isComputed
             ? '<div class="fs-view-toggle">' +
                 '<button type="button" data-colview="formatted"' + (colMode === 'formatted' ? ' class="on"' : '') + '>Formatted</button>' +
                 '<button type="button" data-colview="markdown"' + (colMode === 'markdown' ? ' class="on"' : '') + '>Markdown</button>' +
               '</div>'
+            : '';
+          var badgeHtml = isComputed
+            ? '<span class="fs-computed-badge" title="A live, read-only view">Computed</span>'
+            : '';
+          var noteHtml = isComputed
+            ? '<div class="fs-computed-note">This is a computed view \\u2014 its values come from the records it\\u2019s built from.</div>'
             : '';
           // The object view is the table's ROWS in a table (mirroring the Files file
           // list), one page at a time with a Prev/Next pager. One consistent view.
@@ -928,7 +940,8 @@ export const dashboardJs = `    // ───────────────
             breadcrumbHtml: fsBreadcrumb(segs, crumbs, section),
             icon: d.icon,
             label: d.label,
-            headerExtraHtml: toggleHtml,
+            headerExtraHtml: badgeHtml + toggleHtml,
+            noteHtml: noteHtml,
             bodyOverrideHtml: colMode === 'markdown'
               ? '<div class="fs-context"><div class="fs-context-doc" id="collection-rollup-doc"><div class="muted" style="padding:12px">Loading\u2026</div></div></div>'
               : '',
@@ -1273,6 +1286,10 @@ export const dashboardJs = `    // ───────────────
         // objects) — only the CONTENT section differs (preview/source vs the
         // rendered row context).
         var isFile = table === 'files';
+        // A computed-view row is read-only: no Formatted|Markdown editing
+        // toggle, no actions menu (the server refuses writes anyway), a
+        // "Computed" badge, and a note saying where the values come from.
+        var isComputed = !!(t && t.computedTable);
         var rels = fsRelations(table);
         if (myGen !== renderGen) return; // superseded by a newer navigation while fsWalk resolved
         var base = sectionHref(section, segs);
@@ -1291,8 +1308,12 @@ export const dashboardJs = `    // ───────────────
           '<div class="view-header">' +
             '<span class="entity-icon">' + (isFile ? fileEmoji(row) : d.icon) + '</span>' +
             '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+            (isComputed ? '<span class="fs-computed-badge" title="A live, read-only view">Computed</span>' : '') +
             // Formatted = the rendered doc (or file preview); Markdown = the
             // editable raw markdown (or a file's source). The toggle shows one.
+            // A computed row is read-only \u2014 neither the editing toggle nor the
+            // actions menu is offered.
+            (isComputed ? '' :
             '<div class="fs-view-toggle">' +
               '<button type="button" data-fsview="formatted">Formatted</button>' +
               '<button type="button" data-fsview="markdown">Markdown</button>' +
@@ -1304,8 +1325,9 @@ export const dashboardJs = `    // ───────────────
                 '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
                 '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
               '</div>' +
-            '</div>' +
+            '</div>') +
           '</div>' +
+          (isComputed ? '<div class="fs-computed-note">This is a computed view \\u2014 its values come from the records it\\u2019s built from.</div>' : '') +
           detailVisLineEl(row) +
           // #fs-context holds BOTH the rendered doc (.fs-context-doc) and the
           // editable raw view (.fs-context-edit); the fillers below build them and
@@ -1317,11 +1339,16 @@ export const dashboardJs = `    // ───────────────
           // have rows (count > 0). Rendered hidden; revealed once the counts resolve.
           (rels.length ? '<h3 class="fs-rel-title" hidden>Connected objects</h3><div class="fs-grid fs-rel-folders" hidden>' + folderTiles + '</div>' : '') +
           '<div id="row-provenance"></div>';
-        if (isFile) loadFileContext(content, segs, row); else loadFsContext(table, id);
+        if (isFile) loadFileContext(content, segs, row);
+        else if (isComputed) loadComputedContext(table, row);
+        else loadFsContext(table, id);
         content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
           bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
         });
         wireRecordMenu(content, segs, table, id, row);
+        // A computed row has only the read-only Formatted view — never restore a
+        // markdown/fields/history mode remembered from another record's chrome.
+        if (isComputed) recordViewMode[id] = 'formatted';
         var rvm = recordViewMode[id] || 'formatted';
         if (rvm === 'history') loadRowHistoryInto(content, table, id);
         if (rvm === 'fields') loadFieldsEditor(content, segs, table, id, row, section);
@@ -1527,6 +1554,22 @@ export const dashboardJs = `    // ───────────────
       renderFilePreview(row);
       var save = ctx.querySelector('#file-source-save');
       if (save) save.addEventListener('click', function () { saveFileSource(content, segs, row.id); });
+    }
+
+    // Computed-row CONTENT filler: a read-only field list built from the row we
+    // already fetched (a computed view renders no context markdown and has no
+    // editable raw view — its values are derived, not authored).
+    function loadComputedContext(table, row) {
+      var ctx = document.getElementById('fs-context');
+      if (!ctx) return;
+      var t = tableByName(table);
+      var cols = (t && t.columns) || Object.keys(row);
+      var rows = cols.map(function (c) {
+        return '<dt>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + fsValInner(table, row, c) + '</dd>';
+      }).join('');
+      ctx.innerHTML = '<div class="fs-context-doc"><dl class="fs-computed-fields">' + rows + '</dl></div>';
+      ctx.hidden = false;
+      if (typeof applyFsItemView === 'function') applyFsItemView();
     }
 
     // ONE document-level outside-click closer for the record actions menu. The

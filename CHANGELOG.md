@@ -6,6 +6,87 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Marginal import links now ask instead of auto-creating.** Link inference
+  in the structured importer is governed by the clarify threshold (default
+  0.6): a reference field whose values resolve to another table at or above
+  the threshold is linked exactly as before, but candidates between the floor
+  (threshold/2 — 0.3 by default) and the threshold — which previously
+  auto-created a junction — are **no longer created**. The referencing column
+  imports as a plain scalar column and a short clarification question is
+  queued instead (at most 5 per import, highest confidence first): answering
+  "Yes, connect them" creates and fills the junction from the already-imported
+  rows (idempotent, snapshot-aware); "No" or dismissing does nothing; a
+  free-form answer is saved as the column's definition. Below the floor,
+  candidates are dropped as noise, as before. The confirm card echoes the
+  threshold its proposal was inferred under, so apply bands links identically
+  even if the preference changes between upload and confirm.
+
+### Added
+
+- **Excel formula capture.** Reading a workbook now also summarizes each
+  column's formulas (per-sheet, per-column normalized-pattern counts + an
+  example), including same-column shared-formula runs. Cell values still
+  import from the cached formula results exactly as before — the formula text
+  feeds only the computed-table proposals below.
+- **Opt-in computed-table proposals on import.** A new-dataset import proposal
+  can now carry a "Computed tables" section on the confirm card, unchecked by
+  default:
+  - a **calc field** when a spreadsheet column is computed by one dominant
+    row-local formula (≥ 90% of the column's rows) that translates into the
+    sandboxed calc expression grammar — literals, same-row references,
+    `+ - *`, zero-guarded `/`, text-only `&`/`CONCATENATE`, `IF` →
+    `CASE WHEN`, `AND`/`OR`/`NOT`, comparisons, `ROUND`, `ABS`, and `SUM`
+    over a same-row range; anything else simply isn't proposed;
+  - sparingly, a **classifier field** (no model calls at proposal time) for a
+    category-named text column that missed dimension extraction only on
+    cardinality, seeded with a starter label set drawn from the most frequent
+    values (at most 1 per table and 3 per import).
+
+  Checked fields are created after materialize as live computed tables named
+  `<entity>_computed` (deterministic `_2`/`_3` suffix on collision) through
+  the same audited path as the computed-table builder; the raw source columns
+  import as plain values regardless, and a computed-create failure warns
+  without failing the import. The apply route re-derives the proposals from
+  the stored bytes and honors the opt-in by name — the card's payload is
+  never trusted as a definition.
+
+- **Clarification questions — ask when marginal, act when confident.** One
+  threshold (the machine-local `clarify_threshold` preference, default 0.6,
+  settable via `PUT /api/assistant/clarify-threshold`) now governs when an
+  automated inference asks the user instead of guessing: at or above the
+  threshold it acts silently; between the floor (threshold/2) and the threshold
+  it asks a short, information-seeking multiple-choice question (always with a
+  free-form "Other"); below the floor it drops the inference as noise.
+  Questions are always about what the data _means or is for_, never about
+  storage mechanics — and answers are **enrichment, not just disambiguation**:
+  an informative (free-form) answer is also persisted onto the object it
+  describes (as a table/column definition, a row value, or lineage detail), so
+  the knowledge outlives the conversation.
+  - All questions surface in one place — the assistant dock in the Analytics
+    view — as interactive cards above the composer. A new pending question
+    switches to the Analytics view so the cards are seen; while questions wait
+    with the Analytics view hidden, the header's Ask trigger carries a
+    notification dot. Backed by a new question store
+    (`GET /api/questions/pending`, `POST /api/questions/:id/answer`,
+    `POST /api/questions/:id/dismiss`); answering executes the question's
+    deferred action + enrichment writes through the audited mutation paths, and
+    a failed execution leaves the question pending with the error shown on the
+    card.
+  - The assistant gains an in-turn `ask_user` tool: when it is genuinely
+    uncertain about intent or a data object's meaning, it shows one short
+    multiple-choice question inline in the chat and ends its turn; the pick (or
+    free-form reply) is sent as the next message.
+  - First background producer: file-ingest object extraction now reports a
+    confidence for its target-entity decision. Marginal decisions create
+    nothing and ask instead (at most 2 questions per ingested file); confident
+    or confidence-less extractions behave exactly as before.
+
+---
+
 ## [5.0.0] — 2026-06-28
 
 Major release. The GUI is reframed around the data-modeling story —
@@ -110,6 +191,70 @@ database connector).
   rendering visible separately in the tree. The old per-card dashboard
   overlays are gone; the aggregate header pill stays.
 
+- **Computed tables — config-defined, read-only SQL projections (engine).** A
+  new top-level `computed:` section in `lattice.config.yml` declares live SQL
+  views over a base table: `alias` fields (base columns or dotted belongsTo
+  paths), sandboxed `calc` expressions (a dedicated tokenizer + parser is the
+  injection boundary — raw config text never reaches the SQL string),
+  `aggregate` fields folding junction rows to one scalar per base row
+  (`count`/`sum`/`avg`/`min`/`max`/`concat`), and AI-derived fields
+  (`ai_classify`, `ai_transform`). AI fields never re-run a model at read time:
+  outputs are **materialized once** into the `__lattice_ai_map` /
+  `__lattice_ai_cell` bookkeeping tables the view LEFT JOINs, so reads are
+  always deterministic SQL — and a changed source row makes the join miss, so
+  the field reads NULL until the next fill pass, never a stale value. The fill
+  engine takes an injected LLM interface, sends only never-seen distinct values
+  to the classifier, validates every label against the allowed set, and records
+  per-field status in `__lattice_computed_state`. The stored `prompt_hash` is
+  load-bearing: a field definition changed through ANY path (the builder, a
+  hand-edited config) auto-purges its materialized cache at the next open, so
+  stale labels or transforms are never served. Views register at open in
+  dependency order (SQLite drops + recreates; Postgres guards the DDL behind a
+  content-hash migration version so a converged open issues none, and a
+  changed definition drops + force-recreates its dependent computed views in
+  order); a definition
+  that fails to compile is fault-isolated — recorded, reported, never bricking
+  the open — and direct writes are refused (a computed table is a read-only
+  projection; edit its source tables or its definition). New public API:
+  `ComputedTableDef` / `ComputedFieldDef`, `compileComputedTable`,
+  `computedTableOrder`, `registerComputedTables`, the fill engine
+  (`ensureAiTables`, `runComputedFill`, `purgeAiField`, `readComputedState`,
+  `FillLlm`), the expression language (`parseCalcExpr` / `emitCalcExpr`), and
+  `Lattice.isComputedTable` / `getComputedTableNames` /
+  `getComputedRegistration`. On top of the engine, the GUI server ships the
+  full runtime surface: audited, revertible create/update/delete ops (no
+  reopen; persisted to the config YAML; undo/redo round-trips them; deleting
+  or renaming a source table is refused while a computed table reads from
+  it), a dry-run preview, a field picker, and an AI-fill refresh with
+  streamed per-field progress — over `GET/POST/PUT/DELETE
+/api/computed-tables[...]` (+ `/preview`, `/fields?base=`, and
+  `/:name/refresh` as NDJSON). Computed tables are flagged in the entities
+  payload (the Tables explorer's "Computed Tables" tier), row writes against
+  them get a friendly refusal, and on a team cloud the view compiles with
+  per-viewer row-visibility predicates, members are granted SELECT (re-issued
+  on every owner reconcile), and definitions publish through the shared
+  schema so members hydrate them like entities. The GUI completes the story:
+  a full-page builder at `#/computed/new` / `#/computed/<name>` (base picker,
+  per-kind field rows — Copy a field / Calculation / AI category / AI text /
+  Total across links — a dry-run Preview with per-field ✓/✕ marks + the
+  compiled SQL, a streamed "Refresh values" log, and Remove), reached from a
+  "+ New" button on the Computed Tables tier; the computed card's detail panel
+  gains Edit definition / Refresh / a lazy Definition (SQL) block; the schema
+  graph emits a `computes` edge (base → view, drawn dashed in the Tables
+  explorer and listed as upstream/downstream lineage); and computed rows
+  render read-only everywhere — a "Computed" badge, a note saying where the
+  values come from, and no edit affordances on record or collection pages.
+  The assistant drives the same loop through four chat tools —
+  `preview_computed_table`, `create_computed_table`, `update_computed_table`,
+  `refresh_computed_table` — preview-first by prompt (it checks per-field
+  status and fixes failing fields before creating), with the system prompt
+  teaching the derived-vs-new decision ("a table OF existing data" → computed
+  view; "a new kind of record" → entity) and `delete_entity` routing a
+  computed name straight to the definition delete. Computed views are tagged
+  read-only in the assistant's schema context and entity listing so it never
+  edits their rows, and every assistant computed-table mutation is audited and
+  undoable exactly like a builder action.
+  Documented in `docs/computed-tables.md`.
 - **External databases import their relational structure.** Single-column
   FOREIGN KEYs on the remote are introspected at connect time and materialized as
   graph edges between the imported tables (same machinery as the other
@@ -288,8 +433,6 @@ database connector).
   list, brain graph, and cloud-member grants).
 
 ### Changed
-
-<<<<<<< HEAD
 
 - **Settings and Version history are one full-workspace takeover.** Clicking
   the header clock or gear opens a single panel that replaces everything below

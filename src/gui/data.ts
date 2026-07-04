@@ -121,7 +121,7 @@ export interface GuiGraphEdge {
   id: string;
   source: string;
   target: string;
-  type: 'contains' | 'renders' | 'belongsTo' | 'hasMany' | 'manyToMany' | 'markdown';
+  type: 'contains' | 'renders' | 'belongsTo' | 'hasMany' | 'manyToMany' | 'markdown' | 'computes';
   label: string;
 }
 
@@ -455,6 +455,24 @@ export function buildGuiGraph(
         label: junction.name,
       });
     }
+  }
+
+  // Computed tables: one `computes` edge per definition, base table → computed
+  // view. The definitions come from the parsed config (the same source the
+  // entity tables use); the computed table's node normally arrives via
+  // options.extraTables (computed views live in the runtime registry, not in
+  // `entities:`), but it is added here too so the edge is never dangling for a
+  // caller that passed no extras. A hidden/filtered base prunes the edge via
+  // the referential-consistency filters below.
+  for (const { name, definition } of data.parsed.computedTables) {
+    if (options.visibleFilter && !options.visibleFilter(name)) continue;
+    addNode(nodes, { id: `table:${name}`, label: name, type: 'table', table: name });
+    addEdge(edges, {
+      source: `table:${definition.base}`,
+      target: `table:${name}`,
+      type: 'computes',
+      label: 'computed',
+    });
   }
 
   const objectLookup = new Map<string, string>();

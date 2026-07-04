@@ -16,6 +16,10 @@ export type ChatStreamEvent =
   // A tool asked the GUI to open a row it just created (e.g. create_artifact) in
   // the main viewer. The client navigates to it once the turn finishes streaming.
   | { type: 'open'; table: string; id: string }
+  // The model called ask_user: show this multiple-choice question inline in the
+  // chat and end the turn — the user's pick (or free-form reply) arrives as the
+  // next chat message. Never persisted to the question store; in-turn only.
+  | { type: 'question'; question: string; options: string[]; allowOther: boolean }
   | { type: 'assistant_message_end' }
   | { type: 'done' }
   // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).

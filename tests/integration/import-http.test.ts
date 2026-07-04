@@ -298,6 +298,12 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
       fileId?: string;
       plan?: { entities: { name: string }[] };
       views?: { name: string; master: string }[];
+      linkConfidence?: number;
+      computedProposals?: {
+        entity: string;
+        table: string;
+        fields: { name: string; kind: string; expr?: string; confidence?: number }[];
+      }[];
     };
   }
 
@@ -323,12 +329,16 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     result?: { rowsByTable: Record<string, number>; views: { name: string; rows: number }[] };
   }
 
-  async function applyImport(server: GuiServerHandle, fileId: string): Promise<ApplyEvent[]> {
+  async function applyImport(
+    server: GuiServerHandle,
+    fileId: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<ApplyEvent[]> {
     const text = await (
       await fetch(`${server.url}/api/import/apply`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId, mode: 'both' }),
+        body: JSON.stringify({ fileId, mode: 'both', ...extra }),
       })
     ).text();
     return text
@@ -475,5 +485,217 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     expect((await fetch(`${server.url}/api/history?limit=abc`)).status).toBe(400);
     expect((await fetch(`${server.url}/api/history?limit=50`)).status).toBe(200);
     expect((await fetch(`${server.url}/api/history`)).status).toBe(200);
+  });
+
+  /** An order-lines workbook whose Total column is computed per row (B*C). */
+  async function ordersWorkbook(base: string): Promise<Buffer> {
+    const ExcelJS = await import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Orders');
+    ws.getRow(1).values = [null, 'Sku', 'Price', 'Qty', 'Total'];
+    for (let i = 0; i < 6; i++) {
+      const r = i + 2;
+      const price = 10 + i;
+      const qty = (i % 3) + 1;
+      ws.getRow(r).values = [null, 'SKU-' + String(i), price, qty];
+      ws.getCell(r, 5).value = { formula: `C${String(r)}*D${String(r)}`, result: price * qty };
+    }
+    const path = join(base, 'orders.xlsx');
+    await wb.xlsx.writeFile(path);
+    return readFileSync(path);
+  }
+
+  it('creates an opted-in computed table from a detected formula column', async () => {
+    const { server, base } = await freshServer('lattice-import-computed-');
+    const up = await uploadFile(
+      server,
+      'orders.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      await ordersWorkbook(base),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+    // The upload proposal carries the opt-in computed field with its evidence.
+    const proposals = up.autoImport?.computedProposals ?? [];
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ entity: 'orders', table: 'orders_computed' });
+    expect(proposals[0]?.fields?.[0]).toMatchObject({
+      name: 'total_calc',
+      kind: 'calc',
+      expr: '(price * qty)',
+      confidence: 1,
+    });
+    expect(typeof up.autoImport?.linkConfidence).toBe('number');
+
+    // Apply, opting IN — plus an unknown selection, which warns and is skipped.
+    const events = await applyImport(server, up.autoImport!.fileId!, {
+      linkConfidence: up.autoImport!.linkConfidence,
+      computed: [
+        { table: 'orders_computed', fields: ['total_calc', 'bogus_field'] },
+        { table: 'nope_computed', fields: ['x'] },
+      ],
+    });
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(
+      events.some(
+        (e) => e.phase === 'computed' && (e.message ?? '').includes('orders_computed: 1 field'),
+      ),
+    ).toBe(true);
+    expect(
+      events.some((e) =>
+        (e.message ?? '').includes('unknown computed field "orders_computed.bogus_field"'),
+      ),
+    ).toBe(true);
+    expect(
+      events.some((e) => (e.message ?? '').includes('unknown computed table "nope_computed"')),
+    ).toBe(true);
+
+    // The computed table is live and queryable, with values matching the formula.
+    const rows = (await (
+      await fetch(`${server.url}/api/tables/orders_computed/rows?limit=50`)
+    ).json()) as { rows: { total_calc: number }[] };
+    expect(rows.rows).toHaveLength(6);
+    const source = (await (
+      await fetch(`${server.url}/api/tables/orders/rows?limit=50`)
+    ).json()) as {
+      rows: { sku: string; price: number; qty: number; total: number }[];
+    };
+    const expected = source.rows.map((r) => r.price * r.qty).sort((a, b) => a - b);
+    const actual = rows.rows.map((r) => r.total_calc).sort((a, b) => a - b);
+    expect(actual).toEqual(expected);
+  });
+
+  it('creates nothing computed when the user opts out', async () => {
+    const { server, base } = await freshServer('lattice-import-computed-out-');
+    const up = await uploadFile(
+      server,
+      'orders.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      await ordersWorkbook(base),
+    );
+    expect(up.autoImport?.computedProposals?.length).toBe(1);
+    const events = await applyImport(server, up.autoImport!.fileId!); // no computed key
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(events.some((e) => e.phase === 'computed')).toBe(false);
+    expect((await fetch(`${server.url}/api/tables/orders_computed/rows`)).status).not.toBe(200);
+    // The raw source column imported as plain values regardless.
+    const source = (await (await fetch(`${server.url}/api/tables/orders/rows?limit=5`)).json()) as {
+      rows: { total: number }[];
+    };
+    expect(typeof source.rows[0]?.total).toBe('number');
+  });
+
+  /** Orders whose vendor reference resolves for only 5 of 10 distinct values —
+   *  a marginal link (confidence 0.5) under the default 0.6 threshold. */
+  function marginalVendorFixture() {
+    return {
+      vendors: Array.from({ length: 10 }, (_, i) => ({
+        code: 'V' + String(i),
+        name: 'Vendor ' + String(i),
+      })),
+      orders: Array.from({ length: 20 }, (_, i) => ({
+        sku: 'SKU-' + String(i),
+        vendor: (i % 10 < 5 ? 'V' : 'X') + String(i % 10),
+        amount: 5 + i,
+      })),
+    };
+  }
+
+  interface PendingQuestions {
+    questions: { id: string; question: string; options: string[]; source: string }[];
+  }
+
+  it('asks about marginal links; answering "Yes, connect them" creates the junction', async () => {
+    const { server } = await freshServer('lattice-import-marginal-');
+    const up = await uploadFile(
+      server,
+      'orders.json',
+      'application/json',
+      Buffer.from(JSON.stringify(marginalVendorFixture()), 'utf8'),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+
+    const events = await applyImport(server, up.autoImport!.fileId!);
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(
+      events.some((e) => e.phase === 'questions' && (e.message ?? '').includes('1 question')),
+    ).toBe(true);
+    // The marginal link was NOT materialized…
+    expect((await fetch(`${server.url}/api/tables/orders_vendors/rows`)).status).not.toBe(200);
+    // …a clarification question was enqueued instead.
+    const pending = (await (
+      await fetch(`${server.url}/api/questions/pending`)
+    ).json()) as PendingQuestions;
+    expect(pending.questions).toHaveLength(1);
+    expect(pending.questions[0]).toMatchObject({
+      source: 'import',
+      question: 'Is "vendor" in orders meant to refer to your vendors records?',
+      options: ['Yes, connect them', "No, it's just text"],
+    });
+
+    // Answering "Yes, connect them" creates + fills the junction: the 10 order
+    // rows whose vendor value resolves (V0–V4 twice each) get linked.
+    const answered = await fetch(`${server.url}/api/questions/${pending.questions[0]!.id}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'Yes, connect them' }),
+    });
+    expect(answered.status).toBe(200);
+    expect((await answered.json()) as { action?: string }).toMatchObject({
+      status: 'answered',
+      action: 'import_link',
+    });
+    const links = (await (
+      await fetch(`${server.url}/api/tables/orders_vendors/rows?limit=50`)
+    ).json()) as { rows: { orders_id: string; vendors_id: string }[] };
+    expect(links.rows).toHaveLength(10);
+    expect(links.rows.every((r) => r.orders_id && r.vendors_id)).toBe(true);
+  });
+
+  it('answering "No" leaves everything untouched, and questions are capped at 5', async () => {
+    const { server } = await freshServer('lattice-import-marginal-cap-');
+    // Seven marginal references from one entity to seven target entities —
+    // only the 5 highest-confidence candidates become questions.
+    const data: Record<string, unknown> = {
+      orders: Array.from({ length: 20 }, (_, i) => {
+        const row: Record<string, unknown> = { sku: 'SKU-' + String(i) };
+        for (let t = 1; t <= 7; t++) {
+          row['ref' + String(t)] = (i % 10 < 5 ? `T${String(t)}-` : 'X-') + String(i % 10);
+        }
+        return row;
+      }),
+    };
+    for (let t = 1; t <= 7; t++) {
+      data['targets' + String(t)] = Array.from({ length: 10 }, (_, i) => ({
+        code: `T${String(t)}-${String(i)}`,
+        label: 'Target ' + String(i),
+      }));
+    }
+    const up = await uploadFile(
+      server,
+      'refs.json',
+      'application/json',
+      Buffer.from(JSON.stringify(data), 'utf8'),
+    );
+    const events = await applyImport(server, up.autoImport!.fileId!);
+    expect(
+      events.some((e) => e.phase === 'questions' && (e.message ?? '').includes('5 questions')),
+    ).toBe(true);
+    const pending = (await (
+      await fetch(`${server.url}/api/questions/pending`)
+    ).json()) as PendingQuestions;
+    expect(pending.questions).toHaveLength(5);
+
+    // "No, it's just text" resolves the question without creating anything.
+    const first = pending.questions[0]!;
+    const junction = /"(\w+)" in orders .* your (\w+) records/.exec(first.question);
+    const answered = await fetch(`${server.url}/api/questions/${first.id}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: "No, it's just text" }),
+    });
+    expect(answered.status).toBe(200);
+    expect(
+      (await fetch(`${server.url}/api/tables/orders_${junction?.[2] ?? ''}/rows`)).status,
+    ).not.toBe(200);
   });
 });
