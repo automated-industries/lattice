@@ -137,6 +137,16 @@ database connector).
 
 ### Security
 
+- **MCP connector SSRF guard now survives redirects and OAuth discovery.** The
+  user-supplied MCP server URL was validated once, up front — but the client
+  then followed HTTP redirects and fetched the authorization/token/registration
+  endpoints advertised in the server's own OAuth metadata without re-checking
+  them, so a malicious server could point any of those at a
+  private/loopback/link-local/cloud-metadata address after passing the initial
+  check. Every MCP request (transport and OAuth) is now routed through a fetch
+  that re-validates each hop's resolved target before it is fetched, closing the
+  redirect and OAuth-discovery SSRF paths.
+
 - **External-database connections are read-only, enforced in depth.** A
   connected database is a data source — Lattice must never be able to write to
   it. Every pooled connection now starts with
