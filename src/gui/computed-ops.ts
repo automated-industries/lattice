@@ -595,10 +595,11 @@ export async function previewComputedTable(
   // and the AI cache keys the pending counts probe.
   let name = 'computed_preview';
   for (let i = 2; schema.has(name); i++) name = `computed_preview_${String(i)}`;
-  const cloud =
-    active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db))
-      ? ({ rowVisible: true } as const)
-      : undefined;
+  // Compile the preview the SAME way the registered view is compiled on a secured
+  // cloud — row-visibility predicates AND masked-table sourcing (`<t>_v`) — so the
+  // owner's preview reflects the exact masking a member's read of the live view
+  // would apply, never the raw underlying columns.
+  const cloud = await active.db.computedCloudOption();
   const compiled = compileComputedTable(name, def, schema, active.db.getDialect(), cloud);
   if (compiled.aiFields.length > 0) await ensureAiTables(active.db.adapter);
   const rows = await allAsyncOrSync(active.db.adapter, `${compiled.selectSql} LIMIT ${String(n)}`);

@@ -2,11 +2,6 @@
 // single-row detail panel. (The graph mode + its legend/node coloring were
 // removed: the object page is a table-only view.)
 export const provenanceCss = `
-    .prov-mount {
-      position: relative; background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; height: auto; overflow: visible;
-    }
-
     /* Source provenance table. */
     .pv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .pv-table thead th {
