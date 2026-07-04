@@ -27,6 +27,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Signed + notarized macOS desktop artifacts (when release credentials are
+  configured).** The macOS desktop build now Developer-ID-signs the app
+  inside-out under the hardened runtime (JIT entitlements in
+  `scripts/lattice.entitlements`, required by the embedded JavaScript runtime),
+  and notarizes + staples the `.app`, `.pkg`, and `.dmg`, hard-failing unless
+  Apple returns Accepted. Signing is entirely env-gated — identities, certs,
+  and notary credentials flow through environment variables / CI secrets,
+  nothing is hardcoded — and without credentials the build produces the same
+  ad-hoc (unsigned) installers as before, so contributor and fork builds are
+  unaffected. See docs/desktop.md → "Code signing (maintainers)".
 - **Excel formula capture.** Reading a workbook now also summarizes each
   column's formulas (per-sheet, per-column normalized-pattern counts + an
   example), including same-column shared-formula runs. Cell values still

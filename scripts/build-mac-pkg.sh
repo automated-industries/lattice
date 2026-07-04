@@ -15,7 +15,7 @@
 # and notary credentials — EITHER a stored keychain profile:
 #   NOTARY_PROFILE           a `notarytool store-credentials` profile name
 # OR an App Store Connect API key (CI):
-#   NOTARY_KEY               path to the .p8 key file
+#   NOTARY_KEY_FILE          path to the .p8 key file
 #   NOTARY_KEY_ID
 #   NOTARY_ISSUER_ID
 # If SIGN_APP_IDENTITY is unset, the ad-hoc fallback runs.
@@ -36,6 +36,9 @@ APPNAME="$(basename "$APP")"
 
 # notarize <path> — submit (a .app is zipped first; .pkg/.dmg submit directly),
 # wait, then staple the original. No-op (returns 0) when no notary creds are set.
+# The gate is the literal "status: Accepted" in the submit transcript — the exit
+# code of `notarytool submit --wait` is NOT a reliable Accepted/Invalid signal
+# across notarytool versions, and stapling an unaccepted artifact fails opaquely.
 notarize() {
   _path="$1"
   _zip=""
@@ -47,16 +50,28 @@ notarize() {
       _submit="$_zip" ;;
     *) _submit="$_path" ;;
   esac
+  _log="$_path.notary.log"
   if [ -n "$NOTARY_PROFILE" ]; then
-    xcrun notarytool submit "$_submit" --keychain-profile "$NOTARY_PROFILE" --wait
-  elif [ -n "$NOTARY_KEY" ] && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER_ID" ]; then
+    xcrun notarytool submit "$_submit" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 \
+      | tee "$_log"
+  elif [ -n "$NOTARY_KEY_FILE" ] && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER_ID" ]; then
     xcrun notarytool submit "$_submit" \
-      --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+      --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait 2>&1 \
+      | tee "$_log"
   else
     echo "note: no notary credentials — skipping notarization of $(basename "$_path")" >&2
     if [ -n "$_zip" ]; then rm -f "$_zip"; fi
     return 0
   fi
+  if ! grep -q 'status: Accepted' "$_log"; then
+    _id="$(sed -n 's/^[[:space:]]*id: \([0-9a-fA-F-]*\)$/\1/p' "$_log" | head -n 1)"
+    echo "error: notarization of $(basename "$_path") was not Accepted" >&2
+    if [ -n "$_id" ]; then
+      echo "  inspect Apple's report with: xcrun notarytool log $_id <same credentials>" >&2
+    fi
+    exit 1
+  fi
+  rm -f "$_log"
   xcrun stapler staple "$_path"
   # NOT `[ -n … ] && rm`: for a .pkg/.dmg (no zip) the test is FALSE, that form
   # makes it the function's exit status (1), and set -e aborts the build right
@@ -66,6 +81,24 @@ notarize() {
 
 if [ -n "$SIGN_APP_IDENTITY" ]; then
   echo "signing $APPNAME with Developer ID (inside-out)…"
+  # Align Info.plist BEFORE signing — the signature seals it, so a later edit
+  # would break the seal. Version fields follow package.json (same version the
+  # GUI reports), and the minimum OS is pinned to what the embedded webview
+  # requires. Best-effort: a missing PlistBuddy or plist warns and continues.
+  PLIST="$APP/Contents/Info.plist"
+  PLISTBUDDY="/usr/libexec/PlistBuddy"
+  if [ -x "$PLISTBUDDY" ] && [ -f "$PLIST" ]; then
+    for _kv in "CFBundleShortVersionString:$VERSION" "CFBundleVersion:$VERSION" \
+               "LSMinimumSystemVersion:14.0"; do
+      _k="${_kv%%:*}"
+      _v="${_kv#*:}"
+      "$PLISTBUDDY" -c "Set :$_k $_v" "$PLIST" 2>/dev/null \
+        || "$PLISTBUDDY" -c "Add :$_k string $_v" "$PLIST" 2>/dev/null \
+        || echo "warn: could not set $_k in Info.plist (continuing)" >&2
+    done
+  else
+    echo "warn: PlistBuddy or Info.plist not found — skipping Info.plist alignment" >&2
+  fi
   # The auto-update runtime marker must not be sealed into the signature. (Its
   # name derives from the runtime dylib's, which varies — match the suffix.)
   rm -f "$APP/Contents/MacOS/"*.update-ok
@@ -107,6 +140,15 @@ if [ -n "$SIGN_APP_IDENTITY" ]; then
       --identifier "$IDENTIFIER" --version "$VERSION" "$OUT"
   fi
   notarize "$OUT"
+  if [ -n "$SIGN_INSTALLER_IDENTITY" ]; then
+    # Hard gates on the shipped installer: a valid installer signature, and —
+    # once notarized — Gatekeeper's own install verdict (spctl fails on a
+    # signed-but-unnotarized pkg, so it only runs when notary creds were set).
+    pkgutil --check-signature "$OUT"
+    if [ -n "$NOTARY_PROFILE" ] || [ -n "$NOTARY_KEY_FILE" ]; then
+      spctl -a -vv -t install "$OUT"
+    fi
+  fi
   echo "built + signed: $OUT (v$VERSION)"
 else
   # Ad-hoc fallback: no Developer ID → unsigned pkg.
