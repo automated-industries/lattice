@@ -172,8 +172,39 @@ database connector).
 - **OAuth callback pinned to loopback** — the connector `redirect_uri` is derived
   from the bound loopback authority, not the request `Host`.
 
+### Privacy
+
+- **Computed views honor per-column audience masking on a team cloud.** A
+  computed table's compiled view read its base and related columns raw and
+  applied only row visibility, so a scoped member reading the view could see the
+  value of a column the owner had masked from their role — a column-level leak
+  that a normal read (through the `<table>_v` masking view) would have caught.
+  Cloud-compiled computed views now read every masked source table through its
+  cell-masking `<table>_v` view instead of the base table, so a masked column
+  reads NULL for a member exactly as it does elsewhere; the masking binds
+  per-viewer (`session_user`), so the row owner still sees the real value. Row
+  visibility is unchanged — a masked source is read through a view that already
+  applies it, so the redundant predicate is dropped. SQLite (single-tenant) is
+  unaffected.
+
 ### Performance
 
+- **Provenance builds without an O(files) rendered-content scan.**
+  `/api/provenance` loaded the CONTENT of every rendered context `.md` file from
+  disk to read the table/column/relation structure it actually needs; it now uses
+  the structural (no-content) workspace load, and junction discovery
+  (`tableJunctions` / `fileJunctions`) does the same — no per-request full-tree
+  disk scan.
+- **Clarification-question junction creation reads only the key columns.**
+  `linkMaterializedRows` (the "Yes, connect them" answer path) issued three
+  unbounded `SELECT *` whole-table reads to build its key maps; it now projects
+  just the id + match key (+ `as_of` when the side is dated), so it never pulls
+  every column of every row into JS.
+- **Computed-table registration introspects all views in one round-trip.**
+  Workspace open introspected each computed view's columns with a separate
+  `information_schema` query (one serial round-trip per computed table on a pooled
+  cloud connection); it now batches them into a single query, so an open with K
+  computed tables pays one introspection round-trip instead of K.
 - **Instant undo/redo state.** Header undo/redo availability is computed with
   bounded `COUNT` queries + an index instead of loading the session's entire audit
   log (with row snapshots) on every edit and navigation.

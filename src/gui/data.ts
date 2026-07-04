@@ -720,7 +720,9 @@ export interface FileJunction {
  */
 export function fileJunctions(configPath: string, outputDir: string): FileJunction[] {
   const out: FileJunction[] = [];
-  for (const t of getGuiEntities(configPath, outputDir).tables) {
+  // Structural load only (withContent=false) — junction discovery needs table
+  // columns + relations, never rendered file CONTENT, so skip the O(files) scan.
+  for (const t of loadGuiData(configPath, outputDir, false).tables) {
     if (!isJunctionTable(t)) continue;
     const belongsTo = Object.values(t.relations).filter(
       (r): r is BelongsToRelation => r.type === 'belongsTo',
@@ -764,7 +766,11 @@ export function tableJunctions(
   outputDir: string,
 ): TableJunction[] {
   const out: TableJunction[] = [];
-  for (const t of getGuiEntities(configPath, outputDir).tables) {
+  // Structural load only — junction discovery needs table columns + relations,
+  // never rendered file CONTENT. withContent=false skips the O(files) disk scan
+  // (getGuiEntities would read every rendered .md), so this stays cheap on the
+  // per-request provenance / dedup paths that call it.
+  for (const t of loadGuiData(configPath, outputDir, false).tables) {
     if (!isJunctionTable(t)) continue;
     const belongsTo = Object.values(t.relations).filter(
       (r): r is BelongsToRelation => r.type === 'belongsTo',
