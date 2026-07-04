@@ -32,6 +32,7 @@ import {
   listNativeBindings,
   isNativeEntity,
   isInternalNativeEntity,
+  isAnalyticsNativeEntity,
   NATIVE_INTERNAL_NAMES,
 } from '../framework/native-entities.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -116,8 +117,11 @@ async function enrichEntityTables(
   // conversation storage — they're real tables but must never surface in the
   // Objects list / dashboard cards. Drop them from the display payload here
   // (they stay registered + queryable for the chat route).
+  // Analytics natives (dashboards) live in the Analytics view, not the
+  // Configure Objects list — same drop, different reason (they stay shareable
+  // and assistant-visible; only the Configure display surfaces exclude them).
   const allTables = [...baseTables, ...registeredExtraTables(db, yamlNames)].filter(
-    (t) => !isInternalNativeEntity(t.name),
+    (t) => !isInternalNativeEntity(t.name) && !isAnalyticsNativeEntity(t.name),
   );
 
   // Postgres: collapse the per-table COUNT(*) fan-out to one query against
@@ -560,6 +564,74 @@ export async function handleReadRoutes(
   // GET /api/search?q=&tables=&limit= — LIKE fallback + indexed (FTS5 /
   // tsvector) per the engine in src/search/fts.ts. Scoped to validTables;
   // row visibility is enforced by Postgres RLS at the database.
+  // ── Dashboard SQL reads: POST /api/analytics/sql ─────────────────
+  // The sandboxed dashboard frames' aggregation surface (window.lattice.sql →
+  // parent broker → here). READ-ONLY, defense in depth:
+  //  1. statement-shape gate — a single SELECT/WITH statement only;
+  //  2. identifier deny-list — credential + conversation + bookkeeping tables
+  //     are refused by name (secrets values are additionally encrypted at
+  //     rest, so even a slipped read yields ciphertext);
+  //  3. the query is executed as THIS connection's role — on a cloud member
+  //     open Postgres RLS + grants scope every row (a cell-masked table
+  //     revokes base SELECT, so its rows are reachable only via the mask
+  //     view), and on Postgres it additionally runs inside a READ ONLY
+  //     transaction so a data-modifying CTE cannot slip a write through;
+  //  4. the result is wrapped + capped server-side (no unbounded egress).
+  if (method === 'POST' && pathname === '/api/analytics/sql') {
+    const body = (await readJson<unknown>(req)) as { sql?: unknown };
+    const raw = typeof body.sql === 'string' ? body.sql.trim().replace(/;+\s*$/, '') : '';
+    if (!raw) {
+      sendJson(res, { error: 'sql (string) is required' }, 400);
+      return true;
+    }
+    // Shape gate: first keyword must be select/with, and — after stripping
+    // string literals + comments — no statement separator may remain.
+    const noStrings = raw
+      .replace(/'(?:[^']|'')*'/g, "''")
+      .replace(/--[^\n]*/g, ' ')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ');
+    const first = /^[a-z]+/i.exec(noStrings.trimStart())?.[0]?.toLowerCase() ?? '';
+    if (first !== 'select' && first !== 'with') {
+      sendJson(res, { error: 'only a single SELECT (or WITH … SELECT) statement is allowed' }, 400);
+      return true;
+    }
+    if (noStrings.includes(';')) {
+      sendJson(res, { error: 'multiple statements are not allowed' }, 400);
+      return true;
+    }
+    if (/\b(secrets|chat_threads|chat_messages)\b|_lattice/i.test(noStrings)) {
+      sendJson(res, { error: 'this query references a protected table' }, 400);
+      return true;
+    }
+    const CAP = 1000;
+    const wrapped = `SELECT * FROM (${raw}) AS __lattice_sql LIMIT ${String(CAP + 1)}`;
+    try {
+      let rows: unknown[];
+      const adapter = active.db.adapter;
+      if (active.db.getDialect() === 'postgres' && adapter.withClient) {
+        // READ ONLY transaction: the server itself refuses any write a
+        // data-modifying CTE might smuggle past the keyword gate.
+        rows = await adapter.withClient(async (tx) => {
+          await tx.run('BEGIN TRANSACTION READ ONLY');
+          try {
+            return (await tx.all(wrapped)) as unknown[];
+          } finally {
+            await tx.run('ROLLBACK');
+          }
+        });
+      } else {
+        // SQLite has no data-modifying CTEs; the shape gate is sufficient.
+        rows = (await allAsyncOrSync(adapter, wrapped)) as unknown[];
+      }
+      const truncated = rows.length > CAP;
+      sendJson(res, { rows: truncated ? rows.slice(0, CAP) : rows, truncated });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      sendJson(res, { error: `query failed: ${msg}` }, 400);
+    }
+    return true;
+  }
+
   if (method === 'GET' && pathname === '/api/search') {
     const q = (url.searchParams.get('q') ?? '').trim();
     if (!q) {
@@ -571,7 +643,12 @@ export async function handleReadRoutes(
     // Conversation storage + secrets must never appear in search results
     // (mirrors the assistant's own table allowlist). Same source of truth
     // as the chat dispatcher so search and assistant stay in lockstep.
-    let tables = [...active.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t));
+    // Dashboards are excluded too: their html column is chart boilerplate that
+    // would match countless queries, and dashboards are found by name in the
+    // Analytics sidebar, not workspace search.
+    let tables = [...active.validTables].filter(
+      (t) => !ASSISTANT_HIDDEN_TABLES.has(t) && !isAnalyticsNativeEntity(t),
+    );
     if (requested) {
       const want = new Set(
         requested
@@ -1032,6 +1109,7 @@ export async function handleReadRoutes(
           active.validTables.has(n) &&
           n !== 'secrets' &&
           !isInternalNativeEntity(n) &&
+          !isAnalyticsNativeEntity(n) &&
           !n.startsWith('_lattice') &&
           !n.startsWith('__lattice'),
       )
@@ -1045,7 +1123,8 @@ export async function handleReadRoutes(
       (t) =>
         !active.hiddenLinkTables.has(t.name) &&
         t.name !== 'secrets' &&
-        !isInternalNativeEntity(t.name),
+        !isInternalNativeEntity(t.name) &&
+        !isAnalyticsNativeEntity(t.name),
     );
     const manifest = readManifest(active.outputDir);
     const claimed = new Set<string>();

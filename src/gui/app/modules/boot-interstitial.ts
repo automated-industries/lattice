@@ -37,6 +37,10 @@ export const bootInterstitialJs = `    // ────────────�
     // file"/"this row" resolves to it. null when just browsing a list / dashboard.
     function activeElement() {
       var hash = location.hash || '#/';
+      // An open dashboard IS the viewed record — "make it a pie chart" must
+      // resolve to it (edit_dashboard's default target).
+      var an = /^#\\/analytics\\/(.+)$/.exec(hash);
+      if (an) return { table: 'dashboards', id: decodeURIComponent(an[1]) };
       var segs = (typeof fsParse === 'function') ? fsParse(hash) : null;
       if (segs && segs.length >= 2) {
         // segments alternate table,id,table,id… — take the last complete pair.

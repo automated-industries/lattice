@@ -19,6 +19,7 @@ import { toastJs } from './toast.js';
 import { versionHistoryUndoJs } from './version-history-undo.js';
 import { workspaceSwitchProgressJs } from './workspace-switch-progress.js';
 import { tabsJs } from './tabs.js';
+import { analyticsTabsJs } from './analytics-tabs.js';
 import { sidebarJs } from './sidebar.js';
 import { routerJs } from './router.js';
 import { dashboardJs } from './dashboard.js';
@@ -43,6 +44,7 @@ import { inputsJs } from './inputs.js';
 import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
+import { analyticsViewJs } from './analytics-view.js';
 import { questionsJs } from './questions.js';
 import { modelTablesJs } from './model-tables.js';
 import { computedBuilderJs } from './computed-builder.js';
@@ -66,6 +68,7 @@ export const appJs = [
   versionHistoryUndoJs,
   workspaceSwitchProgressJs,
   tabsJs,
+  analyticsTabsJs,
   sidebarJs,
   routerJs,
   dashboardJs,
@@ -85,9 +88,11 @@ export const appJs = [
   outputsJs,
   activityHeaderJs,
   askLatticeJs,
+  analyticsViewJs,
   // Clarification-question cards + trigger dot. Uses wrapper-scoped helpers
-  // (fetchJson, askLatticeOpen/openAskLattice, railFeedEl, sendChat) so it too
-  // must stay INSIDE the main client IIFE, next to the panel it extends.
+  // (fetchJson, isAnalyticsHash/lastAnalyticsHash, railFeedEl, sendChat) so it
+  // too must stay INSIDE the main client IIFE, right after the Analytics view
+  // whose assistant dock hosts the cards.
   questionsJs,
   modelTablesJs,
   computedBuilderJs,

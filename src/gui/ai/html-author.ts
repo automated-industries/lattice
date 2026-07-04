@@ -4,9 +4,9 @@ import { DEFAULT_MODEL } from './chat.js';
 /**
  * Author a complete, standalone HTML file via a focused model sub-call.
  *
- * This is the "tool-delegated" half of the inline-HTML-file feature: the chat
+ * This is the "tool-delegated" half of the dashboard feature: the chat
  * assistant runs on a fast, cheap model and only gathers intent — when it decides
- * to build or change an HTML file it calls `create_html_file` / `edit_html_file`,
+ * to build or change a dashboard it calls `create_dashboard` / `edit_dashboard`,
  * whose handlers call HERE to do the heavy authoring on a stronger model.
  *
  * The model is given the live table/column schema so any data it wires up uses
@@ -68,9 +68,14 @@ const HTML_SYSTEM = [
   '    lattice.query(table, { limit, offset })  → resolves to { rows: [ ... ] }',
   '    lattice.get(table, id)                   → resolves to a single row object',
   '    lattice.search(queryString)              → resolves to full-text search results',
+  '    lattice.sql(selectStatement)             → resolves to { rows: [ ... ], truncated }',
   '  Use the REAL table and column names from the schema below. Load data on page load (e.g. an async init function using await) and render gracefully when a query returns no rows or rejects. Reads are read-only; you cannot create, update, or delete.',
   '',
+  '- PREFER lattice.sql for anything beyond listing raw rows: aggregations, counts, group-bys, joins, filters, and top-N should be ONE portable SELECT (works unchanged on SQLite and Postgres — stick to standard SQL: no dialect-specific functions) rather than fetching whole tables and computing in page JS. A single statement only; it is read-only and results are capped (check `truncated`).',
+  '- The page must stay CURRENT: never hardcode, snapshot, or inline data values into the document — every number, row, and chart must come from a lattice.query/get/sql read at load time, so the page always shows the live data.',
+  '',
   'Make it clean, readable, and self-explanatory: a simple system-font stack and a responsive layout. Prefer clarity over cleverness.',
+  'When the page is a DASHBOARD — an at-a-glance answer to a question about the data — lead with a compact row of key-number tiles, then charts in a responsive grid, then any supporting detail table, each section clearly titled.',
 ].join('\n');
 
 /** Strip a leading/trailing ``` fence if the model wrapped the document in one. */
