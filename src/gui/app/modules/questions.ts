@@ -1,21 +1,31 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). Must stay
-// INSIDE the client IIFE (uses fetchJson + the ask-lattice/onboarding helpers).
+// INSIDE the client IIFE (uses fetchJson + the analytics-view/onboarding helpers).
 export const questionsJs = `
     // ────────────────────────────────────────────────────────────
     // Clarification questions — marginal automated inferences ask the user
     // instead of guessing. Pending questions (the server store) render as
-    // interactive cards above the composer in the Ask panel; the in-turn
-    // ask_user tool renders the same card inline in the conversation. While
-    // ≥1 question is pending and the panel is closed, the panel trigger
-    // carries a notification dot; a new question auto-opens the panel.
+    // interactive cards above the composer in the assistant dock (Analytics
+    // view); the in-turn ask_user tool renders the same card inline in the
+    // conversation. While ≥1 question is pending and the Analytics view is
+    // not showing, the header's Ask trigger carries a notification dot; a
+    // brand-new question switches to the Analytics view so the cards are
+    // seen (both views stay mounted, so nothing is lost by the flip).
     // ────────────────────────────────────────────────────────────
     var qCards = {};        // pending-store question id → card element
     var qPendingCount = 0;  // live pending count (drives the trigger dot)
     function qContainer() { return document.getElementById('question-cards'); }
+    // The dock is visible exactly when the Analytics view is — hash-derived so
+    // the dot is correct no matter when it's evaluated relative to a re-render.
+    function qDockShowing() { return isAnalyticsHash(location.hash); }
+    function qShowDock() {
+      location.hash = lastAnalyticsHash;
+      var input = document.getElementById('chat-input');
+      if (input) setTimeout(function () { input.focus(); }, 0);
+    }
     function updateQuestionDot() {
       var trig = document.getElementById('ask-lattice-trigger');
       if (!trig) return;
-      trig.classList.toggle('has-question', qPendingCount > 0 && !askLatticeOpen());
+      trig.classList.toggle('has-question', qPendingCount > 0 && !qDockShowing());
     }
     // Build one interactive question card: the question text, one button per
     // option, a free-form "Other" input, and (for store-backed cards) a subtle
@@ -128,9 +138,10 @@ export const questionsJs = `
       host.appendChild(card);
     }
     // Reconcile the cards + dot against the server's pending list. openOnNew:
-    // a brand-new question auto-opens the assistant panel (feed events pass
-    // true; the boot fetch passes false). Resilient by design: a failed fetch
-    // must never break chat — it just leaves the current cards as they are.
+    // a brand-new question switches to the Analytics view, where the dock
+    // shows the cards (feed events pass true; the boot fetch passes false).
+    // Resilient by design: a failed fetch must never break chat — it just
+    // leaves the current cards as they are.
     function refreshQuestions(openOnNew) {
       return fetchJson('/api/questions/pending').then(function (d) {
         var qs = (d && d.questions) || [];
@@ -149,13 +160,18 @@ export const questionsJs = `
           if (!qCards[q.id]) { hadNew = true; renderPendingQuestion(q); }
         });
         qPendingCount = qs.length;
-        if (openOnNew && hadNew && !askLatticeOpen()) openAskLattice();
+        if (openOnNew && hadNew && !qDockShowing()) qShowDock();
         updateQuestionDot();
       }).catch(function () { /* resilient — chat keeps working without questions */ });
     }
     // A 'question' feed event arrived (new / answered / dismissed) — reconcile.
     function onQuestionFeedEvent() { refreshQuestions(true); }
-    function initQuestions() { refreshQuestions(false); }
+    function initQuestions() {
+      // Flipping between Configure and Analytics changes whether the cards are
+      // on screen, so the dot re-evaluates on every hash change.
+      window.addEventListener('hashchange', updateQuestionDot);
+      refreshQuestions(false);
+    }
     // The model asked mid-turn (the ask_user tool): render the same card inline
     // in the conversation; the chosen option (or free-form text) is sent as the
     // next chat message through the normal composer path.

@@ -51,7 +51,7 @@ export const searchJs = `    // ────────────────
       if (!navStacks[navKey]) {
         // A first visit seeds HOME on a switch (the old workspace's hash must not
         // leak in), but seeds the current hash at boot (deep links keep working).
-        navStacks[navKey] = { entries: [initOnly ? (location.hash || '#/') : '#/'], index: 0 };
+        navStacks[navKey] = { entries: [initOnly ? (location.hash || '#/') : '#/analytics'], index: 0 };
       }
       if (!initOnly) {
         var st = navStack();
@@ -180,8 +180,10 @@ export const searchJs = `    // ────────────────
         currentThreadId = null;
         clearChat();
         refreshThreadList(true);
-        if (location.hash !== '#/') location.hash = '#/';
-        // Already on the dashboard hash: re-render in place as a soft refresh so a
+        // A switch lands on the Analytics home — the app's landing view. (The
+        // new workspace's own last location is in its nav stack for Back.)
+        if (location.hash !== '#/analytics') location.hash = '#/analytics';
+        // Already on the Analytics home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.
         else renderRoute({ soft: true });
         loadedTables = {};
@@ -189,6 +191,10 @@ export const searchJs = `    // ────────────────
         // are per-workspace module state — reset them so the new workspace doesn't
         // inherit the previous one's relationship edges or picked source.
         mtResetState();
+        // Open dashboard tabs + the cached Dashboards list are per-workspace too —
+        // stale tabs from the previous workspace would 404 in the new one.
+        anResetTabs();
+        anDashRows = null;
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event
         // stream so realtime/feed/render all rebind to this workspace.

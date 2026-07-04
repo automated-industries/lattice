@@ -77,6 +77,14 @@ export const bootJs = `    // ────────────────�
         state.columnMeta = results[2] || {};
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
+        // Land on Analytics: an empty/home hash boots into the Analytics view
+        // (location.replace — no phantom history entry). Runs BEFORE the nav
+        // stack is seeded below so Back never steps to a Configure home the
+        // user was never shown. Explicit deep links (#/graph, #/fs/…) are
+        // untouched and still boot straight into Configure.
+        if (!location.hash || location.hash === '#/' || location.hash === '#') {
+          location.replace((location.href.split('#')[0] || '') + '#/analytics');
+        }
         // Key the per-workspace navigation history to the booted workspace.
         if (results[5] && results[5].current && typeof navSetWorkspace === 'function') {
           navSetWorkspace(results[5].current, true);

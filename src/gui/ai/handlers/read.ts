@@ -81,6 +81,24 @@ export function frameUntrustedFileContent(table: string, row: Row): Row {
   };
 }
 
+/**
+ * Replace a dashboards row's `html` body with a short pointer before it reaches
+ * the model. Two reasons: the page is a complete standalone HTML document
+ * (often 50–100KB of boilerplate that would drown the context for zero signal —
+ * `spec`/`description`/`source_tables` carry everything the model needs), and
+ * it renders data the model shouldn't re-ingest as if it were instructions.
+ * Changes go through edit_dashboard, which re-authors from the stored page
+ * server-side, so the model never needs the raw body.
+ */
+export function redactDashboardHtml(table: string, row: Row): Row {
+  if (table !== 'dashboards') return row;
+  if (typeof row.html !== 'string' || row.html.length === 0) return row;
+  return {
+    ...row,
+    html: '[dashboard page — the user views it in Analytics; change it with edit_dashboard]',
+  };
+}
+
 export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
   const { ctx, name, args } = deps;
   switch (name) {
@@ -160,7 +178,9 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
       const secretCols = await secretColumnsFor(ctx.db, table);
       return {
         ok: true,
-        result: rows.map((r) => frameUntrustedFileContent(table, redactRow(r, secretCols))),
+        result: rows.map((r) =>
+          redactDashboardHtml(table, frameUntrustedFileContent(table, redactRow(r, secretCols))),
+        ),
       };
     }
     case 'get_row': {
@@ -172,9 +192,9 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
       if (row === null) return { ok: false, error: 'Row not found' };
       return {
         ok: true,
-        result: frameUntrustedFileContent(
+        result: redactDashboardHtml(
           table,
-          redactRow(row, await secretColumnsFor(ctx.db, table)),
+          frameUntrustedFileContent(table, redactRow(row, await secretColumnsFor(ctx.db, table))),
         ),
       };
     }

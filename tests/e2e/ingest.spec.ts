@@ -17,12 +17,11 @@ test.afterEach(async () => {
 // Dispatch a synthetic file drop on the floating Ask Lattice panel (browsers block
 // real paths). Open the panel first so its drop handler is wired + its feed visible.
 async function openAssistant(page: import('@playwright/test').Page) {
-  await page.locator('#ask-lattice-trigger').click();
-  await expect(page.locator('#ask-lattice-panel')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeVisible();
 }
 async function dropFiles(page: import('@playwright/test').Page, names: string[]) {
   await page.evaluate((fileNames) => {
-    const panel = document.getElementById('ask-lattice-panel')!;
+    const panel = document.getElementById('ask-dock')!;
     const dt = new DataTransfer();
     for (const name of fileNames) {
       dt.items.add(new File(['hello ' + name], name, { type: 'text/markdown' }));

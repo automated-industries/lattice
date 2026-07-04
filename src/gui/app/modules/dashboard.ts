@@ -137,6 +137,7 @@ export const dashboardJs = `    // ───────────────
       'window.lattice={' +
       'query:function(t,o){o=o||{};return __lreq("query",{table:t,limit:o.limit,offset:o.offset});},' +
       'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
+      'sql:function(q){return __lreq("sql",{sql:q});},' +
       'search:function(q){return __lreq("search",{query:q});}};';
 
     // Parent-side broker: the ONLY bridge between the isolated frame and the data
@@ -164,6 +165,19 @@ export const dashboardJs = `    // ───────────────
         return fetch('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + lim + '&offset=' + off)
           .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
       }
+      if (op === 'sql') {
+        // Read-only aggregation surface: the server enforces the SELECT-only
+        // shape, protected-table deny-list, row cap, and (Postgres) a READ
+        // ONLY transaction; RLS scopes a cloud member as on any read.
+        return fetch('/api/analytics/sql', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sql: String((msg && msg.sql) || '') }),
+        }).then(function (r) { return r.json(); }).then(function (j) {
+          if (j && j.error) return { ok: false, error: String(j.error) };
+          return { ok: true, data: j };
+        });
+      }
       if (op === 'get') {
         return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(String(msg.id || '')))
           .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
@@ -177,11 +191,18 @@ export const dashboardJs = `    // ───────────────
       window.addEventListener('message', function (e) {
         var d = e.data;
         if (!d || d.__lattice !== true) return;
-        // Identity check: only honour messages whose source IS the live HTML-file
-        // frame's window — an unforgeable handle. (The frame is null-origin, so we
-        // can't match on e.origin; source identity is the real gate.)
-        var frame = document.getElementById('html-file-frame');
-        if (!frame || !frame.contentWindow || e.source !== frame.contentWindow) return;
+        // Identity check: only honour messages whose source IS a live sandboxed
+        // page frame's window — an unforgeable handle. (The frames are null-origin,
+        // so we can't match on e.origin; source identity is the real gate.) Any
+        // .html-frame qualifies: the Configure file preview and the Analytics
+        // dashboard canvas both render through this broker, and the hidden view's
+        // frame may coexist in the DOM.
+        var frame = null;
+        var frames = document.querySelectorAll('iframe.html-frame');
+        for (var fi = 0; fi < frames.length; fi++) {
+          if (frames[fi].contentWindow && e.source === frames[fi].contentWindow) { frame = frames[fi]; break; }
+        }
+        if (!frame) return;
         var rid = d.rid;
         var reply = function (payload) {
           payload.__latticeReply = true;

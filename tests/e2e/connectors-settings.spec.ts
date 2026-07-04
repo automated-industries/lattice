@@ -19,7 +19,7 @@ test('the connectors dialog renders data-driven cards (helpers in scope)', async
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   await page.locator('#src-add-connector').click();
 
   const dlg = page.locator('#connectors-dialog');

@@ -35,6 +35,7 @@ import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
 import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
 import { buildComputedFillLlm } from './computed-llm.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
+import { installDashboardRepair } from './dashboard-repair.js';
 import type { AuditEntry } from './mutations.js';
 import { retireLegacyPreferenceSecrets } from './assistant-routes.js';
 import type { ActiveDb } from './active-db.js';
@@ -560,6 +561,15 @@ export async function openConfig(
     computedFillLlm: () => buildComputedFillLlm(db),
   };
 
+  // Dashboards read the live model — when it changes underneath them
+  // (rename/delete/merge, from the assistant OR the schema UI), re-author the
+  // consuming pages automatically. Registered per-workspace; disposed on switch.
+  active.dashboardRepair = installDashboardRepair({
+    db,
+    feed,
+    validTables: () => active.validTables,
+  });
+
   // Owner-side convergence (native-entity adopt + the cloud RLS/grant/settings/
   // publish bootstrap) runs in the BACKGROUND, off the switch's critical path:
   // openConfig must return a usable ActiveDb instantly (it runs before disposeActive
@@ -901,6 +911,13 @@ export async function disposeActive(
   try {
     active.fileWatcher?.stop();
     active.db.setAutoRenderDrain(null);
+  } catch {
+    // best-effort
+  }
+  // Unregister the dashboard auto-repair listener + drop any pending pass so a
+  // debounced rewrite can't fire against a closing DB.
+  try {
+    active.dashboardRepair?.dispose();
   } catch {
     // best-effort
   }
