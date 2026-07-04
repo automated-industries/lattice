@@ -87,12 +87,6 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       -webkit-line-clamp: none; display: inline;
     }
 
-    /* Document preview (item view, built from columns) */
-    .fs-doc {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 8px 20px; box-shadow: var(--shadow);
-      max-width: 900px;
-    }
     /* Simple-mode rendered context: formatted markdown documents. */
     .fs-context { max-width: 900px; }
     .fs-context-doc {

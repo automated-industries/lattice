@@ -342,8 +342,21 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // hashchange, and onboarding's SSE handler carries BOTH the tool_use status
 // line and the in-turn question card. Length + hash recaptured for the
 // merged bundle.
-const ORIGINAL_LENGTH = 664829;
-const ORIGINAL_SHA256 = 'be9d50e10d838b2bd1945efde064d3282f80dbf6012e353d56227c25742aa55a';
+// UX-review batch (non-destructive question surfacing + confirmations +
+// a11y): a background 'question' feed event no longer force-navigates to the
+// Analytics view while the user is mid-build in the computed-table builder
+// (#/computed/*) — refreshQuestions now surfaces via the trigger dot + a
+// dismissible toast (qUserIsEditing / qNotifyNewQuestion) instead of flipping
+// the hash, and only auto-opens the dock when idle. The Ask trigger's
+// aria-label reflects the pending-question count and a polite #q-live region
+// announces new questions (qAnnounce), so the CSS-only dot is no longer the
+// sole signal; dismissing a question now confirms first. A freshly-created
+// computed view with AI-derived fields shows a "still filling" banner on the
+// collection page (fsComputedAiBanner). Deleting a computed table (cbDelete)
+// or a dashboard (analytics ⋯ Delete) now confirms before the DELETE. Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 670225;
+const ORIGINAL_SHA256 = 'eabfef7ef59a2a6869c85fbbe83a961c37fd2be75141a7cdbabfa7a1d7f0f1cc';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

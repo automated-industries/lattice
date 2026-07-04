@@ -152,10 +152,12 @@ import {
 import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
 import { registerComputedTables } from './schema/computed-table.js';
 import type {
+  CloudCompileOptions,
   ComputedRegistrationResult,
   ComputedSchemaTable,
   ComputedTableHost,
 } from './schema/computed-table.js';
+import { loadAllColumnPolicy, tableNeedsAudienceView } from './cloud/audience.js';
 import type { ComputedTableDef } from './config/types.js';
 import {
   installFilePresigner,
@@ -826,7 +828,7 @@ export class Lattice {
     const defs: Record<string, ComputedTableDef> = {};
     for (const { name, definition } of this._configComputedTables) defs[name] = definition;
 
-    const cloud = await this._computedCloudOption();
+    const cloud = await this.computedCloudOption({ introspectOnly });
     const result = await registerComputedTables(this._computedTableHost(), defs, {
       schema: this.computedSchemaLookup(),
       dialect: this.getDialect(),
@@ -851,6 +853,9 @@ export class Lattice {
       // column-cache write below already covers for the only table that changed.
       migrate: (migrations) => this._schema.applyMigrationsAsync(this._adapter, migrations),
       introspectColumns: (table) => introspectColumnsAsyncOrSync(this._adapter, table),
+      // Batch the post-create column introspection of all computed views into one
+      // information_schema round-trip (a per-table serial cost on a pooled cloud).
+      introspectAllColumns: (tables) => introspectAllColumnsAsyncOrSync(this._adapter, tables),
       register: (table, def, columns) => {
         if (!this._schema.getTables().has(table)) this._registerTable(table, def);
         this._columnCache.set(table, new Set(columns));
@@ -869,13 +874,33 @@ export class Lattice {
    * would be a row-visibility hole, and a connection broken enough to fail this
    * one SELECT fails the open anyway.
    */
-  private async _computedCloudOption(): Promise<{ rowVisible: true } | undefined> {
+  async computedCloudOption(
+    opts: { introspectOnly?: boolean } = {},
+  ): Promise<CloudCompileOptions | undefined> {
     if (this.getDialect() !== 'postgres') return undefined;
     const row = (await getAsyncOrSync(
       this._adapter,
       `SELECT to_regclass('__lattice_owners') AS reg`,
     )) as { reg?: string | null } | undefined;
-    return row?.reg != null ? { rowVisible: true } : undefined;
+    if (row?.reg == null) return undefined;
+    // An introspect-only (scoped member) open compiles NO view DDL — it registers
+    // the owner-created views by introspection — so it needs no masked-tables set;
+    // and a member has no grant on the owner-only `__lattice_column_policy`, so
+    // reading it here would fail. Return just the row-visibility flag.
+    if (opts.introspectOnly) return { rowVisible: true };
+    // Tables with a cell-masking `<t>_v` view (some column carries a non-default
+    // audience in the canonical `__lattice_column_policy` store). A computed view
+    // reads such a table's columns THROUGH its masking view, so a member never
+    // sees the raw value of a column the owner masked from their role. Read the
+    // policy from the DB (canonical), NOT the config-derived in-memory audience —
+    // the latter never reflects a column masked at runtime (GUI "mark secret").
+    // One bounded query over a small, owner-managed table.
+    const policy = await loadAllColumnPolicy(this);
+    const maskedTables = new Set<string>();
+    for (const [table, cols] of policy) {
+      if (tableNeedsAudienceView(cols)) maskedTables.add(table);
+    }
+    return maskedTables.size > 0 ? { rowVisible: true, maskedTables } : { rowVisible: true };
   }
 
   /**
@@ -926,7 +951,7 @@ export class Lattice {
     if (!this._initialized) {
       throw new Error('Lattice: not initialized — call init() first');
     }
-    const cloud = await this._computedCloudOption();
+    const cloud = await this.computedCloudOption();
     const result = await registerComputedTables(this._computedTableHost(), defs, {
       schema: this.computedSchemaLookup(),
       dialect: this.getDialect(),

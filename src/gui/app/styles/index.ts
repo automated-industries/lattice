@@ -14,7 +14,6 @@ import { dataModelCss } from './data-model.js';
 import { provenanceCss } from './provenance.js';
 import { toastCss } from './toast.js';
 import { buttonsCss } from './buttons.js';
-import { renderedContextCss } from './rendered-context.js';
 import { teamsCss } from './teams.js';
 import { settingsGearCss } from './settings-gear.js';
 import { sidebarCss } from './sidebar.js';
@@ -47,7 +46,6 @@ export const css = [
   provenanceCss,
   toastCss,
   buttonsCss,
-  renderedContextCss,
   teamsCss,
   settingsGearCss,
   sidebarCss,

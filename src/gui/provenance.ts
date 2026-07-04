@@ -2,7 +2,7 @@ import type { Lattice } from '../lattice.js';
 import type { AggregateResult, BelongsToRelation, Row } from '../types.js';
 import { allAsyncOrSync } from '../db/adapter.js';
 import { getConnector } from '../connectors/registry.js';
-import { getGuiEntities, tableJunctions } from './data.js';
+import { loadGuiData, tableJunctions } from './data.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 
 /**
@@ -396,7 +396,10 @@ export async function buildProvenanceGraph(
   // (relations are {}), leaving the universal "created" floor below.
   if (rowId && options.row && options.configPath && options.outputDir) {
     try {
-      const me = getGuiEntities(options.configPath, options.outputDir).tables.find(
+      // Structural load only — provenance needs the table's belongsTo relations,
+      // never rendered file CONTENT. Passing withContent=false skips the O(files)
+      // readFileSync scan of every rendered .md that getGuiEntities would trigger.
+      const me = loadGuiData(options.configPath, options.outputDir, false).tables.find(
         (t) => t.name === table,
       );
       const belongs = me

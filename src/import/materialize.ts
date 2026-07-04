@@ -538,19 +538,26 @@ export async function linkMaterializedRows(
     },
   ]);
 
+  // Bounded reads: project only the key columns each map needs (id + the match
+  // key, plus as_of when the side is dated) — never the whole row of every table.
+  const uniq = (cols: string[]): string[] => [...new Set(cols)];
   const toMap = new Map<string, string>();
-  for (const r of await db.query(spec.toTable)) {
+  for (const r of await db.query(spec.toTable, {
+    projection: uniq(['id', spec.toKey, ...(toDated ? ['as_of'] : [])]),
+  })) {
     const k = r[spec.toKey];
     if (k === null || k === undefined) continue;
     toMap.set(toDated ? scopedKey(r.as_of, k) : normalizeText(k), String(r.id));
   }
   const seen = new Set<string>();
-  for (const r of await db.query(spec.junction)) {
+  for (const r of await db.query(spec.junction, { projection: uniq([fromFk, toFk]) })) {
     seen.add(String(r[fromFk]) + '|' + String(r[toFk]));
   }
   const unresolved = new Set<string>();
   let created = 0;
-  for (const r of await db.query(spec.fromTable)) {
+  for (const r of await db.query(spec.fromTable, {
+    projection: uniq(['id', spec.fromColumn, ...(dated ? ['as_of'] : [])]),
+  })) {
     const ref = r[spec.fromColumn];
     if (ref === null || ref === undefined || ref === '') continue;
     const toId = toMap.get(toDated && dated ? scopedKey(r.as_of, ref) : normalizeText(ref));
