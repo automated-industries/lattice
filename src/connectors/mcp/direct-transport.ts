@@ -11,7 +11,7 @@
  */
 
 import { ConnectorUnavailableError } from '../errors.js';
-import { assertSafeUrl } from '../../sources/url-safety.js';
+import { assertSafeUrl, safeFetch } from '../../sources/url-safety.js';
 import type { McpTransport, McpToolCall, McpToolInfo, McpServerRef } from './transport.js';
 import {
   LatticeOAuthProvider,
@@ -49,11 +49,16 @@ type SdkClientCtor = new (
 interface SdkAuthTransport {
   finishAuth(authorizationCode: string): Promise<void>;
 }
+/** The SDK's `fetch` seam: it routes every transport + OAuth HTTP request through this. */
+type SdkFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
 type SdkStreamableCtor = new (
   url: URL,
-  opts?: { authProvider?: unknown; requestInit?: RequestInit },
+  opts?: { authProvider?: unknown; requestInit?: RequestInit; fetch?: SdkFetch },
 ) => SdkAuthTransport;
-type SdkSseCtor = new (url: URL, opts?: { authProvider?: unknown }) => SdkAuthTransport;
+type SdkSseCtor = new (
+  url: URL,
+  opts?: { authProvider?: unknown; fetch?: SdkFetch },
+) => SdkAuthTransport;
 type SdkStdioCtor = new (params: { command: string; args?: string[] }) => unknown;
 
 interface LoadedSdk {
@@ -141,6 +146,24 @@ class DirectMcpTransport implements McpTransport {
   }
 }
 
+/**
+ * Build an SSRF-guarding fetch for the SDK. `assertSafeUrl` on the initial server
+ * URL only guards the FIRST request; the SDK then follows HTTP redirects and
+ * fetches the authorization/token/registration endpoints advertised in the
+ * server's own OAuth metadata. A malicious server can point any of those at a
+ * private/loopback/link-local/cloud-metadata address. Routing every SDK request
+ * through {@link safeFetch} re-validates each hop's target (including a resolved
+ * `Location`) before it is fetched, so the guard survives redirects and covers
+ * the OAuth-discovered endpoints — closing the gap the one-time up-front check
+ * leaves open. Exported for tests; production uses the global `fetch` base.
+ */
+export function makeGuardedFetch(baseFetch: typeof fetch = fetch): SdkFetch {
+  return (url, init) =>
+    safeFetch(typeof url === 'string' ? url : url.toString(), baseFetch, init ? { init } : {});
+}
+
+const guardedFetch = makeGuardedFetch();
+
 /** Construct the right auth-bearing HTTP transport for a server (Streamable HTTP or SSE). */
 function makeAuthTransport(
   sdk: LoadedSdk,
@@ -149,9 +172,15 @@ function makeAuthTransport(
   kind: 'http' | 'sse',
 ): SdkAuthTransport {
   if (kind === 'sse') {
-    return new sdk.SSEClientTransport(url, { authProvider: provider as unknown });
+    return new sdk.SSEClientTransport(url, {
+      authProvider: provider as unknown,
+      fetch: guardedFetch,
+    });
   }
-  return new sdk.StreamableHTTPClientTransport(url, { authProvider: provider as unknown });
+  return new sdk.StreamableHTTPClientTransport(url, {
+    authProvider: provider as unknown,
+    fetch: guardedFetch,
+  });
 }
 
 /** Build the SDK transport for a server ref (HTTP/SSE with the stored OAuth token, or stdio). */

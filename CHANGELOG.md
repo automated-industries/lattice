@@ -24,6 +24,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   candidates are dropped as noise, as before. The confirm card echoes the
   threshold its proposal was inferred under, so apply bands links identically
   even if the preference changes between upload and confirm.
+- **A background clarification question no longer interrupts active work.** A
+  realtime `question` event used to force the app to the Analytics view to show
+  the pending card — which, mid-build in the computed-table builder
+  (`#/computed/*`), discarded the in-progress form. New questions arriving while
+  you are in the builder now surface via the assistant trigger's notification
+  dot plus a dismissible toast instead of navigating; when you are idle, the
+  assistant still opens automatically as before.
+- **Deleting a computed table or a dashboard now asks first.** Both the
+  computed-table builder's "Remove" action and a dashboard's ⋯ → Delete prompt
+  for confirmation ("… You can undo this from history.") before issuing the
+  delete. The after-the-fact undo toast is unchanged.
+- **Clarification questions are more accessible.** The assistant trigger's
+  accessible name now reflects the number of pending questions (e.g. "… — 2
+  questions waiting") and a polite live region announces new questions, so the
+  waiting state is no longer signalled by the visual dot alone. Dismissing a
+  question now confirms first so a stray click can't discard it.
+- **Freshly-created computed views hint that AI columns are still filling.** A
+  computed view whose definition has AI-derived fields (AI category / AI text)
+  now shows an unobtrusive banner on its collection page while those cells fill
+  in the background, so momentarily-blank AI columns don't read as broken.
+
+### Removed
+
+- **Dead GUI stylesheet rules.** Removed CSS whose markup was retired during the
+  5.0 GUI refactors: the rendered-context block, the provenance graph mount, the
+  legacy table cell-clip/empty-row and row-action controls, the retired mobile
+  assistant-rail drawer, the abandoned multi-group Outputs classes, the
+  Advanced-View toggle switch, and the old record detail card. No visual change
+  — every removed selector was verified to have no remaining markup.
 
 ### Added
 
@@ -137,6 +166,16 @@ database connector).
 
 ### Security
 
+- **MCP connector SSRF guard now survives redirects and OAuth discovery.** The
+  user-supplied MCP server URL was validated once, up front — but the client
+  then followed HTTP redirects and fetched the authorization/token/registration
+  endpoints advertised in the server's own OAuth metadata without re-checking
+  them, so a malicious server could point any of those at a
+  private/loopback/link-local/cloud-metadata address after passing the initial
+  check. Every MCP request (transport and OAuth) is now routed through a fetch
+  that re-validates each hop's resolved target before it is fetched, closing the
+  redirect and OAuth-discovery SSRF paths.
+
 - **External-database connections are read-only, enforced in depth.** A
   connected database is a data source — Lattice must never be able to write to
   it. Every pooled connection now starts with
@@ -162,8 +201,39 @@ database connector).
 - **OAuth callback pinned to loopback** — the connector `redirect_uri` is derived
   from the bound loopback authority, not the request `Host`.
 
+### Privacy
+
+- **Computed views honor per-column audience masking on a team cloud.** A
+  computed table's compiled view read its base and related columns raw and
+  applied only row visibility, so a scoped member reading the view could see the
+  value of a column the owner had masked from their role — a column-level leak
+  that a normal read (through the `<table>_v` masking view) would have caught.
+  Cloud-compiled computed views now read every masked source table through its
+  cell-masking `<table>_v` view instead of the base table, so a masked column
+  reads NULL for a member exactly as it does elsewhere; the masking binds
+  per-viewer (`session_user`), so the row owner still sees the real value. Row
+  visibility is unchanged — a masked source is read through a view that already
+  applies it, so the redundant predicate is dropped. SQLite (single-tenant) is
+  unaffected.
+
 ### Performance
 
+- **Provenance builds without an O(files) rendered-content scan.**
+  `/api/provenance` loaded the CONTENT of every rendered context `.md` file from
+  disk to read the table/column/relation structure it actually needs; it now uses
+  the structural (no-content) workspace load, and junction discovery
+  (`tableJunctions` / `fileJunctions`) does the same — no per-request full-tree
+  disk scan.
+- **Clarification-question junction creation reads only the key columns.**
+  `linkMaterializedRows` (the "Yes, connect them" answer path) issued three
+  unbounded `SELECT *` whole-table reads to build its key maps; it now projects
+  just the id + match key (+ `as_of` when the side is dated), so it never pulls
+  every column of every row into JS.
+- **Computed-table registration introspects all views in one round-trip.**
+  Workspace open introspected each computed view's columns with a separate
+  `information_schema` query (one serial round-trip per computed table on a pooled
+  cloud connection); it now batches them into a single query, so an open with K
+  computed tables pays one introspection round-trip instead of K.
 - **Instant undo/redo state.** Header undo/redo availability is computed with
   bounded `COUNT` queries + an index instead of loading the session's entire audit
   log (with row snapshots) on every edit and navigation.

@@ -68,8 +68,10 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
   await expect(page.locator(`.tab[data-key="dash:${id}"]`)).toContainText('New Name');
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toContainText('New Name');
 
-  // Delete → tab closes, list refreshes, home shows.
+  // Delete → tab closes, list refreshes, home shows. It now confirms first
+  // (guarding against a stray click) — accept the dialog.
   await page.locator('#dash-menu-btn').click();
+  page.once('dialog', (d) => void d.accept());
   await page.locator('#dash-menu [data-act="delete"]').click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics');
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toHaveCount(0);

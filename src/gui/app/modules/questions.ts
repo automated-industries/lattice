@@ -7,9 +7,12 @@ export const questionsJs = `
     // interactive cards above the composer in the assistant dock (Analytics
     // view); the in-turn ask_user tool renders the same card inline in the
     // conversation. While ≥1 question is pending and the Analytics view is
-    // not showing, the header's Ask trigger carries a notification dot; a
-    // brand-new question switches to the Analytics view so the cards are
-    // seen (both views stay mounted, so nothing is lost by the flip).
+    // not showing, the header's Ask trigger carries a notification dot; when
+    // the user is idle a brand-new question switches to the Analytics view so
+    // the cards are seen (both views stay mounted, so nothing is lost by the
+    // flip). While the user is mid-edit (the computed-table builder) the view
+    // is NOT switched — the question surfaces via the dot + a dismissible toast
+    // so an in-progress build is never discarded.
     // ────────────────────────────────────────────────────────────
     var qCards = {};        // pending-store question id → card element
     var qPendingCount = 0;  // live pending count (drives the trigger dot)
@@ -26,6 +29,42 @@ export const questionsJs = `
       var trig = document.getElementById('ask-lattice-trigger');
       if (!trig) return;
       trig.classList.toggle('has-question', qPendingCount > 0 && !qDockShowing());
+      // The dot is a CSS-only ::after — invisible to assistive tech — so also
+      // reflect the pending count in the trigger's accessible name. Capture the
+      // authored label once so it can be restored when nothing is pending.
+      if (trig.__qBaseLabel == null) trig.__qBaseLabel = trig.getAttribute('aria-label') || 'Ask Lattice';
+      trig.setAttribute('aria-label', qPendingCount > 0
+        ? trig.__qBaseLabel + ' — ' + qPendingCount + (qPendingCount === 1 ? ' question waiting' : ' questions waiting')
+        : trig.__qBaseLabel);
+    }
+    // A route/surface where the user is actively working, and where an
+    // involuntary navigation would discard unsaved form state. Currently the
+    // full-page computed-table builder (create + edit). A background question
+    // must NOT yank the user out of these — it surfaces via the dot + a toast.
+    function qUserIsEditing() {
+      return (location.hash || '').indexOf('#/computed/') === 0;
+    }
+    // Non-destructive surface for a new question while the user is mid-edit:
+    // a dismissible toast pointing at the assistant (the dot is already lit).
+    function qNotifyNewQuestion() {
+      if (typeof showToast === 'function') {
+        showToast('You have a new question — answer it in the assistant', {});
+      }
+    }
+    // Announce a newly-arrived question to assistive tech (the dot + the dock
+    // flip are both silent to screen readers). One polite live region, lazily
+    // created and reused.
+    function qAnnounce(msg) {
+      var live = document.getElementById('q-live');
+      if (!live) {
+        live = document.createElement('div');
+        live.id = 'q-live';
+        live.setAttribute('aria-live', 'polite');
+        live.setAttribute('role', 'status');
+        live.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;padding:0;margin:-1px';
+        document.body.appendChild(live);
+      }
+      live.textContent = msg;
     }
     // Build one interactive question card: the question text, one button per
     // option, a free-form "Other" input, and (for store-backed cards) a subtle
@@ -125,6 +164,9 @@ export const questionsJs = `
           });
         },
         onDismiss: function (card) {
+          // Dismissing drops a pending question for good — confirm so a stray
+          // click can't discard it silently.
+          if (typeof confirm === 'function' && !confirm('Dismiss this question?')) return;
           qCardBusy(card, true);
           postQuestionAction(q.id, 'dismiss').then(function () {
             qMarkResolved(q.id, card, 'Dismissed');
@@ -160,7 +202,17 @@ export const questionsJs = `
           if (!qCards[q.id]) { hadNew = true; renderPendingQuestion(q); }
         });
         qPendingCount = qs.length;
-        if (openOnNew && hadNew && !qDockShowing()) qShowDock();
+        if (openOnNew && hadNew) {
+          // A newly-arrived question announces itself to screen readers either way.
+          qAnnounce(qPendingCount === 1
+            ? 'A new question is waiting in the assistant.'
+            : qPendingCount + ' questions are waiting in the assistant.');
+          // A broadcast realtime event must never yank the user out of active
+          // work (e.g. an in-progress computed-table build): while editing,
+          // surface via the dot + toast; when idle, auto-open the dock as before.
+          if (qUserIsEditing()) qNotifyNewQuestion();
+          else if (!qDockShowing()) qShowDock();
+        }
         updateQuestionDot();
       }).catch(function () { /* resilient — chat keeps working without questions */ });
     }

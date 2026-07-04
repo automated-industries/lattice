@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
+import { writeManifest } from '../../src/lifecycle/manifest.js';
 import { createConnector } from '../../src/connectors/registry.js';
 import {
   ensureLineageTable,
@@ -556,5 +557,61 @@ describe('provenance: universal row traceback (creation + belongsTo parents)', (
     const g = await buildProvenanceGraph(d, 'projects', { rowId: 'p3', row: row ?? undefined });
     expect(g.nodes.some((n) => n.type === 'created')).toBe(true);
     expect(g.nodes.some((n) => n.type === 'related')).toBe(false);
+  });
+
+  it('never reads rendered .md content when building the graph (bounded reads)', async () => {
+    const { db: d, configPath, outputDir } = await setupProjects();
+    await d.insert('projects', {
+      id: 'p1',
+      name: 'Proj',
+      org_id: 'org1',
+      client_id: 'cli1',
+      created_at: 't',
+      updated_at: 't',
+    });
+    const row = await d.get('projects', 'p1');
+
+    // Build a manifest whose entity-context files are POISONED: each declared
+    // rendered file is actually a DIRECTORY on disk, so any attempt to read its
+    // CONTENT (readFileSync) throws EISDIR. The pre-fix path loaded entity content
+    // (getGuiEntities → collectEntities → readFileSync every rendered .md — an
+    // O(files) per-request scan); that throw would propagate out of the structural
+    // load and, caught by the belongsTo enrichment's guard, SUPPRESS the parent
+    // node. The structural (withContent=false) load never touches these files, so
+    // the enrichment still resolves the parent — the observable proof that no
+    // rendered-content read happened on this hot path.
+    const poison = (dirRoot: string, slug: string): string => {
+      mkdirSync(join(outputDir, dirRoot, slug, 'CONTEXT.md'), { recursive: true });
+      return 'CONTEXT.md';
+    };
+    writeManifest(outputDir, {
+      version: 2,
+      generated_at: new Date().toISOString(),
+      entityContexts: {
+        projects: {
+          directoryRoot: 'projects',
+          declaredFiles: ['CONTEXT.md'],
+          protectedFiles: [],
+          entities: { p1: { [poison('projects', 'p1')]: { hash: 'h1' } } },
+        },
+        orgs: {
+          directoryRoot: 'orgs',
+          declaredFiles: ['CONTEXT.md'],
+          protectedFiles: [],
+          entities: { org1: { [poison('orgs', 'org1')]: { hash: 'h2' } } },
+        },
+      },
+    });
+
+    const g = await buildProvenanceGraph(d, 'projects', {
+      rowId: 'p1',
+      row: row ?? undefined,
+      configPath,
+      outputDir,
+    });
+    // The belongsTo parent still resolves — reading the poisoned rendered files
+    // would have thrown and suppressed it, so this proves they were NOT read.
+    expect(g.nodes.some((n) => n.id === 'rel:orgs:org1')).toBe(true);
+    expect(g.nodes.some((n) => n.type === 'created')).toBe(true);
   });
 });
