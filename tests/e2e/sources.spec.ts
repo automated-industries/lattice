@@ -27,7 +27,7 @@ test.afterEach(async () => {
 });
 
 test('the sidebar shows the three Inputs sections', async ({ page }) => {
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   const src = page.locator('#sources-nav');
   await expect(src.getByText('Files', { exact: true })).toBeVisible({ timeout: 5000 });
   await expect(src.getByText('Connectors', { exact: true })).toBeVisible();
@@ -44,7 +44,7 @@ test('a registered folder renders as a tree and lazily expands one level', async
   });
   expect(res.ok()).toBeTruthy();
 
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   const tree = page.locator('#src-files-tree');
   const rootFolder = tree.locator('.src-folder').first();
   await expect(rootFolder).toBeVisible({ timeout: 5000 });
@@ -59,7 +59,7 @@ test('a registered folder renders as a tree and lazily expands one level', async
 });
 
 test('"Add a Connector" opens the connectors dialog', async ({ page }) => {
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   await page.locator('#src-add-connector').click();
   await expect(page.locator('#connectors-dialog')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('#connectors-dialog-body')).toContainText('Jira');
@@ -93,7 +93,7 @@ test('the Files group header sits left of its child rows (tree indentation)', as
   });
   expect(res.ok()).toBeTruthy();
 
-  await page.goto(gui.url + '#/');
+  await page.goto(gui.url + '#/folders');
   const header = page.locator('.section-toggle[data-group="files"] .section-label-text');
   await expect(header).toBeVisible({ timeout: 5000 });
   const child = page.locator('#src-files-tree .src-row').first();

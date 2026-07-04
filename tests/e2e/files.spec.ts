@@ -10,7 +10,7 @@ test.afterEach(async () => {
 });
 
 test('ingested text renders a preview on the files row detail', async ({ page }) => {
-  await page.goto(gui.url);
+  await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
   // Ingest a text snippet into the native `files` entity (paste-text path).

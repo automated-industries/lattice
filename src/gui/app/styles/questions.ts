@@ -48,7 +48,8 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     /* In-turn ask_user card: sits in the conversation flow like an assistant
        bubble (the wrapper carries the Gladys avatar), sized like one too. */
     .chat-msg.q-inline .q-card { max-width: 85%; }
-    /* Notification dot on the Ask trigger while questions wait, panel closed. */
+    /* Notification dot on the Ask trigger while questions wait off-screen
+       (i.e. the Analytics view — where the cards live — is not showing). */
     .ask-lattice-trigger { position: relative; }
     .ask-lattice-trigger.has-question::after {
       content: ''; position: absolute; top: -2px; right: -2px;

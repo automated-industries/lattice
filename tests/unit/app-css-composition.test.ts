@@ -124,8 +124,16 @@ import { css } from '../../src/gui/app/css.js';
 // Import computed proposals — .imp-computed checkbox rows for the confirm
 // card's opt-in "Computed tables" section (inline-import segment). Length +
 // hash recaptured.
-const ORIGINAL_LENGTH = 134968;
-const ORIGINAL_SHA256 = '8c668a7bd6e3af421a1c19476474a73cae2f61979572b0172c4e533fbc1f0d7c';
+// 5.0 Analytics view — analytics layout grid + Dashboards sidebar + dashboard
+// page/canvas + dock status line; the floating assistant panel's styles became
+// the .ask-dock column (feed/composer/staging rules unchanged). Length + hash
+// recaptured.
+// 5.0 merge — the questions segment's #question-cards strip now lives in the
+// .ask-dock (between the status line and the composer); its rules are
+// container-agnostic, so only the dot comment changed. Length + hash
+// recaptured for the merged stylesheet.
+const ORIGINAL_LENGTH = 138201;
+const ORIGINAL_SHA256 = '31fb8f9a4ac6c6120a48d7d8ebad79f67ab33d7e192470dd9535e8d203233588';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

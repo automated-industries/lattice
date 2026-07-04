@@ -30,6 +30,13 @@ const GEN_MODEL = 'claude-haiku-4-5';
 export const BUILTIN_COLUMN_DESCRIPTIONS: Readonly<
   Record<string, Readonly<Record<string, string>>>
 > = {
+  dashboards: {
+    title: 'Short human-readable title, shown in the Dashboards sidebar and tab.',
+    html: 'The dashboard page itself (standalone HTML). Written only by the dashboard authoring tools; redacted from assistant reads.',
+    spec: 'The authoring instructions — a plain-language description of what the dashboard shows.',
+    description: 'One-line subtitle for the Dashboards sidebar.',
+    source_tables: 'JSON array of the table names the dashboard reads its data from.',
+  },
   files: {
     original_name: 'Original filename as uploaded.',
     mime: 'MIME content type of the file (e.g. application/pdf).',
@@ -72,6 +79,8 @@ export const BUILTIN_TABLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   files: 'Uploaded, ingested, or assistant-authored files and documents.',
   notes: 'Free-form knowledge notes with a title and markdown body.',
   secrets: 'Named secrets (API keys, tokens) stored encrypted at rest.',
+  dashboards:
+    'Live visual dashboards built for the user (the Analytics view). Create or change them ONLY via create_dashboard / edit_dashboard — never create_row / update_row.',
 };
 
 /** Built-in description for a column, or undefined if there is none. */

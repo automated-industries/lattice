@@ -31,6 +31,16 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       var hash = location.hash || '#/';
       // Bumping renderGen invalidates any in-flight (older) render either way.
       renderGen++;
+      // Which of the two app views does this hash belong to? Applied BEFORE the
+      // Configure loading-frame paint below: an Analytics navigation must leave
+      // the hidden Configure content untouched (and vice versa), so each side
+      // keeps its state while parked.
+      applyAppView(hash);
+      if (isAnalyticsHash(hash)) {
+        if (window.LatticeGA) window.LatticeGA.pageView(routeType(hash));
+        renderAnalyticsRoute(hash, soft);
+        return;
+      }
       if (content && !soft) content.innerHTML = routeLoadingHtml();
       if (!state.entities) return; // shell still booting — the loading frame stays
       highlightActive();

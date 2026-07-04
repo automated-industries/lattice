@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { appJs } from '../../src/gui/app/script.js';
+import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 
 // `src/gui/app/script.ts` (a single 7319-line template literal) was split into
 // per-subsystem segments under `src/gui/app/modules/`, composed back into `appJs`
@@ -321,8 +322,28 @@ import { appJs } from '../../src/gui/app/script.js';
 // proposal's linkConfidence so apply re-derives with the same threshold
 // (inline-import segment; runInlineImport now takes the whole autoImport).
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 642692;
-const ORIGINAL_SHA256 = '024621ea95dac6767fa268bd629990bbdd5ee014652aaabb50c004525aa1f415';
+// 5.0 Analytics view — the app splits into two hash-driven views: Analytics
+// (the landing surface: Dashboards sidebar, dynamic dashboard tabs, docked
+// assistant) and Configure (the existing three-column workspace). The floating
+// assistant panel is retired — the chat's #rail-* nodes live in the Analytics
+// dock; dashboards open as closable, deduped tabs with the width-based "⋯ N"
+// overflow; assistant-created dashboards route to #/analytics/<id> everywhere
+// a record would open; a transient plain-language status line acknowledges
+// tool work. Length + hash recaptured.
+// 5.0 live dashboards — the sandboxed page bridge gains a read-only SQL
+// surface (window.lattice.sql → the parent broker → the server-enforced
+// /api/analytics/sql endpoint), so dashboards aggregate live data in one
+// portable SELECT instead of fetching whole tables. Length + hash recaptured.
+// 5.0 merge — clarification questions meet the Analytics dock: the
+// #question-cards strip renders inside the dock above the composer; the
+// questions segment derives "cards on screen" from the Analytics hash
+// (qDockShowing/qShowDock replace the retired floating-panel open/close), a
+// new question switches to the Analytics view, the dot re-evaluates on
+// hashchange, and onboarding's SSE handler carries BOTH the tool_use status
+// line and the in-turn question card. Length + hash recaptured for the
+// merged bundle.
+const ORIGINAL_LENGTH = 664829;
+const ORIGINAL_SHA256 = 'be9d50e10d838b2bd1945efde064d3282f80dbf6012e353d56227c25742aa55a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
@@ -344,5 +365,43 @@ describe('appJs composition', () => {
     // in the browser. Parse it here to catch that at build time.
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- intentional: parse-only syntax check of the internally-composed bundle
     expect(() => new Function(normalized)).not.toThrow();
+  });
+});
+
+describe('analytics tab strip isolation', () => {
+  // The Analytics strip was recovered from the original dynamic tab machinery,
+  // whose identifiers still exist in tabs.ts for the Configure strip. Both
+  // segments live in ONE IIFE, and a duplicate function declaration is legal
+  // JS — the later one would silently REPLACE the Configure implementation
+  // with every unit test still green. Assert the recovered copy carries no
+  // bare legacy identifier (all its symbols/element ids are an-/antab-prefixed).
+  it('redeclares no identifier from the Configure tab strip', () => {
+    // Match against CODE only: comments and string literals legitimately
+    // mention tab words (prose, CSS classes, element ids), but an IDENTIFIER
+    // collision is what would shadow the Configure implementation.
+    const code = analyticsTabsJs.replace(/\/\/[^\n]*/g, '').replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+    const legacy = [
+      'tabs',
+      'activeTabKey',
+      'tabKeyForHash',
+      'reconcileTab',
+      'renderTabStrip',
+      'closeTab',
+      'setTabTitle',
+      'findTab',
+      'tabBtnHtml',
+      'tabOverflowWired',
+      'wireTabOverflowGlobal',
+      'TAB_MIN_W',
+      'GRAPH_HASH',
+    ];
+    for (const name of legacy) {
+      const re = new RegExp('(?<![A-Za-z0-9_$])' + name + '(?![A-Za-z0-9_$])');
+      expect(re.test(code), name + ' must not appear bare in analyticsTabsJs code').toBe(false);
+    }
+    // The Configure strip's mount + overflow element ids must not be targeted.
+    expect(analyticsTabsJs.includes("getElementById('tabstrip-tabs')")).toBe(false);
+    expect(analyticsTabsJs.includes("getElementById('tab-overflow-btn')")).toBe(false);
+    expect(analyticsTabsJs.includes("getElementById('tab-overflow-menu')")).toBe(false);
   });
 });
