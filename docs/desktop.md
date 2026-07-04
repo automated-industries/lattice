@@ -75,6 +75,45 @@ Releases are cut by the `Desktop Release` workflow on a `v*` tag: it builds both
 OSes, generates `latest.json`, and uploads the installers + manifest to the
 GitHub Release.
 
+### Code signing (maintainers)
+
+Builds are **ad-hoc (unsigned) by default** — contributors need no certificates,
+and the unsigned `.pkg` still installs to `/Applications` (with the macOS
+"unidentified developer" prompt on first launch). Real signing activates only
+when credentials are supplied through the environment; no identity, team, or key
+value is hardcoded anywhere in the repo.
+
+To produce a signed + notarized macOS build locally, export before running
+`npm run desktop:build:mac:pkg`:
+
+- `SIGN_APP_IDENTITY` — the Developer ID **Application** identity (certificate
+  name or SHA-1) passed to `codesign`
+- `SIGN_INSTALLER_IDENTITY` — the Developer ID **Installer** identity passed to
+  `pkgbuild` (optional; without it the `.pkg` itself is unsigned)
+- notarization credentials, either:
+  - `NOTARY_PROFILE` — a `notarytool store-credentials` keychain profile name, or
+  - `NOTARY_KEY_FILE` + `NOTARY_KEY_ID` + `NOTARY_ISSUER_ID` — an App Store
+    Connect API key (`.p8` file path, key id, issuer id)
+
+The app is signed inside-out under the hardened runtime with
+[`scripts/lattice.entitlements`](../scripts/lattice.entitlements) (JIT
+entitlements required by the embedded JavaScript runtime), then the `.app`,
+`.pkg`, and `.dmg` are each notarized and stapled, hard-failing unless Apple
+returns **Accepted**.
+
+The `Desktop Release` workflow does the same automatically when these repository
+secrets are configured (absent secrets — e.g. on forks — still produce working
+unsigned artifacts):
+
+| Secret                                                           | Contents                                                 |
+| ---------------------------------------------------------------- | -------------------------------------------------------- |
+| `MACOS_CERT_APP_P12` / `MACOS_CERT_APP_P12_PASSWORD`             | Developer ID Application cert (base64 `.p12`) + password |
+| `MACOS_CERT_INSTALLER_P12` / `MACOS_CERT_INSTALLER_P12_PASSWORD` | Developer ID Installer cert (base64 `.p12`) + password   |
+| `MACOS_KEYCHAIN_PASSWORD`                                        | password for the ephemeral build keychain                |
+| `MACOS_APP_IDENTITY` / `MACOS_INSTALLER_IDENTITY`                | the two signing identity names                           |
+| `NOTARY_KEY_P8`                                                  | App Store Connect API key (base64 `.p8`)                 |
+| `NOTARY_KEY_ID` / `NOTARY_ISSUER_ID`                             | the API key's id + issuer id                             |
+
 ## Limitations
 
 - **Image processing (`sharp`) and `sqlite-vec` acceleration are unavailable** in
