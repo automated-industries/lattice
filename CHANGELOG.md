@@ -10,17 +10,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
-- **Claude access is becoming OAuth-only, enforced server-side (in progress).**
-  The assistant now authenticates only through a connected Claude subscription
-  (OAuth) — the per-user API-key path is being removed. A single server-side gate
-  refuses every AI route (`/api/chat`, `/api/ingest/*`, `/api/import/*`, question
-  answers) with `403 claude_not_connected` when no subscription is connected, so
-  the requirement can't be bypassed by calling the API directly. `resolveClaudeAuth`
-  is now OAuth-token-or-null and `/api/assistant/config` reports a single
-  `connected` boolean. The opt-in managed-deployment mode
-  (`LATTICE_MANAGED_MODEL_AUTH`, operator env credential) is unaffected. Later
-  steps add the un-skippable first-run connect wall, the header disconnect
-  control, and usage-limit messaging.
+- **Claude access is now OAuth-only, enforced server-side.** The assistant
+  authenticates only through a connected Claude subscription (OAuth); the
+  per-user API-key path is removed. A single server-side gate refuses every AI
+  route (`/api/chat`, `/api/ingest/*`, `/api/import/*`, question answers) with
+  `403 claude_not_connected` when no subscription is connected, so the
+  requirement can't be bypassed by calling the API directly. `resolveClaudeAuth`
+  is OAuth-token-or-null and `/api/assistant/config` reports a single `connected`
+  boolean. `PUT`/`DELETE /api/assistant/key` for the `anthropic` kind now return
+  `400` (OAuth-only) — the voice-provider kinds are unaffected. A first-run
+  **connect wall** gates the whole app before any workspace loads, a header
+  **account menu** offers disconnect (with a warning), and the redundant connect
+  step was dropped from the create/join workspace wizard. **Usage-limit
+  messaging**: a genuine Claude usage 429 flips a shared limit state that shows
+  an app-wide banner and, as a pre-flight, refuses chat and Configure-side
+  ingest/import with `429 claude_limit` (a friendly message + `resetAt`) until it
+  auto-clears. The opt-in managed-deployment mode (`LATTICE_MANAGED_MODEL_AUTH`,
+  operator env credential) is unaffected throughout.
 
 - **Marginal import links now ask instead of auto-creating.** Link inference
   in the structured importer is governed by the clarify threshold (default
