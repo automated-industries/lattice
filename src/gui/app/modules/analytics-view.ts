@@ -25,20 +25,68 @@ export const analyticsViewJs = `
       if (an) lastAnalyticsHash = hash; else lastConfigureHash = hash;
     }
 
+    function goAnalytics() {
+      location.hash = lastAnalyticsHash;
+      var input = document.getElementById('chat-input');
+      if (input) setTimeout(function () { input.focus(); }, 0);
+    }
+    function goConfigure() { location.hash = lastConfigureHash; }
+
+    var ASK_DOCK_KEY = 'lattice.askDockWidth';
+    function applyAskDockWidth(px) {
+      var w = Math.max(300, Math.min(640, Math.round(px)));
+      document.documentElement.style.setProperty('--ask-dock-width', w + 'px');
+    }
+
     function initAnalyticsView() {
       var ask = document.getElementById('ask-lattice-trigger');
-      if (ask && !ask.__wired) {
-        ask.__wired = true;
-        ask.addEventListener('click', function () {
-          location.hash = lastAnalyticsHash;
-          var input = document.getElementById('chat-input');
-          if (input) setTimeout(function () { input.focus(); }, 0);
+      if (ask && !ask.__wired) { ask.__wired = true; ask.addEventListener('click', goAnalytics); }
+      var cfg = document.getElementById('configure-trigger');
+      if (cfg && !cfg.__wired) { cfg.__wired = true; cfg.addEventListener('click', goConfigure); }
+      // "+ New Dashboard" in the Dashboards header → the home (New Dashboard tab
+      // + the empty-state prompt), even when a dashboard is already open.
+      var newBtn = document.getElementById('dash-new-btn');
+      if (newBtn && !newBtn.__wired) {
+        newBtn.__wired = true;
+        newBtn.addEventListener('click', function () { location.hash = AN_HOME_HASH; });
+      }
+      // The brand logo toggles between the two views (Analytics ↔ Configure),
+      // landing on wherever the user last was in the other view.
+      var brand = document.querySelector('.brand');
+      if (brand && !brand.__viewToggle) {
+        brand.__viewToggle = true;
+        brand.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (isAnalyticsHash(location.hash)) goConfigure(); else goAnalytics();
         });
       }
-      var cfg = document.getElementById('configure-trigger');
-      if (cfg && !cfg.__wired) {
-        cfg.__wired = true;
-        cfg.addEventListener('click', function () { location.hash = lastConfigureHash; });
+      // Restore + wire the adjustable Ask Gladys dock width (drag its left edge).
+      var savedW = parseInt(window.localStorage.getItem(ASK_DOCK_KEY) || '', 10);
+      if (!isNaN(savedW)) applyAskDockWidth(savedW);
+      var handle = document.getElementById('ask-dock-resize');
+      if (handle && !handle.__wired) {
+        handle.__wired = true;
+        handle.addEventListener('pointerdown', function (e) {
+          e.preventDefault();
+          var startX = e.clientX;
+          var dock = document.getElementById('ask-dock');
+          var startW = dock ? dock.getBoundingClientRect().width : 360;
+          handle.classList.add('dragging');
+          function move(ev) {
+            // Dock is on the right; dragging LEFT (smaller clientX) widens it.
+            applyAskDockWidth(startW - (ev.clientX - startX));
+          }
+          function upFn() {
+            handle.classList.remove('dragging');
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', upFn);
+            var cur = parseInt(
+              getComputedStyle(document.documentElement).getPropertyValue('--ask-dock-width'), 10);
+            if (!isNaN(cur)) window.localStorage.setItem(ASK_DOCK_KEY, String(cur));
+          }
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', upFn);
+        });
       }
     }
 
@@ -105,10 +153,42 @@ export const analyticsViewJs = `
           '<h1>Ask your company anything</h1>' +
           '<p class="muted">' +
           (hasDashboards
-            ? 'Open a dashboard from the left, or ask a question below.'
+            ? 'Open a dashboard from the left, or start one below.'
             : 'Ask Gladys a question about your data — when a picture answers it best, she builds a dashboard for you.') +
           '</p>' +
+          // A prompt box right in the empty state: describe a dashboard / ask a
+          // question and it goes to Gladys (the same chat turn the dock composer
+          // fires). This is the "New Dashboard" starting point.
+          '<form class="analytics-home-prompt" id="an-home-prompt">' +
+          '<textarea id="an-home-input" rows="1" placeholder="Describe a dashboard, or ask a question about your data…"></textarea>' +
+          '<button type="submit" class="btn primary" id="an-home-send">Ask Gladys</button>' +
+          '</form>' +
           '</div>');
+        var form = host.querySelector('#an-home-prompt');
+        var input = host.querySelector('#an-home-input');
+        if (input) {
+          // Grow to fit, and Enter (no shift) submits like the dock composer.
+          input.addEventListener('input', function () {
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+          });
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (form) form.requestSubmit(); }
+          });
+          setTimeout(function () { input.focus(); }, 0);
+        }
+        if (form) {
+          form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var q = input ? input.value.trim() : '';
+            if (!q) return;
+            input.value = '';
+            input.style.height = 'auto';
+            // Hand off to the assistant exactly like the dock composer — the
+            // reply (and any dashboard it builds) streams into the Ask Gladys dock.
+            if (typeof sendChat === 'function') sendChat(q);
+          });
+        }
       });
     }
 

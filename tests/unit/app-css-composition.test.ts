@@ -150,8 +150,11 @@ import { css } from '../../src/gui/app/css.js';
 // Fix: the Connect-a-database / connectors MODAL dialog z-index restored 95→130
 // so it sits ABOVE its z-120 backdrop (a takeover-panel z-fix had dropped it
 // below the backdrop, dimming the dialog itself). Length + hash recaptured.
-const ORIGINAL_LENGTH = 132819;
-const ORIGINAL_SHA256 = '056fbb241ff3abddee6785bb517ad58a36f3c4bddd2342557d98e2d9c55dd138';
+// Analytics batch: "Workspace" col-header on the tab strip (aligned with the
+// Configure headers), + New Dashboard button, adjustable Ask-dock resize handle,
+// empty-state prompt box. Length + hash recaptured.
+const ORIGINAL_LENGTH = 135393;
+const ORIGINAL_SHA256 = 'f543207ac5f7d5e456b3ed4f8ac4bf68ae2a961862b76de1e6fbbbbaebc16b5d';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

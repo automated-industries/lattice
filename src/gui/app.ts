@@ -189,15 +189,22 @@ export const guiAppHtml = `<!doctype html>
        #rail-* ids at call time, so the housing is the only thing that moved). -->
   <div class="analytics-layout" id="analytics-layout">
     <nav class="dash-sidebar">
-      <div class="col-header col-dashboards"><span class="col-header-text">Dashboards</span></div>
+      <div class="col-header col-dashboards">
+        <span class="col-header-text">Dashboards</span>
+        <button type="button" class="dash-new-btn" id="dash-new-btn" title="Start a new dashboard">＋ New Dashboard</button>
+      </div>
       <div id="dash-list"></div>
     </nav>
     <main class="analytics-content-wrap">
-      <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
+      <div class="antabstrip col-header col-model" id="antabstrip">
+        <span class="col-header-text">Workspace</span>
+        <div class="antabstrip-tabs" id="antabstrip-tabs"></div>
+      </div>
       <div id="analytics-content"></div>
     </main>
     <aside class="ask-dock" id="ask-dock" aria-label="Ask Gladys">
-      <div class="ask-dock-head">
+      <div class="ask-dock-resize" id="ask-dock-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="ask-dock-head col-header col-outputs">
         <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
         <select class="rail-threads" id="rail-threads" title="Conversations"></select>
         <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>

@@ -9,7 +9,9 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
        stay mounted so a flip never destroys the hidden side's state. */
     .analytics-layout {
       display: grid;
-      grid-template-columns: var(--nav-width) minmax(0, 1fr) minmax(300px, 24vw);
+      /* The Ask Gladys dock width is user-adjustable (drag the divider) and
+         defaults ~30px wider than before so "Ask or instruct…" fits one line. */
+      grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--ask-dock-width, 360px);
       height: calc(100vh - 56px);
     }
     body:not(.view-analytics) .analytics-layout { display: none; }
@@ -49,13 +51,24 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     .dash-item .vis-indicator { justify-self: end; }
     .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
 
-    /* ── Tab strip + canvas ─────────────────────────────── */
-    .analytics-content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-    .antabstrip {
-      flex: 0 0 auto; display: flex; align-items: center; min-height: 34px;
-      padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--surface);
+    /* ── Header bar (aligned with the Configure view) ───── */
+    /* The Dashboards header carries a "+ New Dashboard" button on the right. */
+    .col-dashboards { justify-content: space-between; }
+    .dash-new-btn {
+      flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface-2);
+      color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1;
+      padding: 5px 9px; border-radius: 7px; cursor: pointer;
     }
-    .antabstrip-tabs { display: flex; align-items: center; flex: 1; min-width: 0; }
+    .dash-new-btn:hover { background: var(--row-hover); }
+
+    /* ── Tab strip (the "Workspace" col-header) + canvas ── */
+    .analytics-content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    /* antabstrip now uses .col-header .col-model (see markup) so it sits at the
+       same 38px height + accent as the Configure "Model" header. Mirror the
+       Configure .tabstrip layout: the label, then the tabs stretching after it. */
+    .antabstrip { align-items: stretch; padding: 0 12px; }
+    .antabstrip .col-header-text { align-self: center; margin-right: 18px; flex: 0 0 auto; }
+    .antabstrip-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; }
     #analytics-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
     /* ── Analytics home (empty states) ──────────────────── */
@@ -66,6 +79,35 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     .analytics-home-mark { font-size: 44px; line-height: 1; opacity: 0.9; }
     .analytics-home h1 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
     .analytics-home p { margin: 0; max-width: 46ch; }
+    /* The empty-state prompt box — describe a dashboard / ask a question; it
+       hands the turn to Gladys (streams into the dock). */
+    .analytics-home-prompt {
+      display: flex; align-items: flex-end; gap: 8px; width: 100%; max-width: 640px; margin-top: 6px;
+    }
+    .analytics-home-prompt textarea {
+      flex: 1 1 auto; resize: none; min-height: 42px; max-height: 200px;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 10px;
+      padding: 11px 12px; font: inherit; font-size: 14px; line-height: 1.4;
+    }
+    .analytics-home-prompt textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
+    .analytics-home-prompt .btn { flex: 0 0 auto; height: 42px; padding: 0 16px; border-radius: 10px; font-weight: 600; }
+    .analytics-home-prompt .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
+
+    /* ── Ask Gladys dock: aligned header + adjustable width ── */
+    .ask-dock { position: relative; }
+    /* The head reuses the shared .col-header chrome (accent bar + 38px height)
+       so it lines up with Dashboards + Workspace; keep its subtle gradient. */
+    .ask-dock-head.col-header {
+      justify-content: flex-start;
+      background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
+    }
+    /* Drag handle on the dock's LEFT edge (the dock is the rightmost column). */
+    .ask-dock-resize {
+      position: absolute; top: 0; left: -3px; width: 6px; height: 100%;
+      cursor: col-resize; z-index: 6;
+    }
+    .ask-dock-resize:hover, .ask-dock-resize.dragging { background: var(--accent-soft); }
 
     /* ── Dashboard page ─────────────────────────────────── */
     .dash-page { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
