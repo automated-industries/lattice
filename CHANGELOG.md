@@ -128,7 +128,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 - **Connecting a database no longer imports every row and then wipes it.** The
   db-source connect handler treated ANY failure during the initial import —
-  including one thrown *after* thousands of rows were already committed — as a
+  including one thrown _after_ thousands of rows were already committed — as a
   reason to hard-roll-back the whole connection, soft-deleting every imported row
   and deleting the registry entry (along with its only error trace). The connect
   is now two-phase: a **setup** failure (table definition / RLS, before any row
