@@ -147,8 +147,11 @@ import { css } from '../../src/gui/app/css.js';
 // retired .fs-doc detail card. (.fs-tile-vis was KEPT — the shared vis() helper
 // still emits it and gui-visibility-indicators.test.ts exercises it.) Length +
 // hash recaptured.
-const ORIGINAL_LENGTH = 132512;
-const ORIGINAL_SHA256 = '6f37a4fe5db451bbfa32e62e0fbd988a5ff3a35582177e4f3e65f85ae0eb3d65';
+// Fix: the Connect-a-database / connectors MODAL dialog z-index restored 95→130
+// so it sits ABOVE its z-120 backdrop (a takeover-panel z-fix had dropped it
+// below the backdrop, dimming the dialog itself). Length + hash recaptured.
+const ORIGINAL_LENGTH = 132819;
+const ORIGINAL_SHA256 = '056fbb241ff3abddee6785bb517ad58a36f3c4bddd2342557d98e2d9c55dd138';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

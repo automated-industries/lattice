@@ -71,7 +71,11 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
       border-right: 1px solid rgba(15, 23, 42, 0.04);
       box-shadow: 12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
-      z-index: 95; display: flex; flex-direction: column;
+      /* A true MODAL side-drawer: its backdrop (z 120) dims the whole app, the
+         header included, so the dialog MUST sit ABOVE the backdrop. (The
+         takeover-panel z-fix wrongly dropped this to 95 — below the backdrop —
+         which dimmed the dialog itself and faded the whole screen.) */
+      z-index: 130; display: flex; flex-direction: column;
       transform: translateX(-100%); transition: transform 0.22s ease;
     }
     .connectors-dialog.open { transform: translateX(0); }
