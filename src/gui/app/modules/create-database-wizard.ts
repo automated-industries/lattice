@@ -241,8 +241,10 @@ export const createDatabaseWizardJs = `    // ───────────�
 
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
-      fetchJson('/api/assistant/config').then(function (cfg) {
-        if (claudeAuth(cfg).any) {
+      fetchJson('/api/assistant/config').then(function () {
+          // The composer is always active — a connected Claude subscription is
+          // guaranteed past the first-run wall (or supplied by a managed deployment),
+          // so there is no key-gated setup prompt anymore.
           // Dictation is always on-device + keyless, so the mic always shows; there
           // is no provider choice in the GUI (the cloud route stays API-only).
           var micHtml = '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>';
@@ -329,10 +331,6 @@ export const createDatabaseWizardJs = `    // ───────────�
             });
             refreshMicAvailability(micBtn);
           }
-        } else {
-          host.innerHTML = '<div class="composer-setup">Set a Claude API token in ' +
-            '<a href="#/settings/user-config">User Settings → Assistant</a> to chat.</div>';
-        }
       }).catch(function () {
         host.innerHTML = '<div class="composer-setup">Assistant unavailable.</div>';
       });
