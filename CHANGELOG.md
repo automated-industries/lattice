@@ -124,6 +124,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
     nothing and ask instead (at most 2 questions per ingested file); confident
     or confidence-less extractions behave exactly as before.
 
+### Fixed
+
+- **Connecting a database no longer imports every row and then wipes it.** The
+  db-source connect handler treated ANY failure during the initial import —
+  including one thrown *after* thousands of rows were already committed — as a
+  reason to hard-roll-back the whole connection, soft-deleting every imported row
+  and deleting the registry entry (along with its only error trace). The connect
+  is now two-phase: a **setup** failure (table definition / RLS, before any row
+  lands) still rolls back cleanly so no phantom entry is left behind, but an
+  **import** failure keeps the connection in an error state with its already-
+  imported rows live and the error surfaced loudly, so a Refresh can retry. See
+  `docs/bugs/2026-07-05-db-source-import-then-wipe.md`.
+
 ---
 
 ## [5.0.0] — 2026-06-28
