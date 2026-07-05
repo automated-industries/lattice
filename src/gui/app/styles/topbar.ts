@@ -142,6 +142,29 @@ export const topbarCss = `    /* ── Top bar ──────────�
       background: var(--surface); margin-bottom: 6px;
     }
 
+    /* Header account menu (disconnect Claude) */
+    .account { position: relative; display: inline-flex; }
+    .account-menu {
+      position: absolute; top: 38px; right: 0;
+      min-width: 200px; background: var(--glass-strong);
+      -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+      border: 1px solid rgba(15, 23, 42, 0.04); border-radius: 8px;
+      box-shadow: var(--shadow-3), var(--hl-top);
+      z-index: 60; padding: 6px;
+    }
+    .account-menu-head {
+      font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.06em; padding: 8px 10px 4px;
+    }
+    .account-menu-item {
+      width: 100%; display: block; text-align: left;
+      padding: 8px 10px; border: none; background: transparent;
+      cursor: pointer; border-radius: 6px; font-size: 13.5px; color: var(--text);
+    }
+    .account-menu-item:hover { background: var(--row-hover); }
+    .account-menu-item.danger { color: #ef4444; }
+    .account-menu-item.danger:hover { background: rgba(239, 68, 68, 0.1); }
+
     /* Live activity feed popover (next to the version-history clock) */
     .activity { position: relative; display: inline-flex; }
     .activity-pill { position: relative; }
