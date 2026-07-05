@@ -49,6 +49,7 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
@@ -57,12 +58,17 @@ const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-chatschema-cfg-'));
   dirs.push(cfgDir);
-  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY']) {
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY']) {
     savedEnv[k] = process.env[k];
   }
   process.env.LATTICE_CONFIG_DIR = cfgDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'chatschema-test-key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake'; // resolves auth; client is mocked
+  // Claude access is OAuth-only: seed a connected subscription so the server's
+  // AI-auth gate and the chat route's auth check pass. Seeded AFTER
+  // LATTICE_CONFIG_DIR/LATTICE_ENCRYPTION_KEY (the machine-local store is keyed
+  // off the config dir + master key). The Anthropic client is mocked above, so
+  // the token never reaches a real endpoint.
+  seedClaudeOAuth();
   turnState.turns = [];
   turnState.captured = [];
 });

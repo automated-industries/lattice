@@ -3,12 +3,15 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 /**
- * POST /api/chat — the assistant chat stream. We can exercise everything except
- * the live model round-trip without an API key:
- *   - no auth configured → 400
- *   - empty message (auth present) → 400
+ * POST /api/chat — the assistant chat stream. Claude access is OAuth-only, and a
+ * server-side gate refuses every AI-mutating route when no subscription is
+ * connected. We can exercise everything except the live model round-trip by
+ * seeding a fake connected subscription:
+ *   - no subscription connected → the gate returns 403 claude_not_connected
+ *   - empty message (subscription connected) → 400
  *   - a real message persists the thread + user message before streaming; the
  *     model call is pointed at a dead endpoint so the stream fails fast and the
  *     handler still completes (covers the persist + streaming-catch paths).
@@ -74,29 +77,21 @@ async function boot(): Promise<GuiServerHandle> {
   return server;
 }
 
-async function setKey(url: string): Promise<void> {
-  await fetch(`${url}/api/assistant/key`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'anthropic', key: 'sk-ant-test-key' }),
-  });
-}
-
 describe('POST /api/chat', () => {
-  it('400s when no Claude auth is configured', async () => {
+  it('403s claude_not_connected when no subscription is connected', async () => {
     const s = await boot();
     const r = await fetch(`${s.url}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: 'hi' }),
     });
-    expect(r.status).toBe(400);
-    expect(String((await r.json()).error)).toMatch(/No Claude auth/i);
+    expect(r.status).toBe(403);
+    expect((await r.json()).error).toBe('claude_not_connected');
   });
 
-  it('400s on an empty message once auth is set', async () => {
+  it('400s on an empty message once a subscription is connected', async () => {
     const s = await boot();
-    await setKey(s.url);
+    seedClaudeOAuth();
     const r = await fetch(`${s.url}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -109,7 +104,7 @@ describe('POST /api/chat', () => {
   it('persists the thread + user message before streaming, then completes when the model call fails', async () => {
     process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1'; // nothing listens → fails fast
     const s = await boot();
-    await setKey(s.url);
+    seedClaudeOAuth();
     const r = await fetch(`${s.url}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
