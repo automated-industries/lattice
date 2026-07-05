@@ -163,8 +163,11 @@ import { css } from '../../src/gui/app/css.js';
 // rounded, bordered .tab buttons; the active tab fills to the canvas surface and
 // merges into the content below, so a single "New Dashboard" tab reads as a TAB
 // rather than an underlined heading. Length + hash recaptured.
-const ORIGINAL_LENGTH = 137272;
-const ORIGINAL_SHA256 = '80503d72e01b46a474613a520dc56c5fbae1b7ffb8e21a9b9972a5c6882dde0f';
+// Version-history takeover drops its redundant "Version history" page heading
+// (the takeover header already titles it); the entity filter moves into a compact
+// .history-subhead row. Length + hash recaptured.
+const ORIGINAL_LENGTH = 137660;
+const ORIGINAL_SHA256 = '1718910253451cfaec591e911fc91ca70c920b9d5295df3ebbe159689f4af154';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
