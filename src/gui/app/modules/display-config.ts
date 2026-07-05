@@ -99,6 +99,24 @@ export const displayConfigJs = `
       return typeof v === 'string' && v.slice(0, 4) === 'enc:';
     }
 
+    // Server-provided display labels for tables whose physical name title-cases
+    // into noise (external-DB tables: db_<database>_<connid>_<table>). Memoized on
+    // the identity of state.entities.tables so it rebuilds only when the payload
+    // is replaced (boot, workspace switch, realtime refresh), not on every render.
+    var _entityLabelCache = { src: null, map: {} };
+    function entityLabelMap() {
+      var tables = (state.entities && state.entities.tables) || [];
+      if (_entityLabelCache.src !== tables) {
+        var m = {};
+        for (var i = 0; i < tables.length; i++) {
+          var t = tables[i];
+          if (t && t.name && t.entityLabel) m[t.name] = t.entityLabel;
+        }
+        _entityLabelCache = { src: tables, map: m };
+      }
+      return _entityLabelCache.map;
+    }
+
     function displayFor(name) {
       // Artifacts is a virtual object (files carrying an artifact_type), not a real
       // table — give it a stable label + icon.
@@ -106,7 +124,10 @@ export const displayConfigJs = `
       var override = state.iconOverrides[name];
       var base = DISPLAY[name];
       var icon = (override && override.icon) || (base && base.icon) || autoEmojiFor(name) || DEFAULT_ICON;
-      var label = (base && base.label) || titleCase(name);
+      // A built-in DISPLAY label wins; then a server-supplied clean label (title-
+      // cased) for machine-namespaced connected tables; else the de-underscored name.
+      var serverLabel = entityLabelMap()[name];
+      var label = (base && base.label) || (serverLabel ? titleCase(serverLabel) : titleCase(name));
       return { label: label, icon: icon };
     }
     // Pick an apt emoji from an entity's NAME when the user hasn't set one and it

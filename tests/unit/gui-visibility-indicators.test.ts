@@ -20,6 +20,26 @@ describe('gui visibility indicators', () => {
 });
 
 /**
+ * External-DB tables are stored under a machine-namespaced physical name
+ * (db_<database>_<connid>_<table>) that title-cases into noise. displayFor honors
+ * a server-supplied clean label (entityLabel) for those, via a memoized map.
+ */
+describe('gui displayFor — clean labels for machine-namespaced connected tables', () => {
+  it('builds a memoized entity-label map keyed on the entities payload identity', () => {
+    expect(appJs).toContain('function entityLabelMap()');
+    // Rebuilds only when the tables array reference changes (not every render).
+    expect(appJs).toContain('_entityLabelCache.src !== tables');
+    expect(appJs).toContain('t.entityLabel');
+  });
+
+  it('displayFor prefers a built-in label, then the server label, then the raw name', () => {
+    // The server label is title-cased; the raw de-underscored name is the last resort.
+    expect(appJs).toContain('var serverLabel = entityLabelMap()[name];');
+    expect(appJs).toContain('serverLabel ? titleCase(serverLabel) : titleCase(name)');
+  });
+});
+
+/**
  * Behavioral test of the actual shipped helper: pull escapeHtml + the lock/eye
  * SVGs + visIndicator out of the appJs bundle and run it. Asserts the lock vs eye
  * choice, the state+ownership-aware tooltip text, the is-private modifier, the

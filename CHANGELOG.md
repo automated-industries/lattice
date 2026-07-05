@@ -10,6 +10,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **External-DB tables now show a clean name in the Objects list.** A table
+  imported from an external database is stored under a machine-namespaced
+  physical name (`db_<database>_<connid>_<table>`) that title-cased into noise
+  like "Db Postgres 1623 Addresses". The entities payload now carries the clean
+  external table name as `entityLabel`, and the GUI shows "Addresses" (the
+  connector badge already conveys it came from an external database).
+
 - **Claude access is now OAuth-only, enforced server-side.** The assistant
   authenticates only through a connected Claude subscription (OAuth); the
   per-user API-key path is removed. A single server-side gate refuses every AI
