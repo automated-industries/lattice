@@ -310,39 +310,12 @@ export const dataModelJs = `    // ───────────────
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
+            // Connect happens at the first-run wall and disconnect lives in the
+            // top-bar account menu — neither is configured here anymore (Claude
+            // access is OAuth-only). This panel keeps only the behavior knobs.
             '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
-              'Keys are stored encrypted in the <code>secrets</code> table.' +
+              'Claude is connected for the whole app. Use the account menu in the top bar to disconnect.' +
             '</p>' +
-            // Connect-with-Claude is the primary path (use your subscription, no
-            // API key). A pasted API key is demoted to an "Advanced" disclosure.
-            (claudeAuth(cfg).oauth
-              ? '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
-                  '<span class="feed-source" style="background:var(--accent-soft);color:var(--accent)">Connected with Claude</span>' +
-                  '<button id="asst-oauth-disconnect" class="btn">Disconnect</button>' +
-                '</div>'
-              : '<div style="margin-bottom:10px">' +
-                  // Opens in a new tab; the user approves there, copies the code
-                  // shown, and pastes it below (the client only allows its own
-                  // registered redirect, so it's a manual code-paste flow).
-                  '<a href="/api/assistant/oauth/start" target="_blank" rel="noopener" class="connect-claude-btn" id="connect-claude-btn">' +
-                    CLAUDE_LOGO_SVG + '<span>Connect with Claude</span>' +
-                  '</a>' +
-                  '<p class="lead" style="margin:8px 0 0;font-size:12px;color:var(--text-muted)">' +
-                    'Use your Claude Pro / Max / Enterprise subscription — no API key needed. ' +
-                    'After you approve in the new tab, paste the code it shows here:' +
-                  '</p>' +
-                  '<div style="display:flex;gap:8px;margin-top:6px">' +
-                    '<input id="connect-claude-code" type="text" placeholder="paste code here" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;background:var(--surface-2)">' +
-                    '<button class="btn" id="connect-claude-finish">Finish</button>' +
-                  '</div>' +
-                  '<div id="connect-claude-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
-                '</div>') +
-            '<details style="margin-bottom:12px"' + (claudeAuth(cfg).kind === 'key' ? ' open' : '') + '>' +
-              '<summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">Advanced — use an API key instead</summary>' +
-              '<div style="margin-top:8px">' +
-                rowHtml('asst-anthropic', 'Claude API token (chat)', !!cfg.hasAnthropicKey, 'sk-ant-…') +
-              '</div>' +
-            '</details>' +
             '<div style="margin:6px 0 12px">' +
               '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
                 '<strong style="font-size:13px">Inference aggressiveness</strong>' +
