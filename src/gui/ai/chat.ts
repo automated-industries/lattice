@@ -240,6 +240,7 @@ export function buildSystemPrompt(
   referencedRecords: ReferencedRecord[] = [],
   nowIso?: string,
   timezone?: string,
+  activeDashboardId?: string,
 ): string {
   // Tell the assistant who it's talking to so it can address the operator and
   // link records to "you" without asking for a name it already has access to.
@@ -281,7 +282,19 @@ export function buildSystemPrompt(
     `"most recent" relative to THIS instant — never your training data. When the user asks about recent ` +
     `activity, read with orderDir="desc" on the most meaningful date column (a meeting's start time, an ` +
     `event's date) rather than the row's created_at, and filter by a date range when they name one.`;
-  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}${dateSection}\n\n# Current database\n${schema}`;
+  // The user is looking at a dashboard right now. A request to change it — incl.
+  // "make this a … chart", "add …", "use blue", or a bare "this" — is an EDIT of
+  // that dashboard, NOT a new one: use edit_dashboard (it already defaults to
+  // this dashboard). Only create_dashboard when they explicitly ask for a new /
+  // separate dashboard. This is the #1 place the model wrongly forks a new one.
+  const dashSection =
+    activeDashboardId && activeDashboardId.trim().length > 0
+      ? `\n\n# Open dashboard\nThe user is CURRENTLY VIEWING a dashboard (id ${activeDashboardId.trim()}). ` +
+        `If they ask to change it, add to it, restyle it, or say "this" / "make this …", call ` +
+        `edit_dashboard (which edits this open dashboard) — do NOT create a new dashboard. Use ` +
+        `create_dashboard ONLY when they explicitly ask for a new or separate dashboard.`
+      : '';
+  return `${BASE_SYSTEM_PROMPT}${who}${workspace}${view}${dateSection}${dashSection}\n\n# Current database\n${schema}`;
 }
 
 /** A content block in the Anthropic message format we use. */
@@ -489,6 +502,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     referencedRecords,
     opts.nowIso,
     opts.timezone,
+    opts.activeContext?.table === 'dashboards' ? opts.activeContext.id : undefined,
   );
 
   let loop = 0;

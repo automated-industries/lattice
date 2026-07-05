@@ -20,10 +20,14 @@ test('boot lands on the Analytics view with its empty states', async ({ page }) 
   // Analytics is showing; Configure is parked hidden.
   await expect(page.locator('#ask-dock')).toBeVisible();
   await expect(page.locator('.layout')).toBeHidden();
-  // No dashboards yet — both empty states, and an empty tab strip.
+  // No dashboards yet — both empty states, and the tab strip holds the single
+  // permanent "New Dashboard" tab (the strip is never empty).
   await expect(page.locator('#dash-list')).toContainText('No dashboards yet');
   await expect(page.locator('.analytics-home h1')).toHaveText('Ask your company anything');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
+  await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toContainText(
+    'New Dashboard',
+  );
 });
 
 test('the header triggers round-trip and restore each side’s last location', async ({ page }) => {

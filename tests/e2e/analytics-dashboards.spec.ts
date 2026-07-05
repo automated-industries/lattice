@@ -41,17 +41,20 @@ test('sidebar lists dashboards; opening = one deduped tab; close falls back to h
   await page.locator(`.dash-item[data-dash-id="${a}"]`).click();
   await expect(page.locator(`.tab[data-key="dash:${a}"]`)).toHaveCount(1);
 
-  // Open the second — two tabs; close the ACTIVE second one → neighbor activates.
+  // Open the second — three tabs (the permanent "New Dashboard" + two opened);
+  // close the ACTIVE second one → neighbor activates.
   await page.locator(`.dash-item[data-dash-id="${b}"]`).click();
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(2);
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(3);
   await page.locator(`.tab[data-key="dash:${b}"] .tab-close`).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + a);
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(2);
 
-  // Close the last tab → the Analytics home (empty strip, hero visible).
+  // Close the last dashboard tab → the Analytics home (only the permanent
+  // "New Dashboard" tab remains, hero visible).
   await page.locator(`.tab[data-key="dash:${a}"] .tab-close`).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
+  await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toBeVisible();
   await expect(page.locator('.analytics-home')).toBeVisible();
 });
 
@@ -80,7 +83,9 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
 test('a stale dashboard link drops its tab and lands home', async ({ page }) => {
   await page.goto(gui.url + '#/analytics/no-such-dashboard');
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
+  // Only the permanent "New Dashboard" tab remains.
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
+  await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toBeVisible();
 });
 
 test('many open tabs collapse into a "⋯ N" overflow with the active tab visible', async ({

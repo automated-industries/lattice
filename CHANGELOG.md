@@ -644,6 +644,11 @@ database connector).
 
 ### Fixed
 
+- **Connect-a-database / connectors dialog no longer fades the whole screen.**
+  The modal side-drawer's z-index had slipped below its own backdrop, so opening
+  it dimmed the dialog along with everything else. Restored so the dialog sits
+  above its scrim.
+
 - **Clicking a table's markdown file shows markdown.** A whole-table rollup
   `.md` in the Markdown tree previously landed on the table's rows view. The
   collection page now carries the same Formatted | Markdown toggle records

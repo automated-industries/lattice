@@ -147,8 +147,20 @@ import { css } from '../../src/gui/app/css.js';
 // retired .fs-doc detail card. (.fs-tile-vis was KEPT — the shared vis() helper
 // still emits it and gui-visibility-indicators.test.ts exercises it.) Length +
 // hash recaptured.
-const ORIGINAL_LENGTH = 132512;
-const ORIGINAL_SHA256 = '6f37a4fe5db451bbfa32e62e0fbd988a5ff3a35582177e4f3e65f85ae0eb3d65';
+// Fix: the Connect-a-database / connectors MODAL dialog z-index restored 95→130
+// so it sits ABOVE its z-120 backdrop (a takeover-panel z-fix had dropped it
+// below the backdrop, dimming the dialog itself). Length + hash recaptured.
+// Analytics batch: "Workspace" col-header on the tab strip (aligned with the
+// Configure headers), + New Dashboard button, adjustable Ask-dock resize handle,
+// empty-state prompt box. Length + hash recaptured.
+// Analytics polish batch: the three analytics column headers get Configure-style
+// accents (Dashboards=blue, Workspace=purple, Ask Gladys=teal); the tab strip
+// moves to its own row BELOW the Workspace header (no longer a col-header); the
+// Ask Gladys header drops its gradient and adopts the uppercase col-header-text
+// treatment; the Settings tab row hides via [hidden] when Version history shows.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 136492;
+const ORIGINAL_SHA256 = '3ef425f411906b76f5b49e29c692d53858b3a5d174b990951d927a1609341007';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

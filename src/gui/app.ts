@@ -189,18 +189,23 @@ export const guiAppHtml = `<!doctype html>
        #rail-* ids at call time, so the housing is the only thing that moved). -->
   <div class="analytics-layout" id="analytics-layout">
     <nav class="dash-sidebar">
-      <div class="col-header col-dashboards"><span class="col-header-text">Dashboards</span></div>
+      <div class="col-header col-dashboards">
+        <span class="col-header-text">Dashboards</span>
+        <button type="button" class="dash-new-btn" id="dash-new-btn" title="New dashboard" aria-label="New dashboard">＋</button>
+      </div>
       <div id="dash-list"></div>
     </nav>
     <main class="analytics-content-wrap">
+      <div class="col-header col-model an-workspace-head"><span class="col-header-text">Workspace</span></div>
       <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
       <div id="analytics-content"></div>
     </main>
     <aside class="ask-dock" id="ask-dock" aria-label="Ask Gladys">
-      <div class="ask-dock-head">
-        <span class="ask-lattice-panel-title"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
+      <div class="ask-dock-resize" id="ask-dock-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="ask-dock-head col-header col-outputs">
+        <span class="ask-lattice-panel-title col-header-text"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
         <select class="rail-threads" id="rail-threads" title="Conversations"></select>
-        <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
+        <button class="dash-new-btn rail-newchat" id="rail-newchat" title="New chat" aria-label="New chat">＋</button>
       </div>
       <div class="rail-feed" id="rail-feed">
         <div class="rail-empty" id="rail-empty">Ask your company anything.</div>
@@ -220,11 +225,12 @@ export const guiAppHtml = `<!doctype html>
       <span class="drawer-title">Settings</span>
       <button class="drawer-close" id="drawer-close" title="Close" aria-label="Close settings">✕</button>
     </div>
+    <!-- Version history is NOT a tab here — it's its own takeover opened via the
+         header clock (🕐). These tabs are the Settings takeover only. -->
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
-      <button class="drawer-tab" data-tab="history">Version history</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
     <div class="drawer-version" title="Lattice version">Lattice <span class="app-version" id="app-version"><!--LATTICE_VERSION--></span></div>

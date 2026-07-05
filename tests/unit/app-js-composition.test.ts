@@ -355,8 +355,18 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // collection page (fsComputedAiBanner). Deleting a computed table (cbDelete)
 // or a dashboard (analytics ⋯ Delete) now confirms before the DELETE. Length +
 // hash recaptured.
-const ORIGINAL_LENGTH = 670225;
-const ORIGINAL_SHA256 = 'eabfef7ef59a2a6869c85fbbe83a961c37fd2be75141a7cdbabfa7a1d7f0f1cc';
+// Analytics batch: workspace-switch stays in the current view; a permanent
+// "New Dashboard" tab + empty-state prompt box (→ chat); "+ New Dashboard"
+// header button; the brand logo toggles Analytics↔Configure; the Ask Gladys
+// dock is width-adjustable. Length + hash recaptured.
+// Analytics polish batch: the composer drops "Enter to send" and Cmd/Ctrl+Enter
+// inserts a newline (create-database-wizard composer + the home prompt box); the
+// dashboard "+" is a bare plus glyph; Version history becomes its OWN takeover
+// (opened via the header clock, not a Settings sub-tab) so selectDrawerTab hides
+// the Settings tab row while history shows; the analytics tab strip moves onto
+// its own row below the WORKSPACE header. Length + hash recaptured.
+const ORIGINAL_LENGTH = 676332;
+const ORIGINAL_SHA256 = '169bad84d4070f6c2938ae8d073dc5961cd6a5311a94c66730a9dfdd387acb60';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

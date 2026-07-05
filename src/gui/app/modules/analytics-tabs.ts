@@ -13,18 +13,24 @@
 // tabsJs in modules/index.ts.
 export const analyticsTabsJs = `
     var AN_HOME_HASH = '#/analytics';
-    var anTabs = [];
-    var anActiveTabKey = '';
+    // A permanent, non-closable "New Dashboard" tab is ALWAYS present (like the
+    // Configure strip's Objects/Graph/Tables) — the Analytics strip is never
+    // empty. It maps to the home (the empty-state prompt); opening a dashboard
+    // adds a closable tab alongside it.
+    function anNewTab() {
+      return { key: 'new', title: 'New Dashboard', icon: '📊', hash: AN_HOME_HASH, closable: false };
+    }
+    var anTabs = [anNewTab()];
+    var anActiveTabKey = 'new';
 
-    // Map a hash to a stable logical tab key, or null = no tab. The Analytics
-    // home has NO tab (an empty strip is a legitimate state); each open
-    // dashboard keys by id so re-opening from the sidebar activates the
-    // existing tab instead of duplicating it.
+    // Map a hash to a stable logical tab key. The Analytics home is the permanent
+    // 'new' tab; each open dashboard keys by id so re-opening from the sidebar
+    // activates the existing tab instead of duplicating it.
     function anTabKeyForHash(hash) {
       hash = hash || '';
       var m = /^#\\/analytics\\/(.+)$/.exec(hash);
       if (m) return 'dash:' + decodeURIComponent(m[1]);
-      return null;
+      return 'new';
     }
 
     function anFindTab(key) {
@@ -37,11 +43,10 @@ export const analyticsTabsJs = `
     // deselects — the strip can legitimately show no active tab.
     function anReconcileTab(hash) {
       var key = anTabKeyForHash(hash);
-      if (!key) { anActiveTabKey = ''; return; }
       var tab = anFindTab(key);
       if (!tab) {
         anTabs.push({ key: key, title: 'Dashboard', icon: '📊', hash: hash, closable: true });
-      } else {
+      } else if (key !== 'new') {
         tab.hash = hash;
       }
       anActiveTabKey = key;
@@ -69,11 +74,12 @@ export const analyticsTabsJs = `
       }
     }
 
-    // Drop every open tab (workspace switch — the new workspace has its own
-    // dashboards; stale tabs would 404).
+    // Drop every open dashboard tab (workspace switch — the new workspace has
+    // its own dashboards; stale tabs would 404), back to just the permanent
+    // "New Dashboard" tab.
     function anResetTabs() {
-      anTabs = [];
-      anActiveTabKey = '';
+      anTabs = [anNewTab()];
+      anActiveTabKey = 'new';
       anRenderTabStrip();
     }
 
