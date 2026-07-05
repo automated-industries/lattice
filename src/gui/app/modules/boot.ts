@@ -69,6 +69,8 @@ export const bootJs = `    // ────────────────�
       // The account control (disconnect) shows once connected; it self-hides in a
       // managed deployment. Safe to wire on every boot (idempotent element lookup).
       initAccountMenu();
+      // Show the usage-limit banner if Claude is already over its limit at boot.
+      refreshLimitBlock();
       if (wsBoot && wsBoot.virgin === true) {
         renderVirginState();
         hideAppLoading();

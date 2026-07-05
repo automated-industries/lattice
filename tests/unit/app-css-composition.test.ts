@@ -166,8 +166,8 @@ import { css } from '../../src/gui/app/css.js';
 // Version-history takeover drops its redundant "Version history" page heading
 // (the takeover header already titles it); the entity filter moves into a compact
 // .history-subhead row. Length + hash recaptured.
-const ORIGINAL_LENGTH = 140736;
-const ORIGINAL_SHA256 = 'afbc88f2095a86106c36771989fe15d055a2d596f410e41b4e4fa3f50e8c4c80';
+const ORIGINAL_LENGTH = 141061;
+const ORIGINAL_SHA256 = '892851eaae03a647bd964f0f222faabad43d123f4db4786ff3b23b70f3d9b9df';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

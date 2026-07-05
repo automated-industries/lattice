@@ -36,4 +36,13 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     .connect-wall-row input:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     .connect-wall-row .btn { flex: 0 0 auto; height: 40px; }
     .connect-wall-status { margin-top: 8px; min-height: 18px; font-size: 12.5px; color: var(--text-muted); }
+
+    /* ── Usage-limit banner (app-wide) ──────────────────── */
+    .limit-banner {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 2100;
+      padding: 8px 16px; text-align: center;
+      background: #fef3c7; color: #92400e;
+      border-bottom: 1px solid #fcd34d;
+      font-size: 13px; font-weight: 600;
+    }
 `;
