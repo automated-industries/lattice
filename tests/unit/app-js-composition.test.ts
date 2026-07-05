@@ -365,8 +365,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (opened via the header clock, not a Settings sub-tab) so selectDrawerTab hides
 // the Settings tab row while history shows; the analytics tab strip moves onto
 // its own row below the WORKSPACE header. Length + hash recaptured.
-const ORIGINAL_LENGTH = 676332;
-const ORIGINAL_SHA256 = '169bad84d4070f6c2938ae8d073dc5961cd6a5311a94c66730a9dfdd387acb60';
+// Version-history header drops its leading 📜 entity-icon (plain "Version
+// history" heading). Length + hash recaptured. (The header clock trigger becomes
+// an SVG icon — but that lives in the app.ts HTML shell, not this bundle.)
+const ORIGINAL_LENGTH = 676282;
+const ORIGINAL_SHA256 = '3c8ff0130df1852f881301decac9f093280599f7ddb07d32faf2f843a515e7ae';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -18,7 +18,6 @@ export const markdownJs = `    // ───────────────�
 
       content.innerHTML =
         '<div class="view-header">' +
-          '<span class="entity-icon">📜</span>' +
           '<h1>Version history</h1>' +
           '<div class="actions">' +
             '<select id="history-filter">' + options + '</select>' +
