@@ -239,14 +239,16 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain("'/api/dbconfig/migrate-to-cloud'");
   });
 
-  it('3.3: Connect-with-Claude is the primary assistant auth, API key behind Advanced', () => {
-    expect(guiAppHtml).toContain('Connect with Claude');
+  it('Claude auth is OAuth-only: connect at the wall, disconnect in the account menu, no API-key UI', () => {
+    // Connect happens at the first-run wall (the surface-agnostic OAuth anchor).
     expect(guiAppHtml).toContain('/api/assistant/oauth/start');
-    // API-key paste is demoted into an Advanced disclosure.
-    expect(guiAppHtml).toContain('Advanced — use an API key instead');
-    // Connected state + disconnect.
+    expect(guiAppHtml).toContain('Connect with Claude');
+    // Disconnect lives in the header account menu.
+    expect(guiAppHtml).toContain('account-disconnect');
     expect(guiAppHtml).toContain('Connected with Claude');
-    expect(guiAppHtml).toContain('asst-oauth-disconnect');
+    // The per-user API-key settings UI is gone (OAuth-only).
+    expect(guiAppHtml).not.toContain('Advanced — use an API key instead');
+    expect(guiAppHtml).not.toContain('asst-oauth-disconnect');
   });
 
   it('computed-table builder: routed under Tables and wired to the HTTP surface', () => {

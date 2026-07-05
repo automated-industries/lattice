@@ -66,6 +66,9 @@ export const bootJs = `    // ────────────────�
     }
 
     function continueBoot(wsBoot) {
+      // The account control (disconnect) shows once connected; it self-hides in a
+      // managed deployment. Safe to wire on every boot (idempotent element lookup).
+      initAccountMenu();
       if (wsBoot && wsBoot.virgin === true) {
         renderVirginState();
         hideAppLoading();
