@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { resolveClaudeAuth, isClaudeConnected } from '../../src/gui/assistant-routes.js';
+import { noteClaudeError, clearClaudeLimit } from '../../src/gui/ai/limit-state.js';
 import { seedClaudeOAuth, clearClaudeOAuth } from '../helpers/claude-auth.js';
 
 /**
@@ -36,6 +37,7 @@ afterEach(async () => {
     if (v === undefined) Reflect.deleteProperty(process.env, k);
     else process.env[k] = v;
   }
+  clearClaudeLimit(); // the limit singleton is process-global — reset between tests
 });
 
 async function boot(): Promise<GuiServerHandle> {
@@ -108,6 +110,27 @@ describe('AI-auth gate (server-side)', () => {
     seedClaudeOAuth();
     const after = await fetch(`${s.url}/api/assistant/config`).then((x) => x.json());
     expect(after.connected).toBe(true);
+  });
+
+  it('pre-flight blocks AI routes with 429 claude_limit once a usage limit is noted', async () => {
+    const s = await boot();
+    seedClaudeOAuth();
+    // A genuine usage limit (429, no retry-after, default model) flips the shared
+    // singleton — the gate must now refuse chat AND the Configure-side ingest.
+    expect(noteClaudeError({ status: 429, headers: {} })).toBe('usage');
+    for (const path of ['/api/chat', '/api/ingest/url']) {
+      const r = await post(s.url, path, { message: 'hi' });
+      expect(r.status, `${path} should be limit-blocked`).toBe(429);
+      const body = await r.json();
+      expect(String(body.error)).toBe('claude_limit');
+      expect(typeof body.message).toBe('string');
+      expect(typeof body.resetAt).toBe('string');
+    }
+    // Clearing the limit (a later successful call) reopens the routes → the chat
+    // handler's own 400 for an empty message proves the gate let it through.
+    clearClaudeLimit();
+    const ok = await post(s.url, '/api/chat', { message: '   ' });
+    expect(ok.status).toBe(400);
   });
 });
 

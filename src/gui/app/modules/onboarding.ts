@@ -256,7 +256,18 @@ export const onboardingJs = `    // ──────────────�
         body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
       }).then(function (r) {
         if (!r.ok || !r.body) {
-          return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+          return r.json().then(function (j) {
+            // Pre-flight usage-limit block (server refused before streaming): show
+            // the friendly limit copy with the ⏳ marker (matching the mid-stream
+            // 'limit' SSE event) and refresh the app-wide banner, not a raw code.
+            if (j && j.error === 'claude_limit') {
+              finalizeBubble(actx);
+              var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + (j.message || 'Claude usage limit reached.'));
+              if (typeof refreshLimitBlock === 'function') refreshLimitBlock();
+              return undefined;
+            }
+            throw new Error((j && j.error) || ('HTTP ' + r.status));
+          });
         }
         var tid = r.headers.get('x-thread-id'); if (tid) { currentThreadId = tid; rememberThread(tid); }
         var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';

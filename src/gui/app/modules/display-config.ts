@@ -296,20 +296,6 @@ export const displayConfigJs = `
       });
     }
 
-    // SINGLE SOURCE OF TRUTH for the assistant's Claude connection state, derived
-    // from /api/assistant/config's claudeAuthKind (oauth | key | null). EVERY
-    // place that shows "Connected with Claude" / opens the API-key panel / gates
-    // on "the assistant has auth" MUST go through this — never re-derive from raw
-    // fields, or the signals disagree (a stray "or hasAnthropicKey" once made
-    // onboarding show "Connected with Claude" for an API-key-only setup while the
-    // settings panel showed not-connected).
-    //   .oauth -> a Claude SUBSCRIPTION is connected ("Connected with Claude")
-    //   .any   -> some working auth exists (subscription OR API key)
-    function claudeAuth(cfg) {
-      var kind = (cfg && cfg.claudeAuthKind) || null; // 'oauth' | 'key' | null
-      return { kind: kind, oauth: kind === 'oauth', any: kind != null };
-    }
-
     // Disable a button + show an inline spinner for the duration of an
     // async action so a slow server round-trip can't be double-clicked.
     // The fn arg should return a Promise; the button is restored on settle.
