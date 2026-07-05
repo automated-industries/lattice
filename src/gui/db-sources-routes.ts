@@ -7,7 +7,10 @@ import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls } from '../connectors/acl.js';
 import { ConnectorUnavailableError } from '../connectors/errors.js';
-import { DatabaseConnector } from '../connectors/db-source/connector.js';
+import {
+  DatabaseConnector,
+  describeDbSourceConnection,
+} from '../connectors/db-source/connector.js';
 import { getSchemaDescriptor } from '../connectors/db-source/schema-cache.js';
 
 /**
@@ -152,8 +155,10 @@ export async function dispatchDbSourcesRoute(
     return true;
   }
 
-  // Per-connection routes: /api/db-sources/<id>[/tables|/refresh]
-  const m = /^\/api\/db-sources\/([^/]+)(?:\/(tables|refresh))?$/.exec(pathname);
+  // Per-connection routes: /api/db-sources/<id>[/tables|/refresh|/reconnect|/connection]
+  const m = /^\/api\/db-sources\/([^/]+)(?:\/(tables|refresh|reconnect|connection))?$/.exec(
+    pathname,
+  );
   if (m) {
     const id = decodeURIComponent(m[1] ?? '');
     const sub = m[2];
@@ -167,6 +172,18 @@ export async function dispatchDbSourcesRoute(
       return true;
     }
 
+    // GET /<id>/connection — the NON-SECRET connection parts, for pre-filling the
+    // edit form. The password is never returned (Lattice does not echo secrets).
+    if (sub === 'connection' && method === 'GET') {
+      const parts = rec.connectionRef ? describeDbSourceConnection(rec.connectionRef) : null;
+      if (!parts) {
+        sendJson(res, { error: 'This connection cannot be edited.' }, 400);
+        return true;
+      }
+      sendJson(res, { connection: { ...parts, displayName: rec.displayName } });
+      return true;
+    }
+
     // GET /<id>/tables — the introspected tables (for the UI).
     if (sub === 'tables' && method === 'GET') {
       const descriptor = rec.connectionRef ? getSchemaDescriptor(rec.connectionRef) : null;
@@ -177,6 +194,63 @@ export async function dispatchDbSourcesRoute(
         selected: t.selected,
       }));
       sendJson(res, { tables });
+      return true;
+    }
+
+    // POST /<id>/reconnect — edit the stored credentials (rotated password,
+    // corrected host/port) and re-sync. Reuses the same connection id + table
+    // prefix so the imported objects stay put and rows upsert idempotently.
+    if (sub === 'reconnect' && method === 'POST') {
+      if (!rec.connectionRef) {
+        sendJson(res, { error: 'This connection cannot be edited.' }, 400);
+        return true;
+      }
+      const raw = (await readJson(req).catch(() => ({}))) as Record<string, unknown>;
+      const creds: Record<string, string> = {};
+      for (const f of connector.credentialFields()) {
+        const v = raw[f.key];
+        creds[f.key] = typeof v === 'string' ? v.trim() : '';
+      }
+      const schemaVal = raw.schema;
+      if (typeof schemaVal === 'string' && schemaVal.trim()) creds.schema = schemaVal.trim();
+
+      let connection: { connectionId: string; displayName: string | null };
+      try {
+        connection = await connector.reconnect(rec.connectionRef, creds);
+      } catch (e) {
+        // Bad credentials / unreachable → actionable; surface it, keep the old
+        // connection intact (the stored creds are only overwritten on success).
+        sendJson(res, { error: (e as Error).message }, 422);
+        return true;
+      }
+      // Register any tables the re-introspection ADDED (existing ones no-op) and
+      // re-apply RLS, mirroring the connect path's setup phase.
+      try {
+        const toolkit = `db_source:${rec.connectionRef}`;
+        for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+        await enableConnectorRls(db, connector, toolkit);
+      } catch (e) {
+        sendJson(
+          res,
+          { error: `Reconnect setup failed: ${(e as Error).message}` },
+          isActionable(e) ? 422 : 500,
+        );
+        return true;
+      }
+      // Re-sync under the refreshed credentials. syncConnector's recordSync
+      // stamps status='connected' + clears last_error on success, so a reconnect
+      // that fixes a broken connection also clears its error state.
+      try {
+        const result = await syncConnector(db, connector, id);
+        publishImportSummary(
+          deps.feed,
+          connection.displayName ?? rec.displayName ?? 'database',
+          result.upserted,
+        );
+        sendJson(res, { ok: true, result });
+      } catch (e) {
+        sendJson(res, { error: (e as Error).message }, isActionable(e) ? 422 : 500);
+      }
       return true;
     }
 
