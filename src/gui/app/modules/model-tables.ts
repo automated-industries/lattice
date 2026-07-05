@@ -75,6 +75,7 @@ export const modelTablesJs = `
           rowCount: typeof t.rowCount === 'number' ? t.rowCount : null,
           neverShare: !!t.neverShare,
           computedTable: !!t.computedTable,
+          connectorToolkit: t.connectorToolkit || null,
           fields: cols.map(function (col) {
             var concept = mtConceptFor(col);
             var ftype = (t.fieldTypes && t.fieldTypes[col]) || (t.columnTypes && t.columnTypes[col]) || '';
