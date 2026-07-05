@@ -66,12 +66,27 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     /* ── Workspace header + tab strip BELOW it + canvas ─── */
     .analytics-content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .an-workspace-head { flex: 0 0 auto; }
-    /* The tab strip is its OWN row beneath the Workspace header (not inside it). */
+    /* The tab strip is its OWN row beneath the Workspace header (not inside it).
+       Folder-style tabs so even a single tab reads unmistakably as a TAB rather
+       than an underlined heading: a tinted strip with raised, rounded, bordered
+       tabs whose ACTIVE one is filled to the canvas surface and merges into the
+       content below. */
     .antabstrip {
-      flex: 0 0 auto; display: flex; align-items: stretch; min-height: 40px;
-      padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface);
+      flex: 0 0 auto; display: flex; align-items: flex-end; min-height: 40px;
+      padding: 6px 10px 0; border-bottom: 1px solid var(--border); background: var(--surface-2);
     }
-    .antabstrip-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; }
+    .antabstrip-tabs { display: flex; align-items: flex-end; gap: 4px; flex: 1; min-width: 0; }
+    .antabstrip .tab {
+      border: 1px solid transparent; border-radius: 8px 8px 0 0;
+      padding: 7px 12px; margin: 0; background: transparent;
+      color: var(--text-muted); font-weight: 500;
+    }
+    .antabstrip .tab:hover { background: var(--row-hover); color: var(--text); }
+    .antabstrip .tab.active {
+      background: var(--surface); border-color: var(--border);
+      border-bottom: 1px solid var(--surface); margin-bottom: -1px;
+      color: var(--text); font-weight: 600;
+    }
     #analytics-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
     /* ── Analytics home (empty states) ──────────────────── */
