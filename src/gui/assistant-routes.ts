@@ -152,6 +152,21 @@ async function readMachineCredential(db: Lattice | null, kind: string): Promise<
 }
 
 /**
+ * Managed-deployment mode. When `LATTICE_MANAGED_MODEL_AUTH` is set, Lattice is
+ * running as a managed service where the operator supplies the model credential
+ * through the environment (typically alongside `ANTHROPIC_BASE_URL`, so calls go
+ * through the operator's own endpoint). In this mode per-user credential
+ * configuration is disabled: a pasted API key or a connected subscription is
+ * never read, so every model call uses the operator-provided credential and a
+ * user cannot substitute their own. Off by default — a normal single-user
+ * install is unaffected.
+ */
+export function isManagedModelAuth(): boolean {
+  const v = process.env.LATTICE_MANAGED_MODEL_AUTH;
+  return v === '1' || v === 'true';
+}
+
+/**
  * Resolve the anthropic API key, honoring the authoritative "cleared" sentinel.
  * When the user has cleared the key, BOTH the stored read and the env fallback
  * are skipped — so a clear stays cleared across reloads/restarts until a new key
@@ -159,6 +174,9 @@ async function readMachineCredential(db: Lattice | null, kind: string): Promise<
  * `secrets` (back-compat) → `ANTHROPIC_API_KEY` env var.
  */
 async function resolveAnthropicKey(db: Lattice | null): Promise<string | null> {
+  // Managed deployment: use ONLY the operator's env credential; never read a
+  // stored per-user key (it must not override the operator's).
+  if (isManagedModelAuth()) return process.env.ANTHROPIC_API_KEY ?? null;
   if (isAssistantCredentialCleared(CREDENTIALS.anthropic.kind)) return null;
   return (
     (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
@@ -301,6 +319,13 @@ interface StoredOAuthTokens {
  * null when nothing is configured.
  */
 export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth | null> {
+  // Managed deployment: the operator provides the credential via env; a user's
+  // connected subscription or pasted key must never override it. Short-circuit
+  // before any stored-credential read so managed auth is always the env key.
+  if (isManagedModelAuth()) {
+    const managedKey = process.env.ANTHROPIC_API_KEY ?? null;
+    return managedKey ? { apiKey: managedKey } : null;
+  }
   // Treat an empty env var the same as unset, so `||` (not `??`) is correct here.
   // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
@@ -437,6 +462,9 @@ export async function dispatchAssistantRoute(
       aggressiveness: getAggressiveness(),
       clarifyThreshold: getClarifyThreshold(),
       oauthEnabled: oauthConfigured(),
+      // Managed deployment: the host supplies the model credential and per-user
+      // credential controls are disabled. The GUI hides the connect/key UI.
+      managedModelAuth: isManagedModelAuth(),
     });
     return true;
   }
@@ -509,6 +537,14 @@ export async function dispatchAssistantRoute(
 
   // PUT /api/assistant/key { kind?, key } — set / replace a credential.
   if (method === 'PUT' && pathname === '/api/assistant/key') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; per-user credentials are disabled.' },
+        403,
+      );
+      return true;
+    }
     let body: Record<string, unknown>;
     try {
       body = await readJson(req);
@@ -549,6 +585,14 @@ export async function dispatchAssistantRoute(
 
   // DELETE /api/assistant/key?kind= — clear a credential.
   if (method === 'DELETE' && pathname === '/api/assistant/key') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; per-user credentials are disabled.' },
+        403,
+      );
+      return true;
+    }
     const url = new URL(req.url ?? '', 'http://localhost');
     const name = (url.searchParams.get('kind') ?? 'anthropic') as CredentialName;
     if (!(name in CREDENTIALS)) {
@@ -612,6 +656,14 @@ export async function dispatchAssistantRoute(
   // page that the user pastes back via /oauth/exchange. A loopback callback is
   // only used when an env-pinned client allowlists one.
   if (method === 'GET' && pathname === '/api/assistant/oauth/start') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; connecting a subscription is disabled.' },
+        403,
+      );
+      return true;
+    }
     const cfg = readOAuthConfig();
     // Only fill a loopback redirect if none is configured (the default is the
     // provider's registered console redirect, i.e. the manual code-paste flow).
@@ -686,6 +738,14 @@ export async function dispatchAssistantRoute(
   // `<code>#<state>`); they paste it here. We verify the state against the cookie
   // set at /start, exchange it for tokens, and store them. Body: { code }.
   if (method === 'POST' && pathname === '/api/assistant/oauth/exchange') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; connecting a subscription is disabled.' },
+        403,
+      );
+      return true;
+    }
     const cfg = readOAuthConfig();
     const cookies = parseCookies(req);
     const verifier = cookies.lat_oauth_verifier;
