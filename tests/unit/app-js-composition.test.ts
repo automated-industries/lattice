@@ -359,8 +359,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // "New Dashboard" tab + empty-state prompt box (→ chat); "+ New Dashboard"
 // header button; the brand logo toggles Analytics↔Configure; the Ask Gladys
 // dock is width-adjustable. Length + hash recaptured.
-const ORIGINAL_LENGTH = 675138;
-const ORIGINAL_SHA256 = '2bfae02c554d3511bed3f13a3e891f304f5185acde3eb9612e10ffcc93e231f3';
+// Analytics polish batch: the composer drops "Enter to send" and Cmd/Ctrl+Enter
+// inserts a newline (create-database-wizard composer + the home prompt box); the
+// dashboard "+" is a bare plus glyph; Version history becomes its OWN takeover
+// (opened via the header clock, not a Settings sub-tab) so selectDrawerTab hides
+// the Settings tab row while history shows; the analytics tab strip moves onto
+// its own row below the WORKSPACE header. Length + hash recaptured.
+const ORIGINAL_LENGTH = 676332;
+const ORIGINAL_SHA256 = '169bad84d4070f6c2938ae8d073dc5961cd6a5311a94c66730a9dfdd387acb60';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

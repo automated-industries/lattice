@@ -173,7 +173,16 @@ export const analyticsViewJs = `
             input.style.height = Math.min(input.scrollHeight, 200) + 'px';
           });
           input.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (form) form.requestSubmit(); }
+            if (e.key !== 'Enter') return;
+            if (e.metaKey || e.ctrlKey) {
+              e.preventDefault();
+              var s = input.selectionStart, en = input.selectionEnd;
+              input.value = input.value.slice(0, s) + '\\n' + input.value.slice(en);
+              input.selectionStart = input.selectionEnd = s + 1;
+              input.dispatchEvent(new Event('input'));
+              return;
+            }
+            if (!e.shiftKey) { e.preventDefault(); if (form) form.requestSubmit(); }
           });
           setTimeout(function () { input.focus(); }, 0);
         }

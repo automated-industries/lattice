@@ -42,6 +42,10 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .drawer-tabs {
       flex: 0 0 auto; display: flex; gap: 4px; padding: 10px 14px 0;
     }
+    /* Version history is its OWN takeover (opened via the header clock), not a
+       Settings sub-tab — so the tab row is hidden while history is showing. The
+       class rule above out-specifies bare [hidden], hence this explicit rule. */
+    .drawer-tabs[hidden] { display: none; }
     .drawer-tab {
       padding: 7px 14px; border: 1px solid var(--border); border-bottom: none;
       border-radius: 6px 6px 0 0; background: var(--surface-2); color: var(--text-muted);

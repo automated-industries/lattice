@@ -51,23 +51,26 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     .dash-item .vis-indicator { justify-self: end; }
     .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
 
-    /* ── Header bar (aligned with the Configure view) ───── */
-    /* The Dashboards header carries a "+ New Dashboard" button on the right. */
-    .col-dashboards { justify-content: space-between; }
+    /* ── Column headers (identical style to the Configure view) ── */
+    /* All three carry the shared .col-header chrome. Accents mirror Configure:
+       Dashboards=blue (inputs), Workspace=purple (model), Ask Gladys=teal
+       (outputs). The Dashboards header holds a compact "+" on the right. */
+    .col-dashboards { --col-accent: #2563eb; justify-content: space-between; }
     .dash-new-btn {
-      flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1;
-      padding: 5px 9px; border-radius: 7px; cursor: pointer;
+      flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; border: 1px solid var(--border); background: var(--surface-2);
+      color: var(--text-muted); font-size: 15px; line-height: 1; border-radius: 6px; cursor: pointer;
     }
-    .dash-new-btn:hover { background: var(--row-hover); }
+    .dash-new-btn:hover { background: var(--row-hover); color: var(--text); }
 
-    /* ── Tab strip (the "Workspace" col-header) + canvas ── */
+    /* ── Workspace header + tab strip BELOW it + canvas ─── */
     .analytics-content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-    /* antabstrip now uses .col-header .col-model (see markup) so it sits at the
-       same 38px height + accent as the Configure "Model" header. Mirror the
-       Configure .tabstrip layout: the label, then the tabs stretching after it. */
-    .antabstrip { align-items: stretch; padding: 0 12px; }
-    .antabstrip .col-header-text { align-self: center; margin-right: 18px; flex: 0 0 auto; }
+    .an-workspace-head { flex: 0 0 auto; }
+    /* The tab strip is its OWN row beneath the Workspace header (not inside it). */
+    .antabstrip {
+      flex: 0 0 auto; display: flex; align-items: stretch; min-height: 40px;
+      padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface);
+    }
     .antabstrip-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; }
     #analytics-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
@@ -97,11 +100,22 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     /* ── Ask Gladys dock: aligned header + adjustable width ── */
     .ask-dock { position: relative; }
     /* The head reuses the shared .col-header chrome (accent bar + 38px height)
-       so it lines up with Dashboards + Workspace; keep its subtle gradient. */
+       so it lines up with Dashboards + Workspace. Teal accent (outputs), plain
+       surface — no gradient — matching the Configure column headers. */
     .ask-dock-head.col-header {
-      justify-content: flex-start;
-      background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
+      --col-accent: #0d9488;
+      justify-content: flex-start; gap: 8px;
+      background: var(--surface);
     }
+    /* Force the WORKSPACE/DASHBOARDS uppercase-accent treatment on the title,
+       overriding .ask-lattice-panel-title's larger glowy style. */
+    .ask-dock-head .ask-lattice-panel-title.col-header-text {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--col-accent); text-shadow: none;
+    }
+    .ask-dock-head .ask-lattice-mark { font-size: 13px; }
+    /* Keep the thread picker from swallowing the whole header. */
+    .ask-dock-head .rail-threads { flex: 0 1 auto; max-width: 150px; margin-left: auto; }
     /* Drag handle on the dock's LEFT edge (the dock is the rightmost column). */
     .ask-dock-resize {
       position: absolute; top: 0; left: -3px; width: 6px; height: 100%;
