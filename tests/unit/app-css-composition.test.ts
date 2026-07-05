@@ -159,8 +159,12 @@ import { css } from '../../src/gui/app/css.js';
 // Ask Gladys header drops its gradient and adopts the uppercase col-header-text
 // treatment; the Settings tab row hides via [hidden] when Version history shows.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 136492;
-const ORIGINAL_SHA256 = '3ef425f411906b76f5b49e29c692d53858b3a5d174b990951d927a1609341007';
+// Analytics tab strip = folder tabs: the strip is a tinted bar with raised,
+// rounded, bordered .tab buttons; the active tab fills to the canvas surface and
+// merges into the content below, so a single "New Dashboard" tab reads as a TAB
+// rather than an underlined heading. Length + hash recaptured.
+const ORIGINAL_LENGTH = 137272;
+const ORIGINAL_SHA256 = '80503d72e01b46a474613a520dc56c5fbae1b7ffb8e21a9b9972a5c6882dde0f';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
