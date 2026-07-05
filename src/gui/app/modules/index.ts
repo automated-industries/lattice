@@ -5,6 +5,7 @@
 // and fetched only when an HTML-file artifact preview needs it (see dashboard.ts
 // ensureChartLib), so it no longer weighs on every startup's parse.
 import { displayConfigJs } from './display-config.js';
+import { connectWallJs } from './connect-wall.js';
 import { bootJs } from './boot.js';
 import { bootInterstitialJs } from './boot-interstitial.js';
 import { realtimeFeedJs } from './realtime-feed.js';
@@ -54,6 +55,7 @@ import { wireMergeJs } from './wiremerge.js';
 
 export const appJs = [
   displayConfigJs,
+  connectWallJs,
   bootJs,
   bootInterstitialJs,
   realtimeFeedJs,
