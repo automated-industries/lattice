@@ -24,10 +24,18 @@ export const inputsJs = `
                 '<span class="src-dot" style="background:' + color + '"></span>' +
                 '<span class="src-name" title="' + escapeHtml(tip) + '">' +
                   escapeHtml(s.displayName || 'Database') + '</span>' +
+                '<button class="src-db-edit" data-id="' + escapeHtml(s.id) +
+                  '" type="button" title="Edit connection" aria-label="Edit connection">\\u270e</button>' +
                 '<button class="src-db-x" data-id="' + escapeHtml(s.id) +
                   '" type="button" title="Disconnect" aria-label="Disconnect">\\u2715</button>' +
                 '</div></li>';
             }).join('') + '</ul>';
+            host.querySelectorAll('.src-db-edit').forEach(function (b) {
+              b.addEventListener('click', function (e) {
+                e.stopPropagation();
+                openDbEditDrawer(b.getAttribute('data-id'));
+              });
+            });
             host.querySelectorAll('.src-db-x').forEach(function (b) {
               b.addEventListener('click', function (e) {
                 e.stopPropagation();
@@ -44,7 +52,8 @@ export const inputsJs = `
       var add = document.getElementById('src-add-database');
       if (add && !add.__wired) {
         add.__wired = true;
-        add.addEventListener('click', openDbConnectDrawer);
+        // Wrap so the click event isn't passed as the (edit) argument.
+        add.addEventListener('click', function () { openDbConnectDrawer(); });
       }
     }
 
@@ -86,31 +95,52 @@ export const inputsJs = `
       back.classList.remove('open');
       window.setTimeout(function () { dlg.hidden = true; back.hidden = true; }, 220);
     }
-    function openDbConnectDrawer() {
+    // Load the (non-secret) connection parts for a connected database, then open
+    // the drawer in edit mode. The password is never returned by the server, so
+    // the field starts blank ("leave blank to keep current").
+    function openDbEditDrawer(id) {
+      if (!id) return;
+      fetchJson('/api/db-sources/' + encodeURIComponent(id) + '/connection')
+        .then(function (d) { openDbConnectDrawer({ id: id, prefill: (d && d.connection) || {} }); })
+        .catch(function (e) { showToast('Could not load connection: ' + (e && e.message ? e.message : e), {}); });
+    }
+
+    // Connect a new database, OR edit an existing one when edit = { id, prefill }
+    // is passed. Edit mode reuses the same drawer/form, pre-fills the parts, keeps
+    // the password unless retyped, and saves via /<id>/reconnect (same tables).
+    function openDbConnectDrawer(edit) {
+      var isEdit = !!(edit && edit.id);
+      var pf = (edit && edit.prefill) || {};
       var dlg = document.getElementById('db-connect-dialog');
       var back = document.getElementById('db-connect-backdrop');
       var body = document.getElementById('db-connect-body');
       if (!dlg || !back || !body) return;
-      function field(label, id, type, ph) {
+      function field(label, id, type, ph, value) {
         return '<label class="conn-field">' + escapeHtml(label) +
-          '<input type="' + type + '" id="' + id + '"' + (ph ? ' placeholder="' + escapeHtml(ph) + '"' : '') +
+          '<input type="' + type + '" id="' + id + '"' +
+          (value ? ' value="' + escapeHtml(value) + '"' : '') +
+          (ph ? ' placeholder="' + escapeHtml(ph) + '"' : '') +
           ' autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true"></label>';
       }
-      body.innerHTML =
-        '<div class="conn-lead">Connect an external Postgres database (AWS RDS, Supabase, or generic Postgres). ' +
+      var lead = isEdit
+        ? 'Update this database\\u2019s connection details. Leave the password blank to keep the current one \\u2014 ' +
+          'the imported tables keep their names and rows re-sync in place.'
+        : 'Connect an external Postgres database (AWS RDS, Supabase, or generic Postgres). ' +
           'Its tables are imported as a READ-ONLY data source \\u2014 Lattice never writes to it. ' +
-          'Use a read-only database user where possible.</div>' +
+          'Use a read-only database user where possible.';
+      body.innerHTML =
+        '<div class="conn-lead">' + lead + '</div>' +
         '<div class="conn-card"><div class="conn-form">' +
-          field('Host', 'db-host', 'text', 'db.example.com') +
-          field('Port', 'db-port', 'text', '5432') +
-          field('User', 'db-user', 'text', '') +
-          field('Password', 'db-pass', 'password', '') +
-          field('Database', 'db-name', 'text', '') +
-          field('Schema (optional)', 'db-schema', 'text', 'public') +
+          field('Host', 'db-host', 'text', 'db.example.com', pf.host) +
+          field('Port', 'db-port', 'text', '5432', pf.port) +
+          field('User', 'db-user', 'text', '', pf.user) +
+          field('Password', 'db-pass', 'password', isEdit ? 'leave blank to keep current' : '') +
+          field('Database', 'db-name', 'text', '', pf.database) +
+          field('Schema (optional)', 'db-schema', 'text', 'public', pf.schema) +
           '<div id="db-msg" class="conn-msg"></div>' +
           '<div class="conn-form-actions">' +
             '<button class="btn" id="db-cancel">Cancel</button>' +
-            '<button class="btn primary" id="db-ok">Connect</button>' +
+            '<button class="btn primary" id="db-ok">' + (isEdit ? 'Save' : 'Connect') + '</button>' +
           '</div>' +
         '</div></div>';
       back.hidden = false;
@@ -141,8 +171,11 @@ export const inputsJs = `
           return;
         }
         okBtn.disabled = true;
-        setMsg('Connecting + importing…');
-        fetch('/api/db-sources/connect', {
+        setMsg(isEdit ? 'Saving + re-syncing…' : 'Connecting + importing…');
+        var url = isEdit
+          ? '/api/db-sources/' + encodeURIComponent(edit.id) + '/reconnect'
+          : '/api/db-sources/connect';
+        fetch(url, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
         })
           .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
@@ -150,7 +183,9 @@ export const inputsJs = `
             okBtn.disabled = false;
             if (!res.ok) { setMsg('Failed: ' + (res.body.error || 'could not connect')); return; }
             closeDbConnectDrawer();
-            showToast('Connected ' + (res.body.displayName || 'database') + ' — tables imported.', {});
+            showToast(isEdit
+              ? 'Connection updated — tables re-synced.'
+              : ('Connected ' + (res.body.displayName || 'database') + ' — tables imported.'), {});
             refreshAfterDbImport();
           })
           .catch(function (e) { okBtn.disabled = false; setMsg('Failed: ' + (e && e.message ? e.message : e)); });
