@@ -236,11 +236,14 @@ test('Version history + Settings are full-panel takeovers with highlighted, togg
   await page.goto(gui.url + '#/folders');
   await expect(page.locator('nav.sidebar')).toBeVisible();
 
-  // Clock opens the takeover on the Version history tab, highlighted.
+  // Clock opens Version history as its OWN takeover, highlighted. Version
+  // history is NOT a Settings sub-tab, so the Settings tab row is hidden and
+  // the title reads "Version history".
   await page.locator('#history-link').click();
   const drawer = page.locator('#settings-drawer');
   await expect(drawer).toBeVisible();
-  await expect(page.locator('.drawer-tab[data-tab="history"]')).toHaveClass(/active/);
+  await expect(page.locator('#settings-drawer .drawer-title')).toHaveText('Version history');
+  await expect(page.locator('#drawer-tabs')).toBeHidden();
   await expect(page.locator('#history-link')).toHaveClass(/on/);
   // The panel spans the workspace below the header (full-bleed left+right).
   const box = await drawer.boundingBox();
@@ -251,14 +254,18 @@ test('Version history + Settings are full-panel takeovers with highlighted, togg
   await expect(drawer).toBeHidden();
   await expect(page.locator('#history-link')).not.toHaveClass(/on/);
 
-  // The gear uses the exact same takeover: open + highlight, toggle to close.
+  // The gear uses the same takeover chrome for Settings: the tab row shows, the
+  // title reads "Settings", the gear highlights.
   await page.locator('#settings-gear').click();
   await expect(drawer).toBeVisible();
   await expect(page.locator('#settings-gear')).toHaveClass(/on/);
-  await expect(page.locator('.drawer-tab[data-tab="history"]')).not.toHaveClass(/active/);
-  // Switching to the clock swaps the content in place (still one panel).
+  await expect(page.locator('#settings-drawer .drawer-title')).toHaveText('Settings');
+  await expect(page.locator('#drawer-tabs')).toBeVisible();
+  // Switching to the clock swaps the content in place (still one panel): the
+  // Settings tab row disappears and the clock takes the highlight.
   await page.locator('#history-link').click();
-  await expect(page.locator('.drawer-tab[data-tab="history"]')).toHaveClass(/active/);
+  await expect(page.locator('#drawer-tabs')).toBeHidden();
+  await expect(page.locator('#settings-drawer .drawer-title')).toHaveText('Version history');
   await expect(page.locator('#history-link')).toHaveClass(/on/);
   await expect(page.locator('#settings-gear')).not.toHaveClass(/on/);
   await page.locator('#history-link').click();

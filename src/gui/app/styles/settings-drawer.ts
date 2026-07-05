@@ -42,6 +42,10 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .drawer-tabs {
       flex: 0 0 auto; display: flex; gap: 4px; padding: 10px 14px 0;
     }
+    /* Version history is its OWN takeover (opened via the header clock), not a
+       Settings sub-tab — so the tab row is hidden while history is showing. The
+       class rule above out-specifies bare [hidden], hence this explicit rule. */
+    .drawer-tabs[hidden] { display: none; }
     .drawer-tab {
       padding: 7px 14px; border: 1px solid var(--border); border-bottom: none;
       border-radius: 6px 6px 0 0; background: var(--surface-2); color: var(--text-muted);
@@ -71,7 +75,11 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
       border-right: 1px solid rgba(15, 23, 42, 0.04);
       box-shadow: 12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
-      z-index: 95; display: flex; flex-direction: column;
+      /* A true MODAL side-drawer: its backdrop (z 120) dims the whole app, the
+         header included, so the dialog MUST sit ABOVE the backdrop. (The
+         takeover-panel z-fix wrongly dropped this to 95 — below the backdrop —
+         which dimmed the dialog itself and faded the whole screen.) */
+      z-index: 130; display: flex; flex-direction: column;
       transform: translateX(-100%); transition: transform 0.22s ease;
     }
     .connectors-dialog.open { transform: translateX(0); }
