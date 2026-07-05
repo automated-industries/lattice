@@ -27,24 +27,26 @@ vi.mock('../../src/gui/ai/summarize.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  savedEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
   savedEnv.LATTICE_CONFIG_DIR = process.env.LATTICE_CONFIG_DIR;
   savedEnv.LATTICE_ENCRYPTION_KEY = process.env.LATTICE_ENCRYPTION_KEY;
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-al-cfg-'));
   dirs.push(cfgDir);
   process.env.LATTICE_CONFIG_DIR = cfgDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'al-test-key';
+  // Claude access is OAuth-only, and /api/ingest/ is gated on a connected
+  // subscription. Seed one (after LATTICE_CONFIG_DIR is set — the credential
+  // store is keyed off it) so the ingest route runs; the model call itself is
+  // mocked to fail, which is what this test exercises.
+  seedClaudeOAuth();
 });
 afterEach(async () => {
-  if (savedEnv.ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedEnv.ANTHROPIC_API_KEY;
   if (savedEnv.LATTICE_CONFIG_DIR === undefined) delete process.env.LATTICE_CONFIG_DIR;
   else process.env.LATTICE_CONFIG_DIR = savedEnv.LATTICE_CONFIG_DIR;
   if (savedEnv.LATTICE_ENCRYPTION_KEY === undefined) delete process.env.LATTICE_ENCRYPTION_KEY;

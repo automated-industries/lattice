@@ -38,24 +38,45 @@ vi.mock('../../src/gui/ai/summarize.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+// Claude access is OAuth-only: the server's AI-auth gate refuses /api/ingest/*
+// unless a Claude subscription is connected. Auth is a fake OAuth token in the
+// machine-local credential store, seeded per-test (below) — NOT ANTHROPIC_API_KEY,
+// which no longer authenticates.
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
-let savedKey: string | undefined;
+
+// The credential store is keyed off LATTICE_CONFIG_DIR, so point it at an isolated
+// per-test dir before seeding, and scrub any stray ANTHROPIC_API_KEY so nothing
+// else can silently authenticate.
+const authEnvKeys = ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY'] as const;
+const savedAuthEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  savedKey = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
+  const cfgDir = mkdtempSync(join(tmpdir(), 'gui-pg-ingest-cfg-'));
+  dirs.push(cfgDir);
+  for (const k of authEnvKeys) savedAuthEnv[k] = process.env[k];
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'gui-pg-ingest-auth-key';
+  delete process.env.ANTHROPIC_API_KEY;
 });
 afterEach(async () => {
-  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedKey;
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedAuthEnv)) {
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
 });
 
 describe.skipIf(!PG_URL)('AI ingest auto-junction — Postgres parity', () => {
   it('creates + links the files↔entity junction on a Postgres-backed lattice', async () => {
+    // Satisfy the AI-auth gate on /api/ingest/*: seed a connected Claude
+    // subscription into the isolated machine store set up in beforeEach. The model
+    // client + summarize/classify leaves are mocked above, so this only makes
+    // resolveClaudeAuth() return a token — no real network call happens.
+    seedClaudeOAuth();
     const runId = randomBytes(4).toString('hex');
     const root = mkdtempSync(join(tmpdir(), `gui-pg-ingest-${runId}-`));
     dirs.push(root);
