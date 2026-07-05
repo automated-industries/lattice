@@ -40,6 +40,28 @@ describe('gui displayFor — clean labels for machine-namespaced connected table
 });
 
 /**
+ * A connected external database can be edited in place: an Edit affordance opens
+ * the same drawer pre-filled with the non-secret parts and saves via /reconnect,
+ * keeping the password unless retyped.
+ */
+describe('gui db-source edit connection', () => {
+  it('renders an Edit affordance and loads the connection for pre-fill', () => {
+    expect(appJs).toContain('class="src-db-edit"');
+    expect(appJs).toContain('function openDbEditDrawer(id)');
+    expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(id) + '/connection'");
+  });
+
+  it('saves edits to /reconnect with a keep-current-password hint', () => {
+    expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(edit.id) + '/reconnect'");
+    expect(appJs).toContain('leave blank to keep current');
+  });
+
+  it('styles the row action buttons', () => {
+    expect(css).toContain('.src-db-edit');
+  });
+});
+
+/**
  * Behavioral test of the actual shipped helper: pull escapeHtml + the lock/eye
  * SVGs + visIndicator out of the appJs bundle and run it. Asserts the lock vs eye
  * choice, the state+ownership-aware tooltip text, the is-private modifier, the

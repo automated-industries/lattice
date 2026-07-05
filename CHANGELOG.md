@@ -8,6 +8,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Edit a connected external database in place.** A connected database in Inputs
+  › Databases now has an Edit affordance that opens the connect drawer pre-filled
+  with the current host / port / user / database / schema (never the password —
+  Lattice does not display stored secrets) and saves via a new
+  `POST /api/db-sources/<id>/reconnect`. Editing reuses the same connection id and
+  table prefix, so the imported tables keep their names and rows re-sync in place
+  (a rotated password or corrected host does not fork a new table set). Leave the
+  password blank to keep the current one; a successful reconnect also clears a
+  prior error state. New `GET /api/db-sources/<id>/connection` serves the
+  non-secret parts for the pre-fill.
+
 ### Changed
 
 - **External-DB tables now show a clean name in the Objects list.** A table

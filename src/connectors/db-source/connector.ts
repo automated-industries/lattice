@@ -67,6 +67,40 @@ export function clearDbSourceCreds(connectionId: string): void {
   deleteAssistantCredential(credKind(connectionId));
 }
 
+/**
+ * The NON-SECRET connection parts (host/port/user/database/schema) for an
+ * existing connection, parsed from the stored connection string + cached schema
+ * — for pre-filling the edit form. The password is NEVER returned (Lattice does
+ * not display stored secrets). Returns null when the connection has no stored
+ * credentials.
+ */
+export function describeDbSourceConnection(connectionId: string): {
+  host: string;
+  port: string;
+  user: string;
+  database: string;
+  schema: string;
+} | null {
+  const cs = getDbSourceCreds(connectionId);
+  if (!cs) return null;
+  let host = '';
+  let port = '';
+  let user = '';
+  let database = '';
+  try {
+    const u = new URL(cs);
+    host = u.hostname;
+    port = u.port;
+    user = u.username ? decodeURIComponent(u.username) : '';
+    const path = u.pathname.replace(/^\//, '');
+    database = path ? decodeURIComponent(path) : '';
+  } catch {
+    /* leave the parts blank when the stored string can't be parsed */
+  }
+  const schema = getSchemaDescriptor(connectionId)?.schema ?? 'public';
+  return { host, port, user, database, schema };
+}
+
 /** The connection id embedded in a `db_source:<id>` toolkit, or '' if malformed. */
 function connectionIdFromToolkit(toolkit: string): string {
   return toolkit.startsWith(TOOLKIT_PREFIX) ? toolkit.slice(TOOLKIT_PREFIX.length) : '';
@@ -99,6 +133,21 @@ export function assembleConnectionString(creds: Record<string, string>): string 
   throw new ConnectorUnavailableError(
     'Provide host + user + database (port and password optional).',
   );
+}
+
+/**
+ * Recover the password from a stored `postgres://user:pass@host/db` string, so an
+ * edit that leaves the password field blank can keep the current one (Lattice
+ * never displays the stored password, so re-typing it just to fix a host is
+ * hostile). Returns '' when the string has no password or can't be parsed.
+ */
+function passwordFromConnectionString(cs: string): string {
+  try {
+    const u = new URL(cs);
+    return u.password ? decodeURIComponent(u.password) : '';
+  } catch {
+    return '';
+  }
 }
 
 /** Coerce a raw external value to the imported column's Lattice spec. */
@@ -298,6 +347,69 @@ export class DatabaseConnector implements CredentialConnector {
       return introspectSchema(pool, dialect, schema, prefix);
     });
 
+    if (!descriptor.tables.length) {
+      throw new Error(`Connected, but found no tables in schema "${schema}".`);
+    }
+    setDbSourceCreds(connectionId, connectionString);
+    setSchemaDescriptor(connectionId, descriptor);
+    return { connectionId, displayName: dbName };
+  }
+
+  /**
+   * Re-authenticate an EXISTING connection with edited credentials (e.g. a rotated
+   * password or a corrected host/port). Unlike {@link connect}, this reuses the
+   * connection id AND the descriptor's original table prefix, so the imported
+   * tables keep their physical names and rows upsert idempotently onto the same
+   * objects — an edit re-points the same database, it does not fork a new table
+   * set. Validates against the DB, re-introspects (picking up any newly-added
+   * tables), and overwrites the stored connection string + schema descriptor.
+   */
+  async reconnect(
+    connectionId: string,
+    creds: Record<string, string>,
+  ): Promise<{ connectionId: string; displayName: string | null }> {
+    const existing = getSchemaDescriptor(connectionId);
+    if (!existing) {
+      throw new Error(
+        'This connection has no cached schema to update — disconnect it and add the database again.',
+      );
+    }
+    // "Leave the password blank to keep the current one": recover it from the
+    // stored connection string when the edit omits it, so fixing a host/port/user
+    // doesn't force re-typing a password Lattice never displays.
+    const merged: Record<string, string> = { ...creds };
+    if (!(merged.password ?? '').trim()) {
+      const prior = this.credsLoader(connectionId);
+      const priorPass = prior ? passwordFromConnectionString(prior) : '';
+      if (priorPass) merged.password = priorPass;
+    }
+    const connectionString = assembleConnectionString(merged);
+    const dialect = dialectFor(connectionString);
+    // Keep the original schema unless the edit explicitly overrides it.
+    const schema = (merged.schema ?? '').trim() || existing.schema || 'public';
+    // Reuse the original prefix — the physical table names must not move.
+    const prefix = existing.prefix;
+    let dbName = (merged.database ?? '').trim();
+    const descriptor = await withExternalPool(connectionString, async (pool) => {
+      try {
+        await pool.query('SELECT 1');
+      } catch (e) {
+        throw new Error(
+          `Could not connect to the database: ${(e as Error).message}. ` +
+            'Check the connection details and that the database accepts connections.',
+        );
+      }
+      if (!dbName) {
+        try {
+          const r = await pool.query('SELECT current_database() AS db');
+          const db = r.rows[0]?.db;
+          dbName = typeof db === 'string' && db ? db : 'database';
+        } catch {
+          dbName = 'database';
+        }
+      }
+      return introspectSchema(pool, dialect, schema, prefix);
+    });
     if (!descriptor.tables.length) {
       throw new Error(`Connected, but found no tables in schema "${schema}".`);
     }
