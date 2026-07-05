@@ -231,7 +231,7 @@ describe('db-source connect failure semantics', () => {
     const models = fake.models(`db_source:${CONN_ID2}`);
     const authorsTable = models.find((m) => m.table.endsWith('authors'))?.table;
     expect(authorsTable).toBeTruthy();
-    const authors = await db.query(authorsTable as string, {});
+    const authors = await db.query(authorsTable!, {});
     expect(authors.length).toBe(2);
 
     // …and the Databases list shows the errored source, not an empty list.
