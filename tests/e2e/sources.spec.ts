@@ -106,3 +106,28 @@ test('the Files group header sits left of its child rows (tree indentation)', as
   // Header label is at or left of the child rows (allow a 1px rounding margin).
   expect(hb!.x).toBeLessThanOrEqual(cb!.x + 1);
 });
+
+// Regression: the Connect-a-database dialog is a MODAL — its backdrop (which
+// dims the whole app) must sit BELOW the dialog, or the dialog fades out with
+// everything else. A z-order slip once put the dialog under its own backdrop.
+test('Connect-a-database opens ABOVE its backdrop (the dialog is not dimmed)', async ({ page }) => {
+  await page.goto(gui.url + '#/folders');
+  await expect(page.locator('#sources-nav')).toBeVisible({ timeout: 5000 });
+
+  await page.locator('#src-add-database').click();
+  const dialog = page.locator('#db-connect-dialog');
+  const backdrop = page.locator('#db-connect-backdrop');
+  await expect(dialog).toBeVisible({ timeout: 5000 });
+  await expect(backdrop).toBeVisible();
+
+  const zOf = (loc: ReturnType<typeof page.locator>) =>
+    loc.evaluate((el) => Number(getComputedStyle(el).zIndex) || 0);
+  const dialogZ = await zOf(dialog);
+  const backdropZ = await zOf(backdrop);
+  expect(dialogZ).toBeGreaterThan(backdropZ); // dialog on top of its own scrim
+
+  // Behavioral proof: the Connect button actually receives the click (it is not
+  // covered by the backdrop) — Playwright's actionability check throws if it is.
+  await expect(page.locator('#db-connect-dialog #db-ok')).toBeVisible();
+  await page.locator('#db-connect-dialog #db-ok').click({ trial: true });
+});

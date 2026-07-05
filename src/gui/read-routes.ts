@@ -1085,6 +1085,34 @@ export async function handleReadRoutes(
     return existsSync(join(active.outputDir, canonical)) ? canonical : undefined;
   };
 
+  // A table's whole-table rollup file. Config tables carry an explicit
+  // outputFile; RUNTIME/DERIVED tables (computed tables, connector- and
+  // imported-database tables) aren't in the parsed config, so their rollup is
+  // the canonical `.schema-only/<name>.md` — without this, resolving/listing a
+  // derived table's markdown found nothing ("no rendered markdown yet") even
+  // though the file exists on disk.
+  const rollupPathOf = (table: string): string | undefined => {
+    const cfg = loadGuiData(active.configPath, active.outputDir, false).tables.find(
+      (t) => t.name === table,
+    );
+    if (cfg && typeof cfg.outputFile === 'string') return cfg.outputFile;
+    if (active.validTables.has(table) && !active.hiddenLinkTables.has(table)) {
+      return `.schema-only/${table}.md`;
+    }
+    return undefined;
+  };
+  /** The table whose rollup lives at `rel`, if any (config OR runtime/derived). */
+  const tableForRollupPath = (rel: string): string | undefined => {
+    const cfg = loadGuiData(active.configPath, active.outputDir, false).tables.find(
+      (t) => t.outputFile === rel,
+    );
+    if (cfg && !active.hiddenLinkTables.has(cfg.name)) return cfg.name;
+    const m = /^\.schema-only\/(.+)\.md$/.exec(rel);
+    const name = m?.[1];
+    if (name && active.validTables.has(name) && !active.hiddenLinkTables.has(name)) return name;
+    return undefined;
+  };
+
   if (method === 'GET' && pathname === '/api/context/tree') {
     // TYPED tree: one node per non-junction table — the SAME set + tier
     // categories as the Outputs Tables mirror — each carrying where its rendered
@@ -1171,11 +1199,8 @@ export async function handleReadRoutes(
         return true;
       }
       const manifest = readManifest(active.outputDir);
-      const t = loadGuiData(active.configPath, active.outputDir, false).tables.find(
-        (x) => x.name === tableParam,
-      );
       const entries: { name: string; path: string; kind: 'dir' | 'file' }[] = [];
-      const rollup = typeof t?.outputFile === 'string' ? t.outputFile : undefined;
+      const rollup = rollupPathOf(tableParam);
       if (rollup && existsSync(join(active.outputDir, rollup))) {
         entries.push({ name: rollup.split('/').pop() ?? rollup, path: rollup, kind: 'file' });
       }
@@ -1237,13 +1262,13 @@ export async function handleReadRoutes(
         return null;
       }
     };
-    // (1) A table's whole-table rollup → the table's object page.
-    const guiTables = loadGuiData(active.configPath, active.outputDir, false).tables;
-    const byRollup = guiTables.find((t) => t.outputFile === relNorm);
-    if (byRollup && !active.hiddenLinkTables.has(byRollup.name)) {
+    // (1) A table's whole-table rollup → the table's object page. Covers config
+    // AND runtime/derived tables (computed, connector, imported-database).
+    const rollupTable = tableForRollupPath(relNorm);
+    if (rollupTable) {
       sendJson(res, {
         kind: 'table',
-        table: byRollup.name,
+        table: rollupTable,
         ...(wantContent ? { content: readContent() } : {}),
       });
       return true;

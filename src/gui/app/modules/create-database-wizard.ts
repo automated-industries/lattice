@@ -256,7 +256,7 @@ export const createDatabaseWizardJs = `    // ───────────�
                 '</svg>' +
               '</button>' +
               micHtml +
-              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
+              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct…"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
             '</div>' +
             // Private mode — when checked, items the assistant adds on this send
@@ -307,7 +307,17 @@ export const createDatabaseWizardJs = `    // ───────────�
             });
           }
           input.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComposer(); }
+            if (e.key !== 'Enter') return;
+            // Cmd/Ctrl+Enter (and Shift+Enter) insert a line break; plain Enter sends.
+            if (e.metaKey || e.ctrlKey) {
+              e.preventDefault();
+              var s = input.selectionStart, en = input.selectionEnd;
+              input.value = input.value.slice(0, s) + '\\n' + input.value.slice(en);
+              input.selectionStart = input.selectionEnd = s + 1;
+              input.dispatchEvent(new Event('input')); // re-run the auto-grow sizer
+              return;
+            }
+            if (!e.shiftKey) { e.preventDefault(); submitComposer(); }
           });
           sendBtn.addEventListener('click', function () { submitComposer(); });
           var micBtn = document.getElementById('chat-mic');
