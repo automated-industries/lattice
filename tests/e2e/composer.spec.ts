@@ -9,22 +9,12 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('composer is gated until a Claude key is set', async ({ page }) => {
+test('the composer is active when Claude is connected', async ({ page }) => {
+  // Claude access is OAuth-only + mandatory (the wall gates a disconnected boot),
+  // so past the wall the composer is always active — there is no key-gated setup
+  // prompt. bootGui boots connected, so the input + send button render.
   await page.goto(gui.url);
   await openAskLattice(page);
-  // No key configured → the composer shows the setup prompt, not a textarea.
-  await expect(page.locator('.composer-setup')).toContainText('Set a Claude API token');
-  await expect(page.locator('#chat-input')).toHaveCount(0);
-
-  // Store a (test) Claude key the same way User Settings → Assistant does.
-  const res = await page.request.put(`${gui.url}/api/assistant/key`, {
-    data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
-  });
-  expect(res.ok()).toBeTruthy();
-
-  await page.reload();
-  await openAskLattice(page);
-  // With auth present, the composer renders an input + send button.
   await expect(page.locator('#chat-input')).toBeVisible();
   await expect(page.locator('#chat-send')).toBeVisible();
   await expect(page.locator('.composer-setup')).toHaveCount(0);
@@ -37,12 +27,9 @@ async function openAskLattice(page: import('@playwright/test').Page) {
   await expect(page.locator('#ask-dock')).toBeVisible();
 }
 
-/** Enable the composer (store a test key + reload), open the Ask Lattice panel,
- *  and return the input locator. */
+/** Open the Ask Lattice dock and return the composer input. bootGui boots
+ *  connected, so the composer is active — no key setup needed. */
 async function enableComposer(page: import('@playwright/test').Page, url: string) {
-  await page.request.put(`${url}/api/assistant/key`, {
-    data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
-  });
   await page.goto(url);
   await openAskLattice(page);
   await expect(page.locator('#chat-input')).toBeVisible();
