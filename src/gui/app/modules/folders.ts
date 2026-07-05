@@ -16,11 +16,15 @@ export const foldersJs = `
     // listed only under the Tables explorer's Source column, never here.
     function foldersModel() {
       return mtBuildModel().filter(function (e) {
-        // Connected external-database tables ARE browsable objects — the empty
-        // state literally invites "add a source", so a connected DB must populate
-        // the Objects page. Other source-tier tables (uploaded files) keep their
-        // own Inputs section and stay out of this grid.
-        var showable = e.tier !== 'source' || !!e.connectorToolkit;
+        // Connected external-source tables (a connected database, or a connected
+        // Gmail/Jira/etc.) ARE browsable objects — the empty state literally
+        // invites "add a source". Show a source-tier table only once it actually
+        // holds data: that surfaces a connected DB's tables, hides the empty
+        // never-connected connector schema stubs (gmail_labels, …) and any
+        // stale/emptied table, and matches the "objects appear as data ingests"
+        // behavior. Uploaded files keep their own Inputs section (no toolkit).
+        var connectedWithData = !!e.connectorToolkit && (e.rowCount || 0) > 0;
+        var showable = e.tier !== 'source' || connectedWithData;
         return showable && foldersParentTables(e.name).length === 0;
       }).slice().sort(function (a, b) {
         return String(a.label || '').toLowerCase().localeCompare(String(b.label || '').toLowerCase());
