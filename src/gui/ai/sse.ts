@@ -24,6 +24,9 @@ export type ChatStreamEvent =
   | { type: 'done' }
   // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).
   | { type: 'warn'; message: string }
+  // Claude usage limit reached — the standard "you've hit your Claude limit"
+  // notice; resetAt (ISO) when known. Distinct from a plain error.
+  | { type: 'limit'; message: string; resetAt?: string }
   | { type: 'error'; message: string };
 
 /** A feed event delivered over the same SSE channel as chat events. */

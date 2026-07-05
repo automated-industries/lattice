@@ -279,6 +279,7 @@ export const onboardingJs = `    // ──────────────�
               // the next chat message.
               else if (ev.type === 'question') { finalizeBubble(actx); actx = null; anToolStatus(null); if (typeof renderChatQuestion === 'function') renderChatQuestion(ev); }
               else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
+              else if (ev.type === 'limit') { finalizeBubble(actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); actx = null; if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); }
               else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
               // A tool (e.g. create_artifact) asked the GUI to open the row it
               // created. Remember it and navigate once the turn finishes so the

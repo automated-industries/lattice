@@ -19,6 +19,12 @@ import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
+import {
+  noteClaudeError,
+  getClaudeLimitState,
+  clearClaudeLimit,
+  CLAUDE_LIMIT_MESSAGE,
+} from './ai/limit-state.js';
 import { columnDescriptionHook } from './meta-gen.js';
 import { sendJson, readJson } from './http.js';
 import {
@@ -800,9 +806,26 @@ export async function dispatchChatRoute(
       }
       await checkpoint(false); // throttled mid-stream persist for refresh recovery
     }
+    // A completed turn means Claude is answering — clear any stale usage limit.
+    clearClaudeLimit();
   } catch (e) {
+    // A genuine usage-limit 429 flips the shared limit state and shows the
+    // standard notice (so the Configure side blocks too, via /api/assistant/config).
+    // A transient or entitlement 429, or any other failure, stays a plain error.
+    const kind = noteClaudeError(e);
     try {
-      res.write(formatSseFrame({ type: 'error', message: (e as Error).message }));
+      if (kind === 'usage') {
+        const limit = getClaudeLimitState();
+        res.write(
+          formatSseFrame({
+            type: 'limit',
+            message: limit ? limit.message : CLAUDE_LIMIT_MESSAGE,
+            ...(limit ? { resetAt: new Date(limit.resetAt).toISOString() } : {}),
+          }),
+        );
+      } else {
+        res.write(formatSseFrame({ type: 'error', message: (e as Error).message }));
+      }
       res.write(formatSseFrame({ type: 'done' }));
     } catch {
       // socket gone
