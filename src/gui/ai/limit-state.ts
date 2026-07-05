@@ -58,7 +58,7 @@ function retryAfterMs(err: ClaudeErrorish): number | null {
  */
 export function classifyClaudeError(err: unknown, model: string = DEFAULT_MODEL): ClaudeLimitKind {
   const e = err as ClaudeErrorish | null;
-  if (!e || e.status !== 429) return 'other';
+  if (e?.status !== 429) return 'other';
   if (model !== DEFAULT_MODEL) return 'entitlement';
   const ra = retryAfterMs(e);
   if (ra !== null && ra < TRANSIENT_MAX_MS) return 'transient';

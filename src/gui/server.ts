@@ -47,6 +47,7 @@ import {
   isClaudeConnected,
 } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { getClaudeLimitState } from './ai/limit-state.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
@@ -919,6 +920,24 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               if (!gated) return false;
               if (!(await isClaudeConnected(active.db))) {
                 sendJson(res, { error: 'claude_not_connected' }, 403);
+                return true;
+              }
+              // Pre-flight usage-limit block: once Claude has reported a usage
+              // limit, refuse the AI-mutating routes (chat AND the Configure-side
+              // ingest/import) up front with the same limit message, instead of
+              // firing a request we already know will 429. Auto-clears at resetAt
+              // (getClaudeLimitState returns null once past the horizon).
+              const limit = getClaudeLimitState();
+              if (limit) {
+                sendJson(
+                  res,
+                  {
+                    error: 'claude_limit',
+                    message: limit.message,
+                    resetAt: new Date(limit.resetAt).toISOString(),
+                  },
+                  429,
+                );
                 return true;
               }
               return false;

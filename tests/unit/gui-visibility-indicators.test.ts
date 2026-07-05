@@ -98,26 +98,23 @@ describe('visIndicator (shared lock/eye component)', () => {
 });
 
 /**
- * Onboarding wizard gains an optional, skippable Connect-with-Claude step right
- * after the name/email (identity) step, reusing the same OAuth exchange flow as
- * the Settings panel.
+ * The onboarding wizard has NO connect step. A connected Claude subscription is
+ * enforced globally by the boot connect wall (before any workspace loads), so by
+ * the time the create/join wizard runs the assistant is already connected — the
+ * per-wizard connect step was removed to avoid a redundant second prompt.
  */
-describe('gui onboarding — Connect with Claude step', () => {
-  it('adds a connect step between identity and create/join', () => {
-    expect(appJs).toContain("st.step === 'connect'");
-    // Identity advances INTO the connect step…
-    expect(appJs).toContain("st.step = 'connect';");
-    // …and the connect step advances on to create (kind) or join.
+describe('gui onboarding — no in-wizard connect step (handled by the boot wall)', () => {
+  it('advances identity straight to create (kind) or join — no connect step', () => {
+    // Identity → kind/join directly; there is no intermediate 'connect' step.
     expect(appJs).toContain("st.step = mode === 'join' ? 'join' : 'kind';");
+    expect(appJs).not.toContain("st.step === 'connect'");
+    expect(appJs).not.toContain("st.step = 'connect';");
   });
 
-  it('offers the Connect-with-Claude button and makes it skippable', () => {
-    expect(appJs).toContain('id="ob-connect-btn"');
-    expect(appJs).toContain('Connect with Claude');
-    expect(appJs).toContain('Skip for now');
-    // Reuses the existing subscription-OAuth exchange endpoint.
-    expect(appJs).toContain("fetch('/api/assistant/oauth/exchange'");
-    // Reflects an already-connected state instead of re-prompting.
-    expect(appJs).toContain('Connected with Claude');
+  it('does not render an in-wizard Connect-with-Claude affordance', () => {
+    // The skippable in-wizard button + its inline OAuth-code exchange are gone.
+    expect(appJs).not.toContain('id="ob-connect-btn"');
+    expect(appJs).not.toContain('id="ob-connect-finish"');
+    expect(appJs).not.toContain('Skip for now');
   });
 });
