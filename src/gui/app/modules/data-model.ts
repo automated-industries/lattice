@@ -335,59 +335,9 @@ export const dataModelJs = `    // ───────────────
             '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
-        function wire(idBase, kind) {
-          var input = host.querySelector('#' + idBase + '-key');
-          var saveBtn = host.querySelector('#' + idBase + '-save');
-          if (saveBtn) saveBtn.addEventListener('click', function () {
-            var key = (input.value || '').trim();
-            if (!key) { msg.textContent = 'Enter a key first.'; return; }
-            msg.textContent = 'Saving…';
-            fetch('/api/assistant/key', {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ kind: kind, key: key }),
-            })
-              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-              .then(function () { renderAssistantPanel(host); renderComposer(); })
-              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-          });
-          var clearBtn = host.querySelector('#' + idBase + '-clear');
-          if (clearBtn) clearBtn.addEventListener('click', function () {
-            msg.textContent = 'Clearing…';
-            fetch('/api/assistant/key?kind=' + encodeURIComponent(kind), { method: 'DELETE' })
-              .then(function (r) { if (!r.ok) throw new Error('clear failed (' + r.status + ')'); return r.json(); })
-              .then(function () { renderAssistantPanel(host); renderComposer(); })
-              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-          });
-        }
-        wire('asst-anthropic', 'anthropic');
-        var disconnectBtn = host.querySelector('#asst-oauth-disconnect');
-        if (disconnectBtn) disconnectBtn.addEventListener('click', function () {
-          msg.textContent = 'Disconnecting…';
-          fetch('/api/assistant/oauth', { method: 'DELETE' })
-            .then(function (r) { if (!r.ok) throw new Error('disconnect failed (' + r.status + ')'); return r.json(); })
-            .then(function () { renderAssistantPanel(host); renderComposer(); })
-            .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
-        });
-        // Manual code-paste: after approving in the popped tab, the user pastes
-        // the code here → exchange it for a token.
-        var finishBtn = host.querySelector('#connect-claude-finish');
-        if (finishBtn) finishBtn.addEventListener('click', function () {
-          var codeEl = host.querySelector('#connect-claude-code');
-          var cmsg = host.querySelector('#connect-claude-msg');
-          var code = (codeEl && codeEl.value ? codeEl.value : '').trim();
-          if (!code) { if (cmsg) cmsg.textContent = 'Paste the code from the Claude tab first.'; return; }
-          withBusy(finishBtn, function () {
-            if (cmsg) cmsg.textContent = 'Connecting…';
-            return fetch('/api/assistant/oauth/exchange', {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ code: code }),
-            }).then(function (r) { return r.json(); }).then(function (d) {
-              if (!d.ok) { if (cmsg) cmsg.textContent = 'Failed: ' + (d.error || 'could not connect'); return; }
-              renderAssistantPanel(host); renderComposer();
-            }).catch(function (e) { if (cmsg) cmsg.textContent = 'Failed: ' + e.message; });
-          });
-        });
+        // Connect/disconnect + API-key configuration are gone from this panel
+        // (Claude access is OAuth-only): connect is the first-run wall and
+        // disconnect is the header account menu. Only the behavior knobs remain.
         var aggr = host.querySelector('#asst-aggr');
         var aggrVal = host.querySelector('#asst-aggr-val');
         function aggrLabel(v) {
