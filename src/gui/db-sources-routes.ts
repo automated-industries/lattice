@@ -124,9 +124,9 @@ export async function dispatchDbSourcesRoute(
     // every one of them). syncConnector's own catch has already stamped the
     // registry row status='error' + last_error, and GET /api/db-sources returns
     // every status, so the connection stays visible with its error and the user can
-    // Refresh (retry) or Disconnect. Surface the error loudly (Rule 16) and log the
-    // raw error server-side first — the registry's last_error is sanitized, so this
-    // is the only full-fidelity trace.
+    // Refresh (retry) or Disconnect. Surface the error loudly (never a silent
+    // reset) and log the raw error server-side first — the registry's last_error
+    // is sanitized, so this is the only full-fidelity trace.
     try {
       const result = await syncConnector(db, connector, connectorId);
       publishImportSummary(deps.feed, connection.displayName ?? 'database', result.upserted);
