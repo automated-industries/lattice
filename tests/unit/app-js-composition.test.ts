@@ -371,8 +371,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Version-history panel drops its redundant "Version history" heading (the
 // takeover header already titles it) and moves the entity filter into a compact
 // .history-subhead row. Length + hash recaptured.
-const ORIGINAL_LENGTH = 676424;
-const ORIGINAL_SHA256 = '7dd2e61ded6ff6f7969fc781f95d251d4e075cdb7c9d85632b4ee5321ab64400';
+// Connected external-DB (db-source) tables now appear on the Objects page:
+// mtBuildModel carries connectorToolkit through, and foldersModel keeps
+// source-tier tables that are connected (the empty state's "add a source"
+// promise). Length + hash recaptured.
+const ORIGINAL_LENGTH = 676839;
+const ORIGINAL_SHA256 = '30b976fe7d03fd8f92842f7d0a0ddab2adf16ac32d1483822e6e3efdff717a94';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
