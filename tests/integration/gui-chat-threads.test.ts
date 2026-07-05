@@ -1,15 +1,39 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
+const savedEnv: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+  const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-threads-cfg-'));
+  dirs.push(cfgDir);
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY']) {
+    savedEnv[k] = process.env[k];
+  }
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'threads-test-key';
+  // Claude access is OAuth-only: the GET /api/chat/* thread-replay routes sit
+  // behind the server's AI-auth gate, which refuses them with 403
+  // `claude_not_connected` when no subscription is connected. Seed a connected
+  // subscription AFTER LATTICE_CONFIG_DIR/LATTICE_ENCRYPTION_KEY (the
+  // machine-local store is keyed off the config dir + master key). These tests
+  // only read persisted threads/messages — no model call is made — so seeding
+  // auth is all the gate needs.
+  seedClaudeOAuth();
+});
 
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
 });
 
 async function boot(): Promise<GuiServerHandle> {

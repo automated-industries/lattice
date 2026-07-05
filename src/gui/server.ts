@@ -41,7 +41,11 @@ import {
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
-import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
+import {
+  dispatchAssistantRoute,
+  getAggressiveness,
+  isClaudeConnected,
+} from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
@@ -896,6 +900,28 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 pathname,
                 method,
               });
+            },
+          },
+          // ── AI-auth gate ──────────────────────────────────────────────────
+          // Claude access is mandatory: every AI-mutating route is refused when no
+          // Claude subscription (or managed operator credential) is connected. This
+          // is the server-side backstop behind the client connect wall — a hidden
+          // button can't enforce it, and the AI routes are directly HTTP-reachable.
+          // /api/assistant/* (matched above) + GET /api/assistant/config stay open
+          // so Connect itself can always run.
+          {
+            handle: async (req, res) => {
+              const gated =
+                pathname.startsWith('/api/chat') ||
+                pathname.startsWith('/api/ingest/') ||
+                pathname.startsWith('/api/import/') ||
+                (method === 'POST' && /^\/api\/questions\/[^/]+\/answer$/.test(pathname));
+              if (!gated) return false;
+              if (!(await isClaudeConnected(active.db))) {
+                sendJson(res, { error: 'claude_not_connected' }, 403);
+                return true;
+              }
+              return false;
             },
           },
           // ── Chat route ──

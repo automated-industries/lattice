@@ -13,15 +13,33 @@ import { inferSchema } from '../../src/import/infer.js';
 import { materializeImport } from '../../src/import/materialize.js';
 import { allAsyncOrSync } from '../../src/db/adapter.js';
 import { LINEAGE_TABLE } from '../../src/gui/lineage-store.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const dbs: Lattice[] = [];
 const servers: GuiServerHandle[] = [];
+// Claude access is OAuth-only, and the AI-mutating ingest/import/answer routes are
+// gated server-side. HTTP tests authenticate by seeding a connected subscription
+// into an isolated machine-local config dir (the credential store is keyed off
+// LATTICE_CONFIG_DIR) — NOT via ANTHROPIC_API_KEY, which no longer authenticates.
+// Snapshot the env we override so each test restores it afterward.
+const AUTH_ENV_KEYS = [
+  'LATTICE_CONFIG_DIR',
+  'LATTICE_ENCRYPTION_KEY',
+  'ANTHROPIC_API_KEY',
+] as const;
+const savedAuthEnv: Record<string, string | undefined> = {};
+for (const k of AUTH_ENV_KEYS) savedAuthEnv[k] = process.env[k];
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
   for (const db of dbs.splice(0)) db.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   delete process.env.LATTICE_ROOT;
+  for (const k of AUTH_ENV_KEYS) {
+    const v = savedAuthEnv[k];
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
 });
 
 /** Fund-shaped fixture: keyed entity, keyless entity with an array ref + dimensions,
@@ -276,6 +294,14 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     const base = mkdtempSync(join(tmpdir(), prefix));
     dirs.push(base);
     process.env.LATTICE_ROOT = join(base, '.lattice');
+    // Seed a connected Claude subscription in this test's isolated config dir so
+    // the server-side AI-auth gate lets the /api/ingest + /api/import routes
+    // through. LATTICE_CONFIG_DIR must be set before seeding (the credential store
+    // is keyed off it) and before any config read below.
+    process.env.LATTICE_CONFIG_DIR = join(base, '.config-store');
+    process.env.LATTICE_ENCRYPTION_KEY = 'import-http-test-key';
+    delete process.env.ANTHROPIC_API_KEY;
+    seedClaudeOAuth();
     const root = ensureLatticeRoot(base);
     const ws = addWorkspace(root, { displayName: 'Http' });
     (await Lattice.openWorkspace({ root, workspaceId: ws.id })).close();
