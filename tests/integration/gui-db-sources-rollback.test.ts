@@ -188,7 +188,7 @@ describe('db-source connect failure semantics', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ host: 'example.invalid', user: 'reader', database: 'db' }),
     });
-    // The error is surfaced loudly (no silent failures).
+    // The error is surfaced loudly, not swallowed.
     expect(r.status).toBeGreaterThanOrEqual(400);
     const body = (await r.json()) as { error: string };
     expect(body.error).toContain('import exploded');
