@@ -94,18 +94,14 @@ export async function dispatchDbSourcesRoute(
       connectionRef: connection.connectionId,
       connectedBy,
     });
-    // ATOMIC connect: if the import (table definition / RLS / initial sync) fails,
-    // roll the whole connection back — registry row, stored creds, schema
-    // descriptor, imported rows, context files — so a failed connect leaves NOTHING
-    // behind (no phantom entry in the Databases list). The rollback reuses the
-    // DELETE route's teardown; a rollback failure is appended to the error rather
-    // than swallowed.
+    // Phase 1 — SETUP (pre-persistence): define the tables + RLS. A failure here
+    // means NO rows or connection data ever landed, so roll the whole connection
+    // back (registry row, creds, descriptor) — a failed setup must leave NOTHING
+    // behind (no phantom entry in the Databases list). A rollback failure is
+    // appended to the error rather than swallowed.
     try {
       for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
       await enableConnectorRls(db, connector, toolkit);
-      const result = await syncConnector(db, connector, connectorId);
-      publishImportSummary(deps.feed, connection.displayName ?? 'database', result.upserted);
-      sendJson(res, { connectorId, displayName: connection.displayName, result });
     } catch (e) {
       let rollbackNote = '';
       try {
@@ -115,7 +111,34 @@ export async function dispatchDbSourcesRoute(
       }
       sendJson(
         res,
-        { error: `Import failed: ${(e as Error).message}${rollbackNote}` },
+        { error: `Connection setup failed: ${(e as Error).message}${rollbackNote}` },
+        isActionable(e) ? 422 : 500,
+      );
+      return true;
+    }
+
+    // Phase 2 — IMPORT (post-persistence): sync the rows. A failure here must NOT
+    // discard rows that already imported, nor the connection itself — that
+    // all-or-nothing rollback is exactly the "data imports then silently vanishes"
+    // bug (a late/derived step throwing after thousands of rows are committed wiped
+    // every one of them). syncConnector's own catch has already stamped the
+    // registry row status='error' + last_error, and GET /api/db-sources returns
+    // every status, so the connection stays visible with its error and the user can
+    // Refresh (retry) or Disconnect. Surface the error loudly (no silent failures) and log the
+    // raw error server-side first — the registry's last_error is sanitized, so this
+    // is the only full-fidelity trace.
+    try {
+      const result = await syncConnector(db, connector, connectorId);
+      publishImportSummary(deps.feed, connection.displayName ?? 'database', result.upserted);
+      sendJson(res, { connectorId, displayName: connection.displayName, result });
+    } catch (e) {
+      console.error(`[latticesql] db-source import failed for connection ${connectorId}:`, e);
+      sendJson(
+        res,
+        {
+          error: `Import failed: ${(e as Error).message} — the connection is kept with this error; use Refresh to retry.`,
+          connectorId,
+        },
         isActionable(e) ? 422 : 500,
       );
     }
