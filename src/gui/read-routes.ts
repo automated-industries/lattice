@@ -207,7 +207,17 @@ async function enrichEntityTables(
       if (db.isComputedTable(t.name)) base.computedTable = true;
       // Connected data type → expose its toolkit so the Objects list can badge it.
       const connectedSource = db.getConnectedSource(t.name);
-      if (connectedSource) base.connectorToolkit = connectedSource.toolkit;
+      if (connectedSource) {
+        base.connectorToolkit = connectedSource.toolkit;
+        // External-DB tables are stored under a machine-namespaced physical name
+        // (`db_<database>_<connid>_<table>`) that title-cases into noise like
+        // "Db Postgres 1623 Addresses". Surface the clean external table name
+        // (the source model) as the display label; the connector badge already
+        // conveys that it came from an external database.
+        if (connectedSource.toolkit.startsWith('db_source:')) {
+          base.entityLabel = connectedSource.model;
+        }
+      }
       // Provenance origin: ingested/connected data is a SOURCE; a table the
       // lineage store says was materialized from ingested data is DERIVED.
       // Tables with neither signal (authored in Lattice) carry no origin.
