@@ -69,6 +69,10 @@ export const tableViewJs = `    // ───────────────
       document.querySelectorAll('.drawer-tab').forEach(function (b) {
         b.classList.toggle('active', b.getAttribute('data-tab') === tab);
       });
+      // History is a standalone takeover: hide the Settings tab row so it doesn't
+      // read as a Settings sub-tab. Show the row for the real settings tabs.
+      var tabsRow = document.getElementById('drawer-tabs');
+      if (tabsRow) tabsRow.hidden = (tab === 'history');
       var body = document.getElementById('drawer-body');
       if (!body) return;
       var title = document.querySelector('#settings-drawer .drawer-title');

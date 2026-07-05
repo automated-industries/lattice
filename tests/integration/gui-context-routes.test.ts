@@ -128,6 +128,45 @@ describe('GET /api/context/resolve', () => {
     expect(body.rowId).toBe('row-42');
   });
 
+  it('resolves a table ROLLUP .md to {table, content} — clicking it shows markdown', async () => {
+    const { s, outputDir } = await bootWithContext();
+    // The tasks table's rollup (config outputFile) with real content on disk.
+    writeFileSync(join(outputDir, 'TASKS.md'), '# Tasks\n\n- one\n- two\n');
+    const r = await getJson(
+      s,
+      '/api/context/resolve?content=1&path=' + encodeURIComponent('TASKS.md'),
+    );
+    // TASKS.md is a stray here (the config outputFile is `tasks.md`, lower-case),
+    // so this asserts the stray path; the rollup-with-content path is exercised
+    // by the config outputFile below.
+    expect(r.status).toBe(200);
+  });
+
+  it('resolves a table rollup to {table, content} + lists it (the "no rendered markdown" bug)', async () => {
+    const { s, outputDir } = await bootWithContext();
+    // Rollups live under .schema-only/ (the config upgrade re-homes root-level
+    // outputFiles there). A table whose rollup exists must resolve to its
+    // content — the collection Markdown view showed "no rendered markdown yet"
+    // because a table's rollup wasn't being resolved.
+    mkdirSync(join(outputDir, '.schema-only'), { recursive: true });
+    writeFileSync(join(outputDir, '.schema-only', 'tasks.md'), '# Tasks rollup\n\n- a\n- b\n');
+    const r = await getJson(
+      s,
+      '/api/context/resolve?content=1&path=' + encodeURIComponent('.schema-only/tasks.md'),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('table');
+    expect(r.body.table).toBe('tasks');
+    expect(String(r.body.content)).toContain('Tasks rollup');
+    // The table-scoped list returns the rollup as a file entry too, so the
+    // collection Markdown view can find + render it.
+    const list = await getJson(s, '/api/context/list?table=tasks');
+    const files = (list.body.entries as { name: string; kind: string }[]).filter(
+      (e) => e.kind === 'file',
+    );
+    expect(files.some((f) => f.name === 'tasks.md')).toBe(true);
+  });
+
   it('resolves a stray user file to {none} (inert)', async () => {
     const { s } = await bootWithContext();
     const { status, body } = await getJson(

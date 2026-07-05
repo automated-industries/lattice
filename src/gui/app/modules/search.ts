@@ -180,10 +180,16 @@ export const searchJs = `    // ────────────────
         currentThreadId = null;
         clearChat();
         refreshThreadList(true);
-        // A switch lands on the Analytics home — the app's landing view. (The
-        // new workspace's own last location is in its nav stack for Back.)
-        if (location.hash !== '#/analytics') location.hash = '#/analytics';
-        // Already on the Analytics home: re-render in place as a soft refresh so a
+        // A switch stays in the SAME view the user is in — Analytics stays in
+        // Analytics (its home; the new workspace has its own dashboards),
+        // Configure stays in Configure (its home). It never yanks the user
+        // across views. (The new workspace's own last location is in its nav
+        // stack for Back.)
+        var switchTarget = (typeof isAnalyticsHash === 'function' && isAnalyticsHash(location.hash))
+          ? '#/analytics'
+          : '#/';
+        if (location.hash !== switchTarget) location.hash = switchTarget;
+        // Already on the target home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.
         else renderRoute({ soft: true });
         loadedTables = {};
