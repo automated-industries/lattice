@@ -50,6 +50,7 @@ import type { ExternalRecord, ListChangesContext } from '../../src/connectors/ty
 
 const CONN_ID = 'rollbacktest1';
 const CONN_ID2 = 'rollbacktest2';
+const CONN_ID3 = 'reconnecttest1';
 
 /**
  * A DatabaseConnector whose remote "connects" fine but whose FIRST (and only)
@@ -138,6 +139,54 @@ class PartialImportDbConnector extends DatabaseConnector {
     }
     // The second model — books — fails AFTER authors' rows have been committed.
     throw new Error('books import exploded');
+  }
+}
+
+/**
+ * A DatabaseConnector whose connect + import succeed, and whose reconnect is a
+ * fake that records the edited credentials + re-points the stored connection
+ * string — no real external pool. Lets the route-level edit flow be tested end to
+ * end (connect → reconnect → re-sync) without a live Postgres.
+ */
+class ReconnectableDbConnector extends DatabaseConnector {
+  readonly reconnectCalls: { id: string; creds: Record<string, string> }[] = [];
+  async connect(): Promise<{ connectionId: string; displayName: string | null }> {
+    setDbSourceCreds(CONN_ID3, 'postgres://olduser:oldpass@example.invalid:5432/db');
+    setSchemaDescriptor(CONN_ID3, {
+      dialect: 'postgres',
+      schema: 'public',
+      prefix: 'store3',
+      tables: [
+        {
+          name: 'authors',
+          columns: [
+            { name: 'id', sqlSpec: 'TEXT' },
+            { name: 'name', sqlSpec: 'TEXT' },
+          ],
+          pk: ['id'],
+          selected: true,
+        },
+      ],
+    });
+    return { connectionId: CONN_ID3, displayName: 'store3' };
+  }
+  async reconnect(
+    id: string,
+    creds: Record<string, string>,
+  ): Promise<{ connectionId: string; displayName: string | null }> {
+    this.reconnectCalls.push({ id, creds });
+    const user = creds.user || 'olduser';
+    const pass = creds.password || 'oldpass';
+    const host = creds.host || 'example.invalid';
+    setDbSourceCreds(CONN_ID3, `postgres://${user}:${pass}@${host}:5432/db`);
+    return { connectionId: id, displayName: 'store3' };
+  }
+  async *listChanges(
+    _toolkit: string,
+    _model: string,
+    _ctx: ListChangesContext,
+  ): AsyncIterable<ExternalRecord> {
+    yield { id: 'a1', row: { id: 'a1', name: 'Ada' } };
   }
 }
 
@@ -238,6 +287,71 @@ describe('db-source connect failure semantics', () => {
     const list = await fetch(`${base}/api/db-sources`);
     const sources = ((await list.json()) as { sources: unknown[] }).sources;
     expect(sources.length).toBe(1);
+  });
+
+  it('reconnect edits credentials, re-syncs, and reuses the SAME connection (no new row)', async () => {
+    const rc = new ReconnectableDbConnector();
+    fake = rc;
+    const headers = { 'content-type': 'application/json' };
+
+    // Establish a healthy connection.
+    const c = await fetch(`${base}/api/db-sources/connect`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ host: 'example.invalid', user: 'olduser', database: 'db' }),
+    });
+    expect(c.status).toBe(200);
+    const before = await listConnectors(db, 'tester');
+    expect(before.length).toBe(1);
+    const id = before[0]!.id;
+
+    // Edit: change the user + password.
+    const r = await fetch(`${base}/api/db-sources/${id}/reconnect`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        host: 'example.invalid',
+        user: 'newuser',
+        password: 'newpass',
+        database: 'db',
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect((await r.json()).ok).toBe(true);
+
+    // The route delegated to connector.reconnect with the edited creds…
+    expect(rc.reconnectCalls.length).toBe(1);
+    expect(rc.reconnectCalls[0]?.creds.user).toBe('newuser');
+    expect(rc.reconnectCalls[0]?.creds.password).toBe('newpass');
+    // …the stored connection string was re-pointed…
+    expect(getDbSourceCreds(CONN_ID3)).toContain('newuser');
+    // …and NO new registry row was created (same connection edited in place).
+    const after = await listConnectors(db, 'tester');
+    expect(after.length).toBe(1);
+    expect(after[0]?.id).toBe(id);
+    // A successful re-sync clears the connection back to healthy.
+    expect(after[0]?.status).toBe('connected');
+  });
+
+  it('GET /<id>/connection returns the non-secret parts, never the password', async () => {
+    const rc = new ReconnectableDbConnector();
+    fake = rc;
+    const headers = { 'content-type': 'application/json' };
+    const c = await fetch(`${base}/api/db-sources/connect`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ host: 'example.invalid', user: 'olduser', database: 'db' }),
+    });
+    expect(c.status).toBe(200);
+    const id = (await listConnectors(db, 'tester'))[0]!.id;
+
+    const r = await fetch(`${base}/api/db-sources/${id}/connection`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { connection: Record<string, string> };
+    expect(body.connection.user).toBe('olduser');
+    expect(body.connection.host).toBe('example.invalid');
+    expect(JSON.stringify(body.connection)).not.toContain('oldpass');
+    expect(body.connection).not.toHaveProperty('password');
   });
 
   it('/api/connectors excludes db_source rows (they live under Databases only)', async () => {
