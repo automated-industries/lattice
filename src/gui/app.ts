@@ -69,7 +69,7 @@ export const guiAppHtml = `<!doctype html>
       <span class="history-sep" aria-hidden="true"></span>
       <button class="history-btn" id="undo-btn" title="Undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
       <button class="history-btn" id="redo-btn" title="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
-      <button class="history-btn" id="history-link" type="button" title="Version history">🕐</button>
+      <button class="history-btn" id="history-link" type="button" title="Version history" aria-label="Version history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></button>
     </div>
     <div class="activity" id="activity">
       <button class="history-btn activity-pill" id="activity-pill" title="Recent activity" aria-haspopup="true" aria-expanded="false">
