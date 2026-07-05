@@ -19,7 +19,7 @@ The connect handler ran the entire import inside one `try`:
 defineLate(each table) → enableConnectorRls → syncConnector → publishImportSummary
 ```
 
-and its `catch` responded to **any** throw — including one that happens *after*
+and its `catch` responded to **any** throw — including one that happens _after_
 all the rows are already committed — by calling
 `disconnectConnector(mode: 'hard')`. That teardown soft-deletes every imported
 row (under one shared `deleted_at` timestamp) and hard-deletes the registry row.
@@ -32,8 +32,8 @@ So the handler conflated two very different failures:
    rows are committed) — the rollback **destroys a fully successful import**.
 
 The specific late throw is not even deterministic on a local SQLite workspace,
-which is the tell: the defect isn't any single operation, it's the *all-or-nothing
-rollback policy*. It also destroyed its own evidence — the only persisted error
+which is the tell: the defect isn't any single operation, it's the _all-or-nothing
+rollback policy_. It also destroyed its own evidence — the only persisted error
 trace (the registry's `last_error`) was hard-deleted by the same teardown, so the
 failure surfaced as "nothing ingested" with no cause.
 
