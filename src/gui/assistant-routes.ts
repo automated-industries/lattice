@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { transcribe, type SttProvider } from './ai/transcribe.js';
 import { voiceModeFromConfig, type VoiceMode } from './ai/voice-mode.js';
+import { getClaudeLimitState } from './ai/limit-state.js';
 import {
   readOAuthConfig,
   oauthConfigured,
@@ -466,6 +467,9 @@ export async function dispatchAssistantRoute(
       // managed deployment (operator env credential) or when a Claude
       // subscription is connected. OAuth-only otherwise.
       connected: await isClaudeConnected(db),
+      // Claude usage-limit state (null unless the limit was hit). The chat shows
+      // it and the Configure side reads it to block ingest/AI while limited.
+      limitState: getClaudeLimitState(),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference,
