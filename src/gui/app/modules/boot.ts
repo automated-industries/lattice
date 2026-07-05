@@ -45,18 +45,33 @@ export const bootJs = `    // ────────────────�
       // an empty workspace list: a plain --config GUI has an active DB but no
       // .lattice registry (empty list) and must still boot normally.
       fetchJson('/api/workspaces').catch(function () { return null; }).then(function (wsBoot) {
-        if (wsBoot && wsBoot.virgin === true) {
-          renderVirginState();
-          hideAppLoading();
-          return undefined;
-        }
-        return bootWorkspace();
+        // Connect wall: a connected Claude subscription is mandatory. Gate the
+        // whole app behind it BEFORE any workspace loads — unless a managed
+        // deployment supplies the credential (managedModelAuth). On a successful
+        // connect the wall calls back into continueBoot to resume the normal boot.
+        return fetchJson('/api/assistant/config').catch(function () { return {}; }).then(function (cfg) {
+          if (cfg && cfg.connected === false && cfg.managedModelAuth !== true) {
+            showConnectWall(function () { continueBoot(wsBoot); });
+            hideAppLoading();
+            return undefined;
+          }
+          return continueBoot(wsBoot);
+        });
       }).catch(function (err) {
         var content = document.getElementById('content');
         if (content) content.innerHTML =
           '<div class="placeholder"><h2>Failed to load</h2>' + escapeHtml(err.message) + '</div>';
         hideAppLoading();
       });
+    }
+
+    function continueBoot(wsBoot) {
+      if (wsBoot && wsBoot.virgin === true) {
+        renderVirginState();
+        hideAppLoading();
+        return undefined;
+      }
+      return bootWorkspace();
     }
 
     function bootWorkspace() {

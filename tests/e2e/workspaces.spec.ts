@@ -9,6 +9,7 @@ import {
   addWorkspace,
   resolveWorkspacePaths,
 } from '../../src/index.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 // These tests share one server (and thus its active-workspace state), so they
 // must run in order rather than racing in parallel workers.
@@ -21,6 +22,9 @@ test.beforeAll(async () => {
   base = mkdtempSync(join(tmpdir(), 'lattice-e2e-ws-'));
   process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-e2e-ws-home-'));
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // A connected Claude subscription is mandatory (the first-run wall gates the
+  // whole app), so seed one before the server boots.
+  seedClaudeOAuth();
   // Pin the registry root to THIS spec's temp dir BEFORE any root resolution:
   // findLatticeRoot's env override wins everywhere (ensureLatticeRoot included),
   // so a developer shell exporting LATTICE_ROOT=~/.lattice would otherwise send

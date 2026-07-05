@@ -31,6 +31,7 @@ import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
 import { statusIndicatorCss } from './status-indicator.js';
 import { fileDocCss } from './file-doc.js';
+import { connectWallCss } from './connect-wall.js';
 
 export const css = [
   tokensCss,
@@ -63,4 +64,5 @@ export const css = [
   sourcesCss,
   statusIndicatorCss,
   fileDocCss,
+  connectWallCss,
 ].join('');
