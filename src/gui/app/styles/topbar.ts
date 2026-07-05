@@ -48,6 +48,13 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .history-btn svg { width: 16px; height: 16px; display: block; }
 
     /* History page */
+    /* Compact subheader over the history list — holds just the entity filter
+       (the takeover's own header already titles the panel "Version history"). */
+    .history-subhead {
+      display: flex; align-items: center; gap: 8px;
+      max-width: 980px; margin: 0 0 12px; padding: 2px;
+    }
+    .history-filter-label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
     .history-list {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; overflow: hidden; max-width: 980px;

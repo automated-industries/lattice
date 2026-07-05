@@ -368,8 +368,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Version-history header drops its leading 📜 entity-icon (plain "Version
 // history" heading). Length + hash recaptured. (The header clock trigger becomes
 // an SVG icon — but that lives in the app.ts HTML shell, not this bundle.)
-const ORIGINAL_LENGTH = 676282;
-const ORIGINAL_SHA256 = '3c8ff0130df1852f881301decac9f093280599f7ddb07d32faf2f843a515e7ae';
+// Version-history panel drops its redundant "Version history" heading (the
+// takeover header already titles it) and moves the entity filter into a compact
+// .history-subhead row. Length + hash recaptured.
+const ORIGINAL_LENGTH = 676424;
+const ORIGINAL_SHA256 = '7dd2e61ded6ff6f7969fc781f95d251d4e075cdb7c9d85632b4ee5321ab64400';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
