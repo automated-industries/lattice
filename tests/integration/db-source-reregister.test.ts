@@ -77,6 +77,13 @@ describe('db-source table re-registration on reopen', () => {
     await reregisterDbSourceTables(s2);
     expect(s2.getRegisteredTableNames()).toContain(model!.table);
     await expect(s2.query(model!.table, {})).resolves.toBeInstanceOf(Array);
+
+    // The physical table is machine-namespaced (`db_store_authors`), but the
+    // connected source carries the clean external table name — this is the
+    // `entityLabel` the entities-summary enrichment surfaces so the Objects list
+    // shows "Authors", not "Db Store Authors".
+    expect(model!.table).toBe('db_store_authors');
+    expect(s2.getConnectedSource(model!.table)?.model).toBe('authors');
     s2.close();
   });
 });

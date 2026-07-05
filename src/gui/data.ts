@@ -28,6 +28,14 @@ export interface GuiTableSummary {
    */
   connectorToolkit?: string;
   /**
+   * Connected data type only: a clean display label for the table when its
+   * physical name is machine-namespaced and title-cases into noise (external-DB
+   * tables: `db_<database>_<connid>_<table>`). Holds the source model / external
+   * table name; the client title-cases it. Absent for tables whose own name
+   * already reads well. Set by the server.
+   */
+  entityLabel?: string;
+  /**
    * True for saved computed tables (live, read-only projections defined over
    * other tables). Drives the Tables explorer's "Computed Tables" tier. Set by
    * the server when the computed-tables engine stamps it.
