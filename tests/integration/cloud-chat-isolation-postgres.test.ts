@@ -20,7 +20,7 @@
  *
  * Postgres-gated (real per-test cloud database + a real member login role).
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,12 +32,14 @@ import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/mem
 import { runAsyncOrSync } from '../../src/db/adapter.js';
 import { addWorkspace, resolveWorkspacePaths } from '../../src/framework/workspace.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
 const servers: GuiServerHandle[] = [];
 const dirs: string[] = [];
 const databases: string[] = [];
 const roles: string[] = [];
+const savedEnv: Record<string, string | undefined> = {};
 
 function dbUrl(dbname: string, user?: string, password?: string): string {
   const u = new URL(PG_URL!);
@@ -75,9 +77,32 @@ function defineChatTables(db: Lattice): void {
   });
 }
 
+beforeEach(() => {
+  // Isolate the machine-local credential store to a throwaway config dir + master
+  // key, then seed a connected Claude subscription into it. Claude access is
+  // OAuth-only, and the GUI's AI-auth gate refuses every /api/chat route with
+  // 403 until a subscription is connected — so the chat READ routes this test
+  // drives (thread + message lists) only reach the isolation logic once the gate
+  // passes. Seeded AFTER LATTICE_CONFIG_DIR/LATTICE_ENCRYPTION_KEY are set (the
+  // store is keyed off the config dir + master key). The token never reaches a
+  // real endpoint — the test only exercises the read endpoints, not a model call.
+  const cfgDir = mkdtempSync(join(tmpdir(), 'chat-iso-cfg-'));
+  dirs.push(cfgDir);
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY']) {
+    savedEnv[k] = process.env[k];
+  }
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'chat-iso-test-key';
+  seedClaudeOAuth();
+});
+
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
   if (!PG_URL) return;
   const admin = new pg.Pool({ connectionString: PG_URL, max: 1 });
   for (const r of roles.splice(0)) {

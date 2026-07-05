@@ -30,14 +30,13 @@ vi.mock('../../src/gui/ai/summarize.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  savedEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
   // Isolate the machine config dir (master key + assistant credentials) to a
   // temp dir so booting the GUI server here never touches the real ~/.lattice
   // or reads a developer's real stored key.
@@ -47,12 +46,16 @@ beforeEach(() => {
   dirs.push(cfgDir);
   process.env.LATTICE_CONFIG_DIR = cfgDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'aggr-test-key';
+  // Claude access is OAuth-only: the ingest routes are gated behind a connected
+  // subscription. Seed one into the isolated config dir (which must already be
+  // set — the credential store is keyed off LATTICE_CONFIG_DIR) so the gated
+  // /api/ingest/* calls below authenticate. The token never reaches a real
+  // endpoint: the model calls are mocked out above.
+  seedClaudeOAuth();
   mockState.matches = [{ table: 'projects', id: 'proj-1' }];
   mockState.objects = [];
 });
 afterEach(async () => {
-  if (savedEnv.ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedEnv.ANTHROPIC_API_KEY;
   if (savedEnv.LATTICE_CONFIG_DIR === undefined) delete process.env.LATTICE_CONFIG_DIR;
   else process.env.LATTICE_CONFIG_DIR = savedEnv.LATTICE_CONFIG_DIR;
   if (savedEnv.LATTICE_ENCRYPTION_KEY === undefined) delete process.env.LATTICE_ENCRYPTION_KEY;

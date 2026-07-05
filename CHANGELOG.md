@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Claude access is becoming OAuth-only, enforced server-side (in progress).**
+  The assistant now authenticates only through a connected Claude subscription
+  (OAuth) — the per-user API-key path is being removed. A single server-side gate
+  refuses every AI route (`/api/chat`, `/api/ingest/*`, `/api/import/*`, question
+  answers) with `403 claude_not_connected` when no subscription is connected, so
+  the requirement can't be bypassed by calling the API directly. `resolveClaudeAuth`
+  is now OAuth-token-or-null and `/api/assistant/config` reports a single
+  `connected` boolean. The opt-in managed-deployment mode
+  (`LATTICE_MANAGED_MODEL_AUTH`, operator env credential) is unaffected. Later
+  steps add the un-skippable first-run connect wall, the header disconnect
+  control, and usage-limit messaging.
+
 - **Marginal import links now ask instead of auto-creating.** Link inference
   in the structured importer is governed by the clarify threshold (default
   0.6): a reference field whose values resolve to another table at or above

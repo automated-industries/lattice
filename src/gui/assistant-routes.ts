@@ -364,33 +364,43 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
       }
       if (tokens.access_token) return { authToken: tokens.access_token, betaHeader };
       console.warn(
-        '[lattice/assistant] Claude subscription is connected but has no usable access token — using the API key if one is configured.',
+        '[lattice/assistant] Claude subscription is connected but has no usable access token — re-connect Claude.',
       );
     } catch (e) {
-      // The stored OAuth blob is corrupt/unreadable — genuinely unusable, so the
-      // API-key fallback below is the right move.
+      // The stored OAuth blob is corrupt/unreadable — genuinely unusable.
       console.warn(
-        '[lattice/assistant] stored Claude subscription credential is unreadable; using the API key if configured:',
+        '[lattice/assistant] stored Claude subscription credential is unreadable; re-connect Claude:',
         (e as Error).message,
       );
     }
   }
-  // No usable OAuth → fall back to the (non-cleared) stored-or-env API key.
-  const apiKey = await resolveAnthropicKey(db);
-  return apiKey ? { apiKey } : null;
+  // No usable OAuth → not connected. Claude access is OAuth-only in a normal
+  // install (the per-user API-key path was removed); a managed deployment already
+  // returned its operator env credential at the top of this function.
+  return null;
 }
 
 /**
- * Which kind of Claude auth is active — the SINGLE source of truth for the
- * assistant's connection state. The GUI derives everything from this (one
- * client helper, `claudeAuth(cfg)`): a connected subscription ('oauth') shows
- * "Connected with Claude"; a pasted API key ('key') is the API-key path; null
- * is not-connected. A connected subscription wins (resolveClaudeAuth prefers
- * it). Do NOT add a second "has any auth" flag — it is exactly `kind !== null`.
+ * The single connected/disconnected truth the server gate and the client wall
+ * both read. True when a model call would succeed: a managed deployment has its
+ * operator env credential, otherwise a Claude subscription (OAuth token) is
+ * connected. Deliberately a presence check — no token refresh — so it stays cheap
+ * on the per-request gate.
  */
-export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | 'key' | null> {
+export async function isClaudeConnected(db: Lattice | null): Promise<boolean> {
+  if (isManagedModelAuth()) return Boolean(process.env.ANTHROPIC_API_KEY);
+  return Boolean(await readMachineCredential(db, CLAUDE_OAUTH_KIND));
+}
+
+/**
+ * Whether a Claude subscription (OAuth) is connected: 'oauth' when a subscription
+ * token is stored, else null. Claude access is OAuth-only in a normal install, so
+ * there is no 'key' kind. A managed deployment authenticates via the operator's
+ * env credential and is reflected by `connected` + `managedModelAuth` on the
+ * config instead — see {@link isClaudeConnected}.
+ */
+export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | null> {
   if (await readMachineCredential(db, CLAUDE_OAUTH_KIND)) return 'oauth';
-  if (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY')) return 'key';
   return null;
 }
 
@@ -452,6 +462,10 @@ export async function dispatchAssistantRoute(
       hasOpenaiKey,
       hasElevenlabsKey,
       claudeAuthKind: await claudeAuthKind(db),
+      // The single connected/disconnected truth the client wall reads. True in a
+      // managed deployment (operator env credential) or when a Claude
+      // subscription is connected. OAuth-only otherwise.
+      connected: await isClaudeConnected(db),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference,
