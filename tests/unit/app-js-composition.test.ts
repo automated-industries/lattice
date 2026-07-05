@@ -375,8 +375,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // mtBuildModel carries connectorToolkit through, and foldersModel keeps
 // source-tier tables that are connected (the empty state's "add a source"
 // promise). Length + hash recaptured.
-const ORIGINAL_LENGTH = 676839;
-const ORIGINAL_SHA256 = '30b976fe7d03fd8f92842f7d0a0ddab2adf16ac32d1483822e6e3efdff717a94';
+const ORIGINAL_LENGTH = 677170;
+const ORIGINAL_SHA256 = '3a18a0eac9bc10c56768ca983fb958e1add651992ccfa7d228201e0298713d55';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

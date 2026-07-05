@@ -136,6 +136,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   **import** failure keeps the connection in an error state with its already-
   imported rows live and the error surfaced loudly, so a Refresh can retry. See
   `docs/bugs/2026-07-05-db-source-import-then-wipe.md`.
+- **A connected database's tables now appear on the Objects page and survive a
+  restart.** Two gaps made a freshly connected database look like "nothing
+  happened": (1) the Objects page filtered out every source-tier table, so
+  connected tables only showed in the Graph / Tables explorer — now a connected
+  source table with data appears as a browsable object (empty never-connected
+  connector schema stubs stay hidden); and (2) the per-connection tables were
+  registered on the live schema only for the connect session, so after an app
+  restart the imported tables + rows persisted on disk but vanished from every
+  view — the workspace-open path now replays that registration from the persisted
+  connection descriptor.
 
 ---
 
