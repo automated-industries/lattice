@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 export interface BootedGui {
   url: string;
@@ -30,7 +31,9 @@ const DEFAULT_YAML = [
  * Each call gets its own ~/.lattice dir + encryption key so specs never share
  * credentials or saved databases. Call `close()` (return value) in afterEach.
  */
-export async function bootGui(opts: { yaml?: string; version?: string } = {}): Promise<BootedGui> {
+export async function bootGui(
+  opts: { yaml?: string; version?: string; connected?: boolean } = {},
+): Promise<BootedGui> {
   const dir = mkdtempSync(join(tmpdir(), 'lattice-e2e-'));
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-e2e-home-'));
   process.env.LATTICE_CONFIG_DIR = cfgDir;
@@ -44,6 +47,10 @@ export async function bootGui(opts: { yaml?: string; version?: string } = {}): P
   mkdirSync(join(rootDir, '.config'), { recursive: true });
   process.env.LATTICE_ROOT = rootDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // A connected Claude subscription is mandatory (the first-run wall gates the
+  // whole app), so specs boot connected by default. A spec exercising the wall
+  // itself passes `connected: false` to boot disconnected.
+  if (opts.connected !== false) seedClaudeOAuth();
   mkdirSync(join(dir, 'data'), { recursive: true });
   const outputDir = join(dir, 'context');
   mkdirSync(outputDir, { recursive: true });
