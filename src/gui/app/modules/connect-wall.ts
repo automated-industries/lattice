@@ -62,4 +62,29 @@ export const connectWallJs = `    // ── First-run connect wall ────�
       var wall = document.getElementById('connect-wall');
       if (wall && wall.parentNode) wall.parentNode.removeChild(wall);
     }
+
+    // ── Usage-limit banner ──────────────────────────────────
+    // The single "you've hit your Claude limit" signal, shown app-wide (Analytics
+    // AND Configure) whenever the server's shared limit state is active — so file
+    // ingestion + other AI features read the same block, not just the chat. Reads
+    // /api/assistant/config (which surfaces limitState); the chat's limit SSE frame
+    // also calls this so the banner appears the instant a limit is hit.
+    function refreshLimitBlock() {
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        var limited = cfg && cfg.limitState;
+        var el = document.getElementById('limit-banner');
+        if (limited) {
+          if (!el) {
+            el = document.createElement('div');
+            el.id = 'limit-banner';
+            el.className = 'limit-banner';
+            el.setAttribute('role', 'status');
+            document.body.appendChild(el);
+          }
+          el.textContent = '\\u23F3 ' + (cfg.limitState.message || 'You have hit your Claude usage limit.');
+        } else if (el && el.parentNode) {
+          el.parentNode.removeChild(el);
+        }
+      }).catch(function () {});
+    }
 `;
