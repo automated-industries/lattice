@@ -575,6 +575,15 @@ export async function dispatchAssistantRoute(
       sendJson(res, { error: `unknown credential kind: ${String(body.kind)}` }, 400);
       return true;
     }
+    if (name === 'anthropic') {
+      // Claude access is OAuth-only — a per-user API key is no longer accepted.
+      sendJson(
+        res,
+        { error: 'Claude access is OAuth-only — connect a subscription instead of an API key.' },
+        400,
+      );
+      return true;
+    }
     const key = typeof body.key === 'string' ? body.key.trim() : '';
     if (!key) {
       sendJson(res, { error: 'key is required' }, 400);
@@ -615,6 +624,15 @@ export async function dispatchAssistantRoute(
     const name = (url.searchParams.get('kind') ?? 'anthropic') as CredentialName;
     if (!(name in CREDENTIALS)) {
       sendJson(res, { error: `unknown credential kind: ${name}` }, 400);
+      return true;
+    }
+    if (name === 'anthropic') {
+      // Claude access is OAuth-only — there is no per-user API key to clear.
+      sendJson(
+        res,
+        { error: 'Claude access is OAuth-only — connect a subscription instead of an API key.' },
+        400,
+      );
       return true;
     }
     // Clear the machine-level store AND any leftover copy in the active

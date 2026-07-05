@@ -63,7 +63,7 @@ function writeMinimalConfig(): { configPath: string; outputDir: string } {
 }
 
 describe('assistant key storage', () => {
-  it('reports no key, accepts one, then clears it — never returning the value', async () => {
+  it('rejects a per-user Claude API key — access is OAuth-only', async () => {
     const { configPath, outputDir } = writeMinimalConfig();
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
     servers.push(server);
@@ -73,66 +73,23 @@ describe('assistant key storage', () => {
     };
     expect(cfg0.hasAnthropicKey).toBe(false);
 
+    // Setting a Claude API key is refused — connect a subscription (OAuth) instead.
     const put = await fetch(`${server.url}/api/assistant/key`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key: 'sk-ant-test-do-not-use' }),
+      body: JSON.stringify({ kind: 'anthropic', key: 'sk-ant-test-do-not-use' }),
     });
-    expect(put.status).toBe(200);
-    const putBody = (await put.json()) as Record<string, unknown>;
-    expect(putBody.ok).toBe(true);
-    // The endpoint must never echo the stored token back.
-    expect(JSON.stringify(putBody)).not.toContain('sk-ant-test-do-not-use');
+    expect(put.status).toBe(400);
+    expect(String((await put.json()).error)).toMatch(/OAuth-only/i);
+
+    // Clearing the anthropic kind is likewise refused (there is no user key).
+    const del = await fetch(`${server.url}/api/assistant/key?kind=anthropic`, { method: 'DELETE' });
+    expect(del.status).toBe(400);
 
     const cfg1 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
       hasAnthropicKey: boolean;
-    } & Record<string, unknown>;
-    expect(cfg1.hasAnthropicKey).toBe(true);
-    expect(JSON.stringify(cfg1)).not.toContain('sk-ant-test-do-not-use');
-
-    const del = await fetch(`${server.url}/api/assistant/key`, { method: 'DELETE' });
-    expect(del.status).toBe(200);
-
-    const cfg2 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
-      hasAnthropicKey: boolean;
     };
-    expect(cfg2.hasAnthropicKey).toBe(false);
-  });
-
-  it('keeps a stored key when a different workspace opens (machine-level, not per-DB)', async () => {
-    // Workspace A: store the key.
-    const a = writeMinimalConfig();
-    const serverA = await startGuiServer({
-      configPath: a.configPath,
-      outputDir: a.outputDir,
-      port: 0,
-      openBrowser: false,
-    });
-    servers.push(serverA);
-    const put = await fetch(`${serverA.url}/api/assistant/key`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key: 'sk-ant-cross-workspace' }),
-    });
-    expect(put.status).toBe(200);
-
-    // Workspace B: a DIFFERENT database (different config + db file), same
-    // machine config dir. The key must still be present — this is the
-    // regression: creating/switching a workspace used to de-attach it.
-    const b = writeMinimalConfig();
-    expect(b.configPath).not.toBe(a.configPath);
-    const serverB = await startGuiServer({
-      configPath: b.configPath,
-      outputDir: b.outputDir,
-      port: 0,
-      openBrowser: false,
-    });
-    servers.push(serverB);
-    const cfgB = (await fetch(`${serverB.url}/api/assistant/config`).then((r) => r.json())) as {
-      hasAnthropicKey: boolean;
-    } & Record<string, unknown>;
-    expect(cfgB.hasAnthropicKey).toBe(true);
-    expect(JSON.stringify(cfgB)).not.toContain('sk-ant-cross-workspace');
+    expect(cfg1.hasAnthropicKey).toBe(false);
   });
 
   it('stores + clears an explicit voice-provider preference', async () => {
@@ -292,59 +249,6 @@ describe('assistant key storage', () => {
       hasAnthropicKey: boolean;
     };
     expect(cfg.hasAnthropicKey).toBe(true);
-  });
-
-  it('clearing the key is authoritative — it suppresses the env fallback and stays cleared', async () => {
-    const { configPath, outputDir } = writeMinimalConfig();
-    const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
-    servers.push(server);
-
-    // An env key is present (an env-supplied key the user wants to remove).
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-supplied';
-
-    // Store a key, then clear it via the API.
-    const put = await fetch(`${server.url}/api/assistant/key`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key: 'sk-ant-stored-do-not-use' }),
-    });
-    expect(put.status).toBe(200);
-    const del = await fetch(`${server.url}/api/assistant/key`, { method: 'DELETE' });
-    expect(del.status).toBe(200);
-
-    // The config must report NO key — the env fallback is suppressed by the
-    // authoritative "cleared" sentinel (this is the bug: env flipped it back to
-    // true after clear).
-    const cfg = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
-      hasAnthropicKey: boolean;
-    };
-    expect(cfg.hasAnthropicKey).toBe(false);
-
-    // And the auth resolver returns nothing while cleared (no OAuth set), so the
-    // cleared key does NOT resolve via the env var.
-    expect(await resolveClaudeAuth(null)).toBeNull();
-
-    // OAuth ALWAYS wins, even with a cleared key + a live env key present.
-    setAssistantCredential('claude_oauth', JSON.stringify({ access_token: 'oauth-tok' }));
-    try {
-      const auth = await resolveClaudeAuth(null);
-      expect(auth?.authToken).toBe('oauth-tok');
-      expect(auth?.apiKey).toBeUndefined();
-    } finally {
-      deleteAssistantCredential('claude_oauth');
-    }
-
-    // Saving a new key un-clears the sentinel → presence flips back to true.
-    const put2 = await fetch(`${server.url}/api/assistant/key`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key: 'sk-ant-fresh-do-not-use' }),
-    });
-    expect(put2.status).toBe(200);
-    const cfg2 = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
-      hasAnthropicKey: boolean;
-    };
-    expect(cfg2.hasAnthropicKey).toBe(true);
   });
 
   // Regression: a connected subscription must stay preferred even when its token
