@@ -16,13 +16,12 @@ export const markdownJs = `    // ───────────────�
           return '<option value="' + escapeHtml(n) + '"' + sel + '>' + escapeHtml(displayFor(n).label) + '</option>';
         }).join('');
 
+      // No page title here — the takeover's own header already reads "Version
+      // history". Just a compact subheader holding the entity filter.
       content.innerHTML =
-        '<div class="view-header">' +
-          '<span class="entity-icon">📜</span>' +
-          '<h1>Version history</h1>' +
-          '<div class="actions">' +
-            '<select id="history-filter">' + options + '</select>' +
-          '</div>' +
+        '<div class="history-subhead">' +
+          '<label class="history-filter-label" for="history-filter">Entity</label>' +
+          '<select id="history-filter">' + options + '</select>' +
         '</div>' +
         '<div class="history-list" id="history-list"><div class="muted" style="padding:20px;">Loading…</div></div>';
 
