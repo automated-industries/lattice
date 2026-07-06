@@ -3,12 +3,19 @@
 export const statusIndicatorCss = `    /* ── Top-right status indicator ────────────────────────── */
     /* The header slot the status pill homes into — where the version used to sit
        (the version moved into the Settings drawer footer). */
-    .header-status-slot { display: inline-flex; align-items: center; flex: 0 0 auto; }
+    /* Shrinkable (min-width:0) so a long ingestion status yields space instead of
+       pushing the "Ask Gladys"/Configure toggle onto a second line. */
+    .header-status-slot { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
     .app-status {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 3px 10px; border-radius: 999px;
       background: var(--surface-2); border: 1px solid var(--border);
       color: var(--text-muted); font-size: 12px; white-space: nowrap;
+      /* Cap the width and truncate long notifications with an ellipsis. */
+      max-width: min(34vw, 340px); min-width: 0;
+    }
+    .app-status .app-status-text {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
     }
     /* When idle the status is hidden via the [hidden] attribute — but the
        display:inline-flex above would otherwise win over the UA [hidden] rule and

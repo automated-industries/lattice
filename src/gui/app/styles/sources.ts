@@ -11,6 +11,19 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
       background: var(--surface-2); color: var(--text); font-size: 12px; cursor: pointer;
     }
     .src-add:hover { background: var(--row-hover); }
+    /* "＋ File(s)" button + its file/folder popover menu. */
+    .src-add-files-wrap { position: relative; }
+    .src-add-menu {
+      position: absolute; left: 8px; right: 8px; top: calc(100% + 2px); z-index: 30;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: var(--shadow-2, 0 8px 24px rgba(15, 23, 42, 0.14)); padding: 4px; overflow: hidden;
+    }
+    .src-add-menu[hidden] { display: none; }
+    .src-add-menu-item {
+      display: block; width: 100%; text-align: left; padding: 6px 8px; border: 0; border-radius: 6px;
+      background: none; color: var(--text); font-size: 12.5px; cursor: pointer;
+    }
+    .src-add-menu-item:hover { background: var(--row-hover); }
     .src-tree { list-style: none; margin: 0; padding: 0; }
     .src-tree .src-tree { margin: 0; } /* nested children */
     .src-node { list-style: none; }

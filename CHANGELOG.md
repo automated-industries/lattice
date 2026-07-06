@@ -10,6 +10,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Switching workspaces keeps you in the same section.** A switch used to be able
+  to drop a Configure view onto Analytics; it now preserves the section you're in
+  (Analytics, brain Graph, Tables, or Objects), resetting only a record-level
+  drill-in to that section's home.
+- **One "＋ File(s)" add-source button.** The separate "＋ Folder" and "＋ File"
+  buttons are combined into a single "＋ File(s)" button with a small menu (add
+  file(s) / add a folder).
+- **Long ingestion status no longer wraps the header.** The top-right status pill
+  is width-capped and ellipsizes, so a long "Ingesting…" notice can't push the
+  Ask Gladys / Configure toggle onto a second line.
+
 - **Composer file-attach UX.** Files staged for Gladys now show as removable "file
   to add" chips directly above the chat box (they were rendered down in the
   message feed). The upload button opens the file picker via a native `<label>`
