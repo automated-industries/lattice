@@ -35,4 +35,12 @@ describe('composer file-attach UX', () => {
     // The old always-switch-to-Analytics behavior is gone.
     expect(appJs).not.toContain('location.hash = lastAnalyticsHash;\n          stageFiles');
   });
+
+  it('refreshes the conversation list when an AI thread title lands', () => {
+    // The friendly Haiku title is written after the chat stream closes, so the
+    // client re-fetches the thread list on the thread_title feed signal — otherwise
+    // the raw first-message placeholder stays visible until a manual reload.
+    expect(appJs).toContain("data.op === 'thread_title'");
+    expect(appJs).toContain('refreshThreadList()');
+  });
 });

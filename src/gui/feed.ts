@@ -27,7 +27,12 @@ export type FeedOp =
   // A clarification question changed state (enqueued / answered / dismissed).
   // Not a data mutation: the client reacts by reconciling its pending-question
   // cards (and the trigger dot) instead of painting an activity card.
-  | 'question';
+  | 'question'
+  // A chat thread's AI-generated title landed (it is written AFTER the stream
+  // closes, so the client's stream-close thread-list refresh misses it). Not a
+  // data mutation: the client reacts by refreshing the conversation list so the
+  // friendly title replaces the first-message placeholder.
+  | 'thread_title';
 
 /**
  * Who originated the mutation. Drives the source pill shown next to a feed
