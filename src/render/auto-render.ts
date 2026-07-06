@@ -65,8 +65,34 @@ export class AutoRenderScheduler {
    */
   private _pendingTables = new Set<string>();
   private _pendingAll = true;
+  /**
+   * Suspend depth (re-entrant). While > 0, `schedule()` still ACCUMULATES the
+   * render scope (`_pendingTables`/`_pendingAll`) but never arms the debounce
+   * timer — so a bulk operation (folder ingest of hundreds of files) does NOT
+   * fire one render per write. `resume()` back to 0 arms a single coalesced
+   * render that covers everything accumulated during the pause.
+   */
+  private _paused = 0;
 
   constructor(private readonly deps: AutoRenderDeps) {}
+
+  /** Suspend timer-firing (re-entrant); scope still accumulates. */
+  pause(): void {
+    this._paused++;
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = undefined;
+    }
+  }
+
+  /**
+   * Undo one {@link pause}. When the depth returns to 0 and a render is pending
+   * (writes arrived during the pause), arm a single coalesced render.
+   */
+  resume(): void {
+    if (this._paused > 0) this._paused--;
+    if (this._paused === 0 && this._pending) this._armTimer();
+  }
 
   /**
    * Turn on automatic rendering into `outputDir`. After this, every scheduled
@@ -92,6 +118,9 @@ export class AutoRenderScheduler {
     // Reset the render scope so a re-enable starts fresh (default = full render).
     this._pendingAll = true;
     this._pendingTables = new Set();
+    // Clear any suspend depth too, so a disable() mid-pause can't leave a
+    // re-enabled scheduler permanently unable to fire.
+    this._paused = 0;
   }
 
   /**
@@ -108,6 +137,7 @@ export class AutoRenderScheduler {
     this._inFlight = false;
     this._pendingAll = true;
     this._pendingTables = new Set();
+    this._paused = 0;
   }
 
   /** True while a render is actively writing the context tree + manifest. */
@@ -131,7 +161,8 @@ export class AutoRenderScheduler {
    * a pending incremental render to a full one.
    */
   private _armTimer(): void {
-    if (!this._dir || this._timer) return;
+    // While suspended, keep the scope but never fire — resume() re-arms.
+    if (!this._dir || this._timer || this._paused > 0) return;
     this._timer = setTimeout(() => {
       this._timer = undefined;
       void this._run();
