@@ -3523,7 +3523,32 @@ export class Lattice {
     // Every mutation schedules an auto-render when one is enabled (workspaces
     // enable it by default). Scoped to the written table so only that entity
     // (+ its cross-table dependents) re-renders. No-op when disabled.
-    this._autoRender.schedule(table);
+    // Internal bookkeeping tables (`_lattice_*` / `__lattice_*`: the GUI audit
+    // log, changelog, edges, lineage, …) are NOT rendered context, so their
+    // writes must never trigger a render — during ingest the audit table alone
+    // took a write per object and re-scheduled a full-table re-scan each time.
+    if (!table.startsWith('_lattice_') && !table.startsWith('__lattice_')) {
+      this._autoRender.schedule(table);
+    }
+  }
+
+  /**
+   * Suspend auto-render (re-entrant) for the duration of a bulk operation — e.g.
+   * ingesting a folder of hundreds of files. Writes still record their render
+   * scope, but no render fires until {@link resumeAutoRender} balances every
+   * pause, at which point ONE coalesced render covers everything. This removes
+   * the O(N²) "render-per-file" blowup where each of N writes re-scanned the
+   * whole (growing) file set. Always pair with resumeAutoRender in a `finally`.
+   */
+  pauseAutoRender(): this {
+    this._autoRender.pause();
+    return this;
+  }
+
+  /** Balance a {@link pauseAutoRender}; the last resume arms one coalesced render. */
+  resumeAutoRender(): this {
+    this._autoRender.resume();
+    return this;
   }
 
   /**

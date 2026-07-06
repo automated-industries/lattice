@@ -236,31 +236,42 @@ function readdirSafe(dir: string) {
 async function ingestFolder(
   abs: string,
   ingestFile: (p: string) => Promise<LocalFileIngestResult>,
+  db: Lattice,
 ): Promise<{ ingested: number; skipped: number }> {
   let ingested = 0;
   let skipped = 0;
-  const queue: { dir: string; depth: number }[] = [{ dir: abs, depth: 0 }];
-  while (queue.length) {
-    const item = queue.shift();
-    if (!item) break;
-    const { dir, depth } = item;
-    const dirents = readdirSafe(dir);
-    if (!dirents) continue; // unreadable dir — skip, don't abort the whole walk
-    for (const d of dirents) {
-      if (d.name.startsWith('.') || SKIP_DIRS.has(d.name)) continue;
-      if (d.isSymbolicLink()) continue;
-      const full = join(dir, d.name);
-      if (d.isDirectory()) {
-        if (depth + 1 <= MAX_INGEST_DEPTH) queue.push({ dir: full, depth: depth + 1 });
-      } else if (d.isFile()) {
-        if (ingested >= MAX_INGEST_FILES) return { ingested, skipped };
-        const r = await ingestFile(full);
-        if (r.id) ingested++;
-        else skipped++;
+  // Suspend auto-render for the WHOLE walk: each of up to MAX_INGEST_FILES writes
+  // would otherwise schedule its own render, and because the writes are separated
+  // by seconds of LLM latency the debounce can't coalesce them — so each render
+  // re-scanned the growing file set (O(N²)). Resume in the finally arms exactly
+  // ONE coalesced render over everything ingested.
+  db.pauseAutoRender();
+  try {
+    const queue: { dir: string; depth: number }[] = [{ dir: abs, depth: 0 }];
+    while (queue.length) {
+      const item = queue.shift();
+      if (!item) break;
+      const { dir, depth } = item;
+      const dirents = readdirSafe(dir);
+      if (!dirents) continue; // unreadable dir — skip, don't abort the whole walk
+      for (const d of dirents) {
+        if (d.name.startsWith('.') || SKIP_DIRS.has(d.name)) continue;
+        if (d.isSymbolicLink()) continue;
+        const full = join(dir, d.name);
+        if (d.isDirectory()) {
+          if (depth + 1 <= MAX_INGEST_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+        } else if (d.isFile()) {
+          if (ingested >= MAX_INGEST_FILES) return { ingested, skipped };
+          const r = await ingestFile(full);
+          if (r.id) ingested++;
+          else skipped++;
+        }
       }
     }
+    return { ingested, skipped };
+  } finally {
+    db.resumeAutoRender();
   }
-  return { ingested, skipped };
 }
 
 // --- Dispatcher --------------------------------------------------------------
@@ -319,7 +330,7 @@ export async function dispatchSourcesRoute(
     }
     // Ingest on add (drives the brain-graph animation via source:'ingest' feed).
     let result: { ingested: number; skipped: number } | LocalFileIngestResult;
-    if (kind === 'folder') result = await ingestFolder(abs, ingestFile);
+    if (kind === 'folder') result = await ingestFolder(abs, ingestFile, deps.db);
     else result = await ingestFile(abs);
     sendJson(res, { root, result });
     return true;
@@ -374,7 +385,7 @@ export async function dispatchSourcesRoute(
       sendJson(res, { error: 'path is outside any registered source root' }, 403);
       return true;
     }
-    sendJson(res, await ingestFolder(abs, ingestFile));
+    sendJson(res, await ingestFolder(abs, ingestFile, deps.db));
     return true;
   }
 
