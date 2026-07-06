@@ -205,9 +205,13 @@ export async function materializeJunction(
       );
     }
   }
+  // IF NOT EXISTS: the callers that reach here concurrently (ingest auto-linking two
+  // files to the same new entity) hold the schema lock and re-check existence inside
+  // it, so this is the sole creator; the guard just hardens the direct create_relationship
+  // path against a repeated click.
   await execSql(
     active.db,
-    `CREATE TABLE "${jName}" (id TEXT PRIMARY KEY, "${colA}" TEXT, "${colB}" TEXT)`,
+    `CREATE TABLE IF NOT EXISTS "${jName}" (id TEXT PRIMARY KEY, "${colA}" TEXT, "${colB}" TEXT)`,
   );
   await active.db.defineLate(jName, {
     columns: { id: 'TEXT PRIMARY KEY', [colA]: 'TEXT', [colB]: 'TEXT' },
@@ -271,25 +275,34 @@ export async function createFileJunction(
   const jName = `files_${otherTable}`;
   const fileFk = 'file_id';
   const otherFk = `${otherTable}_id`;
+  const mapping: FileJunction = { junction: jName, fileFk, otherTable, otherFk };
   // Already present (live this session) — just hand back the mapping.
   if (active.validTables.has(jName) || active.db.getRegisteredTableNames().includes(jName)) {
-    return { junction: jName, fileFk, otherTable, otherFk };
+    return mapping;
   }
-  // A soft-deleted twin exists physically — don't clobber it; let the user
-  // revert that one instead.
-  if (await physicalTableExists(active, jName)) return null;
-
-  await materializeJunction(
-    active,
-    jName,
-    fileFk,
-    'files',
-    otherFk,
-    otherTable,
-    `Linked files ↔ ${otherTable}`,
-    sessionId,
-  );
-  return { junction: jName, fileFk, otherTable, otherFk };
+  // Serialize the check-then-materialize: a parallel ingest can auto-link two files
+  // to the SAME entity at once, so both would pass the existence check and both
+  // CREATE the `files_<entity>` junction (loser throws). The lock makes it atomic;
+  // the re-check inside reuses a junction a concurrent caller just created.
+  return active.db.withSchemaLock(async () => {
+    if (active.validTables.has(jName) || active.db.getRegisteredTableNames().includes(jName)) {
+      return mapping;
+    }
+    // A soft-deleted twin exists physically — don't clobber it; let the user
+    // revert that one instead.
+    if (await physicalTableExists(active, jName)) return null;
+    await materializeJunction(
+      active,
+      jName,
+      fileFk,
+      'files',
+      otherFk,
+      otherTable,
+      `Linked files ↔ ${otherTable}`,
+      sessionId,
+    );
+    return mapping;
+  });
 }
 
 /** A many-to-many junction between two user tables (for the chat assistant). */
@@ -329,23 +342,35 @@ export async function createUserJunction(
     active.validTables.has(n) || active.db.getRegisteredTableNames().includes(n);
   // Reuse an existing junction in either column order.
   const forward = `${tableA}_${tableB}`;
-  if (has(forward)) return { junction: forward, tableA, aFk, tableB, bFk };
-  const reverse = `${tableB}_${tableA}`;
-  if (has(reverse))
-    return { junction: reverse, tableA: tableB, aFk: bFk, tableB: tableA, bFk: aFk };
-  if (await physicalTableExists(active, forward)) return null;
-
-  await materializeJunction(
-    active,
-    forward,
-    aFk,
-    tableA,
-    bFk,
-    tableB,
-    `Linked ${tableA} ↔ ${tableB}`,
-    sessionId,
-  );
-  return { junction: forward, tableA, aFk, tableB, bFk };
+  const fwdResult: UserJunction = { junction: forward, tableA, aFk, tableB, bFk };
+  const revResult: UserJunction = {
+    junction: `${tableB}_${tableA}`,
+    tableA: tableB,
+    aFk: bFk,
+    tableB: tableA,
+    bFk: aFk,
+  };
+  if (has(forward)) return fwdResult;
+  if (has(revResult.junction)) return revResult;
+  // Serialize the check-then-materialize (see createFileJunction) — concurrent callers
+  // creating the same pair would otherwise both CREATE the junction. Re-check both
+  // column orders inside the lock so a concurrent winner is reused, not recreated.
+  return active.db.withSchemaLock(async () => {
+    if (has(forward)) return fwdResult;
+    if (has(revResult.junction)) return revResult;
+    if (await physicalTableExists(active, forward)) return null;
+    await materializeJunction(
+      active,
+      forward,
+      aFk,
+      tableA,
+      bFk,
+      tableB,
+      `Linked ${tableA} ↔ ${tableB}`,
+      sessionId,
+    );
+    return fwdResult;
+  });
 }
 
 /**
@@ -382,68 +407,92 @@ export async function createUserEntity(
     : /^[a-zA-Z][a-zA-Z0-9_]*$/.test(entity);
   if (!valid) return null;
   if (entity === 'files' || isNativeEntity(entity)) return null;
-  // Already present this session — reuse it (the row insert handles the rest).
-  if (active.validTables.has(entity) || active.db.getRegisteredTableNames().includes(entity)) {
-    return active.validTables.has(entity) && !active.junctionTables.has(entity) ? entity : null;
-  }
-  if (await physicalTableExists(active, entity)) return null;
+  // Serialize the whole check-then-CREATE behind the schema lock. A parallel folder
+  // ingest can have two files that both extract the same new entity ("Invoices");
+  // without the lock they'd both pass the "not registered" check (the check and the
+  // CREATE straddle awaits) and both run CREATE TABLE — the loser throwing "table
+  // already exists". Inside the lock the check-then-act is atomic, so the second
+  // caller sees the first's just-registered table and reuses it. Reentrant, so the
+  // nested addColumn inside secureRuntimeTableIfCloud (cloud) runs inline. Any throw
+  // propagates to the caller and releases the lock (withSchemaLock advances on settle).
+  // The closure returns whether THIS call created the table (vs reused a concurrent
+  // creator's), so the background description hook below fires only on a fresh create.
+  const outcome = await active.db.withSchemaLock(
+    async (): Promise<{ result: string | null; created: boolean }> => {
+      // Already present (this session or created by a concurrent caller that won the
+      // lock first) — reuse it (the row insert handles the rest).
+      if (active.validTables.has(entity) || active.db.getRegisteredTableNames().includes(entity)) {
+        const reuse =
+          active.validTables.has(entity) && !active.junctionTables.has(entity) ? entity : null;
+        return { result: reuse, created: false };
+      }
+      if (await physicalTableExists(active, entity)) return { result: null, created: false };
 
-  const reserved = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
-  const inferred = columns
-    .map((c) => c.trim().toLowerCase())
-    .filter((c) => /^[a-z][a-z0-9_]*$/.test(c) && !reserved.has(c));
-  // Always lead with a `name` column so every inferred entity has a
-  // human-readable label slot — it drives the object's card title and the
-  // activity-feed bubble (otherwise rows show a bare `#id`). The Context
-  // Constructor fills it with the object's label; dedupe in case the model
-  // also proposed a `name`.
-  const cols = Array.from(new Set(['name', ...inferred])).slice(0, 12);
-  const colDdl = cols.map((c) => `, "${c}" TEXT`).join('');
-  await execSql(
-    active.db,
-    `CREATE TABLE "${entity}" (id TEXT PRIMARY KEY${colDdl}, deleted_at TEXT)`,
-  );
-  await active.db.defineLate(entity, {
-    columns: {
-      id: 'TEXT PRIMARY KEY',
-      ...Object.fromEntries(cols.map((c) => [c, 'TEXT'])),
-      deleted_at: 'TEXT',
+      const reserved = new Set(['id', 'deleted_at', 'created_at', 'updated_at']);
+      const inferred = columns
+        .map((c) => c.trim().toLowerCase())
+        .filter((c) => /^[a-z][a-z0-9_]*$/.test(c) && !reserved.has(c));
+      // Always lead with a `name` column so every inferred entity has a
+      // human-readable label slot — it drives the object's card title and the
+      // activity-feed bubble (otherwise rows show a bare `#id`). The Context
+      // Constructor fills it with the object's label; dedupe in case the model
+      // also proposed a `name`.
+      const cols = Array.from(new Set(['name', ...inferred])).slice(0, 12);
+      const colDdl = cols.map((c) => `, "${c}" TEXT`).join('');
+      // IF NOT EXISTS is belt-and-suspenders under the lock: the checks above already
+      // rule out a registered/physical collision, so this create is the sole creator.
+      await execSql(
+        active.db,
+        `CREATE TABLE IF NOT EXISTS "${entity}" (id TEXT PRIMARY KEY${colDdl}, deleted_at TEXT)`,
+      );
+      await active.db.defineLate(entity, {
+        columns: {
+          id: 'TEXT PRIMARY KEY',
+          ...Object.fromEntries(cols.map((c) => [c, 'TEXT'])),
+          deleted_at: 'TEXT',
+        },
+      });
+      const fields: Record<string, unknown> = { id: { type: 'uuid', primaryKey: true } };
+      for (const c of cols) fields[c] = { type: 'text' };
+      fields.deleted_at = { type: 'text' };
+      // Hidden .schema-only/ overview (the codebase default), never a root <NAME>.md
+      // orphan at the Context root (which duplicates the per-row <Entity>/ context dir).
+      const entityDef = { fields, outputFile: '.schema-only/' + entity + '.md' };
+      const doc = loadConfigDoc(active.configPath);
+      doc.setIn(['entities', entity], entityDef);
+      saveConfigDoc(active.configPath, doc);
+      active.validTables.add(entity);
+      // The table is created WITH a `deleted_at` column (above), so register it as
+      // soft-deletable too — otherwise the assistant's list_rows would surface
+      // soft-deleted rows and its delete_row would hard-delete. (Junctions, made
+      // without `deleted_at` in materializeJunction, intentionally stay hard.)
+      active.softDeletable.add(entity);
+      // Same step as creation: register the canonical context so the new table
+      // renders without a reopen (the subsequent row inserts' auto-render writes it).
+      syncCanonicalContexts(active);
+      // Secure the just-created table on a cloud (RLS + ownership + mask view + grant)
+      // so a runtime-created table isn't left wide open.
+      await secureRuntimeTableIfCloud(active, entity, ['id']);
+      await recordSchemaOp(
+        active,
+        'schema.create_entity',
+        entity,
+        null,
+        { entity, entityDef },
+        `Created table ${entity}`,
+        sessionId,
+      );
+      return { result: entity, created: true };
     },
-  });
-  const fields: Record<string, unknown> = { id: { type: 'uuid', primaryKey: true } };
-  for (const c of cols) fields[c] = { type: 'text' };
-  fields.deleted_at = { type: 'text' };
-  // Hidden .schema-only/ overview (the codebase default), never a root <NAME>.md
-  // orphan at the Context root (which duplicates the per-row <Entity>/ context dir).
-  const entityDef = { fields, outputFile: '.schema-only/' + entity + '.md' };
-  const doc = loadConfigDoc(active.configPath);
-  doc.setIn(['entities', entity], entityDef);
-  saveConfigDoc(active.configPath, doc);
-  active.validTables.add(entity);
-  // The table is created WITH a `deleted_at` column (above), so register it as
-  // soft-deletable too — otherwise the assistant's list_rows would surface
-  // soft-deleted rows and its delete_row would hard-delete. (Junctions, made
-  // without `deleted_at` in materializeJunction, intentionally stay hard.)
-  active.softDeletable.add(entity);
-  // Same step as creation: register the canonical context so the new table
-  // renders without a reopen (the subsequent row inserts' auto-render writes it).
-  syncCanonicalContexts(active);
-  // Secure the just-created table on a cloud (RLS + ownership + mask view + grant)
-  // so a runtime-created table isn't left wide open.
-  await secureRuntimeTableIfCloud(active, entity, ['id']);
-  await recordSchemaOp(
-    active,
-    'schema.create_entity',
-    entity,
-    null,
-    { entity, entityDef },
-    `Created table ${entity}`,
-    sessionId,
   );
-  // Auto-generate a one-line table definition in the background (fail-silent;
-  // skips native/meta/junction + already-described tables). No-op without auth.
-  active.generateTableDescription?.(entity, columns);
-  return entity;
+  // Auto-generate a one-line table definition in the background (fail-silent; skips
+  // native/meta/junction + already-described tables; no-op without auth). Fired OUTSIDE
+  // withSchemaLock so this detached fire-and-forget task does not inherit the lock's
+  // reentrancy flag (which propagates through AsyncLocalStorage into detached work) —
+  // otherwise any DDL it did would wrongly run inline instead of acquiring the lock.
+  // Only on a fresh create, never on the reuse path.
+  if (outcome.created && outcome.result) active.generateTableDescription?.(outcome.result, columns);
+  return outcome.result;
 }
 
 /**

@@ -56,6 +56,18 @@ interface SourceRoot {
 const MAX_LIST_ENTRIES = 2000;
 const MAX_INGEST_FILES = 500;
 const MAX_INGEST_DEPTH = 8;
+// Upper bound on how many file paths a single folder ingest will COLLECT before it
+// stops walking. The cap that matters is MAX_INGEST_FILES *successful* ingests (below);
+// this is only a memory guard so a pathological tree can't collect an unbounded path
+// list. Set well above MAX_INGEST_FILES so skipped files (too-large / unreadable) never
+// starve the success budget — the reason the collect cap is NOT MAX_INGEST_FILES.
+const MAX_INGEST_SCAN = 5000;
+// How many files a folder ingest processes at once. The per-file bottleneck is
+// network-bound LLM enrichment (summary + classify + extract) plus vision, so a
+// small fan-out collapses wall-clock without flooding the model API. DB writes stay
+// safe under this: row inserts are atomic auto-commits, and the schema mutations they
+// trigger (new entity / column / junction) serialize behind the Lattice schema lock.
+const INGEST_CONCURRENCY = 4;
 // Directories never worth ingesting (huge, derived, or VCS internals).
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.DS_Store', '__pycache__', '.venv', 'venv']);
 
@@ -238,36 +250,71 @@ async function ingestFolder(
   ingestFile: (p: string) => Promise<LocalFileIngestResult>,
   db: Lattice,
 ): Promise<{ ingested: number; skipped: number }> {
-  let ingested = 0;
-  let skipped = 0;
-  // Suspend auto-render for the WHOLE walk: each of up to MAX_INGEST_FILES writes
-  // would otherwise schedule its own render, and because the writes are separated
-  // by seconds of LLM latency the debounce can't coalesce them — so each render
-  // re-scanned the growing file set (O(N²)). Resume in the finally arms exactly
-  // ONE coalesced render over everything ingested.
-  db.pauseAutoRender();
-  try {
-    const queue: { dir: string; depth: number }[] = [{ dir: abs, depth: 0 }];
-    while (queue.length) {
-      const item = queue.shift();
-      if (!item) break;
-      const { dir, depth } = item;
-      const dirents = readdirSafe(dir);
-      if (!dirents) continue; // unreadable dir — skip, don't abort the whole walk
-      for (const d of dirents) {
-        if (d.name.startsWith('.') || SKIP_DIRS.has(d.name)) continue;
-        if (d.isSymbolicLink()) continue;
-        const full = join(dir, d.name);
-        if (d.isDirectory()) {
-          if (depth + 1 <= MAX_INGEST_DEPTH) queue.push({ dir: full, depth: depth + 1 });
-        } else if (d.isFile()) {
-          if (ingested >= MAX_INGEST_FILES) return { ingested, skipped };
-          const r = await ingestFile(full);
-          if (r.id) ingested++;
-          else skipped++;
-        }
+  // Phase 1 — bounded BFS to COLLECT the files to ingest. The directory walk is cheap
+  // (readdir only) and stays sequential + ordered so the depth bound is deterministic
+  // and the file order matches the old loop. Collection stops at MAX_INGEST_SCAN purely
+  // as a memory guard — the meaningful cap (MAX_INGEST_FILES successful ingests) is
+  // applied in phase 2, so skipped files here don't reduce how many real files ingest.
+  const files: string[] = [];
+  const queue: { dir: string; depth: number }[] = [{ dir: abs, depth: 0 }];
+  walk: while (queue.length) {
+    const item = queue.shift();
+    if (!item) break;
+    const { dir, depth } = item;
+    const dirents = readdirSafe(dir);
+    if (!dirents) continue; // unreadable dir — skip, don't abort the whole walk
+    for (const d of dirents) {
+      if (d.name.startsWith('.') || SKIP_DIRS.has(d.name)) continue;
+      if (d.isSymbolicLink()) continue;
+      const full = join(dir, d.name);
+      if (d.isDirectory()) {
+        if (depth + 1 <= MAX_INGEST_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+      } else if (d.isFile()) {
+        files.push(full);
+        if (files.length >= MAX_INGEST_SCAN) break walk;
       }
     }
+  }
+
+  // Phase 2 — ingest the collected files with a bounded concurrent worker pool.
+  // Suspend auto-render for the WHOLE batch: each of up to MAX_INGEST_FILES writes would
+  // otherwise schedule its own render, and because the writes are separated by seconds of
+  // LLM latency the debounce can't coalesce them — so each render re-scanned the growing
+  // file set (O(N²)). The finally arms exactly ONE coalesced render over everything.
+  //
+  // A hand-rolled pool (not mapWithConcurrency) because it needs two properties the plain
+  // map lacks: (1) STOP once MAX_INGEST_FILES files have SUCCESSFULLY ingested — matching
+  // the old sequential loop's "cap on successes, not on files examined", so a run of
+  // too-large/unreadable files never shrinks how many real files get in; and (2) a file
+  // that throws (ingestLocalFile is meant not to, but persist()/createRow can still raise
+  // a DB error) is counted as skipped and the pool keeps going — one bad file must not
+  // reject the whole batch and leave sibling workers writing AFTER resumeAutoRender ran.
+  db.pauseAutoRender();
+  let ingested = 0;
+  let skipped = 0;
+  try {
+    let nextIdx = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (ingested >= MAX_INGEST_FILES) return; // success cap reached — stop pulling
+        const file = files[nextIdx++];
+        if (file === undefined) return; // past the last file
+        let r: LocalFileIngestResult | null = null;
+        try {
+          r = await ingestFile(file);
+        } catch (e) {
+          // ingestLocalFile is documented not to throw, but a DB/schema error in
+          // persist() can still escape. Surface it and treat the file as skipped —
+          // never let it reject the batch (Promise.all would abort the pool and leave
+          // the other workers writing past the auto-render resume).
+          console.error(`[ingest] file failed: ${file}: ${(e as Error).message}`);
+        }
+        if (r?.id) ingested++;
+        else skipped++;
+      }
+    };
+    const poolSize = Math.max(1, Math.min(INGEST_CONCURRENCY, files.length));
+    await Promise.all(Array.from({ length: poolSize }, () => worker()));
     return { ingested, skipped };
   } finally {
     db.resumeAutoRender();
