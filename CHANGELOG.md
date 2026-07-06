@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Folder ingestion now processes files in parallel.** Dragging in a folder used
+  to ingest its files strictly one at a time; it now works on several at once
+  (bounded fan-out), so the per-file AI enrichment overlaps instead of running back
+  to back — a large folder finishes in a fraction of the wall-clock. To keep that
+  safe on the single-connection SQLite backend, schema changes (creating a table,
+  adding a column, creating a link table) are now serialized through a new
+  reentrant schema lock (`Lattice.withSchemaLock`): two files that both introduce
+  the same new object — or the same new field — converge on ONE table/column
+  instead of racing and throwing "table already exists" / "duplicate column name".
+  Row inserts stay fully concurrent (they need no lock). No API change for callers;
+  `addColumn` and the runtime entity/link creators acquire the lock internally.
+
 - **Fewer writes + faster media on file ingest.** Each ingested file is now
   written to the `files` table ONCE with its final extraction result (was a
   create-pending followed by an update, i.e. two writes + two audit rows per

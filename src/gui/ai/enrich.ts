@@ -180,14 +180,14 @@ export async function enrichWithLlm(
       }
     }
   } else {
-    console.warn('[ingest] LLM description failed:', (descR.reason as Error)?.message);
+    console.warn('[ingest] LLM description failed:', (descR.reason as Error).message);
   }
 
   // (2) A classify FAILURE means zero auto-links AND skips extract + the note
   // fallback, returning [] — reproducing the old outer try/catch that wrapped
   // classify + extract together (same feed note).
   if (matchesR.status === 'rejected') {
-    const msg = (matchesR.reason as Error)?.message ?? 'unknown';
+    const msg = matchesR.reason instanceof Error ? matchesR.reason.message : 'unknown';
     console.error('[ingest] classify failed:', msg);
     mctx.feed.publish({
       table: 'files',
