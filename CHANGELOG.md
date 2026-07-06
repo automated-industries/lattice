@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **First-run connect wall polish.** The launch screen now leads with the Lattice
+  logo (not a placeholder emoji) and a black Claude-logo "Connect with Claude"
+  button; the copy reads "Connect your Claude account plan (Max, Pro, etc) to
+  continue," and the code field is labelled by its placeholder ("Paste
+  Authentication Code here") with a "Connect" action.
+
 ### Fixed
 
 - **Dashboards now open on cloud/team workspaces.** Opening any dashboard on a
