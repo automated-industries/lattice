@@ -10,6 +10,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Fewer writes + faster media on file ingest.** Each ingested file is now
+  written to the `files` table ONCE with its final extraction result (was a
+  create-pending followed by an update, i.e. two writes + two audit rows per
+  file). And the vision path streams its Claude response (avoiding the
+  long-request timeout) and asks a scanned PDF for a short summary only, not a
+  full transcription-then-summary.
+
 - **Bulk file ingestion no longer re-renders per file.** A folder ingest now
   suspends auto-render for the whole walk and fires a SINGLE coalesced render at
   the end, instead of one render per file (each of which re-scanned the growing
