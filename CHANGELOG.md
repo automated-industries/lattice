@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Faster file ingestion — the three per-file AI calls now run in parallel.**
+  Enriching an ingested file (summary, link classification, object extraction)
+  issued three LLM round-trips strictly one after another; they are
+  input-independent, so they now run concurrently (`Promise.allSettled`), cutting
+  the per-file AI wall-clock from their sum toward the single slowest call. All
+  prior semantics are preserved exactly — a classify failure still leaves the
+  description, surfaces the note, and skips extraction; an extract failure still
+  only warns and keeps the links.
+
 - **Switching workspaces keeps you in the same section.** A switch used to be able
   to drop a Configure view onto Analytics; it now preserves the section you're in
   (Analytics, brain Graph, Tables, or Objects), resetting only a record-level
