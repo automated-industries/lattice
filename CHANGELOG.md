@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Ingestion questions live in a dedicated Data Questions tab — no more surprise
+  view switches.** When ingesting files raises a clarifying question, it no longer
+  yanks you from the Configure view over to the Analytics assistant. A transient
+  **Data Questions** tab now appears next to Tables (with an unread badge) while
+  questions are outstanding and disappears once they're all answered or dismissed;
+  the Analytics assistant still surfaces the same questions as chat cards when you're
+  working there, so each surface fits the view you're in. The questions are also
+  phrased in plain, business-forward language — an LLM rewrites each into "Do you want
+  to group all your driver's licenses together?" rather than "add records to
+  <entity>?" — and ingestion never blocks waiting for an answer (a marginal question
+  is enqueued in the background; the file still imports).
+
 - **Folder ingestion now processes files in parallel.** Dragging in a folder used
   to ingest its files strictly one at a time; it now works on several at once
   (bounded fan-out), so the per-file AI enrichment overlaps instead of running back

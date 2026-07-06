@@ -48,7 +48,7 @@ export const questionsJs = `
     // a dismissible toast pointing at the assistant (the dot is already lit).
     function qNotifyNewQuestion() {
       if (typeof showToast === 'function') {
-        showToast('You have a new question — answer it in the assistant', {});
+        showToast('New data question — see the Data Questions tab', {});
       }
     }
     // Announce a newly-arrived question to assistive tech (the dot + the dock
@@ -141,6 +141,7 @@ export const questionsJs = `
     function qMarkResolved(id, card, line) {
       delete qCards[id];
       qPendingCount = Math.max(0, qPendingCount - 1);
+      if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
       updateQuestionDot();
       qCardResolve(card, line);
       // The resolved line lingers briefly as confirmation, then clears itself.
@@ -202,22 +203,43 @@ export const questionsJs = `
           if (!qCards[q.id]) { hadNew = true; renderPendingQuestion(q); }
         });
         qPendingCount = qs.length;
+        // Keep the Configure-view 'Data Questions' tab + its unread badge in sync.
+        // The tab appears while questions are outstanding and vanishes at zero.
+        if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
         if (openOnNew && hadNew) {
           // A newly-arrived question announces itself to screen readers either way.
           qAnnounce(qPendingCount === 1
-            ? 'A new question is waiting in the assistant.'
-            : qPendingCount + ' questions are waiting in the assistant.');
-          // A broadcast realtime event must never yank the user out of active
-          // work (e.g. an in-progress computed-table build): while editing,
-          // surface via the dot + toast; when idle, auto-open the dock as before.
-          if (qUserIsEditing()) qNotifyNewQuestion();
-          else if (!qDockShowing()) qShowDock();
+            ? 'A new data question is waiting.'
+            : qPendingCount + ' data questions are waiting.');
+          // NEVER switch views on a new question — being yanked from Configure to
+          // Analytics mid-work is exactly the confusing behavior this replaces. The
+          // question already surfaces where the user is: the docked cards in Analytics,
+          // the Data Questions tab (+badge) in Configure. When the dock isn't showing
+          // (Configure / editing), a non-stealing toast points at the tab.
+          if (!qDockShowing()) qNotifyNewQuestion();
         }
         updateQuestionDot();
       }).catch(function () { /* resilient — chat keeps working without questions */ });
     }
     // A 'question' feed event arrived (new / answered / dismissed) — reconcile.
     function onQuestionFeedEvent() { refreshQuestions(true); }
+    // Wipe all per-workspace question state, then reconcile against the workspace we
+    // just switched to. Without this, the previous workspace's Data Questions tab +
+    // unread badge (module-level tabs/qCards/qPendingCount) linger in the strip and
+    // misreport the new workspace's count (a cross-workspace leak) until the user
+    // happens to click the tab or a new question arrives. Called from the switch path.
+    function resetQuestionsState() {
+      Object.keys(qCards).forEach(function (id) {
+        var el = qCards[id];
+        delete qCards[id];
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      });
+      qPendingCount = 0;
+      if (typeof setQuestionsTab === 'function') setQuestionsTab(0);
+      updateQuestionDot();
+      // Load the NEW workspace's pending questions (re-adds the tab if it has any).
+      refreshQuestions(false);
+    }
     function initQuestions() {
       // Flipping between Configure and Analytics changes whether the cards are
       // on screen, so the dot re-evaluates on every hash change.
@@ -255,6 +277,81 @@ export const questionsJs = `
         return;
       }
       sendChat(text);
+    }
+
+    // The Configure-view Data Questions page (route #/questions). Lists the pending
+    // ingestion questions as the SAME interactive cards used in the Analytics dock —
+    // so answering here or there is identical — but this is the surface used while the
+    // user is in Configure, so a new question never has to yank them to Analytics.
+    // Rebuilt fresh from the store on each visit.
+    function renderQuestionsView(content) {
+      if (!content) return;
+      // Capture the render generation (bumped on every renderRoute) so an in-flight
+      // fetch that resolves AFTER the user has navigated away refuses to commit — both
+      // its DOM writes and its setQuestionsTab (which could otherwise resurrect a tab
+      // that was correctly removed when the last question resolved elsewhere).
+      var myGen = renderGen;
+      content.innerHTML =
+        '<div class="dq-view">' +
+          '<div class="dq-head">' +
+            '<h1 class="dq-title">Data Questions</h1>' +
+            '<p class="dq-sub">A few quick questions about the files you added — answering them helps organize your data. Nothing is held up while these wait.</p>' +
+          '</div>' +
+          '<div class="dq-list" id="dq-list"><div class="dq-empty">Loading…</div></div>' +
+        '</div>';
+      var list = document.getElementById('dq-list');
+      fetchJson('/api/questions/pending').then(function (d) {
+        if (myGen !== renderGen) return; // a newer view is showing — drop this result
+        var qs = (d && d.questions) || [];
+        if (typeof setQuestionsTab === 'function') setQuestionsTab(qs.length);
+        if (!list) return;
+        if (!qs.length) {
+          list.innerHTML = '<div class="dq-empty">All caught up — no questions right now.</div>';
+          return;
+        }
+        list.innerHTML = '';
+        qs.forEach(function (q) {
+          var card = buildQuestionCard({
+            question: q.question,
+            options: q.options || [],
+            allowOther: q.allowOther !== false,
+            onAnswer: function (text, c) {
+              qCardBusy(c, true);
+              postQuestionAction(q.id, 'answer', { answer: text }).then(function () {
+                qCardResolve(c, '✓ ' + text);
+                qDqAfterResolve(q.id, c);
+              }).catch(function (e) { qCardBusy(c, false); qCardError(c, e.message); });
+            },
+            onDismiss: function (c) {
+              if (typeof confirm === 'function' && !confirm('Dismiss this question?')) return;
+              qCardBusy(c, true);
+              postQuestionAction(q.id, 'dismiss').then(function () {
+                qCardResolve(c, 'Dismissed');
+                qDqAfterResolve(q.id, c);
+              }).catch(function (e) { qCardBusy(c, false); qCardError(c, e.message); });
+            }
+          });
+          list.appendChild(card);
+        });
+      }).catch(function () {
+        if (list) list.innerHTML = '<div class="dq-empty">Could not load questions — try again.</div>';
+      });
+    }
+    // After a card on the Data Questions page resolves: drop the dock's TWIN card
+    // (both the map entry AND its DOM node — deleting only the map entry would strand
+    // a stale, still-clickable card in the Analytics dock that refreshQuestions can no
+    // longer reap, since it reconciles by looking ids up in qCards), decrement the
+    // count, and sync the tab (which routes back to Tables at zero).
+    function qDqAfterResolve(id, card) {
+      var twin = qCards[id];
+      if (twin) {
+        delete qCards[id];
+        if (twin.parentNode) twin.parentNode.removeChild(twin);
+      }
+      qPendingCount = Math.max(0, qPendingCount - 1);
+      if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
+      updateQuestionDot();
+      setTimeout(function () { if (card && card.parentNode) card.parentNode.removeChild(card); }, 6000);
     }
 
 `;
