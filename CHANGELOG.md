@@ -8,6 +8,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dashboards now open on cloud/team workspaces.** Opening any dashboard on a
+  shared workspace threw (`appendChild` of an HTML string — the per-row
+  visibility line is a string, and `row._access` is only populated on cloud), and
+  the error was swallowed by closing the tab and bouncing to the Analytics home,
+  so dashboards never opened on a shared workspace. The visibility line is now set
+  via `innerHTML`. Local (SQLite) workspaces were unaffected, which is why it
+  slipped through.
+- **Live ingest no longer clobbers the object drill-down graph.** While viewing an
+  object's drill-down graph (`#/graph/<obj>`, whose nodes are rows), any
+  insert/link/schema mutation anywhere in the workspace replaced it with the
+  unrelated top-level schema (table) graph, without the URL changing. The live
+  ingest animation is now gated to the exact top-level `#/graph` route.
+- **Search-driven dashboards return results again.** The dashboard live-data
+  bridge's `lattice.search()` posted to `/api/search`, but only `GET
+/api/search` exists — the request 404'd and the section rendered empty with no
+  error. It now reads the real `GET /api/search?q=` endpoint.
+- **A graph node ingested during the opening animation stays put.** An object that
+  became non-empty during the graph's opening wave-reveal was removed by a later
+  reveal wave (which replayed a stale node prefix) and stayed missing until the
+  next event. The ingest now cancels the in-flight reveal and paints the full set.
+- **The force-graph renderer releases its `ResizeObserver` on teardown.** `stop()`
+  now disconnects the observer, so re-opening/refreshing the graph over a session
+  no longer stacks stale observers on the shared mount.
+
 ### Added
 
 - **Edit a connected external database in place.** A connected database in Inputs

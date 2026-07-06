@@ -155,6 +155,44 @@ describe('createForceGraph — framing + label sizing (regressions)', () => {
     }
   });
 
+  // Regression: the GUI reuses ONE #graph-mount and builds a fresh graph on every
+  // open/refresh, so stop() (the teardown callers use) MUST disconnect the
+  // ResizeObserver — otherwise stale observers stack up on the same element, each
+  // retaining a prior graph's closure, and keep firing on every resize.
+  it('disconnects the ResizeObserver on stop() so observers do not accumulate', () => {
+    let observes = 0;
+    let disconnects = 0;
+    const orig = (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(public cb: () => void) {}
+      observe(): void {
+        observes++;
+      }
+      disconnect(): void {
+        disconnects++;
+      }
+    };
+    try {
+      const mount = document.createElement('div');
+      document.body.appendChild(mount);
+      // autostart:false runs stop() once at creation — which must disconnect the
+      // observer it just attached.
+      const handle = createForceGraph(mount as unknown as Mount, {
+        nodes: NODES,
+        edges: EDGES,
+        autostart: false,
+      });
+      expect(observes).toBe(1);
+      expect(disconnects).toBe(1);
+      // A further stop() is safe + does not double-disconnect (observer released).
+      handle.stop();
+      expect(disconnects).toBe(1);
+      mount.remove();
+    } finally {
+      (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver = orig;
+    }
+  });
+
   // BUG (flash): the stage must stay hidden until the first real fit, so the un-fit
   // spawn positions never paint in the top-left corner before centring.
   it('hides the stage until the first fit lands (no corner flash)', () => {

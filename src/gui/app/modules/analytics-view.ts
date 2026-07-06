@@ -230,9 +230,14 @@ export const analyticsViewJs = `
           // record page uses — dashboards are ordinary shareable rows.
           var slot = host.querySelector('#dash-vis-slot');
           if (slot && typeof detailVisLineEl === 'function') {
-            var visEl = detailVisLineEl(row);
-            if (visEl) {
-              slot.appendChild(visEl);
+            // detailVisLineEl returns an HTML STRING (not a node) — set it as
+            // innerHTML. Using appendChild here threw on cloud/team workspaces
+            // (where row._access is populated, so the string is non-empty),
+            // which the outer .catch swallowed by closing the tab and bouncing
+            // home — dashboards never opened on a shared workspace.
+            var visHtml = detailVisLineEl(row);
+            if (visHtml) {
+              slot.innerHTML = visHtml;
               wireRowSharing(host, 'dashboards', String(row.id), row, function () {
                 renderDashboardPage(host, id);
               });
