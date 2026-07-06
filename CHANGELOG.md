@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Bulk file ingestion no longer re-renders per file.** A folder ingest now
+  suspends auto-render for the whole walk and fires a SINGLE coalesced render at
+  the end, instead of one render per file (each of which re-scanned the growing
+  file set — O(N²)). Internal bookkeeping tables (`_lattice_*` / `__lattice_*`)
+  never trigger a render. And a file's full `extracted_text` is no longer copied
+  verbatim into every audit row — it is capped to a hash + short preview, keeping
+  the audit log (and every scan of it) small. New `pauseAutoRender()` /
+  `resumeAutoRender()` on `Lattice`.
+
 - **Faster file ingestion — the three per-file AI calls now run in parallel.**
   Enriching an ingested file (summary, link classification, object extraction)
   issued three LLM round-trips strictly one after another; they are
