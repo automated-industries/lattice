@@ -150,11 +150,11 @@ export const dashboardJs = `    // ───────────────
       var table = String((msg && msg.table) || '');
       var DENY = { secrets: 1, chat_threads: 1, chat_messages: 1 };
       if (op === 'search') {
-        return fetch('/api/search', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ query: String((msg && msg.query) || '') }),
-        }).then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+        // Workspace search is a GET (/api/search?q=…) — there is no POST route,
+        // so the prior POST silently 404'd and search-driven dashboard sections
+        // rendered empty with no error. Use the real GET endpoint.
+        return fetch('/api/search?q=' + encodeURIComponent(String((msg && msg.query) || '')))
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
       }
       if (!table || table.charAt(0) === '_' || DENY[table]) {
         return Promise.resolve({ ok: false, error: 'forbidden table' });
