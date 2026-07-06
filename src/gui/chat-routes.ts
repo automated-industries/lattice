@@ -856,7 +856,20 @@ export async function dispatchChatRoute(
             message,
             assistantText,
           );
-          if (title) await ctx.db.update('chat_threads', threadId, { title });
+          if (title) {
+            await ctx.db.update('chat_threads', threadId, { title });
+            // The title is written AFTER the stream closed (kept off the response
+            // path for responsiveness), so the client's stream-close thread-list
+            // refresh already ran with the placeholder. Signal it on the persistent
+            // feed so the conversation list re-fetches and shows the friendly title.
+            ctx.feed.publish({
+              table: null,
+              op: 'thread_title',
+              rowId: threadId,
+              source: 'gui',
+              summary: title,
+            });
+          }
         }
       } catch (e) {
         console.warn('[chat] thread title generation failed:', (e as Error).message);

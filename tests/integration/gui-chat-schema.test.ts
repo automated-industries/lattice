@@ -428,4 +428,36 @@ describe('assistant schema creation via POST /api/chat', () => {
     )) as { files: { name: string }[] };
     expect(ctx.files.some((f) => /PROJECTS/i.test(f.name))).toBe(true);
   });
+
+  it('a first message gives the new thread an AI title, replacing the raw-message placeholder', async () => {
+    const server = await boot();
+    // ensureThread seeds the title to the truncated first message; after the reply the
+    // server generates a friendly title (generateThreadTitle) and updates the thread —
+    // AFTER the stream closes. The scripted client returns this on the title call too
+    // (a fresh client each createAnthropicClient call restarts at turn 0).
+    turnState.turns = [{ text: 'Company Overview' }];
+    const res = await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'tell me about my company' }),
+    });
+    expect(res.status).toBe(200);
+    await res.text(); // drain the SSE stream (res.end) — the title lands shortly after
+
+    // The title is written post-close, so poll the conversation list until it flips
+    // from the placeholder to the AI title (this is exactly the timing the feed-event
+    // signal covers on the client).
+    let title = 'tell me about my company';
+    for (let i = 0; i < 60 && title !== 'Company Overview'; i++) {
+      const list = (await fetch(`${server.url}/api/chat/threads`).then((r) => r.json())) as {
+        threads: { title: string }[];
+      };
+      title = list.threads[0]?.title ?? title;
+      if (title === 'Company Overview') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    // The friendly summary replaced the verbatim first message.
+    expect(title).toBe('Company Overview');
+    expect(title).not.toBe('tell me about my company');
+  });
 });

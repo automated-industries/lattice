@@ -182,6 +182,13 @@ export const offlineEditQueueJs = `    // ────────────�
           try { onQuestionFeedEvent(); } catch (_) { /* best-effort */ }
           return;
         }
+        // A chat thread's AI title landed after its stream closed — refresh the
+        // conversation list so the friendly title replaces the first-message
+        // placeholder. Also a signal, not a data change: no activity card.
+        if (data && data.op === 'thread_title') {
+          try { if (typeof refreshThreadList === 'function') refreshThreadList(); } catch (_) { /* best-effort */ }
+          return;
+        }
         // renderFeedItem now flashes each change as a transient top-right status
         // (the realtime update) — no rail pills.
         try { renderFeedItem(data); } catch (_) { /* best-effort */ }

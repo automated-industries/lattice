@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Conversation names now show the AI-generated title, not the raw first message.**
+  A new chat thread is given a short, friendly title (generated from its opening
+  exchange) — but that title is written just after the reply stream closes, and the
+  conversation list had already refreshed with the truncated first-message
+  placeholder, so the raw message lingered until a manual reload. The server now
+  signals when the title lands and the list re-fetches, so the friendly summary
+  ("Company Overview") replaces the verbatim message ("tell me about my company").
+
 - **In Analytics, dropping a file targets just the Gladys chat window.** The
   drag-drop overlay used to cover the whole screen in every view; in Analytics it is
   now scoped to the chat dock, so a file dropped onto the chat is staged into the
