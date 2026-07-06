@@ -483,13 +483,10 @@ export async function dispatchAssistantRoute(
       // Managed deployment: the host supplies the model credential and per-user
       // credential controls are disabled. The GUI hides the connect/key UI.
       managedModelAuth: isManagedModelAuth(),
-      // Operator-supplied destinations for a managed/hosted deployment; both null
-      // for a normal install. `logoutUrl` is where the account menu's "Log out"
-      // navigates; `accountEndpoint` is a relative path the account/settings UI
-      // fetches for a ready-to-render balance + usage. Generic — the host decides
-      // what they contain; the GUI only displays what it gets back.
-      logoutUrl: process.env.LATTICE_LOGOUT_URL ?? null,
-      accountEndpoint: process.env.LATTICE_ACCOUNT_ENDPOINT ?? null,
+      // Operator-supplied account page for a managed/hosted deployment (null for a
+      // normal install). The header account menu's "Account settings" action opens
+      // it — that page owns balance / billing / sign-out, so none of that lives here.
+      accountUrl: process.env.LATTICE_ACCOUNT_URL ?? null,
     });
     return true;
   }
