@@ -63,13 +63,22 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
         var(--surface);
       border-left: 1px solid var(--border);
     }
-    /* Whole-window file-drop overlay (dragging a file anywhere in the window).
+    /* File-drop overlay. In Configure it covers the whole window (drag a file
+       anywhere → ingest). In Analytics the chat dock is on screen, so it is
+       scoped (.scoped, positioned inline over #ask-dock) to just the chat window —
+       the drop TARGET is the Gladys chat, not the whole screen.
        pointer-events:none so the drag/drop events still reach the document handler. */
     .file-drop-overlay {
       position: fixed; inset: 0; z-index: 9000; display: none;
       align-items: center; justify-content: center; pointer-events: none;
       background: rgba(15, 23, 42, 0.55);
       -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+    }
+    /* Scoped to the chat window (Analytics): the inline top/left/width/height set
+       the box, so clear the whole-window right/bottom and round it like a card. */
+    .file-drop-overlay.scoped {
+      right: auto; bottom: auto; border-radius: 14px;
+      background: rgba(15, 23, 42, 0.42);
     }
     body.dragging-file .file-drop-overlay { display: flex; }
     .file-drop-inner {

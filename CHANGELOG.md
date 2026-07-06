@@ -10,6 +10,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **In Analytics, dropping a file targets just the Gladys chat window.** The
+  drag-drop overlay used to cover the whole screen in every view; in Analytics it is
+  now scoped to the chat dock, so a file dropped onto the chat is staged into the
+  composer (removable chips above the box) and a drop elsewhere is ignored — the drop
+  target matches where the file goes. Configure is unchanged: the whole window is the
+  drop zone and a drop ingests immediately.
+
 - **Switching workspaces now refreshes an open Settings / Version-history panel.**
   With Settings (or Version history) open, switching to another workspace updated the
   topbar but left the panel showing the _previous_ workspace's name / database

@@ -12,12 +12,13 @@ export const askLatticeJs = `
       initFileDropZone();
     }
 
-    // File drag-drop over the WHOLE WINDOW — a full-window overlay appears wherever
-    // you drag a file. The DROP behaves differently by view:
-    //   • Analytics (the Gladys chat dock is here): stage the file into the
-    //     composer (removable chips above the chat box) for review + send. Stay put.
-    //   • Configure (no chat here): ingest IMMEDIATELY (auto-start) and stay in
-    //     Configure — never yank the user over to the Analytics chat.
+    // File drag-drop. The drop TARGET depends on the view:
+    //   • Analytics (the Gladys chat dock is on screen): the drop zone is JUST the
+    //     chat window (#ask-dock). The overlay is scoped over it, and a file dropped
+    //     onto it is STAGED into the composer (removable chips above the chat box) for
+    //     review + send. A drop elsewhere (over the dashboards) is ignored. Stay put.
+    //   • Configure (no chat here): the whole window is the drop zone; a drop INGESTS
+    //     immediately (auto-start) and stays in Configure — never yanks to the chat.
     function initFileDropZone() {
       if (window.__fileDropWired) return;
       window.__fileDropWired = true;
@@ -30,9 +31,30 @@ export const askLatticeJs = `
         var t = e.dataTransfer && e.dataTransfer.types;
         return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
       }
+      // The chat window to scope the drop to — only in Analytics (where it's on
+      // screen). null in Configure ⇒ whole-window drop.
+      function chatDock() {
+        return isAnalyticsHash(location.hash) ? document.getElementById('ask-dock') : null;
+      }
+      // Position the overlay over the chat window (Analytics) or full-window (Configure).
+      function positionOverlay() {
+        var dock = chatDock();
+        if (dock) {
+          var r = dock.getBoundingClientRect();
+          overlay.classList.add('scoped');
+          overlay.style.top = r.top + 'px';
+          overlay.style.left = r.left + 'px';
+          overlay.style.width = r.width + 'px';
+          overlay.style.height = r.height + 'px';
+        } else {
+          overlay.classList.remove('scoped');
+          overlay.style.top = ''; overlay.style.left = ''; overlay.style.width = ''; overlay.style.height = '';
+        }
+      }
       var depth = 0;
       function show() {
         document.body.classList.add('dragging-file');
+        positionOverlay();
         if (overlayLabel) {
           overlayLabel.textContent = isAnalyticsHash(location.hash)
             ? 'Drop to attach to Gladys'
@@ -58,13 +80,17 @@ export const askLatticeJs = `
         hide();
         var files = e.dataTransfer && e.dataTransfer.files;
         if (!files || !files.length) return;
-        if (isAnalyticsHash(location.hash)) {
-          // Analytics: stage into the Gladys composer for review (the #rail-*
-          // dock is here). The user sees the removable chips above the chat box.
+        var dock = chatDock();
+        if (dock) {
+          // Analytics: the drop zone is the chat window. Only stage a file dropped
+          // ONTO it (the scoped overlay shows where); a drop over the dashboards is
+          // ignored. Staged as removable chips above the chat box for review + send.
+          var r = dock.getBoundingClientRect();
+          if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
           stageFiles(files);
         } else {
-          // Configure: ingest immediately and STAY here — dropping in Configure
-          // starts ingestion automatically, it does not switch to the chat.
+          // Configure: whole-window drop — ingest immediately and STAY here (never
+          // switch to the Analytics chat).
           uploadFiles(files);
         }
       });

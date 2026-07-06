@@ -26,8 +26,10 @@ describe('composer file-attach UX', () => {
   });
 
   it('a drop attaches to Gladys on Analytics but auto-ingests on Configure', () => {
-    // Analytics → stage into the composer; Configure → ingest immediately.
-    expect(appJs).toContain('if (isAnalyticsHash(location.hash)) {');
+    // Analytics → the drop zone is scoped to the chat window (#ask-dock): a file
+    // dropped ONTO it stages into the composer; Configure → ingest immediately.
+    expect(appJs).toContain('function chatDock()');
+    expect(appJs).toContain("document.getElementById('ask-dock')");
     expect(appJs).toContain('stageFiles(files);');
     expect(appJs).toContain('uploadFiles(files);');
     // The old always-switch-to-Analytics behavior is gone.
