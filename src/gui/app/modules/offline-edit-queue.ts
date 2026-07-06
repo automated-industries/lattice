@@ -168,6 +168,11 @@ export const offlineEditQueueJs = `    // ────────────�
         // Pass the changed table so only its cache entry is invalidated; a missing
         // table falls back to a full wipe (unchanged behavior).
         scheduleRealtimeRefresh(data && data.table);
+        // A dashboards change from any source (another session, a direct write)
+        // refreshes the Analytics sidebar/home live — same reason as the feed hook.
+        if (data && data.table === 'dashboards' && typeof refreshDashboardsLive === 'function') {
+          refreshDashboardsLive();
+        }
       } else if (type === 'feed') {
         // A clarification-question lifecycle event (enqueued / answered /
         // dismissed) is a signal, not a data change: reconcile the pending
@@ -192,6 +197,12 @@ export const offlineEditQueueJs = `    // ────────────�
         // a row/link change scopes invalidation to its own table.
         if (data && (data.table || data.op === 'schema')) {
           scheduleRealtimeRefresh(data.op === 'schema' ? null : data.table);
+        }
+        // Dashboards live in the Analytics sidebar/home, which the generic
+        // realtime refresh above does not touch — refresh them explicitly so a
+        // Gladys-built dashboard appears without a manual reload.
+        if (data && data.table === 'dashboards' && typeof refreshDashboardsLive === 'function') {
+          refreshDashboardsLive();
         }
       } else if (type === 'render-snapshot') {
         if (data) applyRenderSnapshot(data);

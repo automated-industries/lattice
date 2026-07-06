@@ -149,6 +149,14 @@ export const dashboardJs = `    // ───────────────
       var op = msg && msg.op;
       var table = String((msg && msg.table) || '');
       var DENY = { secrets: 1, chat_threads: 1, chat_messages: 1 };
+      // Table-LESS ops (search + sql) are handled BEFORE the table guard: they
+      // carry no msg.table (search uses msg.query, sql uses msg.sql), so the
+      // empty-table check below would wrongly reject them as "forbidden table".
+      // Their protection is enforced server-side (search allowlist; the SQL
+      // endpoint's SELECT-only shape + protected-table deny-list + row cap + a
+      // Postgres READ ONLY txn). This is the bug that made EVERY sql-driven
+      // dashboard (aggregations, GROUP BY) render "Error loading data: forbidden
+      // table" — the most common dashboard shape.
       if (op === 'search') {
         // Workspace search is a GET (/api/search?q=…) — there is no POST route,
         // so the prior POST silently 404'd and search-driven dashboard sections
@@ -156,19 +164,7 @@ export const dashboardJs = `    // ───────────────
         return fetch('/api/search?q=' + encodeURIComponent(String((msg && msg.query) || '')))
           .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
       }
-      if (!table || table.charAt(0) === '_' || DENY[table]) {
-        return Promise.resolve({ ok: false, error: 'forbidden table' });
-      }
-      if (op === 'query') {
-        var lim = Math.min(Math.max(parseInt(msg.limit, 10) || 50, 1), 500);
-        var off = Math.max(parseInt(msg.offset, 10) || 0, 0);
-        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + lim + '&offset=' + off)
-          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
-      }
       if (op === 'sql') {
-        // Read-only aggregation surface: the server enforces the SELECT-only
-        // shape, protected-table deny-list, row cap, and (Postgres) a READ
-        // ONLY transaction; RLS scopes a cloud member as on any read.
         return fetch('/api/analytics/sql', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -177,6 +173,16 @@ export const dashboardJs = `    // ───────────────
           if (j && j.error) return { ok: false, error: String(j.error) };
           return { ok: true, data: j };
         });
+      }
+      // Table-scoped ops (query / get) must name an allowed table.
+      if (!table || table.charAt(0) === '_' || DENY[table]) {
+        return Promise.resolve({ ok: false, error: 'forbidden table' });
+      }
+      if (op === 'query') {
+        var lim = Math.min(Math.max(parseInt(msg.limit, 10) || 50, 1), 500);
+        var off = Math.max(parseInt(msg.offset, 10) || 0, 0);
+        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + lim + '&offset=' + off)
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
       }
       if (op === 'get') {
         return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(String(msg.id || '')))

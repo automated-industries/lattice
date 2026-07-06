@@ -101,6 +101,38 @@ test('a dashboard on a cloud/team workspace (row carries _access) still opens �
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + id);
 });
 
+test('an sql-driven dashboard loads its data (no "forbidden table") — broker regression', async ({
+  page,
+}) => {
+  await createRow(gui.url, 'items', { name: 'x' });
+  await createRow(gui.url, 'items', { name: 'y' });
+  const id = await seed('SQL Board');
+
+  // Inject an authored page that reads via lattice.sql — the aggregation path
+  // Gladys uses for GROUP BY dashboards. The sql op carries no table, so the
+  // broker's empty-table guard used to reject it as "forbidden table" before the
+  // op even ran (so every aggregation dashboard showed "Error loading data").
+  await page.route(`**/api/tables/dashboards/rows/${id}`, async (route) => {
+    const resp = await route.fetch();
+    const json = (await resp.json()) as Record<string, unknown>;
+    json.html =
+      '<!doctype html><html><body><div id="out">pending</div>' +
+      '<script>(async function(){try{' +
+      'var r = await lattice.sql("SELECT COUNT(*) AS n FROM items");' +
+      'var rows = (r && r.rows) ? r.rows : r;' +
+      'document.getElementById("out").textContent = "n=" + (rows[0] && rows[0].n);' +
+      '}catch(e){document.getElementById("out").textContent = "ERR:" + (e && e.message);}})();</script>' +
+      '</body></html>';
+    await route.fulfill({ json });
+  });
+
+  await page.goto(gui.url + '#/analytics/' + id);
+  const frame = page.frameLocator('#dash-frame');
+  // The sql ran and returned the count — not the pre-fix "forbidden table" reject.
+  await expect(frame.locator('#out')).toContainText('n=', { timeout: 10000 });
+  await expect(frame.locator('#out')).not.toContainText('forbidden');
+});
+
 test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({ page }) => {
   const id = await seed('Old Name');
   await page.goto(gui.url + '#/analytics/' + id);
