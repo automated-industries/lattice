@@ -251,9 +251,14 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   // ALSO re-frames on later pane/window resizes (sidebar collapse, assistant-rail
   // toggle) — but only while the user is still at the auto-fit view, so a manually
   // zoomed/panned user isn't yanked back.
+  // Held so stop() can disconnect it: the GUI reuses ONE #graph-mount element and
+  // creates a fresh graph on every open/refresh, so an un-disconnected observer
+  // would stack up on the same element — each retaining a stale graph's closure —
+  // and keep firing on every resize. stop() is the teardown callers use.
+  let resizeObs: { observe(el: El): void; disconnect(): void } | null = null;
   if (typeof ResizeObserver !== 'undefined') {
     let firstFit = false;
-    const ro = new ResizeObserver(() => {
+    resizeObs = new ResizeObserver(() => {
       if (!mount.clientWidth || !mount.clientHeight) return;
       if (!firstFit) {
         firstFit = true;
@@ -262,7 +267,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
         fitAll();
       }
     });
-    ro.observe(mount);
+    resizeObs.observe(mount);
   }
 
   const nodeMap = new Map<string, FNode>();
@@ -748,6 +753,13 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     }
     raf = 0;
     fitRaf = 0;
+    // Release the resize observer — callers stop() a graph to discard it (the
+    // next open builds a fresh one), so leaving the observer attached to the
+    // shared mount would accumulate stale observers across the session.
+    if (resizeObs) {
+      resizeObs.disconnect();
+      resizeObs = null;
+    }
   }
   function step(n = 1): void {
     sim.tick(n);
