@@ -47,6 +47,10 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     }
     .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
     .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
+    /* Host for the staged-files tray: pinned directly above the composer. */
+    .staging-tray-host { flex: none; }
+    .staging-tray-host:empty { display: none; }
+    .staging-tray-host .staging-tray { margin: 8px 10px 0; }
     .staging-send { flex: 1; }
     /* ── The assistant dock (Analytics view, right column) ─────────── */
     /* The chat's permanent home: a full-height column docked to the right of

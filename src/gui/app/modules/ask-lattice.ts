@@ -12,23 +12,33 @@ export const askLatticeJs = `
       initFileDropZone();
     }
 
-    // File drag-drop over the WHOLE WINDOW — a full-window overlay ("Drop a file to
-    // ingest it") appears wherever you drag a file, and the drop stages it into
-    // Gladys for review + ingest, switching to the Analytics view (where the chat
-    // dock lives) if the user was in Configure.
+    // File drag-drop over the WHOLE WINDOW — a full-window overlay appears wherever
+    // you drag a file. The DROP behaves differently by view:
+    //   • Analytics (the Gladys chat dock is here): stage the file into the
+    //     composer (removable chips above the chat box) for review + send. Stay put.
+    //   • Configure (no chat here): ingest IMMEDIATELY (auto-start) and stay in
+    //     Configure — never yank the user over to the Analytics chat.
     function initFileDropZone() {
       if (window.__fileDropWired) return;
       window.__fileDropWired = true;
       var overlay = document.createElement('div');
       overlay.className = 'file-drop-overlay';
-      overlay.innerHTML = '<div class="file-drop-inner"><div class="file-drop-emoji">📎</div>Drop a file to ingest it</div>';
+      overlay.innerHTML = '<div class="file-drop-inner"><div class="file-drop-emoji">📎</div><span class="file-drop-label">Drop a file to ingest it</span></div>';
       document.body.appendChild(overlay);
+      var overlayLabel = overlay.querySelector('.file-drop-label');
       function isFileDrag(e) {
         var t = e.dataTransfer && e.dataTransfer.types;
         return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
       }
       var depth = 0;
-      function show() { document.body.classList.add('dragging-file'); }
+      function show() {
+        document.body.classList.add('dragging-file');
+        if (overlayLabel) {
+          overlayLabel.textContent = isAnalyticsHash(location.hash)
+            ? 'Drop to attach to Gladys'
+            : 'Drop a file to ingest it';
+        }
+      }
       function hide() { depth = 0; document.body.classList.remove('dragging-file'); }
       document.addEventListener('dragenter', function (e) {
         if (!isFileDrag(e)) return;
@@ -46,12 +56,16 @@ export const askLatticeJs = `
         if (!isFileDrag(e)) { hide(); return; }
         e.preventDefault();
         hide();
-        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-          // The #rail-* nodes are static shell DOM, so staging works regardless
-          // of which view is showing — the switch is so the user SEES the staged
-          // file in the dock.
-          if (!isAnalyticsHash(location.hash)) location.hash = lastAnalyticsHash;
-          stageFiles(e.dataTransfer.files);
+        var files = e.dataTransfer && e.dataTransfer.files;
+        if (!files || !files.length) return;
+        if (isAnalyticsHash(location.hash)) {
+          // Analytics: stage into the Gladys composer for review (the #rail-*
+          // dock is here). The user sees the removable chips above the chat box.
+          stageFiles(files);
+        } else {
+          // Configure: ingest immediately and STAY here — dropping in Configure
+          // starts ingestion automatically, it does not switch to the chat.
+          uploadFiles(files);
         }
       });
       window.addEventListener('dragend', hide);

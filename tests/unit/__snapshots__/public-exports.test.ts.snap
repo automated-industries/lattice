@@ -172,6 +172,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "getTablePolicy",
   "getWorkspace",
   "gmailConnector",
+  "grantMemberAccess",
   "grantPresignerToMemberGroup",
   "graphAdjacencyBoost",
   "hasFilePresigner",
