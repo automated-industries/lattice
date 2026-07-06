@@ -227,6 +227,9 @@ export const guiAppHtml = `<!doctype html>
            cards the user answers or dismisses — above the composer, visually
            distinct from the conversation bubbles. -->
       <div class="question-cards" id="question-cards"></div>
+      <!-- Staged files "to add" — sits directly above the composer, each chip
+           removable; the composer Send ingests them. -->
+      <div class="staging-tray-host" id="staging-tray-host"></div>
       <div class="rail-composer" id="rail-composer"></div>
     </aside>
   </div>

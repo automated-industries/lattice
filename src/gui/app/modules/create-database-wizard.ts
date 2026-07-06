@@ -185,9 +185,11 @@ export const createDatabaseWizardJs = `    // ───────────�
     function renderStagingTray() {
       removeStagingTray();
       if (!stagedFiles.length) return;
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return;
-      railEmptyGone();
+      // The tray sits in its OWN host directly above the composer (not in the
+      // message feed) so the "files to add" list is always visible right above the
+      // chat box while you type — each chip removable via its ✕.
+      var host = document.getElementById('staging-tray-host');
+      if (!host) return;
       var n = stagedFiles.length;
       var rows = stagedFiles.map(function (f, idx) {
         return '<li class="staging-file">' +
@@ -204,10 +206,7 @@ export const createDatabaseWizardJs = `    // ───────────�
         '<ul class="staging-list">' + rows + '</ul>';
       // The tray just DISPLAYS the staged files (each removable with its ✕); the
       // main composer Send ingests them — no separate Send/Cancel here.
-      // Same bottom-pin rule as the pending cards: don't bury a streaming turn.
-      var anchor = feedTypingAnchor(feedEl);
-      if (anchor) feedEl.insertBefore(tray, anchor); else feedEl.appendChild(tray);
-      feedEl.scrollTop = feedEl.scrollHeight;
+      host.appendChild(tray);
       tray.querySelectorAll('.staging-file-x').forEach(function (b) {
         b.addEventListener('click', function () {
           stagedFiles.splice(Number(b.getAttribute('data-idx')), 1);
@@ -250,13 +249,17 @@ export const createDatabaseWizardJs = `    // ───────────�
           var micHtml = '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>';
           host.innerHTML =
             '<div class="composer-row">' +
-              '<button class="composer-clip" id="chat-clip" title="Upload files" aria-label="Upload files">' +
+              // A <label for> the hidden file input opens the picker NATIVELY on
+              // click — the prior <button> + fileInput.click() was a no-op in the
+              // desktop webview (programmatic .click() on a display:none input is
+              // blocked there), so the upload button did nothing.
+              '<label class="composer-clip" id="chat-clip" for="chat-file" role="button" tabindex="0" title="Upload files" aria-label="Upload files">' +
                 '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
                   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
                   '<polyline points="17 8 12 3 7 8"/>' +
                   '<line x1="12" y1="3" x2="12" y2="15"/>' +
                 '</svg>' +
-              '</button>' +
+              '</label>' +
               micHtml +
               '<textarea id="chat-input" rows="1" placeholder="Ask or instruct…"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
@@ -278,7 +281,13 @@ export const createDatabaseWizardJs = `    // ───────────�
           var clipBtn = document.getElementById('chat-clip');
           var fileInput = document.getElementById('chat-file');
           if (clipBtn && fileInput) {
-            clipBtn.addEventListener('click', function () { fileInput.click(); });
+            // The label opens the picker natively on click (its for-target is the
+            // hidden input) — do NOT also call fileInput.click() (that
+            // double-triggers, opening then instantly cancelling the dialog). Only
+            // add keyboard activation for the role=button.
+            clipBtn.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+            });
             fileInput.addEventListener('change', function () { stageFiles(fileInput.files); fileInput.value = ''; });
           }
           // Grow the textarea to fit its content (wrapped lines included), capped

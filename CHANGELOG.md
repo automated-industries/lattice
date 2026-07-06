@@ -8,6 +8,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **Composer file-attach UX.** Files staged for Gladys now show as removable "file
+  to add" chips directly above the chat box (they were rendered down in the
+  message feed). The upload button opens the file picker via a native `<label>`
+  (the prior programmatic click was a no-op in the desktop webview). And a
+  drag-drop now behaves by view: on **Analytics** it attaches the file to the
+  Gladys chat for review; on **Configure** it starts ingestion immediately and
+  stays in Configure (it no longer yanks you to the Analytics chat).
+
 ### Fixed
 
 - **SQL-driven dashboards load data again (no more "forbidden table").** The
