@@ -17,14 +17,14 @@ export const connectWallCss = `    /* ── First-run connect wall ────
       border-radius: 16px; box-shadow: var(--shadow-3, 0 20px 60px rgba(15, 23, 42, 0.18));
       padding: 32px 28px;
     }
-    .connect-wall-mark { font-size: 44px; line-height: 1; margin-bottom: 8px; }
+    .connect-wall-mark { line-height: 1; margin-bottom: 10px; }
+    .connect-wall-mark svg { width: 44px; height: 44px; display: inline-block; }
     .connect-wall-card h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: var(--text); }
     .connect-wall-card p { margin: 0 auto 20px; max-width: 40ch; color: var(--text-muted); font-size: 14px; line-height: 1.5; }
-    .connect-wall-btn {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 100%; height: 44px; border-radius: 10px; font-size: 15px; font-weight: 600;
-      text-decoration: none;
-    }
+    /* The wall's CTA is the shared black Claude-logo button (.connect-claude-btn),
+       sized up a touch for the first-run wall. */
+    .connect-wall .connect-claude-btn { padding: 12px 16px; border-radius: 10px; font-size: 15px; }
+    .connect-wall .connect-claude-btn .claude-logo { width: 20px; height: 20px; }
     .connect-wall-paste { margin-top: 22px; text-align: left; }
     .connect-wall-paste label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
     .connect-wall-row { display: flex; gap: 8px; }
