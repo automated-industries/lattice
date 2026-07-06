@@ -281,18 +281,83 @@ async function likeSearchTable(
   hasDeletedAt: boolean,
   recencyCol: string | null,
 ): Promise<FtsGroup | null> {
-  // CAST(... AS TEXT) keeps the LIKE valid across column types on both engines.
-  const where = searchCols.map((c) => `CAST("${c}" AS TEXT) LIKE ? ESCAPE '\\'`).join(' OR ');
-  const like = `%${escapeLike(q)}%`;
-  const params: unknown[] = searchCols.map(() => like);
-  let sql = `SELECT * FROM "${table}" WHERE (${where})`;
+  // The non-indexed fallback used to ORDER BY recency ONLY, which made a name lookup
+  // unreliable: it returned "the most recently added row that mentions the string
+  // anywhere" (a free-text mention of a person could outrank that person's own
+  // record), it matched only within a SINGLE column (so a name split across first/last
+  // never matched the full name), and it had no tokenization. Now it RELEVANCE-RANKS:
+  // exact name-column match > name prefix > full phrase across the row's text > all
+  // query words present > any-column contains; recency only breaks ties. It also
+  // matches the concatenated text (`blob`) so a name spread across columns, or given
+  // out of order / with an extra middle name, still matches.
+  const lq = q.toLowerCase();
+  const tokens = lq.split(/\s+/).filter(Boolean);
+  // Identity/label-ish columns rank above free-text ones for a name lookup.
+  const nameCols = searchCols.filter(
+    (c) => /(name|title|label|email|handle|username|summary)/i.test(c) || c === 'key',
+  );
+  const blob = `lower(${concatExpr(searchCols, '')})`;
+
+  // Params MUST be pushed in the order they appear in the SQL text. The score CASE is
+  // in the SELECT (before WHERE), so collect its params first.
+  const scoreParams: unknown[] = [];
+  const cases: string[] = [];
+  if (nameCols.length > 0) {
+    const eq = nameCols
+      .map((c) => {
+        scoreParams.push(lq);
+        return `lower(CAST("${c}" AS TEXT)) = ?`;
+      })
+      .join(' OR ');
+    cases.push(`WHEN (${eq}) THEN 100`);
+    const prefix = nameCols
+      .map((c) => {
+        scoreParams.push(`${escapeLike(lq)}%`);
+        return `lower(CAST("${c}" AS TEXT)) LIKE ? ESCAPE '\\'`;
+      })
+      .join(' OR ');
+    cases.push(`WHEN (${prefix}) THEN 80`);
+  }
+  scoreParams.push(`%${escapeLike(lq)}%`);
+  cases.push(`WHEN ${blob} LIKE ? ESCAPE '\\' THEN 60`);
+  if (tokens.length > 1) {
+    const allTokens = tokens
+      .map((t) => {
+        scoreParams.push(`%${escapeLike(t)}%`);
+        return `${blob} LIKE ? ESCAPE '\\'`;
+      })
+      .join(' AND ');
+    cases.push(`WHEN (${allTokens}) THEN 40`);
+  }
+  const scoreExpr = `CASE ${cases.join(' ')} ELSE 10 END`;
+
+  // WHERE (recall): the phrase in ANY single column (original behavior) OR all query
+  // words present in the concatenated text (finds a split / reordered name).
+  const whereParams: unknown[] = [];
+  const phraseOr = searchCols
+    .map((c) => {
+      whereParams.push(`%${escapeLike(q)}%`);
+      return `CAST("${c}" AS TEXT) LIKE ? ESCAPE '\\'`;
+    })
+    .join(' OR ');
+  const whereClauses = [`(${phraseOr})`];
+  if (tokens.length > 0) {
+    const tokenAnd = tokens
+      .map((t) => {
+        whereParams.push(`%${escapeLike(t)}%`);
+        return `${blob} LIKE ? ESCAPE '\\'`;
+      })
+      .join(' AND ');
+    whereClauses.push(`(${tokenAnd})`);
+  }
+  const where = whereClauses.join(' OR ');
+
+  let sql = `SELECT *, (${scoreExpr}) AS __score FROM "${table}" WHERE (${where})`;
   if (hasDeletedAt) sql += ` AND deleted_at IS NULL`;
-  // Without an ORDER BY this returned rows in arbitrary storage order and the LIMIT
-  // could drop the most recent ones — so a scoped cloud member's search for a recent
-  // item could silently miss it. Order NEWEST-FIRST by the table's recency column
-  // (matching the list-read default) so the LIMIT keeps the most recent matches.
-  if (recencyCol) sql += ` ORDER BY "${recencyCol}" DESC`;
+  sql += ` ORDER BY __score DESC`;
+  if (recencyCol) sql += `, "${recencyCol}" DESC`;
   sql += ` LIMIT ${String(limit + 1)}`;
+  const params: unknown[] = [...scoreParams, ...whereParams];
   let rows: Record<string, unknown>[];
   try {
     rows = (await allAsyncOrSync(adapter, sql, params)) as Record<string, unknown>[];
