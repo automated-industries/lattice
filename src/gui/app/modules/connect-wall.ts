@@ -8,6 +8,21 @@
 // it in the system browser and keeps the PKCE cookie on the webview), so this
 // wall is NOT forked per surface.
 export const connectWallJs = `    // ── First-run connect wall ──────────────────────────────
+    // The Claude "sunburst" mark for the black Connect-with-Claude button. Drawn
+    // with currentColor so it inherits the button styling (Claude orange via
+    // .connect-claude-btn .claude-logo).
+    var CLAUDE_LOGO_SVG = (function () {
+      var rays = '';
+      for (var a = 0; a < 360; a += 30) {
+        var r = (a * Math.PI) / 180;
+        var x = (12 + 8.5 * Math.cos(r)).toFixed(2);
+        var y = (12 + 8.5 * Math.sin(r)).toFixed(2);
+        rays += '<line x1="12" y1="12" x2="' + x + '" y2="' + y + '"/>';
+      }
+      return '<svg class="claude-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.6" stroke-linecap="round" aria-hidden="true">' + rays + '</svg>';
+    })();
+
     function showConnectWall(onConnected) {
       if (document.getElementById('connect-wall')) return;
       var wall = document.createElement('div');
@@ -18,15 +33,15 @@ export const connectWallJs = `    // ── First-run connect wall ────�
       wall.setAttribute('aria-label', 'Connect Claude to use Lattice');
       wall.innerHTML =
         '<div class="connect-wall-card">' +
-          '<div class="connect-wall-mark" aria-hidden="true">👵🏻</div>' +
+          '<div class="connect-wall-mark" aria-hidden="true">' + BRAND_SVG + '</div>' +
           '<h1>Connect Claude to use Lattice</h1>' +
-          '<p>Lattice runs on your Claude subscription. Connect your Claude account to continue — there is nothing to skip.</p>' +
-          '<a href="/api/assistant/oauth/start" target="_blank" rel="noopener" class="btn primary connect-wall-btn" id="connect-wall-start">Connect with Claude</a>' +
+          '<p>Lattice runs on your Claude subscription. Connect your Claude account plan (Max, Pro, etc) to continue.</p>' +
+          '<a href="/api/assistant/oauth/start" target="_blank" rel="noopener" class="connect-claude-btn" id="connect-wall-start">' +
+            CLAUDE_LOGO_SVG + '<span>Connect with Claude</span></a>' +
           '<div class="connect-wall-paste">' +
-            '<label for="connect-wall-code">Paste the code Claude gives you</label>' +
             '<div class="connect-wall-row">' +
-              '<input type="text" id="connect-wall-code" placeholder="code#state" autocomplete="off" spellcheck="false" />' +
-              '<button type="button" class="btn primary" id="connect-wall-finish">Finish</button>' +
+              '<input type="text" id="connect-wall-code" placeholder="Paste Authentication Code here" autocomplete="off" spellcheck="false" />' +
+              '<button type="button" class="btn primary" id="connect-wall-finish">Connect</button>' +
             '</div>' +
             '<div class="connect-wall-status" id="connect-wall-status" role="status" aria-live="polite"></div>' +
           '</div>' +
