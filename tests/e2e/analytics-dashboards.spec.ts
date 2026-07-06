@@ -58,6 +58,49 @@ test('sidebar lists dashboards; opening = one deduped tab; close falls back to h
   await expect(page.locator('.analytics-home')).toBeVisible();
 });
 
+test('a dashboard on a cloud/team workspace (row carries _access) still opens — regression for the appendChild-of-string crash', async ({
+  page,
+}) => {
+  const id = await seed('Cloud Board');
+
+  // Cloud (Postgres + RLS) reads attach a per-row `_access` summary that local
+  // SQLite never sets — the ONLY difference at this client layer. That summary
+  // made the per-row visibility line render as a non-empty HTML STRING, which
+  // renderDashboardPage used to appendChild() → TypeError → swallowed by the
+  // .catch, which closed the tab and bounced to the analytics home. Dashboards
+  // therefore NEVER opened on a shared workspace. Inject `_access` into the
+  // dashboards reads to reproduce the cloud read exactly (nothing else about the
+  // cloud matters to this path), so this runs in a real browser without a
+  // Postgres backend but exercises the true failure trigger.
+  await page.route('**/api/tables/dashboards/rows**', async (route) => {
+    const resp = await route.fetch();
+    let json: { rows?: Record<string, unknown>[]; id?: unknown } | null;
+    try {
+      json = (await resp.json()) as { rows?: Record<string, unknown>[]; id?: unknown };
+    } catch {
+      await route.fulfill({ response: resp });
+      return;
+    }
+    const access = { visibility: 'everyone', ownedByMe: true };
+    if (json && Array.isArray(json.rows)) {
+      json.rows = json.rows.map((r) => ({ ...r, _access: access }));
+    } else if (json?.id) {
+      (json as Record<string, unknown>)._access = access;
+    }
+    await route.fulfill({ json });
+  });
+
+  await page.goto(gui.url + '#/analytics/' + id);
+
+  // The dashboard opens: its title + frame mount and we STAY on its route (the
+  // pre-fix code threw and bounced to '#/analytics'). The visibility line — the
+  // exact element that used to throw on appendChild — rendered into the slot.
+  await expect(page.locator('.dash-title')).toHaveText('Cloud Board');
+  await expect(page.locator('#dash-frame')).toBeVisible();
+  await expect(page.locator('#dash-vis-slot .detail-vis')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + id);
+});
+
 test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({ page }) => {
   const id = await seed('Old Name');
   await page.goto(gui.url + '#/analytics/' + id);
