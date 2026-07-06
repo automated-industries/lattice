@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import type { ReverseSyncUpdate } from '../../src/schema/entity-context.js';
+import { createFileLoopbackWatcher } from '../../src/gui/file-watcher.js';
+import { FeedBus } from '../../src/gui/feed.js';
 
 const tmpDirs: string[] = [];
 function tempDir(): string {
@@ -146,6 +148,41 @@ describe('file loopback (default derivation → changelog-aware apply)', () => {
 
     const row = await db.get('agents', 'a1');
     expect(row?.name).toBe('Alpha'); // row untouched
+    db.close();
+  });
+
+  it('does NOT flood the activity feed when a custom/computed-render file is skipped', async () => {
+    const { db, outputDir } = await setupDb();
+    await db.insert('agents', {
+      id: 'a1',
+      name: 'Alpha',
+      slug: 'alpha',
+      role: 'Scout',
+      status: 'active',
+    });
+    await db.reconcile(outputDir);
+
+    // Rewrite the free-form (non-round-trippable) file so a reverse-sync pass
+    // flags it as changed-but-unimportable.
+    const notesFile = join(outputDir, 'agents', 'alpha', 'NOTES.md');
+    writeFileSync(notesFile, '# Alpha\n\nRewritten free-form prose, no fields.\n');
+
+    const events: { summary?: string }[] = [];
+    const feed = new FeedBus();
+    feed.subscribe((e) => events.push(e as { summary?: string }));
+    const watcher = createFileLoopbackWatcher({
+      db,
+      feed,
+      softDeletable: new Set<string>(),
+      outputDir,
+    });
+    await watcher.flush(); // one reverse-sync pass, synchronously
+    watcher.stop();
+
+    // The skip is an expected, non-actionable condition (the render owns the
+    // file) — it must NOT surface in the activity feed, which it flooded with a
+    // duplicate "not auto-importable" notice on every pass.
+    expect(events.some((e) => (e.summary ?? '').includes('not auto-importable'))).toBe(false);
     db.close();
   });
 });

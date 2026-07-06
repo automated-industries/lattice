@@ -68,13 +68,20 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
   };
 
   const onSkip = (info: { table: string; slug: string; filename: string }): void => {
-    deps.feed.publish({
-      table: info.table,
-      op: 'update',
-      rowId: null,
-      source: 'file-edit',
-      summary: `Edited ${info.filename} on disk — change not auto-importable (custom/computed render)`,
-    });
+    // A custom/computed-render file that changed on disk but parses to nothing
+    // produces no importable update. This is an EXPECTED, non-actionable condition
+    // — the render owns the file, and free-form / custom renders never round-trip —
+    // so it must NOT surface in the activity feed. It was publishing one feed event
+    // per reverse-sync pass, which (as the reverse-sync chases each render) floods
+    // the feed with duplicate, useless "not auto-importable" notices. A genuine
+    // conflict (the DB row changed since render) is still surfaced separately in
+    // run(). Diagnostic log only, gated behind a debug flag.
+    if (process.env.LATTICE_DEBUG_REVERSE_SYNC) {
+      console.debug(
+        `[latticesql] reverse-sync: ${info.filename} (${info.table}) changed on disk but is not ` +
+          `auto-importable (custom/computed render) — skipped`,
+      );
+    }
   };
 
   const run = async (): Promise<void> => {
