@@ -43,6 +43,13 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
       width: 16px; height: 16px; border-radius: 4px; font-size: 11px; color: var(--text-muted);
     }
     .tab-close:hover { background: var(--row-hover); color: var(--text); }
+    /* Unread-count badge on the Data Questions tab. */
+    .tab-badge {
+      display: inline-flex; align-items: center; justify-content: center; flex: none;
+      min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+      font-size: 10.5px; font-weight: 700; line-height: 1;
+      background: var(--danger); color: #fff;
+    }
     /* Tab overflow: the "⋯ N" button + a dropdown listing the collapsed tabs. */
     .tab-overflow-wrap { position: relative; display: inline-flex; align-items: stretch; }
     .tab-overflow-btn { flex: none; min-width: 40px; font-weight: 500; }

@@ -214,6 +214,10 @@ export const searchJs = `    // ────────────────
         // stream so realtime/feed/render all rebind to this workspace.
         renderProgress = {};
         startEventStream();
+        // Pending ingestion questions are per-workspace: wipe the previous workspace's
+        // Data Questions tab + badge + dock cards and re-fetch for the new workspace,
+        // so a stale count from workspace A can't linger over workspace B.
+        if (typeof resetQuestionsState === 'function') resetQuestionsState();
       }).finally(function () {
         // Reveal the freshly-rebuilt columns together (a short tick lets the last
         // synchronous renders settle before the overlay fades out).
