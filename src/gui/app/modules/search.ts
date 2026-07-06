@@ -191,11 +191,18 @@ export const searchJs = `    // ────────────────
         var cur = location.hash || '';
         var switchTarget = (typeof isAnalyticsHash === 'function' && isAnalyticsHash(cur))
           ? '#/analytics'
-          : cur.indexOf('#/graph') === 0
-            ? '#/graph'
-            : cur.indexOf('#/tables') === 0
-              ? '#/tables'
-              : '#/folders';
+          : // Settings + Version history are takeover overlays showing WORKSPACE-specific
+            // data (name, DB connection, data model, history). Preserve the exact
+            // #/settings/* route so the switch re-renders the takeover for the NEW
+            // workspace in place — otherwise it routed to #/folders and left the drawer
+            // open showing the previous workspace's data.
+            cur.indexOf('#/settings/') === 0
+            ? cur
+            : cur.indexOf('#/graph') === 0
+              ? '#/graph'
+              : cur.indexOf('#/tables') === 0
+                ? '#/tables'
+                : '#/folders';
         if (location.hash !== switchTarget) location.hash = switchTarget;
         // Already on the target home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.

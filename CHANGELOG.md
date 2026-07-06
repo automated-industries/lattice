@@ -8,6 +8,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switching workspaces now refreshes an open Settings / Version-history panel.**
+  With Settings (or Version history) open, switching to another workspace updated the
+  topbar but left the panel showing the _previous_ workspace's name / database
+  connection / data model / history. The switch now preserves the open takeover and
+  re-renders it for the new workspace instead of routing away and stranding the stale
+  overlay.
+
 ### Changed
 
 - **Ingestion questions live in a dedicated Data Questions tab — no more surprise
