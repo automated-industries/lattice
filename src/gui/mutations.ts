@@ -159,7 +159,7 @@ export function capAuditImage(image: unknown): unknown {
   const digest = createHash('sha256').update(et).digest('hex').slice(0, 16);
   return {
     ...rec,
-    extracted_text: `[capped ${et.length} chars · sha256:${digest}] ${et.slice(0, AUDIT_TEXT_PREVIEW)}`,
+    extracted_text: `[capped ${String(et.length)} chars · sha256:${digest}] ${et.slice(0, AUDIT_TEXT_PREVIEW)}`,
   };
 }
 

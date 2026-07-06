@@ -268,6 +268,13 @@ export class Lattice {
    * never share a transaction.
    */
   private readonly _txStore = new AsyncLocalStorage<StorageAdapter>();
+  /**
+   * Serializer for schema mutations (CREATE TABLE / ALTER … ADD COLUMN). See
+   * {@link withSchemaLock}. The flag marks "already inside the lock" for reentrancy;
+   * the chain is the FIFO queue that runs one locked section at a time.
+   */
+  private readonly _schemaLockFlag = new AsyncLocalStorage<true>();
+  private _schemaLockChain: Promise<unknown> = Promise.resolve();
   private _changelogService?: ChangelogService;
   private _changelogWriterInstance?: ChangelogWriter;
   private _reportBuilder?: ReportBuilder;
@@ -1149,6 +1156,36 @@ export class Lattice {
   }
 
   /**
+   * Run `fn` with exclusive access to schema mutation. Serializes CREATE TABLE /
+   * ALTER … ADD COLUMN so concurrent callers can't interleave a check-then-DDL
+   * across an `await` and collide. This matters because the SQLite adapter is one
+   * synchronous connection: when a parallel folder ingest has two files that both
+   * extract a new "Invoices" entity, or both add an "amount" column, the un-serialized
+   * loser hits `CREATE TABLE`/`ADD COLUMN` after the winner already ran it and throws
+   * "table already exists" / "duplicate column name". Row INSERTs are deliberately NOT
+   * serialized — they're atomic auto-commit statements with uuid keys and no
+   * read-modify-write, so they stay fully concurrent.
+   *
+   * Reentrant via `AsyncLocalStorage`: a locked section that itself triggers more
+   * DDL (e.g. `createUserEntity` → `addColumn` when securing a cloud table) runs the
+   * nested call inline instead of deadlocking on the queue it already holds — the same
+   * ambient-context pattern as {@link transaction}. A rejected `fn` never poisons the
+   * queue: the chain advances on settle either way, and the caller still sees the
+   * rejection through the returned promise.
+   *
+   * @since 5.0.0
+   */
+  async withSchemaLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._schemaLockFlag.getStore()) return fn(); // already holding it → inline
+    const run = this._schemaLockChain.then(() => this._schemaLockFlag.run(true, fn));
+    this._schemaLockChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
    * True when a table opts into the observation/changelog substrate
    * (`def.changelog`). Callers that want to bypass the high-level {@link delete}
    * with a transaction-scoped raw delete use this to know whether the table also
@@ -1251,30 +1288,38 @@ export class Lattice {
     // out of the identifier quoting (see src/schema/identifier.ts).
     assertSafeIdentifier(table, 'table');
     assertSafeIdentifier(column, 'column');
-    const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
-    if (!existing.includes(column)) {
-      if (this._cloudMemberOpen) {
-        // Scoped cloud member: no CREATE/ALTER on the schema, so a raw ALTER would
-        // fail with "permission denied for schema public". Route the column add
-        // (and the masking-view regen) through the owner-side SECURITY DEFINER
-        // helper, which runs as the owner. A real error (bad type, missing table,
-        // helper absent on an older cloud) propagates — never silently swallowed.
-        await runAsyncOrSync(this._exec(), `SELECT lattice_member_add_column(?, ?, ?)`, [
-          table,
-          column,
-          typeSpec,
-        ]);
-      } else {
-        await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+    // The introspect (does the column exist?) and the ALTER straddle an await, so
+    // two concurrent adds of the same column would both read it absent and both
+    // ALTER — the second throwing "duplicate column name". Serialize the whole
+    // check-then-act behind the schema lock so it's atomic. Reentrant, so a caller
+    // already inside the lock (e.g. createUserEntity securing a cloud table) doesn't
+    // deadlock. See withSchemaLock.
+    await this.withSchemaLock(async () => {
+      const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
+      if (!existing.includes(column)) {
+        if (this._cloudMemberOpen) {
+          // Scoped cloud member: no CREATE/ALTER on the schema, so a raw ALTER would
+          // fail with "permission denied for schema public". Route the column add
+          // (and the masking-view regen) through the owner-side SECURITY DEFINER
+          // helper, which runs as the owner. A real error (bad type, missing table,
+          // helper absent on an older cloud) propagates — never silently swallowed.
+          await runAsyncOrSync(this._exec(), `SELECT lattice_member_add_column(?, ?, ?)`, [
+            table,
+            column,
+            typeSpec,
+          ]);
+        } else {
+          await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+        }
       }
-    }
-    const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
-    this._columnCache.set(table, new Set(cols));
-    // Mirror the new column into the registered def so getRegisteredColumns()
-    // (which the Teams `share` serialization reads) reflects the post-ALTER
-    // state. No-op for an unregistered table (def stays null).
-    const def = this._schema.getTables().get(table);
-    if (def && !(column in def.columns)) def.columns[column] = typeSpec;
+      const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
+      this._columnCache.set(table, new Set(cols));
+      // Mirror the new column into the registered def so getRegisteredColumns()
+      // (which the Teams `share` serialization reads) reflects the post-ALTER
+      // state. No-op for an unregistered table (def stays null).
+      const def = this._schema.getTables().get(table);
+      if (def && !(column in def.columns)) def.columns[column] = typeSpec;
+    });
   }
 
   // -------------------------------------------------------------------------
