@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The assistant stops narrating its steps, finds people reliably, and links related
+  records on its own.** Three chat-assistant fixes: (1) it no longer surfaces its
+  internal "let me try that / let me search again" working-it-out messages — you see
+  only its final answer; (2) searching by name now returns the right record instead of
+  the most recently-touched row that merely mentions the name, and it finds names split
+  across separate first/last fields; (3) when it records something like a meeting with
+  named attendees, it now links those people (and you) automatically, following how your
+  existing records are already linked.
+
 - **Conversation names now show the AI-generated title, not the raw first message.**
   A new chat thread is given a short, friendly title (generated from its opening
   exchange) — but that title is written just after the reply stream closes, and the
