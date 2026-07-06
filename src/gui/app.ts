@@ -125,9 +125,12 @@ export const guiAppHtml = `<!doctype html>
           </button>
           <div class="section-body" data-group-body="files">
             <div id="src-files-tree"></div>
-            <div class="src-add-row">
-              <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
-              <button class="src-add" id="src-add-file" type="button">＋ File</button>
+            <div class="src-add-row src-add-files-wrap">
+              <button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ File(s)</button>
+              <div class="src-add-menu" id="src-add-files-menu" role="menu" hidden>
+                <button type="button" class="src-add-menu-item" data-pick="file" role="menuitem">Add file(s)…</button>
+                <button type="button" class="src-add-menu-item" data-pick="folder" role="menuitem">Add a folder…</button>
+              </div>
             </div>
             <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
           </div>

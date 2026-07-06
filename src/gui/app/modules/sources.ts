@@ -284,15 +284,32 @@ export const sourcesJs = `
     function wireSourcesButtons() {
       wireSidebarGroupToggles();
       applySidebarGroupStates();
-      var addFolder = document.getElementById('src-add-folder');
-      if (addFolder && !addFolder.__wired) {
-        addFolder.__wired = true;
-        addFolder.addEventListener('click', function () { addSource('folder'); });
-      }
-      var addFile = document.getElementById('src-add-file');
-      if (addFile && !addFile.__wired) {
-        addFile.__wired = true;
-        addFile.addEventListener('click', function () { addSource('file'); });
+      // One "＋ File(s)" button covers both: click opens a small menu to add
+      // file(s) OR a folder (the OS picker for each differs, so they stay two
+      // menu items behind one button rather than two sidebar buttons).
+      var addFiles = document.getElementById('src-add-files');
+      var addFilesMenu = document.getElementById('src-add-files-menu');
+      if (addFiles && addFilesMenu && !addFiles.__wired) {
+        addFiles.__wired = true;
+        function closeAddMenu() {
+          addFilesMenu.hidden = true;
+          addFiles.setAttribute('aria-expanded', 'false');
+        }
+        addFiles.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var show = addFilesMenu.hidden;
+          addFilesMenu.hidden = !show;
+          addFiles.setAttribute('aria-expanded', show ? 'true' : 'false');
+        });
+        addFilesMenu.querySelectorAll('.src-add-menu-item').forEach(function (mi) {
+          mi.addEventListener('click', function () {
+            closeAddMenu();
+            addSource(mi.getAttribute('data-pick'));
+          });
+        });
+        // Dismiss on an outside click / Escape.
+        document.addEventListener('click', closeAddMenu);
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAddMenu(); });
       }
       var addConn = document.getElementById('src-add-connector');
       if (addConn && !addConn.__wired) {

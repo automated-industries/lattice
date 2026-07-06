@@ -180,14 +180,22 @@ export const searchJs = `    // ────────────────
         currentThreadId = null;
         clearChat();
         refreshThreadList(true);
-        // A switch stays in the SAME view the user is in — Analytics stays in
-        // Analytics (its home; the new workspace has its own dashboards),
-        // Configure stays in Configure (its home). It never yanks the user
-        // across views. (The new workspace's own last location is in its nav
-        // stack for Back.)
-        var switchTarget = (typeof isAnalyticsHash === 'function' && isAnalyticsHash(location.hash))
+        // A switch stays in the SAME SECTION the user is in — Analytics, the brain
+        // Graph, the Tables explorer, or Objects (Configure's default). It resets
+        // only a record-level drill-in to that section's home (the exact record may
+        // not exist in the new workspace) and NEVER yanks the user across the
+        // top-level Analytics⇄Configure split — a Configure view must never land on
+        // Analytics. (The new workspace's own last location is in its nav stack for
+        // Back.) Configure resolves to the concrete '#/folders' (not '#/') so it is
+        // unambiguously the Objects view.
+        var cur = location.hash || '';
+        var switchTarget = (typeof isAnalyticsHash === 'function' && isAnalyticsHash(cur))
           ? '#/analytics'
-          : '#/';
+          : cur.indexOf('#/graph') === 0
+            ? '#/graph'
+            : cur.indexOf('#/tables') === 0
+              ? '#/tables'
+              : '#/folders';
         if (location.hash !== switchTarget) location.hash = switchTarget;
         // Already on the target home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.
