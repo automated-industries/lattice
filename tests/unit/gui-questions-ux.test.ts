@@ -8,13 +8,13 @@ import { css } from '../../src/gui/app/css.js';
 /**
  * Non-destructive clarification-question surfacing + a11y wiring.
  *
- * A background 'question' realtime event used to call refreshQuestions(true),
- * which unconditionally flipped the hash to the Analytics view — yanking the
- * user out of an in-progress computed-table build and discarding the form
- * state. The behavioral tests below execute the REAL questions client in a
- * jsdom global (deps stubbed) and assert that a new question while on a
- * #/computed/* route surfaces via the trigger dot + a toast WITHOUT changing
- * the hash, while an idle route still auto-opens the dock.
+ * A background 'question' realtime event used to flip the hash to the Analytics
+ * view, yanking the user out of whatever they were doing. Questions now live in a
+ * dedicated Data Questions tab (Configure) + the dock (Analytics), so a new question
+ * NEVER switches views — it surfaces where the user already is. The behavioral tests
+ * below execute the REAL questions client in a jsdom global (deps stubbed) and assert
+ * the route is preserved (mid-build or idle), the dot/toast fire, and that answering
+ * in the tab reaps the dock twin.
  */
 
 interface QGlobals extends Record<string, unknown> {
@@ -57,31 +57,52 @@ describe('clarification questions — non-destructive surfacing (jsdom)', () => 
     // The involuntary navigation is gone: the builder route is preserved.
     expect(window.location.hash).toBe('#/computed/new');
     // Surfaced non-destructively: the trigger dot lights and a toast points at
-    // the assistant.
+    // the Data Questions tab.
     const trig = document.getElementById('ask-lattice-trigger')!;
     expect(trig.classList.contains('has-question')).toBe(true);
     expect(w.showToast).toHaveBeenCalledTimes(1);
-    expect(String((w.showToast.mock.calls[0] ?? [])[0])).toMatch(/new question/i);
+    expect(String((w.showToast.mock.calls[0] ?? [])[0])).toMatch(/data question/i);
     // The pending count reaches assistive tech via the accessible name + a live
     // region (the CSS-only dot is not the sole signal).
     expect(trig.getAttribute('aria-label')).toContain('1 question waiting');
     const live = document.getElementById('q-live')!;
     expect(live).toBeTruthy();
     expect(live.getAttribute('aria-live')).toBe('polite');
-    expect(live.textContent || '').toMatch(/new question is waiting/i);
+    expect(live.textContent || '').toMatch(/data question is waiting/i);
   });
 
-  it('a new question while idle still auto-opens the Analytics dock', async () => {
+  it('a new question while idle does NOT switch views — dot + toast, route preserved', async () => {
     window.location.hash = '#/tables';
     const w = loadQuestions([{ id: 'q1', question: 'Track suppliers?', options: ['Yes', 'No'] }]);
 
     await w.refreshQuestions(true);
     await flush();
 
-    // Idle → the dock is surfaced by flipping to the Analytics view as before.
-    expect(window.location.hash).toBe('#/analytics');
-    // No toast when we navigate (the dock itself is the surface).
-    expect(w.showToast).not.toHaveBeenCalled();
+    // The confusing auto-switch to Analytics is gone — a new ingestion question
+    // surfaces where the user already is (the Data Questions tab + a toast), so the
+    // Configure route is preserved instead of being yanked to #/analytics.
+    expect(window.location.hash).toBe('#/tables');
+    expect(w.showToast).toHaveBeenCalledTimes(1);
+    expect(document.getElementById('ask-lattice-trigger')!.classList.contains('has-question')).toBe(
+      true,
+    );
+  });
+
+  it('answering in the Data Questions tab removes the Analytics dock twin (no stale duplicate)', async () => {
+    // A question surfaces while in Analytics → a dock card is created + tracked.
+    const w = loadQuestions([{ id: 'q1', question: 'Track suppliers?', options: ['Yes', 'No'] }]);
+    await w.refreshQuestions(false);
+    await flush();
+    const dock = document.getElementById('question-cards')!;
+    expect(dock.children.length).toBe(1); // dock twin present
+    // The user answers it from the Data Questions tab: qDqAfterResolve must remove the
+    // dock twin's DOM node (not just its qCards entry), or a stale, still-clickable card
+    // lingers in the dock that refreshQuestions can no longer reap.
+    const qDqAfterResolve = (
+      globalThis as unknown as { qDqAfterResolve: (id: string, c: unknown) => void }
+    ).qDqAfterResolve;
+    qDqAfterResolve('q1', document.createElement('div'));
+    expect(document.getElementById('question-cards')!.children.length).toBe(0); // twin gone
   });
 
   it('pluralizes the pending-count accessible name', async () => {
@@ -107,7 +128,31 @@ describe('UX-review bundle wiring (composed client)', () => {
   it('question surfacing guards active work + wires the toast (non-destructive nav)', () => {
     expect(appJs).toContain('function qUserIsEditing()');
     expect(appJs).toContain("(location.hash || '').indexOf('#/computed/') === 0");
-    expect(appJs).toContain('You have a new question');
+    expect(appJs).toContain('New data question');
+  });
+
+  it('the Data Questions tab is wired (conditional tab, badge, route, view)', () => {
+    // The transient tab + its unread badge (tabs.ts).
+    expect(appJs).toContain('function setQuestionsTab(');
+    expect(appJs).toContain("hash === QUESTIONS_HASH) return 'questions'");
+    expect(appJs).toContain('tab-badge');
+    // The Configure-view page + its route (questions.ts + the route dispatcher).
+    expect(appJs).toContain('function renderQuestionsView(');
+    expect(appJs).toContain("hash === '#/questions'");
+    // The questions client keeps the tab in sync with the pending count.
+    expect(appJs).toContain('setQuestionsTab(qPendingCount)');
+  });
+
+  it('review-hardening: soft-refresh guard, renderGen guard, workspace-switch reset', () => {
+    // A soft refresh must not rebuild the questions page (would clobber a half-typed answer).
+    expect(appJs).toContain("hash === '#/questions') { if (!soft) renderQuestionsView(content)");
+    // A stale in-flight fetch refuses to commit (drops DOM writes + setQuestionsTab).
+    expect(appJs).toContain('if (myGen !== renderGen) return;');
+    // Workspace switch wipes the previous workspace's question state.
+    expect(appJs).toContain('function resetQuestionsState()');
+    expect(appJs).toContain('resetQuestionsState();');
+    // Removing the tab only bounces the user when they are actually on the questions page.
+    expect(appJs).toContain('var onQuestionsPage = location.hash === QUESTIONS_HASH;');
   });
 
   it('the pending state has a non-visual signal (aria-label + aria-live) and dismiss confirms', () => {

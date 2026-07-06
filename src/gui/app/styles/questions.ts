@@ -56,4 +56,16 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
       width: 9px; height: 9px; border-radius: 50%;
       background: var(--danger); border: 2px solid var(--surface);
     }
+    /* Data Questions page (Configure-view route #/questions) — the pending
+       ingestion questions as answerable cards. Reuses the .q-card styles above. */
+    .dq-view { max-width: 720px; margin: 0 auto; padding: 24px 20px 40px; }
+    .dq-head { margin-bottom: 18px; }
+    .dq-title { font-size: 20px; font-weight: 700; color: var(--text); margin: 0 0 6px; }
+    .dq-sub { font-size: 13px; color: var(--text-muted); margin: 0; line-height: 1.5; }
+    .dq-list { display: flex; flex-direction: column; gap: 12px; }
+    .dq-list .q-card { max-width: none; }
+    .dq-empty {
+      padding: 32px 16px; text-align: center; color: var(--text-muted);
+      font-size: 13px; border: 1px dashed var(--border); border-radius: 10px;
+    }
 `;

@@ -80,6 +80,12 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         else renderFsItem(content, gs, 'graph');
         return;
       }
+      // Data Questions — the transient section listing pending ingestion questions
+      // (its tab only exists while questions are outstanding). Configure-view surface
+      // for the same store the Analytics dock shows, so a new question never yanks the
+      // user across views. A SOFT (background) refresh must NOT rebuild it — that would
+      // clobber a half-typed answer; the tab badge stays current via refreshQuestions.
+      if (hash === '#/questions') { if (!soft) renderQuestionsView(content); return; }
       // Model > Tables — the tiered explorer, a sibling tab of the graph.
       if (hash === '#/tables') { renderModelTablesView(content); return; }
       // Tables section Object Page + RECORD: #/tables/<obj>[/<id>][/<rel>/…] → the

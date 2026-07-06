@@ -20,6 +20,33 @@ export const tabsJs = `
       { key: 'tables', title: 'Tables', icon: '', hash: '#/tables', closable: false },
     ];
     var activeTabKey = 'folders';
+    // Count of unanswered ingestion questions. Drives a transient 'Data Questions'
+    // tab (appended after Tables) with an unread badge — it appears only while
+    // questions are outstanding and vanishes when they're all answered/dismissed.
+    // setQuestionsTab (called by the questions module) keeps this in sync.
+    var questionsBadge = 0;
+    var QUESTIONS_HASH = '#/questions';
+    function questionsTabPresent() { return !!findTab('questions'); }
+    // Add / remove the Data Questions tab and refresh its badge. When the count
+    // drops to zero while the user is viewing it, route them back to Tables so they
+    // aren't stranded on a tab that's about to disappear.
+    function setQuestionsTab(count) {
+      questionsBadge = count > 0 ? count : 0;
+      var present = questionsTabPresent();
+      if (count > 0 && !present) {
+        tabs.push({ key: 'questions', title: 'Data Questions', icon: '', hash: QUESTIONS_HASH, closable: false });
+      } else if (count <= 0 && present) {
+        // Bounce to Tables ONLY if the user is actually viewing the questions page.
+        // Keying off activeTabKey would be wrong — it can be a stale 'questions' after
+        // a Configure→Analytics toggle (renderRoute skips reconcileTab for analytics
+        // hashes), which would yank an Analytics user to Tables when they answer the
+        // last dock question. location.hash is the source of truth for where they are.
+        var onQuestionsPage = location.hash === QUESTIONS_HASH;
+        tabs = tabs.filter(function (t) { return t.key !== 'questions'; });
+        if (onQuestionsPage) { location.hash = '#/tables'; return; } // re-render on hashchange
+      }
+      renderTabStrip();
+    }
 
     // 'folders' | 'graph' | 'tables' | null. Each model view maps to its tab; object
     // / collection / record pages (#/folders/*, #/fs/*, #/objects/*) belong to the
@@ -34,6 +61,8 @@ export const tabsJs = `
       if (hash === '#/tables' || hash.indexOf('#/tables/') === 0) return 'tables';
       // The computed-table builder is part of the Tables section.
       if (hash.indexOf('#/computed/') === 0) return 'tables';
+      // The transient Data Questions section (only lit while its tab exists).
+      if (hash === QUESTIONS_HASH) return 'questions';
       if (
         hash.indexOf('#/folders/') === 0 ||
         hash.indexOf('#/fs/') === 0 ||
@@ -86,10 +115,15 @@ export const tabsJs = `
     var tabOverflowWired = false;
     function tabBtnHtml(t) {
       var active = t.key === activeTabKey ? ' active' : '';
+      // The Data Questions tab carries an unread badge with the outstanding count.
+      var badge = t.key === 'questions' && questionsBadge > 0
+        ? '<span class="tab-badge" aria-label="' + questionsBadge + ' unanswered">' + questionsBadge + '</span>'
+        : '';
       return '<button type="button" class="tab' + active + '" data-key="' + escapeHtml(t.key) +
         '" title="' + escapeHtml(t.title) + '">' +
         (t.icon ? '<span class="tab-icon">' + t.icon + '</span>' : '') +
         '<span class="tab-title">' + escapeHtml(t.title) + '</span>' +
+        badge +
         (t.closable
           ? '<span class="tab-close" data-close="' + escapeHtml(t.key) +
               '" role="button" aria-label="Close tab" title="Close">✕</span>'
@@ -123,9 +157,13 @@ export const tabsJs = `
           '<button type="button" class="tab tab-overflow-btn" id="tab-overflow-btn" aria-haspopup="menu" aria-expanded="false" title="More tabs">⋯ ' + overflow.length + '</button>' +
           '<div class="tab-overflow-menu" id="tab-overflow-menu" role="menu" hidden>' +
           overflow.map(function (t) {
+            var ovBadge = t.key === 'questions' && questionsBadge > 0
+              ? '<span class="tab-badge" aria-label="' + questionsBadge + ' unanswered">' + questionsBadge + '</span>'
+              : '';
             return '<div class="tab-ov-item' + (t.key === activeTabKey ? ' active' : '') + '" data-key="' + escapeHtml(t.key) + '" role="menuitem">' +
               '<span class="tab-icon">' + (t.icon || '📄') + '</span>' +
               '<span class="tab-ov-label">' + escapeHtml(t.title) + '</span>' +
+              ovBadge +
               (t.closable ? '<span class="tab-close" data-close="' + escapeHtml(t.key) + '" role="button" aria-label="Close tab" title="Close">✕</span>' : '') +
               '</div>';
           }).join('') +

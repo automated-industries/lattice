@@ -17,6 +17,7 @@ import {
   summarizeText,
   classifyLinks,
   extractObjects,
+  rephraseClarifyQuestion,
   type CatalogEntity,
   type ClassifyMatch,
   type ExtractedObject,
@@ -315,14 +316,32 @@ export async function enrichWithLlm(
           if (confidence < clarifyThreshold) {
             if (confidence >= floor && questionsAsked < MAX_QUESTIONS_PER_FILE) {
               questionsAsked++;
+              // Rephrase the structural prompt into business-forward language the
+              // user actually thinks in ("Do you want to group all your driver's
+              // licenses together?" not "add records to <entity>"). Best-effort:
+              // on any failure `phrased` is null and the structural text stands, so
+              // the question is never blocked or dropped — only its wording upgraded.
+              // The stored context/action is unchanged: the options are recorded as
+              // the answer, the action stays `none`.
+              const phrased = await rephraseClarifyQuestion(
+                client,
+                name,
+                obj.entity,
+                temperature,
+                untrusted,
+              );
               // v1 is deliberately conservative: the answer RECORDS the user's
               // intent — no deferred action re-triggers the skipped extraction
               // automatically — and only a free-form answer is persisted, as
               // the (already existing) target entity's definition.
               await enqueueQuestion(mctx.db, mctx.feed, {
                 source: 'enrich',
-                question: `Is "${name}" meant to add records to ${obj.entity}?`,
-                options: ['Yes, add them', 'No, keep it as just a file'],
+                question: phrased
+                  ? phrased.question
+                  : `Is "${name}" meant to add records to ${obj.entity}?`,
+                options: phrased
+                  ? [phrased.yes, phrased.no]
+                  : ['Yes, add them', 'No, keep it as just a file'],
                 context: {
                   action: { kind: 'none' },
                   enrich: existing.has(obj.entity)
