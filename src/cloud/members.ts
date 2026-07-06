@@ -85,8 +85,23 @@ export async function provisionMemberRole(
        END IF;
      END $LATTICE$`,
   );
+  await grantMemberAccess(db, role);
+}
+
+/**
+ * Idempotently grant an EXISTING scoped login role membership in the cloud's
+ * member group. The group holds every table/schema/connect grant and RLS keys on
+ * `session_user`, so the role gets exactly an invited member's access while
+ * staying RLS-confined to its own rows. Use this to adopt a role created out of
+ * band (e.g. by an external provisioner) without rotating its password or
+ * re-running CREATE/ALTER ROLE. The member group must already exist (it is created
+ * when the owner first opens/secures the cloud).
+ */
+export async function grantMemberAccess(db: Lattice, role: string): Promise<void> {
+  assertPg(db);
+  if (!ROLE_RE.test(role)) throw new Error(`lattice: invalid member role name "${role}"`);
   const group = await memberGroupFor(db);
-  await runAsyncOrSync(db.adapter, `GRANT ${group} TO "${role}"`);
+  await runAsyncOrSync(db.adapter, `GRANT ${group} TO "${role}"`); // no-op if already a member
 }
 
 // Sharing levels a row owner may set, mirroring lattice_set_row_visibility's CHECK
