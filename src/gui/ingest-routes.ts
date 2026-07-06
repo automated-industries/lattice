@@ -359,38 +359,54 @@ export async function ingestLocalFile(
   const name = basename(abs);
   const mime = mimeFor(name);
   const localFileId = crypto.randomUUID();
-  const localRow: Record<string, unknown> = {
+  // The invariant, always-present columns for the in-place file reference. No
+  // bytes are copied; the resolver serves the file straight from disk via ref_uri.
+  const baseRow: Record<string, unknown> = {
     id: localFileId,
     ...fileIdentity(name, localFileId),
-    // Reference the file in place: a `local_ref` whose `ref_uri` is the absolute
-    // OS path. No bytes are copied; the resolver serves it straight from disk.
     ref_kind: 'local_ref',
     ref_uri: abs,
     ref_provider: 'fs',
     original_name: name,
     mime,
     size_bytes: size,
-    extraction_status: 'pending',
   };
-  const { id } = await createRow(
-    mctx,
-    'files',
-    {
-      ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
-      ...localRow,
-    },
-    forcePrivate ? 'private' : undefined,
-  );
+  const persist = async (row: Record<string, unknown>): Promise<string> => {
+    const full = { ...(await requiredFileDefaults(ctx.db, name, localFileId, row)), ...row };
+    const { id } = await createRow(mctx, 'files', full, forcePrivate ? 'private' : undefined);
+    return id;
+  };
 
-  // Extract inline (the GUI is local; files are typically small). Failures are
-  // recorded on the row, not swallowed.
+  // Extract BEFORE creating the row so the file row is written ONCE with its
+  // final extraction result — this was createRow(status:'pending') + a follow-up
+  // updateRow(extracted), i.e. two writes + two audit rows for every file. An
+  // extraction failure still records the file (as 'failed'), as before.
+  let result: Awaited<ReturnType<typeof extractSource>>;
   try {
-    const result = await extractSource(ctx.db, abs, mime, name);
-    await updateRow(mctx, 'files', id, {
-      extracted_text: result.text,
-      description: describe(result.text, mime, name),
-      extraction_status: result.skip ? 'skipped' : 'extracted',
+    result = await extractSource(ctx.db, abs, mime, name);
+  } catch (e) {
+    const err = e as Error;
+    console.error(
+      `[ingest] extraction failed for file ${localFileId}: ${err.message}\n${err.stack ?? ''}`,
+    );
+    const id = await persist({
+      ...baseRow,
+      extraction_status: 'failed',
+      description: `Extraction failed: ${err.message}`,
     });
+    return { id, extraction_status: 'failed', error: err.message };
+  }
+
+  const id = await persist({
+    ...baseRow,
+    extracted_text: result.text,
+    description: describe(result.text, mime, name),
+    extraction_status: result.skip ? 'skipped' : 'extracted',
+  });
+
+  // Enrich (auto-link + object extraction) — only when text was actually
+  // extracted. An enrichment failure marks the row failed, as before.
+  try {
     const suggestedLinks = result.skip
       ? []
       : await enrichWithLlm(

@@ -51,8 +51,8 @@ export async function describeImage(
 }
 
 const DEFAULT_PDF_PROMPT =
-  'Read this document for a knowledge base. First transcribe its readable text, ' +
-  'then add a 2-4 sentence factual summary of what it is and its key details. ' +
+  'Summarize this document for a knowledge base: a 2-4 sentence factual summary of ' +
+  'what it is and its key details. Do NOT transcribe the full text — summary only. ' +
   'It may be a scanned/image-only PDF — read the text from the page images. No preamble.';
 
 export interface PdfSenderInput {
@@ -131,11 +131,13 @@ function renderJpeg(sharp: SharpFactory, path: string, quality: number): Promise
 
 // ── Real vision call (lazy SDK) ──────────────────────────────────────────────
 
+type VisionMessage = { content: { type: string; text?: string }[] };
 interface AnthropicMessagesApi {
   messages: {
-    create(
-      params: Record<string, unknown>,
-    ): Promise<{ content: { type: string; text?: string }[] }>;
+    create(params: Record<string, unknown>): Promise<VisionMessage>;
+    // Streaming variant — MessageStream exposes finalMessage() for the resolved
+    // message. Narrowed to what this module uses.
+    stream(params: Record<string, unknown>): { finalMessage(): Promise<VisionMessage> };
   };
 }
 type AnthropicCtor = new (config: Record<string, unknown>) => AnthropicMessagesApi;
@@ -169,22 +171,27 @@ function defaultSender(auth: ClaudeAuth): (input: VisionSenderInput) => Promise<
     const Anthropic = sdk.Anthropic ?? sdk.default;
     if (!Anthropic) throw new Error("Could not resolve Anthropic from '@anthropic-ai/sdk'");
     const client = new Anthropic(buildVisionAnthropicConfig(auth));
-    const res = await client.messages.create({
-      model: input.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: input.media_type, data: input.data },
-            },
-            { type: 'text', text: input.prompt },
-          ],
-        },
-      ],
-    });
+    // Stream: the only non-streaming vision leg. Streaming avoids the SDK's
+    // long-request timeout on a slow model response and returns the same final
+    // message via .finalMessage().
+    const res = await client.messages
+      .stream({
+        model: input.model,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: input.media_type, data: input.data },
+              },
+              { type: 'text', text: input.prompt },
+            ],
+          },
+        ],
+      })
+      .finalMessage();
     return res.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text ?? '')
@@ -200,22 +207,26 @@ function defaultPdfSender(auth: ClaudeAuth): (input: PdfSenderInput) => Promise<
     const Anthropic = sdk.Anthropic ?? sdk.default;
     if (!Anthropic) throw new Error("Could not resolve Anthropic from '@anthropic-ai/sdk'");
     const client = new Anthropic(buildVisionAnthropicConfig(auth));
-    const res = await client.messages.create({
-      model: input.model,
-      max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: 'application/pdf', data: input.data },
-            },
-            { type: 'text', text: input.prompt },
-          ],
-        },
-      ],
-    });
+    // Stream (see the image sender): avoids the long-request timeout; same final
+    // message via .finalMessage().
+    const res = await client.messages
+      .stream({
+        model: input.model,
+        max_tokens: 4096,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: input.data },
+              },
+              { type: 'text', text: input.prompt },
+            ],
+          },
+        ],
+      })
+      .finalMessage();
     return res.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text ?? '')
