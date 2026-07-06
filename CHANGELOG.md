@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **SQL-driven dashboards load data again (no more "forbidden table").** The
+  dashboard data broker rejected every `lattice.sql(...)` call as "forbidden
+  table" because the empty-table guard ran before the sql branch, and sql calls
+  carry no table. Aggregation dashboards (GROUP BY / totals — the most common
+  kind) always errored. The table-less `sql` and `search` ops are now handled
+  before the guard (their protection is server-side).
+- **A dashboard Gladys builds now appears in the sidebar immediately.** The
+  Analytics dashboards sidebar/home only refreshed on navigation and cached an
+  empty list, so a newly-created dashboard didn't show up until a hard reload.
+  A dashboards change now refreshes them live from both the realtime and feed
+  streams.
+- **The activity feed no longer floods with "not auto-importable" notices.** A
+  custom/computed-render file that changes on disk but can't round-trip is an
+  expected, non-actionable condition (the render owns the file); it was
+  publishing one feed event per reverse-sync pass, flooding the feed with
+  duplicates. It is now a debug-only log.
+
 ### Changed
 
 - **First-run connect wall polish.** The launch screen now leads with the Lattice

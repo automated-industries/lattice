@@ -8,6 +8,32 @@ import { appJs } from '../../src/gui/app/script.js';
  * client-JS behavior it can't unit-execute).
  */
 
+describe('sql-driven dashboards are not rejected as "forbidden table"', () => {
+  it('handles the table-less sql (and search) ops BEFORE the empty-table guard', () => {
+    const src = appJs;
+    const guard = "if (!table || table.charAt(0) === '_' || DENY[table])";
+    const sqlOp = "if (op === 'sql')";
+    const searchOp = "if (op === 'search')";
+    // Both table-less ops must be positioned before the empty-table guard, or
+    // their (absent) table trips the guard → "forbidden table".
+    expect(src.indexOf(searchOp)).toBeGreaterThan(-1);
+    expect(src.indexOf(sqlOp)).toBeGreaterThan(-1);
+    expect(src.indexOf(sqlOp)).toBeLessThan(src.indexOf(guard));
+    expect(src.indexOf(searchOp)).toBeLessThan(src.indexOf(guard));
+  });
+});
+
+describe('dashboards sidebar/home refresh live when a dashboard is created', () => {
+  it('defines refreshDashboardsLive that busts the anDashRows cache', () => {
+    expect(appJs).toContain('function refreshDashboardsLive()');
+  });
+  it('is hooked from BOTH the realtime-change and feed dispatch branches', () => {
+    const hook = "data.table === 'dashboards' && typeof refreshDashboardsLive === 'function'";
+    const count = appJs.split(hook).length - 1;
+    expect(count).toBe(2);
+  });
+});
+
 describe('dashboard opens on cloud/team workspaces (no appendChild-of-string throw)', () => {
   it('sets the visibility line via innerHTML, never appendChild of the HTML string', () => {
     // detailVisLineEl returns an HTML STRING; appendChild(string) threw a

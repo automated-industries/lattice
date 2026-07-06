@@ -139,6 +139,23 @@ export const analyticsViewJs = `
         });
     }
 
+    // Realtime hook: a dashboards row changed (most often Gladys building one via
+    // chat). Nothing else watches the dashboards table, and renderAnalyticsHome
+    // short-circuits on the cached anDashRows (which is [] after the first empty
+    // load), so without this a newly-created dashboard never appears in the
+    // sidebar or home until a hard reload. Bust the cache, refresh the sidebar,
+    // and re-render the home when it is the active view. Called from the feed
+    // dispatcher for table === 'dashboards'.
+    function refreshDashboardsLive() {
+      anDashRows = null;
+      renderDashList().then(function () {
+        if (location.hash === AN_HOME_HASH) {
+          var host = document.getElementById('analytics-content');
+          if (host) renderAnalyticsHome(host);
+        }
+      });
+    }
+
     // ── Analytics home (no tab open) ───────────────────────────────────────
     // A chat-only turn is a first-class outcome: the home stays useful with no
     // dashboards at all, and the strip legitimately shows no tabs.
