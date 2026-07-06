@@ -59,4 +59,44 @@ describe('workspace switch refreshes the Outputs column (no cross-workspace mark
     // relationships. reloadEverything() is the single canonical switch path.
     expect(w.mtResetState).toHaveBeenCalled();
   });
+
+  it('a switch while a Settings / Version-history takeover is open re-renders it for the new workspace', async () => {
+    // The Settings drawer (and Version history) overlay the current view and show
+    // WORKSPACE-SPECIFIC data (name, DB connection, data model, history). A switch
+    // used to route these takeovers to #/folders, which left the drawer open showing
+    // the PREVIOUS workspace's data (topbar said workspace B, the drawer still said A).
+    // The switch must PRESERVE a #/settings/* route so renderRoute re-dispatches it and
+    // openSettingsDrawer re-renders the drawer body for the new workspace.
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.fetchJson = () => Promise.resolve({});
+    w.state = {};
+    const renderRoute = vi.fn();
+    w.renderRoute = renderRoute;
+    for (const name of [
+      'renderOutputs',
+      'renderWsSwitcher',
+      'applyWorkspaceLogo',
+      'renderSidebar',
+      'renderComposer',
+      'clearChat',
+      'refreshThreadList',
+      'startEventStream',
+      'mtResetState',
+      'anResetTabs',
+    ]) {
+      w[name] = vi.fn();
+    }
+    w.currentThreadId = null;
+    w.loadedTables = {};
+    w.renderProgress = {};
+    window.location.hash = '#/settings/database';
+
+    (0, eval)(searchJs as string);
+    await (w.reloadEverything as () => Promise<void>)();
+
+    // The takeover route is preserved (NOT reset to #/folders)…
+    expect(window.location.hash).toBe('#/settings/database');
+    // …so the switch re-renders it in place (soft) for the new workspace.
+    expect(renderRoute).toHaveBeenCalledWith({ soft: true });
+  });
 });
