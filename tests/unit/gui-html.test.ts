@@ -243,8 +243,11 @@ describe('guiAppHtml', () => {
     // Connect happens at the first-run wall (the surface-agnostic OAuth anchor).
     expect(guiAppHtml).toContain('/api/assistant/oauth/start');
     expect(guiAppHtml).toContain('Connect with Claude');
-    // Disconnect lives in the header account menu.
-    expect(guiAppHtml).toContain('account-disconnect');
+    // Disconnect lives in the header account menu — one status line + one action
+    // (id account-action), which account-menu.ts relabels to "Account settings" in a
+    // managed/hosted deployment (where the operator owns the credential).
+    expect(guiAppHtml).toContain('account-action');
+    expect(guiAppHtml).toContain('Disconnect Claude');
     expect(guiAppHtml).toContain('Connected with Claude');
     // The per-user API-key settings UI is gone (OAuth-only).
     expect(guiAppHtml).not.toContain('Advanced — use an API key instead');

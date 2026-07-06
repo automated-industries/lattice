@@ -104,6 +104,41 @@ describe('framework user-config', () => {
       const back = readIdentity();
       expect(back).toEqual({ display_name: 'A', email: 'a@b' });
     });
+
+    describe('managed-deployment env fallback', () => {
+      afterEach(() => {
+        delete process.env.LATTICE_USER_NAME;
+        delete process.env.LATTICE_USER_EMAIL;
+      });
+
+      it('falls back to LATTICE_USER_NAME / LATTICE_USER_EMAIL when no file exists', () => {
+        process.env.LATTICE_USER_NAME = 'Cloud User';
+        process.env.LATTICE_USER_EMAIL = 'user@example.com';
+        expect(readIdentity()).toEqual({
+          display_name: 'Cloud User',
+          email: 'user@example.com',
+        });
+      });
+
+      it('a stored value wins over the env fallback', () => {
+        process.env.LATTICE_USER_NAME = 'Env Name';
+        process.env.LATTICE_USER_EMAIL = 'env@example.com';
+        writeIdentity({ display_name: 'File Name', email: 'file@example.com' });
+        expect(readIdentity()).toEqual({
+          display_name: 'File Name',
+          email: 'file@example.com',
+        });
+      });
+
+      it('mixes per-field: an empty stored field uses env, a set one is kept', () => {
+        process.env.LATTICE_USER_EMAIL = 'env@example.com';
+        writeIdentity({ display_name: 'Only Name', email: '' });
+        expect(readIdentity()).toEqual({
+          display_name: 'Only Name',
+          email: 'env@example.com',
+        });
+      });
+    });
   });
 
   describe('preferences.json round-trip', () => {
