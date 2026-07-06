@@ -512,6 +512,7 @@ export {
 export {
   provisionMemberRole,
   revokeMemberRole,
+  grantMemberAccess,
   generateMemberPassword,
   memberRoleName,
   setRowVisibility,
