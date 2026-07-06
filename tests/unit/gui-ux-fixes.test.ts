@@ -30,6 +30,14 @@ describe('add-source: one combined "＋ File(s)" button', () => {
   });
 });
 
+describe('Claude disconnect is discoverable in Settings (works on desktop)', () => {
+  it('offers a Disconnect Claude button in the User assistant panel, not only the topbar', () => {
+    expect(appJs).toContain('id="asst-disconnect"');
+    expect(appJs).toContain('Disconnect Claude');
+    expect(appJs).toContain("fetchJson('/api/assistant/oauth', { method: 'DELETE' })");
+  });
+});
+
 describe('topbar status truncates instead of pushing the toggle to a second line', () => {
   it('caps the status width and ellipsizes the text', () => {
     expect(css).toContain('.app-status .app-status-text');
