@@ -19,6 +19,7 @@ import {
   extractObjects,
   type CatalogEntity,
   type ClassifyMatch,
+  type ExtractedObject,
   type SchemaEntity,
 } from './summarize.js';
 
@@ -146,22 +147,59 @@ export async function enrichWithLlm(
   // privateMode param doc). undefined ⇒ inherit the table default, as before.
   const forceVis: 'private' | undefined = privateMode ? 'private' : undefined;
   const temperature = aggressivenessToTemperature(aggressiveness);
+  // Parallelize the three per-file LLM round-trips. They are input-independent —
+  // each takes only the document text + a snapshot of the catalog/schema, and the
+  // description is consumed only as a post-call side-effect — so running them at
+  // once collapses the per-file LLM wall-clock from their sum toward the single
+  // slowest call (~2–3×). Hoist buildCatalog/buildSchema so each is built ONCE
+  // before the calls. Every side-effect below runs AFTER settle, in the SAME order
+  // as before, and preserves the prior semantics EXACTLY — in particular: a
+  // classify failure still zeroes auto-links AND skips extract + the note fallback
+  // and returns []; an extract failure still only warns and keeps the links + note
+  // fallback; the description is still best-effort and independent.
+  const extractGate = !!createEntity && aggressiveness >= 0.4;
+  const catalog = await buildCatalog(db, descriptions);
+  const schema = buildSchema(db);
+  const [descR, matchesR, proposedR] = await Promise.allSettled([
+    summarizeText(client, text, name, temperature, untrusted),
+    classifyLinks(client, text, name, catalog, temperature, untrusted),
+    extractGate
+      ? extractObjects(client, text, name, schema, temperature, untrusted)
+      : Promise.resolve<ExtractedObject[]>([]),
+  ]);
+
+  // (1) Description — best-effort + independent of the other two, as before.
   let description = '';
-  try {
-    description = (await summarizeText(client, text, name, temperature, untrusted)).trim();
-    if (description) await updateRow(mctx, 'files', fileId, { description });
-  } catch (e) {
-    console.warn('[ingest] LLM description failed:', (e as Error).message);
+  if (descR.status === 'fulfilled') {
+    description = descR.value.trim();
+    if (description) {
+      try {
+        await updateRow(mctx, 'files', fileId, { description });
+      } catch (e) {
+        console.warn('[ingest] LLM description failed:', (e as Error).message);
+      }
+    }
+  } else {
+    console.warn('[ingest] LLM description failed:', (descR.reason as Error)?.message);
+  }
+
+  // (2) A classify FAILURE means zero auto-links AND skips extract + the note
+  // fallback, returning [] — reproducing the old outer try/catch that wrapped
+  // classify + extract together (same feed note).
+  if (matchesR.status === 'rejected') {
+    const msg = (matchesR.reason as Error)?.message ?? 'unknown';
+    console.error('[ingest] classify failed:', msg);
+    mctx.feed.publish({
+      table: 'files',
+      op: 'update',
+      rowId: fileId,
+      source: mctx.source,
+      summary: `Couldn't auto-link "${name}": ${msg}`,
+    });
+    return [];
   }
   try {
-    const matches = await classifyLinks(
-      client,
-      text,
-      name,
-      await buildCatalog(db, descriptions),
-      temperature,
-      untrusted,
-    );
+    const matches = matchesR.value;
     let linkedCount = 0;
     for (const m of matches) {
       let jx = junctions.find((j) => j.otherTable === m.table);
@@ -251,16 +289,14 @@ export async function enrichWithLlm(
     // file. Active at default aggressiveness; new-entity creation gated at ≥ 0.5.
     // Every write is audited + reversible.
     let createdCount = 0;
+    // Same predicate as extractGate above (kept inline so TS narrows createEntity
+    // to defined for the createEntity(...) call in the loop).
     if (createEntity && aggressiveness >= 0.4) {
       try {
-        const proposed = await extractObjects(
-          client,
-          text,
-          name,
-          buildSchema(db),
-          temperature,
-          untrusted,
-        );
+        // Re-throw a rejected extract into this same catch so the old
+        // "object extraction failed" warn (and keep links + note fallback) holds.
+        if (proposedR.status === 'rejected') throw proposedR.reason;
+        const proposed = proposedR.value;
         const allowNewEntity = aggressiveness >= 0.5;
         const existing = new Set(db.getRegisteredTableNames().filter((t) => !isNativeEntity(t)));
         // Ask-when-marginal gate: each extracted object carries the model's 0-1
