@@ -756,13 +756,46 @@ export const dataModelJs = `    // ───────────────
       });
     }
 
+    // Managed/hosted deployments: show a token balance + usage the operator (host)
+    // supplies via a relative accountEndpoint, plus a "Buy more" link. Purely
+    // presentational — the GUI does no pricing/currency math; it renders the
+    // ready-made strings the host returns. A normal install has no accountEndpoint,
+    // so the panel stays empty (fail-soft display, not a swallowed data error).
+    function renderManagedUsage() {
+      var uhost = document.getElementById('lattice-usage-host');
+      if (!uhost) return;
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        if (!cfg || cfg.managedModelAuth !== true || !cfg.accountEndpoint) return;
+        return fetchJson(cfg.accountEndpoint).then(function (acct) {
+          if (!acct) return;
+          var usageRows = (acct.usage || []).map(function (u) {
+            return '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-muted);margin-top:4px">' +
+              '<span>' + escapeHtml(String(u.label)) + '</span><span>' + escapeHtml(String(u.value)) + '</span></div>';
+          }).join('');
+          var buy = acct.buyUrl
+            ? '<a class="btn primary" href="' + escapeHtml(String(acct.buyUrl)) + '" target="_blank" rel="noopener" style="margin-top:12px;display:inline-block">Buy more</a>'
+            : '';
+          uhost.innerHTML =
+            '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+              '<h3 style="margin:0 0 6px">Token balance</h3>' +
+              '<div style="font-size:26px;font-weight:600;color:var(--text)">' + escapeHtml(String(acct.balanceDisplay || '')) + '</div>' +
+              (acct.unit ? '<div style="font-size:12px;color:var(--text-muted)">' + escapeHtml(String(acct.unit)) + '</div>' : '') +
+              usageRows +
+              buy +
+            '</div>';
+        });
+      }).catch(function () { /* fail-soft: no managed balance available, leave empty */ });
+    }
+
     function renderLatticeSettings(content) {
       content.innerHTML =
         '<div class="teams-page">' +
           '<h2>Lattice Settings</h2>' +
           '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
+          '<div id="lattice-usage-host"></div>' +
           '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
         '</div>';
+      renderManagedUsage();
       var host = document.getElementById('lattice-dbs-host');
       // Single source of truth: the workspace registry (same as the header switcher).
       fetchJson('/api/workspaces').then(function (data) {

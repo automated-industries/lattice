@@ -165,19 +165,33 @@ const EMPTY_IDENTITY: UserIdentity = { display_name: '', email: '' };
  * Read the machine-local user identity. Returns `{display_name: '',
  * email: ''}` if the file is missing or malformed — callers can treat
  * empty fields as "not set yet" without a separate existence check.
+ *
+ * In a managed/hosted deployment there is no local identity file, so a stored
+ * field falls back to the `LATTICE_USER_NAME` / `LATTICE_USER_EMAIL` env vars
+ * (which the host injects per session). Env is only a fallback — a value written
+ * to the identity file always wins, preserving the "empty = not set" contract.
  */
 export function readIdentity(): UserIdentity {
+  // A stored value wins; an empty (unset) field falls back to the env var. Uses an
+  // explicit empty check because '' is the "not set" sentinel here — `??` would
+  // keep the empty string instead of falling back.
+  const pick = (stored: string, fromEnv: string | undefined): string =>
+    stored !== '' ? stored : (fromEnv ?? '');
+  const withEnvFallback = (id: UserIdentity): UserIdentity => ({
+    display_name: pick(id.display_name, process.env.LATTICE_USER_NAME),
+    email: pick(id.email, process.env.LATTICE_USER_EMAIL),
+  });
   const dir = ensureConfigDir();
   const path = join(dir, IDENTITY_FILENAME);
-  if (!existsSync(path)) return { ...EMPTY_IDENTITY };
+  if (!existsSync(path)) return withEnvFallback({ ...EMPTY_IDENTITY });
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UserIdentity>;
-    return {
+    return withEnvFallback({
       display_name: typeof parsed.display_name === 'string' ? parsed.display_name : '',
       email: typeof parsed.email === 'string' ? parsed.email : '',
-    };
+    });
   } catch {
-    return { ...EMPTY_IDENTITY };
+    return withEnvFallback({ ...EMPTY_IDENTITY });
   }
 }
 
