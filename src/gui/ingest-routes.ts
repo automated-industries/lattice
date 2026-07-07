@@ -65,6 +65,21 @@ interface IngestContext {
    * when it can't be created. Injected by the server.
    */
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
+  /**
+   * Create (or fetch) a junction between two USER entities — used to cross-link the
+   * objects extracted from ONE document to each other (a meeting ↔ its attendees), not
+   * only to the source file. Injected by the server; omit → no cross-object linking.
+   */
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>;
   /** Inference aggressiveness 0..1 (drives temperature + auto-junction gating). */
   aggressiveness?: number;
   /**
@@ -221,6 +236,7 @@ async function enrichOrFail(
       ctx.createEntity,
       false,
       privateMode,
+      ctx.createObjectJunction,
     );
   } catch (e) {
     const err = e as Error;
@@ -422,6 +438,7 @@ export async function ingestLocalFile(
           ctx.createEntity,
           false,
           forcePrivate,
+          ctx.createObjectJunction,
         );
     return { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks };
   } catch (e) {
@@ -451,6 +468,17 @@ export interface TextIngestDeps {
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
   /** Create/return the files↔<otherTable> junction for auto-linking. */
   createJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  /** Create/return a junction between two USER entities, to cross-link co-extracted objects. */
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>;
   /** Force every derived write private (matches a private source). */
   privateMode?: boolean;
 }
@@ -500,6 +528,7 @@ export async function ingestTextAsFile(
     deps.createEntity,
     false,
     deps.privateMode,
+    deps.createObjectJunction,
   );
   return { id, suggestedLinks };
 }

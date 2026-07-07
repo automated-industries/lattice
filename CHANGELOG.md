@@ -17,9 +17,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   the most recently-touched row that merely mentions the name, and it finds names split
   across separate first/last fields; (3) when you paste content for it to save (notes, a
   transcript, an email), it now runs that content through the SAME ingestion engine a
-  dropped file uses — automatically linking it to the existing records it refers to and
-  pulling out the objects it describes — instead of hand-creating records and hoping it
-  links them.
+  dropped file uses — automatically linking it to the existing records it refers to,
+  pulling out the objects it describes, and linking those objects to each other (a
+  meeting to its attendees) — instead of hand-creating records and hoping it links them.
+  The object-to-object linking also improves file and URL ingestion, which share the
+  engine.
 
 - **Conversation names now show the AI-generated title, not the raw first message.**
   A new chat thread is given a short, friendly title (generated from its opening
