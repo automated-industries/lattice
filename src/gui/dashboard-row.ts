@@ -15,6 +15,48 @@ import type { Row } from '../types.js';
  * by design (a dynamically-built table name is invisible); returns unique
  * names in first-seen order, or null when none are found.
  */
+/** One `lattice.sql(...)` call found in an authored dashboard. */
+export interface DashboardQuery {
+  /** The runtime SQL (JS-string escapes resolved), or the raw source for a dynamic one. */
+  sql: string;
+  /** True when the query is assembled at runtime (a backtick template with `${…}`), so it
+   *  can't be statically executed and the caller should skip it. */
+  dynamic: boolean;
+}
+
+/** Resolve the common JS single-char string escapes so the extracted SQL matches what the
+ *  browser will actually run (`\'`→`'`, `\\`→`\`, `\n`→newline, …). */
+function unescapeJsString(s: string): string {
+  return s.replace(/\\(.)/g, (_m, c: string) =>
+    c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '\r' : c,
+  );
+}
+
+/**
+ * Extract the `lattice.sql('SELECT …')` statements embedded in an authored dashboard —
+ * the queries that pull the page's live data — in document order (a dashboard may run
+ * several). Used by the dashboard QA pass to execute + validate what the page will run.
+ * Best-effort text scan, but ESCAPE-AWARE: the string body may contain the delimiter quote
+ * escaped (`lattice.sql('… \\'x\\' …')`), which is resolved to the runtime SQL. A query
+ * built at runtime — a backtick template literal with a `${…}` hole — is returned flagged
+ * `dynamic` (its values aren't known statically); a literal `${` inside a normal '/" SQL
+ * string is just data and stays a static, runnable query.
+ */
+export function extractDashboardSql(html: string): DashboardQuery[] {
+  const out: DashboardQuery[] = [];
+  // Capture the opening JS quote, then a body that allows escaped chars (`\\.`) and any
+  // non-delimiter char, lazily up to the matching close quote.
+  const re = /\blattice\s*\.\s*sql\s*\(\s*(['"`])((?:\\.|(?!\1)[\s\S])*?)\1/g;
+  for (const m of html.matchAll(re)) {
+    const quote = m[1] ?? "'";
+    const raw = m[2] ?? '';
+    const dynamic = quote === '`' && raw.includes('${');
+    const sql = (dynamic ? raw : unescapeJsString(raw)).trim();
+    if (sql) out.push({ sql, dynamic });
+  }
+  return out;
+}
+
 export function extractSourceTables(html: string): string[] | null {
   const seen = new Set<string>();
   const re = /\blattice\s*\.\s*(?:query|get)\s*\(\s*(['"`])([^'"`]+)\1/g;

@@ -1,9 +1,41 @@
 import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../../../lattice.js';
 import type { Row } from '../../../types.js';
-import { createRow, updateRow, deleteRow, linkRows, unlinkRows } from '../../mutations.js';
+import {
+  createRow,
+  updateRow,
+  deleteRow,
+  linkRows,
+  unlinkRows,
+  type MutationCtx,
+} from '../../mutations.js';
 import { artifactFileRow } from '../../file-row.js';
 import { dashboardRow, extractSourceTables } from '../../dashboard-row.js';
+
+/**
+ * Surface residual dashboard-QA issues to the user via the activity feed. The tool_result
+ * JSON alone reaches only the model (which the system prompt tells to be terse), so this
+ * is the deterministic channel that puts the QA flags in front of the user.
+ */
+function publishDashboardQaNote(
+  mctx: MutationCtx,
+  rowId: string,
+  qaIssues: { detail: string }[],
+): void {
+  if (qaIssues.length === 0) return;
+  mctx.feed.publish({
+    table: 'dashboards',
+    op: 'update',
+    rowId,
+    source: mctx.source,
+    summary:
+      'Dashboard QA flagged: ' +
+      qaIssues
+        .slice(0, 3)
+        .map((i) => i.detail)
+        .join(' · '),
+  });
+}
 import { FetchBudget } from '../../../ai/fetch-policy.js';
 import {
   findTableDuplicates,
@@ -167,7 +199,15 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
       const table = requireTable('dashboards', ctx.validTables);
       const title = requireString(args.title, 'title');
       const spec = requireString(args.spec, 'spec');
-      const html = await ctx.htmlAuthor(spec);
+      let html = await ctx.htmlAuthor(spec);
+      // Automatic QA before the dashboard is stored/shown: run its data queries and
+      // check them against the request, repair, and collect any residual issues.
+      let qaIssues: { kind: string; detail: string }[] = [];
+      if (ctx.qaDashboard) {
+        const qa = await ctx.qaDashboard(html, spec);
+        html = qa.html;
+        qaIssues = qa.issues;
+      }
       const { row } = dashboardRow(title, html, spec);
       // allowReservedFileCols: this is the trusted authoring path, so it may write
       // the executable `html` page that createRow refuses from every other caller
@@ -178,7 +218,16 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         row,
         ctx.privateMode ? 'private' : undefined,
       );
-      return { ok: true, result: { id, table: 'dashboards', open: true } };
+      publishDashboardQaNote(mctx, id, qaIssues);
+      return {
+        ok: true,
+        result: {
+          id,
+          table: 'dashboards',
+          open: true,
+          ...(qaIssues.length > 0 ? { qaIssues } : {}),
+        },
+      };
     }
     case 'edit_dashboard': {
       // Re-author an existing dashboard in place. Targets the dashboard the user
@@ -209,7 +258,16 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
       if (existing === null) {
         return { ok: false, error: `No dashboard with id "${targetId}".` };
       }
-      const html = await ctx.htmlAuthor(instruction, existing.html ?? '');
+      let html = await ctx.htmlAuthor(instruction, existing.html ?? '');
+      // Same automatic QA the create path runs. QA against the CUMULATIVE intent (the
+      // prior spec + this instruction) so a query still has to answer the whole request.
+      let qaIssues: { kind: string; detail: string }[] = [];
+      if (ctx.qaDashboard) {
+        const intent = existing.spec ? `${existing.spec}\n\n${instruction}` : instruction;
+        const qa = await ctx.qaDashboard(html, intent);
+        html = qa.html;
+        qaIssues = qa.issues;
+      }
       // allowReservedFileCols: the trusted authoring path may rewrite an executable
       // page body, which updateRow refuses from every other caller. The spec keeps
       // an append-only trail of what was asked; source_tables is re-derived from
@@ -220,7 +278,16 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         spec: existing.spec ? `${existing.spec}\n\n${instruction}` : instruction,
         source_tables: sources ? JSON.stringify(sources) : null,
       });
-      return { ok: true, result: { id: targetId, table: 'dashboards', open: true } };
+      publishDashboardQaNote(mctx, targetId, qaIssues);
+      return {
+        ok: true,
+        result: {
+          id: targetId,
+          table: 'dashboards',
+          open: true,
+          ...(qaIssues.length > 0 ? { qaIssues } : {}),
+        },
+      };
     }
     case 'ingest_url': {
       // Fetch a USER-PROVIDED web URL, save its readable text as a `files` row
