@@ -14,6 +14,7 @@ import { resolveLlmProvider } from './ai/provider.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
 import { generateHtmlFile } from './ai/html-author.js';
+import { qaDashboard } from './ai/dashboard-qa.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle, triageReferenceMaterial } from './ai/summarize.js';
@@ -770,7 +771,7 @@ export async function dispatchChatRoute(
   // a non-entitled model 429s every call). If the user is viewing an html artifact,
   // expose its id so edit_html_file targets the file on screen by default.
   const authorModel = provider.authorModel;
-  dispatch.htmlAuthor = async (spec: string, currentHtml?: string): Promise<string> => {
+  const authorHtml = async (spec: string, currentHtml?: string): Promise<string> => {
     const schema = await buildSchemaContext(dispatch);
     return generateHtmlFile({
       client: provider.client,
@@ -780,6 +781,19 @@ export async function dispatchChatRoute(
       ...(currentHtml !== undefined ? { currentHtml } : {}),
     });
   };
+  dispatch.htmlAuthor = authorHtml;
+  // Automatic QA for an authored dashboard: run its data queries + check them against the
+  // request, repair via the same author, and report residual issues (see dashboard-qa).
+  // On by default; LATTICE_DASHBOARD_QA=false disables it (skips the extra queries + judge
+  // call + any repair round per dashboard create/edit).
+  if (process.env.LATTICE_DASHBOARD_QA !== 'false') {
+    dispatch.qaDashboard = (html: string, intent: string) =>
+      qaDashboard(
+        { db: ctx.db, client: provider.client, model: authorModel, reAuthor: authorHtml },
+        html,
+        intent,
+      );
+  }
   if (activeContext?.table === 'dashboards') {
     // The user is looking at a dashboard — make it edit_dashboard's default
     // target. No existence probe needed: the handler verifies the row itself.

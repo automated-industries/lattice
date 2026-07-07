@@ -11,6 +11,7 @@ import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, readJson, parsePageParam, sendHtmlCompressed } from './http.js';
 import { Lattice } from '../lattice.js';
 import { allAsyncOrSync, type StorageAdapter } from '../db/adapter.js';
+import { runDashboardSql } from './dashboard-sql.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 import type { GuiRequestContext } from './request-context.js';
 import {
@@ -589,55 +590,12 @@ export async function handleReadRoutes(
   //  4. the result is wrapped + capped server-side (no unbounded egress).
   if (method === 'POST' && pathname === '/api/analytics/sql') {
     const body = (await readJson<unknown>(req)) as { sql?: unknown };
-    const raw = typeof body.sql === 'string' ? body.sql.trim().replace(/;+\s*$/, '') : '';
-    if (!raw) {
-      sendJson(res, { error: 'sql (string) is required' }, 400);
-      return true;
-    }
-    // Shape gate: first keyword must be select/with, and — after stripping
-    // string literals + comments — no statement separator may remain.
-    const noStrings = raw
-      .replace(/'(?:[^']|'')*'/g, "''")
-      .replace(/--[^\n]*/g, ' ')
-      .replace(/\/\*[\s\S]*?\*\//g, ' ');
-    const first = /^[a-z]+/i.exec(noStrings.trimStart())?.[0]?.toLowerCase() ?? '';
-    if (first !== 'select' && first !== 'with') {
-      sendJson(res, { error: 'only a single SELECT (or WITH … SELECT) statement is allowed' }, 400);
-      return true;
-    }
-    if (noStrings.includes(';')) {
-      sendJson(res, { error: 'multiple statements are not allowed' }, 400);
-      return true;
-    }
-    if (/\b(secrets|chat_threads|chat_messages)\b|_lattice/i.test(noStrings)) {
-      sendJson(res, { error: 'this query references a protected table' }, 400);
-      return true;
-    }
-    const CAP = 1000;
-    const wrapped = `SELECT * FROM (${raw}) AS __lattice_sql LIMIT ${String(CAP + 1)}`;
-    try {
-      let rows: unknown[];
-      const adapter = active.db.adapter;
-      if (active.db.getDialect() === 'postgres' && adapter.withClient) {
-        // READ ONLY transaction: the server itself refuses any write a
-        // data-modifying CTE might smuggle past the keyword gate.
-        rows = await adapter.withClient(async (tx) => {
-          await tx.run('BEGIN TRANSACTION READ ONLY');
-          try {
-            return (await tx.all(wrapped)) as unknown[];
-          } finally {
-            await tx.run('ROLLBACK');
-          }
-        });
-      } else {
-        // SQLite has no data-modifying CTEs; the shape gate is sufficient.
-        rows = (await allAsyncOrSync(adapter, wrapped)) as unknown[];
-      }
-      const truncated = rows.length > CAP;
-      sendJson(res, { rows: truncated ? rows.slice(0, CAP) : rows, truncated });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      sendJson(res, { error: `query failed: ${msg}` }, 400);
+    const raw = typeof body.sql === 'string' ? body.sql : '';
+    const result = await runDashboardSql(active.db, raw);
+    if ('error' in result) {
+      sendJson(res, { error: result.error }, 400);
+    } else {
+      sendJson(res, result);
     }
     return true;
   }

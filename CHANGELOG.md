@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Dashboards get an automatic QA pass before they're shown.** When the assistant
+  authors or edits a dashboard, its data queries now run through a QA step before the page
+  is stored: each embedded `lattice.sql` query is executed against your live data and
+  checked for (1) whether the results actually answer what you asked, (2) SQL errors that
+  make the output differ from what was intended, (3) ambiguities resolved questionably or
+  confidence that's overstated for the data, and (4) queries that return **no rows at
+  all** — usually a wrong join, the wrong column/terminology, or a literal `=` match where
+  a fuzzy `LIKE`/`ILIKE` was meant. When problems are found the page is re-authored with
+  that specific feedback and re-checked; anything that still doesn't look right is surfaced
+  to you instead of being silently shipped. Best-effort — a QA hiccup never blocks the
+  dashboard.
+
 - **Connect any OpenAI-compatible model as the assistant backend.** Alongside a Claude
   subscription, you can now point Lattice's assistant at any OpenAI-compatible
   `chat/completions` endpoint — OpenAI, Azure, OpenRouter, a local vLLM / Ollama / LM
