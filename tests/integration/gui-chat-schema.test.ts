@@ -32,7 +32,20 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
     createAnthropicClient: () => {
       let i = 0;
       return {
-        runTurn(params: { onText: (s: string) => void; messages?: unknown[] }) {
+        runTurn(params: { onText: (s: string) => void; messages?: unknown[]; system?: string }) {
+          // The chat route runs a reference-material TRIAGE pass (its own runTurn) BEFORE
+          // the chat turn. Answer it with "nothing to ingest" so it doesn't consume a
+          // scripted chat turn — these tests script the CHAT turns, not the triage.
+          if (
+            typeof params.system === 'string' &&
+            params.system.includes('router for a personal knowledge base')
+          ) {
+            return Promise.resolve({
+              stopReason: 'end_turn',
+              text: '```json\n{"reference":""}\n```',
+              toolUses: [],
+            });
+          }
           turnState.captured.push(params.messages ?? []);
           const turn = turnState.turns[Math.min(i, turnState.turns.length - 1)] ?? { text: '' };
           i++;

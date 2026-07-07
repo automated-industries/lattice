@@ -118,8 +118,9 @@ export async function enrichWithLlm(
   // its own table default (shared-to-everyone on a cloud) and leak the private
   // file's contents + relationships.
   privateMode = false,
-  // Materialize record-to-record links BETWEEN co-extracted objects (a meeting ↔ its
-  // attendees), per the extractor's stated `links`. Same shape as createUserJunction.
+  // Materialize record-to-record links for each extracted object, per the extractor's
+  // stated `links` — to the other co-extracted objects (a meeting ↔ its attendees) AND
+  // to the existing records the classifier matched. Same shape as createUserJunction.
   // Omit → no cross-object linking (each object still links to the source file).
   createObjectJunction?: (
     tableA: string,
@@ -172,7 +173,18 @@ export async function enrichWithLlm(
   // and returns []; an extract failure still only warns and keeps the links + note
   // fallback; the description is still best-effort and independent.
   const extractGate = !!createEntity && aggressiveness >= 0.4;
-  const catalog = await buildCatalog(db, descriptions);
+  // buildCatalog READS every user table; a transient DB read failure here must not
+  // throw out of this best-effort enricher — that would leave the already-saved file
+  // row un-enriched AND make callers (e.g. chat auto-ingest) believe the whole ingest
+  // failed, so they skip the "already saved" signal and the user's content gets
+  // re-created. Degrade to an empty catalog: classify then returns [] (auto-link
+  // skipped), while the description + object extraction still run.
+  let catalog: CatalogEntity[] = [];
+  try {
+    catalog = await buildCatalog(db, descriptions);
+  } catch (e) {
+    console.warn('[ingest] catalog build failed; skipping auto-link:', (e as Error).message);
+  }
   const schema = buildSchema(db);
   const [descR, matchesR, proposedR] = await Promise.allSettled([
     summarizeText(client, text, name, temperature, untrusted),
@@ -433,20 +445,61 @@ export async function enrichWithLlm(
             console.warn(`[ingest] create ${entity} from document failed:`, (e as Error).message);
           }
         }
-        // Second pass: materialize the relationships the extractor stated BETWEEN the
-        // co-extracted objects (a meeting ↔ its attendees), so they link to each other
-        // — not only to the source file. Deterministic: the engine links the pairs the
-        // extractor identified; there is no per-object-type rule. Only when a junction
-        // creator is available and at least two objects were created.
-        if (createObjectJunction && createdObjects.length > 1) {
-          const byLabel = new Map(createdObjects.map((o) => [o.label.toLowerCase(), o]));
+        // Second pass: materialize the relationships the extractor stated for each
+        // extracted object — to the OTHER co-extracted objects AND to the EXISTING
+        // records the classifier matched. So an extracted meeting links to an attendee
+        // whether that person was co-extracted in this pass or already existed as a
+        // record. Deterministic: the engine links the pairs the extractor named (by
+        // label); there is no per-object-type rule. Gated on a junction creator + at
+        // least one created object.
+        if (createObjectJunction && createdObjects.length > 0) {
+          // A label is NOT unique — two records in different tables can share it
+          // ("Apollo" the person vs "Apollo" the project) — so a bare label must never
+          // be guessed: linking the wrong record silently corrupts the graph. Group
+          // candidates by label WITHOUT overwriting, keeping co-extracted and existing
+          // records separate.
+          type Target = { entity: string; rowId: string };
+          const push = (map: Map<string, Target[]>, k: string, v: Target): void => {
+            const arr = map.get(k);
+            if (arr) arr.push(v);
+            else map.set(k, [v]);
+          };
+          const coByLabel = new Map<string, Target[]>();
+          for (const o of createdObjects)
+            push(coByLabel, o.label.toLowerCase(), { entity: o.entity, rowId: o.rowId });
+          const existingByLabel = new Map<string, Target[]>();
+          for (const m of matches) {
+            const rec = catalog
+              .find((c) => c.table === m.table)
+              ?.records.find((r) => r.id === m.id);
+            if (rec)
+              push(existingByLabel, rec.label.toLowerCase(), { entity: m.table, rowId: m.id });
+          }
+          // The extractor's `links` name labels from its OWN output, so a CO-EXTRACTED
+          // object is the intended target and wins; fall through to an EXISTING record
+          // ONLY when the label named no co-extracted object at all. Either way link only
+          // when exactly ONE linkable candidate exists — 0 or >1 (a collision) is skipped,
+          // not guessed. Self and same-entity pairs (a table-to-itself junction, which
+          // createUserJunction refuses) are excluded before counting.
+          const resolve = (label: string, o: Target): Target | null => {
+            const rawCo = (coByLabel.get(label) ?? []).filter((t) => t.rowId !== o.rowId);
+            const coLinkable = rawCo.filter((t) => t.entity !== o.entity);
+            if (coLinkable.length === 1) return coLinkable[0] ?? null;
+            if (coLinkable.length > 1) return null; // ambiguous among co-extracted
+            // A co-extracted match existed but wasn't linkable (same entity) — don't
+            // substitute a same-labelled existing record; that's a different thing.
+            if (rawCo.length > 0) return null;
+            const ex = (existingByLabel.get(label) ?? []).filter(
+              (t) => t.rowId !== o.rowId && t.entity !== o.entity,
+            );
+            return ex.length === 1 ? (ex[0] ?? null) : null;
+          };
+
           const done = new Set<string>();
           for (const o of createdObjects) {
             for (const targetLabel of o.links) {
-              const t = byLabel.get(targetLabel.toLowerCase());
-              // Skip a missing label, a self-reference, or a same-entity pair (a junction
-              // between a table and itself is meaningless — createUserJunction refuses it).
-              if (!t || t.rowId === o.rowId || t.entity === o.entity) continue;
+              const t = resolve(targetLabel.toLowerCase(), { entity: o.entity, rowId: o.rowId });
+              if (!t) continue;
               const key = [o.rowId, t.rowId].sort().join('|');
               if (done.has(key)) continue;
               done.add(key);
