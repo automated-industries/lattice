@@ -149,6 +149,18 @@ export interface DispatchCtx {
    */
   htmlAuthor?: (spec: string, currentHtml?: string) => Promise<string>;
   /**
+   * Run automatic QA on an authored dashboard BEFORE it is stored/shown: execute the
+   * page's data queries, check them against the request (intent match, SQL errors, empty
+   * results, over-confident/ambiguous resolutions), repair via `htmlAuthor`, and return
+   * the (possibly repaired) HTML plus any residual issues to surface to the user. Built
+   * by the chat route with the active provider's client. Absent → the dashboard is
+   * stored as authored (no QA).
+   */
+  qaDashboard?: (
+    html: string,
+    intent: string,
+  ) => Promise<{ html: string; issues: { kind: string; detail: string }[] }>;
+  /**
    * The id of the dashboard the user is currently viewing (resolved from
    * `activeContext` when that row is a dashboards row), so `edit_dashboard` edits
    * the one on screen when the user doesn't name one. Absent → the edit tool
