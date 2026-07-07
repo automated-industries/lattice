@@ -1028,6 +1028,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 fileJunctions: fileJunctions(active.configPath, active.outputDir),
                 entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
                 createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
+                createObjectJunction: (a, b) => createUserJunction(active, a, b, sessionId),
                 createEntity: (entity, columns) =>
                   createUserEntity(active, entity, columns, sessionId),
                 aggressiveness: getAggressiveness(),
@@ -1056,6 +1057,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
                 createJunction: (otherTable: string) =>
                   createFileJunction(active, otherTable, sessionId),
+                createObjectJunction: (a: string, b: string) =>
+                  createUserJunction(active, a, b, sessionId),
                 createEntity: (entity: string, columns: string[]) =>
                   createUserEntity(active, entity, columns, sessionId),
                 aggressiveness: getAggressiveness(),

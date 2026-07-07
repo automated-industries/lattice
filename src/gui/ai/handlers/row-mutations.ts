@@ -307,6 +307,9 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
             ...(ctx.aggressiveness !== undefined ? { aggressiveness: ctx.aggressiveness } : {}),
             ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
             ...(ctx.createFileJunction ? { createJunction: ctx.createFileJunction } : {}),
+            // Cross-link co-extracted objects (a meeting ↔ its people) via the general
+            // entity-to-entity junction creator — the SAME one create_relationship uses.
+            ...(ctx.createJunction ? { createObjectJunction: ctx.createJunction } : {}),
             ...(ctx.privateMode ? { privateMode: true } : {}),
           },
           raw,
