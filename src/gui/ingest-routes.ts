@@ -312,7 +312,7 @@ async function extractSource(
 }
 
 /** A pasted body that is exactly one http(s) URL — a candidate to crawl. */
-function looksLikeUrl(s: string): boolean {
+export function looksLikeUrl(s: string): boolean {
   const t = s.trim();
   return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
 }

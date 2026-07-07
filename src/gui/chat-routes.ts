@@ -11,13 +11,16 @@ import {
   createAnthropicClient,
   runChat,
   buildSchemaContext,
+  type LlmClient,
   type LlmMessage,
   type ContentBlock,
 } from './ai/chat.js';
+import { type MutationCtx } from './mutations.js';
+import type { FileJunction } from './data.js';
 import { generateHtmlFile, htmlAuthorModelForAuth } from './ai/html-author.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
-import { generateThreadTitle } from './ai/summarize.js';
+import { generateThreadTitle, triageReferenceMaterial } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
 import {
   noteClaudeError,
@@ -120,6 +123,122 @@ export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown
     `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. ` +
     `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`
   );
+}
+
+/** Env off-switch for auto-ingesting reference material from chat messages
+ *  (default ON). Mirrors LATTICE_CHAT_REHYDRATE. */
+function autoIngestEnabled(): boolean {
+  return process.env.LATTICE_CHAT_AUTOINGEST !== 'false';
+}
+
+/** Wiring for {@link ingestReferenceMaterial} — the same creators the chat dispatch
+ *  holds, so auto-ingested content enriches with the workspace's real schema. */
+export interface ReferenceIngestDeps {
+  db: Lattice;
+  feed: FeedBus;
+  softDeletable: Set<string>;
+  aggressiveness?: number;
+  createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  createFileJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  createObjectJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  privateMode?: boolean;
+}
+
+/** Prepended to the model's turn when reference material was auto-ingested, so it works
+ *  with the saved item instead of re-creating it. Order-agnostic wording (the note may
+ *  sit before or after the attached-files note). */
+const REFERENCE_INGEST_NOTE =
+  "[Note: reference material in the user's message has already been saved to their " +
+  'Files and automatically enriched by the ingestion engine — linked to the records it ' +
+  'refers to, with any structured objects it describes extracted and linked. Do NOT ' +
+  're-create, re-save, or re-link that content; just address the request and refer to ' +
+  'what was saved if useful.]\n\n';
+
+/**
+ * Route any REFERENCE MATERIAL in the user's message through the SAME engine a dropped
+ * file uses — decided by content TYPE (facts / notes / a pasted document / a link), not
+ * size. A message may be mixed (reference material + a directive); only the reference
+ * portion is ingested here, and the assistant still handles the directive. Deterministic
+ * where it counts: the classifier ALWAYS runs (ingestion isn't left to the chat model
+ * choosing a tool), and the finding-and-linking is the engine's, not prompt rules'.
+ *
+ * Runs BEFORE the chat turn and is fully awaited: row writes aren't serialized against
+ * the chat's own tool writes (better-sqlite3 is one connection), so overlapping them
+ * would race BEGIN — sequencing avoids that AND lets the model reference what was saved.
+ *
+ * Returns a note to prepend to the model's turn, or '' when there was nothing to save,
+ * auto-ingest is disabled, or it failed. Best-effort: a triage/ingest failure is logged
+ * and never blocks the chat. Exported for regression testing.
+ */
+export async function ingestReferenceMaterial(
+  client: LlmClient,
+  message: string,
+  deps: ReferenceIngestDeps,
+  temperature: number,
+): Promise<string> {
+  if (!autoIngestEnabled()) return '';
+  let reference = '';
+  try {
+    reference = (await triageReferenceMaterial(client, message, temperature)).reference;
+  } catch (e) {
+    console.warn('[chat] reference-material triage failed:', (e as Error).message);
+    return '';
+  }
+  const ref = reference.trim();
+  if (!ref) return '';
+
+  // source:'ingest' (not 'ai') so the saved-and-linked activity surfaces on the
+  // persistent feed exactly like a dropped file, not as a chat-turn activity card.
+  const mctx: MutationCtx = {
+    db: deps.db,
+    feed: deps.feed,
+    softDeletable: deps.softDeletable,
+    source: 'ingest',
+    onColumnsAdded: columnDescriptionHook(deps.db),
+  };
+  try {
+    const { ingestTextAsFile, looksLikeUrl } = await import('./ingest-routes.js');
+    // A bare URL is CRAWLED for its readable text (SSRF + policy guarded), mirroring the
+    // /api/ingest/text route; anything else is saved as text. Both go through enrichment.
+    if (looksLikeUrl(ref)) {
+      const { ingestUrlAsFile } = await import('./ingest-url.js');
+      await ingestUrlAsFile(
+        {
+          db: deps.db,
+          mctx,
+          ...(deps.privateMode ? { privateMode: true } : {}),
+          enrich: {
+            fileJunctions: [],
+            entityDescriptions: {},
+            ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
+            ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
+            ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
+          },
+        },
+        ref,
+      );
+      return REFERENCE_INGEST_NOTE;
+    }
+    await ingestTextAsFile(
+      {
+        db: deps.db,
+        mctx,
+        fileJunctions: [],
+        entityDescriptions: {},
+        ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
+        ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
+        ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
+        ...(deps.createObjectJunction ? { createObjectJunction: deps.createObjectJunction } : {}),
+        ...(deps.privateMode ? { privateMode: true } : {}),
+      },
+      ref,
+      'Pasted note',
+    );
+    return REFERENCE_INGEST_NOTE;
+  } catch (e) {
+    console.warn('[chat] reference-material ingest failed:', (e as Error).message);
+    return '';
+  }
 }
 
 /** A chat is private to whoever created it. We never rely on Postgres RLS alone:
@@ -766,13 +885,32 @@ export async function dispatchChatRoute(
   try {
     const client = createAnthropicClient(auth);
     const temperature = aggressivenessToTemperature(getAggressiveness());
+    // Deterministic, type-based ingestion: pull any reference material out of the
+    // user's message and route it through the SAME engine a dropped file uses, BEFORE
+    // the chat turn (sequential — the chat's own writes must not overlap these). The
+    // returned note tells the model what was saved so it neither re-creates nor guesses.
+    const ingestNote = await ingestReferenceMaterial(
+      client,
+      message,
+      {
+        db: ctx.db,
+        feed: ctx.feed,
+        softDeletable: ctx.softDeletable,
+        aggressiveness: getAggressiveness(),
+        ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+        ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
+        ...(ctx.createJunction ? { createObjectJunction: ctx.createJunction } : {}),
+        ...(body.privateMode === true ? { privateMode: true } : {}),
+      },
+      temperature,
+    );
     for await (const ev of runChat({
       client,
       dispatch,
       history,
-      // Prefix the attached-files note (if any) so the model connects the request
-      // to the files just added; the dispatch + tools still see the real message.
-      userMessage: attachedNote + message,
+      // Prefix the attached-files + auto-ingest notes (if any) so the model connects the
+      // request to what was just added; the dispatch + tools still see the real message.
+      userMessage: attachedNote + ingestNote + message,
       temperature,
       // Give the assistant the operator's name so it addresses them and
       // resolves "me"/"my" without asking for a name it already has.

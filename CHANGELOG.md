@@ -15,13 +15,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   its internal "let me try that / let me search again" working-it-out messages — you see
   only its final answer; (2) searching by name now returns the right record instead of
   the most recently-touched row that merely mentions the name, and it finds names split
-  across separate first/last fields; (3) when you paste content for it to save (notes, a
-  transcript, an email), it now runs that content through the SAME ingestion engine a
-  dropped file uses — automatically linking it to the existing records it refers to,
-  pulling out the objects it describes, and linking those objects to each other (a
-  meeting to its attendees) — instead of hand-creating records and hoping it links them.
-  The object-to-object linking also improves file and URL ingestion, which share the
-  engine.
+  across separate first/last fields; (3) it now recognizes reference material in your
+  messages by TYPE — facts, notes, a pasted document, a link — and automatically runs it
+  through the SAME ingestion engine a dropped file uses, even when the same message also
+  carries a question or instruction (the reference part is saved and linked; your request
+  is still answered). Length no longer matters — a one-line fact is ingested, a long
+  instruction is not. It links the content to the existing records it refers to, pulls
+  out the objects it describes, and links those objects both to each other AND to records
+  already on file (a meeting to its attendees, whether they were just extracted or
+  existed already) — instead of hand-creating records and hoping it links them. The
+  object linking also improves file and URL ingestion, which share the engine. (Auto-
+  ingest can be turned off with `LATTICE_CHAT_AUTOINGEST=false`.)
 
 - **Conversation names now show the AI-generated title, not the raw first message.**
   A new chat thread is given a short, friendly title (generated from its opening
