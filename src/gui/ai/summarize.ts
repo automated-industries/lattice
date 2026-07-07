@@ -116,6 +116,79 @@ export async function generateThreadTitle(
     .slice(0, 60);
 }
 
+const TRIAGE_SYSTEM =
+  "You are a router for a personal knowledge base. Read the user's chat message and " +
+  'separate any REFERENCE MATERIAL worth saving — facts, notes, a pasted document or ' +
+  'transcript, a described person / organization / meeting / event, or a link (URL) — ' +
+  'from the DIRECTIVES and QUESTIONS the user is addressing to the assistant. Judge by ' +
+  'the TYPE of content, NEVER its length: one short line can be reference material ' +
+  '("Acme signed the renewal Tuesday") and a long paragraph can be pure instruction. A ' +
+  'single message often contains BOTH — return only the reference-material portion. ' +
+  'Return ONLY a JSON object {"reference": string} in a ```json fenced block, where ' +
+  '"reference" is the reference-material text copied VERBATIM from the message (or the ' +
+  'bare URL), or an empty string when the message is only a question, a command, or ' +
+  "chit-chat with nothing to remember. Never put the user's instructions, questions, or " +
+  'conversational framing in "reference"; never summarize or rewrite — copy the exact ' +
+  'substring so nothing the user did not write is saved.';
+
+/** The reference-material span the triage classifier lifted from a chat message. */
+export interface TriageResult {
+  /** Verbatim reference-material text copied from the message (empty = nothing to save). */
+  reference: string;
+}
+
+/**
+ * Classify a chat message by CONTENT TYPE (not size): pull out any reference material
+ * worth saving — facts, notes, a pasted document, a described entity, a link — and
+ * leave behind the directives/questions the user is addressing to the assistant. A
+ * message may be mixed; only the reference-material portion is returned. Uses the cheap
+ * default model. The result is validated to be a VERBATIM substring of the original
+ * message (whitespace-normalized) so a paraphrase/hallucination is dropped rather than
+ * saved as words the user never wrote.
+ */
+export async function triageReferenceMaterial(
+  client: LlmClient,
+  message: string,
+  temperature?: number,
+): Promise<TriageResult> {
+  const trimmed = message.trim();
+  if (!trimmed) return { reference: '' };
+  const turn = await client.runTurn({
+    model: DEFAULT_MODEL,
+    system: TRIAGE_SYSTEM,
+    messages: [
+      {
+        role: 'user',
+        content: `User message:\n${trimmed.slice(0, 12000)}\n\nReturn the JSON object.`,
+      },
+    ],
+    tools: [],
+    ...(temperature !== undefined ? { temperature } : {}),
+    onText: () => undefined,
+  });
+  return parseTriage(turn.text, message);
+}
+
+const normalizeWs = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+function parseTriage(raw: string, original: string): TriageResult {
+  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
+  const body = (fence?.[1] ?? raw).trim();
+  try {
+    const o = JSON.parse(body) as { reference?: unknown };
+    let ref = typeof o.reference === 'string' ? o.reference.trim() : '';
+    // Only accept a span that actually appears in the original message — the classifier
+    // is told to copy verbatim, so anything else is a paraphrase/hallucination and must
+    // not be ingested. Tolerate whitespace-normalization differences only.
+    if (ref && !original.includes(ref) && !normalizeWs(original).includes(normalizeWs(ref))) {
+      ref = '';
+    }
+    return { reference: ref };
+  } catch {
+    return { reference: '' };
+  }
+}
+
 const CLASSIFY_SYSTEM =
   'You decide which existing records a newly added document relates to. You ' +
   'are given a catalog of record types (with descriptions) and their records. ' +
