@@ -199,6 +199,7 @@ function enrichContext(ctx: IngestContext): UrlIngestEnrich {
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.aggressiveness !== undefined ? { aggressiveness: ctx.aggressiveness } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+    ...(ctx.createObjectJunction ? { createObjectJunction: ctx.createObjectJunction } : {}),
   };
 }
 

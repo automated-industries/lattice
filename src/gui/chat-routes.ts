@@ -213,6 +213,9 @@ export async function ingestReferenceMaterial(
             ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
             ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
             ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
+            ...(deps.createObjectJunction
+              ? { createObjectJunction: deps.createObjectJunction }
+              : {}),
           },
         },
         ref,

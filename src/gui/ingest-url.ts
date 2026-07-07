@@ -41,6 +41,19 @@ export interface UrlIngestEnrich {
   createJunction?: (otherTable: string) => Promise<FileJunction | null>;
   aggressiveness?: number;
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
+  /** Create/return a junction between two USER entities, to cross-link the objects
+   *  extracted from the page to each other and to existing records. Omit → the page's
+   *  objects still link to the source file, just not to one another. */
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>;
 }
 
 export interface UrlIngestCtx {
@@ -163,6 +176,7 @@ export async function ingestUrlAsFile(
       ctx.enrich.createEntity,
       true,
       ctx.privateMode === true,
+      ctx.enrich.createObjectJunction,
     );
   }
 
