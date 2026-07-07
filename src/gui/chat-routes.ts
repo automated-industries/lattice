@@ -56,6 +56,7 @@ interface ChatContext {
     column: string,
   ) => Promise<{ ok: true; column: string } | { ok: false; error: string }>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  createFileJunction?: DispatchCtx['createFileJunction'];
   deleteEntity?: DispatchCtx['deleteEntity'];
   /** Registered computed tables — tagged read-only in the assistant's schema context. */
   computedTables?: Set<string>;
@@ -638,6 +639,7 @@ export async function dispatchChatRoute(
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
     ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
+    ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
     ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
     // Copied like validTables so in-turn additions (create_computed_table)
     // stay visible to later tool calls without mutating the server's set —

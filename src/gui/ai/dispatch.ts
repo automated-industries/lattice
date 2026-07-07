@@ -69,6 +69,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'edit_dashboard',
   'create_secret',
   'ingest_url',
+  'ingest_text',
   'set_definition',
   'set_visibility',
   'dedup',

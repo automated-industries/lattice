@@ -275,6 +275,56 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         },
       };
     }
+    case 'ingest_text': {
+      // Save a block of pasted content the SAME way a dropped file is ingested: route
+      // it through the shared enrichment engine (ingestTextAsFile → enrichWithLlm),
+      // which links it to the records it refers to and extracts + links the objects it
+      // is about. Deterministic + generic — the linking lives in the engine, not in
+      // per-object-type prompt rules. Content is user-provided (trusted), so full
+      // enrichment (entity + junction creation) is enabled, unlike ingest_url's
+      // untrusted web content.
+      const raw =
+        typeof args.content === 'string'
+          ? args.content
+          : typeof args.text === 'string'
+            ? args.text
+            : '';
+      if (!raw.trim()) {
+        return { ok: false, error: 'content is required — the text to save.' };
+      }
+      const title =
+        typeof args.title === 'string' && args.title.trim() ? args.title.trim() : 'Pasted note';
+      // Lazy import (mirrors ingest_url) to keep the chat→dispatch→ingest→enrich→chat
+      // module graph acyclic.
+      const { ingestTextAsFile } = await import('../../ingest-routes.js');
+      try {
+        const result = await ingestTextAsFile(
+          {
+            db: ctx.db,
+            mctx,
+            fileJunctions: [],
+            entityDescriptions: {},
+            ...(ctx.aggressiveness !== undefined ? { aggressiveness: ctx.aggressiveness } : {}),
+            ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+            ...(ctx.createFileJunction ? { createJunction: ctx.createFileJunction } : {}),
+            ...(ctx.privateMode ? { privateMode: true } : {}),
+          },
+          raw,
+          title,
+        );
+        return {
+          ok: true,
+          result: {
+            id: result.id,
+            table: 'files',
+            title,
+            linked: result.suggestedLinks.map((m) => ({ table: m.table, id: m.id })),
+          },
+        };
+      } catch (e) {
+        return { ok: false, error: `Could not save the content: ${(e as Error).message}` };
+      }
+    }
     case 'dedup': {
       const table = requireTable(args.table, ctx.validTables);
       const fuzzy = args.fuzzy === true;
