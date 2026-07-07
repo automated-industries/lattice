@@ -118,6 +118,19 @@ export async function enrichWithLlm(
   // its own table default (shared-to-everyone on a cloud) and leak the private
   // file's contents + relationships.
   privateMode = false,
+  // Materialize record-to-record links BETWEEN co-extracted objects (a meeting ↔ its
+  // attendees), per the extractor's stated `links`. Same shape as createUserJunction.
+  // Omit → no cross-object linking (each object still links to the source file).
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   const auth = await resolveClaudeAuth(db);
@@ -311,6 +324,10 @@ export async function enrichWithLlm(
         const clarifyThreshold = getClarifyThreshold();
         const floor = clarifyFloor(clarifyThreshold);
         let questionsAsked = 0;
+        // Every object actually created this pass (label → its entity + row id), so a
+        // second pass can materialize the relationships the extractor stated between them.
+        const createdObjects: { label: string; entity: string; rowId: string; links: string[] }[] =
+          [];
         for (const obj of proposed) {
           const confidence = obj.confidence ?? 1;
           if (confidence < clarifyThreshold) {
@@ -377,6 +394,7 @@ export async function enrichWithLlm(
             // reload — so no extra, non-persisted feed event is published here.
             const { id: rowId } = await createRow(mctx, entity, row, forceVis);
             createdCount++;
+            createdObjects.push({ label: obj.label, entity, rowId, links: obj.links ?? [] });
             // Provenance: record that this object row was EXTRACTED from the
             // source file (raw tier) — durable, additive lineage bookkeeping.
             await recordLineage(mctx.db.adapter, [
@@ -413,6 +431,43 @@ export async function enrichWithLlm(
             }
           } catch (e) {
             console.warn(`[ingest] create ${entity} from document failed:`, (e as Error).message);
+          }
+        }
+        // Second pass: materialize the relationships the extractor stated BETWEEN the
+        // co-extracted objects (a meeting ↔ its attendees), so they link to each other
+        // — not only to the source file. Deterministic: the engine links the pairs the
+        // extractor identified; there is no per-object-type rule. Only when a junction
+        // creator is available and at least two objects were created.
+        if (createObjectJunction && createdObjects.length > 1) {
+          const byLabel = new Map(createdObjects.map((o) => [o.label.toLowerCase(), o]));
+          const done = new Set<string>();
+          for (const o of createdObjects) {
+            for (const targetLabel of o.links) {
+              const t = byLabel.get(targetLabel.toLowerCase());
+              // Skip a missing label, a self-reference, or a same-entity pair (a junction
+              // between a table and itself is meaningless — createUserJunction refuses it).
+              if (!t || t.rowId === o.rowId || t.entity === o.entity) continue;
+              const key = [o.rowId, t.rowId].sort().join('|');
+              if (done.has(key)) continue;
+              done.add(key);
+              try {
+                const jx = await createObjectJunction(o.entity, t.entity);
+                if (!jx) continue;
+                const oFk = jx.tableA === o.entity ? jx.aFk : jx.bFk;
+                const tFk = jx.tableA === o.entity ? jx.bFk : jx.aFk;
+                await linkRows(
+                  mctx,
+                  jx.junction,
+                  { id: crypto.randomUUID(), [oFk]: o.rowId, [tFk]: t.rowId },
+                  forceVis,
+                );
+              } catch (e) {
+                console.warn(
+                  `[ingest] cross-link ${o.entity} ↔ ${t.entity} failed:`,
+                  (e as Error).message,
+                );
+              }
+            }
           }
         }
       } catch (e) {
