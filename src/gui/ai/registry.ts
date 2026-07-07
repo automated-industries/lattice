@@ -288,6 +288,22 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'ingest_text',
+    description:
+      'Save a block of content the user gave you in their message — pasted notes, a transcript, an email, meeting minutes, a document, a list, any unstructured content they want kept or remembered — AND automatically connect it to their existing records and pull out the things it is about. It saves the content and runs the SAME enrichment a dropped file gets: it links the content to the existing records it refers to and creates + links the objects it describes. PREFER this over manually creating records whenever the user pastes substantial content for you to save, remember, or organize — it does the finding-and-linking for you, so do NOT hand-create rows and hand-search for the people/things to link. Use it ONLY for content to store, not for a short question or instruction. The content is what the user typed (trusted). Follows the same sharing rules as any file (private mode → private).',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        content: str('The text content to save, taken from the user’s message.'),
+        title: str(
+          'Optional short title for the saved content (e.g. "Meeting notes"). Defaults to a generic label.',
+        ),
+      },
+      ['content'],
+    ),
+  },
+  {
     name: 'ask_user',
     description:
       'Show the user ONE short multiple-choice question and end your turn; their answer arrives ' +

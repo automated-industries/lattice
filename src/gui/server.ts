@@ -960,6 +960,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
                 addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
                 createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
+                // The files-side linker the shared enrichment engine uses — lets the
+                // ingest_text tool run pasted content through the same enrichWithLlm
+                // path a dropped file uses (auto-links it to related records).
+                createFileJunction: (otherTable) =>
+                  createFileJunction(active, otherTable, sessionId),
                 // Guarded, reversible table delete — empty tables go immediately;
                 // non-empty ones come back as `needsResolution` so the assistant asks.
                 deleteEntity: (name: string, resolution?: DeleteResolution) =>

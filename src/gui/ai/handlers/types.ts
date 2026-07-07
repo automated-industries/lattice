@@ -1,6 +1,7 @@
 import type { Lattice } from '../../../lattice.js';
 import type { FeedBus } from '../../feed.js';
 import type { MutationCtx } from '../../mutations.js';
+import type { FileJunction } from '../../data.js';
 import type { FetchBudget } from '../../../ai/fetch-policy.js';
 import type { DeleteResolution, DeleteEntityOutcome } from '../../schema-ops.js';
 import type { ComputedTableDef } from '../../../config/types.js';
@@ -118,6 +119,14 @@ export interface DispatchCtx {
    * unavailable. Returns the junction + its two foreign-key columns, or null.
    */
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  /**
+   * Create (or return) the `files`↔<otherTable> junction — the files-side linker the
+   * shared enrichment engine uses. Supplied by the server so the `ingest_text` tool can
+   * route pasted content through the SAME enrichWithLlm engine as a dropped file (which
+   * auto-links the content to related records). Absent → ingest_text runs without
+   * autonomous junction creation.
+   */
+  createFileJunction?: (otherTable: string) => Promise<FileJunction | null>;
   /**
    * Soft-delete a user table — guarded + reversible (no physical drop). Supplied
    * by the server; absent → `delete_entity` reports it's unavailable. An EMPTY
