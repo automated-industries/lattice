@@ -31,10 +31,13 @@ describe('add-source: one combined "＋ File(s)" button', () => {
 });
 
 describe('Claude disconnect is discoverable in Settings (works on desktop)', () => {
-  it('offers a Disconnect Claude button in the User assistant panel, not only the topbar', () => {
+  it('offers a Disconnect button in the User assistant panel, not only the topbar', () => {
     expect(appJs).toContain('id="asst-disconnect"');
     expect(appJs).toContain('Disconnect Claude');
-    expect(appJs).toContain("fetchJson('/api/assistant/oauth', { method: 'DELETE' })");
+    // Disconnect is provider-aware: a Claude subscription hits the OAuth endpoint, a
+    // connected OpenAI-compatible backend hits the provider endpoint.
+    expect(appJs).toContain("'/api/assistant/oauth'");
+    expect(appJs).toContain("'/api/assistant/provider/openai-compat'");
   });
 });
 

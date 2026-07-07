@@ -1,7 +1,7 @@
 import type { Lattice } from '../lattice.js';
 import type { FillLlm } from '../schema/computed-fill.js';
-import { resolveClaudeAuth } from './assistant-routes.js';
-import { createAnthropicClient, DEFAULT_MODEL } from './ai/chat.js';
+import { DEFAULT_MODEL } from './ai/chat.js';
+import { resolveLlmClient } from './ai/provider.js';
 import { CHEAPEST_MODEL } from '../ai/llm-client.js';
 
 /**
@@ -9,8 +9,8 @@ import { CHEAPEST_MODEL } from '../ai/llm-client.js';
  * interface to the real model client. The engine passes the field's declared
  * tier (`'default'` / `'cheapest'`) as `model`; this adapter maps it to the
  * exported model constants and authenticates the same way every other GUI AI
- * feature does ({@link resolveClaudeAuth}: connected Claude subscription first,
- * API key fallback).
+ * feature does ({@link resolveLlmClient}: the active provider — a connected Claude
+ * subscription or a configured OpenAI-compatible endpoint).
  *
  * Auth is resolved PER CALL, not at adapter construction: building the adapter
  * with no credentials must not throw (the fill engine records a per-field
@@ -27,15 +27,14 @@ export function modelForTier(tier: string): string {
 export function buildComputedFillLlm(db: Lattice): FillLlm {
   return {
     async complete(opts: { system: string; user: string; model: string }): Promise<string> {
-      const auth = await resolveClaudeAuth(db);
-      if (!auth) {
+      const client = await resolveLlmClient(db);
+      if (!client) {
         // Thrown INTO the fill engine, which records it as the field's error
         // state — the loud, user-visible representation of "not configured".
         throw new Error(
-          'No Claude credentials are configured — connect Claude or set an API key to fill AI fields',
+          'No model provider is configured — connect Claude or an OpenAI-compatible model to fill AI fields',
         );
       }
-      const client = createAnthropicClient(auth);
       const result = await client.runTurn({
         model: modelForTier(opts.model),
         system: opts.system,

@@ -2,32 +2,23 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { getAsyncOrSync } from '../db/adapter.js';
 import { FeedBus } from './feed.js';
+import { getAggressiveness, aggressivenessToTemperature } from './assistant-routes.js';
 import {
-  resolveClaudeAuth,
-  getAggressiveness,
-  aggressivenessToTemperature,
-} from './assistant-routes.js';
-import {
-  createAnthropicClient,
   runChat,
   buildSchemaContext,
   type LlmClient,
   type LlmMessage,
   type ContentBlock,
 } from './ai/chat.js';
+import { resolveLlmProvider } from './ai/provider.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
-import { generateHtmlFile, htmlAuthorModelForAuth } from './ai/html-author.js';
+import { generateHtmlFile } from './ai/html-author.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
 import { generateThreadTitle, triageReferenceMaterial } from './ai/summarize.js';
 import { formatSseFrame } from './ai/sse.js';
-import {
-  noteClaudeError,
-  getClaudeLimitState,
-  clearClaudeLimit,
-  CLAUDE_LIMIT_MESSAGE,
-} from './ai/limit-state.js';
+import { getClaudeLimitState, clearClaudeLimit, CLAUDE_LIMIT_MESSAGE } from './ai/limit-state.js';
 import { columnDescriptionHook } from './meta-gen.js';
 import { sendJson, readJson } from './http.js';
 import {
@@ -664,13 +655,13 @@ export async function dispatchChatRoute(
 
   if (!(ctx.method === 'POST' && ctx.pathname === '/api/chat')) return false;
 
-  const auth = await resolveClaudeAuth(ctx.db);
-  if (!auth) {
+  const provider = await resolveLlmProvider(ctx.db);
+  if (!provider) {
     sendJson(
       res,
       {
         error:
-          'No Claude auth configured. Connect a subscription or add an API token in User Settings → Assistant.',
+          'No model provider configured. Connect a Claude subscription or an OpenAI-compatible model in User Settings → Assistant.',
       },
       400,
     );
@@ -778,11 +769,11 @@ export async function dispatchChatRoute(
   // all models), the chat model for an OAuth subscription (whose entitlements vary;
   // a non-entitled model 429s every call). If the user is viewing an html artifact,
   // expose its id so edit_html_file targets the file on screen by default.
-  const authorModel = htmlAuthorModelForAuth(auth);
+  const authorModel = provider.authorModel;
   dispatch.htmlAuthor = async (spec: string, currentHtml?: string): Promise<string> => {
     const schema = await buildSchemaContext(dispatch);
     return generateHtmlFile({
-      client: createAnthropicClient(auth),
+      client: provider.client,
       schema,
       spec,
       model: authorModel,
@@ -886,7 +877,7 @@ export async function dispatchChatRoute(
   };
 
   try {
-    const client = createAnthropicClient(auth);
+    const client = provider.client;
     const temperature = aggressivenessToTemperature(getAggressiveness());
     // Deterministic, type-based ingestion: pull any reference material out of the
     // user's message and route it through the SAME engine a dropped file uses, BEFORE
@@ -955,7 +946,7 @@ export async function dispatchChatRoute(
     // A genuine usage-limit 429 flips the shared limit state and shows the
     // standard notice (so the Configure side blocks too, via /api/assistant/config).
     // A transient or entitlement 429, or any other failure, stays a plain error.
-    const kind = noteClaudeError(e);
+    const kind = provider.noteError(e);
     try {
       if (kind === 'usage') {
         const limit = getClaudeLimitState();
@@ -994,11 +985,7 @@ export async function dispatchChatRoute(
         const placeholder = message.slice(0, 60) || 'Chat';
         const cur = (await ctx.db.get('chat_threads', threadId)) as { title?: string } | null;
         if (cur && (cur.title ?? '') === placeholder) {
-          const title = await generateThreadTitle(
-            createAnthropicClient(auth),
-            message,
-            assistantText,
-          );
+          const title = await generateThreadTitle(provider.client, message, assistantText);
           if (title) {
             await ctx.db.update('chat_threads', threadId, { title });
             // The title is written AFTER the stream closed (kept off the response

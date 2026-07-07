@@ -294,10 +294,10 @@ describe('computed-table routes', () => {
     expect(lines.length).toBeGreaterThanOrEqual(3);
     expect(lines[0]).toMatchObject({ phase: 'field', field: 'mood' });
     const done = lines.find((l) => l.phase === 'field-done');
-    // No model credentials in this environment → the fill engine reports the
+    // No model provider in this environment → the fill engine reports the
     // per-field error state through the stream (never a crash, never a 500).
     expect(done).toMatchObject({ field: 'mood' });
-    expect(String(done?.error)).toContain('No Claude credentials');
+    expect(String(done?.error)).toContain('No model provider is configured');
     expect(lines[lines.length - 1]).toEqual({ done: true });
 
     // An unknown table errors INSIDE the stream (headers already sent).

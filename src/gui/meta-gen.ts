@@ -8,8 +8,7 @@
  * import it — so the `dispatch → chat → …` graph never loops back here.
  */
 import type { Lattice } from '../lattice.js';
-import { resolveClaudeAuth } from './assistant-routes.js';
-import { createAnthropicClient } from './ai/chat.js';
+import { resolveLlmClient } from './ai/provider.js';
 import {
   generateAndStoreColumnDescriptions,
   generateAndStoreTableDescription,
@@ -17,8 +16,7 @@ import {
 
 async function resolveClientOrNull(db: Lattice) {
   try {
-    const auth = await resolveClaudeAuth(db);
-    return auth ? createAnthropicClient(auth) : null;
+    return await resolveLlmClient(db);
   } catch {
     return null;
   }

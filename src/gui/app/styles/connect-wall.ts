@@ -37,6 +37,22 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     .connect-wall-row .btn { flex: 0 0 auto; height: 40px; }
     .connect-wall-status { margin-top: 8px; min-height: 18px; font-size: 12.5px; color: var(--text-muted); }
 
+    /* Alternative backend: an OpenAI-compatible endpoint. Collapsed by default. */
+    .connect-wall-alt { margin-top: 18px; text-align: left; }
+    .connect-wall-alt-toggle {
+      background: none; border: none; padding: 0; cursor: pointer;
+      font-size: 12.5px; color: var(--text-muted); text-decoration: underline;
+    }
+    .connect-wall-alt-toggle:hover { color: var(--text); }
+    .connect-wall-alt-form { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .connect-wall-alt-form input {
+      width: 100%; height: 40px; padding: 0 12px; box-sizing: border-box;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); color: var(--text); font-size: 13px;
+    }
+    .connect-wall-alt-form input:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
+    .connect-wall-alt-form .btn { height: 40px; }
+
     /* ── Usage-limit banner (app-wide) ──────────────────── */
     .limit-banner {
       position: fixed; top: 0; left: 0; right: 0; z-index: 2100;

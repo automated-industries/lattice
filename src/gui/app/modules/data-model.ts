@@ -307,17 +307,27 @@ export const dataModelJs = `    // ───────────────
             '</div>' +
           '</div>';
         }
+        // Label + disconnect reflect the ACTIVE backend — a Claude subscription or a
+        // connected OpenAI-compatible endpoint.
+        var asstOai = cfg.openaiCompat;
+        var asstOnOpenai = cfg.activeProvider === 'openai_compat' && asstOai && asstOai.configured;
+        var asstConnLabel = asstOnOpenai
+          ? 'Connected to ' + (asstOai.model || 'your model') + ' for the whole app.'
+          : 'Claude is connected for the whole app.';
+        var asstDiscLabel = asstOnOpenai ? 'Disconnect model' : 'Disconnect Claude';
+        var asstDiscEndpoint = asstOnOpenai
+          ? '/api/assistant/provider/openai-compat'
+          : '/api/assistant/oauth';
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
-            // Connect happens at the first-run wall (OAuth-only). Disconnect is
-            // ALSO offered here (not only the top-bar account menu) so it is
-            // discoverable — especially in the desktop app.
+            // Connect happens at the first-run wall. Disconnect is ALSO offered here (not
+            // only the top-bar account menu) so it is discoverable — especially desktop.
             '<p class="lead" style="margin:0 0 10px;font-size:12px;color:var(--text-muted)">' +
-              'Claude is connected for the whole app. Disconnecting signs you out of Claude — ' +
-              'you will not be able to use Lattice until you reconnect.' +
+              asstConnLabel + ' Disconnecting means you will not be able to use Lattice ' +
+              'until a model is connected.' +
             '</p>' +
-            '<button id="asst-disconnect" class="btn" style="margin:0 0 14px;color:var(--danger,#c0392b);border-color:var(--danger,#c0392b)">Disconnect Claude</button>' +
+            '<button id="asst-disconnect" class="btn" style="margin:0 0 14px;color:var(--danger,#c0392b);border-color:var(--danger,#c0392b)">' + asstDiscLabel + '</button>' +
             '<div style="margin:6px 0 12px">' +
               '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
                 '<strong style="font-size:13px">Inference aggressiveness</strong>' +
@@ -344,9 +354,9 @@ export const dataModelJs = `    // ───────────────
         if (disc) {
           if (!(cfg.connected && cfg.managedModelAuth !== true)) disc.style.display = 'none';
           disc.addEventListener('click', function () {
-            if (!window.confirm('Disconnect Claude? You will not be able to use Lattice until you reconnect.')) return;
+            if (!window.confirm(asstDiscLabel + '? You will not be able to use Lattice until a model is connected.')) return;
             disc.disabled = true;
-            fetchJson('/api/assistant/oauth', { method: 'DELETE' }).then(function () {
+            fetchJson(asstDiscEndpoint, { method: 'DELETE' }).then(function () {
               // Back to the first-run wall; reconnect reboots cleanly.
               if (typeof showConnectWall === 'function') showConnectWall(function () { location.reload(); });
               else location.reload();

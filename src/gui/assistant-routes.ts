@@ -25,6 +25,13 @@ import {
   writePreferences,
 } from '../framework/user-config.js';
 import { sendJson, readJson } from './http.js';
+import {
+  readOpenAiCompatConfig,
+  setOpenAiCompatConfig,
+  clearOpenAiCompatConfig,
+  setActiveProvider,
+  activeProviderKind,
+} from './ai/provider-config.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';
 
@@ -458,15 +465,25 @@ export async function dispatchAssistantRoute(
       hasOpenaiKey,
       hasElevenlabsKey,
     });
+    // OpenAI-compatible LLM provider (a base-URL + key + model the user connected as
+    // an alternative backend). Presence + non-secret fields only — never the API key.
+    const openaiCompat = readOpenAiCompatConfig();
+    const claudeConnected = await isClaudeConnected(db);
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
       hasElevenlabsKey,
       claudeAuthKind: await claudeAuthKind(db),
+      // Which backend answers turns, and the OpenAI-compatible endpoint's non-secret
+      // config (so the GUI can show "Connected to gpt-4o at api.example.com").
+      activeProvider: activeProviderKind(),
+      openaiCompat: openaiCompat
+        ? { configured: true, model: openaiCompat.model, baseUrl: openaiCompat.baseUrl }
+        : { configured: false, model: null, baseUrl: null },
       // The single connected/disconnected truth the client wall reads. True in a
-      // managed deployment (operator env credential) or when a Claude
-      // subscription is connected. OAuth-only otherwise.
-      connected: await isClaudeConnected(db),
+      // managed deployment (operator env credential), when a Claude subscription is
+      // connected, OR when an OpenAI-compatible endpoint is configured.
+      connected: claudeConnected || openaiCompat !== null,
       // Claude usage-limit state (null unless the limit was hit). The chat shows
       // it and the Configure side reads it to block ingest/AI while limited.
       limitState: getClaudeLimitState(),
@@ -488,6 +505,88 @@ export async function dispatchAssistantRoute(
       // it — that page owns balance / billing / sign-out, so none of that lives here.
       accountUrl: process.env.LATTICE_ACCOUNT_URL ?? null,
     });
+    return true;
+  }
+
+  // POST /api/assistant/provider/openai-compat { baseUrl, apiKey, model, headers? } —
+  // connect an OpenAI-compatible endpoint (OpenAI / Azure / OpenRouter / a local server /
+  // a gateway, or Copilot if the user points it there) as the assistant backend. Stored
+  // machine-local + encrypted (like every other assistant credential); saving makes it
+  // the active provider. NO provider-specific auth/headers are shipped — the user
+  // supplies the base URL, key, model, and any extra headers their endpoint needs.
+  if (method === 'POST' && pathname === '/api/assistant/provider/openai-compat') {
+    // Managed deployment: the operator owns the model credential; a user must not
+    // point the assistant at their own backend (see resolveLlmProvider's managed gate).
+    if (isManagedModelAuth()) {
+      sendJson(res, { error: 'The model backend is managed by the operator.' }, 403);
+      return true;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+    const model = typeof body.model === 'string' ? body.model.trim() : '';
+    const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+    if (!/^https?:\/\/\S+$/i.test(baseUrl)) {
+      sendJson(res, { error: 'baseUrl must be an http(s) URL' }, 400);
+      return true;
+    }
+    if (!model) {
+      sendJson(res, { error: 'model is required' }, 400);
+      return true;
+    }
+    const headers =
+      body.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)
+        ? (Object.fromEntries(
+            Object.entries(body.headers as Record<string, unknown>)
+              .filter(([, v]) => typeof v === 'string')
+              .map(([k, v]) => [k, v as string]),
+          ) as Record<string, string>)
+        : undefined;
+    setOpenAiCompatConfig({ baseUrl, apiKey, model, ...(headers ? { headers } : {}) });
+    sendJson(res, { ok: true, activeProvider: 'openai_compat', model, baseUrl });
+    return true;
+  }
+
+  // DELETE /api/assistant/provider/openai-compat — forget the endpoint; the active
+  // provider falls back to Anthropic (a connected Claude subscription still works).
+  if (method === 'DELETE' && pathname === '/api/assistant/provider/openai-compat') {
+    clearOpenAiCompatConfig();
+    sendJson(res, { ok: true, activeProvider: 'anthropic' });
+    return true;
+  }
+
+  // PUT /api/assistant/provider { provider } — switch which configured backend is
+  // active ('anthropic' | 'openai_compat'), without disconnecting the other.
+  if (method === 'PUT' && pathname === '/api/assistant/provider') {
+    if (isManagedModelAuth()) {
+      sendJson(res, { error: 'The model backend is managed by the operator.' }, 403);
+      return true;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const provider = body.provider;
+    if (provider !== 'anthropic' && provider !== 'openai_compat') {
+      sendJson(res, { error: "provider must be 'anthropic' or 'openai_compat'" }, 400);
+      return true;
+    }
+    // Don't let the user select a provider that isn't configured — that would strand
+    // the assistant on a backend that resolves to nothing.
+    if (provider === 'openai_compat' && !readOpenAiCompatConfig()) {
+      sendJson(res, { error: 'no OpenAI-compatible endpoint is configured' }, 400);
+      return true;
+    }
+    setActiveProvider(provider);
+    sendJson(res, { ok: true, activeProvider: provider });
     return true;
   }
 
