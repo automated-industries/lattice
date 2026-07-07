@@ -5,14 +5,13 @@ import { STRUCTURAL } from '../file-row.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from '../mutations.js';
 import { recordLineage } from '../lineage-store.js';
 import {
-  resolveClaudeAuth,
   aggressivenessToTemperature,
   clarifyFloor,
   getClarifyThreshold,
   DEFAULT_AGGRESSIVENESS,
 } from '../assistant-routes.js';
 import { enqueueQuestion } from '../questions.js';
-import { createAnthropicClient } from './chat.js';
+import { resolveLlmClient } from './provider.js';
 import {
   summarizeText,
   classifyLinks,
@@ -134,21 +133,15 @@ export async function enrichWithLlm(
   } | null>,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
-  const auth = await resolveClaudeAuth(db);
-  if (!auth) {
-    // No AI credentials → auto-link can't run. Log it (rather than feed-spamming
-    // local non-AI users) so "why didn't it link?" is answerable from the log.
-    console.warn('[ingest] auto-link skipped — no AI credentials configured');
-    return [];
-  }
   let client;
   try {
-    client = createAnthropicClient(auth);
+    client = await resolveLlmClient(db);
   } catch (e) {
-    // internal guideline: never swallow. A client-init failure means NO auto-link for this
-    // file — say so loudly + visibly instead of returning [] in silence.
+    // internal guideline: never swallow. A client-init failure (e.g. the Anthropic SDK
+    // not installed) means NO auto-link for this file — say so loudly + visibly instead
+    // of returning [] in silence.
     const msg = (e as Error).message;
-    console.error('[ingest] auto-link unavailable — Anthropic client init failed:', msg);
+    console.error('[ingest] auto-link unavailable — model client init failed:', msg);
     mctx.feed.publish({
       table: 'files',
       op: 'update',
@@ -156,6 +149,12 @@ export async function enrichWithLlm(
       source: mctx.source,
       summary: `Couldn't auto-link "${name}": AI client unavailable`,
     });
+    return [];
+  }
+  if (!client) {
+    // No provider configured → auto-link can't run. Log it (rather than feed-spamming
+    // local non-AI users) so "why didn't it link?" is answerable from the log.
+    console.warn('[ingest] auto-link skipped — no model provider configured');
     return [];
   }
   // Force private on derived writes when the source file is private (see the

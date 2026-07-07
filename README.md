@@ -2237,7 +2237,11 @@ Add a Claude API token in **User Settings → Assistant** (or set
 data or instruct edits in natural language. The assistant calls the same
 operations the UI does, so its changes are audited, shown in the feed, and
 undoable. A Claude subscription can be connected instead via OAuth when the
-`ANTHROPIC_OAUTH_*` environment variables are configured.
+`ANTHROPIC_OAUTH_*` environment variables are configured. Or point the assistant at
+**any OpenAI-compatible `chat/completions` endpoint** (OpenAI, Azure, OpenRouter, a
+local vLLM / Ollama / LM Studio server, or your own gateway) — "or connect an
+OpenAI-compatible model" on the first-run screen takes a base URL, API key, and model,
+and every assistant feature then runs on it.
 
 Optional extras, each enabled by its own key/binary:
 

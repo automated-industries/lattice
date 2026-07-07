@@ -22,6 +22,28 @@ Every `ANTHROPIC_OAUTH_*` value (authorize/token URL, client id, scopes,
 redirect) can be overridden via the environment for a non-default deployment —
 see [`.env.example`](../.env.example).
 
+### Use an OpenAI-compatible model instead
+
+The assistant is not tied to Anthropic. On the first-run connect screen, choose
+**or connect an OpenAI-compatible model** to point it at any OpenAI-compatible
+`chat/completions` endpoint — OpenAI, Azure, OpenRouter, a local vLLM / Ollama /
+LM Studio server, your own gateway, or GitHub Copilot if you point it there. You
+supply three things: a **base URL** (up to `/v1`), an **API key** (sent as a
+Bearer token — leave blank for a keyless local server), and a **model** id
+(e.g. `gpt-4o`). Lattice ships **no** provider-specific auth or header
+impersonation; if your endpoint needs extra headers (an Azure `api-key`, a
+gateway token) they can be supplied alongside the config.
+
+Once connected it becomes the active backend and **every** assistant feature —
+chat, auto-linking / ingestion, computed-table fills, as-of detection, HTML
+authoring — runs on it. Switching backends and disconnecting are available via
+the API (`PUT /api/assistant/provider`, `DELETE
+/api/assistant/provider/openai-compat`); with nothing configured the assistant
+resolves a connected Claude subscription exactly as before. Image / PDF vision
+still uses a connected Claude subscription when one is available. Credentials are
+stored encrypted in the machine-local assistant credential store, never returned
+by any endpoint.
+
 ## Chat
 
 The rail runs a Claude tool-calling loop streamed over SSE. The model can list,
