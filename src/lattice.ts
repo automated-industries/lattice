@@ -1523,6 +1523,21 @@ export class Lattice {
     );
   }
 
+  /**
+   * Permanently delete a row via `DELETE FROM`. This is a **hard delete** —
+   * the row is removed from the table, not soft-deleted via a `deleted_at` column.
+   *
+   * On tables with `changelog: true`, the full previous row is captured and
+   * appended to the changelog before removal, making the delete auditable and
+   * recoverable via {@link rollback}. On tables without a changelog, the row
+   * is gone permanently.
+   *
+   * Side effects:
+   * - If the table has materialized rollups fed by child rows, a deleted child
+   *   is removed from its parent's rollup aggregates.
+   * - Write hooks and audit events are fired.
+   * - Embeddings are synced (if the table has embedding definitions).
+   */
   async delete(table: string, id: PkLookup, provenance?: ChangeProvenance): Promise<void> {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
