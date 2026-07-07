@@ -8,6 +8,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Connect any OpenAI-compatible model as the assistant backend.** Alongside a Claude
+  subscription, you can now point Lattice's assistant at any OpenAI-compatible
+  `chat/completions` endpoint — OpenAI, Azure, OpenRouter, a local vLLM / Ollama / LM
+  Studio server, your own gateway, or GitHub Copilot if you point it there. Connect it
+  from the first-run screen ("or connect an OpenAI-compatible model": base URL + API key
+  - model). Every assistant feature — chat, auto-linking / ingestion, computed-table
+    fills, as-of detection, HTML authoring — then runs on the selected provider. No
+    provider-specific auth or headers are shipped: you supply the base URL, the API key
+    (sent as a Bearer token; may be blank for a keyless local server), the model, and any
+    extra headers your endpoint needs. Backward-compatible — with nothing configured the
+    assistant resolves a connected Claude subscription exactly as before. Image / PDF
+    vision still uses a connected Claude subscription when one is available. New endpoints:
+    `POST /api/assistant/provider/openai-compat` (connect), `PUT /api/assistant/provider`
+    (switch active backend), `DELETE /api/assistant/provider/openai-compat` (disconnect);
+    `GET /api/assistant/config` reports `activeProvider` + `openaiCompat` presence (never
+    the key).
+
 ### Fixed
 
 - **The assistant stops narrating its steps, finds records reliably, and enriches

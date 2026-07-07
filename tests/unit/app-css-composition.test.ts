@@ -166,8 +166,10 @@ import { css } from '../../src/gui/app/css.js';
 // Version-history takeover drops its redundant "Version history" page heading
 // (the takeover header already titles it); the entity filter moves into a compact
 // .history-subhead row. Length + hash recaptured.
-const ORIGINAL_LENGTH = 144764;
-const ORIGINAL_SHA256 = 'f8f847f6e9090ec74e952094310a67800036fe0ce1f232a929fdd9cc687873d7';
+// The connect wall gains an "or connect an OpenAI-compatible model" alternative
+// (collapsible base-URL/key/model form) alongside Connect with Claude. Recaptured.
+const ORIGINAL_LENGTH = 145664;
+const ORIGINAL_SHA256 = '3ecb02f76b9c3b05f82d53883358b47eee71910e6d7b26513057fe439fa50686';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

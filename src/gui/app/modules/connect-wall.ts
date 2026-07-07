@@ -45,6 +45,19 @@ export const connectWallJs = `    // ── First-run connect wall ────�
             '</div>' +
             '<div class="connect-wall-status" id="connect-wall-status" role="status" aria-live="polite"></div>' +
           '</div>' +
+          // Alternative backend: any OpenAI-compatible endpoint (OpenAI, Azure,
+          // OpenRouter, a local server, your own gateway). No provider-specific auth
+          // is shipped — you supply the base URL, key, and model.
+          '<div class="connect-wall-alt">' +
+            '<button type="button" class="connect-wall-alt-toggle" id="connect-wall-alt-toggle" aria-expanded="false">or connect an OpenAI-compatible model</button>' +
+            '<div class="connect-wall-alt-form" id="connect-wall-alt-form" hidden>' +
+              '<input type="text" id="oai-base" placeholder="Base URL (e.g. https://api.openai.com/v1)" autocomplete="off" spellcheck="false" />' +
+              '<input type="password" id="oai-key" placeholder="API key (blank for a keyless local server)" autocomplete="off" spellcheck="false" />' +
+              '<input type="text" id="oai-model" placeholder="Model (e.g. gpt-4o)" autocomplete="off" spellcheck="false" />' +
+              '<button type="button" class="btn primary" id="oai-connect">Use this model</button>' +
+              '<div class="connect-wall-status" id="oai-status" role="status" aria-live="polite"></div>' +
+            '</div>' +
+          '</div>' +
         '</div>';
       document.body.appendChild(wall);
       var codeEl = document.getElementById('connect-wall-code');
@@ -71,6 +84,44 @@ export const connectWallJs = `    // ── First-run connect wall ────�
       var finishBtn = document.getElementById('connect-wall-finish');
       if (finishBtn) finishBtn.addEventListener('click', doExchange);
       if (codeEl) codeEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doExchange(); } });
+
+      // ── OpenAI-compatible endpoint (alternative backend) ──
+      var altToggle = document.getElementById('connect-wall-alt-toggle');
+      var altForm = document.getElementById('connect-wall-alt-form');
+      if (altToggle && altForm) {
+        altToggle.addEventListener('click', function () {
+          var open = altForm.hidden;
+          altForm.hidden = !open;
+          altToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+      }
+      var oaiStatusEl = document.getElementById('oai-status');
+      function setOaiStatus(msg) { if (oaiStatusEl) oaiStatusEl.textContent = msg; }
+      function doOaiConnect() {
+        var baseEl = document.getElementById('oai-base');
+        var keyEl = document.getElementById('oai-key');
+        var modelEl = document.getElementById('oai-model');
+        var base = ((baseEl && baseEl.value) || '').trim();
+        var key = ((keyEl && keyEl.value) || '').trim();
+        var model = ((modelEl && modelEl.value) || '').trim();
+        if (!base || !model) { setOaiStatus('Base URL and model are required.'); return; }
+        setOaiStatus('Connecting…');
+        fetchJson('/api/assistant/provider/openai-compat', { method: 'POST', body: JSON.stringify({ baseUrl: base, apiKey: key, model: model }) })
+          .then(function () { return fetchJson('/api/assistant/config').catch(function () { return {}; }); })
+          .then(function (cfg) {
+            if (cfg && cfg.connected) {
+              hideConnectWall();
+              if (typeof onConnected === 'function') onConnected();
+            } else {
+              setOaiStatus('Could not connect that endpoint — check the URL, key, and model.');
+            }
+          })
+          .catch(function (err) {
+            setOaiStatus('Connect failed: ' + (err && err.message ? err.message : 'try again'));
+          });
+      }
+      var oaiBtn = document.getElementById('oai-connect');
+      if (oaiBtn) oaiBtn.addEventListener('click', doOaiConnect);
     }
 
     function hideConnectWall() {

@@ -33,13 +33,18 @@ export const accountMenuJs = `    // ── Header account menu ─────�
           onAction = function () { if (cfg.accountUrl) window.location.assign(cfg.accountUrl); };
           wrap.hidden = false;
         } else {
-          // Normal install: "Connected with Claude" + Disconnect. Shown once connected.
-          head.textContent = 'Connected with Claude';
-          action.textContent = 'Disconnect Claude';
+          // Normal install: label + Disconnect reflect the ACTIVE backend — a Claude
+          // subscription or a connected OpenAI-compatible endpoint. Shown once connected.
+          var oai = cfg && cfg.openaiCompat;
+          var onOpenai = cfg && cfg.activeProvider === 'openai_compat' && oai && oai.configured;
+          head.textContent = onOpenai ? ('Connected to ' + (oai.model || 'your model')) : 'Connected with Claude';
+          action.textContent = onOpenai ? 'Disconnect model' : 'Disconnect Claude';
           action.classList.add('danger');
           onAction = function () {
-            if (!window.confirm('Disconnect Claude? You will not be able to use Lattice while Claude is disconnected.')) return;
-            fetchJson('/api/assistant/oauth', { method: 'DELETE' }).then(function () {
+            var label = onOpenai ? 'this model' : 'Claude';
+            if (!window.confirm('Disconnect ' + label + '? You will not be able to use Lattice until a model is connected.')) return;
+            var endpoint = onOpenai ? '/api/assistant/provider/openai-compat' : '/api/assistant/oauth';
+            fetchJson(endpoint, { method: 'DELETE' }).then(function () {
               wrap.hidden = true;
               // Back to the wall — and a clean reboot once reconnected.
               showConnectWall(function () { location.reload(); });

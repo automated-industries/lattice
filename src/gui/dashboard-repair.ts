@@ -23,10 +23,10 @@ import type { Lattice } from '../lattice.js';
 import type { FeedBus } from './feed.js';
 import { updateRow, setSchemaChangeListener, type SchemaChangeEvent } from './mutations.js';
 import { extractSourceTables } from './dashboard-row.js';
-import { resolveClaudeAuth } from './assistant-routes.js';
-import { createAnthropicClient, buildSchemaContext } from './ai/chat.js';
+import { buildSchemaContext } from './ai/chat.js';
+import { resolveLlmProvider } from './ai/provider.js';
 import type { DispatchCtx } from './ai/dispatch.js';
-import { generateHtmlFile, htmlAuthorModelForAuth } from './ai/html-author.js';
+import { generateHtmlFile } from './ai/html-author.js';
 
 /** Re-authors one page against the current model; injectable for tests. */
 export type DashboardAuthor = (instruction: string, currentHtml: string) => Promise<string>;
@@ -76,10 +76,9 @@ export function createDashboardRepair(deps: DashboardRepairDeps): DashboardRepai
   async function resolveAuthor(): Promise<DashboardAuthor | null> {
     if (deps.author) return deps.author;
     try {
-      const auth = await resolveClaudeAuth(deps.db);
-      if (!auth) return null;
-      const client = createAnthropicClient(auth);
-      const model = htmlAuthorModelForAuth(auth);
+      const provider = await resolveLlmProvider(deps.db);
+      if (!provider) return null;
+      const { client, authorModel: model } = provider;
       const ctx = { db: deps.db, validTables: deps.validTables() } as unknown as DispatchCtx;
       return async (instruction, currentHtml) => {
         const schema = await buildSchemaContext(ctx);

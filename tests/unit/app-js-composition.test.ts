@@ -375,8 +375,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // mtBuildModel carries connectorToolkit through, and foldersModel keeps
 // source-tier tables that are connected (the empty state's "add a source"
 // promise). Length + hash recaptured.
-const ORIGINAL_LENGTH = 697770;
-const ORIGINAL_SHA256 = 'ad1241a6727b8f2358a6400b031baf51256571245398e2575a0c736a1fc8f587';
+// The connect wall gains an "or connect an OpenAI-compatible model" alternative to
+// Connect with Claude (a collapsible base-URL/key/model form → POST
+// /api/assistant/provider/openai-compat, then re-checks config.connected). The account
+// menu + settings drawer label + disconnect are provider-aware (an OpenAI-compatible
+// backend shows "Connected to <model>" and disconnects via the provider endpoint).
+// Recaptured.
+const ORIGINAL_LENGTH = 702046;
+const ORIGINAL_SHA256 = '507cb8773d336ee37d080ce4634806fde8716197bd268d7c56b4cf69236172ac';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
