@@ -66,12 +66,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   signals when the title lands and the list re-fetches, so the friendly summary
   ("Company Overview") replaces the verbatim message ("tell me about my company").
 
-- **In Analytics, dropping a file targets just the Gladys chat window.** The
-  drag-drop overlay used to cover the whole screen in every view; in Analytics it is
-  now scoped to the chat dock, so a file dropped onto the chat is staged into the
-  composer (removable chips above the box) and a drop elsewhere is ignored — the drop
-  target matches where the file goes. Configure is unchanged: the whole window is the
-  drop zone and a drop ingests immediately.
+- **File drag-drop is scoped to one surface per view, and dropping a folder works.**
+  The drag-drop overlay used to cover the whole screen; the drop is now scoped to a
+  single target and a drop elsewhere is ignored — the target matches where the file
+  goes. In Analytics that target is the Gladys chat window (a dropped file is staged
+  into the composer as removable chips for review + send); in Configure it is the
+  Inputs column only (a dropped file ingests immediately — the Model and Outputs areas
+  are not drop targets). Dropping a **folder** now works too: it is expanded into its
+  files (recursively) and each is ingested/staged, instead of failing with "Load
+  failed".
+
+- **Word / PowerPoint / Excel and other documents preview and extract in the desktop
+  app.** In the packaged desktop app, dropping a `.docx` (or `.doc` / `.pptx` /
+  `.xlsx` / OpenDocument / EPUB) file showed "No inline preview" and pulled no text
+  into search or the assistant, because the document parsers were left out of the app
+  bundle. They are now bundled, so document text extracts and previews on every
+  surface — terminal, desktop, and cloud — exactly as it already did on the web.
+
+- **The assistant responds to a dropped attachment even with no message.** Dropping a
+  file into the chat with an empty box now still gets a reply — the attachment is
+  processed and the assistant looks at it — instead of the file being added silently
+  with no response.
+
+- **A dropped-out AI backend sends you back to setup.** If the assistant's model
+  backend becomes disconnected mid-use (credentials removed or no longer valid), the
+  first-run connect screen reappears so you can reconnect, rather than leaving chat in
+  a broken state. A one-off hiccup or a usage limit does not eject you.
+
+- **Every form uses the same field style.** The connection forms (Connect a Database,
+  Migrate to cloud) rendered their inputs with a different fill, corner radius, and
+  padding than the rest of the app; they now use the same rounded field style as the
+  setup screen and every other form, so fields look consistent everywhere.
 
 - **Switching workspaces now refreshes an open Settings / Version-history panel.**
   With Settings (or Version history) open, switching to another workspace updated the
@@ -81,6 +106,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   overlay.
 
 ### Changed
+
+- **The first-run screen is a guided setup wizard.** Connecting the assistant now
+  walks through a short flow: choose a backend (a Claude account or any
+  OpenAI-compatible model), fill in its details (the Connect button stays faded until
+  the required fields are filled), then a **"Testing your AI"** step runs a real check
+  before you continue — if it fails you go back to the model screen with the error, and
+  only a working connection proceeds to the dashboard. From Settings, an
+  OpenAI-compatible backend is now editable in place (base URL / key / model) and is
+  re-tested on save; a failed test does not save.
+
+- **One consistent assistant behavior — the aggressiveness selector is gone.** The
+  per-user "inference aggressiveness" slider has been removed; the assistant now uses a
+  single high default for everyone, so its auto-linking and enrichment behave the same
+  across every workspace and account.
 
 - **Ingestion questions live in a dedicated Data Questions tab — no more surprise
   view switches.** When ingesting files raises a clarifying question, it no longer

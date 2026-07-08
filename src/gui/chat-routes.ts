@@ -676,11 +676,16 @@ export async function dispatchChatRoute(
     sendJson(res, { error: (e as Error).message }, 400);
     return true;
   }
-  const message = typeof body.message === 'string' ? body.message.trim() : '';
-  if (!message) {
+  const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
+  const hasAttachments = Array.isArray(body.attachedFiles) && body.attachedFiles.length > 0;
+  // A turn needs SOMETHING to act on — a message OR an attachment. A files-only send
+  // (drop a file into the assistant with no text) still gets a response: synthesize a
+  // directive so the model reads the attached files (the attached-files note names them).
+  if (!rawMessage && !hasAttachments) {
     sendJson(res, { error: 'message is required' }, 400);
     return true;
   }
+  const message = rawMessage || 'Take a look at the attached file(s).';
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
 
   // Fail CLOSED: on a cloud we must know who this is before creating or reading
