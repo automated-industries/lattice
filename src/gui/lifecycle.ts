@@ -29,6 +29,7 @@ import { FeedBus } from './feed.js';
 import { ensureLineageTable } from './lineage-store.js';
 import { createFileLoopbackWatcher } from './file-watcher.js';
 import { RenderProgressBus } from './render-progress.js';
+import { ChatProgressBus } from './chat-progress.js';
 import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
 import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
@@ -588,6 +589,8 @@ export async function openConfig(
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),
+    chatProgress: new ChatProgressBus(),
+    chatJobs: Promise.resolve(),
     renderAbort: new AbortController(),
     renderState: { phase: 'idle', tables: {} },
     maskedReadViews,
@@ -1052,9 +1055,17 @@ export async function openWithinTimeout(
  */
 export async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
   const feed = active.feed;
+  // Carry the chat bus + job FIFO across the reopen too (same rationale as the feed):
+  // an in-flight chat job keeps publishing to the SAME bus the already-connected sockets
+  // subscribed to, and a queued follow-up message still runs after the current one.
+  // disposeActive leaves all three untouched.
+  const chatProgress = active.chatProgress;
+  const chatJobs = active.chatJobs;
   await disposeActive(active);
   const next = await openConfig(active.configPath, active.outputDir, autoRender);
   next.feed = feed;
+  next.chatProgress = chatProgress;
+  next.chatJobs = chatJobs;
   // Re-render in the background; the caller awaits this reopen (fast) but the
   // render runs detached, so the handler responds without blocking on it.
   startBackgroundRender(next);

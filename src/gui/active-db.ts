@@ -7,6 +7,7 @@ import type { FillLlm } from '../schema/computed-fill.js';
 import type { FeedBus } from './feed.js';
 import type { FileLoopbackWatcher } from './file-watcher.js';
 import type { RenderProgressBus } from './render-progress.js';
+import type { ChatProgressBus } from './chat-progress.js';
 import { getAsyncOrSync } from '../db/adapter.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { isInternalNativeEntity } from '../framework/native-entities.js';
@@ -138,6 +139,19 @@ export interface ActiveDb {
    * target; replaced wholesale on switch.
    */
   renderProgress: RenderProgressBus;
+  /**
+   * In-process bus for streaming a chat turn's progress to the GUI over the
+   * multiplexed `/api/stream` WebSocket — chat text lives HERE, not on a held-open
+   * POST response. Carried ACROSS a `reopenSameConfig` (like {@link feed}) so an
+   * in-flight chat job + already-connected sockets keep the same bus instance.
+   */
+  chatProgress: ChatProgressBus;
+  /**
+   * Per-workspace FIFO for the heavy chat loop: each queued turn's background job
+   * chains onto this so a second message runs only after the first finishes
+   * (serialized per workspace). Init `Promise.resolve()`; carried across reopen.
+   */
+  chatJobs: Promise<void>;
   /**
    * Aborts the in-flight background render for this workspace. {@link disposeActive}
    * fires it before closing the DB so the render loop bails before its next query
