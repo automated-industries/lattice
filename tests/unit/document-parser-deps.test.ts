@@ -62,3 +62,52 @@ describe('document-parser dependencies (2.3.0 regression guard)', () => {
     }
   });
 });
+
+/**
+ * Regression guard for the packaged-desktop document-extraction bug.
+ *
+ * The parsers are lazy-loaded so a missing one degrades only that one format. The
+ * lazy load MUST use a LITERAL `import('<name>')`: the packaged desktop app is a
+ * `deno desktop` bundle with no node_modules, and its static bundler only includes
+ * dynamic imports whose specifier is a string literal. A runtime *variable*
+ * specifier (the old `loadParser(specifier: string)` → `await import(specifier)`)
+ * is invisible to that bundler, so EVERY parser was silently dropped from the
+ * desktop app and every dragged Office document extracted nothing (docx showed
+ * "No inline preview"; pdf was masked only because it has an iframe fallback).
+ *
+ * This locks in the literal-import form so a refactor back to a variable specifier
+ * fails loudly here instead of shipping a desktop app that can't read documents.
+ */
+const PARSER_FILES: Record<string, string[]> = {
+  'src/gui/ai/doc/ooxml.ts': ['mammoth', 'unpdf', 'word-extractor'],
+  'src/gui/ai/doc/helpers.ts': ['fflate'],
+};
+
+describe('document parsers are bundleable by the desktop static bundler', () => {
+  for (const [rel, parsers] of Object.entries(PARSER_FILES)) {
+    const src = readFileSync(resolve(REPO_ROOT, rel), 'utf8');
+    for (const name of parsers) {
+      it(`${rel} loads "${name}" via a LITERAL import() (bundled into the desktop app)`, () => {
+        // Accept single or double quotes; the point is a string-literal specifier.
+        const literal = src.includes(`import('${name}')`) || src.includes(`import("${name}")`);
+        expect(
+          literal,
+          `${rel} must load "${name}" via a literal import('${name}') so the ` +
+            `\`deno desktop\` bundler includes it — a variable specifier ships a ` +
+            `desktop app that silently extracts nothing from documents`,
+        ).toBe(true);
+      });
+    }
+  }
+
+  it('loadParser takes a literal-import thunk, never a runtime string specifier', () => {
+    const helpers = readFileSync(resolve(REPO_ROOT, 'src/gui/ai/doc/helpers.ts'), 'utf8');
+    // The thunk signature — proves callers pass `() => import('x')`, not a bare name.
+    expect(helpers).toContain('load: () => Promise<unknown>');
+    // The old, un-bundleable form must be gone.
+    expect(
+      helpers.includes('import(specifier)'),
+      'loadParser must not `await import(specifier)` a variable — invisible to the desktop bundler',
+    ).toBe(false);
+  });
+});
