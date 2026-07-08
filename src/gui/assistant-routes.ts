@@ -216,21 +216,19 @@ export interface VoiceCredential {
 const STT_PROVIDER_KIND = 'stt_provider';
 const AGGRESSIVENESS_KIND = 'assistant_aggressiveness';
 
-/** Default inference aggressiveness (0 = conservative … 1 = aggressive). */
-export const DEFAULT_AGGRESSIVENESS = 0.85;
+/** Inference aggressiveness (0 = conservative … 1 = aggressive), fixed for all users. */
+export const DEFAULT_AGGRESSIVENESS = 0.9;
 
 /**
- * The user's "inference aggressiveness" — a single behaviour knob (0 = only
+ * The assistant's "inference aggressiveness" — a single behaviour knob (0 = only
  * high-confidence, conservative changes; 1 = eagerly add/enrich/link/extrapolate).
- * Drives the model sampling temperature AND how liberally ingest materializes
- * new junctions. A USER preference (machine-local `preferences.json`), not a
- * workspace secret — so it persists across workspaces and never shows up in a
- * workspace's `secrets` object. Falls back to {@link DEFAULT_AGGRESSIVENESS}.
+ * Drives the model sampling temperature AND how liberally ingest materializes new
+ * junctions. This is now FIXED at {@link DEFAULT_AGGRESSIVENESS} for every user — the
+ * per-user selector was removed; a high, eager setting is the intended experience — so a
+ * stale stored preference no longer applies.
  */
 export function getAggressiveness(): number {
-  const n = readPreferences().aggressiveness;
-  if (!Number.isFinite(n)) return DEFAULT_AGGRESSIVENESS;
-  return Math.min(1, Math.max(0, n));
+  return DEFAULT_AGGRESSIVENESS;
 }
 
 /**
@@ -530,13 +528,13 @@ export async function dispatchAssistantRoute(
     }
     const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
     const model = typeof body.model === 'string' ? body.model.trim() : '';
-    const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+    const rawKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
     if (!/^https?:\/\/\S+$/i.test(baseUrl)) {
-      sendJson(res, { error: 'baseUrl must be an http(s) URL' }, 400);
+      sendJson(res, { ok: false, error: 'baseUrl must be an http(s) URL' }, 400);
       return true;
     }
     if (!model) {
-      sendJson(res, { error: 'model is required' }, 400);
+      sendJson(res, { ok: false, error: 'model is required' }, 400);
       return true;
     }
     const headers =
@@ -547,8 +545,44 @@ export async function dispatchAssistantRoute(
               .map(([k, v]) => [k, v as string]),
           ) as Record<string, string>)
         : undefined;
+    const prior = readOpenAiCompatConfig();
+    // On a settings EDIT a blank key means "keep the current key" (the key is never
+    // shown back, so an empty field is not a request to clear it); on first connect there
+    // is no prior, so a blank key = a keyless local server.
+    const apiKey = rawKey === '' && prior ? prior.apiKey : rawKey;
     setOpenAiCompatConfig({ baseUrl, apiKey, model, ...(headers ? { headers } : {}) });
+    // `test: true` (the settings model-edit save) verifies the endpoint actually responds
+    // and REVERTS to the prior config if it does not — a bad edit never replaces a working
+    // one. The onboarding flow saves WITHOUT `test` and runs POST /api/assistant/test as
+    // its own step (so it can send the user back to the setup screen on failure).
+    if (body.test === true) {
+      const { resolveLlmProvider, smokeTestProvider } = await import('./ai/provider.js');
+      const provider = await resolveLlmProvider(db);
+      const result = provider
+        ? await smokeTestProvider(provider)
+        : { ok: false as const, error: 'Could not resolve the model provider.' };
+      if (!result.ok) {
+        if (prior) setOpenAiCompatConfig(prior);
+        else clearOpenAiCompatConfig();
+        sendJson(res, { ok: false, error: result.error });
+        return true;
+      }
+    }
     sendJson(res, { ok: true, activeProvider: 'openai_compat', model, baseUrl });
+    return true;
+  }
+
+  // POST /api/assistant/test — smoke-test the ACTIVE provider so the onboarding "Testing
+  // your AI" step (and any runtime re-check) can verify the model actually responds.
+  // Always 200; the client branches on `ok`.
+  if (method === 'POST' && pathname === '/api/assistant/test') {
+    const { resolveLlmProvider, smokeTestProvider } = await import('./ai/provider.js');
+    const provider = await resolveLlmProvider(db);
+    if (!provider) {
+      sendJson(res, { ok: false, error: 'No model provider is configured.' });
+      return true;
+    }
+    sendJson(res, await smokeTestProvider(provider));
     return true;
   }
 

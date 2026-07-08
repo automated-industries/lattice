@@ -381,8 +381,13 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // menu + settings drawer label + disconnect are provider-aware (an OpenAI-compatible
 // backend shows "Connected to <model>" and disconnects via the provider endpoint).
 // Recaptured.
-const ORIGINAL_LENGTH = 702046;
-const ORIGINAL_SHA256 = '507cb8773d336ee37d080ce4634806fde8716197bd268d7c56b4cf69236172ac';
+// The first-run connect wall is now a wizard (choose backend → Claude/OpenAI-compatible
+// setup with a faded-until-filled Connect → "Testing your AI" → Analytics/back-with-error).
+// The settings Assistant panel gains editable OpenAI model details (Save & test, revert on
+// failure) and drops the inference-aggressiveness slider (now fixed at 0.9 for everyone).
+// Recaptured.
+const ORIGINAL_LENGTH = 705717;
+const ORIGINAL_SHA256 = 'b009cb0af8a7bc809656b1765c70bbcbd15b6b4225f716daa5742c189206b842';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
