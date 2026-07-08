@@ -175,6 +175,44 @@ describe('dashboard auto-repair', () => {
     warn.mockRestore();
   });
 
+  it('a debounced flush against a closed workspace db is caught, never an unhandled rejection', async () => {
+    // Regression: onSchemaChange arms a debounce; if the workspace db closes before it
+    // fires (a switch/teardown, or a test that closes the db directly — bypassing
+    // dispose()), flush()'s first db.query rejects with _notInitError. That runs on a
+    // fire-and-forget chain (`inFlight`, awaited only by settled()), so without a .catch
+    // it becomes an UNHANDLED rejection that fails the whole test run on slower runners.
+    const localDir = mkdtempSync(join(tmpdir(), 'lattice-dashrepair-closed-'));
+    const localDb = new Lattice(join(localDir, 't.db'), { encryptionKey: 'k' });
+    registerNativeEntities(localDb);
+    await localDb.init();
+    await localDb.insert('dashboards', {
+      id: 'd1',
+      title: 'd1',
+      html:
+        `<!doctype html><html><body>v1<script>lattice.query('orders')</scr` + `ipt></body></html>`,
+      source_tables: JSON.stringify(['orders']),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = createDashboardRepair({
+      db: localDb,
+      feed: new FeedBus(),
+      validTables: () => new Set(['sales', 'dashboards']),
+      author: () => Promise.resolve('<!doctype html><html><body>repaired</body></html>'),
+      debounceMs: 5,
+    });
+    h.onSchemaChange(renameOrders); // arm the debounce
+    localDb.close(); // close BEFORE it fires — bypasses h.dispose(), leaving the timer armed
+    await new Promise((r) => setTimeout(r, 25)); // let the debounce fire → flush hits the closed db
+
+    // The .catch backstop turned the _notInitError into a warning; the chain resolved,
+    // so settled() resolves (pre-fix it rejected + leaked an unhandled rejection).
+    await expect(h.settled()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('auto-repair pass failed'));
+    warn.mockRestore();
+    h.dispose();
+    rmSync(localDir, { recursive: true, force: true });
+  });
+
   it('fires from the shared schema-audit chokepoint — breaking ops only', async () => {
     await seedDashboard('consumer', ['orders']);
     const author = vi.fn(() =>

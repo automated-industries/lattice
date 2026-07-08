@@ -161,8 +161,23 @@ export function createDashboardRepair(deps: DashboardRepairDeps): DashboardRepai
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      inFlight = inFlight.then(() => flush());
+      // CATCH the pass: it is fire-and-forget (only tests await `inFlight`), and its
+      // first db read runs OUTSIDE flush's per-dashboard try/catch — so a workspace
+      // closed out from under a debounced flush (a switch/teardown, or a test that
+      // closes the db directly, bypassing dispose()) would otherwise surface as an
+      // UNHANDLED rejection. Surface it as a warning and move on (this is best-effort
+      // background repair; the pages keep their current content).
+      inFlight = inFlight
+        .then(() => flush())
+        .catch((e: unknown) => {
+          console.warn(
+            '[lattice] dashboard auto-repair pass failed (kept the current pages): ' +
+              (e instanceof Error ? e.message : String(e)),
+          );
+        });
     }, debounceMs);
+    // Don't let a pending auto-repair keep the event loop alive past teardown.
+    timer.unref();
   }
 
   return {

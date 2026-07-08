@@ -88,21 +88,6 @@ if (!process.env.LATTICE_CONFIG_DIR) {
 delete process.env.LATTICE_ROOT;
 
 /**
- * Don't seed the "Welcome to Lattice!" onboarding dashboard by default in the vitest
- * suite. The seed runs an extra `db.migrate` on the workspace-open path, and the
- * integration tests open + tear down GUI workspaces rapidly — that extra open-path work
- * shifts the timing of the lifecycle's fire-and-forget background tasks (converge /
- * render) enough to surface a pre-existing teardown race as an unhandled rejection on
- * slower runners (Windows), failing the run even though every test passes. The tests that
- * DO exercise the seed enable it explicitly (welcome-dashboard.test.ts calls the seeder
- * directly; the e2e boots with it on), so coverage is unaffected. A test may still opt in
- * by setting the var before this file runs.
- */
-if (!process.env.LATTICE_SEED_WELCOME) {
-  process.env.LATTICE_SEED_WELCOME = '0';
-}
-
-/**
  * Per-worker setup: make the disposable Postgres URL that the global setup
  * provisioned visible to the gated `*-postgres.test.ts` modules, which read
  * `process.env.LATTICE_TEST_PG_URL` at import time.
