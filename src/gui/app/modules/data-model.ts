@@ -318,38 +318,54 @@ export const dataModelJs = `    // ───────────────
         var asstDiscEndpoint = asstOnOpenai
           ? '/api/assistant/provider/openai-compat'
           : '/api/assistant/oauth';
+        // When an OpenAI-compatible endpoint is active, the panel lets the user EDIT the
+        // model details in place. Saving TESTS the endpoint (server-side) and does NOT keep
+        // a broken edit — a failure reverts and is shown inline (never sends you back to
+        // onboarding). The Claude path just offers disconnect.
+        var oaiFieldsHtml = asstOnOpenai
+          ? '<div style="margin:2px 0 14px">' +
+              '<strong style="font-size:13px;display:block;margin-bottom:8px">Model details</strong>' +
+              '<input id="asst-base" style="display:block;width:100%;margin-bottom:8px" placeholder="Base URL (e.g. https://api.openai.com/v1)" value="' + escapeHtml(asstOai.baseUrl || '') + '" autocomplete="off" spellcheck="false" />' +
+              '<input id="asst-key" type="password" style="display:block;width:100%;margin-bottom:8px" placeholder="API key (leave blank to keep current)" autocomplete="off" spellcheck="false" />' +
+              '<input id="asst-model" style="display:block;width:100%;margin-bottom:8px" placeholder="Model (e.g. gpt-4o)" value="' + escapeHtml(asstOai.model || '') + '" autocomplete="off" spellcheck="false" />' +
+              '<button id="asst-save" class="btn primary">Save &amp; test</button>' +
+            '</div>'
+          : '';
         host.innerHTML =
           '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
             '<h3 style="margin:0 0 10px">Assistant</h3>' +
             // Connect happens at the first-run wall. Disconnect is ALSO offered here (not
             // only the top-bar account menu) so it is discoverable — especially desktop.
-            '<p class="lead" style="margin:0 0 10px;font-size:12px;color:var(--text-muted)">' +
+            '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
               asstConnLabel + ' Disconnecting means you will not be able to use Lattice ' +
               'until a model is connected.' +
             '</p>' +
-            '<button id="asst-disconnect" class="btn" style="margin:0 0 14px;color:var(--danger,#c0392b);border-color:var(--danger,#c0392b)">' + asstDiscLabel + '</button>' +
-            '<div style="margin:6px 0 12px">' +
-              '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">' +
-                '<strong style="font-size:13px">Inference aggressiveness</strong>' +
-                '<span id="asst-aggr-val" style="font-size:12px;color:var(--text-muted)"></span>' +
-              '</div>' +
-              '<input id="asst-aggr" type="range" min="0" max="1" step="0.05" ' +
-                'value="' + (typeof cfg.aggressiveness === 'number' ? cfg.aggressiveness : 0.5) + '" ' +
-                'style="width:100%">' +
-              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted)">' +
-                '<span>Conservative</span><span>Aggressive</span>' +
-              '</div>' +
-              '<p class="lead" style="margin:4px 0 0;font-size:12px;color:var(--text-muted)">' +
-                'How eagerly the assistant adds, enriches, and links objects (and ' +
-                'auto-creates link tables) when you drop in files. Higher extrapolates more.' +
-              '</p>' +
-            '</div>' +
-            '<div id="assistant-msg" style="margin-top:4px;font-size:12px;color:var(--text-muted)"></div>' +
+            oaiFieldsHtml +
+            '<button id="asst-disconnect" class="btn" style="margin:0;color:var(--danger,#c0392b);border-color:var(--danger,#c0392b)">' + asstDiscLabel + '</button>' +
+            '<div id="assistant-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>' +
           '</div>';
         var msg = host.querySelector('#assistant-msg');
-        // Disconnect Claude — same flow as the header account menu, surfaced here
-        // for discoverability (desktop). Only for a connected, non-managed install
-        // (a managed deployment supplies the credential centrally).
+        function setMsg(t, isError) { if (msg) { msg.textContent = t; msg.style.color = isError ? 'var(--danger,#c0392b)' : 'var(--text-muted)'; } }
+        // Save & test the edited OpenAI-compatible model (test:true → revert-on-fail).
+        var save = host.querySelector('#asst-save');
+        if (save) {
+          save.addEventListener('click', function () {
+            var b = (host.querySelector('#asst-base').value || '').trim();
+            var k = (host.querySelector('#asst-key').value || '').trim();
+            var m = (host.querySelector('#asst-model').value || '').trim();
+            if (!b || !m) { setMsg('Base URL and model are required.', true); return; }
+            save.disabled = true; setMsg('Saving and testing…');
+            fetchJson('/api/assistant/provider/openai-compat', { method: 'POST', body: JSON.stringify({ baseUrl: b, apiKey: k, model: m, test: true }) })
+              .then(function (r) {
+                save.disabled = false;
+                if (r && r.ok) setMsg('Saved and tested.');
+                else setMsg('Not saved — ' + ((r && r.error) || 'the model did not respond') + '.', true);
+              })
+              .catch(function (e) { save.disabled = false; setMsg('Not saved — ' + (e && e.message ? e.message : 'the model did not respond') + '.', true); });
+          });
+        }
+        // Disconnect — surfaced here (not only the header menu) for discoverability
+        // (desktop). Only for a connected, non-managed install.
         var disc = host.querySelector('#asst-disconnect');
         if (disc) {
           if (!(cfg.connected && cfg.managedModelAuth !== true)) disc.style.display = 'none';
@@ -362,32 +378,8 @@ export const dataModelJs = `    // ───────────────
               else location.reload();
             }).catch(function (e) {
               disc.disabled = false;
-              if (msg) msg.textContent = 'Disconnect failed: ' + (e && e.message ? e.message : 'try again');
+              setMsg('Disconnect failed: ' + (e && e.message ? e.message : 'try again'), true);
             });
-          });
-        }
-        var aggr = host.querySelector('#asst-aggr');
-        var aggrVal = host.querySelector('#asst-aggr-val');
-        function aggrLabel(v) {
-          if (v <= 0.25) return 'Conservative (' + v.toFixed(2) + ')';
-          if (v >= 0.75) return 'Aggressive (' + v.toFixed(2) + ')';
-          return 'Balanced (' + v.toFixed(2) + ')';
-        }
-        if (aggr) {
-          if (aggrVal) aggrVal.textContent = aggrLabel(parseFloat(aggr.value));
-          aggr.addEventListener('input', function () {
-            if (aggrVal) aggrVal.textContent = aggrLabel(parseFloat(aggr.value));
-          });
-          aggr.addEventListener('change', function () {
-            msg.textContent = 'Saving…';
-            fetch('/api/assistant/aggressiveness', {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ value: parseFloat(aggr.value) }),
-            })
-              .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
-              .then(function () { msg.textContent = 'Saved.'; })
-              .catch(function (e) { msg.textContent = 'Failed: ' + e.message; });
           });
         }
       }).catch(function (e) {

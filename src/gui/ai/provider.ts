@@ -1,6 +1,6 @@
 import type { Lattice } from '../../lattice.js';
 import type { LlmClient } from './chat.js';
-import { createAnthropicClient } from './chat.js';
+import { createAnthropicClient, DEFAULT_MODEL } from './chat.js';
 import { createOpenAiCompatibleClient } from './openai-client.js';
 import { resolveClaudeAuth, isManagedModelAuth } from '../assistant-routes.js';
 import { htmlAuthorModelForAuth } from './html-author.js';
@@ -89,6 +89,33 @@ export async function resolveLlmProvider(db: Lattice | null): Promise<ResolvedPr
 /** The common case: just the active provider's client (or null if none configured). */
 export async function resolveLlmClient(db: Lattice | null): Promise<LlmClient | null> {
   return (await resolveLlmProvider(db))?.client ?? null;
+}
+
+/**
+ * A minimal "does the model actually respond" check — the onboarding "Testing your AI"
+ * step and the settings model-edit save both run this against the resolved provider.
+ * Returns `{ ok: true }` when the model answers, or `{ ok: false, error }` with the
+ * failure reason (never throws).
+ */
+export async function smokeTestProvider(
+  provider: ResolvedProvider,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const turn = await provider.client.runTurn({
+      model: DEFAULT_MODEL,
+      system: 'You are a connectivity check. Reply with the single word OK.',
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      tools: [],
+      temperature: 0,
+      maxTokens: 16,
+      onText: () => undefined,
+    });
+    return typeof turn.text === 'string' && turn.text.trim().length > 0
+      ? { ok: true }
+      : { ok: false, error: 'The model returned an empty response.' };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 /** True when SOME provider is configured (Claude connected or an OpenAI-compatible

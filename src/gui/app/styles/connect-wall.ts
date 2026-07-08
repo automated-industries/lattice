@@ -17,41 +17,57 @@ export const connectWallCss = `    /* ── First-run connect wall ────
       border-radius: 16px; box-shadow: var(--shadow-3, 0 20px 60px rgba(15, 23, 42, 0.18));
       padding: 32px 28px;
     }
+    .connect-wall-card.cw-wide { max-width: 560px; }
     .connect-wall-mark { line-height: 1; margin-bottom: 10px; }
     .connect-wall-mark svg { width: 44px; height: 44px; display: inline-block; }
-    .connect-wall-card h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; color: var(--text); }
-    .connect-wall-card p { margin: 0 auto 20px; max-width: 40ch; color: var(--text-muted); font-size: 14px; line-height: 1.5; }
-    /* The wall's CTA is the shared black Claude-logo button (.connect-claude-btn),
-       sized up a touch for the first-run wall. */
-    .connect-wall .connect-claude-btn { padding: 12px 16px; border-radius: 10px; font-size: 15px; }
-    .connect-wall .connect-claude-btn .claude-logo { width: 20px; height: 20px; }
-    .connect-wall-paste { margin-top: 22px; text-align: left; }
-    .connect-wall-paste label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
-    .connect-wall-row { display: flex; gap: 8px; }
-    .connect-wall-row input {
-      flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 12px;
-      background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 8px; font: inherit; font-size: 14px;
-    }
-    .connect-wall-row input:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
-    .connect-wall-row .btn { flex: 0 0 auto; height: 40px; }
-    .connect-wall-status { margin-top: 8px; min-height: 18px; font-size: 12.5px; color: var(--text-muted); }
+    .connect-wall-card h1 { margin: 0 0 6px; font-size: 22px; font-weight: 700; color: var(--text); }
+    .connect-wall-card p { margin: 0 auto 18px; max-width: 46ch; color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+    .connect-wall-card .cw-tagline { margin: 0 auto 18px; font-size: 13px; color: var(--text-muted); }
+    .connect-wall-card .cw-lead { margin: 0 auto 16px; }
+    .connect-wall-card .cw-security { margin: 18px auto 0; max-width: 52ch; font-size: 12px; line-height: 1.5; }
 
-    /* Alternative backend: an OpenAI-compatible endpoint. Collapsed by default. */
-    .connect-wall-alt { margin-top: 18px; text-align: left; }
-    .connect-wall-alt-toggle {
-      background: none; border: none; padding: 0; cursor: pointer;
-      font-size: 12.5px; color: var(--text-muted); text-decoration: underline;
+    /* The wall's Claude CTA is the shared black Claude-logo button, sized up a touch. */
+    .connect-wall .connect-claude-btn { padding: 12px 16px; border-radius: 10px; font-size: 15px; margin: 0 auto 6px; }
+    .connect-wall .connect-claude-btn .claude-logo { width: 20px; height: 20px; }
+
+    /* Step 1 — the two backend choices (Claude account vs any OpenAI-compatible endpoint). */
+    .cw-choices { display: flex; gap: 12px; margin: 6px 0 4px; }
+    .cw-choice {
+      flex: 1 1 0; min-width: 0; text-align: center; cursor: pointer;
+      padding: 18px 14px; border: 1px solid var(--border-strong); border-radius: 12px;
+      background: var(--surface); color: var(--text); display: flex; flex-direction: column; gap: 3px;
+      transition: border-color .12s, box-shadow .12s, background .12s;
     }
-    .connect-wall-alt-toggle:hover { color: var(--text); }
-    .connect-wall-alt-form { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .connect-wall-alt-form input {
-      width: 100%; height: 40px; padding: 0 12px; box-sizing: border-box;
-      border: 1px solid var(--border); border-radius: 8px;
-      background: var(--surface); color: var(--text); font-size: 13px;
+    .cw-choice:hover { border-color: var(--accent); box-shadow: var(--glow-focus); }
+    .cw-choice strong { font-size: 15px; font-weight: 700; }
+    .cw-choice span { font-size: 12px; color: var(--text-muted); }
+
+    /* Wall inputs use the shared bubble field style (.lattice-input, below), stacked. */
+    .connect-wall-card .cw-input { display: block; width: 100%; margin: 0 auto 10px; box-sizing: border-box; text-align: left; }
+
+    .connect-wall-status { margin-top: 4px; min-height: 18px; font-size: 12.5px; color: var(--text-muted); text-align: center; }
+    .connect-wall-status.cw-error { color: var(--danger, #c0392b); }
+
+    /* Back / Connect actions. Connect fades until required fields are filled (disabled). */
+    .cw-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; gap: 10px; }
+    .cw-back {
+      background: none; border: none; padding: 8px 4px; cursor: pointer;
+      font: inherit; font-size: 14px; color: var(--text-muted);
     }
-    .connect-wall-alt-form input:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
-    .connect-wall-alt-form .btn { height: 40px; }
+    .cw-back:hover { color: var(--text); }
+    .cw-connect {
+      padding: 9px 18px; border: none; border-radius: 8px; cursor: pointer;
+      font: inherit; font-size: 14px; font-weight: 600; color: #fff; background: var(--accent);
+    }
+    .cw-connect:hover:not(:disabled) { filter: brightness(1.05); }
+    .cw-connect:disabled { opacity: .45; cursor: not-allowed; }
+
+    .cw-spinner {
+      width: 34px; height: 34px; margin: 4px auto 14px; border-radius: 50%;
+      border: 3px solid var(--border); border-top-color: var(--accent);
+      animation: cw-spin .8s linear infinite;
+    }
+    @keyframes cw-spin { to { transform: rotate(360deg); } }
 
     /* ── Usage-limit banner (app-wide) ──────────────────── */
     .limit-banner {
