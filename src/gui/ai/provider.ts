@@ -2,7 +2,7 @@ import type { Lattice } from '../../lattice.js';
 import type { LlmClient } from './chat.js';
 import { createAnthropicClient, DEFAULT_MODEL } from './chat.js';
 import { createOpenAiCompatibleClient } from './openai-client.js';
-import { resolveClaudeAuth, isManagedModelAuth } from '../assistant-routes.js';
+import { resolveClaudeAuth, isClaudeConnected, isManagedModelAuth } from '../assistant-routes.js';
 import { htmlAuthorModelForAuth } from './html-author.js';
 import { noteClaudeError, type ClaudeLimitKind } from './limit-state.js';
 import {
@@ -149,8 +149,16 @@ export async function isAnyProviderConfigured(db: Lattice | null): Promise<boole
 /**
  * The RESOLVED wire kind for the active provider, WITHOUT building a client — so the
  * server gate can cheaply decide "any provider connected?" and "does the Claude
- * usage-limit apply?" (only the Anthropic wire does). Mirrors {@link resolveLlmProvider}'s
- * order + endpoint wire-pick exactly. Returns null when nothing is configured.
+ * usage-limit apply?" (only the Anthropic wire does). Returns null when nothing is
+ * configured.
+ *
+ * Uses the CHEAP presence check {@link isClaudeConnected} for the Claude-subscription
+ * branch — NOT {@link resolveLlmProvider}'s `resolveClaudeAuth`, which can trigger a
+ * network token-refresh + credential write. This gate is on the hot chat/ingest/import
+ * path and must not refresh (the route does the real refresh where the token is actually
+ * used). It also makes this predicate identical to GET /api/assistant/config's `connected`
+ * (both presence), so the server gate and the client wall never disagree. The wire-pick
+ * order + endpoint detection otherwise mirror {@link resolveLlmProvider}.
  */
 export async function resolvedProviderKind(db: Lattice | null): Promise<LlmProviderKind | null> {
   const order: LlmProviderKind[] = isManagedModelAuth()
@@ -162,7 +170,7 @@ export async function resolvedProviderKind(db: Lattice | null): Promise<LlmProvi
     if (kind === 'openai_compat') {
       const cfg = readOpenAiCompatConfig();
       if (cfg) return isAnthropicEndpoint(cfg.baseUrl) ? 'anthropic' : 'openai_compat';
-    } else if (await resolveClaudeAuth(db)) {
+    } else if (await isClaudeConnected(db)) {
       return 'anthropic';
     }
   }
