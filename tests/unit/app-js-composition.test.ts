@@ -391,8 +391,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // disconnects; file drag-drop is scoped to one surface per view (chat dock in Analytics,
 // the Inputs column in Configure) and expands a dropped folder into its files, falling
 // back to the flat file list when the Entries API yields no entry. Recaptured.
-const ORIGINAL_LENGTH = 709502;
-const ORIGINAL_SHA256 = 'e416e55493417b918a4807233dd5196466f110e42e09f4895f546f11001db7ac';
+// The dashboard iframe bridge gains a navigation-only act() (open Configure / an
+// add-source flow / the assistant), and boot opens the seeded Welcome dashboard by
+// default when it exists. Recaptured.
+const ORIGINAL_LENGTH = 712409;
+const ORIGINAL_SHA256 = 'e6293b515c97e26361039e46d25a817df997f5534c2b85e53294a7bbd2c7333b';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

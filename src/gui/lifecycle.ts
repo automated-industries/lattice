@@ -5,6 +5,7 @@ import type { TableDefinition } from '../types.js';
 import { parseConfigFile } from '../config/parser.js';
 import { upgradeConfigShape } from '../config/config-upgrade.js';
 import { upgradeLegacyData } from '../framework/data-upgrade.js';
+import { seedWelcomeDashboard } from './welcome-dashboard.js';
 import { readIdentity, getOrCreateMasterKey, healRawDbUrl } from '../framework/user-config.js';
 import { registerNativeEntities, adoptNativeEntities } from '../framework/native-entities.js';
 import { reregisterDbSourceTables } from '../connectors/db-source/reregister.js';
@@ -390,6 +391,22 @@ export async function openConfig(
   // sentinel-gated, so steady-state cost is ~one round-trip.
   if (!memberOpen) {
     await upgradeLegacyData(db);
+    // Seed the standard "Welcome to Lattice!" onboarding dashboard into a new
+    // workspace (once, sentinel-gated; skipped if the user later deletes it). Owner
+    // side only — a scoped member has no write grant. Best-effort: never fatal to the
+    // open (the workspace is fully usable without it, and it retries next owner open).
+    // `LATTICE_SEED_WELCOME=0` opts out (used by e2e specs that assert the empty state).
+    if (process.env.LATTICE_SEED_WELCOME !== '0') {
+      try {
+        await seedWelcomeDashboard(db);
+      } catch (e) {
+        console.warn(
+          `[lattice] welcome-dashboard seed skipped (will retry next open): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
   }
 
   // Tables the owner-side converge couldn't manage (e.g. owned by a different
