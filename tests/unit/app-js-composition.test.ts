@@ -397,8 +397,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // The first-run "Other AI Endpoint" step now also covers the Claude API, and a failed
 // onboarding model-test forgets the just-saved endpoint (so a broken provider can't be
 // left connected and skip the wall). Recaptured.
-const ORIGINAL_LENGTH = 713078;
-const ORIGINAL_SHA256 = 'f4c7daeafffc604c1dbd0c6834ac2f53f57edfe300809af9147516b54f8ebb7c';
+// Chat text now streams live; a tool round's assistant_message_end carries hadTools, so
+// the client reaps that round's pre-tool preamble bubble instead of leaving it. Recaptured.
+const ORIGINAL_LENGTH = 713589;
+const ORIGINAL_SHA256 = '0e6ee0824e84f7fce8b1a13d0cc6a27e9b095f9fa304cce6be9fa336fb56092d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **The assistant's answer now streams in as it's written.** Chat replies appear
+  token-by-token as the model produces them, instead of the whole answer landing at once
+  after it finishes — so a long answer starts showing in a second or two. Its private
+  "let me look…" step-narration before a tool call stays hidden (only the final answer
+  streams). One edge to note: the invisible auto-recovery for an over-long prompt (trim
+  the oldest bulky context and retry) now only kicks in when nothing has streamed yet —
+  in practice a "prompt too long" error is raised before any text streams, so behavior is
+  unchanged, but a mid-stream context error would surface rather than silently retry.
+
 - **Every new workspace opens on a "Welcome to Lattice!" dashboard.** Instead of a
   blank canvas, a fresh workspace now starts in the Analytics view with a standard
   onboarding dashboard already open in the middle: a plain-English tour of what Lattice
