@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
-import { getAsyncOrSync } from '../db/adapter.js';
+import { isCloudChat, resolveChatOwnerId } from './chat-identity.js';
 import { FeedBus } from './feed.js';
 import { getAggressiveness, aggressivenessToTemperature } from './assistant-routes.js';
 import {
@@ -234,23 +234,6 @@ export async function ingestReferenceMaterial(
     console.warn('[chat] reference-material ingest failed:', (e as Error).message);
     return '';
   }
-}
-
-/** A chat is private to whoever created it. We never rely on Postgres RLS alone:
- *  the app connects as a BYPASSRLS role, so RLS does NOT filter the owner's
- *  connection — every chat read MUST also filter by this key in the app layer,
- *  and every chat write MUST stamp it. On a cloud the key is the connection's
- *  Postgres login role (`session_user`, the same identity the cloud RLS keys on);
- *  on a local single-user SQLite DB there is no cross-user boundary so it is null
- *  and no scoping is applied. */
-function isCloudChat(db: Lattice): boolean {
-  return db.getDialect() === 'postgres';
-}
-async function resolveChatOwnerId(db: Lattice): Promise<string | null> {
-  if (!isCloudChat(db)) return null; // local single-user — no per-user scoping
-  const row = await getAsyncOrSync(db.adapter, 'SELECT session_user AS u');
-  const u = row?.u;
-  return typeof u === 'string' && u.length > 0 ? u : null;
 }
 
 /**
