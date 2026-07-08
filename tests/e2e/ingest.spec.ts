@@ -26,8 +26,18 @@ async function dropFiles(page: import('@playwright/test').Page, names: string[])
     for (const name of fileNames) {
       dt.items.add(new File(['hello ' + name], name, { type: 'text/markdown' }));
     }
+    // The drop is scoped to the chat dock, so the event must land INSIDE its rect
+    // (the handler hit-tests clientX/clientY against the target) — dispatch at its
+    // center, not the default (0,0) which falls outside a docked panel.
+    const r = panel.getBoundingClientRect();
     panel.dispatchEvent(
-      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
+      new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+        clientX: r.left + r.width / 2,
+        clientY: r.top + r.height / 2,
+      }),
     );
   }, names);
 }
