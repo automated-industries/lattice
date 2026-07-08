@@ -327,7 +327,14 @@ export const onboardingJs = `    // ──────────────�
     function applyChatEvent(turn, ev) {
       if (!turn || !ev) return;
       var visible = turn.threadId === currentThreadId;
-      if (ev.type === 'assistant_message_start') {
+      if (ev.type === 'ack') {
+        // Fast contextual acknowledgement shown before the real answer. Render it as its
+        // own transient bubble and finalize any waiting typing bubble — the answer streams
+        // into a fresh bubble via the next assistant_message_start. Not persisted, so it is
+        // never replayed on reload. (For an inline answer the server streams the answer
+        // itself via text_delta, so the ack path isn't used there.)
+        if (visible) { finalizeBubble(turn.actx); turn.actx = null; anToolStatus(null); var ackb = newAssistantBubble(); setBubbleText(ackb, ev.message); }
+      } else if (ev.type === 'assistant_message_start') {
         if (visible) { finalizeBubble(turn.actx); turn.actx = newAssistantBubble(); }
         turn.assembled = '';
       } else if (ev.type === 'text_delta') {

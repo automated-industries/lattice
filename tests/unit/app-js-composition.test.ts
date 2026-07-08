@@ -412,8 +412,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // composer; and reload recovery only rebinds an in-flight row as live when it is FRESH
 // (chatTurnFresh) — a stale row orphaned by a dead process renders as an interrupted reply
 // instead of a permanent typing bubble. Recaptured.
-const ORIGINAL_LENGTH = 722850;
-const ORIGINAL_SHA256 = '60b6716214b4b65382f67f46cc812921c5be73b67bbb62c703533cb863d3217b';
+// Smart intent ack (elektra-style): a turn can now open with a fast contextual `ack` event
+// ("Got it — pulling your invoices…") rendered as a transient bubble before the answer
+// streams; the client renders the new `ack` ChatStreamEvent in applyChatEvent. Recaptured.
+const ORIGINAL_LENGTH = 723477;
+const ORIGINAL_SHA256 = 'aa3173c45d3ac1c3c5ac6a184c93b76ee156b2155646204fa0f894103cb098cc';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
