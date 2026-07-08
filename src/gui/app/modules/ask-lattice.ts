@@ -103,11 +103,12 @@ export const askLatticeJs = `
     // "Load failed"; walking the directory yields the real files instead.
     function collectDroppedFiles(dt) {
       var items = dt && dt.items;
+      // The plain, always-available file list — the fallback whenever the Entries
+      // API is absent or yields nothing (a synthetic DataTransfer, or a browser that
+      // returns null from webkitGetAsEntry). Files must NEVER be silently dropped.
+      var flat = dt && dt.files ? Array.prototype.slice.call(dt.files) : [];
       var canEntries = !!(items && items.length && typeof items[0].webkitGetAsEntry === 'function');
-      if (!canEntries) {
-        // No Entries API — fall back to the flat file list (no folder support).
-        return Promise.resolve(dt && dt.files ? Array.prototype.slice.call(dt.files) : []);
-      }
+      if (!canEntries) return Promise.resolve(flat);
       // DataTransferItems are only valid DURING the drop event, so capture every
       // entry synchronously now; the recursion below is async.
       var entries = [];
@@ -115,6 +116,9 @@ export const askLatticeJs = `
         var en = items[i].webkitGetAsEntry();
         if (en) entries.push(en);
       }
+      // No entry resolved (synthetic transfer, or webkitGetAsEntry returned null for
+      // every item) — the folder walk would yield nothing, so use the flat list.
+      if (!entries.length) return Promise.resolve(flat);
       var out = [];
       function readEntry(entry) {
         if (entry.isFile) {
@@ -140,6 +144,6 @@ export const askLatticeJs = `
         }
         return Promise.resolve();
       }
-      return Promise.all(entries.map(readEntry)).then(function () { return out; });
+      return Promise.all(entries.map(readEntry)).then(function () { return out.length ? out : flat; });
     }
 `;

@@ -389,9 +389,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // The assistant now responds to a files-only send (a dropped attachment with no text gets a
 // synthesized directive); the chat error path re-shows onboarding when the backend
 // disconnects; file drag-drop is scoped to one surface per view (chat dock in Analytics,
-// the Inputs column in Configure) and expands a dropped folder into its files. Recaptured.
-const ORIGINAL_LENGTH = 709080;
-const ORIGINAL_SHA256 = '06834dbe0550de52818e83e73d2721202675284ff9d335cbed6103520cc5827e';
+// the Inputs column in Configure) and expands a dropped folder into its files, falling
+// back to the flat file list when the Entries API yields no entry. Recaptured.
+const ORIGINAL_LENGTH = 709502;
+const ORIGINAL_SHA256 = 'e416e55493417b918a4807233dd5196466f110e42e09f4895f546f11001db7ac';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
