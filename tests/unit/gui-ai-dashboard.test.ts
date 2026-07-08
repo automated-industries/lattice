@@ -118,6 +118,59 @@ describe('create_dashboard / edit_dashboard tools', () => {
     expect((await executeFunction(ctx, 'create_dashboard', { title: 'x' })).ok).toBe(false);
   });
 
+  // ── Honesty gate (Fix A): a dashboard that binds to data that doesn't exist must NOT
+  //    be stored/opened or reported as done — even with the LLM QA pass disabled (it is
+  //    not wired into `ctx` here, so this proves the DETERMINISTIC gate). ──
+  it('create_dashboard over a table that does not exist FAILS and stores nothing (QA off)', async () => {
+    const events: FeedEvent[] = [];
+    feed.subscribe((e) => events.push(e));
+    const ghostCtx: DispatchCtx = {
+      ...ctx,
+      htmlAuthor: () =>
+        Promise.resolve(
+          `<!doctype html><html><body><script>lattice.query('ghost_accounts', { limit: 50 })</scr` +
+            `ipt></body></html>`,
+        ),
+    };
+    const res = await executeFunction(ghostCtx, 'create_dashboard', {
+      title: 'Ghost',
+      spec: 'a chart of ghost accounts',
+    });
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toMatch(/not created|not saved|does not exist|missing/i);
+    // Nothing stored, nothing opened, no write in the activity feed.
+    const listed = await executeFunction(ctx, 'list_rows', { table: 'dashboards' });
+    expect((listed.result as unknown[]).length).toBe(0);
+    expect(events.some((e) => e.table === 'dashboards' && e.source === 'ai')).toBe(false);
+  });
+
+  it('edit_dashboard that would bind to a missing table FAILS and leaves the last-good page intact', async () => {
+    const created = (
+      (await executeFunction(ctx, 'create_dashboard', { title: 'Page', spec: 'first' })).result as {
+        id: string;
+      }
+    ).id;
+    const beforeHtml = String(
+      ((await db.get('dashboards', created)) as Record<string, unknown>).html,
+    );
+    const ghostCtx: DispatchCtx = {
+      ...ctx,
+      htmlAuthor: () =>
+        Promise.resolve(`<script>lattice.query('ghost_accounts', { limit: 5 })</scr` + `ipt>`),
+    };
+    const res = await executeFunction(ghostCtx, 'edit_dashboard', {
+      id: created,
+      instruction: 'rebuild from ghost data',
+    });
+    expect(res.ok).toBe(false);
+    // The prior good page was NOT overwritten with the broken one.
+    const afterHtml = String(
+      ((await db.get('dashboards', created)) as Record<string, unknown>).html,
+    );
+    expect(afterHtml).toBe(beforeHtml);
+    expect(afterHtml).toContain('created:first');
+  });
+
   it('edit_dashboard rewrites the SAME row in place, passing the current page', async () => {
     const created = (
       (await executeFunction(ctx, 'create_dashboard', { title: 'Page', spec: 'first' })).result as {

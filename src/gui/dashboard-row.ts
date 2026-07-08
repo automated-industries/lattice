@@ -57,6 +57,52 @@ export function extractDashboardSql(html: string): DashboardQuery[] {
   return out;
 }
 
+/**
+ * The table names passed as the string-literal first argument to `lattice.query(...)` /
+ * `lattice.get(...)` in an authored page. These are UNAMBIGUOUS table reads (the authoring
+ * contract), so a name here that isn't a real table is a hard binding error. Unique,
+ * first-seen order. (Distinct from {@link extractSourceTables}, which folds in FROM/JOIN
+ * names too and returns null when empty.)
+ */
+export function extractQueryGetTables(html: string): string[] {
+  const seen = new Set<string>();
+  const re = /\blattice\s*\.\s*(?:query|get)\s*\(\s*(['"`])([^'"`]+)\1/g;
+  for (const m of html.matchAll(re)) {
+    const name = (m[2] ?? '').trim();
+    if (name) seen.add(name);
+  }
+  return [...seen];
+}
+
+/** FROM/JOIN table identifiers in ONE SQL string (best-effort scan; unique, first-seen). */
+export function extractSqlFromJoinTables(sql: string): string[] {
+  const seen = new Set<string>();
+  const idRe = /\b(?:from|join)\s+("?)([a-zA-Z_][a-zA-Z0-9_]*)\1/gi;
+  for (const t of sql.matchAll(idRe)) {
+    const name = (t[2] ?? '').trim();
+    if (name) seen.add(name);
+  }
+  return [...seen];
+}
+
+/**
+ * Names bound by `WITH <name> AS (…)` (and `, <name> AS (…)`) common-table expressions in
+ * ONE SQL string. A CTE is a query-local table name, NOT a schema table, so a binding check
+ * must subtract these before flagging a FROM/JOIN identifier as a missing table.
+ */
+export function extractCteNames(sql: string): string[] {
+  const seen = new Set<string>();
+  // A CTE definition is a bare identifier immediately followed by `AS (`. Column aliases
+  // (`expr AS name`) and derived-table aliases (`) AS name`) never have `(` after the name,
+  // so this doesn't over-collect. RECURSIVE and multi-CTE comma lists are covered.
+  const re = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(/gi;
+  for (const m of sql.matchAll(re)) {
+    const name = (m[1] ?? '').trim();
+    if (name && name.toLowerCase() !== 'with') seen.add(name);
+  }
+  return [...seen];
+}
+
 export function extractSourceTables(html: string): string[] | null {
   const seen = new Set<string>();
   const re = /\blattice\s*\.\s*(?:query|get)\s*\(\s*(['"`])([^'"`]+)\1/g;
