@@ -41,12 +41,9 @@ import {
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
-import {
-  dispatchAssistantRoute,
-  getAggressiveness,
-  isClaudeConnected,
-} from './assistant-routes.js';
+import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { resolvedProviderKind } from './ai/provider.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
@@ -918,27 +915,39 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 pathname.startsWith('/api/import/') ||
                 (method === 'POST' && /^\/api\/questions\/[^/]+\/answer$/.test(pathname));
               if (!gated) return false;
-              if (!(await isClaudeConnected(active.db))) {
+              // ANY configured provider satisfies the gate — a connected Claude
+              // subscription, the managed cloud key, OR a user-configured API provider
+              // (an OpenAI-compatible endpoint or a Claude API key). Mirrors GET
+              // /api/assistant/config's `connected` so the server gate and the client
+              // wall agree — previously this checked Claude only, so a working
+              // OpenAI-compatible backend was refused here with `claude_not_connected`
+              // even though the client considered itself connected. The error code is
+              // kept: the client treats it as "no AI connected → show the connect wall".
+              const providerKind = await resolvedProviderKind(active.db);
+              if (!providerKind) {
                 sendJson(res, { error: 'claude_not_connected' }, 403);
                 return true;
               }
-              // Pre-flight usage-limit block: once Claude has reported a usage
-              // limit, refuse the AI-mutating routes (chat AND the Configure-side
-              // ingest/import) up front with the same limit message, instead of
-              // firing a request we already know will 429. Auto-clears at resetAt
-              // (getClaudeLimitState returns null once past the horizon).
-              const limit = getClaudeLimitState();
-              if (limit) {
-                sendJson(
-                  res,
-                  {
-                    error: 'claude_limit',
-                    message: limit.message,
-                    resetAt: new Date(limit.resetAt).toISOString(),
-                  },
-                  429,
-                );
-                return true;
+              // Pre-flight usage-limit block applies ONLY to the Anthropic wire (a
+              // subscription, the managed cloud key, or a Claude API key): once Claude
+              // has reported a usage limit, refuse the AI-mutating routes up front with
+              // the same message instead of firing a request we know will 429 (auto-
+              // clears at resetAt). A BYO OpenAI-compatible endpoint has no
+              // Claude-subscription limit, so it is never blocked on Claude's state.
+              if (providerKind === 'anthropic') {
+                const limit = getClaudeLimitState();
+                if (limit) {
+                  sendJson(
+                    res,
+                    {
+                      error: 'claude_limit',
+                      message: limit.message,
+                      resetAt: new Date(limit.resetAt).toISOString(),
+                    },
+                    429,
+                  );
+                  return true;
+                }
               }
               return false;
             },

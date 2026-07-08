@@ -32,24 +32,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   to you instead of being silently shipped. Best-effort — a QA hiccup never blocks the
   dashboard.
 
-- **Connect any OpenAI-compatible model as the assistant backend.** Alongside a Claude
-  subscription, you can now point Lattice's assistant at any OpenAI-compatible
-  `chat/completions` endpoint — OpenAI, Azure, OpenRouter, a local vLLM / Ollama / LM
-  Studio server, your own gateway, or GitHub Copilot if you point it there. Connect it
-  from the first-run screen ("or connect an OpenAI-compatible model": base URL + API key
-  - model). Every assistant feature — chat, auto-linking / ingestion, computed-table
-    fills, as-of detection, HTML authoring — then runs on the selected provider. No
-    provider-specific auth or headers are shipped: you supply the base URL, the API key
-    (sent as a Bearer token; may be blank for a keyless local server), the model, and any
-    extra headers your endpoint needs. Backward-compatible — with nothing configured the
-    assistant resolves a connected Claude subscription exactly as before. Image / PDF
-    vision still uses a connected Claude subscription when one is available. New endpoints:
-    `POST /api/assistant/provider/openai-compat` (connect), `PUT /api/assistant/provider`
-    (switch active backend), `DELETE /api/assistant/provider/openai-compat` (disconnect);
-    `GET /api/assistant/config` reports `activeProvider` + `openaiCompat` presence (never
-    the key).
+- **Connect any AI provider by key + endpoint — including the Claude API.** Alongside
+  connecting a Claude account, one "API provider" setup (base URL + API key + model)
+  now covers OpenAI, the **Claude API**, Azure, OpenRouter, a local vLLM / Ollama / LM
+  Studio server, your own gateway, or GitHub Copilot. There is a single calling path:
+  Lattice picks the right protocol from the endpoint automatically — an Anthropic
+  endpoint uses the Anthropic wire (the same code that powers a connected subscription
+  and the managed cloud key), everything else uses the OpenAI `chat/completions` wire —
+  so a Claude API key and an OpenAI key both "just work" from the same screen. Connect it
+  from the first-run screen ("Other AI Endpoint": base URL + API key + model). Every
+  assistant feature — chat, auto-linking / ingestion, computed-table
+  fills, as-of detection, HTML authoring — then runs on the selected provider. No
+  provider-specific auth or headers are shipped: you supply the base URL, the API key
+  (sent as a Bearer token; may be blank for a keyless local server), the model, and any
+  extra headers your endpoint needs. Backward-compatible — with nothing configured the
+  assistant resolves a connected Claude subscription exactly as before. Image / PDF
+  vision still uses a connected Claude subscription when one is available. New endpoints:
+  `POST /api/assistant/provider/openai-compat` (connect), `PUT /api/assistant/provider`
+  (switch active backend), `DELETE /api/assistant/provider/openai-compat` (disconnect);
+  `GET /api/assistant/config` reports `activeProvider` + `openaiCompat` presence (never
+  the key).
 
 ### Fixed
+
+- **A connected non-Claude model now actually works for chat and ingestion.** The
+  server-side gate in front of the assistant routes required a connected _Claude_
+  subscription specifically — so if you connected an OpenAI-compatible endpoint (or a
+  Claude API key) the app considered you connected, but chatting or ingesting was still
+  refused with a "not connected" error. The gate now recognizes **any** configured
+  backend (a Claude subscription, the managed cloud key, or an API provider), matching
+  what the connect screen already reports. The Claude usage-limit pre-flight now applies
+  only to the Claude backend — a bring-your-own endpoint is never blocked on Claude's
+  limit.
+
+- **A failed setup test no longer leaves a broken model connected.** During first-run
+  setup, if the "Testing your AI" step failed for an API endpoint, the endpoint had
+  already been saved — so the setup screen could be skipped on the next launch, opening
+  the app with a model that can't answer. A failed test now forgets that endpoint, so
+  you can't proceed until a working model is connected.
 
 - **The assistant stops narrating its steps, finds records reliably, and enriches
   pasted content like a file.** Three chat-assistant fixes: (1) it no longer surfaces

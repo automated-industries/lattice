@@ -103,6 +103,54 @@ describe('AI-auth gate (server-side)', () => {
     expect(String((await r.json()).error)).toMatch(/message is required/i);
   });
 
+  it('lets AI routes through when an OpenAI-compatible provider is configured (no Claude)', async () => {
+    const s = await boot();
+    // Configure a BYO API provider (no Claude subscription). The gate must recognize it
+    // — previously it checked Claude only and 403'd `claude_not_connected` here even
+    // though the client considered itself connected (the reported bug).
+    const { setOpenAiCompatConfig } = await import('../../src/gui/ai/provider-config.js');
+    setOpenAiCompatConfig({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-x',
+      model: 'gpt-4o',
+    });
+    const r = await post(s.url, '/api/chat', { message: '   ' });
+    // Gate passed → the chat handler's own 400 for the empty message (NOT the gate's 403).
+    expect(r.status).toBe(400);
+    expect(String((await r.json()).error)).toMatch(/message is required/i);
+  });
+
+  it('does NOT block an OpenAI-compatible provider on Claude usage-limit state', async () => {
+    const s = await boot();
+    const { setOpenAiCompatConfig } = await import('../../src/gui/ai/provider-config.js');
+    setOpenAiCompatConfig({
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-x',
+      model: 'gpt-4o',
+    });
+    // A Claude usage limit is noted globally, but the active provider is a BYO endpoint
+    // with no Claude-subscription limit — the gate must not 429 it on Claude's state.
+    expect(noteClaudeError({ status: 429, headers: {} })).toBe('usage');
+    const r = await post(s.url, '/api/chat', { message: '   ' });
+    expect(r.status).toBe(400); // reached the handler, not 429
+  });
+
+  it('a Claude API key against an Anthropic endpoint is gated on the Anthropic wire (limit applies)', async () => {
+    const s = await boot();
+    const { setOpenAiCompatConfig } = await import('../../src/gui/ai/provider-config.js');
+    // Same "API provider" config, but an Anthropic endpoint → Anthropic wire → subject
+    // to the Claude usage-limit pre-flight.
+    setOpenAiCompatConfig({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'sk-ant-x',
+      model: 'claude-sonnet-5',
+    });
+    expect(noteClaudeError({ status: 429, headers: {} })).toBe('usage');
+    const r = await post(s.url, '/api/chat', { message: 'hi' });
+    expect(r.status).toBe(429);
+    expect(String((await r.json()).error)).toBe('claude_limit');
+  });
+
   it('GET /api/assistant/config reports the single connected truth', async () => {
     const s = await boot();
     const before = await fetch(`${s.url}/api/assistant/config`).then((x) => x.json());

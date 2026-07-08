@@ -708,6 +708,10 @@ export interface ClaudeAuth {
   apiKey?: string | undefined;
   authToken?: string | undefined;
   betaHeader?: string | undefined;
+  /** Override the Anthropic API host — the SDK's `baseURL` (it appends `/v1/messages`).
+   *  Unset → the SDK default (api.anthropic.com, or its own `ANTHROPIC_BASE_URL`). Set when
+   *  a user configures a Claude API key against an explicit Anthropic endpoint. */
+  baseURL?: string | undefined;
 }
 
 interface AnthropicClientConfig {
@@ -718,6 +722,7 @@ interface AnthropicClientConfig {
   apiKey?: string | null;
   authToken?: string;
   defaultHeaders?: Record<string, string>;
+  baseURL?: string;
 }
 type AnthropicCtor = new (config: AnthropicClientConfig) => AnthropicSdk;
 interface AnthropicSdk {
@@ -778,6 +783,7 @@ export function buildAnthropicConfig(auth: ClaudeAuth): AnthropicClientConfig {
     config.apiKey = null;
   }
   if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
+  if (auth.baseURL) config.baseURL = auth.baseURL;
   return config;
 }
 

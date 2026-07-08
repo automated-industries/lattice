@@ -65,15 +65,27 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
         fetchJson('/api/assistant/test', { method: 'POST' })
           .then(function (r) {
             if (r && r.ok) { proceed(); return; }
-            state.error = 'AI test failed: ' + ((r && r.error) || 'the model did not respond') + '. Check your details and try again.';
-            state.step = state.method || 'choose';
-            render();
+            failTest((r && r.error) || 'the model did not respond');
           })
-          .catch(function (err) {
-            state.error = 'AI test failed: ' + ((err && err.message) || 'could not reach the model') + '. Check your details and try again.';
-            state.step = state.method || 'choose';
-            render();
-          });
+          .catch(function (err) { failTest((err && err.message) || 'could not reach the model'); });
+      }
+      // A failed onboarding test must NOT leave a broken endpoint connected — otherwise
+      // config.connected would be true, the wall would be skipped on the next boot, and
+      // the app would open with an AI that cannot answer. Forget the just-saved
+      // "Other AI Endpoint" so the user must connect a WORKING one before proceeding.
+      // (A Claude subscription is left connected — its token is valid even if a single
+      // model call blips — and the user retries from the same screen.)
+      function failTest(reason) {
+        var back = function () {
+          state.error = 'AI test failed: ' + reason + '. Check your details and try again.';
+          state.step = state.method || 'choose';
+          render();
+        };
+        if (state.method === 'other') {
+          fetchJson('/api/assistant/provider/openai-compat', { method: 'DELETE' }).then(back, back);
+        } else {
+          back();
+        }
       }
 
       function renderChoose() {
@@ -85,7 +97,7 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
             '<p class="cw-lead">Choose which model to use to power Lattice (you can change this later):</p>' +
             '<div class="cw-choices">' +
               '<button type="button" class="cw-choice" data-method="claude"><strong>Claude Account</strong><span>Max, Pro, etc</span></button>' +
-              '<button type="button" class="cw-choice" data-method="other"><strong>Other AI Endpoint</strong><span>OpenAI, Copilot, Custom</span></button>' +
+              '<button type="button" class="cw-choice" data-method="other"><strong>Other AI Endpoint</strong><span>OpenAI, Claude API, Copilot\\u2026</span></button>' +
             '</div>' +
             '<p class="cw-security">Security note: your data lives on your system, your cloud if you create one, or within the confines of the AI service agreement with your chosen provider. <strong>Lattice does not collect or retain your data.</strong></p>' +
           '</div>';
@@ -133,7 +145,7 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
         wall.innerHTML =
           '<div class="connect-wall-card">' +
             '<h1>Other AI Endpoint</h1>' +
-            '<p class="cw-lead">Lattice supports OpenAI, Copilot, or any other custom endpoint. You will need the Base URL, the API Key, and the Model you want to use.</p>' +
+            '<p class="cw-lead">Lattice supports OpenAI, the Claude API, Copilot, or any OpenAI-compatible endpoint. You will need the Base URL, the API Key, and the Model you want to use.</p>' +
             '<input type="text" id="cw-base" class="cw-input" placeholder="Base URL (e.g. https://api.openai.com/v1)" autocomplete="off" spellcheck="false" />' +
             '<input type="password" id="cw-key" class="cw-input" placeholder="API key (blank for a keyless local server)" autocomplete="off" spellcheck="false" />' +
             '<input type="text" id="cw-model" class="cw-input" placeholder="Model (e.g. gpt-4o)" autocomplete="off" spellcheck="false" />' +
