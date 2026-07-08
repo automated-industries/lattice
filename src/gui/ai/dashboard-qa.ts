@@ -1,6 +1,12 @@
 import type { Lattice } from '../../lattice.js';
 import type { LlmClient } from './chat.js';
-import { extractDashboardSql, extractSourceTables } from '../dashboard-row.js';
+import {
+  extractDashboardSql,
+  extractSourceTables,
+  extractQueryGetTables,
+  extractSqlFromJoinTables,
+  extractCteNames,
+} from '../dashboard-row.js';
 import { runDashboardSql } from '../dashboard-sql.js';
 
 /**
@@ -19,6 +25,7 @@ import { runDashboardSql } from '../dashboard-sql.js';
  */
 
 export type DashboardQaIssueKind =
+  | 'missing_table'
   | 'sql_error'
   | 'no_data'
   | 'no_query'
@@ -264,4 +271,85 @@ export function qaIssuesNote(issues: DashboardQaIssue[]): string {
   if (issues.length === 0) return '';
   const parts = issues.slice(0, 5).map((i) => `• ${i.detail}`);
   return `Automatic QA flagged possible issues with this dashboard's data:\n${parts.join('\n')}`;
+}
+
+/**
+ * DETERMINISTIC honesty gate — run before a dashboard is stored/shown, INDEPENDENT of the
+ * best-effort {@link qaDashboard} repair loop (which uses an LLM and can be disabled or
+ * rate-limited). It surfaces only HARD binding failures — the ones that make a dashboard a
+ * broken, data-less shell the product must never claim is "done":
+ *
+ *  (a) a `lattice.query(...)` / `lattice.get(...)` first-arg table, or a FROM/JOIN table in
+ *      a RUNTIME-TEMPLATED `lattice.sql` (which the QA loop skips, so it would otherwise be
+ *      unchecked), that is not in the live schema → `missing_table`. CTE names defined in
+ *      the same statement are subtracted so a query-local `WITH` block isn't misflagged.
+ *  (b) a non-templated `lattice.sql` that ERRORS when executed against the real data (a
+ *      missing table surfaces here too, plus any other SQL fault) → `sql_error`.
+ *
+ * Deliberately says NOTHING about empty results / intent — those are soft (a legitimately
+ * empty dashboard is valid), and stay with {@link qaDashboard}. Bounded (caps the executed
+ * queries) and never throws — on an internal fault it returns [] so the gate can only ever
+ * catch a real defect, never manufacture one.
+ */
+export async function verifyDashboardBinding(
+  db: Lattice,
+  html: string,
+  allowedTables: Iterable<string>,
+): Promise<DashboardQaIssue[]> {
+  try {
+    const allowed = new Set<string>();
+    for (const t of allowedTables) allowed.add(t.toLowerCase());
+    const issues: DashboardQaIssue[] = [];
+    const flagged = new Set<string>();
+    const flagMissing = (name: string): void => {
+      const key = name.toLowerCase();
+      if (allowed.has(key) || flagged.has(key)) return;
+      flagged.add(key);
+      issues.push({
+        kind: 'missing_table',
+        detail:
+          `The dashboard reads from a table "${name}" that does not exist in this ` +
+          `workspace. The data it needs has not been created yet.`,
+      });
+    };
+    // (a1) Unambiguous lattice.query/get table reads.
+    for (const name of extractQueryGetTables(html)) flagMissing(name);
+    // (a2) Templated SQL: statically check its FROM/JOIN tables (it can't be executed).
+    //      (b) Non-templated SQL: execute it — a missing table or any SQL fault surfaces here.
+    let executed = 0;
+    for (const q of extractDashboardSql(html)) {
+      if (q.dynamic) {
+        const ctes = new Set(extractCteNames(q.sql).map((c) => c.toLowerCase()));
+        for (const name of extractSqlFromJoinTables(q.sql)) {
+          if (!ctes.has(name.toLowerCase())) flagMissing(name);
+        }
+      } else if (executed < MAX_QUERIES) {
+        executed++;
+        const r = await runDashboardSql(db, q.sql);
+        if ('error' in r) issues.push({ kind: 'sql_error', query: q.sql, detail: r.error });
+      }
+    }
+    return issues;
+  } catch (e) {
+    // The gate must never itself block a dashboard on a machinery fault — a thrown error
+    // means we couldn't prove a defect, so report none.
+    console.warn('[dashboard-qa] binding verification failed:', (e as Error).message);
+    return [];
+  }
+}
+
+/** A hard-failure message naming what's missing, for the `ok:false` tool result the
+ *  assistant must relay honestly (never "done", never "try again"). */
+export function bindingFailureMessage(issues: DashboardQaIssue[]): string {
+  const missing = issues.filter((i) => i.kind === 'missing_table').map((i) => i.detail);
+  const errors = issues.filter((i) => i.kind === 'sql_error').map((i) => i.detail);
+  const parts: string[] = [];
+  if (missing.length > 0) parts.push(missing.join(' '));
+  if (errors.length > 0) parts.push(`A data query failed: ${errors.join('; ')}.`);
+  return (
+    `The dashboard was NOT created because its data does not load. ${parts.join(' ')} ` +
+    `Tell the user plainly what data is missing and offer to bring it in (e.g. import the ` +
+    `spreadsheet or connect the source); do NOT report it as ready and do NOT tell them to ` +
+    `"try again" — retrying will not create the missing data.`
+  );
 }
