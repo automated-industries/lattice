@@ -394,8 +394,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // The dashboard iframe bridge gains a navigation-only act() (open Configure / an
 // add-source flow / the assistant), and boot opens the seeded Welcome dashboard by
 // default when it exists. Recaptured.
-const ORIGINAL_LENGTH = 712409;
-const ORIGINAL_SHA256 = 'e6293b515c97e26361039e46d25a817df997f5534c2b85e53294a7bbd2c7333b';
+// The first-run "Other AI Endpoint" step now also covers the Claude API, and a failed
+// onboarding model-test forgets the just-saved endpoint (so a broken provider can't be
+// left connected and skip the wall). Recaptured.
+const ORIGINAL_LENGTH = 713078;
+const ORIGINAL_SHA256 = 'f4c7daeafffc604c1dbd0c6834ac2f53f57edfe300809af9147516b54f8ebb7c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
