@@ -25,13 +25,18 @@ describe('composer file-attach UX', () => {
     );
   });
 
-  it('a drop attaches to Gladys on Analytics but auto-ingests on Configure', () => {
-    // Analytics → the drop zone is scoped to the chat window (#ask-dock): a file
-    // dropped ONTO it stages into the composer; Configure → ingest immediately.
-    expect(appJs).toContain('function chatDock()');
+  it('a drop attaches to Gladys on Analytics but ingests on the Inputs column in Configure', () => {
+    // The drop is scoped to ONE surface per view: the chat window (#ask-dock) in
+    // Analytics (stage into the composer), the Inputs column (nav.sidebar) in
+    // Configure (ingest). There is no whole-window drop anymore.
+    expect(appJs).toContain('function dropTarget()');
     expect(appJs).toContain("document.getElementById('ask-dock')");
+    expect(appJs).toContain("document.querySelector('nav.sidebar')");
     expect(appJs).toContain('stageFiles(files);');
     expect(appJs).toContain('uploadFiles(files);');
+    // A dropped folder is expanded into its files via the Entries API.
+    expect(appJs).toContain('function collectDroppedFiles(');
+    expect(appJs).toContain('webkitGetAsEntry');
     // The old always-switch-to-Analytics behavior is gone.
     expect(appJs).not.toContain('location.hash = lastAnalyticsHash;\n          stageFiles');
   });

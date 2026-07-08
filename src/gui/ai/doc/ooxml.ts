@@ -21,7 +21,10 @@ interface MammothLib {
 }
 
 export async function extractDocx(path: string): Promise<string | null> {
-  const mod = await loadParser<{ default?: MammothLib } & Partial<MammothLib>>('mammoth');
+  const mod = await loadParser<{ default?: MammothLib } & Partial<MammothLib>>(
+    () => import('mammoth'),
+    'mammoth',
+  );
   const lib = mod?.default ?? (mod as MammothLib | null);
   if (!lib || typeof lib.extractRawText !== 'function') return null;
   try {
@@ -42,6 +45,7 @@ type WordExtractorCtor = new () => WordExtractorInstance;
 
 export async function extractDoc(path: string): Promise<string | null> {
   const mod = await loadParser<{ default?: WordExtractorCtor } | WordExtractorCtor>(
+    () => import('word-extractor'),
     'word-extractor',
   );
   const Ctor = (mod && 'default' in mod ? mod.default : mod) as WordExtractorCtor | undefined;
@@ -65,7 +69,7 @@ interface UnpdfLib {
 }
 
 export async function extractPdf(path: string): Promise<string | null> {
-  const unpdf = await loadParser<UnpdfLib>('unpdf');
+  const unpdf = await loadParser<UnpdfLib>(() => import('unpdf'), 'unpdf');
   if (!unpdf || typeof unpdf.getDocumentProxy !== 'function') return null;
   try {
     const buf = await readFile(path);

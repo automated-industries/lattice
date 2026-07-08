@@ -227,7 +227,11 @@ export const onboardingJs = `    // ──────────────�
       return buffer;
     }
     function sendChat(text, attachedFiles) {
-      if (chatBusy || !text) return;
+      var hasFiles = !!(attachedFiles && attachedFiles.length);
+      if (chatBusy || (!text && !hasFiles)) return;
+      // A files-only send (no message): give Gladys a directive so it still responds to
+      // the attachment (the server's attached-files note tells it what was added).
+      var effectiveText = text || (attachedFiles && attachedFiles.length > 1 ? 'Take a look at these files.' : 'Take a look at this file.');
       chatBusy = true;
       gaTrack('assistant_message', {}); // no message text — just the event
 
@@ -236,9 +240,9 @@ export const onboardingJs = `    // ──────────────�
       feedTurnId += 1;
       feedTurnStartMs = Date.now();
       feedTurnActive = true;
-      appendUserBubble(text);
+      appendUserBubble(effectiveText);
       var historyToSend = chatHistory.slice();
-      chatHistory.push({ role: 'user', text: text });
+      chatHistory.push({ role: 'user', text: effectiveText });
       var input = document.getElementById('chat-input');
       var sendBtn = document.getElementById('chat-send');
       // Clear + collapse the textarea back to one line (reuse its auto-grow so
@@ -253,7 +257,7 @@ export const onboardingJs = `    // ──────────────�
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
+        body: JSON.stringify({ message: effectiveText, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
       }).then(function (r) {
         if (!r.ok || !r.body) {
           return r.json().then(function (j) {
@@ -312,6 +316,14 @@ export const onboardingJs = `    // ──────────────�
       }).catch(function (e) {
         finalizeBubble(actx);
         var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
+        // If the model backend is no longer connected (credentials gone/invalid), send
+        // the user back to onboarding to reconnect. Keyed off config.connected so a
+        // transient hiccup or a usage-limit does NOT eject them mid-conversation.
+        if (typeof reonboardOnAiFailure === 'function') {
+          fetchJson('/api/assistant/config').then(function (cfg) {
+            if (cfg && cfg.connected === false) reonboardOnAiFailure();
+          }).catch(function () { /* ignore */ });
+        }
       }).finally(function () {
         chatBusy = false;
         // Close the turn scope: later activity starts fresh cards (the next turn,

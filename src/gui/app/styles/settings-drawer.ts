@@ -95,15 +95,15 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .conn-card-title { font-size: 14px; font-weight: 600; }
     .conn-form { display: flex; flex-direction: column; gap: 10px; }
-    /* Fields + buttons match the Ask Lattice composer (surface-2 fill, strong
-       border, 8px radius, accent focus glow) — not default browser controls. */
+    /* Fields use the global bubble field base (same as the onboarding screen) so
+       every form across the app looks the same; the label wrapper is styled here. */
     .conn-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+    /* Box (background / border / radius / padding) comes from the global bubble
+       field base so these match the onboarding fields exactly; only layout is set
+       here. */
     .conn-field input,
     .conn-field select {
-      width: 100%; box-sizing: border-box;
-      background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 8px;
-      padding: 8px 10px; font: inherit; font-size: 13.5px; line-height: 1.4;
+      width: 100%; box-sizing: border-box; line-height: 1.4;
     }
     .conn-field input:focus,
     .conn-field select:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }

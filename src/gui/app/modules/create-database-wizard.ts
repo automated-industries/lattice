@@ -307,14 +307,15 @@ export const createDatabaseWizardJs = `    // ───────────�
           // The ONE Send button (and Enter). When files are staged, ADD them to
           // Files FIRST (await ingest), then run the chat against those just-added
           // files — so the assistant works on exactly what was attached, any file
-          // type, single or many. Files only → just add them. Text only → just chat.
+          // type, single or many. Text only → just chat. Files (with or WITHOUT text)
+          // → add them AND chat, so Gladys always responds to an attachment.
           function submitComposer() {
             var t = input.value.trim();
             if (!stagedFiles.length) { if (t) sendChat(t); return; }
             var batch = stagedFiles.slice();
             clearStaging();
             uploadFiles(batch, { silent: !!t }).then(function (refs) {
-              if (t) sendChat(t, refs);
+              sendChat(t, refs); // respond even to a files-only send (no message)
             });
           }
           input.addEventListener('keydown', function (e) {

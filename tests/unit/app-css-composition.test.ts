@@ -169,8 +169,11 @@ import { css } from '../../src/gui/app/css.js';
 // The connect wall becomes a wizard (choice cards, faded Connect, spinner, error status),
 // and the shared "bubble" field base is strengthened (rounder corners, defined border, real
 // padding on every input/select/textarea) so form fields are consistent app-wide. Recaptured.
-const ORIGINAL_LENGTH = 146961;
-const ORIGINAL_SHA256 = '6086344ef66dcfb819c907537a17bdc3e7bd4c51dc01e3a864a3b2929a05de80';
+// The connection-form fields (.conn-field, used by Connect-a-Database / Migrate-to-cloud) drop
+// their own box styling and inherit the global bubble base so they match every other form.
+// Recaptured.
+const ORIGINAL_LENGTH = 146968;
+const ORIGINAL_SHA256 = '8ea780b608a9ef502777d90e98832b89d7bca45be41ad2eb98e0527c96026983';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
