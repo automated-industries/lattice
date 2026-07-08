@@ -64,6 +64,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A background dashboard auto-repair can no longer crash on an abrupt shutdown.** When
+  the data model changes, dashboards that read the affected tables are re-authored on a
+  short debounce. If the workspace closed before that debounced pass ran, its first data
+  read hit a closed database and surfaced as an unhandled error (only under abrupt
+  teardown — a normal workspace switch already cancels the pass). The pass now catches
+  that case, logs it, and keeps the current pages; its timer no longer holds a shutting-
+  down process open.
+
 - **A connected non-Claude model now actually works for chat and ingestion.** The
   server-side gate in front of the assistant routes required a connected _Claude_
   subscription specifically — so if you connected an OpenAI-compatible endpoint (or a
