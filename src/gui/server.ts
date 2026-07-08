@@ -43,6 +43,7 @@ import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity.js';
 import { resolvedProviderKind } from './ai/provider.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
 import { dispatchQuestionRoute } from './question-routes.js';
@@ -961,6 +962,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return await dispatchChatRoute(req, res, {
                 db: active.db,
                 feed: active.feed,
+                // Async transport: the route acks 202 and runs the turn as a background
+                // job, streaming each event to this per-workspace bus (the /api/stream
+                // forwarder gates delivery per user). The FIFO serializes turns so a
+                // second message waits for the first.
+                chatProgress: active.chatProgress,
+                enqueueChatJob: (job) => {
+                  active.chatJobs = active.chatJobs.then(job).catch((err: unknown) => {
+                    // The job already published an 'error'+'done' frame before throwing;
+                    // this backstop keeps a stray rejection from going unhandled (which
+                    // would fail the process) and keeps the FIFO alive for the next turn.
+                    console.error(
+                      '[chat] background turn job failed:',
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  });
+                },
                 validTables: active.validTables,
                 junctionTables: active.junctionTables,
                 softDeletable: active.softDeletable,
@@ -1356,6 +1373,36 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       offs.push(
         bound.renderProgress.subscribe((e) => {
           send('render-progress', e);
+        }),
+      );
+      // Chat turn events — the async replacement for the held-open POST response.
+      // The bus is per-PROCESS (shared by every socket), so delivery is gated per user:
+      // on a cloud workspace one member must NEVER receive another's chat text, and RLS
+      // does not help (the app connects BYPASSRLS). `connOwner` resolves asynchronously;
+      // until it does (or if it can't) a cloud socket has an unresolved identity and
+      // mayReceiveChat fails closed. On a local single-user DB there is no boundary.
+      const connIsCloud = isCloudChat(bound.db);
+      let connOwner: string | null = null;
+      if (connIsCloud) {
+        void resolveChatOwnerId(bound.db)
+          .then((owner) => {
+            connOwner = owner;
+          })
+          .catch(() => {
+            // unresolved → connOwner stays null → mayReceiveChat fails closed
+          });
+      }
+      offs.push(
+        bound.chatProgress.subscribe((env) => {
+          if (activeRef !== bound) return; // stale after a workspace switch
+          if (!mayReceiveChat(connOwner, connIsCloud, env)) return;
+          // Forward threadId + messageId so the client can route the event to the right
+          // turn's bubble; ownerUserId (the internal cloud login role) is NEVER sent.
+          send('chat-progress', {
+            threadId: env.threadId,
+            messageId: env.messageId,
+            event: env.event,
+          });
         }),
       );
     }

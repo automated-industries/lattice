@@ -399,8 +399,21 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // left connected and skip the wall). Recaptured.
 // Chat text now streams live; a tool round's assistant_message_end carries hadTools, so
 // the client reaps that round's pre-tool preamble bubble instead of leaving it. Recaptured.
-const ORIGINAL_LENGTH = 713589;
-const ORIGINAL_SHA256 = '0e6ee0824e84f7fce8b1a13d0cc6a27e9b095f9fa304cce6be9fa336fb56092d';
+// Async chat transport: POST /api/chat no longer holds a streamed SSE response open — it
+// ACKs 202 {threadId, messageId} and the turn's events arrive over the /api/stream
+// WebSocket as 'chat-progress' frames. The client (onboarding.js) now keys a turn's render
+// state by messageId (chatTurns/applyChatEvent/finalizeChatTurn/onChatProgress), binds it
+// on the 202, and rebinds a still-'streaming' turn on reload (loadThread recovery); the
+// WebSocket dispatcher (offline-edit-queue.js) routes 'chat-progress' frames. The inline
+// SSE reader (parseSse) is removed. Recaptured.
+// Async-chat durability (adversarial-verify follow-up): on WebSocket reconnect the client
+// reconciles bound turns against their persisted rows (resyncChatTurns) — the bus has no
+// replay, so a terminal 'done' published during a disconnect would otherwise strand the
+// composer; and reload recovery only rebinds an in-flight row as live when it is FRESH
+// (chatTurnFresh) — a stale row orphaned by a dead process renders as an interrupted reply
+// instead of a permanent typing bubble. Recaptured.
+const ORIGINAL_LENGTH = 722850;
+const ORIGINAL_SHA256 = '60b6716214b4b65382f67f46cc812921c5be73b67bbb62c703533cb863d3217b';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

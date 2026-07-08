@@ -46,9 +46,12 @@ by any endpoint.
 
 ## Chat
 
-The rail runs a Claude tool-calling loop streamed over SSE. The model can list,
-read, **full-text search**, create, update, link, delete tables, and revert in
-the active database. **Every edit goes through the same audited, undoable
+The rail runs a Claude tool-calling loop. Sending a message returns immediately
+(the request is acknowledged, not held open); the turn runs in the background and
+its text streams to the browser over the multiplexed event WebSocket, so closing
+the panel, navigating away, or reloading never cancels an in-flight answer. The
+model can list, read, **full-text search**, create, update, link, delete tables,
+and revert in the active database. **Every edit goes through the same audited, undoable
 mutation path as a manual edit** — it appears in the activity feed and the
 version history and can be reverted.
 
