@@ -511,49 +511,97 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   let consecutiveAllFailed = 0;
   try {
     for (; loop < MAX_TOOL_LOOPS; loop++) {
-      const deltas: string[] = [];
       yield { type: 'assistant_message_start', id: `m${String(loop)}` };
-      // Run the turn; if the provider rejects the prompt for being too long,
-      // auto-trim the oldest bulky tool result and retry — invisibly, so the user
-      // never sees a "prompt is too long" 400. Give up only when nothing is left
-      // to trim or the retry budget is exhausted (the outer catch then translates
-      // it into a friendly message).
+      // Run the turn and STREAM its text deltas LIVE — the token trickles to the
+      // browser as the model produces it, instead of being buffered until
+      // finalMessage() resolves. If the provider rejects the prompt for being too
+      // long, auto-trim the oldest bulky tool result and retry — invisibly — but only
+      // when nothing has streamed yet (a "prompt is too long" 400 is raised
+      // pre-stream, so `emittedAny` is false there; retrying after streaming would
+      // double the text). Give up when nothing is left to trim or the budget is spent
+      // (the outer catch translates it to a friendly message).
       let turn!: TurnResult;
+      let emittedAny = false;
       for (let trims = 0; ; trims++) {
-        deltas.length = 0;
-        try {
-          turn = await opts.client.runTurn({
+        // Single-consumer channel: onText pushes each delta; the drain loop below
+        // races the turn settling against the next delta and yields as they arrive.
+        const pending: string[] = [];
+        let wake: (() => void) | null = null;
+        const nudge = (): void => {
+          if (wake) {
+            const w = wake;
+            wake = null;
+            w();
+          }
+        };
+        let done = false;
+        // Both success and failure fold into a TAGGED result, so this promise never
+        // rejects (no floating unhandled rejection) and its type is known when awaited
+        // after the loop — dodging the "callback-mutated var" narrowing trap.
+        const attemptP = opts.client
+          .runTurn({
             model,
             system,
             messages,
             tools,
             ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-            onText: (d) => deltas.push(d),
-          });
-          break;
-        } catch (e) {
-          if (
-            trims < MAX_CONTEXT_RECOVERY_TRIMS &&
-            isContextLengthError(e) &&
-            trimOldestToolResult(messages)
-          ) {
+            onText: (d) => {
+              pending.push(d);
+              nudge();
+            },
+          })
+          .then(
+            (t): { ok: true; turn: TurnResult } | { ok: false; err: unknown } => ({
+              ok: true,
+              turn: t,
+            }),
+            (e: unknown): { ok: true; turn: TurnResult } | { ok: false; err: unknown } => ({
+              ok: false,
+              err: e,
+            }),
+          );
+        void attemptP.then(() => {
+          done = true;
+          nudge();
+        });
+        // `done` is flipped inside the .then callback above; ESLint's flow analysis
+        // can't see that a callback ran, so it wrongly reads `!done` as always-true.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        while (!done || pending.length > 0) {
+          const d = pending.shift();
+          if (d !== undefined) {
+            yield { type: 'text_delta', delta: d };
+            emittedAny = true;
             continue;
           }
-          throw e;
+          await new Promise<void>((res) => {
+            wake = res;
+          });
         }
+        const outcome = await attemptP; // already settled once the drain loop exits
+        if (outcome.ok) {
+          turn = outcome.turn;
+          break;
+        }
+        // Retry only when NOTHING streamed yet — a real "prompt is too long" 400 is
+        // raised pre-stream (emittedAny false), so this stays a happy-path no-op;
+        // retrying after streaming would double the text.
+        if (
+          !emittedAny &&
+          trims < MAX_CONTEXT_RECOVERY_TRIMS &&
+          isContextLengthError(outcome.err) &&
+          trimOldestToolResult(messages)
+        ) {
+          continue;
+        }
+        throw outcome.err;
       }
-      // Stream this round's prose to the user ONLY when it is the final answer —
-      // i.e. this round called no tools. On a tool-calling round any text the model
-      // produced is a pre-tool preamble ("Let me search…", "Let me try again", "Let
-      // me fix that by adding a slug") — its private step-narration, NOT the answer.
-      // Suppress it so it is never bubbled, persisted, or replayed as a chat message
-      // (the transient tool-status line already signals work is happening, and the
-      // empty per-round bubble is reaped client-side). The text still enters
-      // `assistantBlocks` below, so the model keeps its own reasoning context.
-      if (turn.toolUses.length === 0) {
-        for (const d of deltas) yield { type: 'text_delta', delta: d };
-      }
-      yield { type: 'assistant_message_end' };
+      // A tool-calling round's streamed text was pre-tool preamble ("Let me search…"),
+      // NOT the answer — `hadTools` tells the client to reap that round's bubble and
+      // the route to drop it from the persisted message, so preamble is never bubbled,
+      // persisted, or replayed (its text still enters `assistantBlocks` below, so the
+      // model keeps its own reasoning context).
+      yield { type: 'assistant_message_end', hadTools: turn.toolUses.length > 0 };
 
       // Record the assistant turn (text + any tool_use blocks).
       const assistantBlocks: ContentBlock[] = [];

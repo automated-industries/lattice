@@ -127,6 +127,54 @@ describe('chat tool loop', () => {
     expect(feedEvents.some((e) => e.op === 'insert' && e.source === 'ai')).toBe(true);
   });
 
+  it('marks a tool round hadTools:true and the final answer hadTools:false', async () => {
+    // Live streaming emits a round's text before tool use is known, so
+    // assistant_message_end carries `hadTools` to tell the client/route which round
+    // was pre-tool preamble (drop it) vs the final answer (keep it).
+    const client = scriptedClient([
+      {
+        text: 'Let me add that',
+        toolUses: [
+          {
+            id: 'tu1',
+            name: 'create_row',
+            input: { table: 'people', values: { id: 'p1', name: 'Ada' } },
+          },
+        ],
+      },
+      { text: 'Done — added Ada.' },
+    ]);
+    const events = await collect(runChat({ client, dispatch, userMessage: 'add Ada' }));
+    const ends = events.filter((e) => e.type === 'assistant_message_end') as {
+      type: 'assistant_message_end';
+      hadTools?: boolean;
+    }[];
+    expect(ends.length).toBe(2);
+    expect(ends[0]?.hadTools).toBe(true); // preamble round (called a tool)
+    expect(ends[1]?.hadTools).toBe(false); // final answer round (no tools)
+  });
+
+  it('streams deltas that arrive across an await (live channel, not buffered per turn)', async () => {
+    // The turn produces text, yields to the event loop, then produces more text
+    // before resolving. The generator must yield BOTH deltas (the drain loop keeps
+    // pulling from the channel across the await), not only what was buffered
+    // synchronously before the first await.
+    const client: LlmClient = {
+      async runTurn(params) {
+        params.onText('alpha ');
+        await Promise.resolve(); // split the deltas across a microtask boundary
+        params.onText('beta');
+        return { stopReason: 'end_turn', text: 'alpha beta', toolUses: [] };
+      },
+    };
+    const events = await collect(runChat({ client, dispatch, userMessage: 'hi' }));
+    const deltas = events
+      .filter((e) => e.type === 'text_delta')
+      .map((e) => (e as { type: 'text_delta'; delta: string }).delta);
+    expect(deltas.join('')).toBe('alpha beta');
+    expect(events[events.length - 1]?.type).toBe('done');
+  });
+
   it('stops after consecutive tool failures (circuit-breaker) and surfaces the real error', async () => {
     // The model keeps calling a tool that always fails (get_row on a missing id).
     // The scripted client repeats this turn; the breaker must stop it well before

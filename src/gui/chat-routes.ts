@@ -946,6 +946,19 @@ export async function dispatchChatRoute(
         assistantText += ev.delta;
         const cur = turns[turns.length - 1];
         if (cur) cur.text += ev.delta;
+      } else if (ev.type === 'assistant_message_end') {
+        // A tool round streamed pre-tool preamble ("Let me search…"), not the answer.
+        // Drop it from BOTH the persisted message and the per-round record — text now
+        // streams live before tool use is known, so this is where preamble is undone.
+        // assistant_message_end fires after this round's text_delta and before its
+        // tool_use, so `assistantText` ends with exactly this round's text.
+        if (ev.hadTools) {
+          const cur = turns[turns.length - 1];
+          if (cur?.text) {
+            assistantText = assistantText.slice(0, assistantText.length - cur.text.length);
+            cur.text = '';
+          }
+        }
       } else if (ev.type === 'tool_use') {
         turns[turns.length - 1]?.tools.push({ id: ev.id, name: ev.name, isError: false });
       } else if (ev.type === 'tool_result') {

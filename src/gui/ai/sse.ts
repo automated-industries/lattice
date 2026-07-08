@@ -20,7 +20,12 @@ export type ChatStreamEvent =
   // chat and end the turn — the user's pick (or free-form reply) arrives as the
   // next chat message. Never persisted to the question store; in-turn only.
   | { type: 'question'; question: string; options: string[]; allowOther: boolean }
-  | { type: 'assistant_message_end' }
+  // Ends one round. `hadTools` is true when this round called tools — its streamed
+  // text was pre-tool preamble ("Let me search…"), NOT the answer, so the client
+  // reaps that round's bubble and the route drops it from the persisted message.
+  // (Text now streams LIVE as it arrives, before tool use is known, so this flag is
+  // how a preamble round is distinguished from the final answer after the fact.)
+  | { type: 'assistant_message_end'; hadTools?: boolean }
   | { type: 'done' }
   // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).
   | { type: 'warn'; message: string }

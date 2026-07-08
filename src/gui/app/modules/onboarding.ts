@@ -282,6 +282,11 @@ export const onboardingJs = `    // ──────────────�
             buf = parseSse(buf, function (ev) {
               if (ev.type === 'assistant_message_start') { finalizeBubble(actx); actx = newAssistantBubble(); assembled = ''; }
               else if (ev.type === 'text_delta' && actx) { anToolStatus(null); assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
+              // A tool round's streamed text was pre-tool preamble ("Let me search\\u2026"),
+              // not the answer — reap its bubble so only the final answer remains (the
+              // server likewise drops it from the persisted message). Text now streams
+              // live before tool use is known, so this is where a preamble round is undone.
+              else if (ev.type === 'assistant_message_end' && ev.hadTools) { if (actx && actx.msg) actx.msg.remove(); actx = null; assembled = ''; }
               // tool_use / tool_result are not painted as inline pills — the
               // assistant's data changes stream in as activity cards over the feed
               // SSE (renderFeedItem). The only in-chat acknowledgement is ONE
