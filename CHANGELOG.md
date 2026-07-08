@@ -19,6 +19,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   in practice a "prompt too long" error is raised before any text streams, so behavior is
   unchanged, but a mid-stream context error would surface rather than silently retry.
 
+- **Chat runs asynchronously — send stays responsive, and a reload no longer loses an
+  in-flight answer.** Sending a message now returns immediately; the turn runs in the
+  background and its text streams to the browser over the same multiplexed event
+  WebSocket that already carries live activity, instead of holding one long HTTP response
+  open for the whole answer. Practical wins: closing the panel or navigating away no
+  longer cancels the turn; if the connection blips mid-answer the client reconnects and
+  reconciles (a completed answer is recovered, a still-running one keeps streaming); and
+  reloading the page mid-turn re-attaches to the running answer and keeps painting it. An
+  answer left unfinished by an app restart or crash is shown as an interrupted reply
+  rather than a spinner that never resolves. On a shared team workspace each turn is
+  delivered only to the connection that owns it — one member never sees another's chat.
+  Turns are processed one at a time per workspace, in order.
+
 - **Every new workspace opens on a "Welcome to Lattice!" dashboard.** Instead of a
   blank canvas, a fresh workspace now starts in the Analytics view with a standard
   onboarding dashboard already open in the middle: a plain-English tour of what Lattice

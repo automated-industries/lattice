@@ -12,9 +12,11 @@ import { seedClaudeOAuth } from '../helpers/claude-auth.js';
  * seeding a fake connected subscription:
  *   - no subscription connected → the gate returns 403 claude_not_connected
  *   - empty message (subscription connected) → 400
- *   - a real message persists the thread + user message before streaming; the
- *     model call is pointed at a dead endpoint so the stream fails fast and the
- *     handler still completes (covers the persist + streaming-catch paths).
+ *   - a real message persists the thread + user message and ACKs 202
+ *     {threadId, messageId}; the turn then runs as a background job (its events go
+ *     to the chat-progress bus, not the response). The model call is pointed at a
+ *     dead endpoint so the background turn fails fast; disposeActive drains the job
+ *     on close. Covers the synchronous persist + 202-ack paths.
  */
 
 const dirs: string[] = [];
@@ -101,8 +103,8 @@ describe('POST /api/chat', () => {
     expect(String((await r.json()).error)).toMatch(/message is required/i);
   });
 
-  it('persists the thread + user message before streaming, then completes when the model call fails', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1'; // nothing listens → fails fast
+  it('persists the thread + user message and ACKs 202 {threadId, messageId}; the background turn fails against a dead model endpoint', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1'; // nothing listens → the background turn fails fast
     const s = await boot();
     seedClaudeOAuth();
     const r = await fetch(`${s.url}/api/chat`, {
@@ -110,9 +112,13 @@ describe('POST /api/chat', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: 'remember this' }),
     });
-    expect(r.status).toBe(200);
+    // Async transport: the route acks immediately (202) with the ids the client uses to
+    // bind the turn to the chat-progress bus, instead of holding a streamed response open.
+    expect(r.status).toBe(202);
     expect(r.headers.get('x-thread-id')).toBeTruthy();
-    await r.text(); // drain the SSE stream — the handler ends after the failed call
+    const ack = (await r.json()) as { threadId?: string; messageId?: string };
+    expect(ack.threadId).toBeTruthy();
+    expect(ack.messageId).toBeTruthy();
 
     const threads = (await fetch(`${s.url}/api/chat/threads`).then((x) => x.json())) as {
       threads: { id: string }[];
@@ -122,8 +128,13 @@ describe('POST /api/chat', () => {
     const msgs = (await fetch(`${s.url}/api/chat/threads/${tid}/messages`).then((x) =>
       x.json(),
     )) as {
-      messages: { role: string; text: string }[];
+      messages: { role: string; text: string; id?: string }[];
     };
+    // The user message is persisted synchronously, BEFORE the 202 — so it is present the
+    // instant the ack returns, independent of the background turn's outcome.
     expect(msgs.messages.some((m) => m.role === 'user' && m.text === 'remember this')).toBe(true);
+    // The pending assistant row was persisted under the acked messageId (its status will
+    // settle to 'error' once the background turn fails against the dead endpoint).
+    expect(msgs.messages.some((m) => m.role === 'assistant' && m.id === ack.messageId)).toBe(true);
   });
 });

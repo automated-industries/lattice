@@ -57,6 +57,7 @@ vi.mock('../../src/gui/ingest-routes.js', async (orig) => {
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { seedClaudeOAuth } from '../helpers/claude-auth.js';
+import { runChatTurnOverStream } from './stream-helper.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
@@ -115,16 +116,11 @@ async function boot(): Promise<GuiServerHandle> {
 describe('chat auto-ingest wiring (POST /api/chat)', () => {
   it('ingests reference material and PREPENDS the saved-item note to the model turn', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      // Mixed message: a fact to save + a directive to act on.
-      body: JSON.stringify({
-        message: 'Acme signed the renewal on Tuesday. Draft a thank-you note.',
-      }),
+    // Mixed message: a fact to save + a directive to act on. The turn runs as a background
+    // job; resolve on its terminal `done` frame so the ingest + chat-turn capture are done.
+    await runChatTurnOverStream(server.url, {
+      message: 'Acme signed the renewal on Tuesday. Draft a thank-you note.',
     });
-    expect(res.status).toBe(200);
-    await res.text(); // drain the SSE stream
 
     // The engine was invoked with EXACTLY the reference span (not the directive).
     expect(ingestTextSpy).toHaveBeenCalledTimes(1);
@@ -139,13 +135,7 @@ describe('chat auto-ingest wiring (POST /api/chat)', () => {
 
   it('does NOT ingest or prepend a note when the message is a pure directive', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'What tickets are open?' }),
-    });
-    expect(res.status).toBe(200);
-    await res.text();
+    await runChatTurnOverStream(server.url, { message: 'What tickets are open?' });
 
     // Triage found nothing to save → the engine is never called and no note is injected.
     expect(ingestTextSpy).not.toHaveBeenCalled();

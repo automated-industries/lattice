@@ -36,43 +36,120 @@ async function enableComposer(page: import('@playwright/test').Page, url: string
   return page.locator('#chat-input');
 }
 
-/** Build an SSE body for the chat stream from a list of events. */
-function sse(events: Record<string, unknown>[]): string {
-  return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
-}
-
 test('read-only tool calls produce no activity cards (only data changes show)', async ({
   page,
 }) => {
+  // Async transport: POST /api/chat ACKs 202 {threadId, messageId} and the turn's events
+  // arrive over the /api/stream WebSocket as 'chat-progress' frames. Mock BOTH — the 202
+  // ack pins the messageId the client binds the turn to, and the mocked WebSocket pushes
+  // the turn's events keyed to that same id. Routes are registered BEFORE navigation so
+  // the client's boot-time WebSocket connects to the mock.
+  const THREAD = 't-e2e';
+  const MSG = 'm-e2e';
+  // The turn: two reads (no data change → no feed event → no activity card) then a reply.
+  const events: Record<string, unknown>[] = [
+    { type: 'assistant_message_start', id: 'm0' },
+    { type: 'tool_use', id: 'u1', name: 'list_rows' },
+    { type: 'tool_result', toolUseId: 'u1', isError: false },
+    { type: 'tool_use', id: 'u2', name: 'list_rows' },
+    { type: 'tool_result', toolUseId: 'u2', isError: false },
+    { type: 'assistant_message_start', id: 'm1' },
+    { type: 'text_delta', delta: 'Found 3 rows.' },
+    { type: 'done' },
+  ];
+
+  let streamSocket: import('@playwright/test').WebSocketRoute | null = null;
+  // Pure mock (no connectToServer): this handler IS the server side of the socket.
+  await page.routeWebSocket('**/api/stream', (ws) => {
+    streamSocket = ws;
+  });
+  await page.route('**/api/chat', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await route.fulfill({
+      status: 202,
+      headers: { 'content-type': 'application/json', 'x-thread-id': THREAD },
+      body: JSON.stringify({ threadId: THREAD, messageId: MSG }),
+    });
+    // Push the turn's events over the mocked WebSocket. The client buffers any frame that
+    // arrives before it binds the turn (on the 202) and replays it, so order is safe.
+    for (const event of events) {
+      streamSocket?.send(
+        JSON.stringify({
+          type: 'chat-progress',
+          data: { threadId: THREAD, messageId: MSG, event },
+        }),
+      );
+    }
+  });
+
   const input = await enableComposer(page, gui.url);
-
-  // Mock a turn that only reads (two list_rows), then a text reply. Reads change
-  // no data, so they emit no feed event — the rail shows the reply text and NO
-  // activity cards (and no inline tool pills; that system was removed in favour
-  // of the unified activity-card design).
-  await page.route('**/api/chat', (route) =>
-    route.fulfill({
-      status: 200,
-      headers: { 'content-type': 'text/event-stream', 'x-thread-id': 't-e2e' },
-      body: sse([
-        { type: 'assistant_message_start', id: 'm0' },
-        { type: 'tool_use', id: 'u1', name: 'list_rows' },
-        { type: 'tool_result', toolUseId: 'u1', isError: false },
-        { type: 'tool_use', id: 'u2', name: 'list_rows' },
-        { type: 'tool_result', toolUseId: 'u2', isError: false },
-        { type: 'assistant_message_start', id: 'm1' },
-        { type: 'text_delta', delta: 'Found 3 rows.' },
-        { type: 'done' },
-      ]),
-    }),
-  );
-
   await input.fill('list everything');
   await input.press('Enter');
 
   await expect(page.locator('.chat-bubble.assistant')).toContainText('Found 3 rows.');
   await expect(page.locator('.tool-pill')).toHaveCount(0);
   await expect(page.locator('.feed-item')).toHaveCount(0);
+});
+
+// Reload recovery of an in-flight turn (async-transport durability). The chat client keys
+// a running turn by messageId and, on reload, rebinds a persisted 'streaming'/'pending'
+// last assistant row so its remaining events keep painting — BUT only when the row is
+// FRESH. A stale row (orphaned by a process that died mid-turn) must render as an
+// interrupted reply, not a permanent typing bubble that locks the composer forever.
+async function mountStreamingThread(
+  page: import('@playwright/test').Page,
+  url: string,
+  startedAt: string,
+): Promise<void> {
+  await page.route('**/api/chat/threads', (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ threads: [{ id: 'th-x', title: 'In-flight thread' }] }),
+        })
+      : route.continue(),
+  );
+  await page.route('**/api/chat/threads/th-x/messages', (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { id: 'u1', role: 'user', text: 'do the thing', created_at: '2020-01-01T00:00:00.000Z' },
+          {
+            id: 'as-x',
+            role: 'assistant',
+            text: 'Working on it so far…',
+            status: 'streaming',
+            startedAt,
+            created_at: '2020-01-01T00:00:01.000Z',
+          },
+        ],
+      }),
+    }),
+  );
+  await page.goto(url);
+  await openAskLattice(page);
+  await expect(page.locator('#chat-input')).toBeVisible();
+}
+
+test('reload rebinds a FRESH in-flight turn as live (composer stays locked)', async ({ page }) => {
+  await mountStreamingThread(page, gui.url, new Date().toISOString());
+  // The saved partial shows, and the composer is disabled — the turn is bound as live and
+  // its remaining chat-progress frames will finalize it.
+  await expect(page.locator('.chat-bubble.assistant')).toContainText('Working on it so far');
+  await expect(page.locator('#chat-send')).toBeDisabled();
+});
+
+test('reload renders a STALE orphaned turn as interrupted (composer stays free)', async ({
+  page,
+}) => {
+  // startedAt well beyond the freshness window → the owning process is presumed dead.
+  await mountStreamingThread(page, gui.url, '2020-01-01T00:00:01.000Z');
+  await expect(page.locator('.chat-bubble.assistant')).toContainText('Working on it so far');
+  // Not bound, not locked — the user can send again immediately.
+  await expect(page.locator('#chat-send')).toBeEnabled();
 });
 
 test('the composer textarea grows to fit multi-line input', async ({ page }) => {

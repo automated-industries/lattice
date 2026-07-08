@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { runChatTurnOverStream } from './stream-helper.js';
 
 /**
  * Live round-trip against the real Anthropic API. Skipped unless BOTH
@@ -44,36 +45,6 @@ function writeConfig(): { configPath: string; outputDir: string } {
   return { configPath, outputDir: join(root, 'context') };
 }
 
-async function readSse(res: Response, timeoutMs = 45000): Promise<Record<string, unknown>[]> {
-  const events: Record<string, unknown>[] = [];
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  const deadline = Date.now() + timeoutMs;
-  let buffer = '';
-  for (;;) {
-    if (Date.now() > deadline) throw new Error('SSE read timed out');
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let sep: number;
-    while ((sep = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      const line = frame.split('\n').find((l) => l.startsWith('data:'));
-      if (!line) continue;
-      const json = line.slice('data:'.length).trim();
-      if (json) {
-        try {
-          events.push(JSON.parse(json) as Record<string, unknown>);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }
-  return events;
-}
-
 describe('chat live round-trip', () => {
   (LIVE ? it : it.skip)(
     'responds and can use a tool against the live API',
@@ -90,16 +61,11 @@ describe('chat live round-trip', () => {
       });
       expect(seed.status).toBe(201);
 
-      const res = await fetch(`${server.url}/api/chat`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          message: 'Use the list_rows tool on the "people" table, then tell me the names you find.',
-        }),
+      // The turn runs as a background job and streams over the /api/stream WebSocket;
+      // this drives it and collects the ordered events, resolving on the terminal `done`.
+      const { events } = await runChatTurnOverStream(server.url, {
+        message: 'Use the list_rows tool on the "people" table, then tell me the names you find.',
       });
-      expect(res.ok).toBe(true);
-
-      const events = await readSse(res);
       const types = events.map((e) => e.type);
       // Stream completed cleanly.
       expect(types[types.length - 1]).toBe('done');
