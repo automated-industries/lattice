@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { extractDashboardSql } from '../../src/gui/dashboard-row.js';
 import { validateDashboardSql, runDashboardSql } from '../../src/gui/dashboard-sql.js';
-import { qaDashboard, qaIssuesNote } from '../../src/gui/ai/dashboard-qa.js';
+import {
+  qaDashboard,
+  qaIssuesNote,
+  verifyDashboardBinding,
+  bindingFailureMessage,
+} from '../../src/gui/ai/dashboard-qa.js';
 import type { LlmClient } from '../../src/gui/ai/chat.js';
 
 /**
@@ -191,6 +196,56 @@ describe('dashboard QA', () => {
       'sales',
     );
     expect(out.issues.some((i) => i.kind === 'no_query')).toBe(true);
+  });
+
+  // ── The deterministic binding gate (Fix A) — always-on, LLM-free honesty check ──
+  it('binding gate: flags a missing table read via lattice.query (missing_table)', async () => {
+    const html = "<script>lattice.query('ghost_accounts', { limit: 10 })</script>";
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues.some((i) => i.kind === 'missing_table')).toBe(true);
+  });
+
+  it('binding gate: flags a ghost table in a TEMPLATED lattice.sql (which the QA loop skips)', async () => {
+    const html = 'lattice.sql(`SELECT * FROM ghost_accounts WHERE id = ${x}`)';
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues.some((i) => i.kind === 'missing_table')).toBe(true);
+  });
+
+  it('binding gate: does NOT flag a same-statement CTE name as a missing table', async () => {
+    const html =
+      'lattice.sql(`WITH recent AS (SELECT * FROM sales) SELECT region FROM recent WHERE amount > ${n}`)';
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues).toEqual([]); // `recent` is a CTE, `sales` is real → nothing missing
+  });
+
+  it('binding gate: reports sql_error when a non-templated query hits a missing table', async () => {
+    const html = dash('SELECT * FROM ghost_accounts');
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues.some((i) => i.kind === 'sql_error')).toBe(true);
+  });
+
+  it('binding gate: a well-bound dashboard produces NO hard issues', async () => {
+    const html = dash('SELECT region, SUM(amount) AS total FROM sales GROUP BY region');
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues).toEqual([]);
+  });
+
+  it('binding gate: an empty (0-row) but well-bound query is NOT a hard issue (stays soft)', async () => {
+    const html = dash('SELECT * FROM sales WHERE amount > 999999'); // valid, binds to sales, 0 rows
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues).toEqual([]); // 0 rows is a soft QA concern, never a hard binding block
+  });
+
+  it('bindingFailureMessage names the gap and forbids a blind retry', () => {
+    const msg = bindingFailureMessage([
+      {
+        kind: 'missing_table',
+        detail: 'The dashboard reads from a table "ghost" that does not exist in this workspace.',
+      },
+    ]);
+    expect(msg).toMatch(/not created|not saved/i);
+    expect(msg).toMatch(/try again/i); // present only to forbid it
+    expect(msg.toLowerCase()).toContain('ghost');
   });
 });
 

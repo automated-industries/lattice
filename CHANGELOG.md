@@ -43,6 +43,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   grounded tool loop — the fast path is reserved for messages that clearly don't, and it
   falls back to the full loop whenever it's unsure.
 
+- **A dashboard is never reported as "done" when its data doesn't load.** Before a
+  generated dashboard is saved and opened, a deterministic check now confirms it actually
+  binds to real data: every table it reads — via `lattice.query`/`lattice.get` and via the
+  runtime-templated `lattice.sql` queries the best-effort QA pass can't execute — must
+  exist, and every runnable query must execute without error. If a dashboard would bind to
+  a table that doesn't exist yet (or a query errors), it is **not stored, not opened, and
+  not claimed as ready** — the assistant instead tells you plainly what data is missing and
+  offers to bring it in, rather than showing a broken page with "Failed to load — please
+  try again" (which retrying can't fix). Editing a dashboard the same way leaves your
+  existing, working page untouched rather than overwriting it with a broken one. This check
+  is always on — it holds even when the optional AI QA pass is disabled or rate-limited —
+  and a legitimately empty result (0 rows) is still fine, shown as a calm "no data yet"
+  state. Authored pages now also distinguish "no data yet" from "couldn't load the data" so
+  an empty section never masquerades as a failure (or vice-versa).
+
 - **Every new workspace opens on a "Welcome to Lattice!" dashboard.** Instead of a
   blank canvas, a fresh workspace now starts in the Analytics view with a standard
   onboarding dashboard already open in the middle: a plain-English tour of what Lattice

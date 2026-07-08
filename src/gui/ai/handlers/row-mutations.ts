@@ -11,6 +11,7 @@ import {
 } from '../../mutations.js';
 import { artifactFileRow } from '../../file-row.js';
 import { dashboardRow, extractSourceTables } from '../../dashboard-row.js';
+import { verifyDashboardBinding, bindingFailureMessage } from '../dashboard-qa.js';
 
 /**
  * Surface residual dashboard-QA issues to the user via the activity feed. The tool_result
@@ -208,6 +209,14 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         html = qa.html;
         qaIssues = qa.issues;
       }
+      // Deterministic honesty gate (always on, independent of the best-effort QA above): a
+      // dashboard that binds to a table that doesn't exist, or whose SQL errors, is a broken
+      // shell — do NOT store or open it, and fail loud so the assistant tells the user what
+      // data is missing instead of claiming it's ready.
+      const binding = await verifyDashboardBinding(ctx.db, html, ctx.validTables);
+      if (binding.length > 0) {
+        return { ok: false, error: bindingFailureMessage(binding) };
+      }
       const { row } = dashboardRow(title, html, spec);
       // allowReservedFileCols: this is the trusted authoring path, so it may write
       // the executable `html` page that createRow refuses from every other caller
@@ -267,6 +276,13 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         const qa = await ctx.qaDashboard(html, intent);
         html = qa.html;
         qaIssues = qa.issues;
+      }
+      // Honesty gate (same as create): a re-authored page that doesn't bind to real data is
+      // NOT applied — the last-good dashboard stays intact rather than being overwritten
+      // with a broken shell — and the failure is relayed to the user.
+      const binding = await verifyDashboardBinding(ctx.db, html, ctx.validTables);
+      if (binding.length > 0) {
+        return { ok: false, error: bindingFailureMessage(binding) };
       }
       // allowReservedFileCols: the trusted authoring path may rewrite an executable
       // page body, which updateRow refuses from every other caller. The spec keeps
