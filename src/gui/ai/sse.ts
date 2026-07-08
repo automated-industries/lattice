@@ -26,6 +26,11 @@ export type ChatStreamEvent =
   // (Text now streams LIVE as it arrives, before tool use is known, so this flag is
   // how a preamble round is distinguished from the final answer after the fact.)
   | { type: 'assistant_message_end'; hadTools?: boolean }
+  // A fast, contextual acknowledgement published the instant a turn is accepted, BEFORE
+  // the (possibly slow) tool loop starts — "Got it, pulling your Q3 invoices…". Rendered
+  // as a transient bubble; the real answer streams into its own bubble after. Not
+  // persisted (only the final answer is), so it never replays on reload.
+  | { type: 'ack'; message: string }
   | { type: 'done' }
   // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).
   | { type: 'warn'; message: string }

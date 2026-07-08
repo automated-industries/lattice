@@ -13,6 +13,7 @@ import {
   type ContentBlock,
 } from './ai/chat.js';
 import { resolveLlmProvider } from './ai/provider.js';
+import { runIntent, type IntentResult } from './ai/intent.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
 import { generateHtmlFile } from './ai/html-author.js';
@@ -33,6 +34,10 @@ import { FetchBudget } from '../ai/fetch-policy.js';
 /** Lifecycle of the assistant row, persisted in content_json so a reload mid-turn can
  *  recover: `pending` (accepted, not started) → `streaming` → `done` | `error`. */
 type ChatMessageStatus = 'pending' | 'streaming' | 'done' | 'error';
+
+/** If the intent pass hasn't produced an acknowledgement within this window, publish a
+ *  templated one so the user is never left waiting on a blank typing bubble. */
+const INTENT_ACK_WATCHDOG_MS = 8000;
 
 /**
  * POST /api/chat — the assistant chat stream. Resolves the Claude token,
@@ -777,7 +782,37 @@ export async function dispatchChatRoute(
   const publish = (event: ChatStreamEvent): void => {
     ctx.chatProgress.publish({ threadId, messageId: assistantMsgId, ownerUserId, event });
   };
-  ctx.enqueueChatJob(async () => {
+  // Stream a complete answer (the intent-inline paths: a trivial reply or a clarifying
+  // question) into the SAME bubble the client is showing, then settle + end the turn — no
+  // tool loop. Mirrors the loop's frame sequence so the client renders it identically and
+  // a reload replays it from the persisted row.
+  const finishWithAnswer = async (text: string, status: ChatMessageStatus): Promise<void> => {
+    streamStatus = status;
+    publish({ type: 'assistant_message_start', id: assistantMsgId });
+    if (text) publish({ type: 'text_delta', delta: text });
+    publish({ type: 'assistant_message_end' });
+    try {
+      await persistMessage(
+        ctx.db,
+        threadId,
+        'assistant',
+        text,
+        ownerUserId,
+        [],
+        turnStartedAt,
+        assistantMsgId,
+        status,
+      );
+    } catch (e) {
+      console.warn('[chat] persist intent answer failed:', (e as Error).message);
+    }
+    publish({ type: 'done' });
+  };
+
+  // The heavy agentic tool loop — runs on the per-workspace FIFO (serialized) only when the
+  // intent pass says the request needs data work. Defined here (not enqueued yet) so the
+  // intent orchestrator below can decide whether to run it.
+  const runHeavyLoop = async (): Promise<void> => {
     // Strip credential-bearing native tables (secrets) so the assistant can
     // neither query them nor be told they exist — it reads rows already decrypted.
     const dispatch: DispatchCtx = {
@@ -1075,6 +1110,54 @@ export async function dispatchChatRoute(
         }
       }
     }
+  };
+
+  // ── Intent orchestrator (elektra-style) — runs OFF the FIFO so the ack is instant ──
+  // A fast structured intent pass runs concurrently (NOT serialized behind a prior turn's
+  // heavy loop), so even a queued second message is acknowledged within seconds. It then
+  // routes: a clarifying question or a trivial/general answer finishes inline (no tool
+  // loop); anything that needs the workspace data joins the FIFO to run the real loop.
+  void (async () => {
+    let acked = false;
+    const ackOnce = (text: string): void => {
+      if (acked || !text) return;
+      acked = true;
+      publish({ type: 'ack', message: text });
+    };
+    // Belt-and-suspenders: if the intent model is slow, publish a templated ack so the user
+    // is never left on a blank typing bubble past the guarantee window.
+    const watchdog = setTimeout(() => {
+      ackOnce('Working on it…');
+    }, INTENT_ACK_WATCHDOG_MS);
+    let intent: IntentResult | null = null;
+    try {
+      intent = await runIntent(provider.client, message, {
+        operatorName: readIdentity().display_name,
+        tableNames: [...ctx.validTables],
+      });
+    } catch (e) {
+      // Best-effort — never drop the user's message; fall through to the real loop.
+      console.warn('[chat] intent pass failed:', (e as Error).message);
+    } finally {
+      clearTimeout(watchdog);
+    }
+
+    if (intent?.needs_more_info) {
+      // Ambiguous — the ack_message is a clarifying question; end the turn awaiting a reply.
+      await finishWithAnswer(intent.ack_message, 'done');
+      return;
+    }
+    if (intent && !intent.needs_work) {
+      // Trivial / general — the ack_message IS the complete answer; skip the tool loop.
+      await finishWithAnswer(intent.ack_message, 'done');
+      return;
+    }
+    // needs_work (or the intent pass failed) → publish the contextual ack (or the generic
+    // one if the watchdog already fired) and run the real loop on the FIFO.
+    ackOnce(intent?.ack_message ?? 'Working on it…');
+    ctx.enqueueChatJob(runHeavyLoop);
+  })().catch((e: unknown) => {
+    console.error('[chat] intent orchestration failed:', (e as Error).message);
   });
   return true;
 }

@@ -40,6 +40,16 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
             toolUses: [],
           });
         }
+        // The fast INTENT pass runs before the chat turn (off-FIFO, on the raw message).
+        // Route to needs_work=true so the real chat turn runs — and do NOT capture it, so
+        // `captured[0]` stays the CHAT turn (with the prepended ingest note under assert).
+        if (typeof params.system === 'string' && params.system.includes('fast intake step')) {
+          return Promise.resolve({
+            stopReason: 'end_turn',
+            text: '```json\n{"intent_summary":"scripted","ack_message":"Working on it…","needs_work":true,"needs_more_info":false}\n```',
+            toolUses: [],
+          });
+        }
         // The chat turn: capture exactly what the model was handed, then answer trivially.
         state.captured.push(params.messages ?? []);
         params.onText('Noted.');

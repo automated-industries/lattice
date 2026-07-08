@@ -32,6 +32,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   delivered only to the connection that owns it — one member never sees another's chat.
   Turns are processed one at a time per workspace, in order.
 
+- **The assistant acknowledges you within seconds — and answers simple things
+  instantly.** The moment you send a message, a fast intake step decides how to handle it:
+  a quick, contextual acknowledgement appears right away for anything that needs to work
+  over your data ("Got it — pulling your Q3 invoices…") so you're never left watching a
+  blank cursor while a multi-step task runs; a greeting, a thank-you, or a general
+  question about what Lattice can do is answered immediately without spinning up the full
+  tool loop; and a genuinely ambiguous request comes back with a short clarifying question
+  instead of a wrong guess. Anything that touches your actual data still runs the real,
+  grounded tool loop — the fast path is reserved for messages that clearly don't, and it
+  falls back to the full loop whenever it's unsure.
+
 - **Every new workspace opens on a "Welcome to Lattice!" dashboard.** Instead of a
   blank canvas, a fresh workspace now starts in the Analytics view with a standard
   onboarding dashboard already open in the middle: a plain-English tour of what Lattice
