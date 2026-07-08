@@ -113,6 +113,23 @@ describe('file drag-drop scope by view', () => {
     expect(w.stageFiles).not.toHaveBeenCalled();
   });
 
+  it('falls back to the flat file list when webkitGetAsEntry yields no entry', async () => {
+    // A synthetic DataTransfer (and some real drops) expose `items` whose
+    // webkitGetAsEntry() returns null; the files must still be picked up from
+    // `dt.files`, never silently dropped.
+    analytics = true; // stage into the composer
+    const dt = {
+      types: ['Files'],
+      files: [{ name: 'memo.md' }],
+      items: [{ webkitGetAsEntry: () => null }],
+    };
+    drop(900, 400, dt); // inside #ask-dock
+    await flush();
+    expect(w.stageFiles).toHaveBeenCalledTimes(1);
+    const arg = w.stageFiles.mock.calls[0]?.[0] as { name: string }[];
+    expect(arg.map((f) => f.name)).toEqual(['memo.md']);
+  });
+
   it('a dropped FOLDER is expanded into its files via the Entries API', async () => {
     analytics = false;
     const fileA = { name: 'x.pdf' };
