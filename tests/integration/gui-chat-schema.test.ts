@@ -46,6 +46,16 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
               toolUses: [],
             });
           }
+          // The async transport runs a fast INTENT pass before the chat turn. Answer it with
+          // needs_work=true so it routes to the scripted CHAT turns below (these tests script
+          // the chat loop, not the intent classification).
+          if (typeof params.system === 'string' && params.system.includes('fast intake step')) {
+            return Promise.resolve({
+              stopReason: 'end_turn',
+              text: '```json\n{"intent_summary":"scripted","ack_message":"Working on it…","needs_work":true,"needs_more_info":false}\n```',
+              toolUses: [],
+            });
+          }
           turnState.captured.push(params.messages ?? []);
           const turn = turnState.turns[Math.min(i, turnState.turns.length - 1)] ?? { text: '' };
           i++;
