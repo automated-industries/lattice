@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { setAssistantCredential } from '../../src/framework/user-config.js';
 import {
   resolveLlmProvider,
+  resolvedProviderKind,
+  isAnthropicEndpoint,
+  anthropicBaseFromEndpoint,
   readOpenAiCompatConfig,
   activeProviderKind,
   OPENAI_COMPAT_KIND,
@@ -108,5 +111,80 @@ describe('LLM provider selection', () => {
     const p = await resolveLlmProvider(null);
     expect(p?.kind).toBe('openai_compat');
     expect(p?.authorModel).toBe('llama-3');
+  });
+
+  // ── One config, wire auto-picked by endpoint ──────────────────────────────
+  it('a Claude API key against an Anthropic endpoint resolves on the ANTHROPIC wire', async () => {
+    // The SAME "API provider" config (base URL + key + model) — but the endpoint is
+    // Anthropic, so it must use the Anthropic client (reusing the subscription/cloud-key
+    // code path) and drive the Claude usage-limit UI, NOT the OpenAI-compat client.
+    setAssistantCredential(
+      OPENAI_COMPAT_KIND,
+      JSON.stringify({
+        baseUrl: 'https://api.anthropic.com/v1',
+        apiKey: 'sk-ant-xxx',
+        model: 'claude-sonnet-5',
+      }),
+    );
+    setAssistantCredential(ACTIVE_PROVIDER_KIND, 'openai_compat');
+    const p = await resolveLlmProvider(null);
+    expect(p?.kind).toBe('anthropic'); // wire picked from the endpoint, not the config slot
+    expect(p?.authorModel).toBe('claude-sonnet-5');
+    expect(typeof p?.client.runTurn).toBe('function');
+  });
+
+  it('a non-Anthropic endpoint stays on the OpenAI-compat wire', async () => {
+    setAssistantCredential(
+      OPENAI_COMPAT_KIND,
+      JSON.stringify({ baseUrl: 'https://api.openai.com/v1', apiKey: 'sk', model: 'gpt-4o' }),
+    );
+    setAssistantCredential(ACTIVE_PROVIDER_KIND, 'openai_compat');
+    expect((await resolveLlmProvider(null))?.kind).toBe('openai_compat');
+  });
+
+  it('resolvedProviderKind mirrors the resolved wire without building a client', async () => {
+    expect(await resolvedProviderKind(null)).toBeNull(); // nothing configured
+    setAssistantCredential(
+      OPENAI_COMPAT_KIND,
+      JSON.stringify({ baseUrl: 'https://api.openai.com/v1', apiKey: 'sk', model: 'gpt-4o' }),
+    );
+    expect(await resolvedProviderKind(null)).toBe('openai_compat');
+    setAssistantCredential(
+      OPENAI_COMPAT_KIND,
+      JSON.stringify({
+        baseUrl: 'https://api.anthropic.com',
+        apiKey: 'sk-ant',
+        model: 'claude-sonnet-5',
+      }),
+    );
+    expect(await resolvedProviderKind(null)).toBe('anthropic'); // anthropic endpoint → anthropic wire
+  });
+
+  it('isAnthropicEndpoint detects Anthropic hosts only', () => {
+    expect(isAnthropicEndpoint('https://api.anthropic.com/v1')).toBe(true);
+    expect(isAnthropicEndpoint('https://api.anthropic.com/v1/messages')).toBe(true);
+    expect(isAnthropicEndpoint('https://eu.anthropic.com')).toBe(true);
+    expect(isAnthropicEndpoint('https://api.openai.com/v1')).toBe(false);
+    expect(isAnthropicEndpoint('https://anthropic.com.evil.example/v1')).toBe(false);
+    expect(isAnthropicEndpoint('not a url')).toBe(false);
+  });
+
+  it('anthropicBaseFromEndpoint normalizes to the SDK host origin', () => {
+    expect(anthropicBaseFromEndpoint('https://api.anthropic.com')).toBe(
+      'https://api.anthropic.com',
+    );
+    expect(anthropicBaseFromEndpoint('https://api.anthropic.com/v1')).toBe(
+      'https://api.anthropic.com',
+    );
+    expect(anthropicBaseFromEndpoint('https://api.anthropic.com/v1/messages')).toBe(
+      'https://api.anthropic.com',
+    );
+    expect(anthropicBaseFromEndpoint('https://api.anthropic.com/v1/')).toBe(
+      'https://api.anthropic.com',
+    );
+    // A gateway path that isn't /v1 is preserved (the SDK still appends /v1/messages).
+    expect(anthropicBaseFromEndpoint('https://proxy.example.com/anthropic')).toBe(
+      'https://proxy.example.com/anthropic',
+    );
   });
 });

@@ -64,9 +64,26 @@ export async function resolveLlmProvider(db: Lattice | null): Promise<ResolvedPr
     if (kind === 'openai_compat') {
       const cfg = readOpenAiCompatConfig();
       if (cfg) {
+        // Auto-pick the wire from the ENDPOINT (one config, one calling path): a
+        // Claude API key against an Anthropic host speaks the Anthropic Messages
+        // wire, so reuse the SAME Anthropic client that powers a connected
+        // subscription and the managed cloud key (no reinvention) — and it drives
+        // the Claude usage-limit UI. Every other endpoint (OpenAI / Copilot / Azure
+        // / a local server / a gateway) speaks OpenAI chat/completions.
+        if (isAnthropicEndpoint(cfg.baseUrl)) {
+          return {
+            client: createAnthropicClient({
+              apiKey: cfg.apiKey || undefined,
+              baseURL: anthropicBaseFromEndpoint(cfg.baseUrl),
+            }),
+            kind: 'anthropic',
+            authorModel: cfg.model,
+            noteError: (e) => noteClaudeError(e),
+          };
+        }
         return {
           client: createOpenAiCompatibleClient(cfg),
-          kind,
+          kind: 'openai_compat',
           authorModel: cfg.model,
           noteError: () => 'other',
         };
@@ -118,11 +135,62 @@ export async function smokeTestProvider(
   }
 }
 
-/** True when SOME provider is configured (Claude connected or an OpenAI-compatible
- *  endpoint saved). Cheap presence check for the connected/disconnected gate. */
+/** True when SOME provider is configured (Claude connected or an API-provider endpoint
+ *  saved). Cheap presence check for the connected/disconnected gate — mirrors the
+ *  `connected` field of GET /api/assistant/config so the server gate and the client wall
+ *  agree. */
 export async function isAnyProviderConfigured(db: Lattice | null): Promise<boolean> {
   if (readOpenAiCompatConfig()) return true;
   // Reuse the same OAuth/managed presence logic Claude uses.
   const { isClaudeConnected } = await import('../assistant-routes.js');
   return isClaudeConnected(db);
+}
+
+/**
+ * The RESOLVED wire kind for the active provider, WITHOUT building a client — so the
+ * server gate can cheaply decide "any provider connected?" and "does the Claude
+ * usage-limit apply?" (only the Anthropic wire does). Mirrors {@link resolveLlmProvider}'s
+ * order + endpoint wire-pick exactly. Returns null when nothing is configured.
+ */
+export async function resolvedProviderKind(db: Lattice | null): Promise<LlmProviderKind | null> {
+  const order: LlmProviderKind[] = isManagedModelAuth()
+    ? ['anthropic']
+    : activeProviderKind() === 'openai_compat'
+      ? ['openai_compat', 'anthropic']
+      : ['anthropic', 'openai_compat'];
+  for (const kind of order) {
+    if (kind === 'openai_compat') {
+      const cfg = readOpenAiCompatConfig();
+      if (cfg) return isAnthropicEndpoint(cfg.baseUrl) ? 'anthropic' : 'openai_compat';
+    } else if (await resolveClaudeAuth(db)) {
+      return 'anthropic';
+    }
+  }
+  return null;
+}
+
+/** True when a base URL points at Anthropic's API (the native Messages wire), so a Claude
+ *  API key configured against it uses the Anthropic client, not the OpenAI-compat one. */
+export function isAnthropicEndpoint(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return (
+      host === 'anthropic.com' || host === 'api.anthropic.com' || host.endsWith('.anthropic.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Normalize a user-entered Anthropic endpoint to the SDK `baseURL` (host origin); the
+ *  SDK appends `/v1/messages`. Strips a trailing `/v1/messages`, `/v1`, or `/` so
+ *  `https://api.anthropic.com`, `.../v1`, and `.../v1/messages` all resolve identically. */
+export function anthropicBaseFromEndpoint(baseUrl: string): string {
+  try {
+    const u = new URL(baseUrl);
+    const path = u.pathname.replace(/\/v1(\/messages)?\/?$/i, '').replace(/\/+$/, '');
+    return u.origin + path;
+  } catch {
+    return baseUrl;
+  }
 }
