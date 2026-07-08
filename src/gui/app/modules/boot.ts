@@ -91,6 +91,10 @@ export const bootJs = `    // ────────────────�
         fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false, analytics: true }; }),
         fetchJson('/api/workspaces').catch(function () { return null; }),
         fetchJson('/api/dbconfig').catch(function () { return {}; }),
+        // Does this workspace have the seeded "Welcome to Lattice!" dashboard? Used
+        // only to pick the empty-hash landing (open it vs the Analytics home). A miss
+        // (deleted, never seeded, or not visible to a member) lands on the home.
+        fetchJson('/api/tables/dashboards/rows/welcome-lattice').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
@@ -103,7 +107,12 @@ export const bootJs = `    // ────────────────�
         // user was never shown. Explicit deep links (#/graph, #/fs/…) are
         // untouched and still boot straight into Configure.
         if (!location.hash || location.hash === '#/' || location.hash === '#') {
-          location.replace((location.href.split('#')[0] || '') + '#/analytics');
+          // Open the seeded Welcome dashboard in the middle pane when it exists, so a
+          // new workspace starts on something useful; otherwise the Analytics home.
+          var welcome = results[7];
+          var hasWelcome = !!(welcome && welcome.id && !welcome.error);
+          var landing = hasWelcome ? '#/analytics/welcome-lattice' : '#/analytics';
+          location.replace((location.href.split('#')[0] || '') + landing);
         }
         // Key the per-workspace navigation history to the booted workspace.
         if (results[5] && results[5].current && typeof navSetWorkspace === 'function') {

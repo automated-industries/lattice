@@ -8,10 +8,29 @@ import { bootGui, type BootedGui } from './helpers';
 
 let gui: BootedGui;
 
+// These specs assert the EMPTY Analytics baseline (no dashboards, the view-flip
+// navigation), so they opt out of the seeded Welcome dashboard. The seed + open-by-
+// default behavior is covered by its own spec below.
 test.beforeAll(async () => {
-  gui = await bootGui();
+  gui = await bootGui({ welcome: false });
 });
 test.afterAll(async () => gui.close());
+
+test('a new workspace opens the seeded Welcome dashboard by default', async ({ page }) => {
+  const wgui = await bootGui(); // welcome seeded (the real default)
+  try {
+    await page.goto(wgui.url);
+    // Boot lands ON the Welcome dashboard in the Analytics view (not the empty home).
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/welcome-lattice');
+    await expect(page.locator('body')).toHaveClass(/view-analytics/);
+    await expect(page.locator('.dash-title')).toHaveText('Welcome to Lattice!');
+    await expect(page.locator('#dash-frame')).toBeVisible();
+    // It appears in the Dashboards sidebar like any other dashboard.
+    await expect(page.locator('#dash-list')).toContainText('Welcome to Lattice!');
+  } finally {
+    await wgui.close();
+  }
+});
 
 test('boot lands on the Analytics view with its empty states', async ({ page }) => {
   await page.goto(gui.url);

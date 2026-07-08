@@ -32,7 +32,7 @@ const DEFAULT_YAML = [
  * credentials or saved databases. Call `close()` (return value) in afterEach.
  */
 export async function bootGui(
-  opts: { yaml?: string; version?: string; connected?: boolean } = {},
+  opts: { yaml?: string; version?: string; connected?: boolean; welcome?: boolean } = {},
 ): Promise<BootedGui> {
   const dir = mkdtempSync(join(tmpdir(), 'lattice-e2e-'));
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-e2e-home-'));
@@ -47,6 +47,10 @@ export async function bootGui(
   mkdirSync(join(rootDir, '.config'), { recursive: true });
   process.env.LATTICE_ROOT = rootDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // Every new workspace seeds the "Welcome to Lattice!" dashboard and boots into it.
+  // Specs that assert the empty Analytics state (no dashboards) pass `welcome: false`.
+  // Set explicitly each boot so the flag never leaks between specs in the same process.
+  process.env.LATTICE_SEED_WELCOME = opts.welcome === false ? '0' : '1';
   // A connected Claude subscription is mandatory (the first-run wall gates the
   // whole app), so specs boot connected by default. A spec exercising the wall
   // itself passes `connected: false` to boot disconnected.

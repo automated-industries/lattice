@@ -10,8 +10,10 @@ import { bootGui, createRow, type BootedGui } from './helpers';
 
 let gui: BootedGui;
 
+// These specs assert exact dashboard counts against a known set they create, so they
+// opt out of the seeded Welcome dashboard (which would add one more).
 test.beforeAll(async () => {
-  gui = await bootGui();
+  gui = await bootGui({ welcome: false });
 });
 test.afterAll(async () => gui.close());
 

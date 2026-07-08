@@ -138,7 +138,11 @@ export const dashboardJs = `    // ───────────────
       'query:function(t,o){o=o||{};return __lreq("query",{table:t,limit:o.limit,offset:o.offset});},' +
       'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
       'sql:function(q){return __lreq("sql",{sql:q});},' +
-      'search:function(q){return __lreq("search",{query:q});}};';
+      'search:function(q){return __lreq("search",{query:q});},' +
+      // Navigation-only, fire-and-forget. The page can ask the host to move the user
+      // around the app (open Configure, an add-source flow, or the assistant) — the
+      // same things they can do themselves — but NEVER read or write data through it.
+      'act:function(name,arg){window.parent.postMessage({__lattice:true,op:"act",name:String(name||""),arg:(arg==null?"":String(arg))},"*");}};';
 
     // Parent-side broker: the ONLY bridge between the isolated frame and the data
     // API. Strictly READ-ONLY — it performs exactly three GET/search reads against
@@ -190,6 +194,32 @@ export const dashboardJs = `    // ───────────────
       }
       return Promise.resolve({ ok: false, error: 'unsupported op' });
     }
+    // Navigation-ONLY host actions a rendered page may request via window.lattice.act().
+    // Every branch just moves the user somewhere they could already reach by hand (open
+    // Configure, an add-source flow, or the assistant with a prefilled question) — there
+    // is deliberately NO data read/write path here, and an unknown name is ignored.
+    function __latticeDashboardAction(name, arg) {
+      if (name === 'configure') { if (typeof goConfigure === 'function') goConfigure(); return; }
+      if (name === 'analytics') { if (typeof goAnalytics === 'function') goAnalytics(); return; }
+      if (name === 'ask') {
+        if (typeof goAnalytics === 'function') goAnalytics();
+        setTimeout(function () {
+          var inp = document.getElementById('chat-input');
+          if (!inp) return;
+          if (arg) inp.value = String(arg);
+          inp.focus();
+        }, 60);
+        return;
+      }
+      var addBtn = { 'add-file': 'src-add-files', 'add-connector': 'src-add-connector', 'add-database': 'src-add-database' };
+      if (Object.prototype.hasOwnProperty.call(addBtn, name)) {
+        if (typeof goConfigure === 'function') goConfigure();
+        var id = addBtn[name];
+        setTimeout(function () { var b = document.getElementById(id); if (b) b.click(); }, 90);
+        return;
+      }
+      // Unknown action \\u2014 ignore (fail closed).
+    }
     var __latticeHtmlBrokerInstalled = false;
     function installHtmlFileBroker() {
       if (__latticeHtmlBrokerInstalled) return;
@@ -209,6 +239,11 @@ export const dashboardJs = `    // ───────────────
           if (frames[fi].contentWindow && e.source === frames[fi].contentWindow) { frame = frames[fi]; break; }
         }
         if (!frame) return;
+        // Navigation actions (op:'act') are fire-and-forget and need no reply — a
+        // rendered dashboard asking to move the user around the app. Whitelisted +
+        // navigation-only (see __latticeDashboardAction), so nothing sensitive rides
+        // this even though any sandboxed frame can post it.
+        if (d.op === 'act') { __latticeDashboardAction(String(d.name || ''), d.arg); return; }
         var rid = d.rid;
         var reply = function (payload) {
           payload.__latticeReply = true;

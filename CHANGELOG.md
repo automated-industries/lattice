@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Every new workspace opens on a "Welcome to Lattice!" dashboard.** Instead of a
+  blank canvas, a fresh workspace now starts in the Analytics view with a standard
+  onboarding dashboard already open in the middle: a plain-English tour of what Lattice
+  does, example questions you can ask the assistant, one-click buttons to bring in data
+  (Files / Connector / Database) or open Configure, and a short list of what you can do.
+  It is an ordinary dashboard — edit or delete it like any other, and it is not
+  re-created once you remove it. Its buttons drive the app through a navigation-only
+  bridge (open a view / start an add-source flow / focus the assistant) — never any data
+  access — so the sandboxed dashboard stays as isolated as every other.
+
 - **Dashboards get an automatic QA pass before they're shown.** When the assistant
   authors or edits a dashboard, its data queries now run through a QA step before the page
   is stored: each embedded `lattice.sql` query is executed against your live data and
