@@ -166,10 +166,11 @@ import { css } from '../../src/gui/app/css.js';
 // Version-history takeover drops its redundant "Version history" page heading
 // (the takeover header already titles it); the entity filter moves into a compact
 // .history-subhead row. Length + hash recaptured.
-// The connect wall gains an "or connect an OpenAI-compatible model" alternative
-// (collapsible base-URL/key/model form) alongside Connect with Claude. Recaptured.
-const ORIGINAL_LENGTH = 145664;
-const ORIGINAL_SHA256 = '3ecb02f76b9c3b05f82d53883358b47eee71910e6d7b26513057fe439fa50686';
+// The connect wall becomes a wizard (choice cards, faded Connect, spinner, error status),
+// and the shared "bubble" field base is strengthened (rounder corners, defined border, real
+// padding on every input/select/textarea) so form fields are consistent app-wide. Recaptured.
+const ORIGINAL_LENGTH = 146961;
+const ORIGINAL_SHA256 = '6086344ef66dcfb819c907537a17bdc3e7bd4c51dc01e3a864a3b2929a05de80';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

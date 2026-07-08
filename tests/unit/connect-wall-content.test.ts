@@ -2,34 +2,43 @@ import { describe, it, expect } from 'vitest';
 import { appJs } from '../../src/gui/app/script.js';
 
 /**
- * First-run connect wall copy + chrome. Pinned on the composed client bundle
- * (the connect wall lives in a template-literal module). Guards the launch-screen
- * design: the Lattice logo (not an emoji), the black Claude-logo CTA, and the
- * trimmed copy.
+ * First-run connect wall — now a WIZARD: choose a backend (Claude account or any
+ * OpenAI-compatible endpoint) → enter its details (Connect stays faded until the required
+ * fields are filled) → a "Testing your AI" step runs a real model call before the app
+ * proceeds to Analytics. Pinned on the composed client bundle (the wall lives in a
+ * template-literal module).
  */
-describe('first-run connect wall', () => {
+describe('first-run connect wall (wizard)', () => {
   it('shows the Lattice logo mark, not the grandma emoji', () => {
     expect(appJs).toContain('+ BRAND_SVG +');
     expect(appJs).toContain('class="connect-wall-mark"');
     expect(appJs).not.toContain('👵');
   });
 
-  it('uses the black Claude-logo button for the connect CTA', () => {
+  it('step 1 offers the two backend choices with the welcome + security copy', () => {
+    expect(appJs).toContain('Welcome to Lattice');
+    expect(appJs).toContain('Choose which model to use to power Lattice');
+    expect(appJs).toContain('data-method="claude"');
+    expect(appJs).toContain('data-method="other"');
+    expect(appJs).toContain('Lattice does not collect or retain your data');
+  });
+
+  it('uses the black Claude-logo button for the Claude connect step', () => {
     expect(appJs).toContain('class="connect-claude-btn"');
-    // The Claude sunburst mark is generated + injected into the button.
     expect(appJs).toContain('var CLAUDE_LOGO_SVG = (function ()');
     expect(appJs).toContain("CLAUDE_LOGO_SVG + '<span>Connect with Claude</span></a>'");
   });
 
-  it('has the trimmed, plan-aware copy', () => {
-    expect(appJs).toContain('Connect your Claude account plan (Max, Pro, etc) to continue');
-    expect(appJs).not.toContain('there is nothing to skip');
+  it('the Other AI Endpoint step takes base URL, key, and model', () => {
+    expect(appJs).toContain('id="cw-base"');
+    expect(appJs).toContain('id="cw-key"');
+    expect(appJs).toContain('id="cw-model"');
+    expect(appJs).toContain('/api/assistant/provider/openai-compat');
   });
 
-  it('labels the code field by placeholder only (no separate label), and the CTA reads Connect', () => {
-    expect(appJs).toContain('placeholder="Paste Authentication Code here"');
-    expect(appJs).not.toContain('placeholder="code#state"');
-    expect(appJs).not.toContain('Paste the code Claude gives you');
-    expect(appJs).toContain('id="connect-wall-finish">Connect</button>');
+  it('has a faded-until-filled Connect button and a "Testing your AI" step', () => {
+    expect(appJs).toContain('id="cw-connect" disabled');
+    expect(appJs).toContain('Testing your AI');
+    expect(appJs).toContain("fetchJson('/api/assistant/test'");
   });
 });

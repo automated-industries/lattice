@@ -71,11 +71,19 @@ export const tokensCss = `
     /* Text-like fields only — radios/checkboxes keep their native rendering
        (the box/border treatment mangles them). The accent color tints the native
        controls so checked radios/checkboxes are on-brand blue. */
+    /* Shared "bubble" field style — one base for EVERY form field in the app
+       (onboarding, settings, New workspace, Identity, invite, migrate-to-cloud, …) so
+       fields look consistent everywhere. Rounder corners, a defined border, and real
+       padding. Component-specific inputs (chat composer, table-cell editors) override
+       this with their own higher-specificity rules; per-form INLINE styles must be
+       removed to inherit it. */
     input:not([type='radio']):not([type='checkbox']):not([type='range']), select, textarea {
       color: var(--text);
       background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      padding: 9px 12px;
+      box-sizing: border-box;
     }
     input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
     input::placeholder, textarea::placeholder {
