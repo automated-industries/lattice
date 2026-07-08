@@ -26,6 +26,9 @@ function makeActive(realtime: { stop: () => Promise<void> } | null): {
   const active = {
     renderAbort: abort,
     realtime,
+    // disposeActive drains the per-workspace chat-job FIFO before closing the DB; a real
+    // ActiveDb always has this (init Promise.resolve()), so the fake must too.
+    chatJobs: Promise.resolve(),
     db: {
       close: (): void => {
         didClose = true;

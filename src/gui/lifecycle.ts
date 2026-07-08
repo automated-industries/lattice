@@ -981,6 +981,21 @@ export async function disposeActive(
       );
     }
   }
+  // Let any in-flight background chat turn drain before the DB closes, so its final
+  // checkpoint write doesn't hit a closing adapter (the teardown-race that surfaces as an
+  // unhandled rejection). Time-bounded like the broker stop above: a genuinely long turn
+  // during a workspace switch is abandoned — its writes are self-guarded — rather than
+  // wedging the switch.
+  const chatOutcome = await settleWithin(
+    active.chatJobs.catch(() => undefined),
+    teardownTimeoutMs,
+  );
+  if (chatOutcome === 'timeout') {
+    console.warn(
+      `[gui] background chat job exceeded ${String(teardownTimeoutMs)}ms during teardown; ` +
+        'closing the DB anyway (the job self-guards its writes).',
+    );
+  }
   try {
     active.db.close();
   } catch {

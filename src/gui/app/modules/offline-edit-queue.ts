@@ -217,6 +217,11 @@ export const offlineEditQueueJs = `    // ────────────�
       } else if (type === 'render-progress') {
         if (data) onRenderEvent(data);
         updateRenderStatus();
+      } else if (type === 'chat-progress') {
+        // A chat turn's streamed event { threadId, messageId, event } — the async
+        // replacement for the held-open POST response. Routed to the turn's bubble by
+        // messageId; gated per user server-side so one member never sees another's chat.
+        if (data && typeof onChatProgress === 'function') onChatProgress(data);
       } else if (type === 'update-applied') {
         // Files on disk are the new version; the server is about to relaunch.
         // Don't reload yet (the server is exiting) — the reconnect version check
@@ -254,7 +259,13 @@ export const offlineEditQueueJs = `    // ────────────�
       try { ws = new WebSocket(proto + '//' + location.host + '/api/stream'); }
       catch (_) { scheduleEventStreamReconnect(); return; }
       eventStream = ws;
-      ws.onopen = function () { eventStreamBackoff = 1000; checkServerVersion(); };
+      ws.onopen = function () {
+        eventStreamBackoff = 1000;
+        checkServerVersion();
+        // The bus has no replay: reconcile any chat turn bound before this (re)connect, so
+        // a terminal 'done' published while the socket was down can't strand the composer.
+        if (typeof resyncChatTurns === 'function') resyncChatTurns();
+      };
       ws.onmessage = function (ev) {
         var msg = null;
         try { msg = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
