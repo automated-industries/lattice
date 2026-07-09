@@ -110,6 +110,41 @@ describe('enrich cross-links co-extracted objects', () => {
     rmSync(cfgDir, { recursive: true, force: true });
   });
 
+  it('does NOT manufacture rows from a SPREADSHEET — the deterministic importer owns those', async () => {
+    // The LLM extractor is prose-oriented and lossy on tabular data (a 53-row workbook
+    // collapsed to a 3-row summary). For a spreadsheet the structured importer materializes
+    // every row, so the enricher must skip object extraction entirely. Script an extract
+    // that WOULD create a meeting, then prove it doesn't run for an .xlsx.
+    scripted.extractJson =
+      '```json\n' +
+      JSON.stringify([
+        {
+          entity: 'meetings',
+          isNew: false,
+          columns: ['name'],
+          values: { name: 'Should Not Exist' },
+          label: 'Should Not Exist',
+        },
+      ]) +
+      '\n```';
+    const createEntity = vi.fn(() => Promise.resolve<string | null>(null));
+    await enrichWithLlm(
+      mctx,
+      db,
+      'f1',
+      'some rows',
+      'ARR Jan - Mar 2021 Summary v0.xlsx', // a spreadsheet → extraction is skipped
+      [],
+      {},
+      vi.fn(() => Promise.resolve(null)),
+      0.9,
+      createEntity,
+    );
+    // No rows manufactured from the workbook, and the entity creator was never consulted.
+    expect((await db.query('meetings', {})).length).toBe(0);
+    expect(createEntity).not.toHaveBeenCalled();
+  });
+
   it('materializes the meeting↔attendee link the extractor stated (not just file↔object)', async () => {
     scripted.extractJson =
       '```json\n' +

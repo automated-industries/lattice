@@ -111,7 +111,7 @@ export function existingDataTables(db: Lattice): ExistingTable[] {
  * proposal saw. Throws a 400-mapped error if the row is gone or its bytes
  * aren't on this disk.
  */
-async function readImportSourceFromFile(
+export async function readImportSourceFromFile(
   db: Lattice,
   fileId: string,
   latticeRoot: string | undefined,
