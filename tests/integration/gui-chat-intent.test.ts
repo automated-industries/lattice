@@ -18,6 +18,11 @@ const script = vi.hoisted(() => ({
   // What the scripted CHAT turn replies (only reached when needs_work routes to the loop).
   chatReply: 'Here is your answer.',
   chatCalls: 0,
+  // When true, each chat turn takes ~80ms — used by the serialization test to prove the
+  // per-workspace FIFO runs turns one at a time (no interleave). `order` records
+  // start/end markers per chat turn.
+  slowChatTurn: false,
+  order: [] as string[],
 }));
 
 vi.mock('../../src/gui/ai/chat.js', async (orig) => {
@@ -49,9 +54,20 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
           return Promise.resolve({ stopReason: 'end_turn', text: 'Notes Count', toolUses: [] });
         }
         // The chat turn (only reached on the needs_work path).
-        script.chatCalls++;
-        params.onText(script.chatReply);
-        return Promise.resolve({ stopReason: 'end_turn', text: script.chatReply, toolUses: [] });
+        const n = ++script.chatCalls;
+        script.order.push('start' + String(n));
+        const finish = (): { stopReason: string; text: string; toolUses: [] } => {
+          script.order.push('end' + String(n));
+          params.onText(script.chatReply);
+          return { stopReason: 'end_turn', text: script.chatReply, toolUses: [] };
+        };
+        return script.slowChatTurn
+          ? new Promise((resolve) => {
+              setTimeout(() => {
+                resolve(finish());
+              }, 80);
+            })
+          : Promise.resolve(finish());
       },
     }),
   };
@@ -76,6 +92,8 @@ beforeEach(() => {
     '{"intent_summary":"x","ack_message":"On it…","needs_work":true,"needs_more_info":false}';
   script.chatReply = 'Here is your answer.';
   script.chatCalls = 0;
+  script.slowChatTurn = false;
+  script.order = [];
 });
 
 afterEach(async () => {
@@ -173,5 +191,28 @@ describe('intent orchestrator', () => {
     const assistant = replay.messages.find((m) => m.role === 'assistant');
     expect(assistant?.text).toBe('Hello there!');
     expect(assistant?.status).toBe('done');
+  });
+
+  it('serializes queued turns per workspace — two back-to-back messages both 202, no interleave', async () => {
+    script.slowChatTurn = true; // ~80ms/turn so an interleave would be observable
+    const s = await boot();
+    const post = (message: string): Promise<Response> =>
+      fetch(`${s.url}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+    // Fire both immediately — the async transport must accept both without blocking (202).
+    const [r1, r2] = await Promise.all([post('first message'), post('second message')]);
+    expect(r1.status).toBe(202);
+    expect(r2.status).toBe(202);
+    // Wait for both heavy turns to run (each pushes a start + end marker).
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && script.order.length < 4) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    // The per-workspace FIFO ran them one at a time: turn 2 starts only after turn 1 ends.
+    // (An unserialized run would produce start1, start2, end1, end2.)
+    expect(script.order).toEqual(['start1', 'end1', 'start2', 'end2']);
   });
 });
