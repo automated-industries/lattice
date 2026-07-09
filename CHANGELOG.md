@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Share a dashboard and its data comes with it.** On a shared cloud workspace, sharing a
+  dashboard — to everyone, or with specific people — now also shares the data that dashboard
+  reads with the same audience, so recipients open a populated page instead of an empty one.
+  The share is table-level and stays live: rows added to those tables later are included
+  automatically, with no re-share needed. It only ever shares the data you own (never another
+  member's private rows in the same table), skips private-only tables, and is one-way —
+  unsharing a dashboard leaves its underlying data shared.
+
 - **The assistant knows what you're looking at — and diagnoses a broken dashboard itself.**
   When you ask about the dashboard on screen ("why is this broken?", "why is it empty?"), the
   assistant now knows which dashboard you mean instead of asking you to identify it, and it runs
