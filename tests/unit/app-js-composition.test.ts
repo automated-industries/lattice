@@ -429,8 +429,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Third-order follow-up: the computed-builder's edit-mode load now commits on the route
 // still matching (cbRouteMatches) instead of a renderGen match, so a soft render's gen
 // bump can't orphan an in-flight edit load into a stuck spinner. Recaptured.
-const ORIGINAL_LENGTH = 707899;
-const ORIGINAL_SHA256 = '1b42d522f23c595d1c392470501b94a5bdb6fcbec1b4c330a3a10f7e569fdf73';
+// Fourth-order follow-up: the edit-mode commit is additionally gated on a per-load token
+// (cbLoadSeq) so a stale same-route re-entry can't repaint/clobber a newer load; stale
+// module-header deps (renderGen/setContent) dropped from the comment. Recaptured.
+const ORIGINAL_LENGTH = 708452;
+const ORIGINAL_SHA256 = '7e681732947bb55cbb185e206eb3a55ba8e2f00685b2eaa40e22014b9738b504';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

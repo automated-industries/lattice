@@ -42,7 +42,11 @@ describe('reframe review fix #1 — computed-table builder is reachable', () => 
     // a soft render's gen bump orphan an in-flight edit load into a stuck spinner. The
     // load now commits via cbRouteMatches(nameArg) instead.
     expect(appJs).toContain('function cbRouteMatches(nameArg)');
-    expect(appJs).toContain('if (!cbRouteMatches(nameArg)) return;');
+    // The edit-mode commit is gated on BOTH a current per-load token AND the route
+    // still matching — the token re-suppresses stale same-route re-entrant paints
+    // that keying on the hash alone would miss.
+    expect(appJs).toContain('var loadTok = ++cbLoadSeq;');
+    expect(appJs).toContain('loadTok !== cbLoadSeq || !cbRouteMatches(nameArg)');
   });
 });
 
