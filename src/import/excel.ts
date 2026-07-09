@@ -53,10 +53,13 @@ export interface SheetFormulaSummary {
 export type WorkbookFormulaSummary = Record<string, SheetFormulaSummary>;
 
 /** One sheet's extraction: the records plus the formula summary gathered
- *  during the same single pass over the cells. */
+ *  during the same single pass over the cells, and a reconciliation warning when the sheet
+ *  held more than one real table block and only the largest was imported. */
 interface SheetExtract {
   records: Record<string, unknown>[];
   summary: SheetFormulaSummary;
+  /** Set when a stacked-table sheet was only partially imported (rows left behind). */
+  warning?: string;
 }
 
 /** The parts of an exceljs formula cell value the summary reads. */
@@ -81,17 +84,84 @@ function extractSheet(ws: Worksheet): SheetExtract {
     for (let c = 1; c <= colCount; c++) if (isFilled(cellValue(ws.getCell(r, c).value))) n++;
     return n;
   };
-
-  // Header = first dense row (after any title preamble) that is followed by data.
+  const filledCols = (r: number): Set<number> => {
+    const s = new Set<number>();
+    for (let c = 1; c <= colCount; c++) if (isFilled(cellValue(ws.getCell(r, c).value))) s.add(c);
+    return s;
+  };
   const threshold = Math.max(3, Math.floor(colCount * 0.4));
-  let headerRow = -1;
-  for (let r = 1; r <= Math.min(HEADER_SCAN_ROWS, rowCount); r++) {
-    if (nonEmpty(r) >= threshold && r < rowCount && nonEmpty(r + 1) >= 2) {
-      headerRow = r;
-      break;
+
+  // A tab may hold a small SUMMARY block, a blank spacer, then the DETAIL table (or several
+  // stacked tables). Reading only until the FIRST blank row keeps the summary and silently
+  // drops the detail. Instead: split the sheet into blank-row-delimited runs, bridge a SINGLE
+  // blank gap when the next run's columns are a subset of the current block's footprint (an
+  // in-table spacer, not a boundary), then import the LARGEST table block — reporting any
+  // other real table block left behind as a warning.
+  const runs: { start: number; end: number }[] = [];
+  let runStart = -1;
+  for (let r = 1; r <= rowCount; r++) {
+    if (nonEmpty(r) > 0) {
+      if (runStart < 0) runStart = r;
+    } else if (runStart >= 0) {
+      runs.push({ start: runStart, end: r - 1 });
+      runStart = -1;
     }
   }
-  if (headerRow < 0) return empty; // no table detected (prose / navigation sheet)
+  if (runStart >= 0) runs.push({ start: runStart, end: rowCount });
+
+  const footprint = (b: { start: number; end: number }): Set<number> => {
+    const s = new Set<number>();
+    for (let r = b.start; r <= b.end; r++) for (const c of filledCols(r)) s.add(c);
+    return s;
+  };
+  const subsetOf = (a: Set<number>, b: Set<number>): boolean => {
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
+  };
+  const blocks: { start: number; end: number }[] = [];
+  for (const run of runs) {
+    const prev = blocks[blocks.length - 1];
+    // Exactly one blank row between (prev.end + 2 === run.start) AND the later run fits inside
+    // the earlier block's columns → a single in-table spacer; extend rather than split.
+    if (prev && run.start === prev.end + 2 && subsetOf(footprint(run), footprint(prev))) {
+      prev.end = run.end;
+    } else {
+      blocks.push({ ...run });
+    }
+  }
+
+  // Each block's header is its first dense row that is followed by data (within the block);
+  // its data-row count is the non-blank rows after that header.
+  const candidates = blocks
+    .map((b) => {
+      let hr = -1;
+      for (let r = b.start; r <= Math.min(b.start + HEADER_SCAN_ROWS, b.end); r++) {
+        if (nonEmpty(r) >= threshold && r < b.end && nonEmpty(r + 1) >= 2) {
+          hr = r;
+          break;
+        }
+      }
+      if (hr < 0) return null;
+      let dataRows = 0;
+      for (let r = hr + 1; r <= b.end; r++) if (nonEmpty(r) > 0) dataRows++;
+      return { headerRow: hr, end: b.end, dataRows };
+    })
+    .filter((c): c is { headerRow: number; end: number; dataRows: number } => c !== null);
+  if (candidates.length === 0) return empty; // no table detected (prose / navigation sheet)
+
+  // Import the largest table; note the rows any OTHER real table block on the sheet holds.
+  candidates.sort((a, b) => b.dataRows - a.dataRows);
+  const best = candidates[0];
+  if (!best) return empty; // unreachable (length checked above) — satisfies the type
+  const headerRow = best.headerRow;
+  const blockEnd = best.end;
+  const droppedRows = candidates.slice(1).reduce((n, c) => n + c.dataRows, 0);
+  const warning =
+    droppedRows > 0
+      ? `Imported the largest table on this sheet (${String(best.dataRows)} rows); ` +
+        `${String(droppedRows)} row(s) in ${String(candidates.length - 1)} other table ` +
+        `block(s) on the same sheet were not imported.`
+      : null;
 
   // Column map: only header cells that carry a name; de-dup repeated names.
   const cols: { c: number; name: string }[] = [];
@@ -136,10 +206,11 @@ function extractSheet(ws: Worksheet): SheetExtract {
     }
   };
 
-  // Data rows until the first fully-blank row (table boundary); drop totals rows.
+  // Data rows across the chosen block (a bridged in-table spacer is skipped, NOT a
+  // boundary — the block's extent already excludes real gaps); drop totals rows.
   const records: Record<string, unknown>[] = [];
   const filledRows = new Map<string, number>(); // column → rows carrying anything
-  for (let r = headerRow + 1; r <= rowCount; r++) {
+  for (let r = headerRow + 1; r <= blockEnd; r++) {
     const row: Record<string, unknown> = {};
     const cells: { c: number; name: string; raw: CellValue; v: unknown }[] = [];
     let any = false;
@@ -152,9 +223,18 @@ function extractSheet(ws: Worksheet): SheetExtract {
         any = true;
       }
     }
-    if (!any) break; // blank row ends the table
+    if (!any) continue; // an in-table blank spacer — skip it, keep reading the block
+    // Totals row: the first cell starts "Total…" AND every other filled cell is numeric (a
+    // true aggregate). A real data row like "Total Wine & More" carries other TEXT and is
+    // kept — the label alone is not enough to drop it.
     const first = cols[0] ? row[cols[0].name] : undefined;
-    if (typeof first === 'string' && /^total\b/i.test(first.trim())) continue; // totals row
+    if (typeof first === 'string' && /^total\b/i.test(first.trim())) {
+      const firstName = cols[0]?.name;
+      const otherText = cells.some(
+        (cell) => cell.name !== firstName && isFilled(cell.v) && typeof cell.v !== 'number',
+      );
+      if (!otherText) continue; // true totals row → drop
+    }
     for (const { c, name, raw, v } of cells) {
       const cell = raw !== null && typeof raw === 'object' ? (raw as unknown as FormulaCell) : null;
       const formula = typeof cell?.formula === 'string' ? cell.formula : null;
@@ -183,7 +263,11 @@ function extractSheet(ws: Worksheet): SheetExtract {
     const st = stats.get(name);
     if (st) columns[name] = { ...st, total: filledRows.get(name) ?? 0 };
   }
-  return { records, summary: { columnLetters, columns } };
+  return {
+    records,
+    summary: { columnLetters, columns },
+    ...(warning ? { warning } : {}),
+  };
 }
 
 /** Detect the single primary table in a worksheet and return its rows as records. */
@@ -208,6 +292,18 @@ export function excelPreambleText(absPath: string): string {
 // bytes, so the proposal-time read (of the upload's temp path) and the
 // apply-time read (of the retained blob) produce identical summaries.
 const formulaCache = new Map<string, WorkbookFormulaSummary>();
+
+// Reconciliation warnings (one per sheet that held more than one real table block and was
+// only partially imported), keyed by absolute path like the caches above — gathered during
+// the single read so the confirm card / apply log / feed pill can surface them without
+// re-opening the file. Empty for a clean single-table workbook.
+const importWarningsCache = new Map<string, string[]>();
+
+/** Reconciliation warnings from the last {@link excelToRecords} read (stacked-table sheets
+ *  where only the largest table was imported). Empty when nothing was left behind. */
+export function excelImportWarnings(absPath: string): string[] {
+  return importWarningsCache.get(resolve(absPath)) ?? [];
+}
 
 /** The per-sheet, per-column formula summary of a workbook last read by
  *  {@link excelToRecords}, for computed-table (calc field) proposals. */
@@ -248,18 +344,21 @@ export async function excelToRecords(absPath: string): Promise<Record<string, un
   const out: Record<string, unknown[]> = {};
   const preamble: string[] = [];
   const formulas: WorkbookFormulaSummary = {};
+  const warnings: string[] = [];
   const props = wb.properties as { title?: string } | undefined;
   if (props?.title) preamble.push(props.title);
   for (const ws of wb.worksheets) {
     preamble.push(ws.name, sheetPreamble(ws));
-    const { records, summary } = extractSheet(ws);
+    const { records, summary, warning } = extractSheet(ws);
     if (records.length > 0) {
       out[ws.name] = records;
       formulas[ws.name] = summary;
+      if (warning) warnings.push(`"${ws.name}": ${warning}`);
     }
   }
   preambleCache.set(resolve(absPath), preamble.filter(Boolean).join('\n'));
   formulaCache.set(resolve(absPath), formulas);
+  importWarningsCache.set(resolve(absPath), warnings);
   return out;
 }
 

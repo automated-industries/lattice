@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { excelFormulaSummary, excelToRecords, __test } from '../../src/import/excel.js';
+import {
+  excelFormulaSummary,
+  excelImportWarnings,
+  excelToRecords,
+  __test,
+} from '../../src/import/excel.js';
 import { inferSchema } from '../../src/import/infer.js';
 
 const dirs: string[] = [];
@@ -120,5 +125,76 @@ describe('excelToRecords', () => {
     // Plain-value columns carry no formula stats.
     expect(funds.columns.Code).toBeUndefined();
     expect(funds.columns.Size).toBeUndefined();
+  });
+});
+
+/** Write a workbook with ONE sheet whose cells are set from a row-major grid (row 1 = grid
+ *  index 0; a `null` grid row is a blank spacer row). Returns the .xlsx path. */
+async function writeGridSheet(sheet: string, grid: (unknown[] | null)[]): Promise<string> {
+  const ExcelJS = await import('exceljs');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(sheet);
+  grid.forEach((cells, i) => {
+    if (cells) ws.getRow(i + 1).values = [null, ...cells]; // leading null → 1-based columns
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'lattice-xlsx-'));
+  dirs.push(dir);
+  const path = join(dir, 'grid.xlsx');
+  await wb.xlsx.writeFile(path);
+  return path;
+}
+
+describe('excelToRecords — multi-block sheets', () => {
+  it('does NOT truncate at an in-table blank spacer row (single-gap tolerance)', async () => {
+    // A header, 3 rows, a blank spacer, then 2 MORE rows in the same columns. The old reader
+    // stopped at the first blank (keeping only 3); the block reader keeps all 5.
+    const path = await writeGridSheet('Data', [
+      ['Code', 'Name', 'Region', 'Amount'],
+      ['A', 'Alpha', 'East', 10],
+      ['B', 'Beta', 'West', 20],
+      ['C', 'Gamma', 'East', 30],
+      null, // in-table spacer
+      ['D', 'Delta', 'West', 40],
+      ['E', 'Epsilon', 'East', 50],
+    ]);
+    const rows = (await excelToRecords(path)).Data!;
+    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.Code)).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(excelImportWarnings(path)).toEqual([]); // one table, nothing left behind
+  });
+
+  it('imports the LARGEST table on a stacked-table sheet and warns about the rest', async () => {
+    // A small summary table, a REAL gap (two blank rows → not bridged), then a larger detail
+    // table. The old reader kept the FIRST (summary); the block reader keeps the largest.
+    const path = await writeGridSheet('Book', [
+      ['Code', 'Name', 'Region', 'Amount'], // summary header
+      ['S1', 'Sum One', 'East', 1],
+      ['S2', 'Sum Two', 'West', 2],
+      null,
+      null, // two blanks → a real table boundary
+      ['Code', 'Name', 'Region', 'Amount'], // detail header
+      ['D1', 'Det One', 'East', 10],
+      ['D2', 'Det Two', 'West', 20],
+      ['D3', 'Det Three', 'East', 30],
+      ['D4', 'Det Four', 'West', 40],
+    ]);
+    const rows = (await excelToRecords(path)).Book!;
+    expect(rows).toHaveLength(4); // the detail table, not the 2-row summary
+    expect(rows.map((r) => r.Code)).toEqual(['D1', 'D2', 'D3', 'D4']);
+    // The dropped summary block is surfaced, not silently lost.
+    const warns = excelImportWarnings(path);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toMatch(/not imported/i);
+  });
+
+  it('drops a true totals row but KEEPS a real row whose label starts with "Total"', async () => {
+    const path = await writeGridSheet('Sales', [
+      ['Company', 'Category', 'Revenue'],
+      ['Acme', 'Tech', 300],
+      ['Total Wine & More', 'Retail', 500], // real company — other TEXT cell → kept
+      ['Total', null, 800], // aggregate — only numbers besides the label → dropped
+    ]);
+    const rows = (await excelToRecords(path)).Sales!;
+    expect(rows.map((r) => r.Company)).toEqual(['Acme', 'Total Wine & More']);
   });
 });

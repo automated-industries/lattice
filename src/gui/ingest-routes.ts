@@ -30,6 +30,7 @@ import { findExactFileDupesOf, mergeDuplicates, type DedupServiceCtx } from './d
 // Smart structured import: a recognized re-upload of a known document is brought
 // in as a new dated snapshot automatically (the assistant "door" for import).
 import { autoImportStructured, type AutoImportResult } from './import-auto.js';
+import { excelImportWarnings } from '../import/excel.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -615,6 +616,7 @@ export async function dispatchIngestRoute(
     // When the drop is a recognized re-upload of a known data document, it's also
     // imported as a new dated snapshot (in addition to being kept as a file).
     let autoImport: AutoImportResult | null = null;
+    let importWarnings: string[] = [];
     try {
       await writeFile(tmp, buf);
       result = await extractSource(ctx.db, tmp, mime, name);
@@ -625,6 +627,11 @@ export async function dispatchIngestRoute(
       } catch (e) {
         console.warn('[ingest] auto-import skipped:', (e as Error).message);
       }
+      // A stacked-table sheet imports only its largest table; capture the reconciliation
+      // warning (from the excelToRecords read the import just did) so it can ride the feed
+      // pill — a partial import is never silent. Read from the in-memory cache, so it holds
+      // even after `tmp` is removed below.
+      if (/\.xlsx?$/i.test(name)) importWarnings = excelImportWarnings(tmp);
       // Retain a content-addressed blob for documents and media (images, PDFs,
       // office docs, text/data, audio, video). Browser drag-drops arrive as bytes
       // with no local path, so this is the only way the underlying file can be
@@ -774,12 +781,24 @@ export async function dispatchIngestRoute(
     // Auto-import outcome → a feed line so the snapshot is visible without any
     // chat round-trip (the assistant "door" working automatically).
     if (autoImport?.imported) {
+      const note = importWarnings.length > 0 ? ` (note: ${importWarnings.join(' ')})` : '';
       ctx.feed.publish({
         table: autoImport.tables[0] ?? 'files',
         op: 'insert',
         rowId: null,
         source: 'system',
-        summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables`,
+        summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables${note}`,
+      });
+    } else if (importWarnings.length > 0) {
+      // Not silently imported (a confirm card, or kept as a plain file), but a sheet was
+      // only partially read — surface that so a stacked-table workbook isn't half-imported
+      // without the user knowing.
+      ctx.feed.publish({
+        table: 'files',
+        op: 'update',
+        rowId: id,
+        source: 'system',
+        summary: `Heads up on "${name}": ${importWarnings.join(' ')}`,
       });
     }
     // A non-silent proposal (`reason` set) surfaces via the inline confirm card in
