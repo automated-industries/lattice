@@ -1110,6 +1110,9 @@ export interface SeedResult {
   upserted: number;
   linked: number;
   softDeleted: number;
+  /** Records skipped because they had no natural-key value to identity-match on (so they
+   *  couldn't be upserted). 0 when every record had a key. Surfaced, never silently dropped. */
+  skipped: number;
   /**
    * Links whose target row did not resolve. Empty when every link
    * resolved. Always present, so callers can check

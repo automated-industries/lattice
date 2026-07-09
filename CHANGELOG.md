@@ -43,6 +43,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   grounded tool loop — the fast path is reserved for messages that clearly don't, and it
   falls back to the full loop whenever it's unsure.
 
+- **Excel sheets with more than one table are read correctly, and stray rows aren't
+  dropped.** The Excel reader used to stop at the first blank row, so a tab with a summary
+  block, a blank spacer, and then a detail table kept only the summary. It now splits each
+  sheet into blank-row-delimited blocks, bridges a single in-table spacer (so a blank row
+  inside a table no longer truncates it), imports the largest table, and — when a sheet
+  holds more than one real table — surfaces a note that the others weren't imported instead
+  of silently leaving them out. Totals-row detection is tighter too: a row is only treated
+  as a totals line when its label starts with "Total" AND every other cell is a number, so a
+  real row like "Total Wine & More" is kept. Rows with no identifying value are now counted
+  and surfaced rather than silently skipped.
+
 - **Spreadsheets import faithfully — every row — and the assistant can do it on request.**
   A dropped spreadsheet is now materialized only by the deterministic structured importer,
   which reads every row; the general-purpose text extractor no longer also manufactures a
