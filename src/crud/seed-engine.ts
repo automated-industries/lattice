@@ -77,6 +77,7 @@ export class SeedEngine {
     let upserted = 0;
     let linked = 0;
     let softDeleted = 0;
+    let skipped = 0;
     const keys: string[] = [];
     const unresolvedLinks: UnresolvedLink[] = [];
 
@@ -88,7 +89,12 @@ export class SeedEngine {
       const rawKey = record[config.naturalKey];
       const naturalKeyVal =
         typeof rawKey === 'string' ? rawKey : typeof rawKey === 'number' ? String(rawKey) : '';
-      if (!naturalKeyVal) continue;
+      // A record with no natural-key value can't be identity-matched, so it is not seeded.
+      // Count it (rather than dropping it silently) so a caller can surface "N rows skipped".
+      if (!naturalKeyVal) {
+        skipped++;
+        continue;
+      }
 
       keys.push(naturalKeyVal);
 
@@ -150,7 +156,7 @@ export class SeedEngine {
       throw new SeedReconciliationError(config.table, unresolvedLinks);
     }
 
-    return { upserted, linked, softDeleted, unresolvedLinks };
+    return { upserted, linked, softDeleted, skipped, unresolvedLinks };
   }
 
   // VERBATIM from lattice.ts 1648–1650 (+ its JSDoc).
