@@ -3,6 +3,7 @@ import type { Lattice } from '../lattice.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
 import { excelFormulaSummary, excelToRecords } from '../import/excel.js';
+import { csvToRecords } from '../import/csv.js';
 import {
   buildComputedProposals,
   type ComputedTableProposal,
@@ -77,6 +78,7 @@ async function readStructured(abs: string, name: string): Promise<Record<string,
   // is staged to an extensionless temp path, so testing `abs` would misroute an
   // `.xlsx` into the JSON branch. The bytes are read from `abs` either way.
   if (/\.xlsx?$/i.test(name)) return excelToRecords(abs);
+  if (/\.(csv|tsv)$/i.test(name)) return csvToRecords(abs, name);
   return JSON.parse(readFileSync(abs, 'utf8')) as Record<string, unknown>;
 }
 
@@ -86,7 +88,7 @@ export async function autoImportStructured(
   abs: string,
   name: string,
 ): Promise<AutoImportResult | null> {
-  if (!/\.(xlsx?|json)$/i.test(name)) return null;
+  if (!/\.(xlsx?|csv|tsv|json)$/i.test(name)) return null;
   let data: Record<string, unknown>;
   try {
     data = await readStructured(abs, name);

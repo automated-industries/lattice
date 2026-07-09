@@ -171,14 +171,14 @@ export async function enrichWithLlm(
   // classify failure still zeroes auto-links AND skips extract + the note fallback
   // and returns []; an extract failure still only warns and keeps the links + note
   // fallback; the description is still best-effort and independent.
-  // A spreadsheet is materialized FAITHFULLY (every row) by the deterministic structured
-  // importer (autoImportStructured → materializeImport) — the single owner of tabular
-  // row creation. The prose-oriented LLM object extractor must NOT also manufacture rows
-  // from the same file: pointed at a 53-row workbook it emitted a lossy 3-row summary, and
-  // two parallel paths creating rows from one file is exactly the duplication to avoid. So
-  // for a spreadsheet the extractor is disabled and the importer owns the data. (The other
-  // enrichment — a description + auto-linking the file to related records — still runs.)
-  const isSpreadsheet = /\.xlsx?$/i.test(name);
+  // A spreadsheet / CSV is materialized FAITHFULLY (every row) by the deterministic
+  // structured importer (autoImportStructured → materializeImport) — the single owner of
+  // tabular row creation. The prose-oriented LLM object extractor must NOT also manufacture
+  // rows from the same file: pointed at a 53-row workbook it emitted a lossy 3-row summary,
+  // and two parallel paths creating rows from one file is exactly the duplication to avoid.
+  // So for tabular files the extractor is disabled and the importer owns the data. (The
+  // other enrichment — a description + auto-linking the file to related records — still runs.)
+  const isSpreadsheet = /\.(xlsx?|csv|tsv)$/i.test(name);
   const extractGate = !!createEntity && aggressiveness >= 0.4 && !isSpreadsheet;
   // buildCatalog READS every user table; a transient DB read failure here must not
   // throw out of this best-effort enricher — that would leave the already-saved file
