@@ -75,6 +75,23 @@ describe('parseDelimited', () => {
       ['1', '', '3'],
     ]);
   });
+
+  it('treats a quote in the MIDDLE of a field as a literal (an inch-mark), not a toggle', () => {
+    // '5" pipe' must stay one cell and the comma must still split — the old parser toggled
+    // on any quote and swallowed the rest of the line into one cell.
+    expect(parseDelimited('size,name\n5" pipe,widget')).toEqual([
+      ['size', 'name'],
+      ['5" pipe', 'widget'],
+    ]);
+  });
+
+  it('detects the delimiter OUTSIDE quotes (a quoted header field of semicolons stays comma)', () => {
+    // The comma is the real delimiter; the semicolons live inside a quoted field.
+    expect(parseDelimited('"a;b;c;d",e\n1,2')).toEqual([
+      ['a;b;c;d', 'e'],
+      ['1', '2'],
+    ]);
+  });
 });
 
 describe('csvToRecords', () => {
