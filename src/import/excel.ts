@@ -84,7 +84,11 @@ function extractSheet(ws: Worksheet): SheetExtract {
     for (let c = 1; c <= colCount; c++) if (isFilled(cellValue(ws.getCell(r, c).value))) n++;
     return n;
   };
-  const threshold = Math.max(3, Math.floor(colCount * 0.4));
+  // A header row must have at least this many filled cells. Floored at 3 for wider sheets so
+  // a stray 1-2 cell prose line is never mistaken for a header — BUT a genuinely narrow
+  // (2-column) table has only 2 columns and could never reach 3, so it dropped entirely; for
+  // a 2-column sheet the floor is 2 (a complete 2-cell header row).
+  const threshold = Math.max(colCount <= 2 ? 2 : 3, Math.floor(colCount * 0.4));
 
   // A tab may hold a small SUMMARY block, a blank spacer, then the DETAIL table (or several
   // stacked tables). Reading only until the FIRST blank row keeps the summary and silently
@@ -108,8 +112,12 @@ function extractSheet(ws: Worksheet): SheetExtract {
   if (runStart >= 0) runs.push({ start: runStart, end: rowCount });
   const blocks = runs;
 
-  // Each block's header is its first dense row that is followed by data (within the block);
-  // its data-row count is the non-blank rows after that header.
+  // Each block's header is its first dense row that is followed by a row of real data (≥2
+  // filled cells). The ≥2 successor guard is kept deliberately: dropping it to also catch a
+  // table whose FIRST data row is sparse (one cell) is not safe — that layout (dense row →
+  // 1-cell row → dense row) is structurally identical to a dense banner sitting above the
+  // real header, so any rule that accepts one mis-maps the other. Both are rare; neither is
+  // worth trading a silent mis-mapping for. See reference_lattice_excel_importer_known_limits.
   const candidates = blocks
     .map((b) => {
       let hr = -1;

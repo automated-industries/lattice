@@ -203,4 +203,34 @@ describe('excelToRecords — multi-block sheets', () => {
     const rows = (await excelToRecords(path)).Sales!;
     expect(rows.map((r) => r.Company)).toEqual(['Acme', 'Total Wine & More']);
   });
+
+  it('imports a TWO-column table (previously dropped by the header-density floor)', async () => {
+    // A 2-col table can never reach a floor of 3 filled cells, so it used to be omitted whole.
+    // Written at A1 (no empty leading column) so the sheet is genuinely 2 columns wide.
+    const ExcelJS = await import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Balances');
+    const grid: [string, number][] = [
+      ['Checking', 1200],
+      ['Savings', 8400],
+      ['Credit', -300],
+    ];
+    ws.getCell('A1').value = 'Account';
+    ws.getCell('B1').value = 'Balance';
+    grid.forEach(([acct, bal], i) => {
+      ws.getCell('A' + String(i + 2)).value = acct;
+      ws.getCell('B' + String(i + 2)).value = bal;
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'lattice-xlsx-'));
+    dirs.push(dir);
+    const path = join(dir, 'balances.xlsx');
+    await wb.xlsx.writeFile(path);
+
+    const rows = (await excelToRecords(path)).Balances!;
+    expect(rows).toEqual([
+      { Account: 'Checking', Balance: 1200 },
+      { Account: 'Savings', Balance: 8400 },
+      { Account: 'Credit', Balance: -300 },
+    ]);
+  });
 });
