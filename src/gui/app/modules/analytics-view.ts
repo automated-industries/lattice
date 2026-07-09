@@ -111,7 +111,7 @@ export const analyticsViewJs = `
           }
           host.innerHTML = anDashRows
             .map(function (r) {
-              var key = 'dash:' + r.id;
+              var key = 'dashboard:' + r.id;
               var vis = typeof visIndicator === 'function' ? visIndicator(r._access, 'dash-vis') : '';
               return (
                 '<button type="button" class="dash-item' + (key === activeKey ? ' active' : '') +
@@ -127,7 +127,7 @@ export const analyticsViewJs = `
           host.scrollTop = keepScroll;
           host.querySelectorAll('.dash-item').forEach(function (el) {
             el.addEventListener('click', function () {
-              location.hash = '#/analytics/' + encodeURIComponent(el.getAttribute('data-dash-id'));
+              location.hash = '#/w/dash/' + encodeURIComponent(el.getAttribute('data-dash-id'));
             });
           });
         })
@@ -150,7 +150,7 @@ export const analyticsViewJs = `
       anDashRows = null;
       renderDashList().then(function () {
         if (location.hash === AN_HOME_HASH) {
-          var host = document.getElementById('analytics-content');
+          var host = document.getElementById('content');
           if (host) renderAnalyticsHome(host);
         }
       });
@@ -224,7 +224,7 @@ export const analyticsViewJs = `
       fetchJson('/api/tables/dashboards/rows/' + encodeURIComponent(id))
         .then(function (row) {
           if (!row || row.error || !row.id) throw new Error('not found');
-          anSetTabTitle('dash:' + id, String(row.title || 'Dashboard'));
+          anSetTabTitle('dashboard:' + id, String(row.title || 'Dashboard'));
           if (myGen !== renderGen) return;
           setContent(host, myGen,
             '<div class="dash-page">' +
@@ -271,7 +271,7 @@ export const analyticsViewJs = `
         })
         .catch(function () {
           // Deleted / never existed / not visible: drop the tab and land home.
-          anCloseTab('dash:' + id);
+          anCloseTab('dashboard:' + id);
           if (location.hash !== AN_HOME_HASH) location.hash = AN_HOME_HASH;
           showToast('That dashboard is no longer available', {});
         });
@@ -305,7 +305,7 @@ export const analyticsViewJs = `
               .then(function (r) { if (!r.ok) throw new Error('rename failed (' + r.status + ')'); })
               .then(function () {
                 row.title = next;
-                anSetTabTitle('dash:' + id, next);
+                anSetTabTitle('dashboard:' + id, next);
                 var h1 = host.querySelector('.dash-title');
                 if (h1) h1.textContent = next;
                 renderDashList();
@@ -329,9 +329,9 @@ export const analyticsViewJs = `
               .then(function (r) { if (!r.ok) throw new Error('delete failed (' + r.status + ')'); return r.json(); })
               .then(function () {
                 showToast('Deleted "' + (row.title || 'dashboard') + '"', { undo: undoLast });
-                anCloseTab('dash:' + id);
+                anCloseTab('dashboard:' + id);
                 renderDashList();
-                if (isAnalyticsHash(location.hash) && anTabKeyForHash(location.hash) === 'dash:' + id) {
+                if (isAnalyticsHash(location.hash) && anTabKeyForHash(location.hash) === 'dashboard:' + id) {
                   location.hash = AN_HOME_HASH;
                 }
               })
@@ -381,11 +381,24 @@ export const analyticsViewJs = `
       anReconcileTab(hash);
       anRenderTabStrip();
       renderDashList();
-      var host = document.getElementById('analytics-content');
+      if (typeof renderNavSections === 'function') renderNavSections();
+      var host = document.getElementById('content');
       if (!host) return;
       if (!soft) host.innerHTML = routeLoadingHtml();
-      var m = /^#\\/analytics\\/(.+)$/.exec(hash);
-      if (m) { renderDashboardPage(host, decodeURIComponent(m[1])); return; }
+      // Typed Workspace tabs: #/w/(dash|table|file|md)/<first>[/<drill-in>…].
+      var m = /^#\\/w\\/(dash|table|file|md)\\/(.+)$/.exec(hash);
+      if (m) {
+        var kind = m[1], rest = m[2];
+        if (kind === 'dash') { renderDashboardPage(host, decodeURIComponent(rest.split('/')[0])); return; }
+        if (kind === 'file') { renderFsItem(host, ['files', decodeURIComponent(rest.split('/')[0])], 'w:file'); return; }
+        // table + markdown: <name>[/<rowId>/<rel>/<id>…]; odd seg count = collection,
+        // even = a record (the same split the fs renderers use).
+        var segs = rest.split('/').map(function (s) { return decodeURIComponent(s); });
+        var section = kind === 'md' ? 'w:md' : 'w:table';
+        if (segs.length % 2 === 1) renderFsCollection(host, segs, section);
+        else renderFsItem(host, segs, section);
+        return;
+      }
       renderAnalyticsHome(host);
     }
 `;
