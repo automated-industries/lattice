@@ -145,33 +145,39 @@ async function writeGridSheet(sheet: string, grid: (unknown[] | null)[]): Promis
 }
 
 describe('excelToRecords — multi-block sheets', () => {
-  it('does NOT truncate at an in-table blank spacer row (single-gap tolerance)', async () => {
-    // A header, 3 rows, a blank spacer, then 2 MORE rows in the same columns. The old reader
-    // stopped at the first blank (keeping only 3); the block reader keeps all 5.
-    const path = await writeGridSheet('Data', [
-      ['Code', 'Name', 'Region', 'Amount'],
+  it('never merges a narrower separate table into the one above it (no silent corruption)', async () => {
+    // A 4-column table, ONE blank row, then a NARROWER 2-column table (its columns are a subset
+    // of the first's). These are two DISTINCT tables — the reader must NOT bridge the single
+    // blank and read the second table's header + rows under the first table's column names.
+    const path = await writeGridSheet('Book', [
+      ['Code', 'Name', 'Region', 'Amount'], // table 1 header (cols 1-4)
       ['A', 'Alpha', 'East', 10],
       ['B', 'Beta', 'West', 20],
-      ['C', 'Gamma', 'East', 30],
-      null, // in-table spacer
-      ['D', 'Delta', 'West', 40],
-      ['E', 'Epsilon', 'East', 50],
+      null, // single blank — a boundary, NOT an in-table spacer
+      ['Ticker', 'Company', 'Sector'], // table 2 header (cols 1-3, a subset of table 1's)
+      ['AAA', 'Acme', 'Tech'],
+      ['BBB', 'Beta Corp', 'Retail'],
+      ['CCC', 'Ceta LLC', 'Finance'],
     ]);
-    const rows = (await excelToRecords(path)).Data!;
-    expect(rows).toHaveLength(5);
-    expect(rows.map((r) => r.Code)).toEqual(['A', 'B', 'C', 'D', 'E']);
-    expect(excelImportWarnings(path)).toEqual([]); // one table, nothing left behind
+    const rows = (await excelToRecords(path)).Book!;
+    // The larger table (table 2, 3 rows) is imported under ITS OWN header — never a row where a
+    // header label ("Ticker"/"Code") leaked in as data (which the buggy single-blank bridge did).
+    expect(rows).toHaveLength(3);
+    expect(Object.keys(rows[0]!).sort()).toEqual(['Company', 'Sector', 'Ticker']);
+    expect(rows.map((r) => r.Ticker)).toEqual(['AAA', 'BBB', 'CCC']);
+    expect(rows.some((r) => r.Ticker === 'Ticker' || r.Code === 'Code')).toBe(false);
+    // The other table is surfaced, not silently swallowed.
+    expect(excelImportWarnings(path)).toHaveLength(1);
   });
 
   it('imports the LARGEST table on a stacked-table sheet and warns about the rest', async () => {
-    // A small summary table, a REAL gap (two blank rows → not bridged), then a larger detail
-    // table. The old reader kept the FIRST (summary); the block reader keeps the largest.
+    // A small summary table, a blank gap, then a larger detail table. The old reader kept the
+    // FIRST (summary); the block reader keeps the largest and reports the rest.
     const path = await writeGridSheet('Book', [
       ['Code', 'Name', 'Region', 'Amount'], // summary header
       ['S1', 'Sum One', 'East', 1],
       ['S2', 'Sum Two', 'West', 2],
-      null,
-      null, // two blanks → a real table boundary
+      null, // blank → a table boundary
       ['Code', 'Name', 'Region', 'Amount'], // detail header
       ['D1', 'Det One', 'East', 10],
       ['D2', 'Det Two', 'West', 20],
