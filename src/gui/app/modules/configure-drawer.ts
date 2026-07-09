@@ -30,7 +30,7 @@ export const configureDrawerJs = `
         '<button type="button" class="tab' + (sub === 'graph' ? ' active' : '') + '" data-dmsub="graph">Graph</button>' +
         '</div>' +
         (sub === 'graph'
-          ? '<div class="brain-graph"><div id="graph-mount"></div></div>'
+          ? '<div class="dm-tables-merge"><div class="brain-graph"><div id="graph-mount"></div></div><div id="dm-panel" class="dm-panel"></div></div>'
           : '<div class="dm-tables-merge"><div id="model-tables-host"></div><div id="dm-panel" class="dm-panel"></div></div>');
       body.querySelectorAll('[data-dmsub]').forEach(function (b) {
         b.addEventListener('click', function () {

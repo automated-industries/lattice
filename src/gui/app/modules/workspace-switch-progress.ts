@@ -32,6 +32,11 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       // Objects/Folders object page → that table's collection tab.
       m = /^#\\/folders\\/([^/]+)$/.exec(hash);
       if (m) return '#/w/table/' + m[1];
+      // A graph node drill-in (old #/graph/<entity>[/<id>]) → that entity's table
+      // tab. The bare #/graph (Data Model → Graph drawer) is matched by
+      // configureRouteFor first, so only the node-level form reaches here.
+      m = /^#\\/graph\\/(.+)$/.exec(hash);
+      if (m) return '#/w/table/' + m[1];
       // #/fs/<t>[/…] and #/tables/<t>[/…] (record/collection drill-ins) → #/w/table/…
       // (bare #/tables is the Data Model drawer, matched by configureRouteFor first).
       m = /^#\\/fs\\/(.+)$/.exec(hash);
@@ -47,7 +52,6 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       hash = hash || '';
       if (hash === '#/graph') return { tab: 'datamodel', subtab: 'graph' };
       if (hash === '#/tables') return { tab: 'datamodel', subtab: 'tables' };
-      if (/^#\\/computed\\//.test(hash)) return { tab: 'datamodel', subtab: 'tables' };
       if (hash === '#/settings/history') return { tab: 'history' };
       if (hash === '#/settings/lattice') return { tab: 'lattice' };
       if (hash === '#/settings/database' || hash === '#/settings/project-config' || hash === '#/settings/data-model')
@@ -78,6 +82,17 @@ export const workspaceSwitchProgressJs = `    // ──────────�
         return;
       }
       if (!state.entities) { if (content && !soft) content.innerHTML = routeLoadingHtml(); return; }
+      // The computed-table builder (#/computed/new to create, #/computed/<name> to
+      // edit) renders as a full center page. It is launched from the Data Model →
+      // Tables explorer inside the Configure drawer, so close that drawer first —
+      // otherwise the builder renders hidden behind the open panel.
+      var cbm = /^#\\/computed\\/([^/]+)$/.exec(hash);
+      if (cbm) {
+        if (typeof drawerIsOpen === 'function' && drawerIsOpen() && typeof closeSettingsDrawer === 'function') closeSettingsDrawer();
+        if (content && !soft) content.innerHTML = routeLoadingHtml();
+        renderComputedBuilder(content, decodeURIComponent(cbm[1]));
+        return;
+      }
       // A few center-rendered utility routes that aren't Workspace tabs.
       if (hash === '#/questions') {
         if (content && !soft) content.innerHTML = routeLoadingHtml();

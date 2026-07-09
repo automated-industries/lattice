@@ -415,8 +415,15 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Smart intent ack (elektra-style): a turn can now open with a fast contextual `ack` event
 // ("Got it — pulling your invoices…") rendered as a transient bubble before the answer
 // streams; the client renders the new `ack` ChatStreamEvent in applyChatEvent. Recaptured.
-const ORIGINAL_LENGTH = 704919;
-const ORIGINAL_SHA256 = '22057d816ba4feb16ea02b1d80952dc5066b0ef38501e070d4abce827593966d';
+// Single-layout reframe adversarial-review fixes (7): computed-builder route restored
+// (#/computed/* → renderComputedBuilder, drawer closes first) + #/graph node drill-in
+// normalized to the table tab; Graph drawer subtab gets a #dm-panel and node clicks open
+// the in-drawer editor; file-delete routes to the files collection (not the invalid
+// #/w/file/files); closeSettingsDrawer + workspace-switch preserve/clear the Configure
+// hashes correctly; dashboard add-source opens the Inputs tab; markdown render-progress
+// selectors repointed to #nav-md-tree. Recaptured.
+const ORIGINAL_LENGTH = 706782;
+const ORIGINAL_SHA256 = '387c2e66c27f78f4ad03a58c23e267efbe052cfbfbd1c99534f4154a6825ca9b';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

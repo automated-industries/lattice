@@ -48,16 +48,18 @@ export const tableViewJs = `    // ───────────────
       var gear = document.getElementById('configure-trigger');
       if (hist) hist.classList.remove('on');
       if (gear) gear.classList.remove('on');
-      // Keep the URL in sync with what's actually on screen. A settings hash
-      // (#/settings/..., e.g. from a "User Settings" link) opens this drawer over
-      // the dashboard, and renderRoute REOPENS the drawer for that hash — so if the
-      // hash stayed put, a later re-render (submitting a chat message, a live data
+      // Keep the URL in sync with what's actually on screen. Any drawer-opening
+      // hash — a settings hash (#/settings/..., e.g. from a "User Settings" link) OR
+      // a Configure route (#/graph, #/tables) that configureRouteFor maps to this
+      // drawer — makes renderRoute REOPEN the drawer for that hash. So if the hash
+      // stayed put, a later re-render (submitting a chat message, a live data
       // refresh) would pop the panel open on its own. Reset the hash to the
-      // dashboard the drawer was overlaying. replaceState (not a location.hash
+      // workspace the drawer was overlaying. replaceState (not a location.hash
       // assignment) avoids both a spurious history entry and a redundant re-render
-      // — the dashboard is already on screen beneath the drawer.
+      // — the workspace is already on screen beneath the drawer.
       if (
-        location.hash.indexOf('#/settings/') === 0 &&
+        (location.hash.indexOf('#/settings/') === 0 ||
+          (typeof configureRouteFor === 'function' && configureRouteFor(location.hash))) &&
         window.history &&
         window.history.replaceState
       ) {

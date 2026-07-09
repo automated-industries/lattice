@@ -213,7 +213,10 @@ export const dashboardJs = `    // ───────────────
       }
       var addBtn = { 'add-file': 'src-add-files', 'add-connector': 'src-add-connector', 'add-database': 'src-add-database' };
       if (Object.prototype.hasOwnProperty.call(addBtn, name)) {
-        if (typeof goConfigure === 'function') goConfigure();
+        // The add-source buttons live ONLY in the Inputs drawer tab — goConfigure()
+        // opens Data Model, where the button lookup below would miss. Open Inputs.
+        if (typeof openConfigureDrawer === 'function') openConfigureDrawer('inputs');
+        else if (typeof goConfigure === 'function') goConfigure();
         var id = addBtn[name];
         setTimeout(function () { var b = document.getElementById(id); if (b) b.click(); }, 90);
         return;
@@ -1349,8 +1352,10 @@ export const dashboardJs = `    // ───────────────
         if (!t) { location.hash = '#/'; return; } // table removed → dashboard
         // The open record was deleted out from under the view — fall back to this
         // section's object page rather than repaint a tombstone (respect trash view).
+        // A file tab (w:file) has no collection form under #/w/file/ (the segment is
+        // always a file id), so route to the files-table collection instead.
         if (!row || (row.deleted_at && tableViewMode[table] !== 'trash')) {
-          location.hash = sectionHref(section, [table]);
+          location.hash = section === 'w:file' ? '#/w/table/' + encodeURIComponent(table) : sectionHref(section, [table]);
           return;
         }
         var d = displayFor(table);
@@ -1766,9 +1771,11 @@ export const dashboardJs = `    // ───────────────
         .then(function () {
           showToast('Deleted "' + (fsDisplayName(row) || 'record') + '"', { undo: undoLast });
           // Navigate to the collection in the SAME section the record was opened
-          // from (Folders/Graph/Tables) — a hard-coded #/fs would yank the user
-          // out of Graph/Tables into Folders.
-          location.hash = sectionHref(sectionOfHash(), [table]);
+          // from (Graph/Tables/Workspace) — a hard-coded #/fs would yank the user
+          // elsewhere. A file tab (w:file) has no #/w/file/ collection form, so route
+          // to the files-table collection instead of the invalid #/w/file/<name>.
+          var delSec = sectionOfHash();
+          location.hash = delSec === 'w:file' ? '#/w/table/' + encodeURIComponent(table) : sectionHref(delSec, [table]);
         })
         .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }

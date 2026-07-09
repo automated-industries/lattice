@@ -60,7 +60,7 @@ export const eventStreamJs = `    // ──────────────�
     // render event AND at the end of renderOutputsMarkdown so overlays survive a
     // tree rebuild. No-op when nothing is rendering.
     function reapplyTreeProgress() {
-      var nodes = document.querySelectorAll('#out-markdown-tree .mdt-node[data-table]');
+      var nodes = document.querySelectorAll('#nav-md-tree .mdt-node[data-table]');
       nodes.forEach(function (node) {
         var table = node.getAttribute('data-table');
         var row = node.querySelector(':scope > .mdt-row');

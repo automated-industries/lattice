@@ -19,7 +19,10 @@ export const outputsJs = `
     // record and opens the record page (the single markdown surface, with the
     // Formatted | Markdown toggle) — the old separate read-only viewer is gone.
     function renderOutputsMarkdown() {
-      renderMarkdownTreeInto(document.getElementById('out-markdown-tree'));
+      // The rendered-markdown tree now lives in the left-sidebar MARKDOWN section
+      // (#nav-md-tree); the old #out-markdown-tree Outputs rail was removed. Refresh
+      // hooks (boot, a source add) route here to rebuild that sidebar tree.
+      renderMarkdownTreeInto(document.getElementById('nav-md-tree'));
     }
     // Render the rendered-markdown tree (one node per non-junction table + lazy
     // per-record folders) INTO a given host, so the SAME tree serves the old
