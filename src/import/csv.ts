@@ -23,7 +23,12 @@ export function parseDelimited(text: string, delimiter?: string): string[][] {
   let row: string[] = [];
   let field = '';
   let inQuotes = false;
-  let started = false; // any char seen for the current row/field (to trim a trailing newline)
+  // A field is QUOTED only when it OPENS with a quote (RFC-4180). `atFieldStart` tracks that
+  // position so a quote in the MIDDLE of a field (an inch-mark: 5" pipe) is a literal char,
+  // not a quote toggle — the old code toggled on any quote and silently swallowed the rest
+  // of the line/file into one cell.
+  let atFieldStart = true;
+  let started = false; // any char seen for the current row (to trim a trailing newline)
   for (let i = 0; i < s.length; i++) {
     const ch = s.charAt(i);
     if (inQuotes) {
@@ -32,25 +37,28 @@ export function parseDelimited(text: string, delimiter?: string): string[][] {
           field += '"';
           i++;
         } else {
-          inQuotes = false;
+          inQuotes = false; // closing quote; any chars before the next delimiter append below
         }
       } else {
         field += ch;
       }
       continue;
     }
-    if (ch === '"') {
+    if (ch === '"' && atFieldStart) {
       inQuotes = true;
+      atFieldStart = false;
       started = true;
     } else if (ch === delim) {
       row.push(field);
       field = '';
+      atFieldStart = true;
       started = true;
     } else if (ch === '\n') {
       row.push(field);
       rows.push(row);
       row = [];
       field = '';
+      atFieldStart = true;
       started = false;
     } else if (ch === '\r') {
       // handled by the following \n (or a lone \r ends the line below)
@@ -59,10 +67,12 @@ export function parseDelimited(text: string, delimiter?: string): string[][] {
         rows.push(row);
         row = [];
         field = '';
+        atFieldStart = true;
         started = false;
       }
     } else {
       field += ch;
+      atFieldStart = false;
       started = true;
     }
   }
@@ -73,14 +83,18 @@ export function parseDelimited(text: string, delimiter?: string): string[][] {
   return rows;
 }
 
-/** Pick the delimiter with the most occurrences on the first line (comma default). */
+/** Pick the delimiter with the most occurrences on the first line — counting only OUTSIDE
+ *  quoted fields, so a header column like "a;b;c" doesn't make a comma-CSV read as semicolon.
+ *  Comma default. */
 function detectDelimiter(text: string): string {
   const firstLine = text.split(/\r?\n/, 1)[0] ?? '';
+  // Blank out quoted spans (incl. "" escapes) so their contents don't count toward any delimiter.
+  const unquoted = firstLine.replace(/"(?:[^"]|"")*"/g, '');
   const candidates = [',', ';', '\t'];
   let best = ',';
   let bestCount = -1;
   for (const d of candidates) {
-    const count = firstLine.split(d).length - 1;
+    const count = unquoted.split(d).length - 1;
     if (count > bestCount) {
       bestCount = count;
       best = d;

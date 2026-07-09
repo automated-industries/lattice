@@ -204,6 +204,21 @@ describe('excelToRecords — multi-block sheets', () => {
     expect(rows.map((r) => r.Company)).toEqual(['Acme', 'Total Wine & More']);
   });
 
+  it('imports a narrow table even when a stray far-right cell inflates the sheet width', async () => {
+    // A note in column 10 makes ws.columnCount=10, so a sheet-wide threshold (floor(10*0.4)=4)
+    // would reject the 3-column table's header. The per-block threshold uses the block's own
+    // width (3), so the table is detected and imported.
+    const path = await writeGridSheet('Data', [
+      ['Code', 'Name', 'Amount'], // 3-col table (cols B–D)
+      ['A', 'Alpha', 10],
+      ['B', 'Beta', 20],
+      [null, null, null, null, null, null, null, null, 'a stray note'], // a lone cell in col 10
+    ]);
+    const rows = (await excelToRecords(path)).Data!;
+    expect(rows.map((r) => r.Code)).toEqual(['A', 'B']); // table imported; the note row skipped
+    expect(Object.keys(rows[0]!).sort()).toEqual(['Amount', 'Code', 'Name']);
+  });
+
   it('imports a TWO-column table (previously dropped by the header-density floor)', async () => {
     // A 2-col table can never reach a floor of 3 filled cells, so it used to be omitted whole.
     // Written at A1 (no empty leading column) so the sheet is genuinely 2 columns wide.
