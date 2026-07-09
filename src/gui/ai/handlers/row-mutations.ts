@@ -305,6 +305,47 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         },
       };
     }
+    case 'import_spreadsheet': {
+      // Faithfully materialize an attached spreadsheet into real tables (every row) via the
+      // deterministic importer — the answer to "build a dashboard from this spreadsheet"
+      // when the data isn't in the workspace yet. Never the lossy LLM extractor.
+      if (!ctx.importAttachment) {
+        return {
+          ok: false,
+          error: 'Spreadsheet import is unavailable here.',
+        };
+      }
+      const fileId = requireString(args.file_id, 'file_id');
+      let imported: { tables: string[]; rows: number } | null;
+      try {
+        imported = await ctx.importAttachment(fileId);
+      } catch (e) {
+        // Surface the real reason (unknown file id, bytes not on disk, parse failure)
+        // rather than swallowing it — the assistant relays it to the user.
+        return { ok: false, error: (e as Error).message };
+      }
+      if (!imported) {
+        return {
+          ok: false,
+          error:
+            'That file has no spreadsheet data to import — it may not be an Excel spreadsheet, ' +
+            'or it has no rows. For pasted or unstructured content use ingest_text instead.',
+        };
+      }
+      // Signal the data change so the workspace view refreshes (new tables/rows appear).
+      if (imported.tables[0]) {
+        mctx.feed.publish({
+          table: imported.tables[0],
+          op: 'insert',
+          rowId: null,
+          source: 'ai',
+          summary: `Imported ${String(imported.rows)} rows from the spreadsheet into ${String(
+            imported.tables.length,
+          )} ${imported.tables.length === 1 ? 'table' : 'tables'}`,
+        });
+      }
+      return { ok: true, result: { tables: imported.tables, rows: imported.rows } };
+    }
     case 'ingest_url': {
       // Fetch a USER-PROVIDED web URL, save its readable text as a `files` row
       // (a `cloud_ref` web reference, flagged source_json.untrusted), and

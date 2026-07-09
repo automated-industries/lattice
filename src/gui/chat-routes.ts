@@ -63,6 +63,8 @@ interface ChatContext {
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   createFileJunction?: DispatchCtx['createFileJunction'];
   deleteEntity?: DispatchCtx['deleteEntity'];
+  /** Faithfully import an attached spreadsheet by files id (deterministic importer). */
+  importAttachment?: DispatchCtx['importAttachment'];
   /** Registered computed tables — tagged read-only in the assistant's schema context. */
   computedTables?: Set<string>;
   /** Computed-table primitives for the assistant's computed-table tools. */
@@ -840,6 +842,7 @@ export async function dispatchChatRoute(
       ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
       ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
       ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
+      ...(ctx.importAttachment ? { importAttachment: ctx.importAttachment } : {}),
       // Copied like validTables so in-turn additions (create_computed_table)
       // stay visible to later tool calls without mutating the server's set —
       // the audited op updates the workspace-level set itself.

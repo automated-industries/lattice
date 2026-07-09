@@ -49,7 +49,8 @@ import { getClaudeLimitState } from './ai/limit-state.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
-import { dispatchImportRoute } from './import-routes.js';
+import { dispatchImportRoute, readImportSourceFromFile } from './import-routes.js';
+import { importDataFaithfully } from './import-auto.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
 import { dispatchDbSourcesRoute } from './db-sources-routes.js';
 import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index.js';
@@ -995,6 +996,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // non-empty ones come back as `needsResolution` so the assistant asks.
                 deleteEntity: (name: string, resolution?: DeleteResolution) =>
                   aiDeleteEntity(active, name, resolution, sessionId),
+                // Faithfully import an attached spreadsheet by files id — read its retained
+                // bytes + materialize every row via the deterministic importer (the
+                // import_spreadsheet tool). Same read + materialize path as the apply route,
+                // so a workbook lands ALL its rows, never the lossy LLM summary.
+                importAttachment: (fileId: string) =>
+                  readImportSourceFromFile(active.db, fileId, dirname(active.configPath)).then(
+                    ({ data }) => importDataFaithfully(active.db, active.configPath, data),
+                  ),
                 // Computed tables: tagged read-only in the schema context, and
                 // driven by the assistant's computed-table tools through the
                 // same audited, revertible primitives as the builder routes.

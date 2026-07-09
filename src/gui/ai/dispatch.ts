@@ -67,6 +67,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'create_artifact',
   'create_dashboard',
   'edit_dashboard',
+  'import_spreadsheet',
   'create_secret',
   'ingest_url',
   'ingest_text',
