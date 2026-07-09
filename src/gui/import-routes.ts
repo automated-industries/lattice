@@ -14,6 +14,7 @@ import {
   excelToRecords,
   type WorkbookFormulaSummary,
 } from '../import/excel.js';
+import { csvToRecords } from '../import/csv.js';
 import {
   buildComputedProposals,
   type ComputedFieldProposal,
@@ -143,6 +144,9 @@ export async function readImportSourceFromFile(
   if (/\.xlsx?$/i.test(name) || mime.includes('spreadsheet') || mime.includes('excel')) {
     const data = await excelToRecords(path);
     return { data, formulaSummary: excelFormulaSummary(path) };
+  }
+  if (/\.(csv|tsv)$/i.test(name) || mime.includes('csv') || mime.includes('tab-separated')) {
+    return { data: csvToRecords(path, name), formulaSummary: null };
   }
   let parsed: unknown;
   try {

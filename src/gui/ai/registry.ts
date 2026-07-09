@@ -275,7 +275,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'import_spreadsheet',
     description:
-      "Import a spreadsheet the user attached (an .xlsx / .xls file) into their workspace as real, structured data — every row, faithfully — so you can then answer questions about it or build a dashboard from it. Use this when the user attaches a spreadsheet and wants its contents available as data, or when a dashboard/answer needs data that lives in a spreadsheet they gave you (e.g. a create_dashboard failed because the data doesn't exist yet). Pass the `file_id` of the attached spreadsheet (from the note listing what they attached). This reads the whole file deterministically — it does not summarize or drop rows. Follows the same sharing rules as any data. Only Excel spreadsheets are supported here; for other content use ingest_text.",
+      "Import a spreadsheet the user attached (an .xlsx / .xls or .csv / .tsv file) into their workspace as real, structured data — every row, faithfully — so you can then answer questions about it or build a dashboard from it. Use this when the user attaches a spreadsheet and wants its contents available as data, or when a dashboard/answer needs data that lives in a spreadsheet they gave you (e.g. a create_dashboard failed because the data doesn't exist yet). Pass the `file_id` of the attached spreadsheet (from the note listing what they attached). This reads the whole file deterministically — it does not summarize or drop rows. Follows the same sharing rules as any data. Only spreadsheet / delimited files (Excel, CSV, TSV) are supported here; for other content use ingest_text.",
     mutates: true,
     category: 'row',
     args: obj(
