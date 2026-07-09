@@ -361,3 +361,78 @@ describe('extractSourceTables', () => {
     expect(extractSourceTables(html)).toEqual(['widgets', 'orders', 'customers']);
   });
 });
+
+describe('investigate tool (self-diagnose the open dashboard)', () => {
+  let tmpDir: string;
+  let db: Lattice;
+  let feed: FeedBus;
+  let ctx: DispatchCtx;
+
+  beforeEach(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'lattice-investigate-'));
+    db = new Lattice(join(tmpDir, 'test.db'), { encryptionKey: 'investigate-test-key' });
+    registerNativeEntities(db);
+    db.define('widgets', {
+      columns: { id: 'TEXT PRIMARY KEY', n: 'INTEGER' },
+      render: () => '',
+      outputFile: 'widgets.md',
+    });
+    await db.init();
+    await db.insert('widgets', { id: 'w1', n: 5 });
+    feed = new FeedBus();
+    ctx = {
+      db,
+      feed,
+      validTables: new Set(['files', 'dashboards', 'widgets']),
+      junctionTables: new Set(),
+      softDeletable: new Set(['files', 'dashboards']),
+    };
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeDash = (id: string, sql: string): Promise<unknown> =>
+    db.insert('dashboards', {
+      id,
+      title: `D-${id}`,
+      html: `<!doctype html><html><body><script>lattice.sql('${sql}')</scr` + `ipt></body></html>`,
+      source_tables: JSON.stringify(['widgets']),
+    });
+
+  it('reports the concrete SQL fault of a broken dashboard (the ":" error)', async () => {
+    await makeDash('broken', 'SELECT n::int FROM widgets'); // :: is invalid on SQLite
+    const res = await executeFunction({ ...ctx, activeDashboardId: 'broken' }, 'investigate', {});
+    expect(res.ok).toBe(true);
+    const r = res.result as { healthy: boolean; problems: { kind: string; detail: string }[] };
+    expect(r.healthy).toBe(false);
+    expect(r.problems.some((p) => p.kind === 'sql_error')).toBe(true);
+  });
+
+  it('reports a healthy dashboard when every query runs', async () => {
+    await makeDash('ok', 'SELECT COUNT(*) AS c FROM widgets');
+    const res = await executeFunction({ ...ctx, activeDashboardId: 'ok' }, 'investigate', {});
+    const r = res.result as { healthy: boolean; problems: unknown[] };
+    expect(r.healthy).toBe(true);
+    expect(r.problems).toEqual([]);
+  });
+
+  it('defaults to the open dashboard, and an explicit id overrides it', async () => {
+    await makeDash('open', 'SELECT COUNT(*) AS c FROM widgets');
+    await makeDash('other', 'SELECT bad::x FROM widgets');
+    const openRes = await executeFunction({ ...ctx, activeDashboardId: 'open' }, 'investigate', {});
+    expect((openRes.result as { healthy: boolean }).healthy).toBe(true);
+    const otherRes = await executeFunction({ ...ctx, activeDashboardId: 'open' }, 'investigate', {
+      id: 'other',
+    });
+    expect((otherRes.result as { healthy: boolean }).healthy).toBe(false);
+  });
+
+  it('says so plainly when no dashboard is open', async () => {
+    const res = await executeFunction(ctx, 'investigate', {});
+    expect(res.ok).toBe(true);
+    expect((res.result as { investigated: null; note: string }).note).toMatch(/no dashboard/i);
+  });
+});

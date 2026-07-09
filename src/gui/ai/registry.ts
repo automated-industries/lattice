@@ -273,6 +273,21 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'investigate',
+    description:
+      'Diagnose why the dashboard the user is viewing is broken, empty, blank, wrong, or showing an error. This RUNS the dashboard\'s live data queries and checks the tables it reads, and returns the CONCRETE faults — a failing query with its exact error (e.g. an "unrecognized token" SQL error), or a table that does not exist. Call this the MOMENT the user says something is broken / not working / empty / wrong, or asks "why is this…", while a dashboard is open — investigate FIRST and report what you find, instead of asking them what is wrong (you can see it yourself). By default it inspects the dashboard on screen; pass `id` to inspect a specific one. After finding a fault, offer to fix it with edit_dashboard.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        id: str(
+          'Optional id of the dashboard to investigate. Omit to inspect the one the user is viewing.',
+        ),
+      },
+      [],
+    ),
+  },
+  {
     name: 'import_spreadsheet',
     description:
       "Import a spreadsheet the user attached (an .xlsx / .xls or .csv / .tsv file) into their workspace as real, structured data — every row, faithfully — so you can then answer questions about it or build a dashboard from it. Use this when the user attaches a spreadsheet and wants its contents available as data, or when a dashboard/answer needs data that lives in a spreadsheet they gave you (e.g. a create_dashboard failed because the data doesn't exist yet). Pass the `file_id` of the attached spreadsheet (from the note listing what they attached). This reads the whole file deterministically — it does not summarize or drop rows. Follows the same sharing rules as any data. Only spreadsheet / delimited files (Excel, CSV, TSV) are supported here; for other content use ingest_text.",
