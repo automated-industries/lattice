@@ -1145,12 +1145,17 @@ export async function dispatchChatRoute(
       clearTimeout(watchdog);
     }
 
-    if (intent?.needs_more_info) {
+    // A dragged-in file must ALWAYS be processed by the tool loop: the intent pass sees only
+    // the message text, so a file attached to a short/vague message ("here", "thanks") would
+    // otherwise be silently dropped by an inline short-circuit. When files are attached, skip
+    // the inline branches and run the real loop (which works on the attachment).
+    const hasAttachments = attachedNote.length > 0;
+    if (!hasAttachments && intent?.needs_more_info) {
       // Ambiguous — the ack_message is a clarifying question; end the turn awaiting a reply.
       await finishWithAnswer(intent.ack_message, 'done');
       return;
     }
-    if (intent && !intent.needs_work) {
+    if (!hasAttachments && intent && !intent.needs_work) {
       // Trivial / general — the ack_message IS the complete answer; skip the tool loop.
       await finishWithAnswer(intent.ack_message, 'done');
       return;

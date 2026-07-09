@@ -44,6 +44,7 @@ import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
 import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity.js';
+import type { ChatProgressEnvelope } from './chat-progress.js';
 import { resolvedProviderKind } from './ai/provider.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
 import { dispatchQuestionRoute } from './question-routes.js';
@@ -211,6 +212,12 @@ export interface GuiServerHandle {
    * resolves immediately for a non-cloud / virgin workspace.
    */
   whenConverged: () => Promise<void>;
+  /**
+   * TEST-ONLY: publish a chat-progress envelope directly into the active workspace's bus so
+   * the per-user `/api/stream` delivery gate can be exercised without a live model turn.
+   * Never invoked in production.
+   */
+  publishChatProgressForTest: (env: ChatProgressEnvelope) => void;
 }
 
 /**
@@ -1401,9 +1408,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             // unresolved → connOwner stays null → mayReceiveChat fails closed
           });
       }
+      // Stale-guard on the BUS identity, not the ActiveDb object: a same-config schema
+      // reopen (add column / create entity / …) swaps in a fresh ActiveDb but CARRIES the
+      // chatProgress bus across (so an in-flight turn keeps streaming), so `activeRef` no
+      // longer equals `bound` even though this is still the same workspace + socket. A real
+      // workspace SWITCH builds a NEW bus, which this correctly drops.
+      const boundBus = bound.chatProgress;
       offs.push(
         bound.chatProgress.subscribe((env) => {
-          if (activeRef !== bound) return; // stale after a workspace switch
+          if (activeRef?.chatProgress !== boundBus) return; // stale after a workspace switch
           if (!mayReceiveChat(connOwner, connIsCloud, env)) return;
           // Forward threadId + messageId so the client can route the event to the right
           // turn's bubble; ownerUserId (the internal cloud login role) is NEVER sent.
@@ -1481,6 +1494,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     port,
     url,
     whenConverged: () => activeRef?.converged ?? Promise.resolve(),
+    publishChatProgressForTest: (env: ChatProgressEnvelope) => {
+      activeRef?.chatProgress.publish(env);
+    },
     close: () =>
       new Promise<void>((resolveClose, reject) => {
         // Stop the update poll first so its interval can't fire mid-teardown.
