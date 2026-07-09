@@ -12,25 +12,25 @@
 // after analyticsTabsJs in modules/index.ts. (Exported as analyticsViewJs —
 // the bare analyticsJs name belongs to the separate telemetry script.)
 export const analyticsViewJs = `
-    function isAnalyticsHash(h) { return (h || '').indexOf('#/analytics') === 0; }
-    var lastAnalyticsHash = '#/analytics';
+    // Single layout: everything IS the workspace, so this predicate is always true
+    // (kept as a shim so drop-to-dock + other call sites keep working unchanged).
+    function isAnalyticsHash(h) { return true; }
+    var lastAnalyticsHash = '#/';
     var lastConfigureHash = '#/';
 
-    // Flip the body class that shows one layout and hides the other, and
-    // remember each side's last hash so the header toggles return the user to
-    // where they left off (not to a fixed landing page).
-    function applyAppView(hash) {
-      var an = isAnalyticsHash(hash);
-      document.body.classList.toggle('view-analytics', an);
-      if (an) lastAnalyticsHash = hash; else lastConfigureHash = hash;
-    }
+    // No view flip in the single layout — kept as a harmless no-op for any caller.
+    function applyAppView(hash) {}
 
     function goAnalytics() {
-      location.hash = lastAnalyticsHash;
+      location.hash = '#/';
       var input = document.getElementById('chat-input');
       if (input) setTimeout(function () { input.focus(); }, 0);
     }
-    function goConfigure() { location.hash = lastConfigureHash; }
+    // The Configure button opens the Configure drawer (not a view flip).
+    function goConfigure() {
+      if (typeof openConfigureDrawer === 'function') openConfigureDrawer('datamodel');
+      else if (typeof openSettingsDrawer === 'function') openSettingsDrawer('database');
+    }
 
     var ASK_DOCK_KEY = 'lattice.askDockWidth';
     function applyAskDockWidth(px) {
@@ -39,10 +39,9 @@ export const analyticsViewJs = `
     }
 
     function initAnalyticsView() {
-      var ask = document.getElementById('ask-lattice-trigger');
-      if (ask && !ask.__wired) { ask.__wired = true; ask.addEventListener('click', goAnalytics); }
-      var cfg = document.getElementById('configure-trigger');
-      if (cfg && !cfg.__wired) { cfg.__wired = true; cfg.addEventListener('click', goConfigure); }
+      // The Configure button + the drawer are wired by wireSettingsDrawer (it now
+      // targets #configure-trigger); the old Ask-Gladys view-toggle button is gone
+      // (the Ask Gladys dock is always visible in the single layout).
       // "+ New Dashboard" in the Dashboards header → the home (New Dashboard tab
       // + the empty-state prompt), even when a dashboard is already open.
       var newBtn = document.getElementById('dash-new-btn');
@@ -50,16 +49,8 @@ export const analyticsViewJs = `
         newBtn.__wired = true;
         newBtn.addEventListener('click', function () { location.hash = AN_HOME_HASH; });
       }
-      // The brand logo toggles between the two views (Analytics ↔ Configure),
-      // landing on wherever the user last was in the other view.
-      var brand = document.querySelector('.brand');
-      if (brand && !brand.__viewToggle) {
-        brand.__viewToggle = true;
-        brand.addEventListener('click', function (e) {
-          e.preventDefault();
-          if (isAnalyticsHash(location.hash)) goConfigure(); else goAnalytics();
-        });
-      }
+      // The brand logo just navigates home (#/) via its href — no view toggle in
+      // the single layout.
       // Restore + wire the adjustable Ask Gladys dock width (drag its left edge).
       var savedW = parseInt(window.localStorage.getItem(ASK_DOCK_KEY) || '', 10);
       if (!isNaN(savedW)) applyAskDockWidth(savedW);

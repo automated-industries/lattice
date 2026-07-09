@@ -85,12 +85,6 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <span class="header-status-slot" id="header-status-slot"></span>
     <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
-    <button id="settings-gear" title="Settings" aria-label="Open settings">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-    </button>
     <!-- Account menu: one status line + one action, set by JS (account-menu.ts)
          from the config. Normal install: "Connected with Claude" + Disconnect
          (connect happens at the first-run wall, never here). Managed/hosted
@@ -105,117 +99,31 @@ export const guiAppHtml = `<!doctype html>
         <button type="button" class="account-menu-item danger" id="account-action">Disconnect Claude</button>
       </div>
     </div>
-    <!-- The top-right slot toggles the app's two views: in Configure it shows
-         "Ask Gladys" (→ Analytics, where the chat lives); in Analytics it shows
-         "Configure" (→ the workspace-builder view). CSS shows exactly one. -->
-    <div class="ask-lattice" id="ask-lattice">
-      <button class="ask-lattice-trigger" id="ask-lattice-trigger" title="Ask Gladys" aria-label="Open Analytics">
-        <span class="ask-lattice-mark" aria-hidden="true">👵🏻</span><span class="ask-lattice-label">Ask Gladys</span>
-      </button>
-      <button class="configure-trigger" id="configure-trigger" title="Configure this workspace" aria-label="Open Configure">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
-      </button>
-    </div>
+    <!-- Single-layout: one Configure button (wrench) toggles the Configure drawer
+         (Data Model / Inputs / Workspace / Lattice / User). There is no view flip —
+         the Workspace + Ask Gladys dock are always visible. -->
+    <button class="configure-trigger" id="configure-trigger" title="Configure this workspace" aria-label="Open Configure">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
+    </button>
   </header>
-  <div class="layout">
-    <nav class="sidebar">
-      <div class="col-header col-inputs"><span class="col-header-text">Inputs</span><button class="col-collapse" data-col="inputs" type="button" title="Collapse Inputs" aria-label="Collapse Inputs">‹</button></div>
-      <div id="sources-nav">
-        <div class="src-group">
-          <button class="section-label section-toggle" data-group="files" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Files</span>
-          </button>
-          <div class="section-body" data-group-body="files">
-            <div id="src-files-tree"></div>
-            <div class="src-add-row src-add-files-wrap">
-              <button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ File(s)</button>
-              <div class="src-add-menu" id="src-add-files-menu" role="menu" hidden>
-                <button type="button" class="src-add-menu-item" data-pick="file" role="menuitem">Add file(s)…</button>
-                <button type="button" class="src-add-menu-item" data-pick="folder" role="menuitem">Add a folder…</button>
-              </div>
-            </div>
-            <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
-          </div>
+  <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Tables/
+       Files/Markdown nav sections, added by nav-sections.ts) │ center Workspace tabs
+       │ the persistent Ask Gladys dock. The former Inputs sidebar, Model tab strip,
+       and Markdown rail moved into the left sidebar + the Configure drawer. -->
+  <div class="layout" id="layout">
+    <nav class="dash-sidebar">
+      <section class="dash-section" data-section="dashboards">
+        <div class="col-header col-dashboards">
+          <span class="col-header-text">Dashboards</span>
+          <button type="button" class="dash-new-btn" id="dash-new-btn" title="New dashboard" aria-label="New dashboard">＋</button>
         </div>
-        <div class="src-group">
-          <button class="section-label section-toggle" data-group="connectors" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Connectors</span>
-          </button>
-          <div class="section-body" data-group-body="connectors">
-            <div id="src-connectors-list"></div>
-            <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
-          </div>
-        </div>
-        <div class="src-group">
-          <button class="section-label section-toggle" data-group="databases" type="button" aria-expanded="true">
-            <span class="section-caret">▾</span><span class="section-label-text">Databases</span>
-          </button>
-          <div class="section-body" data-group-body="databases">
-            <div id="src-databases-list"></div>
-            <button class="src-add" id="src-add-database" type="button">＋ Connect a Database</button>
-          </div>
-        </div>
-      </div>
-      <div id="objects-section" hidden>
-        <button class="section-label section-toggle" data-group="objects" type="button" aria-expanded="true">
-          <span class="section-caret">▾</span><span class="section-label-text">Objects</span>
-        </button>
-        <div class="section-body" data-group-body="objects">
-          <ul id="object-nav"></ul>
-        </div>
-      </div>
-      <div id="system-section" hidden>
-        <button class="section-label section-toggle" data-group="system" type="button" aria-expanded="true">
-          <span class="section-caret">▾</span><span class="section-label-text">System</span>
-        </button>
-        <div class="section-body" data-group-body="system">
-          <ul id="system-nav"></ul>
-        </div>
-      </div>
+        <div id="dash-list"></div>
+      </section>
     </nav>
     <main class="content-wrap">
-      <div class="tabstrip col-header col-model" id="tabstrip">
-        <span class="col-header-text">Model</span>
-        <div class="tabstrip-tabs" id="tabstrip-tabs"></div>
-        <div class="wm-actions">
-          <button class="wm-btn" id="wm-wire-btn" type="button" title="Link two objects (many-to-many) — click a source, then a target">Link</button>
-          <button class="wm-btn" id="wm-merge-btn" type="button" title="Merge one object into another — moves its rows in, then removes it (reversible). Shift-drag one object onto another to merge.">Merge</button>
-        </div>
-        <div class="tabstrip-status" id="tabstrip-status"></div>
-      </div>
-      <div id="content"></div>
-    </main>
-    <aside class="outputs" id="outputs-rail" aria-label="Outputs">
-      <div class="outputs-resize" id="outputs-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="outputs-head col-header col-outputs"><span class="col-header-text">Markdown</span><button class="col-collapse" data-col="outputs" type="button" title="Collapse Outputs" aria-label="Collapse Outputs">›</button></div>
-      <div class="outputs-body" id="outputs-body">
-        <!-- ONE view: every entity as a folder (same emojis as the Objects grid),
-             its markdown files inside, grouped by tier — with Artifacts as just
-             another category. The former separate Artifacts + Tables sections
-             showed the same content and were removed. -->
-        <div id="out-markdown-tree"></div>
-      </div>
-    </aside>
-  </div>
-
-  <!-- Analytics view — the app's landing surface. A sibling of .layout, toggled
-       by body.view-analytics (CSS only; both stay mounted so neither view loses
-       state when the user flips). Left: the Dashboards list. Center: dynamic
-       dashboard tabs + canvas. Right: the assistant dock — the chat feed,
-       thread controls, and composer live HERE (the chat client resolves the
-       #rail-* ids at call time, so the housing is the only thing that moved). -->
-  <div class="analytics-layout" id="analytics-layout">
-    <nav class="dash-sidebar">
-      <div class="col-header col-dashboards">
-        <span class="col-header-text">Dashboards</span>
-        <button type="button" class="dash-new-btn" id="dash-new-btn" title="New dashboard" aria-label="New dashboard">＋</button>
-      </div>
-      <div id="dash-list"></div>
-    </nav>
-    <main class="analytics-content-wrap">
       <div class="col-header col-model an-workspace-head"><span class="col-header-text">Workspace</span></div>
       <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
-      <div id="analytics-content"></div>
+      <div id="content"></div>
     </main>
     <aside class="ask-dock" id="ask-dock" aria-label="Ask Gladys">
       <div class="ask-dock-resize" id="ask-dock-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
@@ -240,9 +148,9 @@ export const guiAppHtml = `<!doctype html>
   </div>
 
   <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
-  <aside class="settings-drawer" id="settings-drawer" hidden aria-label="Settings">
+  <aside class="settings-drawer" id="settings-drawer" hidden aria-label="Configure">
     <div class="drawer-head">
-      <span class="drawer-title">Settings</span>
+      <span class="drawer-title">Configure</span>
       <button class="drawer-close" id="drawer-close" title="Close" aria-label="Close settings">✕</button>
     </div>
     <!-- Version history is NOT a tab here — it's its own takeover opened via the

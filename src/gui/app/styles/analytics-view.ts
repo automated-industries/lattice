@@ -4,22 +4,17 @@
 // header trigger visibility. The tab buttons themselves reuse the .tab /
 // .tab-close / .tab-overflow-* classes from tabs.ts (styles) — only the
 // container differs.
-export const analyticsViewCss = `    /* ── Analytics view ─────────────────────────────────── */
-    /* Two sibling layouts, one visible: the body class picks the view. Both
-       stay mounted so a flip never destroys the hidden side's state. */
-    .analytics-layout {
+export const analyticsViewCss = `    /* ── Single workspace layout ────────────────────────── */
+    /* One 3-column layout (no view flip): left sidebar │ Workspace tabs │ the
+       persistent Ask Gladys dock (its width is user-adjustable via the divider). */
+    .layout {
       display: grid;
-      /* The Ask Gladys dock width is user-adjustable (drag the divider) and
-         defaults ~30px wider than before so "Ask or instruct…" fits one line. */
       grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--ask-dock-width, 360px);
       height: calc(100vh - 56px);
     }
-    body:not(.view-analytics) .analytics-layout { display: none; }
-    body.view-analytics .layout { display: none; }
-    /* Exactly one header trigger shows: Ask in Configure, Configure in Analytics. */
-    body.view-analytics .ask-lattice-trigger { display: none; }
-    body:not(.view-analytics) .configure-trigger { display: none; }
+    /* The Configure button (top-right) pushes to the far right of the header. */
     .configure-trigger {
+      margin-left: auto;
       display: inline-flex; align-items: center; gap: 6px;
       padding: 5px 12px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: var(--surface-2);
@@ -64,7 +59,7 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     .dash-new-btn:hover { background: var(--row-hover); color: var(--text); }
 
     /* ── Workspace header + tab strip BELOW it + canvas ─── */
-    .analytics-content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .an-workspace-head { flex: 0 0 auto; }
     /* The tab strip is its OWN row beneath the Workspace header (not inside it).
        Folder-style tabs so even a single tab reads unmistakably as a TAB rather

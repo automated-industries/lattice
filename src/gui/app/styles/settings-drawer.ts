@@ -27,7 +27,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .settings-drawer:not(.open) { pointer-events: none; }
     .settings-drawer .drawer-body { max-width: 980px; width: 100%; margin: 0 auto; }
     /* Highlight the header trigger whose takeover is open. */
-    .history-btn.on, #settings-gear.on { background: var(--accent-soft, rgba(79,70,229,0.12)); color: var(--accent, #4f46e5); }
+    .history-btn.on, #configure-trigger.on { background: var(--accent-soft, rgba(79,70,229,0.12)); color: var(--accent, #4f46e5); }
     .drawer-head {
       flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
       padding: 14px 18px; border-bottom: 1px solid var(--border);

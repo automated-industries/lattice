@@ -14,7 +14,7 @@ export const tableViewJs = `    // ───────────────
     function updateTakeoverTriggers() {
       var open = drawerIsOpen();
       var hist = document.getElementById('history-link');
-      var gear = document.getElementById('settings-gear');
+      var gear = document.getElementById('configure-trigger');
       if (hist) hist.classList.toggle('on', open && drawerTab === 'history');
       if (gear) gear.classList.toggle('on', open && drawerTab !== 'history');
     }
@@ -45,7 +45,7 @@ export const tableViewJs = `    // ───────────────
       window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 220);
       updateTakeoverTriggers();
       var hist = document.getElementById('history-link');
-      var gear = document.getElementById('settings-gear');
+      var gear = document.getElementById('configure-trigger');
       if (hist) hist.classList.remove('on');
       if (gear) gear.classList.remove('on');
       // Keep the URL in sync with what's actually on screen. A settings hash
@@ -76,7 +76,7 @@ export const tableViewJs = `    // ───────────────
       var body = document.getElementById('drawer-body');
       if (!body) return;
       var title = document.querySelector('#settings-drawer .drawer-title');
-      if (title) title.textContent = tab === 'history' ? 'Version history' : 'Settings';
+      if (title) title.textContent = tab === 'history' ? 'Version history' : 'Configure';
       if (tab === 'history') renderHistory(body);
       else if (tab === 'database') renderDatabaseSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
@@ -87,7 +87,7 @@ export const tableViewJs = `    // ───────────────
       // Both header triggers TOGGLE the takeover: click to open (highlighted),
       // click the same trigger again to collapse. Clicking the other trigger
       // switches the panel's content in place.
-      var gear = document.getElementById('settings-gear');
+      var gear = document.getElementById('configure-trigger');
       if (gear) gear.addEventListener('click', function () {
         if (drawerIsOpen() && drawerTab !== 'history') { closeSettingsDrawer(); return; }
         openSettingsDrawer(drawerTab === 'history' ? 'user' : drawerTab || 'user');

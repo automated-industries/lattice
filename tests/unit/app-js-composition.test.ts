@@ -415,8 +415,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Smart intent ack (elektra-style): a turn can now open with a fast contextual `ack` event
 // ("Got it — pulling your invoices…") rendered as a transient bubble before the answer
 // streams; the client renders the new `ack` ChatStreamEvent in applyChatEvent. Recaptured.
-const ORIGINAL_LENGTH = 713832;
-const ORIGINAL_SHA256 = '4f204c95c4d3987014e632a04f8c90b55e262613021a598e07fefd29f171e642';
+const ORIGINAL_LENGTH = 713438;
+const ORIGINAL_SHA256 = 'd800ec53bedc95dca2f0954c59200867eaaeb00d592af3177eb9c93e1ed9d006';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
