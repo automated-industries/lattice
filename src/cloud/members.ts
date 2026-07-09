@@ -277,6 +277,30 @@ export async function batchRowGrants(
 }
 
 /**
+ * Standing TABLE-LEVEL share: the connected role shares ALL rows THEY own in
+ * `table` with an audience — 'everyone', or the specific member roles in
+ * `grantees` ('custom'). Backed by the owner-keyed `lattice_share_table` SECURITY
+ * DEFINER function, so a caller can only ever share their own rows and a
+ * never-share table is refused. Unlike {@link grantRow} this covers rows added
+ * later (the visibility predicate reads it live), which is what keeps a shared
+ * dashboard's dependency data visible as the table grows. Additive + one-way: the
+ * audience only widens and grantees only accumulate — nothing is revoked here.
+ */
+export async function shareTable(
+  db: Lattice,
+  table: string,
+  audience: 'everyone' | 'custom',
+  grantees: readonly string[] = [],
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_share_table(?, ?, ?::text[])`, [
+    table,
+    audience,
+    [...grantees],
+  ]);
+}
+
+/**
  * Remove a member: clear its privileges and drop the role. NOTE: rows the member
  * owned remain in their tables but become unreachable (their `owner_role` no
  * longer matches any login role, and RLS shows a row only to its owner / grantees

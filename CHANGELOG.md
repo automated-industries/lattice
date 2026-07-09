@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Share a dashboard and its data comes with it.** On a shared cloud workspace, sharing a
+  dashboard — to everyone, or with specific people — now also shares the data that dashboard
+  reads with the same audience, so recipients open a populated page instead of an empty one.
+  The share is table-level and stays live: rows added to those tables later are included
+  automatically, with no re-share needed. It only ever shares the data you own (never another
+  member's private rows in the same table), skips private-only tables, and is one-way —
+  unsharing a dashboard leaves its underlying data shared.
+
 - **The assistant's answer now streams in as it's written.** Chat replies appear
   token-by-token as the model produces them, instead of the whole answer landing at once
   after it finishes — so a long answer starts showing in a second or two. Its private
