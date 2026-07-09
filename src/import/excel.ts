@@ -84,19 +84,17 @@ function extractSheet(ws: Worksheet): SheetExtract {
     for (let c = 1; c <= colCount; c++) if (isFilled(cellValue(ws.getCell(r, c).value))) n++;
     return n;
   };
-  const filledCols = (r: number): Set<number> => {
-    const s = new Set<number>();
-    for (let c = 1; c <= colCount; c++) if (isFilled(cellValue(ws.getCell(r, c).value))) s.add(c);
-    return s;
-  };
   const threshold = Math.max(3, Math.floor(colCount * 0.4));
 
   // A tab may hold a small SUMMARY block, a blank spacer, then the DETAIL table (or several
   // stacked tables). Reading only until the FIRST blank row keeps the summary and silently
-  // drops the detail. Instead: split the sheet into blank-row-delimited runs, bridge a SINGLE
-  // blank gap when the next run's columns are a subset of the current block's footprint (an
-  // in-table spacer, not a boundary), then import the LARGEST table block — reporting any
-  // other real table block left behind as a warning.
+  // drops the detail. Instead: split the sheet into blank-row-delimited blocks and import the
+  // LARGEST table block, reporting any other real table block left behind as a warning. We do
+  // NOT bridge a single blank into the neighbouring block: a lone blank row is treated as a
+  // boundary, because a narrower separate table is indistinguishable from an in-table spacer
+  // by columns alone, and merging them would read one table's rows under another's header
+  // (silent corruption). Splitting is safe — the worst case for a genuinely single-blank-split
+  // table is that the smaller half is reported as an unimported block, never mis-mapped.
   const runs: { start: number; end: number }[] = [];
   let runStart = -1;
   for (let r = 1; r <= rowCount; r++) {
@@ -108,27 +106,7 @@ function extractSheet(ws: Worksheet): SheetExtract {
     }
   }
   if (runStart >= 0) runs.push({ start: runStart, end: rowCount });
-
-  const footprint = (b: { start: number; end: number }): Set<number> => {
-    const s = new Set<number>();
-    for (let r = b.start; r <= b.end; r++) for (const c of filledCols(r)) s.add(c);
-    return s;
-  };
-  const subsetOf = (a: Set<number>, b: Set<number>): boolean => {
-    for (const x of a) if (!b.has(x)) return false;
-    return true;
-  };
-  const blocks: { start: number; end: number }[] = [];
-  for (const run of runs) {
-    const prev = blocks[blocks.length - 1];
-    // Exactly one blank row between (prev.end + 2 === run.start) AND the later run fits inside
-    // the earlier block's columns → a single in-table spacer; extend rather than split.
-    if (prev && run.start === prev.end + 2 && subsetOf(footprint(run), footprint(prev))) {
-      prev.end = run.end;
-    } else {
-      blocks.push({ ...run });
-    }
-  }
+  const blocks = runs;
 
   // Each block's header is its first dense row that is followed by data (within the block);
   // its data-row count is the non-blank rows after that header.
