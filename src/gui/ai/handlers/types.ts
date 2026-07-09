@@ -149,6 +149,14 @@ export interface DispatchCtx {
    */
   htmlAuthor?: (spec: string, currentHtml?: string) => Promise<string>;
   /**
+   * Faithfully import an attached spreadsheet (by files id) into real tables — every row,
+   * via the deterministic structured importer (never the lossy LLM extractor). Supplied by
+   * the chat route, closed over the workspace's file store + config. Resolves to the
+   * created tables + row count, or null when the file has no importable tabular data.
+   * Absent → the `import_spreadsheet` tool reports it's unavailable (fail loud).
+   */
+  importAttachment?: (fileId: string) => Promise<{ tables: string[]; rows: number } | null>;
+  /**
    * Run automatic QA on an authored dashboard BEFORE it is stored/shown: execute the
    * page's data queries, check them against the request (intent match, SQL errors, empty
    * results, over-confident/ambiguous resolutions), repair via `htmlAuthor`, and return

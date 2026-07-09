@@ -10,7 +10,7 @@ import {
   inferSchema,
   materializeImport,
 } from '../../src/index.js';
-import { autoImportStructured } from '../../src/gui/import-auto.js';
+import { autoImportStructured, importDataFaithfully } from '../../src/gui/import-auto.js';
 
 const dirs: string[] = [];
 const dbs: Lattice[] = [];
@@ -43,6 +43,26 @@ async function freshWorkspace(): Promise<{ db: Lattice; configPath: string; base
   dbs.push(db);
   return { db, configPath: resolveWorkspacePaths(root, ws).configPath, base };
 }
+
+describe('importDataFaithfully (explicit import_spreadsheet materialization)', () => {
+  it('materializes EVERY row of a brand-new dataset — no lossy summary', async () => {
+    const { db, configPath } = await freshWorkspace();
+    // Brand-new data: autoImportStructured would only PROPOSE (never create from a passive
+    // drop). The explicit import_spreadsheet path commits it faithfully — all rows.
+    const result = await importDataFaithfully(db, configPath, doc());
+    expect(result).not.toBeNull();
+    expect(result?.tables.sort()).toEqual(['funds', 'investments']);
+    expect(result?.rows).toBe(4); // 2 funds + 2 investments — nothing dropped
+    expect(await db.count('funds')).toBe(2);
+    expect(await db.count('investments')).toBe(2);
+  });
+
+  it('returns null when there is no inferable tabular data', async () => {
+    const { db, configPath } = await freshWorkspace();
+    // A scalar-only object infers no entity arrays → nothing to import.
+    expect(await importDataFaithfully(db, configPath, { note: 'just a string' })).toBeNull();
+  });
+});
 
 describe('autoImportStructured (assistant-door smart import)', () => {
   it('auto-imports a recognized new period as a dated snapshot', async () => {

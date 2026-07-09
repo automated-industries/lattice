@@ -154,3 +154,38 @@ export async function autoImportStructured(
     rows,
   };
 }
+
+/** The faithful materialization of a parsed structured dataset (all rows). */
+export interface FaithfulImportResult {
+  /** Tables created/updated by the import. */
+  tables: string[];
+  /** Total rows materialized across those tables. */
+  rows: number;
+}
+
+/**
+ * Materialize an already-parsed structured dataset into real tables IMMEDIATELY and
+ * FAITHFULLY (every row), using the same deterministic pipeline as the confirm-card apply
+ * path — infer schema → dedupe/detect views → match to existing tables → materialize.
+ * Unlike {@link autoImportStructured} (whose new-dataset path only PROPOSES, never creating
+ * tables from a passive drop), this is the executor for an EXPLICIT user request to import
+ * a file they attached, so it commits. Returns null when the data has no inferable
+ * entities (nothing to import). Every write is auditable + reversible like any other.
+ */
+export async function importDataFaithfully(
+  db: Lattice,
+  configPath: string | null,
+  data: Record<string, unknown>,
+): Promise<FaithfulImportResult | null> {
+  const linkConfidence = getClarifyThreshold();
+  const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
+    inferSchema(data, { minLinkConfidence: linkConfidence }),
+    data,
+  );
+  if (inferredPlan.entities.length === 0) return null;
+  const schemaMatch = matchSchemaToExisting(existingDataTables(db), inferredPlan);
+  const { plan, views } = renameEntities(inferredPlan, inferredViews, schemaMatch.rename);
+  const result = await materializeImport({ db, configPath }, data, plan, views, {});
+  const rows = Object.values(result.rowsByTable).reduce((a, b) => a + b, 0);
+  return { tables: Object.keys(result.rowsByTable), rows };
+}

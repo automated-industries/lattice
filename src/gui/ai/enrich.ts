@@ -171,7 +171,15 @@ export async function enrichWithLlm(
   // classify failure still zeroes auto-links AND skips extract + the note fallback
   // and returns []; an extract failure still only warns and keeps the links + note
   // fallback; the description is still best-effort and independent.
-  const extractGate = !!createEntity && aggressiveness >= 0.4;
+  // A spreadsheet is materialized FAITHFULLY (every row) by the deterministic structured
+  // importer (autoImportStructured → materializeImport) — the single owner of tabular
+  // row creation. The prose-oriented LLM object extractor must NOT also manufacture rows
+  // from the same file: pointed at a 53-row workbook it emitted a lossy 3-row summary, and
+  // two parallel paths creating rows from one file is exactly the duplication to avoid. So
+  // for a spreadsheet the extractor is disabled and the importer owns the data. (The other
+  // enrichment — a description + auto-linking the file to related records — still runs.)
+  const isSpreadsheet = /\.xlsx?$/i.test(name);
+  const extractGate = !!createEntity && aggressiveness >= 0.4 && !isSpreadsheet;
   // buildCatalog READS every user table; a transient DB read failure here must not
   // throw out of this best-effort enricher — that would leave the already-saved file
   // row un-enriched AND make callers (e.g. chat auto-ingest) believe the whole ingest
@@ -315,8 +323,9 @@ export async function enrichWithLlm(
     // Every write is audited + reversible.
     let createdCount = 0;
     // Same predicate as extractGate above (kept inline so TS narrows createEntity
-    // to defined for the createEntity(...) call in the loop).
-    if (createEntity && aggressiveness >= 0.4) {
+    // to defined for the createEntity(...) call in the loop) — including the
+    // spreadsheet exclusion, so a workbook never manufactures rows here.
+    if (createEntity && aggressiveness >= 0.4 && !isSpreadsheet) {
       try {
         // Re-throw a rejected extract into this same catch so the old
         // "object extraction failed" warn (and keep links + note fallback) holds.
