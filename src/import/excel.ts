@@ -84,11 +84,14 @@ function extractSheet(ws: Worksheet): SheetExtract {
     for (let c = 1; c <= colCount; c++) if (isFilled(cellValue(ws.getCell(r, c).value))) n++;
     return n;
   };
-  // A header row must have at least this many filled cells. Floored at 3 for wider sheets so
-  // a stray 1-2 cell prose line is never mistaken for a header — BUT a genuinely narrow
-  // (2-column) table has only 2 columns and could never reach 3, so it dropped entirely; for
-  // a 2-column sheet the floor is 2 (a complete 2-cell header row).
-  const threshold = Math.max(colCount <= 2 ? 2 : 3, Math.floor(colCount * 0.4));
+  // A header row must have at least this many filled cells, computed PER BLOCK from that
+  // block's actual width (its widest row's filled-cell count) — NOT the sheet-wide
+  // columnCount. A stray far-right note cell inflates columnCount but not a block's own
+  // width, so a genuine narrow table next to such a cell keeps a sane threshold instead of
+  // being dropped silently. Floored at 3 (2 for a genuinely 2-wide table) so a stray 1-2
+  // cell prose line is still never mistaken for a header.
+  const headerThreshold = (width: number): number =>
+    Math.max(width <= 2 ? 2 : 3, Math.floor(width * 0.4));
 
   // A tab may hold a small SUMMARY block, a blank spacer, then the DETAIL table (or several
   // stacked tables). Reading only until the FIRST blank row keeps the summary and silently
@@ -120,6 +123,11 @@ function extractSheet(ws: Worksheet): SheetExtract {
   // worth trading a silent mis-mapping for. See reference_lattice_excel_importer_known_limits.
   const candidates = blocks
     .map((b) => {
+      // This block's width = its widest row's filled-cell count (a stray 1-cell note row
+      // elsewhere on the sheet can't inflate it), which sets a sane header threshold.
+      let blockWidth = 0;
+      for (let r = b.start; r <= b.end; r++) blockWidth = Math.max(blockWidth, nonEmpty(r));
+      const threshold = headerThreshold(blockWidth);
       let hr = -1;
       for (let r = b.start; r <= Math.min(b.start + HEADER_SCAN_ROWS, b.end); r++) {
         if (nonEmpty(r) >= threshold && r < b.end && nonEmpty(r + 1) >= 2) {

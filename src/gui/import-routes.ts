@@ -11,6 +11,7 @@ import { materializeImport, type ImportMode } from '../import/materialize.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import {
   excelFormulaSummary,
+  excelImportWarnings,
   excelToRecords,
   type WorkbookFormulaSummary,
 } from '../import/excel.js';
@@ -116,7 +117,11 @@ export async function readImportSourceFromFile(
   db: Lattice,
   fileId: string,
   latticeRoot: string | undefined,
-): Promise<{ data: Record<string, unknown>; formulaSummary: WorkbookFormulaSummary | null }> {
+): Promise<{
+  data: Record<string, unknown>;
+  formulaSummary: WorkbookFormulaSummary | null;
+  importWarnings: string[];
+}> {
   const row = (await getAsyncOrSync(
     db.adapter,
     `SELECT "id","original_name","mime","ref_kind","ref_uri","blob_path"
@@ -143,10 +148,14 @@ export async function readImportSourceFromFile(
   const mime = row.mime ?? '';
   if (/\.xlsx?$/i.test(name) || mime.includes('spreadsheet') || mime.includes('excel')) {
     const data = await excelToRecords(path);
-    return { data, formulaSummary: excelFormulaSummary(path) };
+    return {
+      data,
+      formulaSummary: excelFormulaSummary(path),
+      importWarnings: excelImportWarnings(path),
+    };
   }
   if (/\.(csv|tsv)$/i.test(name) || mime.includes('csv') || mime.includes('tab-separated')) {
-    return { data: csvToRecords(path, name), formulaSummary: null };
+    return { data: csvToRecords(path, name), formulaSummary: null, importWarnings: [] };
   }
   let parsed: unknown;
   try {
@@ -157,7 +166,7 @@ export async function readImportSourceFromFile(
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw badRequest('Expected a JSON object whose keys are record arrays.');
   }
-  return { data: parsed as Record<string, unknown>, formulaSummary: null };
+  return { data: parsed as Record<string, unknown>, formulaSummary: null, importWarnings: [] };
 }
 
 /** The card's computed opt-in selection, sanitized from the request body. */
@@ -277,11 +286,14 @@ export async function dispatchImportRoute(
   };
   try {
     emit({ phase: 'parse', message: 'Reading source…' });
-    const { data, formulaSummary } = await readImportSourceFromFile(
+    const { data, formulaSummary, importWarnings } = await readImportSourceFromFile(
       deps.db,
       fileId,
       deps.latticeRoot,
     );
+    // Surface a stacked-table partial-import warning on the apply log — a partial import is
+    // never silent (it also rode the confirm card + the post-import feed pill).
+    for (const w of importWarnings) emit({ phase: 'warning', message: w });
     emit({ phase: 'infer', message: 'Analyzing schema…' });
     const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
       inferSchema(data, { minLinkConfidence: linkConfidence }),

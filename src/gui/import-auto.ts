@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
-import { excelFormulaSummary, excelToRecords } from '../import/excel.js';
+import { excelFormulaSummary, excelImportWarnings, excelToRecords } from '../import/excel.js';
 import { csvToRecords } from '../import/csv.js';
 import {
   buildComputedProposals,
@@ -60,6 +60,9 @@ export interface AutoImportResult {
   /** Opt-in computed-table proposals (new-dataset flows only; display-only —
    *  the apply route re-derives them and intersects with the user's picks). */
   computedProposals?: ComputedTableProposal[];
+  /** Reconciliation warnings from the read (a stacked-table sheet where only the largest
+   *  table was imported) — surfaced on the confirm card so a partial import is never silent. */
+  importWarnings?: string[];
 }
 
 function existingDataTables(db: Lattice): ExistingTable[] {
@@ -109,6 +112,9 @@ export async function autoImportStructured(
   const asOfCandidates = await detectImportAsOf(db, data, { abs, fileName: name });
   const asOf = asOfCandidates[0]?.date ?? null;
   const asOfColumns = detectAsOfColumns(data, inferredPlan);
+  // Reconciliation warnings from the Excel read (a stacked-table sheet only partially
+  // imported) — surfaced on the confirm card so the user sees a partial import before applying.
+  const importWarnings = /\.xlsx?$/i.test(name) ? excelImportWarnings(abs) : [];
   // The proposal the inline confirm card renders (display-only; apply re-derives).
   const proposal = {
     plan: inferredPlan,
@@ -121,6 +127,7 @@ export async function autoImportStructured(
     tables: [],
     rows: 0,
     linkConfidence,
+    ...(importWarnings.length > 0 ? { importWarnings } : {}),
   };
 
   // Brand-new structured data: never silently create from a chat drop — surface
