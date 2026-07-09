@@ -269,6 +269,8 @@ export const sourcesJs = `
         'files', 'connectors', 'databases',
         'out-markdown',
         'objects', 'system',
+        // Left-sidebar single-layout nav sections.
+        'nav-tables', 'nav-files', 'nav-md',
       ].forEach(applySidebarGroupState);
     }
     function toggleSidebarGroup(group) {

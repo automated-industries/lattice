@@ -48,9 +48,10 @@ import { askLatticeJs } from './ask-lattice.js';
 import { analyticsViewJs } from './analytics-view.js';
 import { questionsJs } from './questions.js';
 import { modelTablesJs } from './model-tables.js';
+import { navSectionsJs } from './nav-sections.js';
+import { configureDrawerJs } from './configure-drawer.js';
 import { computedBuilderJs } from './computed-builder.js';
 import { fsTilesJs } from './fs-tiles.js';
-import { foldersJs } from './folders.js';
 import { columnCollapseJs } from './column-collapse.js';
 import { wireMergeJs } from './wiremerge.js';
 
@@ -98,9 +99,10 @@ export const appJs = [
   // whose assistant dock hosts the cards.
   questionsJs,
   modelTablesJs,
+  navSectionsJs,
+  configureDrawerJs,
   computedBuilderJs,
   fsTilesJs,
-  foldersJs,
   columnCollapseJs,
   wireMergeJs,
   detailViewJs,

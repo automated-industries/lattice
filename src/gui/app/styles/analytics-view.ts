@@ -46,6 +46,31 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .dash-item .vis-indicator { justify-self: end; }
     .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
 
+    /* ── Left-sidebar nav sections (Tables / Files / Markdown) ── */
+    .nav-section { border-top: 1px solid var(--border); }
+    .nav-section-head {
+      width: 100%; display: flex; align-items: center; gap: 6px;
+      padding: 8px 10px; border: 0; background: none; cursor: pointer;
+      color: var(--text-muted); font-size: 11.5px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .nav-section-head:hover { color: var(--text); }
+    .nav-tier-head {
+      padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
+    }
+    .nav-table-item {
+      width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+      padding: 5px 10px 5px 14px; border: 0; border-radius: 6px; background: none;
+      color: var(--text); font-size: 12.5px; cursor: pointer;
+    }
+    .nav-table-item:hover { background: var(--surface-2); }
+    .nav-table-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .nav-item-ic { flex: 0 0 auto; }
+    .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nav-empty { color: var(--text-muted); font-size: 12px; padding: 8px 12px; }
+    #nav-tables-list, #nav-files-tree, #nav-md-tree { padding-bottom: 6px; }
+
     /* ── Column headers (identical style to the Configure view) ── */
     /* All three carry the shared .col-header chrome. Accents mirror Configure:
        Dashboards=blue (inputs), Workspace=purple (model), Ask Gladys=teal

@@ -78,6 +78,8 @@ export const tableViewJs = `    // ───────────────
       var title = document.querySelector('#settings-drawer .drawer-title');
       if (title) title.textContent = tab === 'history' ? 'Version history' : 'Configure';
       if (tab === 'history') renderHistory(body);
+      else if (tab === 'datamodel' && typeof renderDataModelTab === 'function') renderDataModelTab(body);
+      else if (tab === 'inputs' && typeof renderInputsTab === 'function') renderInputsTab(body);
       else if (tab === 'database') renderDatabaseSettings(body);
       else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);

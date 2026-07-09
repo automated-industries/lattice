@@ -634,7 +634,7 @@ export const modelTablesJs = `
         computedHtml +
         flHtml + upHtml + downHtml +
         '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>' +
-        '<a class="mt-detail-open" href="#/tables/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>';
+        '<a class="mt-detail-open" href="#/w/table/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>';
       panel.hidden = false;
       if (e.computedTable) mtWireComputedDetail(e.name);
       var close = document.getElementById('mt-detail-close');

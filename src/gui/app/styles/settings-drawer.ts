@@ -123,5 +123,15 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       border-radius: 50%; border: 1px solid var(--bg);
     }
 
-
+    /* ── Configure drawer: Data Model + Inputs tabs ── */
+    .dm-subtabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .dm-subtabs .tab { border: 0; background: none; padding: 7px 12px; cursor: pointer;
+      color: var(--text-muted); font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; }
+    .dm-subtabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .dm-tables-merge { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+    .dm-panel { min-width: 0; }
+    @media (max-width: 900px) { .dm-tables-merge { grid-template-columns: 1fr; } }
+    .inputs-group { margin-bottom: 20px; }
+    .inputs-group-head { font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px; }
 `;

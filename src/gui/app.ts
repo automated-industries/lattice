@@ -119,6 +119,24 @@ export const guiAppHtml = `<!doctype html>
         </div>
         <div id="dash-list"></div>
       </section>
+      <section class="dash-section nav-section" data-section="tables">
+        <button class="section-label section-toggle nav-section-head" data-group="nav-tables" type="button" aria-expanded="true">
+          <span class="section-caret">▾</span><span class="section-label-text">🗄️ Tables</span>
+        </button>
+        <div class="section-body" data-group-body="nav-tables"><div id="nav-tables-list"></div></div>
+      </section>
+      <section class="dash-section nav-section" data-section="files">
+        <button class="section-label section-toggle nav-section-head" data-group="nav-files" type="button" aria-expanded="true">
+          <span class="section-caret">▾</span><span class="section-label-text">📁 Files</span>
+        </button>
+        <div class="section-body" data-group-body="nav-files"><div id="nav-files-tree"></div></div>
+      </section>
+      <section class="dash-section nav-section" data-section="markdown">
+        <button class="section-label section-toggle nav-section-head" data-group="nav-md" type="button" aria-expanded="true">
+          <span class="section-caret">▾</span><span class="section-label-text">📝 Markdown</span>
+        </button>
+        <div class="section-body" data-group-body="nav-md"><div id="nav-md-tree"></div></div>
+      </section>
     </nav>
     <main class="content-wrap">
       <div class="col-header col-model an-workspace-head"><span class="col-header-text">Workspace</span></div>
@@ -156,6 +174,8 @@ export const guiAppHtml = `<!doctype html>
     <!-- Version history is NOT a tab here — it's its own takeover opened via the
          header clock (🕐). These tabs are the Settings takeover only. -->
     <div class="drawer-tabs" id="drawer-tabs">
+      <button class="drawer-tab" data-tab="datamodel">Data Model</button>
+      <button class="drawer-tab" data-tab="inputs">Inputs</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
