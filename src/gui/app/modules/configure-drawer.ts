@@ -43,10 +43,45 @@ export const configureDrawerJs = `
     }
 
     // ── Inputs tab: Files | Connectors | Databases (existing ids, existing fns) ──
+    var INPUTS_FILES_VIEW_KEY = 'lattice.inputs.files.view';
+    function inputsFilesView() {
+      try { return window.localStorage.getItem(INPUTS_FILES_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
+      catch (e) { return 'list'; }
+    }
+    // Render the Inputs Files as the source tree (list, default) OR a tile grid
+    // (fsTileHtml). Both open a file with #/w/file/<id>.
+    function renderInputsFiles(rows) {
+      var host = document.getElementById('inputs-files-tree');
+      if (!host) return;
+      var view = inputsFilesView();
+      var toggle = document.getElementById('inputs-files-toggle');
+      if (toggle) {
+        toggle.querySelectorAll('[data-view]').forEach(function (b) {
+          b.classList.toggle('on', b.getAttribute('data-view') === view);
+        });
+      }
+      if (view === 'grid' && typeof fsTileHtml === 'function') {
+        host.innerHTML = rows.length
+          ? '<div class="fs-grid">' + rows.map(function (r) {
+              var nm = r.name || r.original_name || 'Untitled';
+              var ic = typeof fileEmoji === 'function' ? fileEmoji(r) : '📄';
+              return fsTileHtml('#/w/file/' + encodeURIComponent(r.id), ic, nm, 'files', '', 'file');
+            }).join('') + '</div>'
+          : '<div class="src-empty">No files yet.</div>';
+        host.querySelectorAll('.fs-tile[data-href]').forEach(function (t) {
+          t.addEventListener('click', function () { location.hash = t.getAttribute('data-href'); });
+        });
+      } else if (typeof renderSourcesFilesInto === 'function') {
+        renderSourcesFilesInto(host, rows);
+      }
+    }
     function renderInputsTab(body) {
       if (!body) return;
       body.innerHTML =
-        '<div class="inputs-group"><div class="inputs-group-head">Files</div>' +
+        '<div class="inputs-group"><div class="inputs-group-head">Files' +
+        '<span class="inputs-files-toggle" id="inputs-files-toggle">' +
+        '<button type="button" class="ift-btn" data-view="list" title="List view">☰</button>' +
+        '<button type="button" class="ift-btn" data-view="grid" title="Grid view">▦</button></span></div>' +
         '<div id="inputs-files-tree"></div>' +
         '<div class="src-add-row src-add-files-wrap">' +
         '<button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ File(s)</button>' +
@@ -65,13 +100,22 @@ export const configureDrawerJs = `
       if (typeof renderSourcesConnectors === 'function') renderSourcesConnectors();
       if (typeof renderInputsDatabases === 'function') renderInputsDatabases();
       if (typeof wireSourcesButtons === 'function') wireSourcesButtons();
-      fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
-        .then(function (data) {
-          var rows = ((data && data.rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; });
-          if (typeof renderSourcesFilesInto === 'function') {
-            renderSourcesFilesInto(document.getElementById('inputs-files-tree'), rows);
-          }
-        })
-        .catch(function () {});
+      var loadFiles = function () {
+        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
+          .then(function (data) {
+            renderInputsFiles(((data && data.rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; }));
+          })
+          .catch(function () { renderInputsFiles([]); });
+      };
+      var toggle = document.getElementById('inputs-files-toggle');
+      if (toggle) {
+        toggle.querySelectorAll('[data-view]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            try { window.localStorage.setItem(INPUTS_FILES_VIEW_KEY, b.getAttribute('data-view')); } catch (e) {}
+            loadFiles();
+          });
+        });
+      }
+      loadFiles();
     }
 `;

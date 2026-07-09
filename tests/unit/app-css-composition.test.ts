@@ -172,8 +172,8 @@ import { css } from '../../src/gui/app/css.js';
 // The connection-form fields (.conn-field, used by Connect-a-Database / Migrate-to-cloud) drop
 // their own box styling and inherit the global bubble base so they match every other form.
 // Recaptured.
-const ORIGINAL_LENGTH = 148361;
-const ORIGINAL_SHA256 = '4b5b65dabff505598387ca2a1f5cb4a939142f5122a866d8f609c16eb0194d30';
+const ORIGINAL_LENGTH = 149239;
+const ORIGINAL_SHA256 = 'f8bdd56932c2121d8e368c31c0fc93924b999ddd578b04bf36179c93bb4f8722';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

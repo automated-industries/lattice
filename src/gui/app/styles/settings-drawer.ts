@@ -132,6 +132,16 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .dm-panel { min-width: 0; }
     @media (max-width: 900px) { .dm-tables-merge { grid-template-columns: 1fr; } }
     .inputs-group { margin-bottom: 20px; }
-    .inputs-group-head { font-size: 12px; font-weight: 700; text-transform: uppercase;
+    .inputs-group-head { display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px; }
+    .inputs-files-toggle { display: inline-flex; gap: 2px; }
+    .ift-btn { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
+      width: 24px; height: 22px; border-radius: 5px; cursor: pointer; font-size: 12px; line-height: 1; }
+    .ift-btn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+    /* "Edit columns & relationships" affordance in the Data Model detail panel. */
+    .mt-detail-edit { display: inline-block; margin-top: 10px; margin-left: 10px; padding: 6px 12px;
+      border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
+      color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+    .mt-detail-edit:hover { background: var(--row-hover); }
 `;
