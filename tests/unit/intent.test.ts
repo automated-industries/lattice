@@ -98,4 +98,19 @@ describe('runIntent', () => {
     expect(sent).toContain('Ada');
     expect(sent).toContain('projects');
   });
+
+  it('grounds the classifier in what the user is viewing so a complaint is actionable, not ambiguous', async () => {
+    const { client, calls } = fakeClient(
+      '```json\n{"ack_message":"Checking what went wrong…","needs_work":true,"needs_more_info":false}\n```',
+    );
+    const r = await runIntent(client, 'why is this broken?', {
+      activeView: 'the dashboard "Books Sold by Month"',
+    });
+    const sent = JSON.stringify(calls[0]!.messages);
+    // The view grounding reaches the prompt so "this" is understood + a complaint is
+    // steered to needs_work (investigate) rather than needs_more_info (ask what's wrong).
+    expect(sent).toContain('the dashboard \\"Books Sold by Month\\"');
+    expect(sent.toLowerCase()).toContain('not ambiguous');
+    expect(r.needs_work).toBe(true);
+  });
 });

@@ -305,6 +305,48 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         },
       };
     }
+    case 'investigate': {
+      // Diagnose the dashboard the user is viewing (or a given id): run its live
+      // data queries + check the tables it reads, and report the CONCRETE faults —
+      // so the assistant explains WHY it's broken instead of asking the user. Reuses
+      // the SAME binding gate the create/edit paths run.
+      const targetId =
+        typeof args.id === 'string' && args.id.trim() ? args.id.trim() : ctx.activeDashboardId;
+      if (!targetId) {
+        return {
+          ok: true,
+          result: {
+            investigated: null,
+            note: 'No dashboard is open to investigate. Ask the user which dashboard they mean, or have them open it.',
+          },
+        };
+      }
+      const dash = (await ctx.db.get('dashboards', targetId)) as {
+        title?: string;
+        html?: string;
+      } | null;
+      if (dash === null) {
+        return { ok: false, error: `No dashboard with id "${targetId}".` };
+      }
+      const issues = await verifyDashboardBinding(ctx.db, dash.html ?? '', ctx.validTables);
+      const problems = issues.map((i) => ({
+        kind: i.kind,
+        detail: i.detail,
+        ...(i.query ? { query: i.query } : {}),
+      }));
+      return {
+        ok: true,
+        result: {
+          dashboard: dash.title ?? targetId,
+          healthy: problems.length === 0,
+          problems,
+          note:
+            problems.length === 0
+              ? 'Every data query runs and every table it reads exists — no data-loading fault. If it still looks wrong, ask the user what they expected vs. what they actually see.'
+              : 'These are the concrete faults. Explain them plainly, then offer to fix the dashboard with edit_dashboard (a re-author can correct or drop the failing query).',
+        },
+      };
+    }
     case 'import_spreadsheet': {
       // Faithfully materialize an attached spreadsheet into real tables (every row) via the
       // deterministic importer — the answer to "build a dashboard from this spreadsheet"
