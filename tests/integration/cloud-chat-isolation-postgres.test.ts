@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
+import WebSocket from 'ws';
 import { Lattice } from '../../src/lattice.js';
 import { secureCloud } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
@@ -226,6 +227,75 @@ describe.skipIf(!PG_URL)('cloud chat isolation (security regression)', () => {
     expect(ownerList.threads.map((t) => t.id)).toEqual(['t-owner']);
     expect(ownerList.threads.map((t) => t.id)).not.toContain('t-member');
     expect(ownerList.threads.map((t) => t.id)).not.toContain('t-null');
+  });
+
+  it('a member’s /api/stream socket receives ONLY its own live chat frames, never another user’s', async () => {
+    // The async chat transport streams a turn's text over the workspace-wide chat-progress
+    // bus (one bus per process, shared by every socket). This is the DELIVERY gate: publish a
+    // member-owned frame AND a foreign-owned frame into the bus and prove the member's socket
+    // gets only its own — the end-to-end companion to the mayReceiveChat unit table.
+    const dbname = `lattice_wschat_${randomBytes(4).toString('hex')}`;
+    databases.push(dbname);
+    const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+    await admin.query(`CREATE DATABASE "${dbname}"`);
+    await admin.end();
+
+    const owner = new Lattice(dbUrl(dbname));
+    defineChatTables(owner);
+    await owner.init();
+    await secureCloud(owner);
+    const role = `lm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    const pw = generateMemberPassword();
+    await provisionMemberRole(owner, role, pw);
+    owner.close();
+
+    // The member's connection identity (what the socket's connOwner resolves to).
+    const memberPool = new pg.Pool({ connectionString: dbUrl(dbname, role, pw), max: 1 });
+    const memberSU = (await memberPool.query<{ u: string }>('SELECT session_user AS u')).rows[0]!.u;
+    await memberPool.end();
+
+    // Boot the MEMBER GUI (active.db connects as the member role), open a real socket.
+    const gui = await bootGui(dbname, role, pw);
+    const ws = new WebSocket(gui.url.replace(/^http/, 'ws') + '/api/stream');
+    const chatFrames: { ownerUserId?: unknown; event?: { delta?: string } }[] = [];
+    ws.on('message', (buf: WebSocket.RawData) => {
+      const m = JSON.parse(buf.toString()) as { type?: string; data?: (typeof chatFrames)[number] };
+      if (m.type === 'chat-progress' && m.data) chatFrames.push(m.data);
+    });
+    await new Promise<void>((r) => {
+      ws.on('open', () => {
+        r();
+      });
+    });
+
+    const mine = {
+      threadId: 't',
+      messageId: 'm-mine',
+      ownerUserId: memberSU,
+      event: { type: 'text_delta' as const, delta: 'MEMBER_OWN_TEXT' },
+    };
+    const foreign = {
+      threadId: 't',
+      messageId: 'm-foreign',
+      ownerUserId: 'a-different-member',
+      event: { type: 'text_delta' as const, delta: 'FOREIGN_SECRET' },
+    };
+    // connOwner resolves asynchronously after the socket subscribes; publish both frames
+    // repeatedly until the member's own arrives (proving identity resolved), never the foreign.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && !chatFrames.some((f) => f.event?.delta === 'MEMBER_OWN_TEXT')) {
+      gui.publishChatProgressForTest(mine);
+      gui.publishChatProgressForTest(foreign);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await new Promise((r) => setTimeout(r, 250)); // let any stray foreign frame arrive
+    ws.close();
+
+    expect(chatFrames.some((f) => f.event?.delta === 'MEMBER_OWN_TEXT')).toBe(true); // delivered
+    expect(chatFrames.some((f) => f.event?.delta === 'FOREIGN_SECRET')).toBe(false); // NEVER
+    // The forwarder never leaks the internal owner id to the client.
+    expect(chatFrames.every((f) => f.ownerUserId === undefined)).toBe(true);
   });
 });
 
