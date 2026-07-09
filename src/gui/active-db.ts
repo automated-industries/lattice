@@ -216,8 +216,13 @@ export async function changeVisibleToActiveRole(
       if (payload.del_owner_role == null) return false;
       const row = (await getAsyncOrSync(
         db.adapter,
-        `SELECT lattice_delete_visible(?, ?, ?::text[]) AS v`,
-        [payload.del_owner_role, payload.del_visibility ?? null, payload.del_grantees ?? []],
+        `SELECT lattice_delete_visible(?, ?, ?, ?::text[]) AS v`,
+        [
+          payload.table_name,
+          payload.del_owner_role,
+          payload.del_visibility ?? null,
+          payload.del_grantees ?? [],
+        ],
       )) as { v?: unknown } | undefined;
       return row?.v === true || row?.v === 't' || row?.v === 1;
     }

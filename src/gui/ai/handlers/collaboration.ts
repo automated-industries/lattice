@@ -1,6 +1,7 @@
 import type { DeleteResolution } from '../../schema-ops.js';
 import { upsertColumnMeta, upsertTableMeta } from '../../column-descriptions.js';
 import { setRowVisibility, rowAccessSummaries } from '../../../cloud/members.js';
+import { cascadeDashboardDataShare } from '../../dashboard-share-cascade.js';
 import { setTableDefaultVisibility } from '../../../cloud/table-policy.js';
 import { canManageRoles } from '../../../framework/cloud-connect.js';
 import { visibilityDenialReason } from './permission.js';
@@ -58,6 +59,11 @@ export async function handleCollaboration(deps: HandlerDeps): Promise<GroupResul
       try {
         if (id) {
           await setRowVisibility(ctx.db, table, id, visibility);
+          // Sharing a dashboard to everyone cascades to the data it reads so the
+          // recipients get a populated page. One-way: never on 'private'.
+          if (table === 'dashboards' && visibility === 'everyone') {
+            await cascadeDashboardDataShare(ctx.db, id, 'everyone');
+          }
           return { ok: true, result: { table, id, visibility } };
         }
         await setTableDefaultVisibility(ctx.db, table, visibility);
