@@ -314,19 +314,21 @@ export async function verifyDashboardBinding(
     };
     // (a1) Unambiguous lattice.query/get table reads.
     for (const name of extractQueryGetTables(html)) flagMissing(name);
-    // (a2) Templated SQL: statically check its FROM/JOIN tables (it can't be executed).
-    //      (b) Non-templated SQL: execute it — a missing table or any SQL fault surfaces here.
+    // Non-templated SQL is EXECUTED (up to a cap) so it catches missing tables + any other
+    // SQL fault; templated SQL, and any non-templated query BEYOND the execution cap, get the
+    // static FROM/JOIN missing-table check instead — so NO query escapes binding
+    // verification (a 13th chart's ghost table is still caught).
     let executed = 0;
     for (const q of extractDashboardSql(html)) {
-      if (q.dynamic) {
+      if (!q.dynamic && executed < MAX_QUERIES) {
+        executed++;
+        const r = await runDashboardSql(db, q.sql);
+        if ('error' in r) issues.push({ kind: 'sql_error', query: q.sql, detail: r.error });
+      } else {
         const ctes = new Set(extractCteNames(q.sql).map((c) => c.toLowerCase()));
         for (const name of extractSqlFromJoinTables(q.sql)) {
           if (!ctes.has(name.toLowerCase())) flagMissing(name);
         }
-      } else if (executed < MAX_QUERIES) {
-        executed++;
-        const r = await runDashboardSql(db, q.sql);
-        if ('error' in r) issues.push({ kind: 'sql_error', query: q.sql, detail: r.error });
       }
     }
     return issues;
@@ -348,8 +350,9 @@ export function bindingFailureMessage(issues: DashboardQaIssue[]): string {
   if (errors.length > 0) parts.push(`A data query failed: ${errors.join('; ')}.`);
   return (
     `The dashboard was NOT created because its data does not load. ${parts.join(' ')} ` +
-    `Tell the user plainly what data is missing and offer to bring it in (e.g. import the ` +
-    `spreadsheet or connect the source); do NOT report it as ready and do NOT tell them to ` +
-    `"try again" — retrying will not create the missing data.`
+    `Tell the user plainly what data is missing and offer to bring it in — if they attached a ` +
+    `spreadsheet, call import_spreadsheet with its file id to import it, otherwise offer to ` +
+    `connect the source. Do NOT report it as ready and do NOT tell them to "try again" — ` +
+    `retrying will not create the missing data.`
   );
 }

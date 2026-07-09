@@ -236,6 +236,17 @@ describe('dashboard QA', () => {
     expect(issues).toEqual([]); // 0 rows is a soft QA concern, never a hard binding block
   });
 
+  it('binding gate: static-checks a query BEYOND the execution cap (a 13th ghost-table query)', async () => {
+    // The gate executes only the first 12 non-templated queries; a 13th referencing a table
+    // that does not exist must still be caught by the static FROM/JOIN check, not slip through.
+    let html = '<script>';
+    for (let i = 0; i < 12; i++) html += "lattice.sql('SELECT amount FROM sales');";
+    html += "lattice.sql('SELECT * FROM ghost_accounts');"; // #13 — not executed, statically checked
+    html += '</script>';
+    const issues = await verifyDashboardBinding(db, html, ['sales']);
+    expect(issues.some((i) => i.kind === 'missing_table')).toBe(true);
+  });
+
   it('bindingFailureMessage names the gap and forbids a blind retry', () => {
     const msg = bindingFailureMessage([
       {
