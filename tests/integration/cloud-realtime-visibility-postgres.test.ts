@@ -321,12 +321,44 @@ describe.skipIf(!PG_URL)('realtime per-recipient visibility gate', () => {
       const del = (
         (await allAsyncOrSync(
           member.adapter,
-          `SELECT lattice_delete_visible(?, ?, ?::text[]) AS v`,
-          [o.owner_role, o.visibility, g?.gs ?? []],
+          `SELECT lattice_delete_visible(?, ?, ?, ?::text[]) AS v`,
+          ['gadget', o.owner_role, o.visibility, g?.gs ?? []],
         )) as { v: boolean }[]
       )[0]!;
       // The snapshot predicate must never drift from the live one.
       expect(del.v).toBe(live.v);
     }
+
+    // A row visible ONLY via a standing table-share must ALSO agree between the
+    // live and delete predicates — otherwise a "kept live" shared table would drop
+    // the realtime delete for its grantees (stale rows until a refetch).
+    await allAsyncOrSync(owner.adapter, `SELECT lattice_share_table(?, 'custom', ?::text[])`, [
+      'gadget',
+      [mRole],
+    ]);
+    await owner.insert('gadget', { id: 'r_tshare', name: 't' }); // private per-row, shared via table
+    const tsOwner = (
+      (await allAsyncOrSync(
+        owner.adapter,
+        `SELECT "owner_role", "visibility" FROM "__lattice_owners" WHERE table_name='gadget' AND pk='r_tshare'`,
+      )) as { owner_role: string; visibility: string }[]
+    )[0]!;
+    const tsLive = (
+      (await allAsyncOrSync(
+        member.adapter,
+        `SELECT lattice_row_visible('gadget','r_tshare') AS v`,
+      )) as {
+        v: boolean;
+      }[]
+    )[0]!;
+    const tsDel = (
+      (await allAsyncOrSync(
+        member.adapter,
+        `SELECT lattice_delete_visible(?, ?, ?, ?::text[]) AS v`,
+        ['gadget', tsOwner.owner_role, tsOwner.visibility, []],
+      )) as { v: boolean }[]
+    )[0]!;
+    expect(tsLive.v).toBe(true); // the table-share reaches the member
+    expect(tsDel.v).toBe(tsLive.v); // and the delete predicate mirrors it
   });
 });
