@@ -422,8 +422,15 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // #/w/file/files); closeSettingsDrawer + workspace-switch preserve/clear the Configure
 // hashes correctly; dashboard add-source opens the Inputs tab; markdown render-progress
 // selectors repointed to #nav-md-tree. Recaptured.
-const ORIGINAL_LENGTH = 706782;
-const ORIGINAL_SHA256 = '387c2e66c27f78f4ad03a58c23e267efbe052cfbfbd1c99534f4154a6825ca9b';
+// Re-verify follow-up (2 regressions the fixes themselves introduced): the #/computed
+// router branch now bails on a soft/background render so it can't wipe the in-progress
+// builder form; the Graph drawer subtab gets a definite height (CSS) so its canvas no
+// longer collapses to 0. Recaptured.
+// Third-order follow-up: the computed-builder's edit-mode load now commits on the route
+// still matching (cbRouteMatches) instead of a renderGen match, so a soft render's gen
+// bump can't orphan an in-flight edit load into a stuck spinner. Recaptured.
+const ORIGINAL_LENGTH = 707899;
+const ORIGINAL_SHA256 = '1b42d522f23c595d1c392470501b94a5bdb6fcbec1b4c330a3a10f7e569fdf73';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

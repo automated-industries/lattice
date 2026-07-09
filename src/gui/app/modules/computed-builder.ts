@@ -55,11 +55,19 @@ export const computedBuilderJs = `
       return r;
     }
 
+    // True while the location still targets THIS builder+name. The edit-mode load
+    // commits on this rather than on a renderGen match: a background soft render
+    // bumps renderGen but leaves the hash put, so keying on renderGen would let it
+    // orphan an in-flight edit load (stuck spinner). A real navigation-away DOES
+    // change the hash, so a stale load is still dropped.
+    function cbRouteMatches(nameArg) {
+      var m = /^#\\/computed\\/([^/]+)$/.exec(location.hash || '');
+      return !!m && decodeURIComponent(m[1]) === nameArg;
+    }
     // Route entry. 'new' renders the empty create form; any other name loads
     // that definition for editing (the reserved word costs nothing: the server
     // refuses "new" only if no such computed table exists, which 404s here).
     function renderComputedBuilder(content, nameArg) {
-      var myGen = renderGen;
       if (nameArg === 'new') {
         cbS = {
           mode: 'create', name: '', base: '', description: undefined,
@@ -81,12 +89,13 @@ export const computedBuilderJs = `
           };
           if (!cbS.rows.length) cbS.rows.push(cbNewRow());
           return cbLoadFields(cbS.base).then(function () {
-            if (myGen !== renderGen) return;
+            if (!cbRouteMatches(nameArg)) return;
             cbPaint(content);
           });
         })
         .catch(function (err) {
-          setContent(content, myGen, '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>');
+          if (!content || !cbRouteMatches(nameArg)) return;
+          content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
         });
     }
 

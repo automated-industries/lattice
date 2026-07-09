@@ -88,8 +88,15 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       // otherwise the builder renders hidden behind the open panel.
       var cbm = /^#\\/computed\\/([^/]+)$/.exec(hash);
       if (cbm) {
+        // A background (soft) refresh must NOT rebuild the builder: renderComputedBuilder
+        // resets its in-progress definition to a blank/last-saved form, so a landed
+        // mutation (a collaborator edit, an ingest completing, a render-done event) would
+        // silently wipe the user's unsaved work. Leave the mounted builder untouched — it
+        // self-fetches its base fields; there is nothing to reconcile in. (Mirrors the
+        // #/questions branch below, another unsaved-form surface.)
+        if (soft) return;
         if (typeof drawerIsOpen === 'function' && drawerIsOpen() && typeof closeSettingsDrawer === 'function') closeSettingsDrawer();
-        if (content && !soft) content.innerHTML = routeLoadingHtml();
+        if (content) content.innerHTML = routeLoadingHtml();
         renderComputedBuilder(content, decodeURIComponent(cbm[1]));
         return;
       }

@@ -130,6 +130,11 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .dm-subtabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .dm-tables-merge { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
     .dm-panel { min-width: 0; }
+    /* The Graph subtab shares this grid. .brain-graph is height:100%, but a grid cell
+       in an align-items:start, auto-height grid is an indefinite containing block, so
+       that percentage would collapse the graph canvas to 0. Pin it to the same 64vh the
+       standalone #graph-mount uses so the force-graph canvas has a real height. */
+    .dm-tables-merge .brain-graph { height: 64vh; }
     @media (max-width: 900px) { .dm-tables-merge { grid-template-columns: 1fr; } }
     .inputs-group { margin-bottom: 20px; }
     .inputs-group-head { display: flex; align-items: center; justify-content: space-between;

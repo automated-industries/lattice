@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { appJs } from '../../src/gui/app/script.js';
+import { css } from '../../src/gui/app/css.js';
 
 /**
- * Regression guards for the seven defects an adversarial review found in the
- * single-layout GUI reframe. Each `expect` re-introducing one of these bugs would
- * flip a check here. The GUI client is one composed IIFE string (appJs), so these
- * assert against its text — the same pattern the byte-pin + gui-html suites use.
+ * Regression guards for the defects two adversarial passes found in the single-layout
+ * GUI reframe: the first pass found seven, and re-verifying the fixes found two more the
+ * fixes themselves introduced. Each `expect` re-introducing one of these bugs would flip
+ * a check here. The GUI client is one composed IIFE string (appJs) + one composed
+ * stylesheet (css), so these assert against their text — the byte-pin + gui-html pattern.
  */
 
 describe('reframe review fix #1 — computed-table builder is reachable', () => {
@@ -19,6 +21,37 @@ describe('reframe review fix #1 — computed-table builder is reachable', () => 
     // The '+ New computed table' / 'Edit definition' affordances live inside the
     // drawer; entering the builder must drop that overlay.
     expect(appJs).toContain('drawerIsOpen() && typeof closeSettingsDrawer');
+  });
+  it('does NOT rebuild the builder on a soft/background render (would wipe the in-progress form)', () => {
+    // Re-verify follow-up: a landed mutation fires renderRoute({soft:true}); the
+    // #/computed branch must bail before renderComputedBuilder resets the form. The
+    // cbm branch opens with an early `if (soft) return;` guard.
+    const cbmIdx = appJs.indexOf('/^#\\/computed\\/([^/]+)$/.exec(hash)');
+    expect(cbmIdx).toBeGreaterThan(-1);
+    const branch = appJs.slice(cbmIdx, cbmIdx + 1000);
+    expect(branch).toContain('if (soft) return;');
+    // ...and the soft guard precedes the renderComputedBuilder call within the branch.
+    const softIdx = branch.indexOf('if (soft) return;');
+    const renderIdx = branch.indexOf('renderComputedBuilder(content');
+    expect(softIdx).toBeGreaterThan(-1);
+    expect(renderIdx).toBeGreaterThan(-1);
+    expect(softIdx).toBeLessThan(renderIdx);
+  });
+  it('commits the edit-mode load on the route still matching, not a renderGen match (soft render cannot orphan it)', () => {
+    // Third-order follow-up to the soft-guard: keying the async paint on renderGen let
+    // a soft render's gen bump orphan an in-flight edit load into a stuck spinner. The
+    // load now commits via cbRouteMatches(nameArg) instead.
+    expect(appJs).toContain('function cbRouteMatches(nameArg)');
+    expect(appJs).toContain('if (!cbRouteMatches(nameArg)) return;');
+  });
+});
+
+describe('reframe review re-verify fix — Graph drawer subtab has a real height', () => {
+  it('pins .brain-graph to a definite height inside the Data Model grid so the canvas is not 0px', () => {
+    // Re-verify follow-up: .dm-tables-merge is an auto-height grid, so .brain-graph's
+    // height:100% would collapse the force-graph canvas to 0. A scoped rule restores it.
+    expect(css).toContain('.dm-tables-merge .brain-graph');
+    expect(css).toMatch(/\.dm-tables-merge \.brain-graph\s*\{\s*height:\s*64vh/);
   });
 });
 

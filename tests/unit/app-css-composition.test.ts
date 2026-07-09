@@ -172,8 +172,11 @@ import { css } from '../../src/gui/app/css.js';
 // The connection-form fields (.conn-field, used by Connect-a-Database / Migrate-to-cloud) drop
 // their own box styling and inherit the global bubble base so they match every other form.
 // Recaptured.
-const ORIGINAL_LENGTH = 149239;
-const ORIGINAL_SHA256 = 'f8bdd56932c2121d8e368c31c0fc93924b999ddd578b04bf36179c93bb4f8722';
+// Single-layout reframe re-verify fix: the Graph subtab shares the Data Model grid, so
+// .brain-graph gets a definite 64vh height there (.dm-tables-merge .brain-graph) — without
+// it the height:100% chain collapsed the graph canvas to 0. Recaptured.
+const ORIGINAL_LENGTH = 149638;
+const ORIGINAL_SHA256 = 'c851434eee78a8e06b7d31e2e68a1b89279e16aec6732970c53d3b1708a7b21a';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
