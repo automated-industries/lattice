@@ -275,6 +275,40 @@ export function parseActiveContext(
   return { table, id: trimmedId };
 }
 
+/**
+ * A short context note telling the model what the user is currently LOOKING AT, so
+ * "this" / "it" / "why is this broken" resolve without asking. Prepended to the
+ * turn's message (the dispatch + tools still see the real message). Empty when no
+ * view context was sent. For a dashboard it names the page and points at the
+ * `investigate` tool, so the model diagnoses a complaint itself instead of
+ * interrogating the user for details it can find.
+ */
+async function describeActiveView(
+  db: Lattice,
+  active: { table: string; id: string } | undefined,
+): Promise<{ note: string; label: string }> {
+  if (!active) return { note: '', label: '' };
+  if (active.table === 'dashboards') {
+    const d = (await db.get('dashboards', active.id).catch(() => null)) as {
+      title?: string;
+    } | null;
+    const name = d?.title ? `"${d.title}"` : 'the one on screen';
+    return {
+      label: `the dashboard ${name}`,
+      note:
+        `[The user is currently viewing the dashboard ${name}. If they say "this" / "it" / ` +
+        `"this dashboard", or ask why something is broken, empty, blank, or wrong, they mean THIS ` +
+        `dashboard — call \`investigate\` to find the concrete fault yourself instead of asking ` +
+        `them what is wrong.]\n\n`,
+    };
+  }
+  const label = `the ${active.table} record "${active.id}"`;
+  return {
+    label,
+    note: `[The user is currently viewing ${label} — "this" / "it" refers to it.]\n\n`,
+  };
+}
+
 /** Map client-supplied prior turns into the loop's message format. */
 function mapHistory(raw: unknown): LlmMessage[] {
   if (!Array.isArray(raw)) return [];
@@ -744,6 +778,9 @@ export async function dispatchChatRoute(
   // Connect the request to the files the user just attached (ingested via the
   // composer Send) so the assistant works on them with its existing file tools.
   const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
+  // What the user is currently looking at, so "this"/"it"/"why is this broken"
+  // resolve to the open dashboard/record (and a complaint routes to `investigate`).
+  const activeView = await describeActiveView(ctx.db, activeContext);
 
   // Persist a PENDING assistant row and respond IMMEDIATELY (202) — the turn then runs
   // in a background job and streams over the /api/stream WebSocket, so the request path
@@ -1001,9 +1038,10 @@ export async function dispatchChatRoute(
         client,
         dispatch,
         history,
-        // Prefix the attached-files + auto-ingest notes (if any) so the model connects the
-        // request to what was just added; the dispatch + tools still see the real message.
-        userMessage: attachedNote + ingestNote + message,
+        // Prefix the active-view + attached-files + auto-ingest notes (if any) so the model
+        // knows what's on screen and connects the request to what was just added; the
+        // dispatch + tools still see the real message.
+        userMessage: activeView.note + attachedNote + ingestNote + message,
         temperature,
         // Give the assistant the operator's name so it addresses them and
         // resolves "me"/"my" without asking for a name it already has.
@@ -1137,6 +1175,7 @@ export async function dispatchChatRoute(
       intent = await runIntent(provider.client, message, {
         operatorName: readIdentity().display_name,
         tableNames: [...ctx.validTables],
+        ...(activeView.label ? { activeView: activeView.label } : {}),
       });
     } catch (e) {
       // Best-effort — never drop the user's message; fall through to the real loop.

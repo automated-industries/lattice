@@ -18,6 +18,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   member's private rows in the same table), skips private-only tables, and is one-way —
   unsharing a dashboard leaves its underlying data shared.
 
+- **The assistant knows what you're looking at — and diagnoses a broken dashboard itself.**
+  When you ask about the dashboard on screen ("why is this broken?", "why is it empty?"), the
+  assistant now knows which dashboard you mean instead of asking you to identify it, and it runs
+  a new self-diagnosis step that executes the page's live data queries and reports the concrete
+  fault — a failing query with its exact error, or a table that doesn't exist — then offers to
+  fix it. Relatedly, assistant-authored dashboards now stick to portable SQL that runs on both
+  the local (SQLite) and cloud (Postgres) engines, so a Postgres-only construct no longer breaks
+  a tile at render time.
+
 - **The assistant's answer now streams in as it's written.** Chat replies appear
   token-by-token as the model produces them, instead of the whole answer landing at once
   after it finishes — so a long answer starts showing in a second or two. Its private

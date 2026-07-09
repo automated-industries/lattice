@@ -67,6 +67,10 @@ export interface IntentOptions {
   /** Names of the tables in the workspace, so the ack is grounded and needs_work is
    *  judged accurately. Kept to names only (no rows) to stay cheap. */
   tableNames?: string[];
+  /** Short label for what the user is currently viewing (e.g. `the dashboard "Sales"`),
+   *  so a complaint like "why is this broken" is understood as actionable (investigate
+   *  it), NOT flagged as too ambiguous. */
+  activeView?: string;
   temperature?: number;
 }
 
@@ -85,6 +89,15 @@ export async function runIntent(
     opts.tableNames && opts.tableNames.length > 0
       ? `The workspace currently has these tables: ${opts.tableNames.slice(0, 80).join(', ')}.\n`
       : 'The workspace has no tables yet.\n';
+  // Grounding for a message about what's on screen: a complaint that "this" is
+  // broken/empty/wrong is actionable (the assistant can investigate it), so it must
+  // be needs_work — never needs_more_info.
+  const viewing = opts.activeView
+    ? `The user is currently viewing ${opts.activeView}. If their message is a complaint or ` +
+      `question that "this"/"it" is broken, empty, blank, wrong, or not working, it refers to ` +
+      `what they are viewing and is NOT ambiguous — set needs_work true (the assistant will ` +
+      `investigate it); do NOT ask them what is wrong.\n`
+    : '';
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
     // Small budget: the ack/inline-answer is short by construction. Keeps latency + cost low.
@@ -93,7 +106,7 @@ export async function runIntent(
     messages: [
       {
         role: 'user',
-        content: `${who}${tables}\nUser message:\n${message.slice(0, 8000)}\n\nReturn the JSON object.`,
+        content: `${who}${tables}${viewing}\nUser message:\n${message.slice(0, 8000)}\n\nReturn the JSON object.`,
       },
     ],
     tools: [],
