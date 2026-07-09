@@ -50,6 +50,7 @@ import { analyticsViewJs } from './analytics-view.js';
 import { questionsJs } from './questions.js';
 import { modelTablesJs } from './model-tables.js';
 import { computedBuilderJs } from './computed-builder.js';
+import { fsTilesJs } from './fs-tiles.js';
 import { foldersJs } from './folders.js';
 import { columnCollapseJs } from './column-collapse.js';
 import { wireMergeJs } from './wiremerge.js';
@@ -100,6 +101,7 @@ export const appJs = [
   questionsJs,
   modelTablesJs,
   computedBuilderJs,
+  fsTilesJs,
   foldersJs,
   columnCollapseJs,
   wireMergeJs,

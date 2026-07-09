@@ -19,7 +19,13 @@ export const outputsJs = `
     // record and opens the record page (the single markdown surface, with the
     // Formatted | Markdown toggle) — the old separate read-only viewer is gone.
     function renderOutputsMarkdown() {
-      var host = document.getElementById('out-markdown-tree');
+      renderMarkdownTreeInto(document.getElementById('out-markdown-tree'));
+    }
+    // Render the rendered-markdown tree (one node per non-junction table + lazy
+    // per-record folders) INTO a given host, so the SAME tree serves the old
+    // Outputs rail AND the left-sidebar MARKDOWN section. Leaf clicks resolve to a
+    // record/collection hash, which the router normalizes to the #/w/* tab.
+    function renderMarkdownTreeInto(host) {
       if (!host) return;
       Promise.all([
         fetchJson('/api/context/tree'),
@@ -79,10 +85,12 @@ export const outputsJs = `
       var icon = (typeof displayFor === 'function' ? displayFor(t.table).icon : '\ud83d\udcc1');
       var label = (typeof displayFor === 'function' ? displayFor(t.table).label : t.table);
       if (t.empty) {
+        // A table with nothing rendered yet (typically no records). Show it calmly
+        // rather than flagging "no rendered context" as if something failed.
         return '<li class="mdt-node mdt-empty" data-table="' + escapeHtml(t.table) +
-          '"><div class="mdt-row mdt-row-empty" style="padding-left:0px" title="no rendered context">' +
+          '"><div class="mdt-row mdt-row-empty" style="padding-left:0px" title="no records yet">' +
           '<span class="src-ic">' + icon + '</span><span class="src-name">' + escapeHtml(label) + '</span>' +
-          '<span class="mdt-note">no rendered context</span></div></li>';
+          '<span class="mdt-note">no records yet</span></div></li>';
       }
       return '<li class="mdt-node mdt-folder mdt-table" data-table="' + escapeHtml(t.table) +
         '" data-depth="0" data-loaded="0"><div class="mdt-row" style="padding-left:0px">' +

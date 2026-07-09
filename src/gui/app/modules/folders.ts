@@ -115,19 +115,10 @@ export const foldersJs = `
     // An OBJECT (its own emoji + name as its label) or a FILE (the file-type emoji +
     // name). An object's name is click-to-rename inline (no button, no popup). We use
     // the object's OWN emoji — not a folder icon — since these are objects, not folders.
+    // Delegates to the shared fsTileHtml (fs-tiles.ts) — one tile renderer for the
+    // Objects grid, the record page's connected-objects grid, and the Inputs→Files grid.
     function foldersTileHtml(href, icon, label, table, meta, kind) {
-      var isFolder = kind === 'folder';
-      var iconHtml = icon;
-      var labelHtml = isFolder
-        ? '<span class="fs-tile-name" data-rename="' + escapeHtml(table) + '">' + escapeHtml(label) + '</span>'
-        : escapeHtml(label);
-      return '<div class="fs-tile fs-' + kind + ' mt-card" role="link" tabindex="0" ' +
-        'data-href="' + escapeHtml(href) + '" data-table="' + escapeHtml(table) + '" data-kind="' + kind + '" ' +
-        'title="' + escapeHtml(label) + '">' +
-        '<div class="fs-tile-icon">' + iconHtml + '</div>' +
-        '<div class="fs-tile-label">' + labelHtml + '</div>' +
-        (meta ? '<div class="fs-folder-count">' + escapeHtml(String(meta)) + '</div>' : '') +
-        '</div>';
+      return fsTileHtml(href, icon, label, table, meta, kind);
     }
 
     // Human label for a row: name/title/label/… then a first meaningful field, else id.
