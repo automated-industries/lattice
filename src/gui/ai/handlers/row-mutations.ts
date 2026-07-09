@@ -328,8 +328,8 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         return {
           ok: false,
           error:
-            'That file has no spreadsheet data to import — it may not be an Excel spreadsheet, ' +
-            'or it has no rows. For pasted or unstructured content use ingest_text instead.',
+            'That file has no spreadsheet data to import — it may not be a spreadsheet (Excel, ' +
+            'CSV, or TSV), or it has no rows. For pasted or unstructured content use ingest_text instead.',
         };
       }
       // Signal the data change so the workspace view refreshes (new tables/rows appear).

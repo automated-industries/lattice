@@ -104,7 +104,7 @@ describe('enrich extraction clarify gate', () => {
       ),
     );
     await db.init();
-    fileId = await db.insert('files', { original_name: 'orders.csv', extracted_text: 'x' });
+    fileId = await db.insert('files', { original_name: 'orders.txt', extracted_text: 'x' });
     feed = new FeedBus();
     feedEvents = [];
     feed.subscribe((e) => feedEvents.push(e));
@@ -126,7 +126,7 @@ describe('enrich extraction clarify gate', () => {
       db,
       fileId,
       'Acme Corp supplies fasteners. PO-1123.',
-      'orders.csv',
+      'orders.txt',
       [], // junctions
       {}, // descriptions
       undefined, // createJunction
@@ -160,7 +160,7 @@ describe('enrich extraction clarify gate', () => {
     const pending = await listPendingQuestions(db);
     expect(pending.length).toBe(1);
     expect(pending[0]?.source).toBe('enrich');
-    expect(pending[0]?.question).toBe('Is "orders.csv" meant to add records to suppliers?');
+    expect(pending[0]?.question).toBe('Is "orders.txt" meant to add records to suppliers?');
     expect(JSON.parse(pending[0]?.options_json ?? '[]')).toEqual([
       'Yes, add them',
       'No, keep it as just a file',

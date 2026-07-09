@@ -57,11 +57,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   A dropped spreadsheet is now materialized only by the deterministic structured importer,
   which reads every row; the general-purpose text extractor no longer also manufactures a
   lossy handful of rows from the same workbook (a 53-row file could previously collapse to
-  a 3-row summary). And a new `import_spreadsheet` assistant tool lets Lattice bring an
-  attached `.xlsx`/`.xls` file in as real, structured data on request — so "build a
+  a 3-row summary). This now covers **CSV and TSV** files too — a new delimited-file reader
+  (quote-aware, auto-detecting comma/semicolon/tab) means a `.csv`/`.tsv` is structured into
+  a real table like an Excel sheet instead of being run through the lossy text extractor.
+  And a new `import_spreadsheet` assistant tool lets Lattice bring an attached
+  `.xlsx`/`.xls`/`.csv`/`.tsv` file in as real, structured data on request — so "build a
   dashboard from this spreadsheet" works: it imports the whole file (reversible like any
-  change), then answers or builds from it. (CSV is not yet covered by the structured
-  importer and still uses the prior path — a dedicated CSV importer is a separate change.)
+  change), then answers or builds from it.
 
 - **A dashboard is never reported as "done" when its data doesn't load.** Before a
   generated dashboard is saved and opened, a deterministic check now confirms it actually

@@ -11,6 +11,7 @@ import {
   materializeImport,
 } from '../../src/index.js';
 import { autoImportStructured, importDataFaithfully } from '../../src/gui/import-auto.js';
+import { csvToRecords } from '../../src/import/csv.js';
 
 const dirs: string[] = [];
 const dbs: Lattice[] = [];
@@ -61,6 +62,17 @@ describe('importDataFaithfully (explicit import_spreadsheet materialization)', (
     const { db, configPath } = await freshWorkspace();
     // A scalar-only object infers no entity arrays → nothing to import.
     expect(await importDataFaithfully(db, configPath, { note: 'just a string' })).toBeNull();
+  });
+
+  it('materializes every row of a CSV file (parsed by the new CSV reader)', async () => {
+    const { db, configPath, base } = await freshWorkspace();
+    const p = join(base, 'vendors.csv');
+    writeFileSync(p, 'name,amount,region\nAcme,300,East\nBeta,500,West\nCeta,100,East\n');
+    const data = csvToRecords(p, 'vendors.csv');
+    const result = await importDataFaithfully(db, configPath, data);
+    expect(result?.tables).toEqual(['vendors']);
+    expect(result?.rows).toBe(3);
+    expect(await db.count('vendors')).toBe(3);
   });
 });
 

@@ -127,22 +127,25 @@ describe('enrich cross-links co-extracted objects', () => {
         },
       ]) +
       '\n```';
-    const createEntity = vi.fn(() => Promise.resolve<string | null>(null));
-    await enrichWithLlm(
-      mctx,
-      db,
-      'f1',
-      'some rows',
-      'ARR Jan - Mar 2021 Summary v0.xlsx', // a spreadsheet → extraction is skipped
-      [],
-      {},
-      vi.fn(() => Promise.resolve(null)),
-      0.9,
-      createEntity,
-    );
-    // No rows manufactured from the workbook, and the entity creator was never consulted.
-    expect((await db.query('meetings', {})).length).toBe(0);
-    expect(createEntity).not.toHaveBeenCalled();
+    // Both an Excel workbook and a CSV are structured-import files → the extractor is skipped.
+    for (const fileName of ['ARR Jan - Mar 2021 Summary v0.xlsx', 'vendors.csv']) {
+      const createEntity = vi.fn(() => Promise.resolve<string | null>(null));
+      await enrichWithLlm(
+        mctx,
+        db,
+        'f1',
+        'some rows',
+        fileName,
+        [],
+        {},
+        vi.fn(() => Promise.resolve(null)),
+        0.9,
+        createEntity,
+      );
+      // No rows manufactured from the tabular file, and the entity creator was never consulted.
+      expect((await db.query('meetings', {})).length).toBe(0);
+      expect(createEntity).not.toHaveBeenCalled();
+    }
   });
 
   it('materializes the meeting↔attendee link the extractor stated (not just file↔object)', async () => {
