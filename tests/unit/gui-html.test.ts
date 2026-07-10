@@ -3,8 +3,9 @@ import { guiAppHtml } from '../../src/gui/app.js';
 
 describe('guiAppHtml', () => {
   it('contains the structural DOM hooks the SPA boots against', () => {
-    // Sidebar / content mount points
-    expect(guiAppHtml).toContain('id="object-nav"');
+    // Sidebar / content mount points (single layout: left-sidebar nav sections +
+    // the Workspace tab host #content).
+    expect(guiAppHtml).toContain('id="nav-tables-list"');
     expect(guiAppHtml).toContain('id="content"');
     // The Advanced-mode toggle moved out of the sidebar into Settings → Lattice
     // (the old collapse control + static settings nav were already removed).
@@ -12,23 +13,25 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('id="sidebar-collapse"');
     expect(guiAppHtml).not.toContain('id="settings-nav"');
 
-    // Settings now live in a slide-over drawer opened by the header gear, with one
-    // tab per settings page. (The "Advanced View" toggle + classic-editor feature
-    // were removed — the file workspace is the single view.)
-    expect(guiAppHtml).toContain('id="settings-gear"');
+    // Configure lives in a slide-over drawer opened by the single #configure-trigger
+    // button (the gear + the Ask/Configure view-toggle pair were retired), with one
+    // tab per page: Data Model / Inputs / Workspace / Lattice / User.
+    expect(guiAppHtml).toContain('id="configure-trigger"');
+    expect(guiAppHtml).not.toContain('id="settings-gear"');
     expect(guiAppHtml).toContain('id="settings-drawer"');
     expect(guiAppHtml).toContain('id="drawer-body"');
+    expect(guiAppHtml).toContain('data-tab="datamodel"');
+    expect(guiAppHtml).toContain('data-tab="inputs"');
     expect(guiAppHtml).toContain('data-tab="database"');
     expect(guiAppHtml).toContain('data-tab="lattice"');
     expect(guiAppHtml).toContain('data-tab="user"');
     expect(guiAppHtml).not.toContain('id="advanced-toggle"');
 
-    // Data Model still lives inside Database Settings (renderEntityEditorInto —
-    // an entity list + editor), rendered into the drawer body. The schema graph
-    // itself moved to the center brain view (renderBrainGraph).
+    // Data Model now lives in the Configure drawer's Data Model tab (the tiered
+    // explorer + the schema graph), no longer inside Workspace settings.
     expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
-    expect(guiAppHtml).toContain('id="data-model-host"');
-    expect(guiAppHtml).toContain('renderEntityEditorInto');
+    expect(guiAppHtml).toContain('renderDataModelTab');
+    expect(guiAppHtml).toContain('renderModelTables');
     expect(guiAppHtml).toContain('renderBrainGraph');
 
     // The file-system workspace is the single view (the classic table editor
@@ -254,11 +257,11 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('asst-oauth-disconnect');
   });
 
-  it('computed-table builder: routed under Tables and wired to the HTTP surface', () => {
-    // The full-page builder renders at #/computed/new | #/computed/<name>
-    // (renderRoute dispatch) and the Tables tab stays lit (tabKeyForHash).
+  it('computed-table builder: available via the Data Model tab + wired to the HTTP surface', () => {
+    // The builder still ships; the #/computed/* route now opens the Configure
+    // drawer's Data Model tab (configureRouteFor), where computed tables are managed.
     expect(guiAppHtml).toContain('function renderComputedBuilder(');
-    expect(guiAppHtml).toContain("hash.indexOf('#/computed/') === 0");
+    expect(guiAppHtml).toContain('renderDataModelTab');
     // The builder drives the computed-tables HTTP surface: field picker,
     // dry-run preview, create/save, and the NDJSON refresh stream.
     expect(guiAppHtml).toContain('/api/computed-tables/fields?base=');

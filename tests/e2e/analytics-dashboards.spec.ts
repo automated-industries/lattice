@@ -34,27 +34,27 @@ test('sidebar lists dashboards; opening = one deduped tab; close falls back to h
 
   // Open one — a closable tab appears, the canvas mounts the page frame.
   await page.locator(`.dash-item[data-dash-id="${a}"]`).click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + a);
-  await expect(page.locator(`.tab[data-key="dash:${a}"]`)).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + a);
+  await expect(page.locator(`.tab[data-key="dashboard:${a}"]`)).toHaveCount(1);
   await expect(page.locator('.dash-title')).toHaveText('Revenue');
   await expect(page.locator('#dash-frame')).toBeVisible();
 
   // Re-opening from the sidebar never duplicates the tab.
   await page.locator(`.dash-item[data-dash-id="${a}"]`).click();
-  await expect(page.locator(`.tab[data-key="dash:${a}"]`)).toHaveCount(1);
+  await expect(page.locator(`.tab[data-key="dashboard:${a}"]`)).toHaveCount(1);
 
   // Open the second — three tabs (the permanent "New Dashboard" + two opened);
   // close the ACTIVE second one → neighbor activates.
   await page.locator(`.dash-item[data-dash-id="${b}"]`).click();
   await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(3);
-  await page.locator(`.tab[data-key="dash:${b}"] .tab-close`).click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + a);
+  await page.locator(`.tab[data-key="dashboard:${b}"] .tab-close`).click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + a);
   await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(2);
 
-  // Close the last dashboard tab → the Analytics home (only the permanent
+  // Close the last dashboard tab → the home tab (only the permanent
   // "New Dashboard" tab remains, hero visible).
-  await page.locator(`.tab[data-key="dash:${a}"] .tab-close`).click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics');
+  await page.locator(`.tab[data-key="dashboard:${a}"] .tab-close`).click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
   await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
   await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toBeVisible();
   await expect(page.locator('.analytics-home')).toBeVisible();
@@ -92,7 +92,7 @@ test('a dashboard on a cloud/team workspace (row carries _access) still opens �
     await route.fulfill({ json });
   });
 
-  await page.goto(gui.url + '#/analytics/' + id);
+  await page.goto(gui.url + '#/w/dash/' + id);
 
   // The dashboard opens: its title + frame mount and we STAY on its route (the
   // pre-fix code threw and bounced to '#/analytics'). The visibility line — the
@@ -100,7 +100,7 @@ test('a dashboard on a cloud/team workspace (row carries _access) still opens �
   await expect(page.locator('.dash-title')).toHaveText('Cloud Board');
   await expect(page.locator('#dash-frame')).toBeVisible();
   await expect(page.locator('#dash-vis-slot .detail-vis')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + id);
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + id);
 });
 
 test('an sql-driven dashboard loads its data (no "forbidden table") — broker regression', async ({
@@ -128,7 +128,7 @@ test('an sql-driven dashboard loads its data (no "forbidden table") — broker r
     await route.fulfill({ json });
   });
 
-  await page.goto(gui.url + '#/analytics/' + id);
+  await page.goto(gui.url + '#/w/dash/' + id);
   const frame = page.frameLocator('#dash-frame');
   // The sql ran and returned the count — not the pre-fix "forbidden table" reject.
   await expect(frame.locator('#out')).toContainText('n=', { timeout: 10000 });
@@ -137,7 +137,7 @@ test('an sql-driven dashboard loads its data (no "forbidden table") — broker r
 
 test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({ page }) => {
   const id = await seed('Old Name');
-  await page.goto(gui.url + '#/analytics/' + id);
+  await page.goto(gui.url + '#/w/dash/' + id);
   await expect(page.locator('.dash-title')).toHaveText('Old Name');
 
   // Rename via the menu prompt.
@@ -145,7 +145,7 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
   await page.locator('#dash-menu-btn').click();
   await page.locator('#dash-menu [data-act="rename"]').click();
   await expect(page.locator('.dash-title')).toHaveText('New Name');
-  await expect(page.locator(`.tab[data-key="dash:${id}"]`)).toContainText('New Name');
+  await expect(page.locator(`.tab[data-key="dashboard:${id}"]`)).toContainText('New Name');
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toContainText('New Name');
 
   // Delete → tab closes, list refreshes, home shows. It now confirms first
@@ -153,13 +153,13 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
   await page.locator('#dash-menu-btn').click();
   page.once('dialog', (d) => void d.accept());
   await page.locator('#dash-menu [data-act="delete"]').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toHaveCount(0);
 });
 
 test('a stale dashboard link drops its tab and lands home', async ({ page }) => {
-  await page.goto(gui.url + '#/analytics/no-such-dashboard');
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics');
+  await page.goto(gui.url + '#/w/dash/no-such-dashboard');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
   // Only the permanent "New Dashboard" tab remains.
   await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
   await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toBeVisible();
@@ -176,7 +176,7 @@ test('many open tabs collapse into a "⋯ N" overflow with the active tab visibl
   // Open all twelve.
   for (const id of ids) {
     await page.locator(`.dash-item[data-dash-id="${id}"]`).click();
-    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/analytics/' + id);
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + id);
   }
   // The strip cannot fit twelve: the overflow button shows a count, and the
   // ACTIVE (last-opened) tab is still visible in the strip.
@@ -184,7 +184,7 @@ test('many open tabs collapse into a "⋯ N" overflow with the active tab visibl
   await expect(ov).toBeVisible();
   await expect(ov).toContainText('⋯');
   await expect(
-    page.locator(`#antabstrip-tabs .tab[data-key="dash:${ids[ids.length - 1]}"]`),
+    page.locator(`#antabstrip-tabs .tab[data-key="dashboard:${ids[ids.length - 1]}"]`),
   ).toBeVisible();
 
   // The overflow menu lists the hidden (trailing, non-active) tabs and
@@ -198,5 +198,5 @@ test('many open tabs collapse into a "⋯ N" overflow with the active tab visibl
   await first.click();
   await expect
     .poll(() => page.evaluate(() => location.hash))
-    .toBe('#/analytics/' + String(key).replace(/^dash:/, ''));
+    .toBe('#/w/dash/' + String(key).replace(/^dashboard:/, ''));
 });

@@ -10,8 +10,8 @@ test.afterEach(async () => {
 });
 
 test('ingested text renders a preview on the files row detail', async ({ page }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
   // Ingest a text snippet into the native `files` entity (paste-text path).
   const res = await page.request.post(`${gui.url}/api/ingest/text`, {
@@ -20,8 +20,8 @@ test('ingested text renders a preview on the files row detail', async ({ page })
   expect(res.ok()).toBeTruthy();
   const { id } = (await res.json()) as { id: string };
 
-  // Open the files row detail directly via its hash route.
-  await page.goto(`${gui.url}#/objects/files/${id}`);
+  // Open the file record detail directly via its Workspace tab hash route.
+  await page.goto(`${gui.url}#/w/file/${id}`);
   // text/plain isn't a markdown mime, so it renders in a <pre> preview.
   const preview = page.locator('.file-preview pre');
   await expect(preview).toBeVisible();

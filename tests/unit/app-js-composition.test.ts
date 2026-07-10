@@ -415,8 +415,25 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Smart intent ack (ack-first): a turn can now open with a fast contextual `ack` event
 // ("Got it — pulling your invoices…") rendered as a transient bubble before the answer
 // streams; the client renders the new `ack` ChatStreamEvent in applyChatEvent. Recaptured.
-const ORIGINAL_LENGTH = 723477;
-const ORIGINAL_SHA256 = 'aa3173c45d3ac1c3c5ac6a184c93b76ee156b2155646204fa0f894103cb098cc';
+// Single-layout reframe adversarial-review fixes (7): computed-builder route restored
+// (#/computed/* → renderComputedBuilder, drawer closes first) + #/graph node drill-in
+// normalized to the table tab; Graph drawer subtab gets a #dm-panel and node clicks open
+// the in-drawer editor; file-delete routes to the files collection (not the invalid
+// #/w/file/files); closeSettingsDrawer + workspace-switch preserve/clear the Configure
+// hashes correctly; dashboard add-source opens the Inputs tab; markdown render-progress
+// selectors repointed to #nav-md-tree. Recaptured.
+// Re-verify follow-up (2 regressions the fixes themselves introduced): the #/computed
+// router branch now bails on a soft/background render so it can't wipe the in-progress
+// builder form; the Graph drawer subtab gets a definite height (CSS) so its canvas no
+// longer collapses to 0. Recaptured.
+// Third-order follow-up: the computed-builder's edit-mode load now commits on the route
+// still matching (cbRouteMatches) instead of a renderGen match, so a soft render's gen
+// bump can't orphan an in-flight edit load into a stuck spinner. Recaptured.
+// Fourth-order follow-up: the edit-mode commit is additionally gated on a per-load token
+// (cbLoadSeq) so a stale same-route re-entry can't repaint/clobber a newer load; stale
+// module-header deps (renderGen/setContent) dropped from the comment. Recaptured.
+const ORIGINAL_LENGTH = 708452;
+const ORIGINAL_SHA256 = '7e681732947bb55cbb185e206eb3a55ba8e2f00685b2eaa40e22014b9738b504';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

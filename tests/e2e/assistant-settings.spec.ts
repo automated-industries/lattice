@@ -18,8 +18,16 @@ test.afterEach(async () => {
 test('settings expose NO voice provider option — dictation is always on-device', async ({
   page,
 }) => {
+  // In the single-layout GUI, #/settings/user-config opens the Configure drawer
+  // to the User tab, which renders the identity + Assistant + preferences panels
+  // (incl. #assistant-host) into the drawer body.
   await page.goto(gui.url + '#/settings/user-config');
+  await expect(page.locator('#settings-drawer.open')).toBeVisible();
   const host = page.locator('#assistant-host');
+  // Wait for the async assistant panel to finish rendering, so the negative
+  // assertions below assert against a populated panel rather than passing
+  // vacuously on an empty host.
+  await expect(host.getByRole('heading', { name: 'Assistant' })).toBeVisible();
   // The GUI offers no voice-provider choice whatsoever: on-device is the only
   // path, and the keyed/cloud route is reachable solely through the API. No
   // dropdown, no cloud key fields, no "Use for voice" label.

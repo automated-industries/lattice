@@ -180,29 +180,22 @@ export const searchJs = `    // ────────────────
         currentThreadId = null;
         clearChat();
         refreshThreadList(true);
-        // A switch stays in the SAME SECTION the user is in — Analytics, the brain
-        // Graph, the Tables explorer, or Objects (Configure's default). It resets
-        // only a record-level drill-in to that section's home (the exact record may
-        // not exist in the new workspace) and NEVER yanks the user across the
-        // top-level Analytics⇄Configure split — a Configure view must never land on
-        // Analytics. (The new workspace's own last location is in its nav stack for
-        // Back.) Configure resolves to the concrete '#/folders' (not '#/') so it is
-        // unambiguously the Objects view.
+        // A workspace switch PRESERVES the Configure/takeover surface the user is on
+        // — Settings, Version history, or the Data Model Graph/Tables drawer (all
+        // show WORKSPACE-specific data: name, DB connection, data model, history) —
+        // so renderRoute re-renders that drawer for the NEW workspace in place.
+        // Leaving the hash put would strand the drawer showing the PREVIOUS
+        // workspace's data. Every other hash (a Workspace dashboard/table/file tab,
+        // or a record drill-in that may not exist in the new workspace) resets to the
+        // Workspace home. NB: gate on configureRouteFor, NOT isAnalyticsHash — the
+        // latter is a constant-true shim in the single layout, and '#/folders' (the
+        // old Objects home) no longer exists.
         var cur = location.hash || '';
-        var switchTarget = (typeof isAnalyticsHash === 'function' && isAnalyticsHash(cur))
-          ? '#/analytics'
-          : // Settings + Version history are takeover overlays showing WORKSPACE-specific
-            // data (name, DB connection, data model, history). Preserve the exact
-            // #/settings/* route so the switch re-renders the takeover for the NEW
-            // workspace in place — otherwise it routed to #/folders and left the drawer
-            // open showing the previous workspace's data.
-            cur.indexOf('#/settings/') === 0
+        var switchTarget =
+          (cur.indexOf('#/settings/') === 0 ||
+            (typeof configureRouteFor === 'function' && configureRouteFor(cur)))
             ? cur
-            : cur.indexOf('#/graph') === 0
-              ? '#/graph'
-              : cur.indexOf('#/tables') === 0
-                ? '#/tables'
-                : '#/folders';
+            : '#/';
         if (location.hash !== switchTarget) location.hash = switchTarget;
         // Already on the target home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.

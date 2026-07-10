@@ -15,7 +15,6 @@ import { provenanceCss } from './provenance.js';
 import { toastCss } from './toast.js';
 import { buttonsCss } from './buttons.js';
 import { teamsCss } from './teams.js';
-import { settingsGearCss } from './settings-gear.js';
 import { sidebarCss } from './sidebar.js';
 import { fsWorkspaceCss } from './fs-workspace.js';
 import { settingsDrawerCss } from './settings-drawer.js';
@@ -48,7 +47,6 @@ export const css = [
   toastCss,
   buttonsCss,
   teamsCss,
-  settingsGearCss,
   sidebarCss,
   fsWorkspaceCss,
   settingsDrawerCss,

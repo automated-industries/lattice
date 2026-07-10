@@ -4,34 +4,12 @@ export const versionHistoryUndoJs = `    // ────────────
     // Sidebar
     // ────────────────────────────────────────────────────────────
     function renderSidebar() {
-      var ul = document.getElementById('object-nav');
-      var prefix = '#/fs/'; // single view — the legacy #/objects route redirects here
-      var firstClass = state.entities.tables.filter(function (t) { return !isJunction(t); });
-      // Objects list is ordered alphabetically by display label (case-insensitive).
-      firstClass.sort(function (a, b) {
-        return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
-      });
-      ul.innerHTML = firstClass.map(function (t) {
-        var d = displayFor(t.name);
-        var unseen = unseenByTable[t.name] || 0;
-        var badge = unseen > 0
-          ? ' <span class="nav-badge" title="' + unseen + ' change' + (unseen === 1 ? '' : 's') +
-            ' from another editor">' + (unseen > 99 ? '99+' : unseen) + '</span>'
-          : '';
-        // Connected data types (synced from an external source) get a link chip.
-        var connBadge = t.connectorToolkit
-          ? ' <span class="nav-badge" title="Connected — synced from ' + escapeHtml(t.connectorToolkit) + '">🔗</span>'
-          : '';
-        return '<li><a data-route="' + prefix + t.name + '" href="' + prefix + t.name +
-          '"' + titleAttr(tableDesc(t.name)) + '><span class="nav-icon">' + d.icon + '</span> <span class="nav-text">' + escapeHtml(d.label) + '</span>' + navVisIcon(t) + badge + connBadge + '</a></li>';
-      }).join('');
-
-      var section = document.getElementById('system-section');
-      // System tables surface in Advanced View (no separate preference).
+      // Single layout: the flat Objects list is gone (its #object-nav was removed with
+      // the old sidebar — don't deref it). System tables stay advanced-only, guarded
+      // for the absence of their now-removed hosts.
       var show = advancedMode();
+      var section = document.getElementById('system-section');
       if (section) section.hidden = !show;
-      // The flat Objects list is Advanced-view only; the Sources sidebar (Files /
-      // Artifacts / Connectors) is the default-mode entry point.
       var objSection = document.getElementById('objects-section');
       if (objSection) objSection.hidden = !show;
       var sys = document.getElementById('system-nav');
@@ -43,10 +21,11 @@ export const versionHistoryUndoJs = `    // ────────────
             }).join('')
           : '';
       }
-
-      // Populate the Sources sidebar (Files tree / Artifacts / Connectors).
+      // The left-sidebar nav sections (Tables / Files / Markdown).
+      if (typeof renderNavSections === 'function') renderNavSections();
+      // Populate the Inputs surfaces (Files / Connectors / Databases) — now hosted in
+      // the Configure drawer's Inputs tab; no-ops until that tab is mounted.
       if (typeof renderSources === 'function') renderSources();
-
       highlightActive();
     }
 

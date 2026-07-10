@@ -131,28 +131,27 @@ describe('UX-review bundle wiring (composed client)', () => {
     expect(appJs).toContain('New data question');
   });
 
-  it('the Data Questions tab is wired (conditional tab, badge, route, view)', () => {
-    // The transient tab + its unread badge (tabs.ts).
-    expect(appJs).toContain('function setQuestionsTab(');
-    expect(appJs).toContain("hash === QUESTIONS_HASH) return 'questions'");
-    expect(appJs).toContain('tab-badge');
-    // The Configure-view page + its route (questions.ts + the route dispatcher).
+  it('the Data Questions view + its route survive (the Configure tab strip is retired)', () => {
+    // The transient Configure tab + its badge went with the Configure tab strip
+    // (tabs.ts), but the questions VIEW + its #/questions route remain (surfaced via
+    // the dock badge). The tab-strip fn setQuestionsTab is gone; its callers are guarded.
+    expect(appJs).not.toContain('function setQuestionsTab(');
     expect(appJs).toContain('function renderQuestionsView(');
     expect(appJs).toContain("hash === '#/questions'");
-    // The questions client keeps the tab in sync with the pending count.
+    // The questions client's call is kept behind a typeof guard (no-op now).
     expect(appJs).toContain('setQuestionsTab(qPendingCount)');
   });
 
   it('review-hardening: soft-refresh guard, renderGen guard, workspace-switch reset', () => {
     // A soft refresh must not rebuild the questions page (would clobber a half-typed answer).
-    expect(appJs).toContain("hash === '#/questions') { if (!soft) renderQuestionsView(content)");
+    expect(appJs).toContain('if (!soft) renderQuestionsView(content)');
     // A stale in-flight fetch refuses to commit (drops DOM writes + setQuestionsTab).
     expect(appJs).toContain('if (myGen !== renderGen) return;');
     // Workspace switch wipes the previous workspace's question state.
     expect(appJs).toContain('function resetQuestionsState()');
     expect(appJs).toContain('resetQuestionsState();');
-    // Removing the tab only bounces the user when they are actually on the questions page.
-    expect(appJs).toContain('var onQuestionsPage = location.hash === QUESTIONS_HASH;');
+    // (The old "removing the Configure tab bounces the user off the questions page"
+    // logic went with the retired Configure tab strip.)
   });
 
   it('the pending state has a non-visual signal (aria-label + aria-live) and dismiss confirms', () => {

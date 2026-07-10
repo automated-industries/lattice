@@ -4,22 +4,17 @@
 // header trigger visibility. The tab buttons themselves reuse the .tab /
 // .tab-close / .tab-overflow-* classes from tabs.ts (styles) — only the
 // container differs.
-export const analyticsViewCss = `    /* ── Analytics view ─────────────────────────────────── */
-    /* Two sibling layouts, one visible: the body class picks the view. Both
-       stay mounted so a flip never destroys the hidden side's state. */
-    .analytics-layout {
+export const analyticsViewCss = `    /* ── Single workspace layout ────────────────────────── */
+    /* One 3-column layout (no view flip): left sidebar │ Workspace tabs │ the
+       persistent Ask Gladys dock (its width is user-adjustable via the divider). */
+    .layout {
       display: grid;
-      /* The Ask Gladys dock width is user-adjustable (drag the divider) and
-         defaults ~30px wider than before so "Ask or instruct…" fits one line. */
       grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--ask-dock-width, 360px);
       height: calc(100vh - 56px);
     }
-    body:not(.view-analytics) .analytics-layout { display: none; }
-    body.view-analytics .layout { display: none; }
-    /* Exactly one header trigger shows: Ask in Configure, Configure in Analytics. */
-    body.view-analytics .ask-lattice-trigger { display: none; }
-    body:not(.view-analytics) .configure-trigger { display: none; }
+    /* The Configure button (top-right) pushes to the far right of the header. */
     .configure-trigger {
+      margin-left: auto;
       display: inline-flex; align-items: center; gap: 6px;
       padding: 5px 12px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: var(--surface-2);
@@ -51,6 +46,31 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     .dash-item .vis-indicator { justify-self: end; }
     .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
 
+    /* ── Left-sidebar nav sections (Tables / Files / Markdown) ── */
+    .nav-section { border-top: 1px solid var(--border); }
+    .nav-section-head {
+      width: 100%; display: flex; align-items: center; gap: 6px;
+      padding: 8px 10px; border: 0; background: none; cursor: pointer;
+      color: var(--text-muted); font-size: 11.5px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .nav-section-head:hover { color: var(--text); }
+    .nav-tier-head {
+      padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
+    }
+    .nav-table-item {
+      width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+      padding: 5px 10px 5px 14px; border: 0; border-radius: 6px; background: none;
+      color: var(--text); font-size: 12.5px; cursor: pointer;
+    }
+    .nav-table-item:hover { background: var(--surface-2); }
+    .nav-table-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .nav-item-ic { flex: 0 0 auto; }
+    .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nav-empty { color: var(--text-muted); font-size: 12px; padding: 8px 12px; }
+    #nav-tables-list, #nav-files-tree, #nav-md-tree { padding-bottom: 6px; }
+
     /* ── Column headers (identical style to the Configure view) ── */
     /* All three carry the shared .col-header chrome. Accents mirror Configure:
        Dashboards=blue (inputs), Workspace=purple (model), Ask Gladys=teal
@@ -64,7 +84,7 @@ export const analyticsViewCss = `    /* ── Analytics view ──────
     .dash-new-btn:hover { background: var(--row-hover); color: var(--text); }
 
     /* ── Workspace header + tab strip BELOW it + canvas ─── */
-    .analytics-content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .an-workspace-head { flex: 0 0 auto; }
     /* The tab strip is its OWN row beneath the Workspace header (not inside it).
        Folder-style tabs so even a single tab reads unmistakably as a TAB rather
