@@ -49,12 +49,11 @@ test('a live refresh updates the middle pane in place without flashing a loading
   page,
 }) => {
   for (let i = 0; i < 8; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
-  // Land on the items object page (a stable view to refresh).
-  await page.evaluate(() => {
-    window.location.hash = '#/fs/items';
-  });
+  // Land on the items table collection tab (a stable view to refresh). The old
+  // Objects `#/folders` → `#/fs/items` flow is gone; the single-layout Workspace
+  // table tab `#/w/table/items` is its equivalent (and still paints `.view-header`).
+  await page.goto(gui.url + '#/w/table/items');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
   await expect(page.locator('.view-header')).toBeVisible({
     timeout: 5000,
   });

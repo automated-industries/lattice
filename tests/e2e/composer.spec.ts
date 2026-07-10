@@ -20,9 +20,9 @@ test('the composer is active when Claude is connected', async ({ page }) => {
   await expect(page.locator('.composer-setup')).toHaveCount(0);
 });
 
-/** The composer lives in the Analytics view's always-visible assistant dock;
- *  the app boots into Analytics, so there is nothing to open — just wait for
- *  the dock. */
+/** The composer lives in the persistent Ask Gladys dock of the single 3-column
+ *  layout; the dock is always visible (no view flip, no toggle), so there is
+ *  nothing to open — just wait for the dock. */
 async function openAskLattice(page: import('@playwright/test').Page) {
   await expect(page.locator('#ask-dock')).toBeVisible();
 }

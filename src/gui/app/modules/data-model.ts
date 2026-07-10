@@ -494,13 +494,12 @@ export const dataModelJs = `    // ───────────────
           // System Prompt subsection — directly beneath Database connection,
           // owner-only (the panel renders nothing for members / local).
           '<div id="system-prompt-host"></div>' +
-          '<div id="data-model-host"><div class="placeholder" style="padding:18px">Loading data model…</div></div>' +
+          // The Data Model editor moved to the Configure drawer's Data Model tab.
           '<div id="db-danger-host"></div>' +
         '</div>';
       renderDatabaseNamePanel(document.getElementById('db-name-host'));
       renderDatabasePanel(document.getElementById('dbconfig-host'));
       renderSystemPromptPanel(document.getElementById('system-prompt-host'));
-      renderEntityEditorInto(document.getElementById('data-model-host'));
       renderDatabaseDangerZone(document.getElementById('db-danger-host'));
     }
 

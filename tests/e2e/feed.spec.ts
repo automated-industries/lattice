@@ -12,11 +12,20 @@ test.afterEach(async () => {
 test('a server-side mutation flashes a transient status and logs to the activity popover (not rail pills)', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
   // The (removed) right rail never showed pills; the header activity popover
   // starts empty before any mutation.
   await expect(page.locator('#activity-popover .feed-item')).toHaveCount(0);
+
+  // The transient status auto-clears, so ARM the visibility watcher BEFORE the
+  // mutation — otherwise a brief flash can clear between createRow resolving and the
+  // assert (a race that only bites under heavy parallelism, never serial CI, but the
+  // armed watcher is event-driven and catches even a momentary flash).
+  const flashSeen = page
+    .waitForSelector('#app-status', { state: 'visible', timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
 
   await createRow(gui.url, 'items', { name: 'Hello from e2e' });
 
@@ -24,16 +33,18 @@ test('a server-side mutation flashes a transient status and logs to the activity
   // message over the multiplexed /api/stream WebSocket the page opened on boot.
   // The client flashes it as a transient note in the top-right status indicator
   // (it auto-clears) AND logs it to the header activity popover — never a rail pill.
-  await expect(page.locator('#app-status')).toBeVisible();
+  expect(await flashSeen).toBe(true);
   await expect(page.locator('#activity-popover .feed-item')).toHaveCount(1);
 });
 
 test('a server-side new entity appears in the sidebar without a reload', async ({ page }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
-  // The entity does not exist yet — its nav item is absent.
-  const navItem = page.locator('#object-nav a[data-route="#/fs/consulting_agreements"]');
+  // The entity does not exist yet — its Tables-section nav row is absent.
+  const navItem = page.locator(
+    '#nav-tables-list button.nav-table-item[data-table="consulting_agreements"]',
+  );
   await expect(navItem).toHaveCount(0);
 
   // Create it server-side — the same `schema.create_entity` op the Context

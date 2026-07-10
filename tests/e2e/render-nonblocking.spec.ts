@@ -27,9 +27,12 @@ test('navigation paints the new view immediately even when data is slow', async 
     if (i === 0) firstItemId = r.id;
   }
 
-  // Slow the object-page (provenance) + row fetches, to simulate a large local
-  // table / a cloud open. (Entities/dashboard are NOT delayed, so the shell still
-  // boots normally.)
+  // Slow the row fetches that gate the table-collection + record Workspace tabs,
+  // to simulate a large local table / a cloud open. The collection and record
+  // renderers both await these before painting their real content, so this makes
+  // the freeze deterministic. (Entities/dashboard are NOT delayed, so the shell
+  // still boots normally. Provenance is now a lazy, collapsed panel on the record
+  // view — off the initial-render path — but we keep it slowed for good measure.)
   await page.route('**/api/provenance**', async (route) => {
     await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
     await route.continue();
@@ -39,22 +42,26 @@ test('navigation paints the new view immediately even when data is slow', async 
     await route.continue();
   });
 
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  // Boot the single-layout shell; wait for entities so the table nav resolves to
+  // the real collection/record renderers rather than the pre-entities loading gate.
+  const entitiesLoaded = page.waitForResponse((r) => r.url().includes('/api/entities-summary'));
+  await page.goto(gui.url + '#/');
+  await entitiesLoaded;
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
-  // Navigate to the items object page (provenance). A loading frame must appear
-  // well before the 800ms data — the view never blocks on the fetch.
+  // Open the items table collection tab. A loading frame must appear well before
+  // the 800ms row data — the view never blocks on the fetch.
   await page.evaluate(() => {
-    window.location.hash = '#/fs/items';
+    window.location.hash = '#/w/table/items';
   });
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …then the provenance view fills in.
+  // …then the collection view fills in.
   await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
   // Open a record (the row detail) directly: the nav must paint the new frame
   // immediately (a loading state), not freeze on the slow row fetch.
   await page.evaluate((id) => {
-    window.location.hash = '#/fs/items/' + id;
+    window.location.hash = '#/w/table/items/' + id;
   }, firstItemId);
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
   // …and the item content eventually loads (the record view header).
@@ -63,7 +70,7 @@ test('navigation paints the new view immediately even when data is slow', async 
   // The GUI stays responsive: navigating again while data is still in flight
   // immediately repaints (no freeze, no stale view).
   await page.evaluate(() => {
-    window.location.hash = '#/fs/items';
+    window.location.hash = '#/w/table/items';
   });
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
 });

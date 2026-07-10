@@ -20,7 +20,6 @@ import { searchJs } from './search.js';
 import { toastJs } from './toast.js';
 import { versionHistoryUndoJs } from './version-history-undo.js';
 import { workspaceSwitchProgressJs } from './workspace-switch-progress.js';
-import { tabsJs } from './tabs.js';
 import { analyticsTabsJs } from './analytics-tabs.js';
 import { sidebarJs } from './sidebar.js';
 import { routerJs } from './router.js';
@@ -49,8 +48,10 @@ import { askLatticeJs } from './ask-lattice.js';
 import { analyticsViewJs } from './analytics-view.js';
 import { questionsJs } from './questions.js';
 import { modelTablesJs } from './model-tables.js';
+import { navSectionsJs } from './nav-sections.js';
+import { configureDrawerJs } from './configure-drawer.js';
 import { computedBuilderJs } from './computed-builder.js';
-import { foldersJs } from './folders.js';
+import { fsTilesJs } from './fs-tiles.js';
 import { columnCollapseJs } from './column-collapse.js';
 import { wireMergeJs } from './wiremerge.js';
 
@@ -71,7 +72,6 @@ export const appJs = [
   toastJs,
   versionHistoryUndoJs,
   workspaceSwitchProgressJs,
-  tabsJs,
   analyticsTabsJs,
   sidebarJs,
   routerJs,
@@ -99,8 +99,10 @@ export const appJs = [
   // whose assistant dock hosts the cards.
   questionsJs,
   modelTablesJs,
+  navSectionsJs,
+  configureDrawerJs,
   computedBuilderJs,
-  foldersJs,
+  fsTilesJs,
   columnCollapseJs,
   wireMergeJs,
   detailViewJs,

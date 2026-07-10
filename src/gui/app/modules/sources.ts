@@ -54,7 +54,13 @@ export const sourcesJs = `
     }
 
     function renderSourcesFiles(sourceFiles) {
-      var host = document.getElementById('src-files-tree');
+      renderSourcesFilesInto(document.getElementById('src-files-tree'), sourceFiles);
+    }
+    // Render the source-files tree (roots + loose files + lazy folders) INTO a given
+    // host element, so the SAME tree serves the Inputs drawer (#src-files-tree) and
+    // the left-sidebar FILES section (#nav-files-tree). Leaf clicks navigate to
+    // #/fs/files/<id>, which the router normalizes to the canonical #/w/file/<id> tab.
+    function renderSourcesFilesInto(host, sourceFiles) {
       if (!host) return;
       sourceFiles = sourceFiles || [];
       // The Files section shows the user's source files (ingested/uploaded) PLUS any
@@ -263,6 +269,8 @@ export const sourcesJs = `
         'files', 'connectors', 'databases',
         'out-markdown',
         'objects', 'system',
+        // Left-sidebar single-layout nav sections.
+        'nav-tables', 'nav-files', 'nav-md',
       ].forEach(applySidebarGroupState);
     }
     function toggleSidebarGroup(group) {

@@ -2,24 +2,22 @@ import { describe, it, expect } from 'vitest';
 import { guiAppHtml } from '../../src/gui/app.js';
 
 describe('assistant dock + Outputs markup + wiring', () => {
-  it('houses the assistant in the Analytics dock (floating panel retired)', () => {
-    // The chat lives in the Analytics view's docked right column. The chat
-    // element IDs are reused inside the dock so the chat client code is
-    // unchanged; the old floating upper-right panel is gone.
+  it('houses the assistant in the persistent Ask Gladys dock (single layout)', () => {
+    // The chat lives in the always-visible right-hand dock; the chat element IDs are
+    // reused inside it so the chat client is unchanged. No view flip, no floating panel.
     expect(guiAppHtml).toContain('id="ask-dock"');
-    expect(guiAppHtml).toContain('id="analytics-layout"');
+    expect(guiAppHtml).toContain('class="layout"');
     expect(guiAppHtml).toContain('id="dash-list"');
     expect(guiAppHtml).toContain('id="antabstrip-tabs"');
-    expect(guiAppHtml).toContain('id="ask-lattice-trigger"');
     expect(guiAppHtml).toContain('id="configure-trigger"');
     expect(guiAppHtml).toContain('id="rail-feed"');
-    expect(guiAppHtml).toContain('id="outputs-rail"');
-    expect(guiAppHtml).toContain('id="outputs-resize"');
-    expect(guiAppHtml).toContain('class="outputs"');
-    // The docked rail AND the floating panel are gone.
+    // The docked rail, the floating panel, the old Ask-Gladys view toggle, and the
+    // separate two-layout structure are gone.
     expect(guiAppHtml).not.toContain('id="assistant-rail"');
     expect(guiAppHtml).not.toContain('class="assistant-rail"');
     expect(guiAppHtml).not.toContain('id="ask-lattice-panel"');
+    expect(guiAppHtml).not.toContain('id="ask-lattice-trigger"');
+    expect(guiAppHtml).not.toContain('id="analytics-layout"');
   });
 
   it('drives the layout grid off the --outputs-width variable', () => {
@@ -59,9 +57,9 @@ describe('assistant dock + Outputs markup + wiring', () => {
     expect(guiAppHtml).toContain('initActivityHeader();');
   });
 
-  it('artifacts live in the Markdown column tree (no sidebar tree, no separate section)', () => {
-    // ONE Markdown view: artifacts are a category inside the markdown tree.
-    expect(guiAppHtml).toContain('id="out-markdown-tree"');
+  it('artifacts live in the Markdown tree (now the left-sidebar Markdown section)', () => {
+    // ONE Markdown tree, moved to the sidebar; artifacts are a category inside it.
+    expect(guiAppHtml).toContain('id="nav-md-tree"');
     expect(guiAppHtml).toContain('mdt-artifact');
     // The old left-sidebar artifacts tree AND the separate Outputs sections are gone.
     expect(guiAppHtml).not.toContain('id="src-artifacts-tree"');

@@ -24,8 +24,11 @@ describe('3.2 GUI regression guards', () => {
     expect(guiAppHtml).toContain('Local workspaces are always private');
   });
 
-  it('#8 the sidebar objects list is sorted alphabetically by display label', () => {
-    expect(guiAppHtml).toContain('firstClass.sort(');
+  it('#8 the sidebar surfaces model tables grouped by tier (the flat Objects list is retired)', () => {
+    // The old flat, alphabetically-sorted Objects list is gone with the single-layout
+    // reframe; the sidebar now shows tables grouped by tier (Inputs / Derived / Computed).
+    expect(guiAppHtml).toContain('function renderNavTables(');
+    expect(guiAppHtml).toContain('nav-tier-head');
   });
 
   it('#11 the "Chat" settings tab is gone; System Prompt lives under Workspace', () => {

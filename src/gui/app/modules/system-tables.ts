@@ -274,11 +274,13 @@ export const systemTablesJs = `    // ──────────────
             reducedMotion: graphReducedMotion(),
             onNode: function (node) {
               // In Wire/Merge mode a node click picks a source then a target (drag
-              // stays off the graph, which owns node repositioning); otherwise DRILL
-              // DOWN into that entity's graph (its rows) — staying in the Graph
-              // section, mirroring the folder drill-in.
+              // stays off the graph, which owns node repositioning). Otherwise the
+              // graph lives in the Configure → Data Model → Graph drawer, so a click
+              // opens that entity's editor in the side panel (#dm-panel) — there is
+              // no separate entity-graph route in the single layout.
               if (typeof wmModeClick === 'function' && wmModeClick(node.id)) return;
-              location.hash = '#/graph/' + encodeURIComponent(node.id);
+              dmShowEntityEditor(node.id);
+              if (schemaGraphHandle) schemaGraphHandle.setSelected(node.id);
             },
             onEdge: function (edge) {
               // m2m → open the junction table; FK → open the child (source) table.

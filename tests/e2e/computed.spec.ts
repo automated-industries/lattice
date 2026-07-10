@@ -48,9 +48,12 @@ test('builder: name + base + fields → Preview gates Create → lands on the vi
   page,
 }) => {
   await page.goto(gui.url + '#/computed/new');
-  // The builder is part of the Tables section — its tab stays lit.
+  // The builder is a Tables-section surface — it shows the Tables breadcrumb back
+  // to the Data Model → Tables explorer (the old fixed Configure tab strip is gone).
   await expect(page.locator('.computed-builder')).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('.tab[data-key="tables"]')).toHaveClass(/active/);
+  await expect(page.locator('.computed-builder .fs-crumbs a[href="#/tables"]')).toHaveText(
+    'Tables',
+  );
 
   // Create is gated until a preview succeeds.
   await expect(page.locator('#cb-save-btn')).toBeDisabled();
@@ -87,7 +90,9 @@ test('builder: name + base + fields → Preview gates Create → lands on the vi
 
   // Create → the entities payload refreshes and we land on the view's rows.
   await page.locator('#cb-save-btn').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/fs/item_summary');
+  // Save lands on the view's rows; the legacy #/fs/<name> target normalizes to the
+  // canonical single-layout table tab.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/item_summary');
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-rows-table')).toContainText('first item');
 });
@@ -111,7 +116,7 @@ test('computed rows are read-only: badge + note, no editing affordances', async 
   await createComputed(gui.url, 'item_summary');
 
   // Collection page: badge + note, and no Formatted|Markdown toggle.
-  await page.goto(gui.url + '#/fs/item_summary');
+  await page.goto(gui.url + '#/w/table/item_summary');
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-computed-badge')).toBeVisible();
   await expect(page.locator('.fs-computed-note')).toContainText('computed view');
@@ -120,7 +125,7 @@ test('computed rows are read-only: badge + note, no editing affordances', async 
   // Record page: badge + note, a read-only field list, and neither the
   // actions menu nor the editing toggle.
   await page.locator('.fs-rows-table tbody tr').first().click();
-  await expect(page).toHaveURL(/#\/fs\/item_summary\/[^/]+$/);
+  await expect(page).toHaveURL(/#\/w\/table\/item_summary\/[^/]+$/);
   await expect(page.locator('.fs-computed-badge')).toBeVisible();
   await expect(page.locator('.fs-computed-note')).toBeVisible();
   await expect(page.locator('.fs-computed-fields')).toBeVisible({ timeout: 5000 });
@@ -131,8 +136,10 @@ test('computed rows are read-only: badge + note, no editing affordances', async 
 test('Tables explorer: "+ New" entry point and the computed detail panel', async ({ page }) => {
   await createComputed(gui.url, 'item_summary');
 
+  // The Tables explorer now lives in the Configure drawer's Data Model → Tables
+  // subtab; #/tables opens the drawer there and mounts #model-tables-host.
   await page.goto(gui.url + '#/tables');
-  await expect(page.locator('.model-tables-view .mt')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#model-tables-host .mt')).toBeVisible({ timeout: 5000 });
   // The computed card renders in the Computed Tables tier with its ƒ flag.
   const card = page.locator('.mt-card[data-table="item_summary"]');
   await expect(card).toBeVisible();
@@ -170,9 +177,10 @@ test('edit mode: loads the definition, saves, and Remove returns to Tables', asy
   await expect(page.locator('.cb-field-name').first()).toHaveValue('title');
   await expect(page.locator('#cb-refresh-btn')).toBeVisible();
 
-  // Save (no preview gate in edit mode) → lands on the view's rows.
+  // Save (no preview gate in edit mode) → lands on the view's rows (legacy #/fs/<name>
+  // normalizes to the canonical table tab).
   await page.locator('#cb-save-btn').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/fs/item_summary');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/item_summary');
 
   // Remove deletes the view and returns to the Tables explorer. It now confirms
   // first (guarding against a stray click) — accept the dialog.
@@ -180,6 +188,10 @@ test('edit mode: loads the definition, saves, and Remove returns to Tables', asy
   await expect(page.locator('#cb-delete-btn')).toBeVisible({ timeout: 5000 });
   page.once('dialog', (d) => void d.accept());
   await page.locator('#cb-delete-btn').click();
+  // Remove returns to the Tables explorer; #/tables is a Configure-drawer route, so
+  // the hash stays #/tables (it does not normalize away).
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
+  // Wait for the explorer to re-render in the drawer, then confirm the card is gone.
+  await expect(page.locator('#model-tables-host .mt')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.mt-card[data-table="item_summary"]')).toHaveCount(0);
 });

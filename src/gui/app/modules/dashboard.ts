@@ -213,7 +213,10 @@ export const dashboardJs = `    // ───────────────
       }
       var addBtn = { 'add-file': 'src-add-files', 'add-connector': 'src-add-connector', 'add-database': 'src-add-database' };
       if (Object.prototype.hasOwnProperty.call(addBtn, name)) {
-        if (typeof goConfigure === 'function') goConfigure();
+        // The add-source buttons live ONLY in the Inputs drawer tab — goConfigure()
+        // opens Data Model, where the button lookup below would miss. Open Inputs.
+        if (typeof openConfigureDrawer === 'function') openConfigureDrawer('inputs');
+        else if (typeof goConfigure === 'function') goConfigure();
         var id = addBtn[name];
         setTimeout(function () { var b = document.getElementById(id); if (b) b.click(); }, 90);
         return;
@@ -634,15 +637,24 @@ export const dashboardJs = `    // ───────────────
     // #/fs, Graph under #/graph, Tables under #/tables — all rendered by the SAME
     // record/collection renderers, told which section they're in.
     function sectionHref(section, segs) {
-      var p = section === 'graph' ? '#/graph/' : section === 'tables' ? '#/tables/' : '#/fs/';
+      var p = section === 'graph' ? '#/graph/'
+        : section === 'tables' ? '#/tables/'
+        : section === 'w:table' ? '#/w/table/'
+        : section === 'w:md' ? '#/w/md/'
+        : section === 'w:file' ? '#/w/file/'
+        : '#/fs/';
       return p + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
     }
     // The section a hash belongs to, from its prefix — used by in-place re-renders
-    // (a mode toggle / save) that don't carry the section as an argument.
+    // (a mode toggle / save) that don't carry the section as an argument. The w:*
+    // sections are the single-layout Workspace tabs (table/markdown/file).
     function sectionOfHash(hash) {
       hash = hash || location.hash || '';
       if (hash.indexOf('#/graph/') === 0) return 'graph';
       if (hash.indexOf('#/tables/') === 0) return 'tables';
+      if (hash.indexOf('#/w/table/') === 0) return 'w:table';
+      if (hash.indexOf('#/w/md/') === 0) return 'w:md';
+      if (hash.indexOf('#/w/file/') === 0) return 'w:file';
       return 'folders';
     }
 
@@ -751,21 +763,26 @@ export const dashboardJs = `    // ───────────────
     }
 
     function fsBreadcrumb(segs, crumbs, section) {
-      // Rooted at the SECTION you drilled in from (Folders / Graph / Tables), so the
-      // breadcrumb root matches the highlighted tab: <Section> ▸ <Object> ▸ <record>…
+      // Rooted at the SECTION you drilled in from, so the breadcrumb root matches the
+      // highlighted tab. The w:* single-layout Workspace tabs have NO top-level index
+      // page (Objects/Graph/Tables index pages are gone), so they root directly at the
+      // collection: <Object> ▸ <record>…
       section = section || 'folders';
-      var rootHref = section === 'graph' ? '#/graph' : section === 'tables' ? '#/tables' : '#/folders';
-      var rootLabel = section === 'graph' ? 'Graph' : section === 'tables' ? 'Tables' : 'Objects';
-      var parts = ['<a href="' + rootHref + '">' + rootLabel + '</a>'];
+      var isW = section === 'w:table' || section === 'w:md' || section === 'w:file';
+      var parts = [];
+      if (!isW) {
+        var rootHref = section === 'graph' ? '#/graph' : section === 'tables' ? '#/tables' : '#/folders';
+        var rootLabel = section === 'graph' ? 'Graph' : section === 'tables' ? 'Tables' : 'Objects';
+        parts.push('<a href="' + rootHref + '">' + rootLabel + '</a>');
+      }
       var t0 = segs[0];
-      // The OBJECT crumb opens that section's real Object Page for t0 (Folders → the
-      // icon grid, Graph → the entity graph, Tables → the rows list). 'artifacts' is
-      // a VIRTUAL object (no real table) served only by renderArtifactsView via the
-      // #/fs/artifacts special-case, so it must keep that self-view href in every
-      // section — #/folders/artifacts would hit renderFolderEntity and dead-end.
+      // The OBJECT crumb opens that section's collection page for t0. 'artifacts' is a
+      // VIRTUAL object (no real table) served only by renderArtifactsView via the
+      // #/fs/artifacts special-case, so it keeps that self-view href in every section.
       var objHref = t0 === 'artifacts' ? '#/fs/artifacts'
         : section === 'graph' ? '#/graph/' + encodeURIComponent(t0)
         : section === 'tables' ? '#/tables/' + encodeURIComponent(t0)
+        : isW ? sectionHref(section, [t0])
         : '#/folders/' + encodeURIComponent(t0);
       // Record/relation crumbs accumulate onto the section's RECORD prefix.
       var prefix = sectionHref(section, [t0]);
@@ -1335,19 +1352,22 @@ export const dashboardJs = `    // ───────────────
         if (!t) { location.hash = '#/'; return; } // table removed → dashboard
         // The open record was deleted out from under the view — fall back to this
         // section's object page rather than repaint a tombstone (respect trash view).
+        // A file tab (w:file) has no collection form under #/w/file/ (the segment is
+        // always a file id), so route to the files-table collection instead.
         if (!row || (row.deleted_at && tableViewMode[table] !== 'trash')) {
-          location.hash = sectionHref(section, [table]);
+          location.hash = section === 'w:file' ? '#/w/table/' + encodeURIComponent(table) : sectionHref(section, [table]);
           return;
         }
         var d = displayFor(table);
-        // The tab shows the open RECORD's name (e.g. an entity row), not the
-        // object/table name. Guard: only retitle a RECORD ('item:') tab — never the
-        // shared Brain Graph ('graph') tab, even if a record render briefly runs
-        // while the hash still resolves to the graph (which would rename 🧠).
-        if (typeof setTabTitle === 'function') {
-          var fsItemKey = tabKeyForHash(location.hash);
-          if (fsItemKey && fsItemKey.indexOf('item:') === 0) {
-            setTabTitle(fsItemKey, fsDisplayName(row) || d.label);
+        // The Workspace tab shows the open RECORD's name + its entity/file icon (a
+        // file record shows its file-type emoji; other records show the table icon).
+        // Guard on a real typed tab key so a record briefly rendering under a legacy
+        // hash never renames the permanent "New Dashboard" home tab.
+        if (typeof anSetTabMeta === 'function') {
+          var fsItemKey = anTabKeyForHash(location.hash);
+          if (fsItemKey && fsItemKey !== 'new') {
+            var isFileRec = table === 'files';
+            anSetTabMeta(fsItemKey, fsDisplayName(row) || d.label, isFileRec ? fileEmoji(row) : d.icon);
           }
         }
         // ONE record page for every row: files + artifacts flow through the same
@@ -1751,9 +1771,11 @@ export const dashboardJs = `    // ───────────────
         .then(function () {
           showToast('Deleted "' + (fsDisplayName(row) || 'record') + '"', { undo: undoLast });
           // Navigate to the collection in the SAME section the record was opened
-          // from (Folders/Graph/Tables) — a hard-coded #/fs would yank the user
-          // out of Graph/Tables into Folders.
-          location.hash = sectionHref(sectionOfHash(), [table]);
+          // from (Graph/Tables/Workspace) — a hard-coded #/fs would yank the user
+          // elsewhere. A file tab (w:file) has no #/w/file/ collection form, so route
+          // to the files-table collection instead of the invalid #/w/file/<name>.
+          var delSec = sectionOfHash();
+          location.hash = delSec === 'w:file' ? '#/w/table/' + encodeURIComponent(table) : sectionHref(delSec, [table]);
         })
         .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }

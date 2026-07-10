@@ -39,7 +39,7 @@ test('a persistent /api/version mismatch reloads a bounded number of times, neve
   let navigations = 0;
   page.on('framenavigated', (frame) => {
     // Count HARD loads only: boot performs a same-document hash redirect to
-    // the Analytics landing (#/analytics), which also fires framenavigated —
+    // the single-layout Home landing (#/), which also fires framenavigated —
     // it is not a reload and must not count against the cap.
     if (frame === page.mainFrame() && !frame.url().includes('#')) navigations += 1;
   });

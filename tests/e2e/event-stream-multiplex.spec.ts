@@ -43,8 +43,8 @@ test('a tab opens exactly ONE persistent event stream — a WebSocket, not three
     }
   });
 
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
   // Exactly one persistent stream, and it is the multiplexed WebSocket.
   await expect.poll(() => sockets.length, { timeout: 4000 }).toBe(1);
@@ -79,15 +79,15 @@ test('stays responsive with several tabs open while row data is slow (rapid clic
     await route.continue();
   });
 
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
   // Rapidly bounce between the collection and home while row data is still in
   // flight — each navigation must repaint its frame immediately (a loading
   // state), never freeze on the pending fetch.
   for (let i = 0; i < 3; i++) {
     await page.evaluate(() => {
-      window.location.hash = '#/fs/items';
+      window.location.hash = '#/w/table/items';
     });
     // The loading frame repaints immediately, never frozen on the pending fetch.
     await expect(page.locator('.route-loading')).toBeVisible({ timeout: 1500 });

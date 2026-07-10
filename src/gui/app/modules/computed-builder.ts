@@ -5,7 +5,7 @@
 // data (POST /api/computed-tables/preview), then save it through the audited
 // /api/computed-tables surface. Must stay INSIDE the client IIFE (uses
 // state/fetchJson/escapeHtml/displayFor/isJunction/tableByName/showToast/
-// refreshEntities/renderGen/setContent, and drops the Tables explorer's
+// refreshEntities, and drops the Tables explorer's
 // mtEdgesCache after a schema change); iiStreamNdjson (a top-level function in
 // the same script) streams the AI-refresh NDJSON progress. Like every segment,
 // ONE template literal — no raw backticks or dollar-brace inside; HTML built
@@ -26,6 +26,13 @@ export const computedBuilderJs = `
     // Builder state — rebuilt from scratch on every route entry, so navigating
     // away (or switching workspaces) can never leak a stale definition back in.
     var cbS = null;
+    // Monotonic load token. Every renderComputedBuilder entry bumps it; an async
+    // edit-mode load commits only if its token is still current, so a stale
+    // same-route re-entry (A→B→A within the fetch window, or a coincident
+    // non-soft renderRoute) can't repaint over a newer load. Paired with the
+    // route-hash check so a background soft render (which does NOT re-enter the
+    // builder) still can't orphan an in-flight load.
+    var cbLoadSeq = 0;
 
     function cbNewRow() {
       return {
@@ -55,11 +62,20 @@ export const computedBuilderJs = `
       return r;
     }
 
+    // True while the location still targets THIS builder+name. The edit-mode load
+    // commits on this rather than on a renderGen match: a background soft render
+    // bumps renderGen but leaves the hash put, so keying on renderGen would let it
+    // orphan an in-flight edit load (stuck spinner). A real navigation-away DOES
+    // change the hash, so a stale load is still dropped.
+    function cbRouteMatches(nameArg) {
+      var m = /^#\\/computed\\/([^/]+)$/.exec(location.hash || '');
+      return !!m && decodeURIComponent(m[1]) === nameArg;
+    }
     // Route entry. 'new' renders the empty create form; any other name loads
     // that definition for editing (the reserved word costs nothing: the server
     // refuses "new" only if no such computed table exists, which 404s here).
     function renderComputedBuilder(content, nameArg) {
-      var myGen = renderGen;
+      var loadTok = ++cbLoadSeq;
       if (nameArg === 'new') {
         cbS = {
           mode: 'create', name: '', base: '', description: undefined,
@@ -81,12 +97,13 @@ export const computedBuilderJs = `
           };
           if (!cbS.rows.length) cbS.rows.push(cbNewRow());
           return cbLoadFields(cbS.base).then(function () {
-            if (myGen !== renderGen) return;
+            if (loadTok !== cbLoadSeq || !cbRouteMatches(nameArg)) return;
             cbPaint(content);
           });
         })
         .catch(function (err) {
-          setContent(content, myGen, '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>');
+          if (!content || loadTok !== cbLoadSeq || !cbRouteMatches(nameArg)) return;
+          content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
         });
     }
 

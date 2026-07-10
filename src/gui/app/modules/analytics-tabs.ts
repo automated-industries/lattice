@@ -12,24 +12,28 @@
 // Must stay INSIDE the client IIFE (uses escapeHtml/location); inserted after
 // tabsJs in modules/index.ts.
 export const analyticsTabsJs = `
-    var AN_HOME_HASH = '#/analytics';
-    // A permanent, non-closable "New Dashboard" tab is ALWAYS present (like the
-    // Configure strip's Objects/Graph/Tables) — the Analytics strip is never
-    // empty. It maps to the home (the empty-state prompt); opening a dashboard
-    // adds a closable tab alongside it.
+    var AN_HOME_HASH = '#/';
+    // A permanent, non-closable "New Dashboard" tab is ALWAYS present — the
+    // Workspace strip is never empty. It maps to the home (the "Ask your company
+    // anything" prompt); opening a dashboard/table/file/markdown doc adds a
+    // closable typed tab alongside it.
     function anNewTab() {
       return { key: 'new', title: 'New Dashboard', icon: '📊', hash: AN_HOME_HASH, closable: false };
     }
     var anTabs = [anNewTab()];
     var anActiveTabKey = 'new';
 
-    // Map a hash to a stable logical tab key. The Analytics home is the permanent
-    // 'new' tab; each open dashboard keys by id so re-opening from the sidebar
-    // activates the existing tab instead of duplicating it.
+    // Map a hash to a stable logical tab key. The home is the permanent 'new' tab;
+    // each open surface keys by kind + its FIRST path segment so a record drill-in
+    // (#/w/table/foo/<rowId>/…) reuses the same 'table:foo' tab, and re-opening from
+    // the sidebar activates the existing tab instead of duplicating it.
     function anTabKeyForHash(hash) {
       hash = hash || '';
-      var m = /^#\\/analytics\\/(.+)$/.exec(hash);
-      if (m) return 'dash:' + decodeURIComponent(m[1]);
+      var m = /^#\\/w\\/(dash|table|file|md)\\/([^\\/]+)/.exec(hash);
+      if (m) {
+        var kindMap = { dash: 'dashboard', table: 'table', file: 'file', md: 'markdown' };
+        return kindMap[m[1]] + ':' + decodeURIComponent(m[2]);
+      }
       return 'new';
     }
 
@@ -45,19 +49,38 @@ export const analyticsTabsJs = `
       var key = anTabKeyForHash(hash);
       var tab = anFindTab(key);
       if (!tab) {
-        anTabs.push({ key: key, title: 'Dashboard', icon: '📊', hash: hash, closable: true });
+        anTabs.push(anSeedTab(key, hash));
       } else if (key !== 'new') {
         tab.hash = hash;
       }
       anActiveTabKey = key;
     }
 
-    // Let the dashboard page refine its tab's title once the row is loaded.
-    // No-op if the tab is gone.
-    function anSetTabTitle(key, title) {
-      var tab = anFindTab(key);
-      if (tab && title && tab.title !== title) { tab.title = title; anRenderTabStrip(); }
+    // Seed a new typed tab's icon + provisional title from its key's kind; the
+    // renderer refines them once the row/collection loads (anSetTabMeta).
+    function anSeedTab(key, hash) {
+      var kind = key.split(':')[0];
+      var name = key.slice(kind.length + 1);
+      var icon = '📊', title = 'Dashboard';
+      if (kind === 'table' || kind === 'markdown') {
+        icon = typeof displayFor === 'function' ? displayFor(name).icon : '🗂️';
+        title = typeof displayFor === 'function' ? displayFor(name).label : name;
+      } else if (kind === 'file') { icon = '📄'; title = 'File'; }
+      return { key: key, title: title, icon: icon, hash: hash, closable: true };
     }
+
+    // Let a renderer refine its tab's title AND icon once the row/collection is
+    // loaded. No-op if the tab is gone.
+    function anSetTabMeta(key, title, icon) {
+      var tab = anFindTab(key);
+      if (!tab) return;
+      var changed = false;
+      if (title && tab.title !== title) { tab.title = title; changed = true; }
+      if (icon && tab.icon !== icon) { tab.icon = icon; changed = true; }
+      if (changed) anRenderTabStrip();
+    }
+    // Title-only shim (kept for existing callers).
+    function anSetTabTitle(key, title) { anSetTabMeta(key, title, null); }
 
     function anCloseTab(key) {
       var idx = -1;

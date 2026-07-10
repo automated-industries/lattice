@@ -39,7 +39,7 @@ test('a file gets the UNIFIED record page: toggle + sharing + provenance + menu'
   page,
 }) => {
   const id = await ingestFile(page);
-  await page.goto(gui.url + '#/fs/files/' + id);
+  await page.goto(gui.url + '#/w/file/' + id);
   // Formatted view by default: the inline preview inside the shared chrome.
   await expect(page.locator('#file-preview')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-doc')).toHaveCount(0);
@@ -91,7 +91,7 @@ test('in-place content edit mutates the same row and is kept in history', async 
 
 test('Delete soft-deletes the record but never the on-disk file', async ({ page }) => {
   const id = await ingestFile(page);
-  await page.goto(gui.url + '#/fs/files/' + id);
+  await page.goto(gui.url + '#/w/file/' + id);
   await page.locator('#file-menu-btn').click();
   await page.locator('.file-menu-item[data-act="delete"]').click();
   // The row is soft-deleted (recoverable from trash), not hard-deleted…

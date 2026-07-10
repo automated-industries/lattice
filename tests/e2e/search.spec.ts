@@ -20,19 +20,20 @@ test.afterEach(async () => {
 test('the header has no search box — the assistant is the single search surface', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
   await expect(page.locator('#search-input')).toHaveCount(0);
   await expect(page.locator('#search-results')).toHaveCount(0);
-  // The assistant trigger is present — the one way to ask.
-  await expect(page.locator('#ask-lattice-trigger')).toBeVisible();
+  // The persistent Ask Gladys dock is the single ask surface — always visible,
+  // no toggle. (The old header Ask trigger is gone in the single layout.)
+  await expect(page.locator('#ask-dock')).toBeVisible();
 });
 
 test('Back / Forward buttons walk the page-navigation history, next to Undo/Redo', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
   const back = page.locator('#nav-back-btn');
   const fwd = page.locator('#nav-fwd-btn');
   await expect(back).toBeVisible();
@@ -41,11 +42,19 @@ test('Back / Forward buttons walk the page-navigation history, next to Undo/Redo
   await expect(page.locator('.history-controls #undo-btn')).toBeVisible();
   await expect(page.locator('.history-controls #redo-btn')).toBeVisible();
 
-  // Navigate: Objects → Tables, then Back returns to Objects, Forward to Tables.
-  await page.locator('.tab[data-key="tables"]').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
+  // Navigate between two Workspace locations (Questions → the items table tab),
+  // then Back returns to the first and Forward to the second — the buttons walk
+  // the app-managed page-navigation history.
+  await page.evaluate(() => {
+    location.hash = '#/questions';
+  });
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/questions');
+  await page.evaluate(() => {
+    location.hash = '#/w/table/items';
+  });
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/items');
   await back.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/folders');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/questions');
   await fwd.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/items');
 });
