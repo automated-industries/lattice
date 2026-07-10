@@ -10,9 +10,13 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('GUI boots and renders the Sources sidebar', async ({ page }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
-  // The default sidebar is now Sources (Files / Artifacts / Connectors).
-  await expect(page.locator('#sources-nav').getByText('Files', { exact: true })).toBeVisible();
+test('GUI boots and renders the single-layout workspace shell', async ({ page }) => {
+  await page.goto(gui.url + '#/');
+  // One 3-column layout: sidebar │ center Workspace │ Ask Gladys dock — all visible,
+  // no view flip.
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
+  await expect(page.locator('#content')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeVisible();
+  // The sidebar carries the Dashboards + Tables / Files / Markdown nav sections.
+  await expect(page.locator('.section-toggle[data-group="nav-files"]')).toBeVisible();
 });

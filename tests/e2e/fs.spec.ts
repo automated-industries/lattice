@@ -89,7 +89,7 @@ test('object pages paginate: Prev/Next + "A–B of T", and Next loads the next w
     );
   }
 
-  await page.goto(`${gui.url}#/fs/tags`);
+  await page.goto(`${gui.url}#/w/table/tags`);
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
 
   // Page 1: 100 rows, "1–100 of 101", Prev disabled, Next enabled.
@@ -107,27 +107,32 @@ test('object pages paginate: Prev/Next + "A–B of T", and Next loads the next w
 
   // The whole row still opens the record (pagination didn't break row-click).
   await page.locator('.fs-rows-table tbody tr').first().click();
-  await expect(page).toHaveURL(/#\/fs\/tags\/[^/]+$/);
+  await expect(page).toHaveURL(/#\/w\/table\/tags\/[^/]+$/);
 });
 
-test('an object page shows its data provenance; a row opens its detail', async ({ page }) => {
+test('the sidebar opens a table workspace; the collection lists rows; a row opens its detail', async ({
+  page,
+}) => {
   const author = (await createRow(gui.url, 'authors', {
     name: 'Jane Author',
     bio: 'A novelist.',
   })) as { id: string };
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
-  // Default mode: the sidebar object link points at the file-system route.
-  const navLink = page.locator('#object-nav a').first();
-  await expect(navLink).toHaveAttribute('href', /#\/fs\//);
+  // The single-layout sidebar Tables section carries a nav item per table; clicking
+  // one opens that table's Workspace tab (#/w/table/<name>) — the replacement for
+  // the old two-view Objects-nav link that pointed at #/fs/….
+  const navItem = page.locator('.nav-table-item[data-table="authors"]');
+  await expect(navItem).toBeVisible({ timeout: 5000 });
+  await navItem.click();
+  await expect(page).toHaveURL(/#\/w\/table\/authors$/);
 
-  await page.goto(`${gui.url}#/fs/authors`);
-  // The object page is the table's rows (mirroring the Files file list).
+  // The table's Workspace tab is the rows collection (mirroring the Files file list).
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
 
   // Opening the row directly shows its detail (the record view header carries the name).
-  await page.goto(`${gui.url}#/fs/authors/${author.id}`);
+  await page.goto(`${gui.url}#/w/table/authors/${author.id}`);
   await expect(page.locator('.view-header')).toContainText('Jane Author', { timeout: 5000 });
 });
 
@@ -137,14 +142,14 @@ test('drilling a row shows the record view, relationship sub-folders, and a brea
   const { authorId } = await seedChain(gui.url);
 
   // Author item view: the record header + a "Books" sub-folder.
-  await page.goto(`${gui.url}#/fs/authors/${authorId}`);
+  await page.goto(`${gui.url}#/w/table/authors/${authorId}`);
   await expect(page.locator('.view-header')).toContainText('Jane Author');
   const booksFolder = page.locator('.fs-folder', { hasText: 'Books' });
   await expect(booksFolder).toBeVisible();
   await booksFolder.click();
 
   // Books collection (filtered to this author) → a rows table; open the book.
-  await expect(page).toHaveURL(new RegExp(`#/fs/authors/${authorId}/books$`));
+  await expect(page).toHaveURL(new RegExp(`#/w/table/authors/${authorId}/books$`));
   const bookLink = page.locator('.fs-rows-table a', { hasText: 'Tidewater' });
   await expect(bookLink).toBeVisible();
   await bookLink.click();
@@ -155,10 +160,10 @@ test('drilling a row shows the record view, relationship sub-folders, and a brea
   await expect(page.locator('.fs-folder', { hasText: 'Reviews' })).toBeVisible();
   await expect(page.locator('.fs-folder', { hasText: 'Tags' })).toHaveCount(0);
 
-  // Breadcrumb reflects the full clickable drill path, rooted at the section the
-  // record was opened in (#/fs/* = the Objects section).
+  // Breadcrumb reflects the full clickable drill path. In the single layout a
+  // Workspace table tab (#/w/table/*) has no top-level Objects index, so the crumb
+  // roots directly at the object (Authors ▸ record ▸ relation ▸ …).
   const crumbs = page.locator('.fs-crumbs');
-  await expect(crumbs).toContainText('Objects');
   await expect(crumbs).toContainText('Authors');
   await expect(crumbs).toContainText('Jane Author');
   await expect(crumbs).toContainText('Books');
@@ -177,7 +182,7 @@ test('a record renders the Formatted | Markdown toggle and switches between the 
   // markdown that writes back via PUT …/context) toggle. The markdown write-back
   // itself is covered at the API level by tests/integration/gui-row-context-writeback.
   const { authorId } = await seedChain(gui.url);
-  await page.goto(`${gui.url}#/fs/authors/${authorId}`);
+  await page.goto(`${gui.url}#/w/table/authors/${authorId}`);
 
   // The record header carries the name; the Formatted | Markdown toggle is present
   // with Formatted active by default.
@@ -196,23 +201,29 @@ test('a record renders the Formatted | Markdown toggle and switches between the 
   await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
 });
 
-test('object navigation always targets the file workspace (single view)', async ({ page }) => {
+test('object navigation always targets the workspace (single view)', async ({ page }) => {
   await createRow(gui.url, 'authors', { name: 'Jane Author' });
-  // There is a single view — the file workspace. Cards and the object nav both
-  // point at #/fs/… ; the former "Advanced View" toggle + classic #/objects editor
-  // were removed, and Settings → Lattice no longer carries a view toggle.
-  await page.goto(`${gui.url}#/dashboard`);
-  await expect(page.locator('.card').first()).toHaveAttribute('href', /#\/fs\//);
-  await expect(page.locator('#object-nav a').first()).toHaveAttribute('href', /#\/fs\//);
+  // There is a single view — the Workspace. Sidebar table nav opens the one
+  // #/w/table/… surface; the former two-view "Advanced View" toggle + classic
+  // #/objects editor were removed, and Configure → Lattice no longer carries a
+  // view toggle.
+  await page.goto(`${gui.url}#/`);
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
-  await page.locator('#settings-gear').click();
+  const navItem = page.locator('.nav-table-item[data-table="authors"]');
+  await expect(navItem).toBeVisible({ timeout: 5000 });
+  await navItem.click();
+  await expect(page).toHaveURL(/#\/w\/table\/authors$/);
+
+  await page.locator('#configure-trigger').click();
   await page.locator('.drawer-tab[data-tab="lattice"]').click();
+  await expect(page.locator('#settings-drawer')).toContainText('Lattice Settings');
   await expect(page.locator('#advanced-toggle')).toHaveCount(0);
 });
 
 test('the gear opens a settings drawer with Database / Lattice / User tabs', async ({ page }) => {
   await page.goto(gui.url);
-  await page.locator('#settings-gear').click();
+  await page.locator('#configure-trigger').click();
 
   const drawer = page.locator('#settings-drawer');
   await expect(drawer).toHaveClass(/open/);
@@ -233,8 +244,8 @@ test('the gear opens a settings drawer with Database / Lattice / User tabs', asy
 test('Version history + Settings are full-panel takeovers with highlighted, toggling triggers', async ({
   page,
 }) => {
-  await page.goto(gui.url + '#/folders');
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
   // Clock opens Version history as its OWN takeover, highlighted. Version
   // history is NOT a Settings sub-tab, so the Settings tab row is hidden and
@@ -254,12 +265,14 @@ test('Version history + Settings are full-panel takeovers with highlighted, togg
   await expect(drawer).toBeHidden();
   await expect(page.locator('#history-link')).not.toHaveClass(/on/);
 
-  // The gear uses the same takeover chrome for Settings: the tab row shows, the
-  // title reads "Settings", the gear highlights.
-  await page.locator('#settings-gear').click();
+  // The wrench uses the same takeover chrome for Configure: the tab row shows, the
+  // title reads "Configure", the wrench highlights.
+  await page.locator('#configure-trigger').click();
   await expect(drawer).toBeVisible();
-  await expect(page.locator('#settings-gear')).toHaveClass(/on/);
-  await expect(page.locator('#settings-drawer .drawer-title')).toHaveText('Settings');
+  // The `on` highlight is a standalone class token — match it with word boundaries
+  // so it isn't confused with the "on" substring inside "c-on-figure-trigger".
+  await expect(page.locator('#configure-trigger')).toHaveClass(/\bon\b/);
+  await expect(page.locator('#settings-drawer .drawer-title')).toHaveText('Configure');
   await expect(page.locator('#drawer-tabs')).toBeVisible();
   // Switching to the clock swaps the content in place (still one panel): the
   // Settings tab row disappears and the clock takes the highlight.
@@ -267,7 +280,7 @@ test('Version history + Settings are full-panel takeovers with highlighted, togg
   await expect(page.locator('#drawer-tabs')).toBeHidden();
   await expect(page.locator('#settings-drawer .drawer-title')).toHaveText('Version history');
   await expect(page.locator('#history-link')).toHaveClass(/on/);
-  await expect(page.locator('#settings-gear')).not.toHaveClass(/on/);
+  await expect(page.locator('#configure-trigger')).not.toHaveClass(/\bon\b/);
   await page.locator('#history-link').click();
   await expect(drawer).toBeHidden();
 });

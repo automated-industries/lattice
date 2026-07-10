@@ -9,11 +9,12 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-/** Open the floating "Ask Lattice" panel. In the 5.0 reframe the composer (input /
- *  mic / send) lives inside this collapsed panel, so it must be opened before any
- *  composer element is visible. */
+/** Ensure the "Ask Gladys" dock (which hosts the composer: input / mic / send) is
+ *  present. In the single-layout reframe the dock is a persistent third column, so
+ *  it is always visible with no toggle — asserting it renders is the boot gate before
+ *  any composer element is used. */
 async function openAskLattice(page: import('@playwright/test').Page) {
-  // The app boots into Analytics with the assistant dock (and composer) visible.
+  // The single layout always shows the persistent Ask Gladys dock (and composer).
   await expect(page.locator('#ask-dock')).toBeVisible();
 }
 

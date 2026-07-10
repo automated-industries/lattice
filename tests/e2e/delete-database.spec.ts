@@ -58,6 +58,13 @@ test('Workspace Settings danger zone deletes the active workspace after typed co
 }) => {
   await page.goto(`${server.url}#/settings/database`);
 
+  // Single-layout reframe: the old fixed "Workspace Settings" view is gone.
+  // #/settings/database now opens the Configure drawer; the workspace danger zone
+  // lives in its "Workspace" tab (data-tab="database"). Wait for the drawer, then
+  // switch to that tab to reach the Delete workspace button.
+  await expect(page.locator('#settings-drawer.open')).toBeVisible();
+  await page.locator('.drawer-tab[data-tab="database"]').click();
+
   const deleteBtn = page.locator('#db-delete-btn');
   await expect(deleteBtn).toBeVisible();
   await deleteBtn.click();

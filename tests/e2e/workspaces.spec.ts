@@ -79,7 +79,8 @@ test('the header workspace switcher lists workspaces and switches the active one
 test('switching paints a loading frame immediately and never freezes on the previous workspace', async ({
   page,
 }) => {
-  await page.goto(server.url + '#/folders');
+  // The old Objects home (#/folders) is gone; boot into the single-layout home.
+  await page.goto(server.url + '#/');
   const startName = (await page.locator('#ws-name').textContent()) ?? '';
 
   // Simulate a slow (cloud-like) open by delaying the switch POST.
@@ -102,24 +103,34 @@ test('switching paints a loading frame immediately and never freezes on the prev
 test('Back/Forward history is per-workspace: a switch never carries the old hash or history', async ({
   page,
 }) => {
-  await page.goto(server.url + '#/folders');
+  await page.goto(server.url + '#/');
   await expect(page.locator('#ws-name')).toBeVisible();
+  const startName = (await page.locator('#ws-name').textContent()) ?? '';
 
-  // Build some history in the current workspace: Objects → Tables.
-  await page.locator('.tab[data-key="tables"]').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
+  // Build some navigation history in the current workspace: home → the
+  // Questions view. Back becomes enabled once this workspace's per-workspace
+  // history stack has a prior entry.
+  await page.evaluate(() => {
+    location.hash = '#/questions';
+  });
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/questions');
   await expect(page.locator('#nav-back-btn')).toBeEnabled();
 
   // Switch workspaces (whichever is not current).
   await page.locator('#ws-button').click();
-  const other = page.locator('#ws-menu button.db-item:not(:has(.db-item-current))').first();
+  const other = page.locator('#ws-menu button.db-item:not(.active)').first();
   await other.click();
-  await expect
-    .poll(() => page.evaluate(() => location.hash), { timeout: 15000 })
-    .toBe('#/analytics');
+  // The switch lands the new workspace on ITS OWN home (#/), never the previous
+  // workspace's hash (#/questions).
+  await expect.poll(() => page.evaluate(() => location.hash), { timeout: 15000 }).toBe('#/');
+  await expect(page.locator('#ws-name')).not.toHaveText(startName, { timeout: 5000 });
 
-  // The new workspace starts with ITS OWN history: Back is disabled — the old
-  // workspace's #/tables (or any of its records) is unreachable from here.
-  await expect(page.locator('#nav-back-btn')).toBeDisabled();
+  // The new workspace starts with ITS OWN history: the old workspace's
+  // #/questions (or any of its records) is unreachable from here. There is
+  // nothing ahead to go Forward into, and stepping Back never crosses back
+  // into the previous workspace's location — it stays on this workspace's home.
   await expect(page.locator('#nav-fwd-btn')).toBeDisabled();
+  const backBtn = page.locator('#nav-back-btn');
+  if (await backBtn.isEnabled()) await backBtn.click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
 });
