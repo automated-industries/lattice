@@ -130,15 +130,21 @@ if [ -n "$SIGN_APP_IDENTITY" ]; then
     fi
   done
   notarize "$APP"
-  # Signed component pkg that installs the app to /Applications.
+  # Signed component pkg that installs the app to /Applications. Turn bundle
+  # relocation OFF (see the fallback note below) so an update never lands on a
+  # previously-seen copy instead of /Applications; the signing flow is unchanged.
+  CPLIST="$(mktemp -d)/component.plist"
+  pkgbuild --analyze --root "$APP" "$CPLIST" >/dev/null
+  /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$CPLIST" 2>/dev/null || true
   if [ -n "$SIGN_INSTALLER_IDENTITY" ]; then
-    pkgbuild --root "$APP" --install-location "/Applications/$APPNAME" \
+    pkgbuild --root "$APP" --component-plist "$CPLIST" --install-location "/Applications/$APPNAME" \
       --identifier "$IDENTIFIER" --version "$VERSION" \
       --sign "$SIGN_INSTALLER_IDENTITY" --timestamp "$OUT"
   else
-    pkgbuild --root "$APP" --install-location "/Applications/$APPNAME" \
+    pkgbuild --root "$APP" --component-plist "$CPLIST" --install-location "/Applications/$APPNAME" \
       --identifier "$IDENTIFIER" --version "$VERSION" "$OUT"
   fi
+  rm -f "$CPLIST"
   notarize "$OUT"
   if [ -n "$SIGN_INSTALLER_IDENTITY" ]; then
     # Hard gates on the shipped installer: a valid installer signature, and —
@@ -152,15 +158,29 @@ if [ -n "$SIGN_APP_IDENTITY" ]; then
   echo "built + signed: $OUT (v$VERSION)"
 else
   # Ad-hoc fallback: no Developer ID → unsigned pkg.
-  PKGROOT="$(mktemp -d)/root"
-  trap 'rm -rf "$(dirname "$PKGROOT")"' EXIT
+  TMPD="$(mktemp -d)"
+  trap 'rm -rf "$TMPD"' EXIT
+  PKGROOT="$TMPD/root"
   mkdir -p "$PKGROOT/Applications"
   cp -R "$APP" "$PKGROOT/Applications/"
   # Re-affirm a valid ad-hoc seal on exactly the bytes we ship.
   codesign --verify --deep --strict "$PKGROOT/Applications/$APPNAME" 2>/dev/null \
     || codesign --force --deep --sign - "$PKGROOT/Applications/$APPNAME" 2>/dev/null \
     || echo "warn: codesign unavailable (continuing unsigned)"
-  pkgbuild --root "$PKGROOT" --identifier "$IDENTIFIER" --version "$VERSION" \
-    --install-location "/" "$OUT"
+  # Pin the install to /Applications. By default pkgbuild marks an app bundle
+  # RELOCATABLE, so the Installer looks the app up by its bundle id in the
+  # LaunchServices database and drops the update onto a previously-seen copy (a
+  # build folder, ~/Applications, Downloads) instead of /Applications. Generate the
+  # component plist and turn relocation OFF so it always lands at install-location.
+  CPLIST="$TMPD/component.plist"
+  pkgbuild --analyze --root "$PKGROOT" "$CPLIST" >/dev/null
+  /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$CPLIST" 2>/dev/null || true
+  COMPONENT="$TMPD/component.pkg"
+  pkgbuild --root "$PKGROOT" --component-plist "$CPLIST" \
+    --identifier "$IDENTIFIER" --version "$VERSION" --install-location "/" "$COMPONENT"
+  # Wrap the component into a distribution product archive: a bare component pkg
+  # installs unreliably when double-clicked in Finder, Installer.app expects a
+  # distribution.
+  productbuild --package "$COMPONENT" "$OUT"
   echo "built: $OUT (unsigned, v$VERSION)"
 fi
