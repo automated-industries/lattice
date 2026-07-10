@@ -205,8 +205,7 @@ describe('dead-CSS removal (composed stylesheet)', () => {
     // .fs-tile-vis is emitted by the shared vis() helper (exercised by
     // gui-visibility-indicators.test.ts) — retained on purpose.
     expect(css).toContain('.fs-tile-vis');
-    // The Outputs Tables mirror + the live file-drop overlay are still used.
-    expect(css).toContain('.out-tier');
+    // The live file-drop overlay is still used.
     expect(css).toContain('.file-drop-overlay');
   });
 });

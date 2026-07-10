@@ -179,8 +179,14 @@ import { css } from '../../src/gui/app/css.js';
 // full-height + scroll (.dash-sidebar height:100%/overflow); nav heads styled like
 // DASHBOARDS (blue #2563eb, 11px/0.08em, sticky); drawer scroll-lock (body.drawer-open
 // overflow:hidden + .drawer-body overscroll-behavior:contain). Recaptured.
-const ORIGINAL_LENGTH = 150514;
-const ORIGINAL_SHA256 = 'c884186b105a27fdb254dcd2957c2cb7f9f797b4c0276794eb528fc9e77c1870';
+// Markdown redesign: deleted outputs.ts styles (Outputs column + .mdt-* markdown tree) +
+// the .fs-view-toggle rules; TABLES/FILES nav heads now match DASHBOARDS exactly via
+// .nav-section-head .section-label-text (11px/700/0.08em/#2563eb). Recaptured.
+// Review fix: keep the TABLES/FILES label blue on hover too (.section-toggle.nav-section-head
+// :hover .section-label-text) — a generic .section-toggle:hover rule would flip it to
+// var(--text), diverging from DASHBOARDS which never recolors on hover. Recaptured.
+const ORIGINAL_LENGTH = 146733;
+const ORIGINAL_SHA256 = 'bf65f3d201046b227570888e9fb51e76a59b1194f6702622a57998b972ab2218';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

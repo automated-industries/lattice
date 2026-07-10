@@ -106,10 +106,11 @@ export const guiAppHtml = `<!doctype html>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
     </button>
   </header>
-  <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Tables/
-       Files/Markdown nav sections, added by nav-sections.ts) │ center Workspace tabs
-       │ the persistent Ask Gladys dock. The former Inputs sidebar, Model tab strip,
-       and Markdown rail moved into the left sidebar + the Configure drawer. -->
+  <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Tables /
+       Files nav sections, added by nav-sections.ts) │ center Workspace tabs │ the
+       persistent Ask Gladys dock. The former Inputs sidebar + Model tab strip moved
+       into the left sidebar + the Configure drawer; a table's/record's markdown is now
+       reached via its "View Markdown" action, not a separate sidebar tree. -->
   <div class="layout" id="layout">
     <nav class="dash-sidebar">
       <section class="dash-section" data-section="dashboards">
@@ -130,12 +131,6 @@ export const guiAppHtml = `<!doctype html>
           <span class="section-caret">▾</span><span class="section-label-text">Files</span>
         </button>
         <div class="section-body" data-group-body="nav-files"><div id="nav-files-tree"></div></div>
-      </section>
-      <section class="dash-section nav-section" data-section="markdown">
-        <button class="section-label section-toggle nav-section-head" data-group="nav-md" type="button" aria-expanded="true">
-          <span class="section-caret">▾</span><span class="section-label-text">Markdown</span>
-        </button>
-        <div class="section-body" data-group-body="nav-md"><div id="nav-md-tree"></div></div>
       </section>
     </nav>
     <main class="content-wrap">

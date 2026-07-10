@@ -47,18 +47,25 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .dash-item .vis-indicator { justify-self: end; }
     .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
 
-    /* ── Left-sidebar nav sections (Tables / Files / Markdown) ── */
+    /* ── Left-sidebar nav sections (Tables / Files) ── */
     .nav-section { border-top: 1px solid var(--border); }
-    /* Match the DASHBOARDS header (.col-header-text): blue, 11px, 0.08em, uppercase,
-       no emoji. Sticky so each head pins while the single sidebar scroll runs under it. */
     .nav-section-head {
       width: 100%; display: flex; align-items: center; gap: 6px;
       position: sticky; top: 0; z-index: 2; background: var(--surface);
       padding: 8px 10px; border: 0; cursor: pointer;
-      color: #2563eb; font-size: 11px; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
-    .nav-section-head:hover { color: #1d4ed8; }
+    /* Match the DASHBOARDS header (.col-header-text) EXACTLY: blue, 11px, 700, 0.08em.
+       Target the label SPAN — the button itself carries button.section-label.section-toggle
+       { font:inherit; color:var(--text-muted) } at higher specificity, so declaring these on
+       .nav-section-head loses; the child span (no competing specificity) wins. */
+    .nav-section-head .section-label-text {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: #2563eb;
+    }
+    /* Stay blue on hover too — a generic .section-toggle:hover .section-label-text
+       (layout.ts, 0,3,0) would otherwise flip it to var(--text). DASHBOARDS never
+       recolors on hover, so match that. This (0,4,0) beats it. */
+    .section-toggle.nav-section-head:hover .section-label-text { color: #2563eb; }
     .nav-tier-head {
       padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
@@ -73,7 +80,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-item-ic { flex: 0 0 auto; }
     .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .nav-empty { color: var(--text-muted); font-size: 12px; padding: 8px 12px; }
-    #nav-tables-list, #nav-files-tree, #nav-md-tree { padding-bottom: 6px; }
+    #nav-tables-list, #nav-files-tree { padding-bottom: 6px; }
 
     /* ── Column headers (identical style to the Configure view) ── */
     /* All three carry the shared .col-header chrome. Accents mirror Configure:

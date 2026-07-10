@@ -438,8 +438,13 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // accordion (enforceNavAccordion / NAV_ACCORDION_GROUPS). Recaptured.
 // Polish review fix: the drawer close-hide timeout is now cancelable (drawerHideTimer) so
 // a quick reopen can't strand body.drawer-open and freeze page scroll. Recaptured.
-const ORIGINAL_LENGTH = 711475;
-const ORIGINAL_SHA256 = 'a667590f6b2796effd1eecda56e76fe630483394d976b4465b07664537f7c824';
+// Markdown redesign: removed the MARKDOWN sidebar section + its whole outputs.ts module
+// (markdown tree) + the dead render-progress DOM overlay in event-stream.ts; removed the
+// Formatted|Markdown toggle in favor of a "View Markdown"/"View Formatted" item in the ⋯
+// menu (collection + record + file); collection markdown shows RAW source with a
+// rowsToMarkdown fallback so a data table is never blank. Recaptured.
+const ORIGINAL_LENGTH = 699716;
+const ORIGINAL_SHA256 = '1ad481718fb40417c70ab20e288350be5bb4eaf1ac93201f59d5df9ac1c7ea7f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

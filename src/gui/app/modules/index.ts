@@ -42,7 +42,6 @@ import { inlineImportJs } from './inline-import.js';
 import { connectorsSettingsJs } from './connectors-settings.js';
 import { sourcesJs } from './sources.js';
 import { inputsJs } from './inputs.js';
-import { outputsJs } from './outputs.js';
 import { activityHeaderJs } from './activity-header.js';
 import { askLatticeJs } from './ask-lattice.js';
 import { analyticsViewJs } from './analytics-view.js';
@@ -83,13 +82,11 @@ export const appJs = [
   // global scope and throw "fetchJson is not defined" when the tab is opened.
   connectorsSettingsJs,
   sourcesJs,
-  // The 5.0 Inputs/Model/Outputs segments. Like sourcesJs they use wrapper-scoped
-  // helpers (fetchJson/escapeHtml/showToast/stageFiles) and are invoked from
-  // renderSources()/boot(), so they MUST stay INSIDE the main client IIFE —
-  // placed immediately after sourcesJs (the IIFE closes at the end of
-  // createDatabaseWizardJs).
+  // The 5.0 Inputs/Model segments. Like sourcesJs they use wrapper-scoped helpers
+  // (fetchJson/escapeHtml/showToast/stageFiles) and are invoked from
+  // renderSources()/boot(), so they MUST stay INSIDE the main client IIFE — placed
+  // immediately after sourcesJs (the IIFE closes at the end of createDatabaseWizardJs).
   inputsJs,
-  outputsJs,
   activityHeaderJs,
   askLatticeJs,
   analyticsViewJs,

@@ -12,9 +12,6 @@ export const sourcesJs = `
     function renderSources() {
       renderSourcesConnectors();
       renderInputsDatabases();
-      // The Outputs > Tables mirror reflects the same entities; keep it fresh as
-      // the sidebar re-renders (cheap — reads in-memory state, no fetch).
-      if (typeof renderOutputsMarkdown === 'function') renderOutputsMarkdown();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a
@@ -267,16 +264,15 @@ export const sourcesJs = `
     function applySidebarGroupStates() {
       [
         'files', 'connectors', 'databases',
-        'out-markdown',
         'objects', 'system',
         // Left-sidebar single-layout nav sections.
-        'nav-tables', 'nav-files', 'nav-md',
+        'nav-tables', 'nav-files',
       ].forEach(applySidebarGroupState);
     }
-    // The three left-sidebar nav sections behave as a single-open ACCORDION — opening
-    // one collapses the others. The Configure-drawer groups (files/connectors/
-    // databases/objects/system) are NOT in this set, so they stay independent.
-    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-files', 'nav-md'];
+    // The left-sidebar nav sections behave as a single-open ACCORDION — opening one
+    // collapses the other. The Configure-drawer groups (files/connectors/databases/
+    // objects/system) are NOT in this set, so they stay independent.
+    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-files'];
     function toggleSidebarGroup(group) {
       var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
       if (willExpand && NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {

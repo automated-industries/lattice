@@ -174,31 +174,34 @@ test('drilling a row shows the record view, relationship sub-folders, and a brea
   await expect(page.locator('.fs-rows-table', { hasText: 'Luminous.' })).toBeVisible();
 });
 
-test('a record renders the Formatted | Markdown toggle and switches between the views', async ({
+test('a record exposes "View Markdown"/"View Formatted" in the ⋯ menu and switches views', async ({
   page,
 }) => {
-  // The 5.0 record view replaced the column-by-column field editor (and its inline
-  // click-to-edit) with a Formatted (rendered markdown) | Markdown (editable raw
-  // markdown that writes back via PUT …/context) toggle. The markdown write-back
+  // The 5.0 record view has a Formatted (rendered markdown) default and an editable
+  // raw Markdown view that writes back via PUT …/context — reached via the ⋯ menu's
+  // "View Markdown" (which then reads "View Formatted"). The markdown write-back
   // itself is covered at the API level by tests/integration/gui-row-context-writeback.
   const { authorId } = await seedChain(gui.url);
   await page.goto(`${gui.url}#/w/table/authors/${authorId}`);
-
-  // The record header carries the name; the Formatted | Markdown toggle is present
-  // with Formatted active by default.
   await expect(page.locator('.view-header')).toContainText('Jane Author');
-  const toggle = page.locator('.fs-view-toggle');
-  await expect(toggle).toBeVisible();
-  await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
+  // No standalone toggle anymore.
+  await expect(page.locator('.fs-view-toggle')).toHaveCount(0);
 
-  // Switch to the editable Markdown view…
-  await toggle.locator('[data-fsview="markdown"]').click();
-  await expect(toggle.locator('[data-fsview="markdown"]')).toHaveClass('on');
+  // Open the ⋯ menu → "View Markdown" → the raw markdown context pane shows and the
+  // item flips to "View Formatted" (the menu label is the source of truth for the mode).
+  const menuBtn = page.locator('#file-menu-btn');
+  await menuBtn.click();
+  const mdItem = page.locator('#file-menu [data-act="markdown"]');
+  await expect(mdItem).toHaveText('View Markdown');
+  await mdItem.click();
   await expect(page.locator('#fs-context')).toBeVisible();
+  await menuBtn.click();
+  await expect(page.locator('#file-menu [data-act="markdown"]')).toHaveText('View Formatted');
 
-  // …and back to Formatted.
-  await toggle.locator('[data-fsview="formatted"]').click();
-  await expect(toggle.locator('[data-fsview="formatted"]')).toHaveClass('on');
+  // …and back to Formatted (the item flips back).
+  await page.locator('#file-menu [data-act="markdown"]').click();
+  await menuBtn.click();
+  await expect(page.locator('#file-menu [data-act="markdown"]')).toHaveText('View Markdown');
 });
 
 test('object navigation always targets the workspace (single view)', async ({ page }) => {

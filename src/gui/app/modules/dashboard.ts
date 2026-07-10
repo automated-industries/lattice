@@ -1005,10 +1005,16 @@ export const dashboardJs = `    // ───────────────
           // (read-only — rollups are generated). Clicking a rollup .md in the
           // Markdown tree lands here in markdown mode.
           var colMode = topLevel && !isComputed ? (collectionViewMode[table] || 'formatted') : 'formatted';
-          var toggleHtml = topLevel && !isComputed
-            ? '<div class="fs-view-toggle">' +
-                '<button type="button" data-colview="formatted"' + (colMode === 'formatted' ? ' class="on"' : '') + '>Formatted</button>' +
-                '<button type="button" data-colview="markdown"' + (colMode === 'markdown' ? ' class="on"' : '') + '>Markdown</button>' +
+          // The ⋯ actions menu (shared #file-menu chrome — only one collection/record
+          // renders into #content at a time, so the id is unique). "View Markdown"
+          // toggles to the raw markdown, "View Formatted" back to the rows grid.
+          var menuHtml = topLevel && !isComputed
+            ? '<div class="actions file-menu-wrap">' +
+                '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\\u22ef</button>' +
+                '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+                  '<button class="file-menu-item" data-act="colmarkdown" role="menuitem">' +
+                    (colMode === 'markdown' ? 'View Formatted' : 'View Markdown') + '</button>' +
+                '</div>' +
               '</div>'
             : '';
           var badgeHtml = isComputed
@@ -1023,7 +1029,7 @@ export const dashboardJs = `    // ───────────────
             breadcrumbHtml: fsBreadcrumb(segs, crumbs, section),
             icon: d.icon,
             label: d.label,
-            headerExtraHtml: badgeHtml + toggleHtml,
+            headerExtraHtml: badgeHtml + menuHtml,
             noteHtml: noteHtml,
             bodyOverrideHtml: colMode === 'markdown'
               ? '<div class="fs-context"><div class="fs-context-doc" id="collection-rollup-doc"><div class="muted" style="padding:12px">Loading\u2026</div></div></div>'
@@ -1042,36 +1048,48 @@ export const dashboardJs = `    // ───────────────
           // Computed views with AI-derived fields fill those cells in the
           // background — hint at that so blank AI columns don't read as broken.
           if (isComputed) fsComputedAiBanner(content, table, myGen);
-          // Formatted | Markdown toggle (top-level collections): markdown shows
-          // the table's rollup file, fetched through the resolver (claimed
-          // artifacts only). Rollups are generated files — read-only here.
-          if (topLevel) {
-            content.querySelectorAll('.fs-view-toggle [data-colview]').forEach(function (bb) {
-              bb.addEventListener('click', function () {
-                collectionViewMode[table] = bb.getAttribute('data-colview') === 'markdown' ? 'markdown' : 'formatted';
-                renderFsCollection(content, segs, section);
+          // Collection ⋯ menu → "View Markdown" / "View Formatted". Markdown shows the
+          // table's rollup file RAW in a text box (matching the record markdown view);
+          // when there is NO rollup file (e.g. a junction/derived table that has rows
+          // but was never rolled up), generate raw markdown from the loaded rows so
+          // "View Markdown" never dead-ends on a table that clearly has data.
+          if (topLevel && !isComputed) {
+            var cmBtn = content.querySelector('#file-menu-btn');
+            var cmMenu = content.querySelector('#file-menu');
+            if (cmBtn && cmMenu) {
+              cmBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var willShow = cmMenu.hidden;
+                cmMenu.hidden = !willShow;
+                cmBtn.setAttribute('aria-expanded', willShow ? 'true' : 'false');
               });
-            });
+              if (typeof wireFileMenuGlobal === 'function') wireFileMenuGlobal();
+              cmMenu.querySelectorAll('[data-act="colmarkdown"]').forEach(function (it) {
+                it.addEventListener('click', function (e) {
+                  e.stopPropagation();
+                  cmMenu.hidden = true;
+                  collectionViewMode[table] = colMode === 'markdown' ? 'formatted' : 'markdown';
+                  renderFsCollection(content, segs, section);
+                });
+              });
+            }
             if (colMode === 'markdown') {
+              var setColRaw = function (text) {
+                var host = document.getElementById('collection-rollup-doc');
+                if (host) host.innerHTML = '<pre class="file-source-pre">' + escapeHtml(text) + '</pre>';
+              };
+              var colFallback = function () {
+                return rowsToMarkdown(d.label, objRowCols(tableByName(table)), view.rows);
+              };
               fetchJson('/api/context/list?table=' + encodeURIComponent(table))
-                .then(function (d) {
-                  var entries = (d && d.entries) || [];
+                .then(function (dd) {
+                  var entries = (dd && dd.entries) || [];
                   var rollup = entries.filter(function (e) { return e.kind === 'file'; })[0];
-                  if (!rollup) throw new Error('no rollup rendered yet');
+                  if (!rollup) throw new Error('no rollup');
                   return fetchJson('/api/context/resolve?content=1&path=' + encodeURIComponent(rollup.path));
                 })
-                .then(function (r) {
-                  var host = document.getElementById('collection-rollup-doc');
-                  if (!host) return;
-                  var md = stripFrontmatter((r && r.content) || '');
-                  host.innerHTML = md.trim()
-                    ? mdToHtml(md)
-                    : '<div class="src-empty">This table has no rendered markdown yet.</div>';
-                })
-                .catch(function () {
-                  var host = document.getElementById('collection-rollup-doc');
-                  if (host) host.innerHTML = '<div class="src-empty">This table has no rendered markdown yet.</div>';
-                });
+                .then(function (r) { var md = (r && r.content) || ''; setColRaw(md.trim() ? md : colFallback()); })
+                .catch(function () { setColRaw(colFallback()); });
             }
           }
         });
@@ -1152,6 +1170,20 @@ export const dashboardJs = `    // ───────────────
       var s = String(raw).replace(/\\s+/g, ' ').trim();
       if (s.length > 90) s = s.slice(0, 88) + '…';
       return escapeHtml(s);
+    }
+
+    // Fallback RAW markdown for a collection whose table has no rendered rollup file:
+    // a heading + a markdown table of the loaded page rows, so "View Markdown" never
+    // dead-ends on a junction/derived table that has data. Newlines/pipes in cells are
+    // neutralised so the markdown table stays well-formed.
+    function rowsToMarkdown(label, cols, rows) {
+      var cell = function (v) { return String(v == null ? '' : v).replace(/\\r?\\n/g, ' ').replace(/\\|/g, '\\\\|'); };
+      var head = '| ' + cols.map(function (c) { return fieldLabel(c); }).join(' | ') + ' |';
+      var sep = '| ' + cols.map(function () { return '---'; }).join(' | ') + ' |';
+      var body = (rows || []).map(function (r) {
+        return '| ' + cols.map(function (c) { return cell(r[c]); }).join(' | ') + ' |';
+      }).join('\\n');
+      return '# ' + label + '\\n\\n' + head + '\\n' + sep + (body ? '\\n' + body : '') + '\\n';
     }
 
     // ── Folder navigation (the Files object's on-disk hierarchy) ─────────────
@@ -1336,9 +1368,9 @@ export const dashboardJs = `    // ───────────────
       if (status) status.style.display = md ? '' : 'none';
       if (histEl) histEl.hidden = !hist;
       if (fldsEl) fldsEl.hidden = !flds;
-      document.querySelectorAll('#content .fs-view-toggle [data-fsview]').forEach(function (b) {
-        b.classList.toggle('on', !hist && !flds && b.getAttribute('data-fsview') === mode);
-      });
+      // The ⋯ menu item flips label to reflect the current view.
+      var mdItem = document.querySelector('#content #file-menu [data-act="markdown"]');
+      if (mdItem) mdItem.textContent = md ? 'View Formatted' : 'View Markdown';
     }
 
     function renderFsItem(content, segs, section) {
@@ -1399,17 +1431,14 @@ export const dashboardJs = `    // ───────────────
             '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
             (isComputed ? '<span class="fs-computed-badge" title="A live, read-only view">Computed</span>' : '') +
             // Formatted = the rendered doc (or file preview); Markdown = the
-            // editable raw markdown (or a file's source). The toggle shows one.
-            // A computed row is read-only \u2014 neither the editing toggle nor the
-            // actions menu is offered.
+            // editable raw markdown (or a file's source), reached via the \u22ef menu's
+            // "View Markdown" (which then reads "View Formatted"). A computed row is
+            // read-only \u2014 the actions menu is not offered.
             (isComputed ? '' :
-            '<div class="fs-view-toggle">' +
-              '<button type="button" data-fsview="formatted">Formatted</button>' +
-              '<button type="button" data-fsview="markdown">Markdown</button>' +
-            '</div>' +
             '<div class="actions file-menu-wrap">' +
               '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\u22ef</button>' +
               '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+                '<button class="file-menu-item" data-act="markdown" role="menuitem">View Markdown</button>' +
                 '<button class="file-menu-item" data-act="fields" role="menuitem">Edit fields</button>' +
                 '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
                 '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
@@ -1431,9 +1460,6 @@ export const dashboardJs = `    // ───────────────
         if (isFile) loadFileContext(content, segs, row);
         else if (isComputed) loadComputedContext(table, row);
         else loadFsContext(table, id);
-        content.querySelectorAll('.fs-view-toggle [data-fsview]').forEach(function (bb) {
-          bb.addEventListener('click', function () { setFsItemView(bb.getAttribute('data-fsview')); });
-        });
         wireRecordMenu(content, segs, table, id, row);
         // A computed row has only the read-only Formatted view — never restore a
         // markdown/fields/history mode remembered from another record's chrome.
@@ -1694,6 +1720,12 @@ export const dashboardJs = `    // ───────────────
           e.stopPropagation();
           if (menu) menu.hidden = true;
           var act = it.getAttribute('data-act');
+          if (act === 'markdown') {
+            // Toggle the raw markdown ⇄ formatted view (records + files share this menu).
+            var cur = (currentRecordId != null && recordViewMode[currentRecordId]) || 'formatted';
+            setFsItemView(cur === 'markdown' ? 'formatted' : 'markdown');
+            return;
+          }
           if (act === 'delete') { removeRow(table, segs, id, row); return; }
           if (act === 'fields') {
             loadFieldsEditor(content, segs, table, id, row, sectionOfHash());
