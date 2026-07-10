@@ -273,9 +273,34 @@ export const sourcesJs = `
         'nav-tables', 'nav-files', 'nav-md',
       ].forEach(applySidebarGroupState);
     }
+    // The three left-sidebar nav sections behave as a single-open ACCORDION — opening
+    // one collapses the others. The Configure-drawer groups (files/connectors/
+    // databases/objects/system) are NOT in this set, so they stay independent.
+    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-files', 'nav-md'];
     function toggleSidebarGroup(group) {
+      var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
+      if (willExpand && NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {
+        NAV_ACCORDION_GROUPS.forEach(function (g) {
+          if (g !== group) { setSidebarGroupCollapsed(g, true); applySidebarGroupState(g); }
+        });
+      }
       setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
       applySidebarGroupState(group);
+    }
+    // Enforce single-open among the nav accordion on (re)render: keep the FIRST
+    // currently-open nav section open (default the first when none) and collapse the
+    // rest. Nav groups default expanded, so a fresh load would show all three — this
+    // reduces it to one. Idempotent; safe to call on every renderNavSections.
+    function enforceNavAccordion() {
+      var openGroup = null;
+      NAV_ACCORDION_GROUPS.forEach(function (g) {
+        if (!openGroup && !sidebarGroupCollapsed(g)) openGroup = g;
+      });
+      if (!openGroup) openGroup = NAV_ACCORDION_GROUPS[0];
+      NAV_ACCORDION_GROUPS.forEach(function (g) {
+        setSidebarGroupCollapsed(g, g !== openGroup);
+        applySidebarGroupState(g);
+      });
     }
     function wireSidebarGroupToggles() {
       var btns = document.querySelectorAll('.section-toggle[data-group]');

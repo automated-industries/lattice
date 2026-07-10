@@ -26,9 +26,10 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     /* ── Dashboards sidebar ─────────────────────────────── */
     .dash-sidebar {
       display: flex; flex-direction: column; min-height: 0;
+      height: 100%; overflow-y: auto;
       background: var(--surface); border-right: 1px solid var(--border);
     }
-    #dash-list { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+    #dash-list { flex: 0 0 auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
     .dash-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center;
       column-gap: 8px; width: 100%; text-align: left;
@@ -48,13 +49,16 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
 
     /* ── Left-sidebar nav sections (Tables / Files / Markdown) ── */
     .nav-section { border-top: 1px solid var(--border); }
+    /* Match the DASHBOARDS header (.col-header-text): blue, 11px, 0.08em, uppercase,
+       no emoji. Sticky so each head pins while the single sidebar scroll runs under it. */
     .nav-section-head {
       width: 100%; display: flex; align-items: center; gap: 6px;
-      padding: 8px 10px; border: 0; background: none; cursor: pointer;
-      color: var(--text-muted); font-size: 11.5px; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.04em;
+      position: sticky; top: 0; z-index: 2; background: var(--surface);
+      padding: 8px 10px; border: 0; cursor: pointer;
+      color: #2563eb; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em;
     }
-    .nav-section-head:hover { color: var(--text); }
+    .nav-section-head:hover { color: #1d4ed8; }
     .nav-tier-head {
       padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
@@ -159,7 +163,11 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .ask-dock-resize:hover, .ask-dock-resize.dragging { background: var(--accent-soft); }
 
     /* ── Dashboard page ─────────────────────────────────── */
-    .dash-page { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
+    /* height:100% (not flex:1) because #content is display:block, so a flex-grow on a
+       block child is inert and the page would collapse to content height. #content has
+       a definite height (flex:1 in the .content-wrap column), so 100% fills the pane
+       and gives .dash-frame a definite height to stretch into. */
+    .dash-page { height: 100%; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
     .dash-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     .dash-title { margin: 0; font-size: 19px; font-weight: 700; flex: 0 1 auto; min-width: 0; }
     .dash-vis-slot { display: inline-flex; align-items: center; min-width: 0; }

@@ -25,6 +25,10 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        and an invisible full-workspace panel would swallow every click. */
     .settings-drawer[hidden] { display: none; }
     .settings-drawer:not(.open) { pointer-events: none; }
+    /* While the drawer takeover is open, freeze the document scroll so the columns
+       beneath it can't scroll (toggled by open/closeSettingsDrawer). The drawer's own
+       body (#drawer-body) keeps its overflow-y:auto below. */
+    body.drawer-open { overflow: hidden; }
     .settings-drawer .drawer-body { max-width: 980px; width: 100%; margin: 0 auto; }
     /* Highlight the header trigger whose takeover is open. */
     .history-btn.on, #configure-trigger.on { background: var(--accent-soft, rgba(79,70,229,0.12)); color: var(--accent, #4f46e5); }
@@ -52,7 +56,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       font-size: 13px; cursor: pointer;
     }
     .drawer-tab.active { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--border-strong); }
-    .drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 20px; }
+    .drawer-body { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 4px 4px 20px; }
     .drawer-body .teams-page { padding: 16px 18px; }
     /* Lattice version, pinned to the bottom of the Settings drawer (moved here
        from the header, whose spot the status pill now occupies). */

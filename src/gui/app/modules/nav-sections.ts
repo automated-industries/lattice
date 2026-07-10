@@ -59,9 +59,11 @@ export const navSectionsJs = `
       renderNavTables();
       renderNavFiles();
       renderNavMarkdown();
-      // Restore each section's persisted collapse state + wire the toggles (both are
-      // idempotent — applySidebarGroupState reads localStorage, wire guards on __wired).
-      if (typeof applySidebarGroupState === 'function') {
+      // Enforce the single-open accordion (keeps one nav section open, collapses the
+      // rest) + wire the toggles (both idempotent — enforceNavAccordion reconciles
+      // localStorage, wire guards on __wired).
+      if (typeof enforceNavAccordion === 'function') enforceNavAccordion();
+      else if (typeof applySidebarGroupState === 'function') {
         ['nav-tables', 'nav-files', 'nav-md'].forEach(applySidebarGroupState);
       }
       if (typeof wireSidebarGroupToggles === 'function') wireSidebarGroupToggles();

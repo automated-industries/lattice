@@ -42,12 +42,22 @@ export const analyticsViewJs = `
       // The Configure button + the drawer are wired by wireSettingsDrawer (it now
       // targets #configure-trigger); the old Ask-Gladys view-toggle button is gone
       // (the Ask Gladys dock is always visible in the single layout).
-      // "+ New Dashboard" in the Dashboards header → the home (New Dashboard tab
-      // + the empty-state prompt), even when a dashboard is already open.
+      // "+" in the Dashboards header → open-or-focus the seeded "Welcome to Lattice!"
+      // dashboard. Dedupe is automatic: the router reconciles #/w/dash/<id> to the
+      // existing tab, so a second click just re-activates it. If Welcome was deleted
+      // (not in the loaded list), fall back to the home empty-state, whose prompt box
+      // is the "ask Gladys to build one" starting point.
       var newBtn = document.getElementById('dash-new-btn');
       if (newBtn && !newBtn.__wired) {
         newBtn.__wired = true;
-        newBtn.addEventListener('click', function () { location.hash = AN_HOME_HASH; });
+        newBtn.addEventListener('click', function () {
+          var hasWelcome =
+            anDashRows &&
+            anDashRows.some(function (r) {
+              return String(r.id) === 'welcome-lattice';
+            });
+          location.hash = hasWelcome ? '#/w/dash/welcome-lattice' : AN_HOME_HASH;
+        });
       }
       // The brand logo just navigates home (#/) via its href — no view toggle in
       // the single layout.

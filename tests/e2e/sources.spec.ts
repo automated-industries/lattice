@@ -47,8 +47,10 @@ test.afterEach(async () => {
 });
 
 test('the Configure drawer shows the three Inputs sections', async ({ page }) => {
-  // The Markdown tree lives in the left sidebar now (always visible, no view flip).
+  // The Markdown tree lives in the left sidebar now. The Tables/Files/Markdown sections
+  // are a single-open accordion (Tables open by default), so expand Markdown first.
   await page.goto(gui.url + '#/');
+  await page.locator('.section-toggle[data-group="nav-md"]').click();
   await expect(page.locator('#nav-md-tree')).toBeVisible({ timeout: 5000 });
   // Files / Connectors / Databases moved into the Configure drawer's Inputs tab.
   await openInputsDrawer(page);

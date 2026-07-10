@@ -175,8 +175,12 @@ import { css } from '../../src/gui/app/css.js';
 // Single-layout reframe re-verify fix: the Graph subtab shares the Data Model grid, so
 // .brain-graph gets a definite 64vh height there (.dm-tables-merge .brain-graph) — without
 // it the height:100% chain collapsed the graph canvas to 0. Recaptured.
-const ORIGINAL_LENGTH = 149638;
-const ORIGINAL_SHA256 = 'c851434eee78a8e06b7d31e2e68a1b89279e16aec6732970c53d3b1708a7b21a';
+// Single-layout polish: .dash-page fills the pane (height:100%, not inert flex:1); sidebar
+// full-height + scroll (.dash-sidebar height:100%/overflow); nav heads styled like
+// DASHBOARDS (blue #2563eb, 11px/0.08em, sticky); drawer scroll-lock (body.drawer-open
+// overflow:hidden + .drawer-body overscroll-behavior:contain). Recaptured.
+const ORIGINAL_LENGTH = 150514;
+const ORIGINAL_SHA256 = 'c884186b105a27fdb254dcd2957c2cb7f9f797b4c0276794eb528fc9e77c1870';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

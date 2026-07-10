@@ -13,20 +13,16 @@
 // tabsJs in modules/index.ts.
 export const analyticsTabsJs = `
     var AN_HOME_HASH = '#/';
-    // A permanent, non-closable "New Dashboard" tab is ALWAYS present — the
-    // Workspace strip is never empty. It maps to the home (the "Ask your company
-    // anything" prompt); opening a dashboard/table/file/markdown doc adds a
-    // closable typed tab alongside it.
-    function anNewTab() {
-      return { key: 'new', title: 'New Dashboard', icon: '📊', hash: AN_HOME_HASH, closable: false };
-    }
-    var anTabs = [anNewTab()];
-    var anActiveTabKey = 'new';
+    // One closable tab per open surface (dashboard/table/file/markdown); NO permanent
+    // tab. The strip is empty at the home route (#/, AN_HOME_HASH) — the "Ask your
+    // company anything" empty-state. Opening a surface adds its typed tab.
+    var anTabs = [];
+    var anActiveTabKey = null;
 
-    // Map a hash to a stable logical tab key. The home is the permanent 'new' tab;
-    // each open surface keys by kind + its FIRST path segment so a record drill-in
-    // (#/w/table/foo/<rowId>/…) reuses the same 'table:foo' tab, and re-opening from
-    // the sidebar activates the existing tab instead of duplicating it.
+    // Map a hash to a stable logical tab key, or null for the home route (#/, which
+    // has no tab). Each open surface keys by kind + its FIRST path segment so a record
+    // drill-in (#/w/table/foo/<rowId>/…) reuses the same 'table:foo' tab, and
+    // re-opening from the sidebar activates the existing tab instead of duplicating it.
     function anTabKeyForHash(hash) {
       hash = hash || '';
       var m = /^#\\/w\\/(dash|table|file|md)\\/([^\\/]+)/.exec(hash);
@@ -34,7 +30,7 @@ export const analyticsTabsJs = `
         var kindMap = { dash: 'dashboard', table: 'table', file: 'file', md: 'markdown' };
         return kindMap[m[1]] + ':' + decodeURIComponent(m[2]);
       }
-      return 'new';
+      return null;
     }
 
     function anFindTab(key) {
@@ -43,16 +39,14 @@ export const analyticsTabsJs = `
     }
 
     // Ensure a tab exists for the current hash and mark it active. Called by
-    // renderRoute before its body dispatch. A null key (the Analytics home)
-    // deselects — the strip can legitimately show no active tab.
+    // renderRoute before its body dispatch. A null key (the home route) deselects —
+    // the strip legitimately shows no active tab (and may be empty).
     function anReconcileTab(hash) {
       var key = anTabKeyForHash(hash);
+      if (!key) { anActiveTabKey = null; return; }
       var tab = anFindTab(key);
-      if (!tab) {
-        anTabs.push(anSeedTab(key, hash));
-      } else if (key !== 'new') {
-        tab.hash = hash;
-      }
+      if (!tab) anTabs.push(anSeedTab(key, hash));
+      else tab.hash = hash;
       anActiveTabKey = key;
     }
 
@@ -97,12 +91,11 @@ export const analyticsTabsJs = `
       }
     }
 
-    // Drop every open dashboard tab (workspace switch — the new workspace has
-    // its own dashboards; stale tabs would 404), back to just the permanent
-    // "New Dashboard" tab.
+    // Drop every open tab (workspace switch — the new workspace has its own
+    // dashboards; stale tabs would 404), back to an empty strip (the home route).
     function anResetTabs() {
-      anTabs = [anNewTab()];
-      anActiveTabKey = 'new';
+      anTabs = [];
+      anActiveTabKey = null;
       anRenderTabStrip();
     }
 

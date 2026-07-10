@@ -18,6 +18,14 @@ import { allAsyncOrSync } from '../db/adapter.js';
 export const WELCOME_DASHBOARD_ID = 'welcome-lattice';
 /** One-time seed marker — seeds exactly once per workspace, even if later deleted. */
 const WELCOME_SEED_SENTINEL = 'internal:seed:welcome-dashboard:v1';
+/**
+ * One-time refresh marker. Workspaces seeded before the dashboard became light-only
+ * still hold the old dark-capable HTML in their `welcome-lattice` row. This migration
+ * rewrites that row to the current light HTML — but ONLY when it still carries the old
+ * dark-mode marker (`#0b1220`), so a user who edited or replaced the dashboard is never
+ * overwritten. On a freshly-seeded (already light) row it matches nothing = no-op.
+ */
+const WELCOME_REFRESH_SENTINEL = 'internal:seed:welcome-dashboard:v2-light';
 export const WELCOME_DASHBOARD_TITLE = 'Welcome to Lattice!';
 const WELCOME_DESCRIPTION =
   'Your starting point — what Lattice does and how to bring in your data.';
@@ -35,15 +43,14 @@ export function welcomeDashboardSpec(): string {
 
 /**
  * The standalone HTML page for the Welcome dashboard. Self-contained (inline CSS +
- * one inline script), theme-aware via `prefers-color-scheme`, and wired to the
- * host through `window.lattice.act(...)` (navigation only). No network, no data reads.
+ * one inline script), LIGHT-ONLY to match the light-only host app (a dark
+ * `prefers-color-scheme` override would paint the dashboard black on a dark-mode OS
+ * while the surrounding app stays white), and wired to the host through
+ * `window.lattice.act(...)` (navigation only). No network, no data reads.
  */
 export function welcomeDashboardHtml(): string {
   return `<style>
-  :root { color-scheme: light dark; --bg: #ffffff; --card: #f8fafc; --text: #0f172a; --muted: #64748b; --border: #e2e8f0; --accent: #4f46e5; --accent-soft: #eef2ff; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #0b1220; --card: #131c2e; --text: #e8eefc; --muted: #94a3b8; --border: #24304a; --accent: #818cf8; --accent-soft: #1c2740; }
-  }
+  :root { color-scheme: light; --bg: #ffffff; --card: #f8fafc; --text: #0f172a; --muted: #64748b; --border: #e2e8f0; --accent: #4f46e5; --accent-soft: #eef2ff; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
   .wrap { max-width: 860px; margin: 0 auto; padding: 40px 28px 64px; }
@@ -176,5 +183,17 @@ export async function seedWelcomeDashboard(db: Lattice): Promise<void> {
        VALUES ('${WELCOME_DASHBOARD_ID}', ${sqliteLiteral(WELCOME_DASHBOARD_TITLE)},
                ${sqliteLiteral(html)}, ${sqliteLiteral(spec)}, ${sqliteLiteral(WELCOME_DESCRIPTION)})`;
 
-  await db.migrate([{ version: WELCOME_SEED_SENTINEL, sql }]);
+  // Refresh an EXISTING dark-capable Welcome row to the light HTML, guarded on the old
+  // dark-mode marker so a user-edited/replaced dashboard is never touched. Idempotent:
+  // the new light html has no `0b1220`, so re-running (or a fresh row) matches nothing.
+  const refreshSql = pg
+    ? `UPDATE dashboards SET html = $whtml$${html}$whtml$
+       WHERE id = '${WELCOME_DASHBOARD_ID}' AND html LIKE '%0b1220%'`
+    : `UPDATE dashboards SET html = ${sqliteLiteral(html)}
+       WHERE id = '${WELCOME_DASHBOARD_ID}' AND html LIKE '%0b1220%'`;
+
+  await db.migrate([
+    { version: WELCOME_SEED_SENTINEL, sql },
+    { version: WELCOME_REFRESH_SENTINEL, sql: refreshSql },
+  ]);
 }

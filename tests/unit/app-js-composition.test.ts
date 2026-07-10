@@ -432,8 +432,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Fourth-order follow-up: the edit-mode commit is additionally gated on a per-load token
 // (cbLoadSeq) so a stale same-route re-entry can't repaint/clobber a newer load; stale
 // module-header deps (renderGen/setContent) dropped from the comment. Recaptured.
-const ORIGINAL_LENGTH = 708452;
-const ORIGINAL_SHA256 = '7e681732947bb55cbb185e206eb3a55ba8e2f00685b2eaa40e22014b9738b504';
+// Single-layout polish: removed the permanent "New Dashboard" home tab (empty strip at
+// home; anTabKeyForHash returns null; + opens/focuses the Welcome dashboard); Configure
+// drawer scroll-lock (body.drawer-open toggle); sidebar Tables/Files/Markdown single-open
+// accordion (enforceNavAccordion / NAV_ACCORDION_GROUPS). Recaptured.
+// Polish review fix: the drawer close-hide timeout is now cancelable (drawerHideTimer) so
+// a quick reopen can't strand body.drawer-open and freeze page scroll. Recaptured.
+const ORIGINAL_LENGTH = 711475;
+const ORIGINAL_SHA256 = 'a667590f6b2796effd1eecda56e76fe630483394d976b4465b07664537f7c824';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
