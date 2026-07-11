@@ -253,6 +253,23 @@ export function isFeedHiddenTable(t: string): boolean {
 }
 
 /**
+ * Is `table` a real, queryable (non-internal) table RIGHT NOW? Prefer the open-time
+ * `validTables` snapshot, then fall back to the LIVE registry: a connector or an
+ * external database registers its tables via `db.defineLate` AFTER the workspace
+ * opened, so those tables are live-registered but absent from the snapshot. Without
+ * this fallback the sidebar lists such a table (it is built from the live registry)
+ * while clicking it 404s "Unknown table" — the exact list-vs-validation divergence
+ * behind that bug. This mirrors the `validTables.has(x) || getRegisteredTableNames()
+ * .includes(x)` idiom already used on the schema-op paths; internal (`__lattice_*`)
+ * tables stay excluded so the security boundary is unchanged.
+ */
+export function isRegisteredTable(active: ActiveDb, table: string): boolean {
+  if (active.validTables.has(table)) return true;
+  if (table.startsWith('__lattice') || table.startsWith('_lattice')) return false;
+  return active.db.getRegisteredTableNames().includes(table);
+}
+
+/**
  * #2.1 — the relation a SELECT for `table` should target: the audience-masking
  * view (`<table>_v`) when this (member) connection lost base SELECT, else the base
  * table itself. Passing `<table>_v` to `db.query`/`db.get`-style SELECTs is safe —

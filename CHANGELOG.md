@@ -142,6 +142,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Clicking a just-connected connector or external-database table no longer errors "Unknown
+  table".** Connecting a connector (or an external database) registers its tables, and they
+  appear in the sidebar right away — but the row and read routes validated table names against
+  a snapshot captured when the workspace opened, so a table added after that snapshot 404'd
+  with "Unknown table" when clicked. Those routes now fall back to the live table registry
+  (internal bookkeeping tables stay excluded), so a listed table is always openable — matching
+  what the schema routes already did.
+
 - **The assistant reliably sees the dashboard (or record) you have open.** Asking "why is
   this dashboard blank?" while viewing a dashboard no longer gets a reply asking you to open
   the dashboard you are already looking at. The chat sends the currently-open surface with
