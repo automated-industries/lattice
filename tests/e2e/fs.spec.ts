@@ -219,25 +219,29 @@ test('object navigation always targets the workspace (single view)', async ({ pa
   await expect(page).toHaveURL(/#\/w\/table\/authors$/);
 
   await page.locator('#configure-trigger').click();
-  await page.locator('.drawer-tab[data-tab="lattice"]').click();
-  await expect(page.locator('#settings-drawer')).toContainText('Lattice Settings');
+  // The Workspaces module moved from the former "Lattice" tab into User settings.
+  await page.locator('.drawer-tab[data-tab="user"]').click();
+  await expect(page.locator('#settings-drawer')).toContainText('Workspaces');
   await expect(page.locator('#advanced-toggle')).toHaveCount(0);
 });
 
-test('the gear opens a settings drawer with Database / Lattice / User tabs', async ({ page }) => {
+test('the gear opens a settings drawer with Workspace / User tabs (Workspaces under User)', async ({
+  page,
+}) => {
   await page.goto(gui.url);
   await page.locator('#configure-trigger').click();
 
   const drawer = page.locator('#settings-drawer');
   await expect(drawer).toHaveClass(/open/);
-  // Defaults to the User tab.
+  // Defaults to the User tab — which now also hosts the Workspaces registry.
   await expect(drawer).toContainText('User Settings');
+  await expect(drawer).toContainText('Workspaces');
 
   await page.locator('.drawer-tab[data-tab="database"]').click();
   await expect(drawer).toContainText('Workspace Settings');
 
-  await page.locator('.drawer-tab[data-tab="lattice"]').click();
-  await expect(drawer).toContainText('Lattice Settings');
+  // There is no longer a separate "Lattice" tab.
+  await expect(page.locator('.drawer-tab[data-tab="lattice"]')).toHaveCount(0);
 
   // Escape closes it.
   await page.keyboard.press('Escape');

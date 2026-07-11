@@ -276,13 +276,14 @@ export const dataModelJs = `    // ───────────────
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
           '<div id="assistant-host"></div>' +
           '<div id="preferences-host"></div>' +
+          '<div id="workspaces-host" style="margin-top:8px"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
       renderAssistantPanel(document.getElementById('assistant-host'));
       renderPreferencesPanel(document.getElementById('preferences-host'));
-      // Databases catalog lives on Lattice Settings; per-database cloud/team
-      // config lives on Database Settings. User Settings is identity +
-      // preferences only — every config option in exactly one place.
+      // The Workspaces registry (the former "Lattice" tab) now lives here too — every
+      // config option in one place. Per-database cloud/team config is on Workspace Settings.
+      renderWorkspacesPanel(document.getElementById('workspaces-host'));
     }
 
 
@@ -775,14 +776,11 @@ export const dataModelJs = `    // ───────────────
       });
     }
 
-    function renderLatticeSettings(content) {
-      content.innerHTML =
-        '<div class="teams-page">' +
-          '<h2>Lattice Settings</h2>' +
-          '<p class="lead">Every workspace this lattice can switch to. This is the same list as the header dropdown.</p>' +
-          '<div id="lattice-dbs-host"><div class="placeholder" style="padding:18px">Loading workspaces…</div></div>' +
-        '</div>';
-      var host = document.getElementById('lattice-dbs-host');
+    // The Workspaces panel (moved from the former "Lattice" tab into User settings):
+    // the registry of every workspace this lattice can switch to, rendered into host.
+    function renderWorkspacesPanel(host) {
+      if (!host) return;
+      host.innerHTML = '<div class="placeholder" style="padding:18px">Loading workspaces…</div>';
       // Single source of truth: the workspace registry (same as the header switcher).
       fetchJson('/api/workspaces').then(function (data) {
         var currentId = (data && data.current) || null;

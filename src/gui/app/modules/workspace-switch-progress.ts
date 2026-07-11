@@ -53,10 +53,15 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       if (hash === '#/graph') return { tab: 'datamodel', subtab: 'graph' };
       if (hash === '#/tables') return { tab: 'datamodel', subtab: 'tables' };
       if (hash === '#/settings/history') return { tab: 'history' };
-      if (hash === '#/settings/lattice') return { tab: 'lattice' };
+      // Lattice tab merged into User.
+      if (hash === '#/settings/lattice') return { tab: 'user' };
       if (hash === '#/settings/database' || hash === '#/settings/project-config' || hash === '#/settings/data-model')
         return { tab: 'datamodel' };
-      if (hash === '#/settings/inputs') return { tab: 'inputs' };
+      // Inputs split into three tabs; keep the legacy #/settings/inputs → Files.
+      if (hash === '#/settings/files') return { tab: 'files' };
+      if (hash === '#/settings/connectors') return { tab: 'connectors' };
+      if (hash === '#/settings/databases') return { tab: 'databases' };
+      if (hash === '#/settings/inputs') return { tab: 'files' };
       if (hash === '#/settings/user-config') return { tab: 'user' };
       return null;
     }

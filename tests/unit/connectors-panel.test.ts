@@ -140,12 +140,16 @@ describe('connectors panel (jsdom)', () => {
 });
 
 describe('connectors panel wiring (structural + parse-safety)', () => {
-  it('is composed into appJs and wired to the left-sliding dialog (not the drawer)', () => {
+  it('the connect FORM is the left-sliding dialog; the Connectors tab only hosts the list + entry', () => {
     expect(appJs).toContain('function renderConnectorsPanel(host)');
     expect(appJs).toContain('function openConnectorsDialog()');
-    // The connectors panel no longer lives in the Settings drawer.
-    expect(appJs).not.toContain("tab === 'connectors'");
-    // The sidebar's "Add a Connector" opens the dialog.
+    // There IS now a Connectors Configure tab, but it renders the connectors LIST
+    // (renderConnectorsTab → renderSourcesConnectors) + the "Add a Connector" entry —
+    // the connect FORM (renderConnectorsPanel) still lives only in the left-sliding
+    // dialog, never embedded in the drawer body.
+    expect(appJs).toContain("tab === 'connectors'");
+    expect(appJs).toContain('renderConnectorsTab');
+    // The "Add a Connector" button opens that dialog.
     expect(appJs).toContain('openConnectorsDialog()');
   });
 

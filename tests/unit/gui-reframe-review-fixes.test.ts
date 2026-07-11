@@ -90,9 +90,13 @@ describe('reframe review fix #4 — a dismissed Configure drawer does not re-pop
   });
 });
 
-describe('reframe review fix #6 — dashboard add-source opens the Inputs tab', () => {
-  it('opens the Inputs drawer tab (where the src-add-* buttons live), not Data Model', () => {
-    expect(appJs).toContain("openConfigureDrawer('inputs')");
+describe('reframe review fix #6 — dashboard add-source opens the right Configure tab', () => {
+  it('opens the matching Files/Connectors/Databases tab (where the src-add-* buttons live), not Data Model', () => {
+    // The single Inputs tab was split into three; each add-source action opens ITS tab.
+    expect(appJs).toContain('openConfigureDrawer(addTab[name])');
+    expect(appJs).toContain("'add-file': 'files'");
+    expect(appJs).toContain("'add-connector': 'connectors'");
+    expect(appJs).toContain("'add-database': 'databases'");
   });
 });
 
