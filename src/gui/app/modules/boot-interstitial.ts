@@ -41,6 +41,24 @@ export const bootInterstitialJs = `    // ────────────�
       // resolve to it (edit_dashboard's default target).
       var an = /^#\\/analytics\\/(.+)$/.exec(hash);
       if (an) return { table: 'dashboards', id: decodeURIComponent(an[1]) };
+      // 5.0 canonical Workspace routes: #/w/(dash|table|file|md)/<first>[/<drill-in>…]
+      // (renderRoute). This is the route the user actually sits on — normalizeLegacyHash
+      // rewrites #/analytics/<id> → #/w/dash/<id> on entry — so WITHOUT this branch the
+      // open dashboard/record is never sent to chat as activeContext, and the assistant
+      // asks the user to open a surface that is already open.
+      var w = /^#\\/w\\/(dash|table|file|md)\\/(.+)$/.exec(hash);
+      if (w) {
+        var wkind = w[1];
+        var wsegs = w[2].split('/').map(function (s) { return decodeURIComponent(s); });
+        if (wkind === 'dash') return { table: 'dashboards', id: wsegs[0] };
+        if (wkind === 'file') return { table: 'files', id: wsegs[0] };
+        // table / markdown: <name>[/<rowId>/<rel>/<id>…] — the deepest complete
+        // table,id pair (the same alternation the fs renderers use); a bare
+        // collection (odd seg count, nothing selected) yields null.
+        var wlast = (wsegs.length % 2 === 0) ? wsegs.length - 1 : wsegs.length - 2;
+        if (wlast >= 1) return { table: wsegs[wlast - 1], id: wsegs[wlast] };
+        return null;
+      }
       var segs = (typeof fsParse === 'function') ? fsParse(hash) : null;
       if (segs && segs.length >= 2) {
         // segments alternate table,id,table,id… — take the last complete pair.

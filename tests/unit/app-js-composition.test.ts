@@ -452,8 +452,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (nav-dashboards), with TABLES kept as the default-open section (accordion index 0).
 // A nav-accordion header click now always OPENS its section (clicking the only-open one is a
 // no-op) so exactly one section stays visible — never a collapse-to-none. Recaptured.
-const ORIGINAL_LENGTH = 701953;
-const ORIGINAL_SHA256 = 'dc658b9a465b45d7bfeace2615326d09cc93e31856f8f9f5bccca6d0d464d9f8';
+// activeElement() now recognizes the 5.0 canonical Workspace routes #/w/(dash|table|file|md)/…
+// (it previously matched only the retired #/analytics/<id>), so the currently-open dashboard/
+// record is sent to chat as activeContext — fixing the assistant asking you to open an
+// already-open dashboard. Recaptured.
+const ORIGINAL_LENGTH = 703130;
+const ORIGINAL_SHA256 = '710867eaace7b0b2b14770ca72fa6cb96cc8cf51b0cc6726983e982ed35df4be';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

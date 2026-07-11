@@ -142,6 +142,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The assistant reliably sees the dashboard (or record) you have open.** Asking "why is
+  this dashboard blank?" while viewing a dashboard no longer gets a reply asking you to open
+  the dashboard you are already looking at. The chat sends the currently-open surface with
+  each message so the assistant knows which dashboard/record you mean (and its self-diagnosis
+  step can run) — but that detection still matched only the retired `#/analytics/…` route and
+  saw nothing open on the current workspace routes (`#/w/dash/…`, `#/w/table/…`, `#/w/file/…`).
+  It now recognizes those routes, so the open dashboard, table record, or file is passed to
+  the assistant as context again.
+
 - **A background dashboard auto-repair can no longer crash on an abrupt shutdown.** When
   the data model changes, dashboards that read the affected tables are re-authored on a
   short debounce. If the workspace closed before that debounced pass ran, its first data
