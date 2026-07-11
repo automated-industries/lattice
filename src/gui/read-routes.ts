@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, readJson, parsePageParam, sendHtmlCompressed } from './http.js';
+import { isRegisteredTable } from './active-db.js';
 import { Lattice } from '../lattice.js';
 import { allAsyncOrSync, type StorageAdapter } from '../db/adapter.js';
 import { runDashboardSql } from './dashboard-sql.js';
@@ -669,7 +670,7 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'table is required' }, 400);
       return true;
     }
-    if (!active.validTables.has(table)) {
+    if (!isRegisteredTable(active, table)) {
       sendJson(res, { error: `Unknown table: ${table}` }, 400);
       return true;
     }
@@ -690,7 +691,7 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'table and id are required' }, 400);
       return true;
     }
-    if (!active.validTables.has(table)) {
+    if (!isRegisteredTable(active, table)) {
       sendJson(res, { error: `Unknown table: ${table}` }, 400);
       return true;
     }
@@ -1162,7 +1163,7 @@ export async function handleReadRoutes(
     // stays the lazy deeper-level listing.
     const tableParam = (url.searchParams.get('table') ?? '').trim();
     if (tableParam) {
-      if (!active.validTables.has(tableParam) || active.hiddenLinkTables.has(tableParam)) {
+      if (!isRegisteredTable(active, tableParam) || active.hiddenLinkTables.has(tableParam)) {
         sendJson(res, { error: 'unknown table' }, 404);
         return true;
       }
