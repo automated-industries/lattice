@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson, readJson, parsePageParam, MAX_ROWS_PAGE } from './http.js';
 import type { Row } from '../types.js';
 import type { GuiRequestContext } from './request-context.js';
-import { readRelationFor, attachRowAccess } from './active-db.js';
+import { readRelationFor, attachRowAccess, isRegisteredTable } from './active-db.js';
 import { createRow, updateRow, deleteRow, linkRows, unlinkRows } from './mutations.js';
 import { ROWS_PATH, LINK_PATH } from './route-paths.js';
 
@@ -83,7 +83,7 @@ export async function handleTablesRoutes(
     const [, rawTable, rawId] = rowsMatch;
     const table = decodeURIComponent(rawTable ?? '');
     const id = rawId ? decodeURIComponent(rawId) : null;
-    if (!active.validTables.has(table)) {
+    if (!isRegisteredTable(active, table)) {
       sendJson(res, { error: `Unknown table: ${table}` }, 400);
       return true;
     }

@@ -11,6 +11,7 @@ import {
   changeVisibleToActiveRole,
   isDeleteOp,
   isFeedHiddenTable,
+  isRegisteredTable,
 } from './active-db.js';
 import { openConfig, startBackgroundRender, disposeActive } from './lifecycle.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
@@ -851,7 +852,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             handle: async (req, res) => {
               if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
               const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
-              if (!active.validTables.has(entityName)) {
+              if (!isRegisteredTable(active, entityName)) {
                 sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
                 return true;
               }
