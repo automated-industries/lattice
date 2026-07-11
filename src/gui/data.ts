@@ -82,6 +82,25 @@ export interface GuiTableSummary {
    * declared field types, where the editor falls back to `columnTypes`.
    */
   fieldTypes?: Record<string, string>;
+  /**
+   * Provenance-schema grouping for the schema-grouped TABLES sidebar (see
+   * schema-classify.ts): a stable key + human label. `schemaKey` is `'lattice'` for
+   * native/derived/authored tables, `'conn:<toolkit>'` per connector, `'db:<connId>'`
+   * per connected external database. Server-stamped so the sidebar renders zero-fetch.
+   */
+  schemaKey?: string;
+  schemaLabel?: string;
+  /**
+   * True for a pure link/junction table (hidden from the TABLES list — a junction is
+   * not a browsable object). From the display predicate `isHiddenLinkTable`.
+   */
+  linkTable?: boolean;
+  /**
+   * True when the read-only SQL runner refuses this table (credentials / chat storage /
+   * bookkeeping — see isSqlProtectedTable). The Tables UI hides it, since its SQL-runner
+   * page could only ever error.
+   */
+  sqlDenied?: boolean;
 }
 
 export interface GuiFileSummary {
