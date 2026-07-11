@@ -443,8 +443,17 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Formatted|Markdown toggle in favor of a "View Markdown"/"View Formatted" item in the ⋯
 // menu (collection + record + file); collection markdown shows RAW source with a
 // rowsToMarkdown fallback so a data table is never blank. Recaptured.
-const ORIGINAL_LENGTH = 699716;
-const ORIGINAL_SHA256 = '1ad481718fb40417c70ab20e288350be5bb4eaf1ac93201f59d5df9ac1c7ea7f';
+// Configure/sidebar polish batch: welcome "ask" chips SUBMIT to Gladys (sendChat) +
+// add-source callers open the new Files/Connectors/Databases tabs; the single Inputs
+// tab split into three (renderFilesTab/renderConnectorsTab/renderDatabasesTab, no
+// subheadings); the Lattice tab's Workspaces module folded into User (renderWorkspacesPanel);
+// configureRouteFor maps #/settings/{files,connectors,databases} + legacy inputs→files and
+// lattice→user; the left sidebar's Dashboards section joined the single-open accordion
+// (nav-dashboards), with TABLES kept as the default-open section (accordion index 0).
+// A nav-accordion header click now always OPENS its section (clicking the only-open one is a
+// no-op) so exactly one section stays visible — never a collapse-to-none. Recaptured.
+const ORIGINAL_LENGTH = 701953;
+const ORIGINAL_SHA256 = 'dc658b9a465b45d7bfeace2615326d09cc93e31856f8f9f5bccca6d0d464d9f8';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

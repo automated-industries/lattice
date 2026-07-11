@@ -29,6 +29,9 @@ test('sidebar lists dashboards; opening = one deduped tab; close falls back to h
   const b = await seed('Pipeline');
 
   await page.goto(gui.url);
+  // Dashboards is a collapsible accordion section now (TABLES opens by default); expand
+  // it so the dashboard list is visible + its items are clickable.
+  await page.locator('.section-toggle[data-group="nav-dashboards"]').click();
   await expect(page.locator('.dash-item')).toHaveCount(2);
   await expect(page.locator('#dash-list')).toContainText('Revenue');
 
@@ -207,6 +210,9 @@ test('many open tabs collapse into a "⋯ N" overflow with the active tab visibl
 
     await page.setViewportSize({ width: 900, height: 700 });
     await page.goto(ogui.url);
+    // Dashboards is a collapsible accordion section (TABLES opens by default); expand it.
+    // With a long list the OPEN section scrolls internally, so each item stays reachable.
+    await page.locator('.section-toggle[data-group="nav-dashboards"]').click();
     // Open all sixteen.
     for (const id of ids) {
       await page.locator(`.dash-item[data-dash-id="${id}"]`).click();

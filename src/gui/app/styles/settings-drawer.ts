@@ -17,10 +17,13 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       background: var(--surface, #fff);
       border-top: 1px solid rgba(15, 23, 42, 0.06);
       z-index: 95; display: flex; flex-direction: column;
-      opacity: 0; transform: translateY(-6px);
-      transition: transform 0.18s ease, opacity 0.18s ease;
+      /* Slide in from the top (down from behind the header) on open, back up on close.
+         Kept under the 220ms hide-timeout in closeSettingsDrawer so the panel isn't
+         display:none'd mid-slide. */
+      transform: translateY(-100%);
+      transition: transform 0.2s ease;
     }
-    .settings-drawer.open { transform: translateY(0); opacity: 1; }
+    .settings-drawer.open { transform: translateY(0); }
     /* display:flex above would override the hidden attribute's display:none —
        and an invisible full-workspace panel would swallow every click. */
     .settings-drawer[hidden] { display: none; }
@@ -141,9 +144,6 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .dm-tables-merge .brain-graph { height: 64vh; }
     @media (max-width: 900px) { .dm-tables-merge { grid-template-columns: 1fr; } }
     .inputs-group { margin-bottom: 20px; }
-    .inputs-group-head { display: flex; align-items: center; justify-content: space-between;
-      font-size: 12px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px; }
     .inputs-files-toggle { display: inline-flex; gap: 2px; }
     .ift-btn { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
       width: 24px; height: 22px; border-radius: 5px; cursor: pointer; font-size: 12px; line-height: 1; }

@@ -202,20 +202,23 @@ export const dashboardJs = `    // ───────────────
       if (name === 'configure') { if (typeof goConfigure === 'function') goConfigure(); return; }
       if (name === 'analytics') { if (typeof goAnalytics === 'function') goAnalytics(); return; }
       if (name === 'ask') {
-        if (typeof goAnalytics === 'function') goAnalytics();
-        setTimeout(function () {
-          var inp = document.getElementById('chat-input');
-          if (!inp) return;
-          if (arg) inp.value = String(arg);
-          inp.focus();
-        }, 60);
+        // A dashboard "ask" chip SUBMITS the question straight to Gladys — not just
+        // prefill the composer. The Ask Gladys dock is always visible in the single
+        // layout, so no navigation is needed: sendChat posts it, shows the user bubble,
+        // and clears the composer (and guards on chatBusy so a rapid double-click can't
+        // double-send). Fall back to prefilling the composer if the chat isn't wired.
+        var q = arg ? String(arg).trim() : '';
+        if (q && typeof sendChat === 'function') { sendChat(q); return; }
+        var inp = document.getElementById('chat-input');
+        if (inp) { if (q) inp.value = q; inp.focus(); }
         return;
       }
       var addBtn = { 'add-file': 'src-add-files', 'add-connector': 'src-add-connector', 'add-database': 'src-add-database' };
+      var addTab = { 'add-file': 'files', 'add-connector': 'connectors', 'add-database': 'databases' };
       if (Object.prototype.hasOwnProperty.call(addBtn, name)) {
-        // The add-source buttons live ONLY in the Inputs drawer tab — goConfigure()
-        // opens Data Model, where the button lookup below would miss. Open Inputs.
-        if (typeof openConfigureDrawer === 'function') openConfigureDrawer('inputs');
+        // The add-source buttons live in their own Configure tab now (Files/Connectors/
+        // Databases) — open the RIGHT one, then click the button by id.
+        if (typeof openConfigureDrawer === 'function') openConfigureDrawer(addTab[name]);
         else if (typeof goConfigure === 'function') goConfigure();
         var id = addBtn[name];
         setTimeout(function () { var b = document.getElementById(id); if (b) b.click(); }, 90);

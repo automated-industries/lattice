@@ -75,10 +75,14 @@ export const configureDrawerJs = `
         renderSourcesFilesInto(host, rows);
       }
     }
-    function renderInputsTab(body) {
+    // Files / Connectors / Databases are now three separate Configure tabs (the tab
+    // name IS the heading, so the old .inputs-group-head subheadings are dropped). Each
+    // reuses the same element ids + wiring fns as the former single Inputs tab.
+    function renderFilesTab(body) {
       if (!body) return;
       body.innerHTML =
-        '<div class="inputs-group"><div class="inputs-group-head">Files' +
+        '<div class="inputs-group">' +
+        '<div class="inputs-files-bar" style="display:flex;justify-content:flex-end;margin-bottom:8px">' +
         '<span class="inputs-files-toggle" id="inputs-files-toggle">' +
         '<button type="button" class="ift-btn" data-view="list" title="List view">☰</button>' +
         '<button type="button" class="ift-btn" data-view="grid" title="Grid view">▦</button></span></div>' +
@@ -90,15 +94,7 @@ export const configureDrawerJs = `
         '<button type="button" class="src-add-menu-item" data-pick="folder" role="menuitem">Add a folder…</button>' +
         '</div></div>' +
         '<div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>' +
-        '</div>' +
-        '<div class="inputs-group"><div class="inputs-group-head">Connectors</div>' +
-        '<div id="src-connectors-list"></div>' +
-        '<button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button></div>' +
-        '<div class="inputs-group"><div class="inputs-group-head">Databases</div>' +
-        '<div id="src-databases-list"></div>' +
-        '<button class="src-add" id="src-add-database" type="button">＋ Connect a Database</button></div>';
-      if (typeof renderSourcesConnectors === 'function') renderSourcesConnectors();
-      if (typeof renderInputsDatabases === 'function') renderInputsDatabases();
+        '</div>';
       if (typeof wireSourcesButtons === 'function') wireSourcesButtons();
       var loadFiles = function () {
         fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
@@ -117,5 +113,20 @@ export const configureDrawerJs = `
         });
       }
       loadFiles();
+    }
+    function renderConnectorsTab(body) {
+      if (!body) return;
+      body.innerHTML =
+        '<div class="inputs-group"><div id="src-connectors-list"></div>' +
+        '<button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button></div>';
+      if (typeof renderSourcesConnectors === 'function') renderSourcesConnectors();
+      if (typeof wireSourcesButtons === 'function') wireSourcesButtons();
+    }
+    function renderDatabasesTab(body) {
+      if (!body) return;
+      body.innerHTML =
+        '<div class="inputs-group"><div id="src-databases-list"></div>' +
+        '<button class="src-add" id="src-add-database" type="button">＋ Connect a Database</button></div>';
+      if (typeof renderInputsDatabases === 'function') renderInputsDatabases();
     }
 `;

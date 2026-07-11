@@ -126,7 +126,10 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
     .modal .field textarea { min-height: 60px; font-family: ui-monospace, monospace; font-size: 12px; }
     /* New-workspace "Kind" selector — clean cards, blue-highlighted selection. */
     .wiz-kind-opts { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
-    .wiz-kind-card {
+    /* These cards ARE <label>s inside .modal .field, so .modal .field label {display:block}
+       (0,3,0) out-specifies a bare .wiz-kind-card (0,1,0) and kills the flex layout — the
+       radio jams against the text. Qualify the selector (0,3,1) so display:flex/gap win. */
+    .modal .field label.wiz-kind-card {
       flex: 1 1 0; min-width: 132px; display: flex; align-items: center; gap: 9px;
       padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
       background: var(--surface); cursor: pointer;

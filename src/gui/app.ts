@@ -113,22 +113,24 @@ export const guiAppHtml = `<!doctype html>
        reached via its "View Markdown" action, not a separate sidebar tree. -->
   <div class="layout" id="layout">
     <nav class="dash-sidebar">
-      <section class="dash-section" data-section="dashboards">
-        <div class="col-header col-dashboards">
-          <span class="col-header-text">Dashboards</span>
+      <section class="dash-section nav-section" data-section="dashboards">
+        <div class="nav-head-row">
+          <button class="section-label section-toggle nav-section-head" data-group="nav-dashboards" type="button" aria-expanded="true">
+            <span class="section-label-text">Dashboards</span>
+          </button>
           <button type="button" class="dash-new-btn" id="dash-new-btn" title="New dashboard" aria-label="New dashboard">＋</button>
         </div>
-        <div id="dash-list"></div>
+        <div class="section-body" data-group-body="nav-dashboards"><div id="dash-list"></div></div>
       </section>
       <section class="dash-section nav-section" data-section="tables">
         <button class="section-label section-toggle nav-section-head" data-group="nav-tables" type="button" aria-expanded="true">
-          <span class="section-caret">▾</span><span class="section-label-text">Tables</span>
+          <span class="section-label-text">Tables</span>
         </button>
         <div class="section-body" data-group-body="nav-tables"><div id="nav-tables-list"></div></div>
       </section>
       <section class="dash-section nav-section" data-section="files">
         <button class="section-label section-toggle nav-section-head" data-group="nav-files" type="button" aria-expanded="true">
-          <span class="section-caret">▾</span><span class="section-label-text">Files</span>
+          <span class="section-label-text">Files</span>
         </button>
         <div class="section-body" data-group-body="nav-files"><div id="nav-files-tree"></div></div>
       </section>
@@ -170,9 +172,10 @@ export const guiAppHtml = `<!doctype html>
          header clock (🕐). These tabs are the Settings takeover only. -->
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="datamodel">Data Model</button>
-      <button class="drawer-tab" data-tab="inputs">Inputs</button>
+      <button class="drawer-tab" data-tab="files">Files</button>
+      <button class="drawer-tab" data-tab="connectors">Connectors</button>
+      <button class="drawer-tab" data-tab="databases">Databases</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>
-      <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>

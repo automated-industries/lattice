@@ -101,9 +101,10 @@ export const tableViewJs = `    // ───────────────
       if (title) title.textContent = tab === 'history' ? 'Version history' : 'Configure';
       if (tab === 'history') renderHistory(body);
       else if (tab === 'datamodel' && typeof renderDataModelTab === 'function') renderDataModelTab(body);
-      else if (tab === 'inputs' && typeof renderInputsTab === 'function') renderInputsTab(body);
+      else if (tab === 'files' && typeof renderFilesTab === 'function') renderFilesTab(body);
+      else if (tab === 'connectors' && typeof renderConnectorsTab === 'function') renderConnectorsTab(body);
+      else if (tab === 'databases' && typeof renderDatabasesTab === 'function') renderDatabasesTab(body);
       else if (tab === 'database') renderDatabaseSettings(body);
-      else if (tab === 'lattice') renderLatticeSettings(body);
       else renderUserConfig(body);
       updateTakeoverTriggers();
     }
