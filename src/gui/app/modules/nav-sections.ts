@@ -1,10 +1,10 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// left-sidebar nav sections beneath Dashboards: Tables, Files, Markdown. Each opens
-// a typed Workspace tab by setting the hash (the tab host renders it). Collapse
-// state reuses the shared .section-toggle[data-group] idiom (sources.ts). Must stay
-// INSIDE the client IIFE (uses state/escapeHtml/fetchJson/displayFor/mtClassifyTier/
-// MT_LAYERS/renderSourcesFilesInto/renderMarkdownTreeInto); registered before
-// createDatabaseWizardJs. Function declarations hoist, so call order is free.
+// left-sidebar nav sections beneath Dashboards: Tables, Files. Each opens a typed
+// Workspace tab by setting the hash (the tab host renders it). Collapse state reuses
+// the shared .section-toggle[data-group] idiom (sources.ts). Must stay INSIDE the
+// client IIFE (uses state/escapeHtml/fetchJson/displayFor/mtClassifyTier/MT_LAYERS/
+// renderSourcesFilesInto); registered before createDatabaseWizardJs. Function
+// declarations hoist, so call order is free.
 export const navSectionsJs = `
     // TABLES — every model table grouped by tier (Inputs / Derived / Computed),
     // read from the in-memory state.entities (no fetch). Click → #/w/table/<name>.
@@ -50,18 +50,14 @@ export const navSectionsJs = `
         .catch(function () { renderSourcesFilesInto(host, []); });
     }
 
-    // MARKDOWN — the rendered-context tree, into the sidebar host.
-    function renderNavMarkdown() {
-      renderMarkdownTreeInto(document.getElementById('nav-md-tree'));
-    }
-
     function renderNavSections() {
       renderNavTables();
       renderNavFiles();
-      renderNavMarkdown();
-      // Restore each section's persisted collapse state + wire the toggles (both are
-      // idempotent — applySidebarGroupState reads localStorage, wire guards on __wired).
-      if (typeof applySidebarGroupState === 'function') {
+      // Enforce the single-open accordion (keeps one nav section open, collapses the
+      // rest) + wire the toggles (both idempotent — enforceNavAccordion reconciles
+      // localStorage, wire guards on __wired).
+      if (typeof enforceNavAccordion === 'function') enforceNavAccordion();
+      else if (typeof applySidebarGroupState === 'function') {
         ['nav-tables', 'nav-files', 'nav-md'].forEach(applySidebarGroupState);
       }
       if (typeof wireSidebarGroupToggles === 'function') wireSidebarGroupToggles();

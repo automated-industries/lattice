@@ -20,14 +20,12 @@ describe('3.3.5 GUI — no-flash refresh + settings-drawer URL sync', () => {
     expect(guiAppHtml).toContain('renderRoute({ soft: true })');
   });
 
-  it('a finished table clears its overlay in place (the per-table-done reconcile is gone)', () => {
-    // The marker comment proves the table-done branch was changed to NOT refetch +
-    // re-render the whole pane on every table (the flashing cause).
-    // The per-table-done handler is DOM-only (repaint the tree from state) —
-    // the one reconciling refetch rides the terminal done. The lock is on the
-    // comment stating the invariant plus the absence of any per-table fetch.
-    expect(guiAppHtml).toContain('must\n      // not fire 23 reconciles');
-    expect(guiAppHtml).toContain('reapplyTreeProgress();');
+  it('a finished render does ONE reconcile on the terminal done (no per-table refetch storm)', () => {
+    // Per-table events only fold the renderProgress map (no refetch); the terminal
+    // 'done' does the single reconciling refetch (afterMutation). That is the
+    // anti-flashing invariant — one refresh per render, never one per table.
+    expect(guiAppHtml).toContain('ONE reconciling refetch');
+    expect(guiAppHtml).toContain('afterMutation().catch(function () {');
   });
 
   it('closing the settings drawer resets a #/settings hash so it cannot self-reopen', () => {

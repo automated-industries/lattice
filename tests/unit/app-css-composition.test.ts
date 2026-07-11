@@ -175,8 +175,18 @@ import { css } from '../../src/gui/app/css.js';
 // Single-layout reframe re-verify fix: the Graph subtab shares the Data Model grid, so
 // .brain-graph gets a definite 64vh height there (.dm-tables-merge .brain-graph) — without
 // it the height:100% chain collapsed the graph canvas to 0. Recaptured.
-const ORIGINAL_LENGTH = 149638;
-const ORIGINAL_SHA256 = 'c851434eee78a8e06b7d31e2e68a1b89279e16aec6732970c53d3b1708a7b21a';
+// Single-layout polish: .dash-page fills the pane (height:100%, not inert flex:1); sidebar
+// full-height + scroll (.dash-sidebar height:100%/overflow); nav heads styled like
+// DASHBOARDS (blue #2563eb, 11px/0.08em, sticky); drawer scroll-lock (body.drawer-open
+// overflow:hidden + .drawer-body overscroll-behavior:contain). Recaptured.
+// Markdown redesign: deleted outputs.ts styles (Outputs column + .mdt-* markdown tree) +
+// the .fs-view-toggle rules; TABLES/FILES nav heads now match DASHBOARDS exactly via
+// .nav-section-head .section-label-text (11px/700/0.08em/#2563eb). Recaptured.
+// Review fix: keep the TABLES/FILES label blue on hover too (.section-toggle.nav-section-head
+// :hover .section-label-text) — a generic .section-toggle:hover rule would flip it to
+// var(--text), diverging from DASHBOARDS which never recolors on hover. Recaptured.
+const ORIGINAL_LENGTH = 146733;
+const ORIGINAL_SHA256 = 'bf65f3d201046b227570888e9fb51e76a59b1194f6702622a57998b972ab2218';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

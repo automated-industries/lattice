@@ -198,7 +198,6 @@ export const bootJs = `    // ────────────────�
         initWireMerge();
         initAskLattice();
         initActivityHeader();
-        renderOutputs();
         renderComposer();
         initThreadControls();
         // Pending clarification questions: render any waiting cards + the

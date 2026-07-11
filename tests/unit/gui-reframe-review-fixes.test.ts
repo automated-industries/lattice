@@ -96,10 +96,5 @@ describe('reframe review fix #6 — dashboard add-source opens the Inputs tab', 
   });
 });
 
-describe('reframe review fix #7 — markdown render-progress targets the sidebar tree', () => {
-  it('scopes render-progress + the tree refresh to #nav-md-tree (the removed #out-markdown-tree is gone)', () => {
-    expect(appJs).toContain('#nav-md-tree .mdt-node[data-table]');
-    // The sidebar markdown tree is the live host id.
-    expect(appJs).toContain("getElementById('nav-md-tree')");
-  });
-});
+// (reframe review fix #7 — markdown render-progress on #nav-md-tree — retired: the
+// Markdown sidebar section + its render-progress overlay were removed entirely.)

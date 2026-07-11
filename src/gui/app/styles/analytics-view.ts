@@ -26,9 +26,10 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     /* ── Dashboards sidebar ─────────────────────────────── */
     .dash-sidebar {
       display: flex; flex-direction: column; min-height: 0;
+      height: 100%; overflow-y: auto;
       background: var(--surface); border-right: 1px solid var(--border);
     }
-    #dash-list { flex: 1 1 auto; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+    #dash-list { flex: 0 0 auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
     .dash-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center;
       column-gap: 8px; width: 100%; text-align: left;
@@ -46,15 +47,25 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .dash-item .vis-indicator { justify-self: end; }
     .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
 
-    /* ── Left-sidebar nav sections (Tables / Files / Markdown) ── */
+    /* ── Left-sidebar nav sections (Tables / Files) ── */
     .nav-section { border-top: 1px solid var(--border); }
     .nav-section-head {
       width: 100%; display: flex; align-items: center; gap: 6px;
-      padding: 8px 10px; border: 0; background: none; cursor: pointer;
-      color: var(--text-muted); font-size: 11.5px; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.04em;
+      position: sticky; top: 0; z-index: 2; background: var(--surface);
+      padding: 8px 10px; border: 0; cursor: pointer;
+      text-transform: uppercase;
     }
-    .nav-section-head:hover { color: var(--text); }
+    /* Match the DASHBOARDS header (.col-header-text) EXACTLY: blue, 11px, 700, 0.08em.
+       Target the label SPAN — the button itself carries button.section-label.section-toggle
+       { font:inherit; color:var(--text-muted) } at higher specificity, so declaring these on
+       .nav-section-head loses; the child span (no competing specificity) wins. */
+    .nav-section-head .section-label-text {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: #2563eb;
+    }
+    /* Stay blue on hover too — a generic .section-toggle:hover .section-label-text
+       (layout.ts, 0,3,0) would otherwise flip it to var(--text). DASHBOARDS never
+       recolors on hover, so match that. This (0,4,0) beats it. */
+    .section-toggle.nav-section-head:hover .section-label-text { color: #2563eb; }
     .nav-tier-head {
       padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
@@ -69,7 +80,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-item-ic { flex: 0 0 auto; }
     .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .nav-empty { color: var(--text-muted); font-size: 12px; padding: 8px 12px; }
-    #nav-tables-list, #nav-files-tree, #nav-md-tree { padding-bottom: 6px; }
+    #nav-tables-list, #nav-files-tree { padding-bottom: 6px; }
 
     /* ── Column headers (identical style to the Configure view) ── */
     /* All three carry the shared .col-header chrome. Accents mirror Configure:
@@ -159,7 +170,11 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .ask-dock-resize:hover, .ask-dock-resize.dragging { background: var(--accent-soft); }
 
     /* ── Dashboard page ─────────────────────────────────── */
-    .dash-page { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
+    /* height:100% (not flex:1) because #content is display:block, so a flex-grow on a
+       block child is inert and the page would collapse to content height. #content has
+       a definite height (flex:1 in the .content-wrap column), so 100% fills the pane
+       and gives .dash-frame a definite height to stretch into. */
+    .dash-page { height: 100%; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
     .dash-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     .dash-title { margin: 0; font-size: 19px; font-weight: 700; flex: 0 1 auto; min-width: 0; }
     .dash-vis-slot { display: inline-flex; align-items: center; min-width: 0; }

@@ -43,22 +43,22 @@ test('a file gets the UNIFIED record page: toggle + sharing + provenance + menu'
   // Formatted view by default: the inline preview inside the shared chrome.
   await expect(page.locator('#file-preview')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-doc')).toHaveCount(0);
-  // The SAME chrome as every record page: the Formatted|Markdown toggle, the
-  // visibility/sharing line, and the collapsible Data provenance panel.
-  await expect(page.locator('.fs-view-toggle')).toBeVisible();
+  // No standalone toggle; the visibility/sharing line + Data provenance panel remain.
+  await expect(page.locator('.fs-view-toggle')).toHaveCount(0);
   await expect(page.locator('#row-provenance')).toContainText('Data provenance');
-  // The actions dropdown carries history + delete (source moved to the toggle).
+  // The ⋯ menu carries "View Markdown" + history + delete (no separate "source" item).
   await expect(page.locator('#file-menu-btn')).toBeVisible();
   await page.locator('#file-menu-btn').click();
+  await expect(page.locator('.file-menu-item[data-act="markdown"]')).toHaveText('View Markdown');
   await expect(page.locator('.file-menu-item[data-act="history"]')).toBeVisible();
   await expect(page.locator('.file-menu-item[data-act="delete"]')).toBeVisible();
   await expect(page.locator('.file-menu-item[data-act="source"]')).toHaveCount(0);
-  await page.keyboard.press('Escape');
-  // Markdown (source) mode enters via the shared toggle…
-  await page.locator('.fs-view-toggle [data-fsview="markdown"]').click();
+  // "View Markdown" → the raw source pre.
+  await page.locator('.file-menu-item[data-act="markdown"]').click();
   await expect(page.locator('.file-source-pre')).toContainText('original body', { timeout: 5000 });
-  // …and Formatted returns to the preview.
-  await page.locator('.fs-view-toggle [data-fsview="formatted"]').click();
+  // Reopen → "View Formatted" → back to the preview.
+  await page.locator('#file-menu-btn').click();
+  await page.locator('.file-menu-item[data-act="markdown"]').click();
   await expect(page.locator('#file-preview')).toBeVisible();
 });
 
