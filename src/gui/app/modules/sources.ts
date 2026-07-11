@@ -266,20 +266,32 @@ export const sourcesJs = `
         'files', 'connectors', 'databases',
         'objects', 'system',
         // Left-sidebar single-layout nav sections.
-        'nav-tables', 'nav-files',
+        'nav-dashboards', 'nav-tables', 'nav-files',
       ].forEach(applySidebarGroupState);
     }
     // The left-sidebar nav sections behave as a single-open ACCORDION — opening one
     // collapses the other. The Configure-drawer groups (files/connectors/databases/
     // objects/system) are NOT in this set, so they stay independent.
-    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-files'];
+    // Display order in the DOM is Dashboards / Tables / Files, but TABLES is the default
+    // OPEN section (index 0 → enforceNavAccordion's fallback when none is open): it's the
+    // primary data nav, so a fresh load lands with your tables visible, not collapsed.
+    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-dashboards', 'nav-files'];
     function toggleSidebarGroup(group) {
       var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
-      if (willExpand && NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {
+      if (NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {
+        // Single-open accordion (the left-sidebar nav sections): a header click always
+        // OPENS its section and collapses the siblings. Clicking the already-open section
+        // is a no-op — never collapse the only-open one, so exactly one section stays
+        // visible at all times.
+        if (!willExpand) return;
         NAV_ACCORDION_GROUPS.forEach(function (g) {
           if (g !== group) { setSidebarGroupCollapsed(g, true); applySidebarGroupState(g); }
         });
+        setSidebarGroupCollapsed(group, false);
+        applySidebarGroupState(group);
+        return;
       }
+      // Independent groups (the Configure-drawer sections) keep a plain open/close toggle.
       setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
       applySidebarGroupState(group);
     }

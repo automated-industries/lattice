@@ -19,10 +19,14 @@ test('the connectors dialog renders data-driven cards (helpers in scope)', async
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
-  // "+ Add a Connector" now lives in the Configure drawer → Inputs tab; the
-  // #/settings/inputs hash opens the drawer to that tab and renders the button.
-  await page.goto(gui.url + '#/settings/inputs');
+  // "+ Add a Connector" lives in the Configure drawer's Connectors tab; the
+  // #/settings/connectors hash opens the drawer to that tab and renders the button.
+  await page.goto(gui.url + '#/settings/connectors');
   await expect(page.locator('#settings-drawer.open')).toBeVisible({ timeout: 5000 });
+  await page.waitForSelector('#drawer-body #src-add-connector', {
+    state: 'visible',
+    timeout: 5000,
+  });
   await page.locator('#src-add-connector').click();
 
   const dlg = page.locator('#connectors-dialog');

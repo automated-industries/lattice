@@ -185,8 +185,16 @@ import { css } from '../../src/gui/app/css.js';
 // Review fix: keep the TABLES/FILES label blue on hover too (.section-toggle.nav-section-head
 // :hover .section-label-text) — a generic .section-toggle:hover rule would flip it to
 // var(--text), diverging from DASHBOARDS which never recolors on hover. Recaptured.
-const ORIGINAL_LENGTH = 146733;
-const ORIGINAL_SHA256 = 'bf65f3d201046b227570888e9fb51e76a59b1194f6702622a57998b972ab2218';
+// Configure/sidebar polish batch: Configure drawer slides in from the top (translateY(-100%)
+// → 0) instead of fading; radio cards keep their flex layout (.modal .field label.wiz-kind-card
+// out-specifies the .modal .field label{display:block} that jammed the radio against the text);
+// the left sidebar is a fixed-header accordion (rail overflow:hidden; the open section grows +
+// scrolls via :has(); Dashboards header row + body); DASHBOARDS/TABLES/FILES carets removed;
+// workspace tab strip forces uniform tab widths (flex:1 1 0; min 38px icon / max 180px) that
+// shrink then spill into the ⋯ menu; the now-unused .inputs-group-head rule (its subheadings
+// were dropped when Inputs split into three tabs) was deleted. Recaptured.
+const ORIGINAL_LENGTH = 148985;
+const ORIGINAL_SHA256 = '065639ff8217485c9ad4b663f0e9feefd168a1c41dd35fde1072978dca885a56';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

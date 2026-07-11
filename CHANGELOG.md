@@ -232,6 +232,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Configure panel and sidebar refinements.** The Configure panel now slides in from the
+  top instead of fading. Its single "Inputs" tab is split into separate **Files**,
+  **Connectors**, and **Databases** tabs, and the Workspaces list moved into the **User**
+  tab (the standalone Lattice tab is gone). In the left sidebar, the Dashboards, Tables, and
+  Files section headers now stay pinned and one section expands at a time, scrolling within
+  its own frame — so every section header is always reachable no matter how long a list gets.
+  Welcome-dashboard suggestion chips now send the question straight to the assistant instead
+  of only filling the box, and open workspace tabs share one uniform width, shrinking evenly
+  to fit before the extras collapse into a "⋯" overflow menu.
+
 - **The first-run screen is a guided setup wizard.** Connecting the assistant now
   walks through a short flow: choose a backend (a Claude account or any
   OpenAI-compatible model), fill in its details (the Connect button stays faded until

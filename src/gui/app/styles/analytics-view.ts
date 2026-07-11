@@ -26,9 +26,25 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     /* ── Dashboards sidebar ─────────────────────────────── */
     .dash-sidebar {
       display: flex; flex-direction: column; min-height: 0;
-      height: 100%; overflow-y: auto;
+      /* The RAIL itself never scrolls — the one open accordion section scrolls
+         internally (below), so the three section headers are always on screen. */
+      height: 100%; overflow: hidden;
       background: var(--surface); border-right: 1px solid var(--border);
     }
+    /* Fixed-header accordion: each section is a flex column whose header stays put and
+       whose body scrolls. The OPEN section (body not [hidden]) grows to fill the rail;
+       collapsed sections shrink to just their header. One is open at a time (JS
+       enforces single-open), so the headers of the other two stay visible above/below. */
+    .dash-section { display: flex; flex-direction: column; min-height: 0; }
+    .dash-section:has(> .section-body:not([hidden])) { flex: 1 1 auto; min-height: 0; }
+    .dash-section:has(> .section-body[hidden]) { flex: 0 0 auto; }
+    .dash-section > .nav-section-head, .dash-section > .nav-head-row { flex: 0 0 auto; }
+    .dash-section > .section-body:not([hidden]) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    /* Dashboards header row: the collapse toggle fills the row, the "+" sits at the end. */
+    .nav-head-row { display: flex; align-items: center; gap: 4px; padding-right: 8px; }
+    .nav-head-row .nav-section-head { flex: 1 1 auto; }
+    /* The Dashboards body holds #dash-list (its own padding) — no tree indent. */
+    .section-body[data-group-body="nav-dashboards"] { padding-left: 0; }
     #dash-list { flex: 0 0 auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
     .dash-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center;
@@ -51,7 +67,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-section { border-top: 1px solid var(--border); }
     .nav-section-head {
       width: 100%; display: flex; align-items: center; gap: 6px;
-      position: sticky; top: 0; z-index: 2; background: var(--surface);
+      background: var(--surface);
       padding: 8px 10px; border: 0; cursor: pointer;
       text-transform: uppercase;
     }
@@ -107,11 +123,20 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       padding: 6px 10px 0; border-bottom: 1px solid var(--border); background: var(--surface-2);
     }
     .antabstrip-tabs { display: flex; align-items: flex-end; gap: 4px; flex: 1; min-width: 0; }
+    /* Every tab is FORCED to one width (flex:1 1 0 → equal share). With a few tabs each
+       caps at the natural ~180px ("Certificate Holders" width); as more open they shrink
+       uniformly down to 38px — icon-only (title/× clip under overflow:hidden). 38px is
+       AN_TAB_MIN_W in analytics-tabs.ts; once even that won't fit, the trailing tabs
+       collapse into the "⋯ N" overflow menu (JS), so no horizontal scrollbar appears. */
     .antabstrip .tab {
       border: 1px solid transparent; border-radius: 8px 8px 0 0;
       padding: 7px 12px; margin: 0; background: transparent;
       color: var(--text-muted); font-weight: 500;
+      flex: 1 1 0; min-width: 38px; max-width: 180px;
     }
+    /* The overflow "⋯ N" button is NOT a uniform tab — keep it natural width so it
+       always shows its full count and never shrinks to an icon. */
+    .antabstrip .tab.tab-overflow-btn { flex: 0 0 auto; min-width: 40px; max-width: none; }
     .antabstrip .tab:hover { background: var(--row-hover); color: var(--text); }
     .antabstrip .tab.active {
       background: var(--surface); border-color: var(--border);
