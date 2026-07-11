@@ -12,9 +12,6 @@ export const sourcesJs = `
     function renderSources() {
       renderSourcesConnectors();
       renderInputsDatabases();
-      // The Outputs > Tables mirror reflects the same entities; keep it fresh as
-      // the sidebar re-renders (cheap — reads in-memory state, no fetch).
-      if (typeof renderOutputsMarkdown === 'function') renderOutputsMarkdown();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a
@@ -267,15 +264,39 @@ export const sourcesJs = `
     function applySidebarGroupStates() {
       [
         'files', 'connectors', 'databases',
-        'out-markdown',
         'objects', 'system',
         // Left-sidebar single-layout nav sections.
-        'nav-tables', 'nav-files', 'nav-md',
+        'nav-tables', 'nav-files',
       ].forEach(applySidebarGroupState);
     }
+    // The left-sidebar nav sections behave as a single-open ACCORDION — opening one
+    // collapses the other. The Configure-drawer groups (files/connectors/databases/
+    // objects/system) are NOT in this set, so they stay independent.
+    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-files'];
     function toggleSidebarGroup(group) {
+      var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
+      if (willExpand && NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {
+        NAV_ACCORDION_GROUPS.forEach(function (g) {
+          if (g !== group) { setSidebarGroupCollapsed(g, true); applySidebarGroupState(g); }
+        });
+      }
       setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
       applySidebarGroupState(group);
+    }
+    // Enforce single-open among the nav accordion on (re)render: keep the FIRST
+    // currently-open nav section open (default the first when none) and collapse the
+    // rest. Nav groups default expanded, so a fresh load would show all three — this
+    // reduces it to one. Idempotent; safe to call on every renderNavSections.
+    function enforceNavAccordion() {
+      var openGroup = null;
+      NAV_ACCORDION_GROUPS.forEach(function (g) {
+        if (!openGroup && !sidebarGroupCollapsed(g)) openGroup = g;
+      });
+      if (!openGroup) openGroup = NAV_ACCORDION_GROUPS[0];
+      NAV_ACCORDION_GROUPS.forEach(function (g) {
+        setSidebarGroupCollapsed(g, g !== openGroup);
+        applySidebarGroupState(g);
+      });
     }
     function wireSidebarGroupToggles() {
       var btns = document.querySelectorAll('.section-toggle[data-group]');

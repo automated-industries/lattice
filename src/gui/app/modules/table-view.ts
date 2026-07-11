@@ -18,15 +18,26 @@ export const tableViewJs = `    // ───────────────
       if (hist) hist.classList.toggle('on', open && drawerTab === 'history');
       if (gear) gear.classList.toggle('on', open && drawerTab !== 'history');
     }
+    // Pending close-hide timer (the fade-out delay before the drawer is display:none'd).
+    // Tracked so a reopen within the fade window cancels it — otherwise a stale timeout
+    // would hide a just-reopened drawer AND leave body.drawer-open behind, freezing page
+    // scroll with no visible drawer to close.
+    var drawerHideTimer = null;
     function openSettingsDrawer(section) {
       drawerTab = section || drawerTab || 'user';
       var drawer = document.getElementById('settings-drawer');
       var backdrop = document.getElementById('drawer-backdrop');
       if (!drawer || !backdrop) return;
+      // Cancel any pending close-hide so this reopen can't be undone by a stale timeout.
+      if (drawerHideTimer) { window.clearTimeout(drawerHideTimer); drawerHideTimer = null; }
       // The panel fills the workspace BELOW the header — measure the real
       // topbar height (the CSS default is a fallback).
       var bar = document.querySelector('header.topbar');
       if (bar) drawer.style.top = bar.offsetHeight + 'px';
+      // Lock background scroll: the drawer is an opaque full-workspace takeover, so
+      // the columns beneath it must not scroll (wheel/trackpad would otherwise chain
+      // out to the document). Removed symmetrically in closeSettingsDrawer.
+      document.body.classList.add('drawer-open');
       backdrop.hidden = false;
       drawer.hidden = false;
       // Allow the elements to lay out before transitioning in.
@@ -40,9 +51,18 @@ export const tableViewJs = `    // ───────────────
       var drawer = document.getElementById('settings-drawer');
       var backdrop = document.getElementById('drawer-backdrop');
       if (!drawer || !backdrop) return;
+      document.body.classList.remove('drawer-open');
       drawer.classList.remove('open');
       backdrop.classList.remove('open');
-      window.setTimeout(function () { drawer.hidden = true; backdrop.hidden = true; }, 220);
+      if (drawerHideTimer) window.clearTimeout(drawerHideTimer);
+      drawerHideTimer = window.setTimeout(function () {
+        drawerHideTimer = null;
+        // A reopen during the fade re-adds .open (and cleared this timer already); if we
+        // somehow still run, don't hide/strand the reopened drawer.
+        if (drawer.classList.contains('open')) return;
+        drawer.hidden = true;
+        backdrop.hidden = true;
+      }, 220);
       updateTakeoverTriggers();
       var hist = document.getElementById('history-link');
       var gear = document.getElementById('configure-trigger');

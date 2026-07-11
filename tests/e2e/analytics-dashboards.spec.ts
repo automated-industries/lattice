@@ -43,20 +43,19 @@ test('sidebar lists dashboards; opening = one deduped tab; close falls back to h
   await page.locator(`.dash-item[data-dash-id="${a}"]`).click();
   await expect(page.locator(`.tab[data-key="dashboard:${a}"]`)).toHaveCount(1);
 
-  // Open the second — three tabs (the permanent "New Dashboard" + two opened);
+  // Open the second — two tabs (one per open dashboard; there is no permanent tab);
   // close the ACTIVE second one → neighbor activates.
   await page.locator(`.dash-item[data-dash-id="${b}"]`).click();
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(3);
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(2);
   await page.locator(`.tab[data-key="dashboard:${b}"] .tab-close`).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + a);
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(2);
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
 
-  // Close the last dashboard tab → the home tab (only the permanent
-  // "New Dashboard" tab remains, hero visible).
+  // Close the last dashboard tab → the strip is EMPTY (no permanent tab), the home
+  // route (#/) and its hero are shown.
   await page.locator(`.tab[data-key="dashboard:${a}"] .tab-close`).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
-  await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toBeVisible();
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
   await expect(page.locator('.analytics-home')).toBeVisible();
 });
 
@@ -160,43 +159,81 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
 test('a stale dashboard link drops its tab and lands home', async ({ page }) => {
   await page.goto(gui.url + '#/w/dash/no-such-dashboard');
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
-  // Only the permanent "New Dashboard" tab remains.
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
-  await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toBeVisible();
+  // The strip is empty at the home route — there is no permanent tab.
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
+});
+
+test('the + button opens-or-focuses the Welcome dashboard (never a duplicate)', async ({
+  page,
+}) => {
+  // This one needs the seeded Welcome dashboard, so it boots its own welcome:true gui.
+  const wgui = await bootGui();
+  try {
+    await page.goto(wgui.url + '#/');
+    await expect(page.locator('nav.dash-sidebar')).toBeVisible();
+    // Boot auto-opens the Welcome tab — close it so we start from an empty strip.
+    const welcomeClose = page.locator('.tab[data-key="dashboard:welcome-lattice"] .tab-close');
+    if (await welcomeClose.count()) await welcomeClose.click();
+    await expect(page.locator('.tab[data-key="dashboard:welcome-lattice"]')).toHaveCount(0);
+    // "+" opens the Welcome dashboard as a normal tab.
+    await page.locator('#dash-new-btn').click();
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/welcome-lattice');
+    await expect(page.locator('.tab[data-key="dashboard:welcome-lattice"]')).toHaveCount(1);
+    // Clicking "+" again focuses the existing tab — it does NOT create a second.
+    await page.locator('#dash-new-btn').click();
+    await expect(page.locator('.tab[data-key="dashboard:welcome-lattice"]')).toHaveCount(1);
+  } finally {
+    await wgui.close();
+  }
 });
 
 test('many open tabs collapse into a "⋯ N" overflow with the active tab visible', async ({
   page,
 }) => {
-  const ids: string[] = [];
-  for (let i = 0; i < 12; i++) ids.push(await seed('Board ' + String(i).padStart(2, '0')));
+  // Own fresh gui: this asserts exact overflow behavior against a known set, so it must
+  // not inherit the other specs' accumulated dashboards (which share the beforeAll gui).
+  // 16 also stress-tests clicking a sidebar item when the Dashboards list is long (the
+  // whole sidebar scrolls) — the item must still be reachable/clickable.
+  const ogui = await bootGui({ welcome: false });
+  try {
+    const ids: string[] = [];
+    for (let i = 0; i < 16; i++) {
+      const row = await createRow(ogui.url, 'dashboards', {
+        title: 'Board ' + String(i).padStart(2, '0'),
+        description: 'overview',
+      });
+      ids.push(String(row.id));
+    }
 
-  await page.setViewportSize({ width: 900, height: 700 });
-  await page.goto(gui.url);
-  // Open all twelve.
-  for (const id of ids) {
-    await page.locator(`.dash-item[data-dash-id="${id}"]`).click();
-    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + id);
+    await page.setViewportSize({ width: 900, height: 700 });
+    await page.goto(ogui.url);
+    // Open all sixteen.
+    for (const id of ids) {
+      await page.locator(`.dash-item[data-dash-id="${id}"]`).click();
+      await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + id);
+    }
+    // The strip cannot fit them all: the overflow button shows a count, and the
+    // ACTIVE (last-opened) tab is still visible in the strip.
+    const ov = page.locator('#antab-overflow-btn');
+    await expect(ov).toBeVisible();
+    await expect(ov).toContainText('⋯');
+    await expect(
+      page.locator(`#antabstrip-tabs .tab[data-key="dashboard:${ids[ids.length - 1]}"]`),
+    ).toBeVisible();
+
+    // The overflow menu lists the hidden (trailing, non-active) tabs and
+    // activates one — whichever it holds first.
+    await ov.click();
+    const menu = page.locator('#antab-overflow-menu');
+    await expect(menu).toBeVisible();
+    const first = menu.locator('.tab-ov-item').first();
+    const key = await first.getAttribute('data-key');
+    expect(key).toBeTruthy();
+    await first.click();
+    await expect
+      .poll(() => page.evaluate(() => location.hash))
+      .toBe('#/w/dash/' + String(key).replace(/^dashboard:/, ''));
+  } finally {
+    await ogui.close();
   }
-  // The strip cannot fit twelve: the overflow button shows a count, and the
-  // ACTIVE (last-opened) tab is still visible in the strip.
-  const ov = page.locator('#antab-overflow-btn');
-  await expect(ov).toBeVisible();
-  await expect(ov).toContainText('⋯');
-  await expect(
-    page.locator(`#antabstrip-tabs .tab[data-key="dashboard:${ids[ids.length - 1]}"]`),
-  ).toBeVisible();
-
-  // The overflow menu lists the hidden (trailing, non-active) tabs and
-  // activates one — whichever it holds first.
-  await ov.click();
-  const menu = page.locator('#antab-overflow-menu');
-  await expect(menu).toBeVisible();
-  const first = menu.locator('.tab-ov-item').first();
-  const key = await first.getAttribute('data-key');
-  expect(key).toBeTruthy();
-  await first.click();
-  await expect
-    .poll(() => page.evaluate(() => location.hash))
-    .toBe('#/w/dash/' + String(key).replace(/^dashboard:/, ''));
 });

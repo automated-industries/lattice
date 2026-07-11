@@ -52,14 +52,11 @@ test('boot lands on the single-layout workspace with its empty states', async ({
   // persistent Ask Gladys dock are all visible (no view flip, nothing parked hidden).
   await expect(page.locator('.layout')).toBeVisible();
   await expect(page.locator('#ask-dock')).toBeVisible();
-  // No dashboards yet — both empty states, and the tab strip holds the single
-  // permanent "New Dashboard" tab (the strip is never empty).
+  // No dashboards yet — both empty states, and the tab strip is EMPTY (there is no
+  // permanent tab; the home route shows the hero, no tab).
   await expect(page.locator('#dash-list')).toContainText('No dashboards yet');
   await expect(page.locator('.analytics-home h1')).toHaveText('Ask your company anything');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
-  await expect(page.locator('#antabstrip-tabs .tab[data-key="new"]')).toContainText(
-    'New Dashboard',
-  );
+  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
 });
 
 test('the Configure trigger opens the drawer and reaches the Tables data-model surface', async ({

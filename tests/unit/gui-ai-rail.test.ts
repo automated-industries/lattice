@@ -57,11 +57,13 @@ describe('assistant dock + Outputs markup + wiring', () => {
     expect(guiAppHtml).toContain('initActivityHeader();');
   });
 
-  it('artifacts live in the Markdown tree (now the left-sidebar Markdown section)', () => {
-    // ONE Markdown tree, moved to the sidebar; artifacts are a category inside it.
-    expect(guiAppHtml).toContain('id="nav-md-tree"');
-    expect(guiAppHtml).toContain('mdt-artifact');
-    // The old left-sidebar artifacts tree AND the separate Outputs sections are gone.
+  it('the separate MARKDOWN sidebar section + tree are gone (markdown is per-object now)', () => {
+    // The rendered-markdown tree was retired: a table's/record's markdown is reached
+    // via its "View Markdown" action, not a standalone sidebar section.
+    expect(guiAppHtml).not.toContain('id="nav-md-tree"');
+    expect(guiAppHtml).not.toContain('data-section="markdown"');
+    expect(guiAppHtml).not.toContain('mdt-artifact');
+    // The older left-sidebar artifacts tree + Outputs sections were already gone.
     expect(guiAppHtml).not.toContain('id="src-artifacts-tree"');
     expect(guiAppHtml).not.toContain('id="out-artifacts-tree"');
     expect(guiAppHtml).not.toContain('renderOutputsArtifacts');
