@@ -48,6 +48,106 @@ export const tokensCss = `
       --nav-width: 220px;
       --outputs-width: 416px;
     }
+    /* ── Design-system scales ─────────────────────────────────────────────────
+       Fallback policy: root tokens load first in this same <style>, so
+       var(--x, fallback) fallbacks on root tokens only ever fire on typos —
+       silently wrong. Rules below the token layer reference root tokens WITHOUT
+       fallbacks. Keep fallbacks only for JS/state-scoped custom props set at
+       runtime (--col-accent, --gnode-label-size, --ask-dock-width, --gtc-*).
+
+       Spacing + font-size stay literal values on these scales (enforced by the
+       css-value-scale unit test):
+         spacing {2,4,6,8,10,12,14,16,18,20,24,28,32,40,48,56}  (1px = borders only)
+         type    {10,11,12,13,14,15,16,18,20,22,28}  (13 = UI control, 14 = body;
+                  emoji glyphs 34–46 exempt)
+       z-index values ≤ 10 (intra-component layering) stay literal. */
+    :root {
+      /* Hue mini-palette — field tints / chips / column accents */
+      --hue-slate: #94a3b8;
+      --hue-violet: #a78bfa;
+      --hue-violet-deep: #7c3aed;
+      --hue-cyan: #22d3ee;
+      --hue-cyan-deep: #0891b2;
+      --hue-teal-deep: #0d9488;
+      --hue-emerald: #34d399;
+      --hue-emerald-deep: #059669;
+      --hue-amber: #fbbf24;
+      --hue-amber-deep: #d97706;
+      --hue-amber-ink: #b45309;
+      --hue-orange: #fb923c;
+      --hue-red: #f87171; /* border tint only */
+
+      /* Claude brand isolate — intentional, exempt from the palette rules */
+      --brand-claude: #d97757;
+      --brand-claude-btn: #0b0d10;
+      --brand-claude-btn-hover: #16191d;
+
+      /* Accent / danger / warn alpha steps (--accent-soft above stays the 12% step) */
+      --accent-wash: color-mix(in srgb, var(--accent) 8%, transparent);
+      --accent-tint: color-mix(in srgb, var(--accent) 18%, transparent);
+      --accent-border-soft: color-mix(in srgb, var(--accent) 25%, transparent);
+      --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
+      --danger-wash: color-mix(in srgb, var(--danger) 8%, transparent);
+      --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
+      --danger-border: color-mix(in srgb, var(--danger) 40%, transparent);
+      --warn-wash: color-mix(in srgb, var(--warn) 8%, transparent);
+      --warn-soft: color-mix(in srgb, var(--warn) 12%, transparent);
+      --warn-border: color-mix(in srgb, var(--warn) 40%, transparent);
+      --glow-warn: 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent),
+        0 0 18px -2px color-mix(in srgb, var(--warn) 35%, transparent);
+      /* Opaque status pairs (badges/banners that must not blend) */
+      --warn-bg: #fef3c7;
+      --warn-edge: #fcd34d;
+      --warn-ink: #92400e;
+      --danger-bg: #fee2e2;
+      --danger-ink: #b91c1c;
+      /* Ink alphas — same value, distinct roles (kept separate on purpose) */
+      --edge-faint: rgba(15, 23, 42, 0.05); /* hairline edges */
+      --hover-veil: rgba(15, 23, 42, 0.05); /* hover washes */
+
+      /* Radius scale — snaps: 7→sm, 9→md; literal 50% only for fixed circles */
+      --r-xs: 4px;
+      --r-sm: 6px;
+      --r-md: 8px;
+      --r-lg: 10px;
+      --r-xl: 12px;
+      --r-2xl: 16px;
+      --r-pill: 999px;
+
+      /* Z tiers — exact current values (find-replace only; in-content dropdowns
+         merge at --z-menu, each the sole floater in its own stacking context) */
+      --z-menu: 60;
+      --z-takeover-scrim: 90;
+      --z-takeover: 95;
+      --z-topbar: 100;
+      --z-popover: 110;
+      --z-drawer-scrim: 120;
+      --z-drawer: 130;
+      --z-gate: 200;
+      --z-modal: 1000;
+      --z-boot: 1500;
+      --z-toast: 2000;
+      --z-banner: 2100;
+      --z-ghost: 3000;
+      --z-wall: 5000;
+      --z-veil: 8000;
+      --z-dropzone: 9000;
+
+      /* Motion — easing stays literal ease; spinner/pulse durations stay bespoke */
+      --dur-1: 0.12s;
+      --dur-2: 0.18s;
+      --dur-3: 0.25s;
+
+      /* Fonts — system stacks (no webfont is ever loaded) */
+      --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+      /* Overlay / selection */
+      --overlay-dim: rgba(15, 23, 42, 0.45);
+      --overlay-dim-soft: rgba(15, 23, 42, 0.15);
+      --overlay-blur: blur(3px);
+      --ring-select: 0 0 0 2px var(--accent-soft);
+    }
     /* Keep frosted surfaces opaque where backdrop-filter is unsupported */
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
       header.topbar, .outputs, .ask-dock, .modal, .settings-drawer,
@@ -56,13 +156,13 @@ export const tokensCss = `
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: var(--font-ui);
       color: var(--text);
       background: var(--bg);
       font-size: 14px;
     }
     code, kbd, samp, pre {
-      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--font-mono);
     }
     /* Form controls take the theme tokens so they're consistent across every
        surface (a bare input on a modal, the Database wizard, User Config, etc.):
@@ -81,8 +181,8 @@ export const tokensCss = `
       color: var(--text);
       background: var(--surface);
       border: 1px solid var(--border-strong);
-      border-radius: 9px;
-      padding: 9px 12px;
+      border-radius: var(--r-md);
+      padding: 10px 12px;
       box-sizing: border-box;
     }
     input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
@@ -95,7 +195,7 @@ export const tokensCss = `
 
     /* Light-blue focus ring for keyboard nav (mouse focus unaffected) */
     :where(button, a, [tabindex]):focus-visible {
-      outline: none; box-shadow: var(--glow-focus); border-radius: 6px;
+      outline: none; box-shadow: var(--glow-focus); border-radius: var(--r-sm);
     }
     input:focus-visible, select:focus-visible, textarea:focus-visible {
       outline: none; border-color: var(--accent-deep); box-shadow: 0 0 0 3px var(--accent-soft);

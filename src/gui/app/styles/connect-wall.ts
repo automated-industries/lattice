@@ -4,7 +4,7 @@
 // modals, toasts) so nothing behind it is reachable.
 export const connectWallCss = `    /* ── First-run connect wall ─────────────────────────── */
     .connect-wall {
-      position: fixed; inset: 0; z-index: 5000;
+      position: fixed; inset: 0; z-index: var(--z-wall);
       display: flex; align-items: center; justify-content: center;
       padding: 24px;
       background: var(--surface);
@@ -14,7 +14,7 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     .connect-wall-card {
       width: 100%; max-width: 440px; text-align: center;
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: 16px; box-shadow: var(--shadow-3, 0 20px 60px rgba(15, 23, 42, 0.18));
+      border-radius: var(--r-2xl); box-shadow: var(--shadow-3);
       padding: 32px 28px;
     }
     .connect-wall-card.cw-wide { max-width: 560px; }
@@ -27,16 +27,16 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     .connect-wall-card .cw-security { margin: 18px auto 0; max-width: 52ch; font-size: 12px; line-height: 1.5; }
 
     /* The wall's Claude CTA is the shared black Claude-logo button, sized up a touch. */
-    .connect-wall .connect-claude-btn { padding: 12px 16px; border-radius: 10px; font-size: 15px; margin: 0 auto 6px; }
+    .connect-wall .connect-claude-btn { padding: 12px 16px; border-radius: var(--r-lg); font-size: 15px; margin: 0 auto 6px; }
     .connect-wall .connect-claude-btn .claude-logo { width: 20px; height: 20px; }
 
     /* Step 1 — the two backend choices (Claude account vs any OpenAI-compatible endpoint). */
     .cw-choices { display: flex; gap: 12px; margin: 6px 0 4px; }
     .cw-choice {
       flex: 1 1 0; min-width: 0; text-align: center; cursor: pointer;
-      padding: 18px 14px; border: 1px solid var(--border-strong); border-radius: 12px;
-      background: var(--surface); color: var(--text); display: flex; flex-direction: column; gap: 3px;
-      transition: border-color .12s, box-shadow .12s, background .12s;
+      padding: 18px 14px; border: 1px solid var(--border-strong); border-radius: var(--r-xl);
+      background: var(--surface); color: var(--text); display: flex; flex-direction: column; gap: 4px;
+      transition: border-color var(--dur-1), box-shadow var(--dur-1), background var(--dur-1);
     }
     .cw-choice:hover { border-color: var(--accent); box-shadow: var(--glow-focus); }
     .cw-choice strong { font-size: 15px; font-weight: 700; }
@@ -45,8 +45,8 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     /* Wall inputs use the shared bubble field style (.lattice-input, below), stacked. */
     .connect-wall-card .cw-input { display: block; width: 100%; margin: 0 auto 10px; box-sizing: border-box; text-align: left; }
 
-    .connect-wall-status { margin-top: 4px; min-height: 18px; font-size: 12.5px; color: var(--text-muted); text-align: center; }
-    .connect-wall-status.cw-error { color: var(--danger, #c0392b); }
+    .connect-wall-status { margin-top: 4px; min-height: 18px; font-size: 13px; color: var(--text-muted); text-align: center; }
+    .connect-wall-status.cw-error { color: var(--danger); }
 
     /* Back / Connect actions. Connect fades until required fields are filled (disabled). */
     .cw-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; gap: 10px; }
@@ -56,8 +56,8 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     }
     .cw-back:hover { color: var(--text); }
     .cw-connect {
-      padding: 9px 18px; border: none; border-radius: 8px; cursor: pointer;
-      font: inherit; font-size: 14px; font-weight: 600; color: #fff; background: var(--accent);
+      padding: 10px 18px; border: none; border-radius: var(--r-md); cursor: pointer;
+      font: inherit; font-size: 14px; font-weight: 600; color: var(--btn-text); background: var(--accent);
     }
     .cw-connect:hover:not(:disabled) { filter: brightness(1.05); }
     .cw-connect:disabled { opacity: .45; cursor: not-allowed; }
@@ -71,10 +71,10 @@ export const connectWallCss = `    /* ── First-run connect wall ────
 
     /* ── Usage-limit banner (app-wide) ──────────────────── */
     .limit-banner {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 2100;
+      position: fixed; top: 0; left: 0; right: 0; z-index: var(--z-banner);
       padding: 8px 16px; text-align: center;
-      background: #fef3c7; color: #92400e;
-      border-bottom: 1px solid #fcd34d;
+      background: var(--warn-bg); color: var(--warn-ink);
+      border-bottom: 1px solid var(--warn-edge);
       font-size: 13px; font-weight: 600;
     }
 `;

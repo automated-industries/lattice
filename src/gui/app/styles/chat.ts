@@ -1,7 +1,7 @@
 // Auto-composed section of the GUI stylesheet. Verbatim substring of the original
 // css template literal — do not hand-edit; see styles/index.ts for composition.
 export const chatCss = `    /* ── Chat bubbles + tool pills ─────────────────────── */
-    .chat-msg { display: flex; animation: feedIn 0.18s ease-out; }
+    .chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
     /* Gladys, the assistant, speaks with her own avatar so replies read as coming
@@ -12,18 +12,18 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
       font-size: 18px; line-height: 1.2; margin-right: 8px;
     }
     .chat-bubble {
-      max-width: 85%; padding: 8px 12px; font-size: 13.5px; line-height: 1.45;
+      max-width: 85%; padding: 8px 12px; font-size: 14px; line-height: 1.45;
       white-space: pre-wrap; word-break: break-word;
     }
     .chat-bubble.user {
       background: var(--accent);
       color: var(--btn-text);
-      border-radius: 14px 14px 4px 14px;
-      box-shadow: 0 2px 10px -2px rgba(37, 99, 235, 0.5);
+      border-radius: var(--r-xl) var(--r-xl) var(--r-xs) var(--r-xl);
+      box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--accent-deep) 50%, transparent);
     }
     .chat-bubble.assistant {
       background: var(--surface-2); color: var(--text); border: 1px solid rgba(15, 23, 42, 0.04);
-      border-radius: 14px 14px 14px 4px;
+      border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-xs);
       white-space: normal; /* rendered Markdown flows as HTML, not pre-wrapped */
     }
     /* Markdown elements rendered inside assistant chat bubbles */
@@ -38,15 +38,15 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     }
     .chat-bubble.assistant h3 { font-size: 15px; }
     .chat-bubble.assistant h4 { font-size: 14px; }
-    .chat-bubble.assistant h5, .chat-bubble.assistant h6 { font-size: 13.5px; }
+    .chat-bubble.assistant h5, .chat-bubble.assistant h6 { font-size: 14px; }
     .chat-bubble.assistant a { color: var(--accent); text-decoration: underline; }
     .chat-bubble.assistant strong { font-weight: 700; }
     .chat-bubble.assistant code {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
-      padding: 0 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xs);
+      padding: 0 4px; font-family: var(--font-mono); font-size: 12px;
     }
     .chat-bubble.assistant pre {
-      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm);
       padding: 8px; margin: 0 0 8px; overflow-x: auto;
     }
     .chat-bubble.assistant pre code { background: none; border: none; padding: 0; white-space: pre; }
@@ -54,7 +54,7 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
        the rail — there is no separate inline pill style. Reads emit no card.
        Typing indicator: three pulsing dots shown in an assistant bubble while
        the model is generating (before the first text delta of a turn). */
-    .chat-typing { display: inline-flex; align-items: center; gap: 4px; padding: 1px 0; }
+    .chat-typing { display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; }
     .chat-typing i {
       width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);
       display: inline-block; animation: chat-typing-kf 1.2s ease-in-out infinite;
@@ -72,27 +72,26 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .rail-composer textarea {
       width: 100%; min-width: 0; resize: none; min-height: 38px; max-height: 160px;
       background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 8px;
-      padding: 8px 10px; font: inherit; font-size: 13.5px; line-height: 1.4;
+      border: 1px solid var(--border-strong); border-radius: var(--r-md);
+      padding: 8px 10px; font: inherit; font-size: 14px; line-height: 1.4;
       /* Wrap instead of overflowing: min-width:0 lets the flex child shrink so
          text reflows to the rail width, and overflow-wrap breaks long tokens
          (URLs) that have no space to wrap at. JS auto-grows height to fit. */
       overflow-wrap: break-word; word-break: break-word;
     }
-    .rail-composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     /* While a voice note is being recorded/transcribed the textarea is read-only
        (shows a "Listening…" / "Transcribing…" placeholder, not editable). */
     .rail-composer textarea.recording { opacity: 0.6; cursor: not-allowed; }
     .rail-composer .composer-row { display: flex; gap: 8px; align-items: flex-end; }
     .rail-composer .composer-send {
-      flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: 8px;
+      flex: 0 0 auto; height: 38px; padding: 0 14px; border: none; border-radius: var(--r-md);
       background: var(--accent); color: var(--btn-text); font-weight: 600; cursor: pointer;
-      box-shadow: none; transition: filter 0.18s ease, box-shadow 0.18s ease, transform 0.08s ease;
+      box-shadow: none; transition: filter var(--dur-2) ease, box-shadow var(--dur-2) ease, transform 0.08s ease;
     }
     .rail-composer .composer-send:hover:not(:disabled) { filter: brightness(1.06); box-shadow: var(--shadow-2); }
     .rail-composer .composer-send:active:not(:disabled) { transform: translateY(1px); }
     .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
-    .rail-composer .composer-setup { font-size: 12.5px; color: var(--text-muted); text-align: center; }
+    .rail-composer .composer-setup { font-size: 13px; color: var(--text-muted); text-align: center; }
     .rail-composer .composer-setup a { color: var(--accent); }
     /* Private-mode toggle under the composer row. */
     .rail-composer .composer-private {
@@ -106,20 +105,20 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .rail-composer .composer-private-hint { color: var(--text-muted); opacity: 0.8; font-size: 11px; }
     .rail-composer .composer-mic {
       flex: 0 0 auto; height: 38px; width: 38px; font-size: 15px;
-      border: 1px solid var(--border-strong); border-radius: 8px;
+      border: 1px solid var(--border-strong); border-radius: var(--r-md);
       background: var(--surface-2); color: var(--text-muted); cursor: pointer;
     }
-    .rail-composer .composer-mic.recording { background: var(--warn); color: var(--text); border-color: var(--warn); box-shadow: 0 0 14px -2px rgba(251, 146, 60, 0.6); }
+    .rail-composer .composer-mic.recording { background: var(--warn); color: var(--text); border-color: var(--warn); box-shadow: 0 0 14px -2px color-mix(in srgb, var(--hue-orange) 60%, transparent); }
     .rail-composer .composer-mic.transcribing { color: var(--accent); }
     /* No microphone available: faded + not-allowed, but still hoverable so the
        title tooltip ("No microphone available") shows. Not natively disabled —
        disabled buttons suppress the tooltip. */
     .rail-composer .composer-mic.composer-mic-unavailable { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
-    .rail-composer .mic-picker { flex: 0 0 auto; max-width: 150px; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
+    .rail-composer .mic-picker { flex: 0 0 auto; max-width: 150px; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); }
     .rail-composer .composer-clip {
       flex: 0 0 auto; height: 38px; width: 38px;
       display: inline-flex; align-items: center; justify-content: center;
-      border: 1px solid var(--border-strong); border-radius: 8px;
+      border: 1px solid var(--border-strong); border-radius: var(--r-md);
       background: var(--surface-2); color: var(--text-muted); cursor: pointer;
     }
     .rail-composer .composer-clip:hover { color: var(--text); border-color: var(--accent); }

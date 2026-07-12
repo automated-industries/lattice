@@ -196,10 +196,32 @@ import { css } from '../../src/gui/app/css.js';
 // Schema-grouped TABLES + SQL-runner table page: added the collapsible .nav-schema-head
 // styles + the .sql-runner/.sql-editor/.sql-error/.sql-note/.sql-results-head block; removed
 // the dead #nav-files-tree rule (the FILES sidebar section is gone). Recaptured.
-// Record page: the actions (dotdotdot) menu moved onto the breadcrumb row (new .record-topbar
-// flex rule) instead of the title row. Recaptured.
-const ORIGINAL_LENGTH = 151410;
-const ORIGINAL_SHA256 = 'beca77b3a2e5e8f345728c495e994c2da30b4e5fc06730f17105ce12440d0396';
+// Design pass M1 — token scales added to tokens.ts (hue mini-palette, brand isolate,
+// accent/danger/warn alpha steps, opaque status pairs, radius scale, z tiers, motion,
+// font stacks, overlay/selection) in a second :root block + the fallback-policy and
+// value-scale doc comments. Purely additive: histogram diff = 63 additions, 0 removals;
+// nothing references the new tokens yet, so rendered output is unchanged. Recaptured.
+// Design pass M2a — value normalization across the styles files: color literals swapped to the
+// token layer (hue palette, accent/danger/warn color-mix steps, status pairs, --btn-text/
+// --surface whites), dead root-token fallbacks stripped (incl. the undefined --panel/
+// --text-dim/--mono/--danger-soft fallbacks), odd paddings/margins + half-pixel font sizes
+// snapped to the documented scales, letter-spacing unified at .05em, border-radius moved to
+// the --r-* tokens, exact-match durations to --dur-*, and font stacks to --font-ui/--font-mono.
+// Four sanctioned contrast fixes (op-schema chip, import errors, shared-yellow, role-expired
+// bg) + three hue absorptions. z-index untouched (next commit). Recaptured.
+// Design pass M2b — z-index tiers: every stacking-tier literal moved to its --z-* token
+// (values unchanged), and the five in-content dropdowns (file menu, sources add-menu, tab
+// overflow, emoji grid — each the sole floater in its own stacking context) merged at
+// --z-menu. Literals <= 10 (intra-component micro-order) stay by documented rule. Recaptured.
+// Design pass M3 — component consolidation: NEW components.ts (canonical modal moved from
+// teams.ts; backdrop-geometry, icon-button-chrome, card-DNA, pill-radius, empty-state,
+// kicker, toolbar alias groups; grouped focus ring; .panel/.pill/.empty-state/.kicker/
+// .toolbar primitives) + NEW utilities.ts (the .muted/.hint/.mono/.u-* vocabulary — the
+// global .muted rule is the sanctioned fix for ~43 bare class=muted usages). Dead CSS
+// deleted (.danger-btn, .wm-actions/.wm-btn, .modal-foot .btn overrides, .cd-btn dupes).
+// Recaptured.
+const ORIGINAL_LENGTH = 158556;
+const ORIGINAL_SHA256 = '8587dfa25a8d35a92dc21614030492467d933fd94cd99988572bf35e1acfa9bb';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

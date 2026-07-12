@@ -22,8 +22,8 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       display: flex; flex-direction: column; align-items: center; gap: 8px;
       padding: 18px 12px 14px; text-align: center;
       background: var(--sheen), var(--surface); border: 1px solid var(--border);
-      border-radius: 12px; box-shadow: var(--shadow-2), var(--hl-top); cursor: pointer;
-      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      border-radius: var(--r-xl); box-shadow: var(--shadow-2), var(--hl-top); cursor: pointer;
+      transition: transform var(--dur-2) ease, border-color var(--dur-2) ease, box-shadow var(--dur-2) ease;
       /* Wire/Merge drag: block native text-selection + scroll/pan gestures on the
          tile so a drag can't hand the pointer stream to the OS (which stops
          pointermove and freezes the ghost). Chrome tolerates the omission; some
@@ -42,7 +42,7 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       -webkit-line-clamp: 2; -webkit-box-orient: vertical; max-height: 2.6em; line-height: 1.3;
     }
     .fs-folder-count { font-size: 11px; color: var(--text-muted); }
-    .fs-empty { color: var(--text-muted); font-style: italic; padding: 28px 4px; }
+    .fs-empty { font-style: italic; padding: 28px 4px; }
 
     /* ── Folders view (the default tab: objects as folders) ─────────── */
     .folders-view { padding: 2px 2px 24px; }
@@ -57,18 +57,18 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .folders-rename-cur {
       margin-left: auto; font-size: 12px; color: var(--text-muted);
       background: var(--surface-2); border: 1px solid var(--border);
-      border-radius: 7px; padding: 3px 9px; cursor: pointer;
+      border-radius: var(--r-sm); padding: 4px 10px; cursor: pointer;
     }
     .folders-rename-cur:hover { color: var(--accent); border-color: var(--accent); }
     .folders-section {
-      font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+      font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
       color: var(--text-muted); margin: 20px 2px 10px;
     }
     .folders-grid { max-width: none; }
     /* Desktop-icon style: no card box — just the 📁 icon + a centered name. */
     .folders-view .fs-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 4px; }
     .folders-view .fs-tile {
-      background: none; border: 0; box-shadow: none; padding: 12px 6px 10px; gap: 5px;
+      background: none; border: 0; box-shadow: none; padding: 12px 6px 10px; gap: 6px;
     }
     .folders-view .fs-tile:hover { background: var(--surface-2); transform: none; box-shadow: none; }
     .folders-view .fs-tile-icon { font-size: 42px; line-height: 1; }
@@ -79,7 +79,7 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-folder-base { font-size: 46px; line-height: 1; }
     .fs-folder-badge {
       position: absolute; left: 50%; top: 60%; transform: translate(-50%, -50%);
-      font-size: 19px; line-height: 1; pointer-events: none;
+      font-size: 20px; line-height: 1; pointer-events: none;
       filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
     }
     /* Rename: right-click a folder tile, or click the open-folder breadcrumb name. */
@@ -87,7 +87,7 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .folders-crumb-cur .fs-tile-name:hover { text-decoration: underline dotted; }
     .fs-tile-name.fs-renaming {
       outline: 1px solid var(--accent); background: var(--surface);
-      padding: 0 3px; border-radius: 4px; cursor: text; text-decoration: none;
+      padding: 0 4px; border-radius: var(--r-xs); cursor: text; text-decoration: none;
       -webkit-line-clamp: none; display: inline;
     }
 
@@ -95,7 +95,7 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-context { max-width: 900px; }
     .fs-context-doc {
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 6px 20px; box-shadow: var(--shadow); margin-top: 16px;
+      border-radius: var(--r-lg); padding: 6px 20px; box-shadow: var(--shadow); margin-top: 16px;
     }
     .fs-context-doc .md-body { font-size: 14px; line-height: 1.6; color: var(--text); }
     .fs-context-doc .md-body h1 { font-size: 18px; margin: 14px 0 6px; }
@@ -104,15 +104,15 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-context-doc .md-body ul { margin: 6px 0; padding-left: 20px; }
     .fs-context-doc .md-body li { margin: 2px 0; }
     .fs-context-doc .md-body p { margin: 6px 0; }
-    .fs-context-doc .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .fs-context-doc .md-body code { background: var(--surface-2); padding: 2px 4px; border-radius: var(--r-xs); font-size: 13px; }
     .fs-context-doc .md-body a { color: var(--accent); }
     /* Markdown view: the editable raw-markdown textarea (writes back to the row)
        + an inline save-status line. */
     .fs-context-edit {
       display: block; width: 100%; max-width: 900px; min-height: 340px; box-sizing: border-box;
-      margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
+      margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--r-lg);
       background: var(--surface); color: var(--text); box-shadow: var(--shadow);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.6;
+      font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
       resize: vertical; tab-size: 2;
     }
     .fs-context-edit:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
@@ -123,25 +123,25 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-create-actions { display: flex; gap: 8px; justify-content: flex-end; max-width: 900px; margin-top: 16px; }
     .fs-field-label {
       font-size: 11px; color: var(--text-muted); text-transform: uppercase;
-      letter-spacing: 0.04em; margin-bottom: 4px;
+      letter-spacing: 0.05em; margin-bottom: 4px;
     }
     .fs-field-val { font-size: 14px; line-height: 1.5; }
-    .fs-field-val.ce { cursor: text; border-radius: 6px; margin: -3px -6px; padding: 3px 6px; }
+    .fs-field-val.ce { cursor: text; border-radius: var(--r-sm); margin: -4px -6px; padding: 4px 6px; }
     .fs-field-val.ce:hover { background: var(--surface-2); outline: 1px dashed var(--border-strong); }
     .fs-field-val.editing { outline: none; background: transparent; }
     .fs-field-val.editing input, .fs-field-val.editing textarea, .fs-field-val.editing select {
-      width: 100%; padding: 6px 9px; font: inherit; font-size: 14px;
-      border: 1px solid var(--accent); border-radius: 6px; background: var(--surface);
+      width: 100%; padding: 6px 10px; font: inherit; font-size: 14px;
+      border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--surface);
     }
     .fs-field-val.editing textarea { min-height: 80px; resize: vertical; }
     .fs-field-val .md-body { font-size: 14px; line-height: 1.55; }
     .fs-field-val .md-body h1, .fs-field-val .md-body h2, .fs-field-val .md-body h3 { margin: 10px 0 6px; line-height: 1.3; }
     .fs-field-val .md-body ul { margin: 6px 0; padding-left: 20px; }
-    .fs-field-val .md-body code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .fs-field-val .md-body code { background: var(--surface-2); padding: 2px 4px; border-radius: var(--r-xs); font-size: 13px; }
     .fs-empty-val { color: var(--text-muted); }
     .fs-link { color: var(--accent); }
     .fs-link:hover { text-decoration: underline; }
     .fs-rel-title { font-size: 13px; color: var(--text-muted); text-transform: uppercase;
-      letter-spacing: 0.04em; margin: 24px 0 12px; }
+      letter-spacing: 0.05em; margin: 24px 0 12px; }
 
 `;

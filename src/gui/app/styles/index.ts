@@ -2,6 +2,7 @@
 // order, joined with the empty string. The concatenation is byte-identical to the
 // original single template literal (pinned by tests/unit/app-css-composition.test.ts).
 import { tokensCss } from './tokens.js';
+import { componentsCss } from './components.js';
 import { topbarCss } from './topbar.js';
 import { searchCss } from './search.js';
 import { realtimeCss } from './realtime.js';
@@ -30,9 +31,11 @@ import { sourcesCss } from './sources.js';
 import { statusIndicatorCss } from './status-indicator.js';
 import { fileDocCss } from './file-doc.js';
 import { connectWallCss } from './connect-wall.js';
+import { utilitiesCss } from './utilities.js';
 
 export const css = [
   tokensCss,
+  componentsCss,
   topbarCss,
   searchCss,
   realtimeCss,
@@ -61,4 +64,5 @@ export const css = [
   statusIndicatorCss,
   fileDocCss,
   connectWallCss,
+  utilitiesCss,
 ].join('');

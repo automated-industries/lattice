@@ -163,7 +163,7 @@ export const inlineImportJs = `
           });
         });
       }
-      parts.push('<div class="cd-row"><button class="cd-btn cd-primary" id="ii-apply" type="button">Import into Lattice</button></div>');
+      parts.push('<div class="cd-row"><button class="btn primary cd-btn cd-primary" id="ii-apply" type="button">Import into Lattice</button></div>');
       parts.push('<div class="imp-card-log" id="ii-log"></div>');
 
       var content = document.createElement('div');

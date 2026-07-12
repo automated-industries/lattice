@@ -96,14 +96,14 @@ export const markdownJs = `    // ───────────────�
       // (nothing to restore) — neither carries a Revert button.
       if (isSchemaHistoryOp(e.operation)) {
         var sActions = e.undone
-          ? '<span class="muted" style="font-size:11px;">undone</span>'
+          ? '<span class="hint-xs">undone</span>'
           : (e.operation === 'schema.purge' || e.operation === 'schema.refresh_computed'
-              ? '<span class="muted" style="font-size:11px;">' + (e.operation === 'schema.purge' ? 'permanent' : 'not revertible') + '</span>'
+              ? '<span class="hint-xs">' + (e.operation === 'schema.purge' ? 'permanent' : 'not revertible') + '</span>'
               : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>');
         return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
           '<div class="history-meta">' +
             '<div><span class="history-op op-schema">SCHEMA</span></div>' +
-            '<div style="margin-top:6px;">' + escapeHtml(formatTs(e.ts)) + '</div>' +
+            '<div class="u-mt-2">' + escapeHtml(formatTs(e.ts)) + '</div>' +
           '</div>' +
           '<div class="history-summary">' + schemaEntryLabel(e) + '</div>' +
           '<div class="history-actions">' + sActions + '</div>' +
@@ -123,12 +123,12 @@ export const markdownJs = `    // ───────────────�
       }
       var diff = renderDiff(before, after);
       var actions = e.undone
-        ? '<span class="muted" style="font-size:11px;">undone</span>'
+        ? '<span class="hint-xs">undone</span>'
         : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>';
       return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
         '<div class="history-meta">' +
           '<div><span class="history-op op-' + escapeHtml(e.operation) + '">' + escapeHtml(e.operation) + '</span></div>' +
-          '<div style="margin-top:6px;">' + escapeHtml(formatTs(e.ts)) + '</div>' +
+          '<div class="u-mt-2">' + escapeHtml(formatTs(e.ts)) + '</div>' +
         '</div>' +
         '<div class="history-summary">' +
           summary +
