@@ -68,4 +68,40 @@ describe('computed columns (#10) — same-row write-path recompute (SQLite)', ()
     const urgent = await db.query('ticket', { filters: [{ col: 'is_urgent', op: 'eq', val: 1 }] });
     expect(urgent.map((r) => r.id)).toEqual(['t1']);
   });
+
+  it('derives computed columns on the upsert + natural-key paths (connector sync / seed)', async () => {
+    // Regression: the sync + seed engines write via upsert / upsertByNaturalKey / enrichByNaturalKey,
+    // NOT insert()/update(). Those paths must also recompute, or a computed field on a synced table
+    // stays NULL.
+    db = new Lattice(':memory:');
+    db.define('contact', {
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        email: 'TEXT',
+        score: 'INTEGER',
+        is_vip: 'INTEGER',
+        deleted_at: 'TEXT',
+      },
+      computedFields: { is_vip: { kind: 'calc', expr: 'score >= 90', type: 'boolean' } },
+      render: () => '',
+      outputFile: 'c.md',
+    });
+    await db.init();
+
+    // upsert (the connector sync write path)
+    await db.upsert('contact', { id: 'c1', email: 'a@x.com', score: 95 });
+    expect((await db.get('contact', 'c1'))?.is_vip).toBe(1);
+
+    // upsertByNaturalKey INSERT branch, then its UPDATE branch (seed / re-sync)
+    await db.upsertByNaturalKey('contact', 'email', 'b@x.com', { score: 40 });
+    let b = await db.query('contact', { filters: [{ col: 'email', op: 'eq', val: 'b@x.com' }] });
+    expect(b[0]?.is_vip).toBe(0);
+    await db.upsertByNaturalKey('contact', 'email', 'b@x.com', { score: 99 });
+    b = await db.query('contact', { filters: [{ col: 'email', op: 'eq', val: 'b@x.com' }] });
+    expect(b[0]?.is_vip).toBe(1); // recomputed on the natural-key update
+
+    // enrichByNaturalKey (sparse enrich)
+    await db.enrichByNaturalKey('contact', 'email', 'a@x.com', { score: 10 });
+    expect((await db.get('contact', 'c1'))?.is_vip).toBe(0); // re-derived down from VIP
+  });
 });

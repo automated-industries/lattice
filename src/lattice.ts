@@ -1690,6 +1690,10 @@ export class Lattice {
     // them). _fireWriteHooks self-schedules the auto-render, so this replaces the
     // explicit call above rather than adding to it.
     await this._fireWriteHooks(table, 'update', rowWithPk, pkValue, Object.keys(sanitized));
+    // Derive computed columns. The connector sync + seed bulk-write paths reach the DB
+    // through upsert (not insert()/update()), so without this a computed field on a
+    // synced/enriched table would never populate. upsert is a full-row write → recompute all.
+    await this._deriveComputedAfterWrite(table, pkValue, null);
     return pkValue;
   }
 
@@ -1888,18 +1892,42 @@ export class Lattice {
   }
 
   /**
+   * Derive computed columns after a row is written: recompute the deterministic same-row
+   * columns and NULL any AI cells whose inputs changed. Called by every write path (insert,
+   * update, upsert, the natural-key upsert/enrich the sync + seed engines use) so a computed
+   * field is never left unpopulated or stale regardless of HOW the row was written.
+   * `changedCols === null` = a full-row write (recompute all + null every AI cell).
+   */
+  private async _deriveComputedAfterWrite(
+    table: string,
+    id: PkLookup,
+    changedCols: Set<string> | null,
+  ): Promise<void> {
+    if (this._computedFieldSql.has(table)) {
+      await this._recomputeComputedFieldColumns(table, id, changedCols);
+    }
+    if (this._aiComputedFields.has(table)) {
+      await this._nullStaleAiColumns(table, id, changedCols);
+    }
+  }
+
+  /**
    * NULL the AI computed cells on ONE row whose input columns just changed (one bounded
    * row update, no scan). The "never serve stale" contract: a changed input clears the derived value
-   * immediately; {@link fillComputedFields} repopulates it out-of-band.
+   * immediately; {@link fillComputedFields} repopulates it out-of-band. `changedCols === null`
+   * NULLs every AI cell on the row (a full-row write, where any input may have changed).
    */
   private async _nullStaleAiColumns(
     table: string,
     id: PkLookup,
-    changedCols: Set<string>,
+    changedCols: Set<string> | null,
   ): Promise<void> {
     const fields = this._aiComputedFields.get(table);
     if (!fields || fields.length === 0) return;
-    const stale = fields.filter((f) => [...f.deps].some((d) => changedCols.has(d)));
+    const stale =
+      changedCols === null
+        ? fields
+        : fields.filter((f) => [...f.deps].some((d) => changedCols.has(d)));
     if (stale.length === 0) return;
     const setClause = stale.map((f) => `"${f.column}" = NULL`).join(', ');
     const { clause, params } = this._pkWhere(table, id);
@@ -2318,6 +2346,11 @@ export class Lattice {
         existing.id as string,
         Object.keys(sanitized),
       );
+      await this._deriveComputedAfterWrite(
+        table,
+        existing.id as string,
+        new Set(Object.keys(sanitized)),
+      );
       return existing.id as string;
     }
 
@@ -2343,6 +2376,7 @@ export class Lattice {
       Object.values(encInserted),
     );
     await this._fireWriteHooks(table, 'insert', filtered, id);
+    await this._deriveComputedAfterWrite(table, id, null); // full-row insert → recompute all
     return id;
   }
 
@@ -2389,6 +2423,11 @@ export class Lattice {
       Object.fromEntries(entries),
       existing.id as string,
       entries.map(([k]) => k),
+    );
+    await this._deriveComputedAfterWrite(
+      table,
+      existing.id as string,
+      new Set(entries.map(([k]) => k)),
     );
     return true;
   }
