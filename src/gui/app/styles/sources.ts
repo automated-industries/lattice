@@ -14,7 +14,7 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     /* "＋ File(s)" button + its file/folder popover menu. */
     .src-add-files-wrap { position: relative; }
     .src-add-menu {
-      position: absolute; left: 8px; right: 8px; top: calc(100% + 2px); z-index: 30;
+      position: absolute; left: 8px; right: 8px; top: calc(100% + 2px); z-index: var(--z-menu);
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
       box-shadow: var(--shadow-2); padding: 4px; overflow: hidden;
     }

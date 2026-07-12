@@ -54,7 +54,7 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     .tab-overflow-wrap { position: relative; display: inline-flex; align-items: stretch; }
     .tab-overflow-btn { flex: none; min-width: 40px; font-weight: 500; }
     .tab-overflow-menu {
-      position: absolute; right: 0; top: calc(100% + 2px); z-index: 50;
+      position: absolute; right: 0; top: calc(100% + 2px); z-index: var(--z-menu);
       min-width: 220px; max-height: 60vh; overflow-y: auto;
       display: flex; flex-direction: column; padding: 6px;
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);

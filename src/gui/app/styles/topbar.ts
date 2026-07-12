@@ -7,7 +7,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
          explicit z-index it (and its dropdowns like .db-menu) get painted under
          the main content. 100 keeps dropdowns above the dashboard cards while
          staying below drawers (120/130), modals (1000), and toasts (2000). */
-      position: relative; z-index: 100;
+      position: relative; z-index: var(--z-topbar);
       min-height: 56px; padding: 8px 20px;
       background: var(--glass);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
@@ -122,7 +122,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
       border: 1px solid rgba(15, 23, 42, 0.04); border-radius: var(--r-md);
       box-shadow: var(--shadow-3), var(--hl-top);
-      z-index: 60; padding: 6px;
+      z-index: var(--z-menu); padding: 6px;
     }
     .db-menu .db-section { font-size: 11px; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.05em;
@@ -150,7 +150,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
       border: 1px solid rgba(15, 23, 42, 0.04); border-radius: var(--r-md);
       box-shadow: var(--shadow-3), var(--hl-top);
-      z-index: 60; padding: 6px;
+      z-index: var(--z-menu); padding: 6px;
     }
     .account-menu-head {
       font-size: 11px; color: var(--text-muted);
@@ -179,7 +179,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
       background: var(--glass-strong);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
       border: 1px solid rgba(15, 23, 42, 0.06); border-radius: var(--r-lg);
-      box-shadow: var(--shadow-3), var(--hl-top); z-index: 110; padding: 8px;
+      box-shadow: var(--shadow-3), var(--hl-top); z-index: var(--z-popover); padding: 8px;
     }
     .activity-popover[hidden] { display: none; }
     .activity-popover-head {

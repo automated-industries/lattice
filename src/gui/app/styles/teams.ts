@@ -78,7 +78,7 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
       position: fixed; inset: 0; background: var(--overlay-dim);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       display: flex; align-items: center; justify-content: center;
-      z-index: 1000;
+      z-index: var(--z-modal);
     }
     .modal {
       background: rgba(255, 255, 255, 0.80);

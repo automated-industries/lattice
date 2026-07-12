@@ -209,8 +209,12 @@ import { css } from '../../src/gui/app/css.js';
 // the --r-* tokens, exact-match durations to --dur-*, and font stacks to --font-ui/--font-mono.
 // Four sanctioned contrast fixes (op-schema chip, import errors, shared-yellow, role-expired
 // bg) + three hue absorptions. z-index untouched (next commit). Recaptured.
-const ORIGINAL_LENGTH = 157229;
-const ORIGINAL_SHA256 = '2a15680fdd1f283bc9f11f2aa5cd45ac74e0d434fc9c956a008ce2152f437fe0';
+// Design pass M2b — z-index tiers: every stacking-tier literal moved to its --z-* token
+// (values unchanged), and the five in-content dropdowns (file menu, sources add-menu, tab
+// overflow, emoji grid — each the sole floater in its own stacking context) merged at
+// --z-menu. Literals <= 10 (intra-component micro-order) stay by documented rule. Recaptured.
+const ORIGINAL_LENGTH = 157477;
+const ORIGINAL_SHA256 = '61b14c0e8b2881a1db747fa6665bf6132ca34f0efcfdb4ad0e3ea80bfbd9a546';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

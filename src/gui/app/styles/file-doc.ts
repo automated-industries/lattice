@@ -32,7 +32,7 @@ export const fileDocCss = `    /* ── File / artifact document view ───
     .file-menu-wrap { position: relative; }
     .file-menu-btn { font-size: 18px; line-height: 1; padding: 2px 10px; }
     .file-menu {
-      position: absolute; right: 0; top: calc(100% + 4px); z-index: 30;
+      position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-menu);
       min-width: 172px; padding: 6px; display: flex; flex-direction: column;
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);

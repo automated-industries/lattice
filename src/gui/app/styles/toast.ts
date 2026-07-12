@@ -9,7 +9,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
       box-shadow: var(--shadow-3);
       /* Above every overlay (.modal-backdrop is z-index 1000, drawers 120-130) so
          an error thrown by an overlay screen is always visible on top. */
-      z-index: 2000; font-size: 14px;
+      z-index: var(--z-toast); font-size: 14px;
       animation: toast-in var(--dur-2) ease;
     }
     @keyframes toast-in {
@@ -29,7 +29,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
        (topbar 100, drawers 120/130, modals 1000) but below toasts (2000) so a
        boot-error toast can still surface. Boot-only — never re-shown on a switch. */
     .app-loading {
-      position: fixed; inset: 0; z-index: 1500;
+      position: fixed; inset: 0; z-index: var(--z-boot);
       background: var(--bg);
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
       opacity: 1; transition: opacity var(--dur-3) ease;
@@ -46,7 +46,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
        chrome (topbar 100) but below modals (1000) so the onboarding wizard sits
        on top. The onboarding modal reuses .modal-backdrop. */
     .virgin-state {
-      position: fixed; inset: 0; z-index: 200;
+      position: fixed; inset: 0; z-index: var(--z-gate);
       background: var(--bg);
       display: flex; align-items: center; justify-content: center; padding: 24px;
     }

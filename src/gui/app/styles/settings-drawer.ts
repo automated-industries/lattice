@@ -9,14 +9,14 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       /* BELOW the topbar (z 100): the takeover replaces the workspace, but the
          header and its triggers must stay clickable — the clock/gear COLLAPSE
          the open panel. */
-      z-index: 90; opacity: 0; transition: opacity 0.2s ease;
+      z-index: var(--z-takeover-scrim); opacity: 0; transition: opacity 0.2s ease;
     }
     .drawer-backdrop.open { opacity: 1; }
     .settings-drawer {
       position: fixed; left: 0; right: 0; bottom: 0; top: 49px; /* refined by JS to the real header height */
       background: var(--surface);
       border-top: 1px solid rgba(15, 23, 42, 0.06);
-      z-index: 95; display: flex; flex-direction: column;
+      z-index: var(--z-takeover); display: flex; flex-direction: column;
       /* Slide in from the top (down from behind the header) on open, back up on close.
          Kept under the 220ms hide-timeout in closeSettingsDrawer so the panel isn't
          display:none'd mid-slide. */
@@ -73,7 +73,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .connectors-backdrop {
       position: fixed; inset: 0; background: var(--overlay-dim);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-      z-index: 120; opacity: 0; transition: opacity 0.2s ease;
+      z-index: var(--z-drawer-scrim); opacity: 0; transition: opacity 0.2s ease;
     }
     .connectors-backdrop.open { opacity: 1; }
     .connectors-dialog {
@@ -86,7 +86,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
          header included, so the dialog MUST sit ABOVE the backdrop. (The
          takeover-panel z-fix wrongly dropped this to 95 — below the backdrop —
          which dimmed the dialog itself and faded the whole screen.) */
-      z-index: 130; display: flex; flex-direction: column;
+      z-index: var(--z-drawer); display: flex; flex-direction: column;
       transform: translateX(-100%); transition: transform 0.22s ease;
     }
     .connectors-dialog.open { transform: translateX(0); }

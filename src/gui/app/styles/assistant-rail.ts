@@ -69,7 +69,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
        the drop TARGET is the Gladys chat, not the whole screen.
        pointer-events:none so the drag/drop events still reach the document handler. */
     .file-drop-overlay {
-      position: fixed; inset: 0; z-index: 9000; display: none;
+      position: fixed; inset: 0; z-index: var(--z-dropzone); display: none;
       align-items: center; justify-content: center; pointer-events: none;
       background: rgba(15, 23, 42, 0.55);
       -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);

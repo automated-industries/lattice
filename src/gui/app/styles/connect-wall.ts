@@ -4,7 +4,7 @@
 // modals, toasts) so nothing behind it is reachable.
 export const connectWallCss = `    /* ── First-run connect wall ─────────────────────────── */
     .connect-wall {
-      position: fixed; inset: 0; z-index: 5000;
+      position: fixed; inset: 0; z-index: var(--z-wall);
       display: flex; align-items: center; justify-content: center;
       padding: 24px;
       background: var(--surface);
@@ -71,7 +71,7 @@ export const connectWallCss = `    /* ── First-run connect wall ────
 
     /* ── Usage-limit banner (app-wide) ──────────────────── */
     .limit-banner {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 2100;
+      position: fixed; top: 0; left: 0; right: 0; z-index: var(--z-banner);
       padding: 8px 16px; text-align: center;
       background: var(--warn-bg); color: var(--warn-ink);
       border-bottom: 1px solid var(--warn-edge);

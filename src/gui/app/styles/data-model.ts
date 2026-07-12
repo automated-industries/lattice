@@ -180,7 +180,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .emoji-trigger .emoji-preview { font-size: 22px; line-height: 1; }
     .emoji-trigger .emoji-caret { color: var(--text-muted); font-size: 10px; }
     .emoji-grid {
-      position: absolute; top: 42px; left: 0; z-index: 70;
+      position: absolute; top: 42px; left: 0; z-index: var(--z-menu);
       display: grid; grid-template-columns: repeat(8, 36px); gap: 4px;
       background: var(--glass-strong);
       -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
