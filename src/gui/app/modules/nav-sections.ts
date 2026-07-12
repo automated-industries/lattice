@@ -1,64 +1,89 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// left-sidebar nav sections beneath Dashboards: Tables, Files. Each opens a typed
-// Workspace tab by setting the hash (the tab host renders it). Collapse state reuses
+// left-sidebar TABLES nav section beneath Dashboards. Tables are grouped by their
+// provenance SCHEMA (LATTICE / one per connector / one per connected database —
+// server-stamped as schemaKey/schemaLabel), each schema an independently collapsible
+// group. Junctions (linkTable) and SQL-protected tables (sqlDenied) are excluded.
+// Clicking a table opens its Workspace tab (#/w/table/<name>). Collapse state reuses
 // the shared .section-toggle[data-group] idiom (sources.ts). Must stay INSIDE the
-// client IIFE (uses state/escapeHtml/fetchJson/displayFor/mtClassifyTier/MT_LAYERS/
-// renderSourcesFilesInto); registered before createDatabaseWizardJs. Function
+// client IIFE (uses state/escapeHtml/displayFor/sidebarGroupKey/
+// setSidebarGroupCollapsed/applySidebarGroupState/wireSidebarGroupToggles). Function
 // declarations hoist, so call order is free.
 export const navSectionsJs = `
-    // TABLES — every model table grouped by tier (Inputs / Derived / Computed),
-    // read from the in-memory state.entities (no fetch). Click → #/w/table/<name>.
+    // TABLES — every model table grouped by provenance SCHEMA, read from the in-memory
+    // state.entities (no fetch). LATTICE first, then connector schemas, then connected
+    // databases (alpha by label within each). Junctions + SQL-protected tables excluded
+    // via the server stamps. Each schema is an independent collapsible group; LATTICE is
+    // open by default, the rest collapsed on first sight.
     function renderNavTables() {
       var host = document.getElementById('nav-tables-list');
       if (!host) return;
       var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
-        return t && t.name && !(typeof isJunction === 'function' && isJunction(t.name));
+        return t && t.name && !t.linkTable && !t.sqlDenied;
       });
       var activeM = /^#\\/w\\/table\\/([^\\/]+)/.exec(location.hash);
       var activeName = activeM ? decodeURIComponent(activeM[1]) : '';
-      var html = MT_LAYERS.map(function (layer) {
-        var group = tables.filter(function (t) { return mtClassifyTier(t) === layer.id; });
-        if (!group.length) return '';
-        return '<div class="nav-tier"><div class="nav-tier-head">' + escapeHtml(layer.short || layer.name) + '</div>' +
-          group.map(function (t) {
-            var d = typeof displayFor === 'function' ? displayFor(t.name) : { icon: '🗂️', label: t.name };
-            return '<button type="button" class="nav-table-item' + (t.name === activeName ? ' active' : '') +
-              '" data-table="' + escapeHtml(t.name) + '" title="' + escapeHtml(d.label) + '">' +
-              '<span class="nav-item-ic">' + (d.icon || '🗂️') + '</span>' +
-              '<span class="nav-item-name">' + escapeHtml(d.label) + '</span></button>';
-          }).join('') + '</div>';
+      // Bucket by schema.
+      var groups = {};
+      tables.forEach(function (t) {
+        var key = t.schemaKey || 'lattice';
+        if (!groups[key]) groups[key] = { key: key, label: t.schemaLabel || 'LATTICE', tables: [] };
+        groups[key].tables.push(t);
+      });
+      // LATTICE (0) → connector schemas (1) → db-source schemas (2); alpha within each.
+      function rank(g) { return g.key === 'lattice' ? 0 : (g.key.indexOf('conn:') === 0 ? 1 : 2); }
+      var ordered = Object.keys(groups).map(function (k) { return groups[k]; }).sort(function (a, b) {
+        var ra = rank(a), rb = rank(b);
+        if (ra !== rb) return ra - rb;
+        return String(a.label).localeCompare(String(b.label));
+      });
+      var rendered = [];
+      var html = ordered.map(function (g) {
+        var gkey = 'nav-schema-' + g.key;
+        rendered.push({ gkey: gkey, isLattice: g.key === 'lattice' });
+        var items = g.tables.map(function (t) {
+          var d = typeof displayFor === 'function' ? displayFor(t.name) : { icon: '🗂️', label: t.name };
+          return '<button type="button" class="nav-table-item' + (t.name === activeName ? ' active' : '') +
+            '" data-table="' + escapeHtml(t.name) + '" title="' + escapeHtml(d.label) + '">' +
+            '<span class="nav-item-ic">' + (d.icon || '🗂️') + '</span>' +
+            '<span class="nav-item-name">' + escapeHtml(d.label) + '</span></button>';
+        }).join('');
+        return '<div class="nav-schema">' +
+          '<button type="button" class="section-label section-toggle nav-schema-head" data-group="' + gkey + '" aria-expanded="true">' +
+          '<span class="section-caret">▾</span><span class="nav-schema-label">' + escapeHtml(g.label) + '</span></button>' +
+          '<div class="section-body" data-group-body="' + gkey + '">' + items + '</div></div>';
       }).join('');
       host.innerHTML = html || '<div class="nav-empty">No tables yet.</div>';
+      // Seed non-LATTICE schemas collapsed on first sight (no stored preference yet);
+      // LATTICE stays open. Then apply the (possibly stored) collapse state + caret.
+      rendered.forEach(function (r) {
+        try {
+          if (!r.isLattice && typeof sidebarGroupKey === 'function' &&
+              typeof setSidebarGroupCollapsed === 'function' &&
+              window.localStorage.getItem(sidebarGroupKey(r.gkey)) === null) {
+            setSidebarGroupCollapsed(r.gkey, true);
+          }
+        } catch (e) {}
+        if (typeof applySidebarGroupState === 'function') applySidebarGroupState(r.gkey);
+      });
       host.querySelectorAll('.nav-table-item').forEach(function (b) {
         if (b.__wired) return; b.__wired = true;
         b.addEventListener('click', function () {
           location.hash = '#/w/table/' + encodeURIComponent(b.getAttribute('data-table'));
         });
       });
-    }
-
-    // FILES — the source-files tree (roots + loose files), into the sidebar host.
-    // Leaf click → #/fs/files/<id>, which the router normalizes to #/w/file/<id>.
-    function renderNavFiles() {
-      var host = document.getElementById('nav-files-tree');
-      if (!host) return;
-      fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
-        .then(function (data) {
-          var rows = ((data && data.rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; });
-          renderSourcesFilesInto(host, rows);
-        })
-        .catch(function () { renderSourcesFilesInto(host, []); });
+      // Wire the schema-header toggles (idempotent; independent open/close since the
+      // nav-schema-* groups are not in NAV_ACCORDION_GROUPS).
+      if (typeof wireSidebarGroupToggles === 'function') wireSidebarGroupToggles();
     }
 
     function renderNavSections() {
       renderNavTables();
-      renderNavFiles();
-      // Enforce the single-open accordion (keeps one nav section open, collapses the
-      // rest) + wire the toggles (both idempotent — enforceNavAccordion reconciles
-      // localStorage, wire guards on __wired).
+      // (Files no longer has its own sidebar section — it is a table in the LATTICE
+      // schema above.) Enforce the outer single-open accordion (Dashboards | Tables) +
+      // wire the toggles (both idempotent).
       if (typeof enforceNavAccordion === 'function') enforceNavAccordion();
       else if (typeof applySidebarGroupState === 'function') {
-        ['nav-tables', 'nav-files', 'nav-md'].forEach(applySidebarGroupState);
+        ['nav-tables', 'nav-dashboards'].forEach(applySidebarGroupState);
       }
       if (typeof wireSidebarGroupToggles === 'function') wireSidebarGroupToggles();
     }

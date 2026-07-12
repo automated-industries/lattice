@@ -54,8 +54,10 @@ test('navigation paints the new view immediately even when data is slow', async 
   await page.evaluate(() => {
     window.location.hash = '#/w/table/items';
   });
-  await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …then the collection view fills in.
+  // The table page is a SQL runner: its header + editor paint synchronously (never
+  // blocking on data), so the shell is there at once.
+  await expect(page.locator('.sql-editor')).toBeVisible({ timeout: 1000 });
+  // …then the result grid fills in (the SQL query runs against /api/analytics/sql).
   await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
   // Open a record (the row detail) directly: the nav must paint the new frame
@@ -72,5 +74,6 @@ test('navigation paints the new view immediately even when data is slow', async 
   await page.evaluate(() => {
     window.location.hash = '#/w/table/items';
   });
-  await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
+  // Back to the SQL runner — its editor repaints immediately, no freeze.
+  await expect(page.locator('.sql-editor')).toBeVisible({ timeout: 1000 });
 });

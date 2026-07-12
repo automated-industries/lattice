@@ -456,8 +456,16 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (it previously matched only the retired #/analytics/<id>), so the currently-open dashboard/
 // record is sent to chat as activeContext — fixing the assistant asking you to open an
 // already-open dashboard. Recaptured.
-const ORIGINAL_LENGTH = 703130;
-const ORIGINAL_SHA256 = '710867eaace7b0b2b14770ca72fa6cb96cc8cf51b0cc6726983e982ed35df4be';
+// Schema-grouped TABLES + SQL-runner table page: the sidebar groups tables by provenance
+// schema (server-stamped schemaKey/schemaLabel) with collapsible schema groups and drops
+// the FILES section; the top-level table page is a SQL runner (renderTableSqlRunner +
+// paintSqlResults over /api/analytics/sql) replacing the Formatted/Markdown collection view
+// (removed collectionViewMode + rowsToMarkdown + fsComputedAiBanner + renderFilesRootView).
+// Net shrink. Recaptured.
+// Review fix: the SQL-runner row-click is decided PER ROW (r.id present + non-null) instead
+// of result-wide, so a null/aliased id never navigates to a dead /null record. Recaptured.
+const ORIGINAL_LENGTH = 700897;
+const ORIGINAL_SHA256 = 'c679651ec5fadbf6d8d9afbf90ab31eb66df6d7a5196b72252d923d72028da7a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

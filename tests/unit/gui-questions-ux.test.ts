@@ -162,13 +162,9 @@ describe('UX-review bundle wiring (composed client)', () => {
     expect(appJs).toContain("confirm('Dismiss this question?')");
   });
 
-  it('a computed view with AI fields shows a pending-fill banner on the collection page', () => {
-    expect(appJs).toContain('function fsComputedAiBanner(content, table, gen)');
-    expect(appJs).toContain('AI-derived fields fill in the background');
-    expect(appJs).toContain('fs-ai-pending-note');
-    // Gated on the definition actually having AI-derived fields.
-    expect(appJs).toContain("kind === 'ai_classify' || kind === 'ai_transform'");
-  });
+  // (Removed: the computed-view AI-pending banner lived on the old Formatted/Markdown
+  // collection page, which is now the SQL runner — computed tables render through the
+  // same runner, so there is no per-collection pending-fill banner.)
 
   it('deleting a computed table or a dashboard confirms before the DELETE', () => {
     // Computed-table builder Remove.

@@ -903,31 +903,6 @@ export const dashboardJs = `    // ───────────────
       if (nextBtn && hasNext) nextBtn.addEventListener('click', function () { o.onPage(page + 1); });
     }
 
-    // A freshly-created computed view fills its AI-derived cells (ai_classify /
-    // ai_transform) in the background, so those columns read blank for a moment.
-    // When the definition actually has AI fields, drop an unobtrusive banner
-    // under the "computed view" note so the blanks read as "still filling", not
-    // "broken". Pure alias/calc/aggregate views fill synchronously and get no
-    // banner. One small metadata GET (computed tables only); best-effort — a
-    // failed hint must never break the collection view.
-    function fsComputedAiBanner(content, table, gen) {
-      fetchJson('/api/computed-tables/' + encodeURIComponent(table)).then(function (d) {
-        if (gen !== renderGen) return; // superseded by a newer navigation
-        var fields = (d && d.def && d.def.fields) || {};
-        var hasAi = Object.keys(fields).some(function (k) {
-          var kind = fields[k] && fields[k].kind;
-          return kind === 'ai_classify' || kind === 'ai_transform';
-        });
-        if (!hasAi) return;
-        var anchor = content.querySelector('.fs-computed-note');
-        if (!anchor || content.querySelector('.fs-ai-pending-note')) return;
-        var note = document.createElement('div');
-        note.className = 'fs-computed-note fs-ai-pending-note';
-        note.textContent = 'AI-derived fields fill in the background and may be blank briefly \\u2014 use Refresh values to update.';
-        anchor.parentNode.insertBefore(note, anchor.nextSibling);
-      }).catch(function () { /* best-effort hint — never break the collection view */ });
-    }
-
     // Turn a server page envelope into paintRowsTable terms. env.rows was fetched
     // with limit PAGE_SIZE + 1 (a sentinel over-fetch): if the extra row came back
     // there IS a next page — a precise signal that works even when the count is
@@ -943,100 +918,168 @@ export const dashboardJs = `    // ───────────────
       };
     }
 
-    // Collection view — a folder of tiles for a NESTED relation path
-    // (#/fs/<table>/<id>/<rel>). The top-level object page (#/fs/<table>) is the
-    // data-provenance view (graph or table — how this object's rows are sourced).
-    // Per-table collection view mode: 'formatted' (the rows) | 'markdown' (the
-    // whole-table rollup file, read-only). Set to markdown when a rollup .md is
-    // clicked in the Markdown tree.
-    var collectionViewMode = {};
+    // The SQL page size for the top-level table runner: pagination appears ONLY when a
+    // query returns MORE than this many rows (client-side, over the already-fetched
+    // result). The default query never paginates.
+    var SQL_PAGE = 100;
+    // Remember the last query run per table this session, so re-opening a table restores
+    // what the user was looking at instead of resetting to the default.
+    var sqlByTable = {};
+
+    // The top-level table page is a SQL RUNNER: an editable, re-runnable query defaulting
+    // to  select * from "<table>" limit 100 , executed against the read-only analytics SQL
+    // endpoint, its result rows in a grid. This is the ONE table view (no Formatted/
+    // Markdown toggle). A result row opens its record (#/w/table/<name>/<id>) when the
+    // result set carries an id column.
+    function renderTableSqlRunner(content, table, section) {
+      var myGen = renderGen;
+      var d = displayFor(table);
+      var defaultSql = 'select * from "' + table + '" limit 100';
+      var sql = sqlByTable[table] || defaultSql;
+      content.innerHTML =
+        fsBreadcrumb([table], [], section) +
+        '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1></div>' +
+        '<div class="sql-runner">' +
+          '<div class="sql-editor-row">' +
+            '<textarea class="sql-editor" id="sql-editor" spellcheck="false" rows="2" aria-label="SQL query">' + escapeHtml(sql) + '</textarea>' +
+            '<button type="button" class="btn primary sql-run" id="sql-run" title="Run (Cmd/Ctrl+Enter)">Run</button>' +
+          '</div>' +
+          '<div class="sql-error" id="sql-error" hidden></div>' +
+          '<div class="sql-results" id="sql-results"></div>' +
+        '</div>';
+      var editor = content.querySelector('#sql-editor');
+      var runBtn = content.querySelector('#sql-run');
+      var errEl = content.querySelector('#sql-error');
+      var resEl = content.querySelector('#sql-results');
+      function run() {
+        var q = (editor.value || '').trim();
+        if (!q) return;
+        sqlByTable[table] = q;
+        errEl.hidden = true; errEl.textContent = '';
+        resEl.innerHTML = '<div class="muted" style="padding:12px">Running…</div>';
+        fetch('/api/analytics/sql', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sql: q }),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            if (myGen !== renderGen) return; // superseded by a newer navigation
+            if (res.status !== 200 || (res.body && res.body.error)) {
+              // Loud, visible failure — never a silent empty grid.
+              errEl.textContent = (res.body && res.body.error) || ('Query failed (HTTP ' + res.status + ')');
+              errEl.hidden = false; resEl.innerHTML = '';
+              return;
+            }
+            paintSqlResults(resEl, table, (res.body && res.body.rows) || [], !!(res.body && res.body.truncated));
+          })
+          .catch(function (err) {
+            if (myGen !== renderGen) return;
+            errEl.textContent = 'Request failed: ' + (err && err.message ? err.message : String(err));
+            errEl.hidden = false; resEl.innerHTML = '';
+          });
+      }
+      runBtn.addEventListener('click', run);
+      editor.addEventListener('keydown', function (e) {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+      });
+      run(); // run the default (or remembered) query on open
+    }
+
+    // Render a SQL result set into a grid with client-side pagination (only when the
+    // result exceeds SQL_PAGE rows — the default query never paginates). Columns are the
+    // union of keys across the returned rows (a raw query carries no column metadata); a
+    // row opens its record only when the result includes an id.
+    function paintSqlResults(host, table, rows, truncated) {
+      if (!rows.length) { host.innerHTML = '<div class="fs-empty" style="padding:24px">No rows.</div>'; return; }
+      var cols = [];
+      var seen = {};
+      rows.forEach(function (r) {
+        Object.keys(r).forEach(function (k) { if (!seen[k]) { seen[k] = true; cols.push(k); } });
+      });
+      var pageRef = { page: 0 };
+      function paint() {
+        var page = pageRef.page;
+        var start = page * SQL_PAGE;
+        var slice = rows.slice(start, start + SQL_PAGE);
+        var thead = cols.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('');
+        var body = slice.map(function (r) {
+          // Row-click opens the record only when THIS row has a real id — a result set
+          // with no id column, a null id, or an aggregate aliased as id never navigates
+          // to a dead /null record page.
+          var href = (r.id !== undefined && r.id !== null && r.id !== '')
+            ? ('#/w/table/' + encodeURIComponent(table) + '/' + encodeURIComponent(r.id)) : '';
+          var cells = cols.map(function (c) { return '<td>' + fsCellText(table, r, c) + '</td>'; }).join('');
+          return '<tr' + (href ? ' class="fs-row-click" data-href="' + href + '"' : '') + '>' + cells + '</tr>';
+        }).join('');
+        var paged = rows.length > SQL_PAGE;
+        var first = start + 1, lastN = start + slice.length;
+        var pager = paged
+          ? '<span class="rows-pager"><span class="rows-pager-info">' + first + '–' + lastN + ' of ' + rows.length + '</span>' +
+            '<button type="button" class="btn rows-prev"' + (page > 0 ? '' : ' disabled') + '>‹ Prev</button>' +
+            '<button type="button" class="btn rows-next"' + ((start + SQL_PAGE < rows.length) ? '' : ' disabled') + '>Next ›</button></span>'
+          : '';
+        var note = truncated
+          ? '<div class="sql-note">Showing the first ' + rows.length + ' rows — add a filter or a smaller limit to your query to narrow the result.</div>'
+          : '';
+        host.innerHTML =
+          (pager ? '<div class="sql-results-head">' + pager + '</div>' : '') + note +
+          '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>';
+        host.querySelectorAll('tr.fs-row-click').forEach(function (tr) {
+          tr.addEventListener('click', function () { var h = tr.getAttribute('data-href'); if (h) location.hash = h; });
+        });
+        var pv = host.querySelector('.rows-prev'), nx = host.querySelector('.rows-next');
+        if (pv && page > 0) pv.addEventListener('click', function () { pageRef.page = page - 1; paint(); });
+        if (nx && start + SQL_PAGE < rows.length) nx.addEventListener('click', function () { pageRef.page = page + 1; paint(); });
+      }
+      paint();
+    }
+
+    // Collection view for a NESTED relation path (#/w/table/<t>/<id>/<rel>): a rows table
+    // of the related records. The top-level table page (#/w/table/<t>) is the SQL runner
+    // above; Artifacts keep their bespoke files-subset table.
     function renderFsCollection(content, segs, section) {
       section = section || 'folders';
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
-      // Files keep their bespoke file-list table (folders + loose files).
-      if (topLevel && segs[0] === 'files') { renderFilesRootView(content); return; }
-      // Artifacts = the subset of files carrying an artifact_type, shown as their
-      // own object/table (Tables ▸ Artifacts), not buried under Files.
+      // Artifacts = the files carrying an artifact_type, shown as their own table. Not a
+      // real DB table, so it can't be a SQL runner — keep its bespoke view.
       if (topLevel && segs[0] === 'artifacts') { renderArtifactsView(content); return; }
-      var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
-      crumbsP.then(function (crumbs) {
+      // The top-level table page IS the SQL runner (files included — a file record still
+      // opens its preview via the row-click record route).
+      if (topLevel) {
+        if (!tableByName(segs[0])) {
+          setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(segs[0]) + '</div>');
+          return;
+        }
+        renderTableSqlRunner(content, segs[0], section);
+        return;
+      }
+      fsWalk(segs).then(function (crumbs) {
         var base = sectionHref(section, segs);
         var page = fsPageByPath[base] || 0;
-        var table, viewP;
-        if (topLevel) {
-          table = segs[0];
-          if (!tableByName(table)) {
-            setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
-            return;
-          }
-          // Server-side paging: fetch this page + ONE sentinel row (limit + 1) so
-          // "is there a next page" is exact, plus the bounded approximate total.
-          viewP = fetchRowsPage(table, { limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE }).then(fsServerPage);
-        } else {
-          var last = crumbs[crumbs.length - 1];
-          if (!last || last.type !== 'rel') throw new Error('Bad collection path');
-          table = last.rel.targetTable;
-          // Relation drill: fsRelatedRows returns a bounded array (JS-filtered by
-          // membership), so page client-side over the full array.
-          viewP = fsRelatedRows(last.parentTable, last.parentRow, last.rel).then(function (all) {
-            return {
-              rows: all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
-              approxTotal: all.length,
-              totalLabel: String(all.length),
-              hasNext: (page + 1) * PAGE_SIZE < all.length,
-            };
-          });
-        }
-        return viewP.then(function (view) {
+        var last = crumbs[crumbs.length - 1];
+        if (!last || last.type !== 'rel') throw new Error('Bad collection path');
+        var table = last.rel.targetTable;
+        // Relation drill: fsRelatedRows returns a bounded array (JS-filtered by
+        // membership), so page client-side over the full array.
+        return fsRelatedRows(last.parentTable, last.parentRow, last.rel).then(function (all) {
           if (myGen !== renderGen) return; // superseded by a newer navigation
-          // A stale page index (rows deleted under us, or a remembered deep page)
-          // can land past the end → clamp to the last real page and re-render.
+          var view = {
+            rows: all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+            totalLabel: String(all.length),
+            hasNext: (page + 1) * PAGE_SIZE < all.length,
+          };
+          // A stale page index (rows deleted under us, or a remembered deep page) can land
+          // past the end — clamp to the last real page and re-render.
           if (!view.rows.length && page > 0) {
-            var lastPage = Math.max(0, Math.ceil((view.approxTotal || 0) / PAGE_SIZE) - 1);
+            var lastPage = Math.max(0, Math.ceil(all.length / PAGE_SIZE) - 1);
             if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs, section); return; }
           }
           var d = displayFor(table);
-          // Computed tables are live, read-only projections: badge the header,
-          // say where the values come from, and skip the Markdown toggle (a
-          // computed view renders no rollup and offers nothing to edit).
-          var tMeta = tableByName(table);
-          var isComputed = !!(tMeta && tMeta.computedTable);
-          // The collection has the SAME Formatted | Markdown duality as records:
-          // Formatted = the rows; Markdown = the table's whole-table rollup file
-          // (read-only — rollups are generated). Clicking a rollup .md in the
-          // Markdown tree lands here in markdown mode.
-          var colMode = topLevel && !isComputed ? (collectionViewMode[table] || 'formatted') : 'formatted';
-          // The ⋯ actions menu (shared #file-menu chrome — only one collection/record
-          // renders into #content at a time, so the id is unique). "View Markdown"
-          // toggles to the raw markdown, "View Formatted" back to the rows grid.
-          var menuHtml = topLevel && !isComputed
-            ? '<div class="actions file-menu-wrap">' +
-                '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\\u22ef</button>' +
-                '<div class="file-menu" id="file-menu" role="menu" hidden>' +
-                  '<button class="file-menu-item" data-act="colmarkdown" role="menuitem">' +
-                    (colMode === 'markdown' ? 'View Formatted' : 'View Markdown') + '</button>' +
-                '</div>' +
-              '</div>'
-            : '';
-          var badgeHtml = isComputed
-            ? '<span class="fs-computed-badge" title="A live, read-only view">Computed</span>'
-            : '';
-          var noteHtml = isComputed
-            ? '<div class="fs-computed-note">This is a computed view \\u2014 its values come from the records it\\u2019s built from.</div>'
-            : '';
-          // The object view is the table's ROWS in a table (mirroring the Files file
-          // list), one page at a time with a Prev/Next pager. One consistent view.
           paintRowsTable(content, {
             breadcrumbHtml: fsBreadcrumb(segs, crumbs, section),
             icon: d.icon,
             label: d.label,
-            headerExtraHtml: badgeHtml + menuHtml,
-            noteHtml: noteHtml,
-            bodyOverrideHtml: colMode === 'markdown'
-              ? '<div class="fs-context"><div class="fs-context-doc" id="collection-rollup-doc"><div class="muted" style="padding:12px">Loading\u2026</div></div></div>'
-              : '',
             table: table,
             cols: objRowCols(tableByName(table)),
             rows: view.rows,
@@ -1045,56 +1088,8 @@ export const dashboardJs = `    // ───────────────
             pageSize: PAGE_SIZE,
             totalLabel: view.totalLabel,
             hasNext: view.hasNext,
-            // Bump renderGen so a slow prior-page fetch can't paint over this one.
             onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs, section); },
           });
-          // Computed views with AI-derived fields fill those cells in the
-          // background — hint at that so blank AI columns don't read as broken.
-          if (isComputed) fsComputedAiBanner(content, table, myGen);
-          // Collection ⋯ menu → "View Markdown" / "View Formatted". Markdown shows the
-          // table's rollup file RAW in a text box (matching the record markdown view);
-          // when there is NO rollup file (e.g. a junction/derived table that has rows
-          // but was never rolled up), generate raw markdown from the loaded rows so
-          // "View Markdown" never dead-ends on a table that clearly has data.
-          if (topLevel && !isComputed) {
-            var cmBtn = content.querySelector('#file-menu-btn');
-            var cmMenu = content.querySelector('#file-menu');
-            if (cmBtn && cmMenu) {
-              cmBtn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                var willShow = cmMenu.hidden;
-                cmMenu.hidden = !willShow;
-                cmBtn.setAttribute('aria-expanded', willShow ? 'true' : 'false');
-              });
-              if (typeof wireFileMenuGlobal === 'function') wireFileMenuGlobal();
-              cmMenu.querySelectorAll('[data-act="colmarkdown"]').forEach(function (it) {
-                it.addEventListener('click', function (e) {
-                  e.stopPropagation();
-                  cmMenu.hidden = true;
-                  collectionViewMode[table] = colMode === 'markdown' ? 'formatted' : 'markdown';
-                  renderFsCollection(content, segs, section);
-                });
-              });
-            }
-            if (colMode === 'markdown') {
-              var setColRaw = function (text) {
-                var host = document.getElementById('collection-rollup-doc');
-                if (host) host.innerHTML = '<pre class="file-source-pre">' + escapeHtml(text) + '</pre>';
-              };
-              var colFallback = function () {
-                return rowsToMarkdown(d.label, objRowCols(tableByName(table)), view.rows);
-              };
-              fetchJson('/api/context/list?table=' + encodeURIComponent(table))
-                .then(function (dd) {
-                  var entries = (dd && dd.entries) || [];
-                  var rollup = entries.filter(function (e) { return e.kind === 'file'; })[0];
-                  if (!rollup) throw new Error('no rollup');
-                  return fetchJson('/api/context/resolve?content=1&path=' + encodeURIComponent(rollup.path));
-                })
-                .then(function (r) { var md = (r && r.content) || ''; setColRaw(md.trim() ? md : colFallback()); })
-                .catch(function () { setColRaw(colFallback()); });
-            }
-          }
         });
       }).catch(function (err) {
         if (myGen !== renderGen) return; // a stale error must not clobber a newer view
@@ -1173,20 +1168,6 @@ export const dashboardJs = `    // ───────────────
       var s = String(raw).replace(/\\s+/g, ' ').trim();
       if (s.length > 90) s = s.slice(0, 88) + '…';
       return escapeHtml(s);
-    }
-
-    // Fallback RAW markdown for a collection whose table has no rendered rollup file:
-    // a heading + a markdown table of the loaded page rows, so "View Markdown" never
-    // dead-ends on a junction/derived table that has data. Newlines/pipes in cells are
-    // neutralised so the markdown table stays well-formed.
-    function rowsToMarkdown(label, cols, rows) {
-      var cell = function (v) { return String(v == null ? '' : v).replace(/\\r?\\n/g, ' ').replace(/\\|/g, '\\\\|'); };
-      var head = '| ' + cols.map(function (c) { return fieldLabel(c); }).join(' | ') + ' |';
-      var sep = '| ' + cols.map(function () { return '---'; }).join(' | ') + ' |';
-      var body = (rows || []).map(function (r) {
-        return '| ' + cols.map(function (c) { return cell(r[c]); }).join(' | ') + ' |';
-      }).join('\\n');
-      return '# ' + label + '\\n\\n' + head + '\\n' + sep + (body ? '\\n' + body : '') + '\\n';
     }
 
     // ── Folder navigation (the Files object's on-disk hierarchy) ─────────────
@@ -1305,35 +1286,6 @@ export const dashboardJs = `    // ───────────────
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
-    // The Files object page (#/fs/files): the folder roots + loose files.
-    function renderFilesRootView(content) {
-      var myGen = renderGen;
-      // No setTabTitle — the Files object page shares the exploration tab.
-      Promise.all([
-        fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
-        fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
-      ]).then(function (res) {
-        if (myGen !== renderGen) return;
-        var roots = (res[0] && res[0].roots) || [];
-        var rows = ((res[1] && res[1].rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; });
-        var folderPaths = roots.filter(function (r) { return r.kind === 'folder'; }).map(function (r) { return r.path; });
-        var entries = [];
-        roots.forEach(function (r) { if (r.kind === 'folder') entries.push({ kind: 'folder', path: r.path, name: r.name || fsBasename(r.path) }); });
-        rows.forEach(function (r) {
-          var under = r.ref_uri && folderPaths.some(function (p) { return fsUnder(r.ref_uri, p); });
-          if (!under) entries.push({ kind: 'file', path: r.ref_uri || '', name: r.name || r.original_name || 'Untitled', id: r.id });
-        });
-        var d = displayFor('files');
-        var header = '<a class="breadcrumb" href="#/tables">\\u2190 Tables</a>' +
-          '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1>' +
-          '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
-        paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.');
-      }).catch(function (err) {
-        if (myGen !== renderGen) return;
-        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
-      });
-    }
-
     // Item view — ONE record page for every row (regular, file, artifact): the
     // same chrome everywhere — Formatted|Markdown toggle, visibility/sharing,
     // Data provenance, Connected objects, and the record actions menu. View mode

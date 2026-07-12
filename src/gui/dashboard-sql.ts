@@ -49,6 +49,17 @@ export function validateDashboardSql(
 }
 
 /**
+ * Does the read-only SQL runner refuse this TABLE — credentials (`secrets`), the
+ * assistant's chat storage, or `_lattice*` bookkeeping? Mirrors the deny-list inside
+ * {@link validateDashboardSql} above (kept in lockstep), exported so the Tables UI can
+ * hide a table whose SQL-runner page could only ever return "protected table" — one
+ * source of truth for "not queryable here" instead of a second hard-coded list.
+ */
+export function isSqlProtectedTable(name: string): boolean {
+  return /^(secrets|chat_threads|chat_messages)$/i.test(name) || /_lattice/i.test(name);
+}
+
+/**
  * Run a validated dashboard SELECT read-only and capped. Returns the rows (+ a truncated
  * flag) or an `{ error }` — validation failures and execution failures both come back as
  * `{ error }`, never thrown, so the QA can treat "the query errors" as a finding and the
