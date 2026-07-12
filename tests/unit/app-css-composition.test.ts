@@ -196,8 +196,13 @@ import { css } from '../../src/gui/app/css.js';
 // Schema-grouped TABLES + SQL-runner table page: added the collapsible .nav-schema-head
 // styles + the .sql-runner/.sql-editor/.sql-error/.sql-note/.sql-results-head block; removed
 // the dead #nav-files-tree rule (the FILES sidebar section is gone). Recaptured.
-const ORIGINAL_LENGTH = 151065;
-const ORIGINAL_SHA256 = '2b4094708581744001f6678efeee0b2a5db46726f4b103e6c2265cc29b18122d';
+// Design pass M1 — token scales added to tokens.ts (hue mini-palette, brand isolate,
+// accent/danger/warn alpha steps, opaque status pairs, radius scale, z tiers, motion,
+// font stacks, overlay/selection) in a second :root block + the fallback-policy and
+// value-scale doc comments. Purely additive: histogram diff = 63 additions, 0 removals;
+// nothing references the new tokens yet, so rendered output is unchanged. Recaptured.
+const ORIGINAL_LENGTH = 155357;
+const ORIGINAL_SHA256 = 'b6fd8234cad4083d3505943b555cd7289a3dfbb857fc139124dfc530d1f16dc9';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
