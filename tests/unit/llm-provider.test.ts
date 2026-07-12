@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setAssistantCredential } from '../../src/framework/user-config.js';
 import {
   resolveLlmProvider,
+  resolveVisionAuth,
   resolvedProviderKind,
   isAnthropicEndpoint,
   anthropicBaseFromEndpoint,
@@ -13,6 +14,7 @@ import {
   OPENAI_COMPAT_KIND,
   ACTIVE_PROVIDER_KIND,
 } from '../../src/gui/ai/provider.js';
+import { resolveClaudeAuth } from '../../src/gui/assistant-routes.js';
 
 /**
  * Provider selection: a user can connect an OpenAI-compatible endpoint as the assistant
@@ -186,5 +188,44 @@ describe('LLM provider selection', () => {
     expect(anthropicBaseFromEndpoint('https://proxy.example.com/anthropic')).toBe(
       'https://proxy.example.com/anthropic',
     );
+  });
+
+  // Vision (image/PDF captioning) must accept the SAME credentials chat + text enrichment
+  // do. The bug: the narrow `resolveClaudeAuth` used by vision ignored a bring-your-own
+  // Claude API key, so a BYO-key user got working chat but images ingested with no
+  // description → the file view showed "No source text.".
+  it('resolveVisionAuth accepts a BYO Claude API key on an Anthropic endpoint (the bug)', async () => {
+    setAssistantCredential(
+      OPENAI_COMPAT_KIND,
+      JSON.stringify({
+        baseUrl: 'https://api.anthropic.com/v1',
+        apiKey: 'sk-ant-byo',
+        model: 'claude-opus-4-8',
+      }),
+    );
+    setAssistantCredential(ACTIVE_PROVIDER_KIND, 'openai_compat');
+    // Root cause: the narrow resolver returns null in exactly this state…
+    expect(await resolveClaudeAuth(null)).toBeNull();
+    // …while the unified vision resolver returns the usable key, so captions can generate.
+    expect(await resolveVisionAuth(null)).toEqual({ apiKey: 'sk-ant-byo' });
+  });
+
+  it('resolveVisionAuth gives NO vision auth for a non-Anthropic OpenAI-compat endpoint', async () => {
+    // Vision is Anthropic-only; a plain OpenAI/gateway endpoint yields no Anthropic vision
+    // auth (and there is no OAuth/managed fallback configured here).
+    setAssistantCredential(
+      OPENAI_COMPAT_KIND,
+      JSON.stringify({
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-openai',
+        model: 'gpt-4o',
+      }),
+    );
+    setAssistantCredential(ACTIVE_PROVIDER_KIND, 'openai_compat');
+    expect(await resolveVisionAuth(null)).toBeNull();
+  });
+
+  it('resolveVisionAuth returns null when nothing is configured (unchanged default)', async () => {
+    expect(await resolveVisionAuth(null)).toBeNull();
   });
 });

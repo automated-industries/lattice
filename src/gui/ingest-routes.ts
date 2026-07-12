@@ -13,7 +13,7 @@ import { attachBlob } from '../framework/blob-store.js';
 import { createS3Store, s3Key } from '../framework/s3-store.js';
 import { resolveActiveS3Config } from '../framework/s3-config.js';
 import { createHash } from 'node:crypto';
-import { resolveClaudeAuth } from './assistant-routes.js';
+import { resolveVisionAuth } from './ai/provider.js';
 import { type ClassifyMatch } from './ai/summarize.js';
 import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 // LLM enrichment (description + auto-link + object extraction) is a shared leaf
@@ -270,7 +270,7 @@ async function extractImage(
   mime: string,
 ): Promise<{ text: string; skip: boolean } | null> {
   if (!mime.startsWith('image/')) return null;
-  const auth = await resolveClaudeAuth(db);
+  const auth = await resolveVisionAuth(db);
   if (!auth) return null;
   try {
     const text = await describeImage(auth, path);
@@ -300,7 +300,7 @@ async function extractSource(
   const parsed = await parseFile(path, mime, name);
   if (!parsed.skip) return parsed;
   if (mime === 'application/pdf') {
-    const auth = await resolveClaudeAuth(db);
+    const auth = await resolveVisionAuth(db);
     if (auth) {
       try {
         const text = await describePdf(auth, path);
