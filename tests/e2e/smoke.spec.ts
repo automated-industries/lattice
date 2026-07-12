@@ -17,6 +17,8 @@ test('GUI boots and renders the single-layout workspace shell', async ({ page })
   await expect(page.locator('nav.dash-sidebar')).toBeVisible();
   await expect(page.locator('#content')).toBeVisible();
   await expect(page.locator('#ask-dock')).toBeVisible();
-  // The sidebar carries the Dashboards + Tables / Files / Markdown nav sections.
-  await expect(page.locator('.section-toggle[data-group="nav-files"]')).toBeVisible();
+  // The sidebar carries the Dashboards + Tables nav sections (Files is now a table
+  // in the LATTICE schema under Tables, not its own section).
+  await expect(page.locator('.section-toggle[data-group="nav-tables"]')).toBeVisible();
+  await expect(page.locator('.section-toggle[data-group="nav-files"]')).toHaveCount(0);
 });

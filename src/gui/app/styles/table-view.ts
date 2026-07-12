@@ -14,6 +14,28 @@ export const tableViewCss = `    /* ── Table view ────────�
     .rows-pager .btn { padding: 3px 10px; font-size: 12.5px; }
     .rows-pager .btn[disabled] { opacity: 0.45; cursor: default; pointer-events: none; }
 
+    /* ── SQL runner (the table page) ─────────────────────── */
+    .sql-runner { display: flex; flex-direction: column; gap: 10px; }
+    .sql-editor-row { display: flex; align-items: stretch; gap: 8px; }
+    .sql-editor {
+      flex: 1 1 auto; min-width: 0; resize: vertical;
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      font-size: 13px; line-height: 1.5; padding: 8px 10px;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); color: var(--text);
+    }
+    .sql-editor:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
+    .sql-run { flex: 0 0 auto; align-self: flex-start; }
+    .sql-error {
+      padding: 8px 12px; border-radius: 8px; font-size: 12.5px;
+      background: var(--danger-soft, rgba(192, 57, 43, 0.1));
+      color: var(--danger, #c0392b); border: 1px solid var(--danger, #c0392b);
+    }
+    .sql-error[hidden] { display: none; }
+    .sql-note { color: var(--text-muted); font-size: 12.5px; padding: 2px 2px 0; }
+    .sql-results-head { display: flex; align-items: center; justify-content: flex-end; margin-bottom: 8px; }
+    .sql-results-head .rows-pager { margin-left: 0; }
+
     table {
       width: 100%; border-collapse: separate; border-spacing: 0;
       background: var(--surface);

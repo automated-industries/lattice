@@ -115,11 +115,12 @@ test('a compile error surfaces in the strip and marks the failing field', async 
 test('computed rows are read-only: badge + note, no editing affordances', async ({ page }) => {
   await createComputed(gui.url, 'item_summary');
 
-  // Collection page: badge + note, and no Formatted|Markdown toggle.
+  // Collection page: a computed table renders through the SAME SQL runner as any table
+  // (its view is queryable), with no Formatted/Markdown toggle. The read-only guarantee
+  // comes from the SQL endpoint being read-only + the record view below.
   await page.goto(gui.url + '#/w/table/item_summary');
+  await expect(page.locator('.sql-runner')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('.fs-computed-badge')).toBeVisible();
-  await expect(page.locator('.fs-computed-note')).toContainText('computed view');
   await expect(page.locator('.fs-view-toggle')).toHaveCount(0);
 
   // Record page: badge + note, a read-only field list, and neither the

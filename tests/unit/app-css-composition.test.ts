@@ -193,8 +193,11 @@ import { css } from '../../src/gui/app/css.js';
 // workspace tab strip forces uniform tab widths (flex:1 1 0; min 38px icon / max 180px) that
 // shrink then spill into the ⋯ menu; the now-unused .inputs-group-head rule (its subheadings
 // were dropped when Inputs split into three tabs) was deleted. Recaptured.
-const ORIGINAL_LENGTH = 148985;
-const ORIGINAL_SHA256 = '065639ff8217485c9ad4b663f0e9feefd168a1c41dd35fde1072978dca885a56';
+// Schema-grouped TABLES + SQL-runner table page: added the collapsible .nav-schema-head
+// styles + the .sql-runner/.sql-editor/.sql-error/.sql-note/.sql-results-head block; removed
+// the dead #nav-files-tree rule (the FILES sidebar section is gone). Recaptured.
+const ORIGINAL_LENGTH = 151065;
+const ORIGINAL_SHA256 = '2b4094708581744001f6678efeee0b2a5db46726f4b103e6c2265cc29b18122d';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
