@@ -54,9 +54,8 @@ export const sourcesJs = `
       renderSourcesFilesInto(document.getElementById('src-files-tree'), sourceFiles);
     }
     // Render the source-files tree (roots + loose files + lazy folders) INTO a given
-    // host element, so the SAME tree serves the Inputs drawer (#src-files-tree) and
-    // the left-sidebar FILES section (#nav-files-tree). Leaf clicks navigate to
-    // #/fs/files/<id>, which the router normalizes to the canonical #/w/file/<id> tab.
+    // host element — used by the Configure drawer's Files tab (#inputs-files-tree). Leaf
+    // clicks navigate to #/fs/files/<id>, which the router normalizes to #/w/file/<id>.
     function renderSourcesFilesInto(host, sourceFiles) {
       if (!host) return;
       sourceFiles = sourceFiles || [];
@@ -265,17 +264,18 @@ export const sourcesJs = `
       [
         'files', 'connectors', 'databases',
         'objects', 'system',
-        // Left-sidebar single-layout nav sections.
-        'nav-dashboards', 'nav-tables', 'nav-files',
+        // Left-sidebar single-layout nav sections (Files is now a table, not a section).
+        'nav-dashboards', 'nav-tables',
       ].forEach(applySidebarGroupState);
     }
     // The left-sidebar nav sections behave as a single-open ACCORDION — opening one
     // collapses the other. The Configure-drawer groups (files/connectors/databases/
     // objects/system) are NOT in this set, so they stay independent.
-    // Display order in the DOM is Dashboards / Tables / Files, but TABLES is the default
-    // OPEN section (index 0 → enforceNavAccordion's fallback when none is open): it's the
-    // primary data nav, so a fresh load lands with your tables visible, not collapsed.
-    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-dashboards', 'nav-files'];
+    // The left sidebar has two single-open sections — Dashboards and Tables. TABLES is
+    // the default OPEN one (index 0 → enforceNavAccordion's fallback when none is open):
+    // it's the primary data nav, so a fresh load lands with your tables visible.
+    // (nav-schema-* groups WITHIN Tables are independent — not listed here.)
+    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-dashboards'];
     function toggleSidebarGroup(group) {
       var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
       if (NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {

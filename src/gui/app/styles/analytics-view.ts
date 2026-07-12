@@ -86,6 +86,22 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
     }
+    /* Schema group header within TABLES — a clickable collapse toggle (caret + label). */
+    .nav-schema-head {
+      width: 100%; display: flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border: 0; background: none; cursor: pointer; text-align: left;
+    }
+    .nav-schema-head .section-caret {
+      font-size: 9px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
+    }
+    .nav-schema-label {
+      font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.85;
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .nav-schema-head:hover .nav-schema-label { opacity: 1; color: var(--text); }
+    /* The schema body's table items already carry their own indent; don't double it. */
+    .nav-schema > .section-body { padding-left: 0; }
     .nav-table-item {
       width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
       padding: 5px 10px 5px 14px; border: 0; border-radius: 6px; background: none;
@@ -96,7 +112,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-item-ic { flex: 0 0 auto; }
     .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .nav-empty { color: var(--text-muted); font-size: 12px; padding: 8px 12px; }
-    #nav-tables-list, #nav-files-tree { padding-bottom: 6px; }
+    #nav-tables-list { padding-bottom: 6px; }
 
     /* ── Column headers (identical style to the Configure view) ── */
     /* All three carry the shared .col-header chrome. Accents mirror Configure:

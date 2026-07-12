@@ -128,12 +128,6 @@ export const guiAppHtml = `<!doctype html>
         </button>
         <div class="section-body" data-group-body="nav-tables"><div id="nav-tables-list"></div></div>
       </section>
-      <section class="dash-section nav-section" data-section="files">
-        <button class="section-label section-toggle nav-section-head" data-group="nav-files" type="button" aria-expanded="true">
-          <span class="section-label-text">Files</span>
-        </button>
-        <div class="section-body" data-group-body="nav-files"><div id="nav-files-tree"></div></div>
-      </section>
     </nav>
     <main class="content-wrap">
       <div class="col-header col-model an-workspace-head"><span class="col-header-text">Workspace</span></div>

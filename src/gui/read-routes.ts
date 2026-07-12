@@ -188,13 +188,14 @@ async function enrichEntityTables(
     }
   }
 
-  // Schema grouping: build the external-database label map once (bounded read of the
-  // tiny connector registry — Rule 28-safe). Only `db_source:<id>` connections need a
-  // lookup; a connector schema's label comes from its toolkit slug (classifySchema).
+  // Schema grouping: build the external-database label map once — a single bounded read
+  // of the tiny connector registry (never a whole-table scan). Only `db_source:<id>`
+  // connections need a lookup; a connector schema's label comes from its toolkit slug.
   const dbLabels = new Map<string, string>();
   try {
     for (const c of await listConnectors(db)) {
-      if (c.toolkit.startsWith('db_source:') && c.displayName) dbLabels.set(c.toolkit, c.displayName);
+      if (c.toolkit.startsWith('db_source:') && c.displayName)
+        dbLabels.set(c.toolkit, c.displayName);
     }
   } catch (err) {
     // A scoped cloud member has no SELECT grant on the registry; schema labels then

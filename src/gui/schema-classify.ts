@@ -48,7 +48,11 @@ export function classifySchema(
   if (!src) return { kind: 'lattice', key: 'lattice', label: 'LATTICE' };
   if (src.startsWith(DB_SOURCE_PREFIX)) {
     const connId = src.slice(DB_SOURCE_PREFIX.length);
-    const fallback = (fallbackLabel && fallbackLabel.trim()) || connId || 'Database';
+    // Prefer the entity label (when non-empty after trim), then the connection id, then a
+    // generic name. `||` semantics are needed (an empty label must fall through), spelled
+    // out as ternaries so an empty string isn't treated as a valid label.
+    const trimmed = (fallbackLabel ?? '').trim();
+    const fallback = trimmed !== '' ? trimmed : connId !== '' ? connId : 'Database';
     return { kind: 'db_source', key: 'db:' + connId, label: dbLabels.get(src) ?? fallback };
   }
   return { kind: 'connector', key: 'conn:' + src, label: titleCaseToolkit(src) };

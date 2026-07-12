@@ -90,22 +90,31 @@ test('object pages paginate: Prev/Next + "A–B of T", and Next loads the next w
   }
 
   await page.goto(`${gui.url}#/w/table/tags`);
-  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
+  // The table page is a SQL runner. The default query `select * from "tags" limit 100`
+  // returns exactly 100 rows — NOT more than the page size — so there is NO pager
+  // (pagination appears only when a query returns more than 100 rows).
+  await expect(page.locator('.sql-runner')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(100, { timeout: 5000 });
+  await expect(page.locator('.rows-pager')).toHaveCount(0);
 
+  // Widen the query to return all 101 rows → client-side pagination kicks in.
+  await page.locator('#sql-editor').fill('select * from tags limit 200');
+  await page.locator('#sql-run').click();
   // Page 1: 100 rows, "1–100 of 101", Prev disabled, Next enabled.
-  await expect(page.locator('.rows-pager-info')).toContainText('1–100 of 101');
+  await expect(page.locator('.rows-pager-info')).toContainText('1–100 of 101', { timeout: 5000 });
   await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(100);
   await expect(page.locator('.rows-prev')).toBeDisabled();
   await expect(page.locator('.rows-next')).toBeEnabled();
 
-  // Next → page 2: the remaining row, "101–101 of 101", Next disabled.
+  // Next → page 2: the remaining row, "101–101 of 101", Next disabled. This is purely
+  // client-side over the already-fetched 101 rows — no extra network round-trip.
   await page.locator('.rows-next').click();
   await expect(page.locator('.rows-pager-info')).toContainText('101–101 of 101');
   await expect(page.locator('.fs-rows-table tbody tr')).toHaveCount(1);
   await expect(page.locator('.rows-next')).toBeDisabled();
   await expect(page.locator('.rows-prev')).toBeEnabled();
 
-  // The whole row still opens the record (pagination didn't break row-click).
+  // The whole row opens the record (the result carries an id).
   await page.locator('.fs-rows-table tbody tr').first().click();
   await expect(page).toHaveURL(/#\/w\/table\/tags\/[^/]+$/);
 });
