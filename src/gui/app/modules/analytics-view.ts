@@ -233,7 +233,7 @@ export const analyticsViewJs = `
             '<h1 class="dash-title">' + escapeHtml(String(row.title || 'Dashboard')) + '</h1>' +
             '<span class="dash-vis-slot" id="dash-vis-slot"></span>' +
             '<div class="file-menu-wrap dash-menu-wrap">' +
-            '<button type="button" class="file-menu-btn" id="dash-menu-btn" title="Dashboard actions" aria-haspopup="menu" aria-expanded="false">⋯</button>' +
+            '<button type="button" class="btn file-menu-btn" id="dash-menu-btn" title="Dashboard actions" aria-haspopup="menu" aria-expanded="false">⋯</button>' +
             '<div class="file-menu" id="dash-menu" role="menu" hidden>' +
             '<button type="button" class="file-menu-item" data-act="rename" role="menuitem">Rename</button>' +
             '<button type="button" class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +

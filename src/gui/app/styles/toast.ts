@@ -3,14 +3,14 @@
 export const toastCss = `    /* ── Toast / undo banner ──────────────────────────── */
     .toast {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      background: #ffffff; color: var(--text); border: 1px solid var(--border);
-      padding: 10px 18px; border-radius: 999px;
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      padding: 10px 18px;
       display: flex; align-items: center; gap: 14px;
       box-shadow: var(--shadow-3);
       /* Above every overlay (.modal-backdrop is z-index 1000, drawers 120-130) so
          an error thrown by an overlay screen is always visible on top. */
-      z-index: 2000; font-size: 13.5px;
-      animation: toast-in 0.18s ease;
+      z-index: var(--z-toast); font-size: 14px;
+      animation: toast-in var(--dur-2) ease;
     }
     @keyframes toast-in {
       from { transform: translate(-50%, 8px); opacity: 0; }
@@ -29,10 +29,10 @@ export const toastCss = `    /* ── Toast / undo banner ───────
        (topbar 100, drawers 120/130, modals 1000) but below toasts (2000) so a
        boot-error toast can still surface. Boot-only — never re-shown on a switch. */
     .app-loading {
-      position: fixed; inset: 0; z-index: 1500;
+      position: fixed; inset: 0; z-index: var(--z-boot);
       background: var(--bg);
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
-      opacity: 1; transition: opacity 0.25s ease;
+      opacity: 1; transition: opacity var(--dur-3) ease;
     }
     .app-loading.is-hidden { opacity: 0; pointer-events: none; }
     .app-loading-text { color: var(--text-muted); font-size: 13px; letter-spacing: 0.02em; }
@@ -46,7 +46,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
        chrome (topbar 100) but below modals (1000) so the onboarding wizard sits
        on top. The onboarding modal reuses .modal-backdrop. */
     .virgin-state {
-      position: fixed; inset: 0; z-index: 200;
+      position: fixed; inset: 0; z-index: var(--z-gate);
       background: var(--bg);
       display: flex; align-items: center; justify-content: center; padding: 24px;
     }
@@ -60,23 +60,23 @@ export const toastCss = `    /* ── Toast / undo banner ───────
     .virgin-state .virgin-actions { display: flex; gap: 10px; margin-top: 8px; }
     .modal .ob-kind {
       flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer;
-      padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+      padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md);
       background: var(--surface-2);
     }
     /* Connect-with-Claude: a black, centered button carrying the Claude mark. */
     .connect-claude-btn {
       display: flex; align-items: center; justify-content: center; gap: 8px;
-      width: 100%; box-sizing: border-box; padding: 9px 14px; border-radius: 8px;
-      background: #0b0d10; color: #fff; border: 1px solid var(--border-strong);
+      width: 100%; box-sizing: border-box; padding: 10px 14px; border-radius: var(--r-md);
+      background: var(--brand-claude-btn); color: var(--btn-text); border: 1px solid var(--border-strong);
       font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer;
     }
-    .connect-claude-btn:hover { background: #16191d; border-color: var(--accent); }
+    .connect-claude-btn:hover { background: var(--brand-claude-btn-hover); border-color: var(--accent); }
     .connect-claude-btn .claude-logo {
-      width: 18px; height: 18px; flex: 0 0 auto; color: #d97757; /* Claude orange */
+      width: 18px; height: 18px; flex: 0 0 auto; color: var(--brand-claude); /* Claude orange */
     }
     /* Privacy indicators: faint lock/eye in the sidebar object list + a clearer
        one on the entity detail header. */
-    .nav-vis { display: inline-flex; align-items: center; margin-left: 5px; color: var(--text-muted); opacity: 0.45; }
+    .nav-vis { display: inline-flex; align-items: center; margin-left: 6px; color: var(--text-muted); opacity: 0.45; }
     .nav-vis svg { width: 12px; height: 12px; }
     /* Shared lock/eye indicator (sidebar/detail/cards) — see visIndicator(). */
     .vis-indicator { display: inline-flex; align-items: center; color: var(--text-muted); }
@@ -91,7 +91,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
     }
     .toast .undo-link:hover { color: var(--accent-deep); }
     .toast .toast-dismiss {
-      background: transparent; border: none; color: #64748b;
+      background: transparent; border: none; color: var(--text-muted);
       cursor: pointer; padding: 0 4px; font-size: 16px; line-height: 1;
     }
     .toast .toast-dismiss:hover { color: var(--text); }

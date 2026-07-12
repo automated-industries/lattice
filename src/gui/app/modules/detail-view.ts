@@ -16,7 +16,7 @@ export const detailViewJs = `    // ──────────────�
           '<span class="count">' + (entry.rowCount == null ? 'no access' : (entry.rowCount + ' row' + (entry.rowCount === 1 ? '' : 's'))) +
             ' · read-only</span>' +
         '</div>' +
-        '<div class="muted" style="margin-bottom:12px;font-size:13px;">' +
+        '<div class="dialog-lead">' +
           'Lattice-internal table — shown here for inspection only. The GUI does not allow editing.' +
         '</div>' +
         '<table id="system-table"><thead><tr></tr></thead><tbody></tbody></table>';
@@ -28,7 +28,7 @@ export const detailViewJs = `    // ──────────────�
         thead.innerHTML = cols.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('');
         var tbody = content.querySelector('#system-table tbody');
         if (rows.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="' + cols.length + '" class="muted" style="padding:24px;text-align:center;">Empty</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="' + cols.length + '" class="empty-state">Empty</td></tr>';
           return;
         }
         tbody.innerHTML = rows.map(function (r) {

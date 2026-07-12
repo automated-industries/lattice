@@ -125,7 +125,7 @@ export const toastJs = `    // ────────────────�
         menu.innerHTML =
           '<div class="db-section">Workspaces</div>' + items +
           '<div class="db-create">' +
-            '<button class="btn primary" id="ws-create-btn" style="width:100%;">+ New workspace…</button>' +
+            '<button class="btn primary u-w-100" id="ws-create-btn">+ New workspace…</button>' +
           '</div>';
         menu.querySelectorAll('button.db-item').forEach(function (b) {
           b.addEventListener('click', function () {

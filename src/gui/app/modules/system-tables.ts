@@ -74,7 +74,7 @@ export const systemTablesJs = `    // ──────────────
       if (!content) return;
       dmActiveTable = null;
       if (!tableByName(table)) {
-        content.innerHTML = '<div class="brain-graph"><div class="muted" style="padding:24px">Unknown object: ' + escapeHtml(table) + '</div></div>';
+        content.innerHTML = '<div class="brain-graph"><div class="empty-state">Unknown object: ' + escapeHtml(table) + '</div></div>';
         return;
       }
       var myGen = ++graphRevealGen;
@@ -96,7 +96,7 @@ export const systemTablesJs = `    // ──────────────
         if (myGen !== graphRevealGen) return;
         var rows = page.rows;
         var mount = document.getElementById('graph-mount');
-        if (!rows.length) { if (mount) mount.innerHTML = '<div class="muted" style="padding:24px">No items yet in ' + escapeHtml(d.label) + '.</div>'; return; }
+        if (!rows.length) { if (mount) mount.innerHTML = '<div class="empty-state">No items yet in ' + escapeHtml(d.label) + '.</div>'; return; }
         // This entity's rows are the primary nodes (id encodes table:rowId).
         var nodes = rows.map(function (r) {
           return { id: table + ':' + r.id, label: fsDisplayName(r) || String(r.id).slice(0, 8), icon: d.icon, radius: 16, cls: '', title: fsDisplayName(r) };
@@ -155,7 +155,7 @@ export const systemTablesJs = `    // ──────────────
         });
       }).catch(function (err) {
         var m = document.getElementById('graph-mount');
-        if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load graph: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+        if (m) m.innerHTML = '<div class="empty-state">Failed to load graph: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
       });
     }
 
@@ -175,9 +175,9 @@ export const systemTablesJs = `    // ──────────────
     function renderEntityEditorInto(host) {
       if (!host) return;
       host.innerHTML =
-        '<div class="dbconfig-panel" style="margin-top:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-            '<h3 style="margin:0">Data Model</h3>' +
+        '<div class="dbconfig-panel panel" style="margin-top:18px">' +
+          '<div class="u-spread" style="margin-bottom:10px">' +
+            '<h3 class="u-m-0">Data Model</h3>' +
             '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
           '</div>' +
           '<div class="dm-layout">' +
@@ -209,7 +209,7 @@ export const systemTablesJs = `    // ──────────────
               '<span class="dm-entity-icon">' + d.icon + '</span>' +
               '<span class="dm-entity-label">' + escapeHtml(d.label) + '</span></button></li>';
           }).join('') + '</ul>'
-        : '<div class="muted" style="padding:12px">No entities yet — use “+ New entity”.</div>';
+        : '<div class="empty-state-sm">No entities yet — use “+ New entity”.</div>';
       host.querySelectorAll('.dm-entity-item').forEach(function (b) {
         b.addEventListener('click', function () { dmShowEntityEditor(b.getAttribute('data-table')); });
       });
@@ -254,7 +254,7 @@ export const systemTablesJs = `    // ──────────────
         if (myGen !== graphRevealGen) return; // superseded
         var model = buildSchemaModel(graph);
         if (!model.nodes.length) {
-          mount.innerHTML = '<div class="muted" style="padding:24px">No objects with data yet. Add files or connect a source to populate the graph.</div>';
+          mount.innerHTML = '<div class="empty-state">No objects with data yet. Add files or connect a source to populate the graph.</div>';
           return;
         }
         graphModelCache = model; // baseline for the live ingest animation
@@ -297,10 +297,10 @@ export const systemTablesJs = `    // ──────────────
           if (dmActiveTable) { dmShowEntityEditor(dmActiveTable); schemaGraphHandle.setSelected(dmActiveTable); }
         }).catch(function (err) {
           var m = document.getElementById('graph-mount');
-          if (m) m.innerHTML = '<div class="muted" style="padding:24px">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+          if (m) m.innerHTML = '<div class="empty-state">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
         });
       }).catch(function (err) {
-        mount.innerHTML = '<div class="muted" style="padding:24px">Failed to load schema graph: ' +
+        mount.innerHTML = '<div class="empty-state">Failed to load schema graph: ' +
           escapeHtml(err.message) + '</div>';
       });
     }
@@ -412,7 +412,7 @@ export const systemTablesJs = `    // ──────────────
               '<button class="btn primary" id="dm-create-btn">Create entity</button>' +
             '</div>' +
           '</div>' +
-          '<div class="muted" style="margin-top:14px;font-size:12px;">' +
+          '<div class="hint" style="margin-top:14px">' +
             'New entities get id (uuid PK), name, and deleted_at columns. ' +
             'Add more columns once the entity exists. On a cloud workspace the ' +
             'entity is private to you until you share it.' +
@@ -459,7 +459,7 @@ export const systemTablesJs = `    // ──────────────
         }).join('');
         panel.innerHTML =
           '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
-          '<div class="muted" style="font-size:12px;margin-bottom:12px">Shared by another member — read-only. Only the table owner can edit its columns and relationships.</div>' +
+          '<div class="hint u-mb-3">Shared by another member — read-only. Only the table owner can edit its columns and relationships.</div>' +
           '<div class="dm-cols">' + (roCols || '<span class="muted">No columns</span>') + '</div>';
         return;
       }
@@ -552,7 +552,7 @@ export const systemTablesJs = `    // ──────────────
         return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
       });
       var addLinkHtml = linkTargets.length
-        ? '<div class="dm-row-inline" style="margin-top:8px">' +
+        ? '<div class="dm-row-inline u-mt-2">' +
             '<select id="dm-newlink-target" title="Link to entity (many-to-many)">' +
               linkTargets.map(function (rt) {
                 return '<option value="' + escapeHtml(rt.name) + '">↔ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
@@ -560,7 +560,7 @@ export const systemTablesJs = `    // ──────────────
             '</select>' +
             '<button class="btn primary" id="dm-newlink-btn">Add link</button>' +
           '</div>'
-        : '<span class="muted" style="font-size:12px">No other entities to link to.</span>';
+        : '<span class="hint">No other entities to link to.</span>';
 
       // Cloud sharing row — only the owner of a table may toggle its
       // visibility (t.ownedByMe is set by the server only for cloud
@@ -576,15 +576,15 @@ export const systemTablesJs = `    // ──────────────
         ? ''
         : neverShare
           ? '<label>Cloud sharing</label>' +
-            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-              '<span style="font-size:12px;color:var(--text-muted)">🔒 Private to you — this table is never shared.</span>' +
+            '<div class="u-row-wrap">' +
+              '<span class="hint">🔒 Private to you — this table is never shared.</span>' +
             '</div>'
           : '<label>Cloud sharing</label>' +
-            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<div class="u-row-wrap">' +
               '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
                 (isShared ? 'Make private' : 'Share with workspace') +
               '</button>' +
-              '<span style="font-size:12px;color:var(--text-muted)">' +
+              '<span class="hint">' +
                 (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
               '</span>' +
             '</div>';
@@ -594,12 +594,12 @@ export const systemTablesJs = `    // ──────────────
       var defaultVis = (t && t.defaultRowVisibility) || 'private';
       var defaultVisRow = canShare && isShared
         ? '<label>New rows default to</label>' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<div class="u-row-wrap">' +
             '<select id="dm-rowvis-select"' + (neverShare ? ' disabled' : '') + '>' +
               '<option value="private"' + (defaultVis === 'private' ? ' selected' : '') + '>Private (owner only)</option>' +
               '<option value="everyone"' + (defaultVis === 'everyone' ? ' selected' : '') + '>Everyone on the workspace</option>' +
             '</select>' +
-            '<span style="font-size:12px;color:var(--text-muted)">Visibility new rows in this table are created with.</span>' +
+            '<span class="hint">Visibility new rows in this table are created with.</span>' +
           '</div>'
         : '';
       // Owner-only "Never share" control, shown for a shared table. When on, the
@@ -607,11 +607,11 @@ export const systemTablesJs = `    // ──────────────
       // visibility above — a hard floor the owner can set per shared table.
       var neverShareRow = canShare && isShared
         ? '<label>Never share</label>' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<div class="u-row-wrap">' +
             '<label class="dm-secret-toggle">' +
               '<input type="checkbox" id="dm-nevershare-check"' + (neverShare ? ' checked' : '') + ' /> Keep all rows private' +
             '</label>' +
-            '<span style="font-size:12px;color:var(--text-muted)">When on, rows in this table are always private to their owner, ignoring the default above.</span>' +
+            '<span class="hint">When on, rows in this table are always private to their owner, ignoring the default above.</span>' +
           '</div>'
         : '';
       panel.innerHTML =
@@ -634,7 +634,7 @@ export const systemTablesJs = `    // ──────────────
           '<div>' +
             '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
             (scalarCols.length
-              ? '<button class="btn primary" id="dm-cols-save" style="margin-top:8px" disabled>Save changes</button>'
+              ? '<button class="btn primary u-mt-2" id="dm-cols-save" disabled>Save changes</button>'
               : '') +
           '</div>' +
           '<label>Add column</label>' +
@@ -653,13 +653,13 @@ export const systemTablesJs = `    // ──────────────
           '</div>' +
           '<label>Links</label>' +
           '<div>' +
-            '<div class="dm-links">' + (linkRows || '<span class="muted" style="font-size:12px">No links.</span>') + '</div>' +
+            '<div class="dm-links">' + (linkRows || '<span class="hint">No links.</span>') + '</div>' +
             addLinkHtml +
           '</div>' +
           '<label>Danger zone</label>' +
           '<div class="dm-danger">' +
             '<button class="btn danger" id="dm-delete-table">Delete table</button>' +
-            '<span style="font-size:12px;color:var(--text-muted)">Permanently drops this table and all its rows. ' +
+            '<span class="hint">Permanently drops this table and all its rows. ' +
               'You\\'ll be asked to type the name to confirm. Refused while other tables link to it.</span>' +
           '</div>' +
         '</div>';
@@ -981,9 +981,9 @@ export const systemTablesJs = `    // ──────────────
           return (v || '').trim().toLowerCase() === tableName.toLowerCase();
         };
         showModal('Delete table "' + tableName + '"',
-          '<p style="margin:0 0 8px">This permanently drops the table ' + nameTag +
+          '<p class="u-m-0 u-mb-2">This permanently drops the table ' + nameTag +
             ' and all its rows. This cannot be undone.</p>' +
-          '<p style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+          '<p class="hint u-m-0 u-mb-3">' +
             'You can\\'t delete a table while another table links to it — delete those links first ' +
             '(they show in this table\\'s Links section).</p>' +
           '<div class="field"><label>Type ' + nameTag +
