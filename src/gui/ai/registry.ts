@@ -459,6 +459,31 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'merge_rows',
+    description:
+      'Consolidate specific rows the user identified as the same thing (e.g. several ' +
+      'rows for one company) into ONE surviving row. Re-points every reference (junction ' +
+      'link) from the duplicates onto the survivor, then soft-deletes the duplicates ' +
+      '(recoverable). This is the correct way to combine/merge/consolidate records: ' +
+      'delete_row only removes a row and would leave its links dangling. Returns the exact ' +
+      'number of rows merged and references relinked — report those actual counts.',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        table: str('Table containing the rows.'),
+        survivor_id: str('Primary key of the row to KEEP as the master.'),
+        duplicate_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Primary keys of the duplicate rows to merge into the survivor + soft-delete.',
+        },
+      },
+      ['table', 'survivor_id', 'duplicate_ids'],
+    ),
+  },
+  {
     name: 'update_row',
     description: 'Update columns on an existing row.',
     mutates: true,

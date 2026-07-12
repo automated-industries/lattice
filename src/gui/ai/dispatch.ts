@@ -75,6 +75,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'set_definition',
   'set_visibility',
   'dedup',
+  'merge_rows',
   'update_row',
   'bulk_update',
   'delete_row',

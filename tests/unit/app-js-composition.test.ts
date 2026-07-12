@@ -469,8 +469,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // composer Send always keeps focus on the chat (silent) so a files-only send gets a reply;
 // and the typed message survives an ingest failure (sendChat runs in the reject path too).
 // Recaptured.
-const ORIGINAL_LENGTH = 701783;
-const ORIGINAL_SHA256 = 'b4df3891f7ec57e43d78551178a4c6caa2da74d84f34d4cc89ec68c96ebebb36';
+// Chat + sidebar correctness: keep a tool round's streamed narration (finalize its bubble
+// instead of reaping it); the table SQL-runner defaults to live rows only (where deleted_at
+// is null) so a merge isn't invisible; the left-sidebar hides empty tables + empty schema
+// groups. Recaptured.
+// Plus: the record actions menu renders on the breadcrumb row (record-topbar), and a lone
+// self-referential table-page breadcrumb is suppressed (no double title). Recaptured.
+const ORIGINAL_LENGTH = 703665;
+const ORIGINAL_SHA256 = '979f35df01cd2f34cf7067563fcbbb14ddfec0d2d420079442630642ebe4fb6d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

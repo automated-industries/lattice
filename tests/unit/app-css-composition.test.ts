@@ -196,8 +196,10 @@ import { css } from '../../src/gui/app/css.js';
 // Schema-grouped TABLES + SQL-runner table page: added the collapsible .nav-schema-head
 // styles + the .sql-runner/.sql-editor/.sql-error/.sql-note/.sql-results-head block; removed
 // the dead #nav-files-tree rule (the FILES sidebar section is gone). Recaptured.
-const ORIGINAL_LENGTH = 151065;
-const ORIGINAL_SHA256 = '2b4094708581744001f6678efeee0b2a5db46726f4b103e6c2265cc29b18122d';
+// Record page: the actions (dotdotdot) menu moved onto the breadcrumb row (new .record-topbar
+// flex rule) instead of the title row. Recaptured.
+const ORIGINAL_LENGTH = 151410;
+const ORIGINAL_SHA256 = 'beca77b3a2e5e8f345728c495e994c2da30b4e5fc06730f17105ce12440d0396';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
