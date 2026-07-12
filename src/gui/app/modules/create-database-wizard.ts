@@ -275,7 +275,12 @@ export const createDatabaseWizardJs = `    // ───────────�
                 (cloudMode ? 'New items I add stay private to you' : 'Local workspaces are always private') +
               '</span>' +
             '</label>' +
-            '<input type="file" id="chat-file" multiple style="display:none">';
+            // Visually hidden but STILL RENDERED (not display:none): a <label for> can
+            // only open the native picker for an input the engine considers rendered —
+            // a display:none file input is inert in the desktop webview, so the clip
+            // button did nothing. This sr-only style keeps it activatable + off-screen.
+            '<input type="file" id="chat-file" multiple ' +
+              'style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0,0,0,0);border:0;padding:0;margin:-1px;">';
           var input = document.getElementById('chat-input');
           var sendBtn = document.getElementById('chat-send');
           var clipBtn = document.getElementById('chat-clip');
@@ -314,9 +319,15 @@ export const createDatabaseWizardJs = `    // ───────────�
             if (!stagedFiles.length) { if (t) sendChat(t); return; }
             var batch = stagedFiles.slice();
             clearStaging();
-            uploadFiles(batch, { silent: !!t }).then(function (refs) {
-              sendChat(t, refs); // respond even to a files-only send (no message)
-            });
+            // The composer Send ALWAYS keeps focus on the chat (silent) — a files-only
+            // send should get a Gladys response, not navigate off to the file record.
+            // If ingest fails, still run the turn with the user's text so a typed
+            // message is never lost (a files-only send with a failed ingest no-ops in
+            // sendChat, which is correct — there is nothing to say).
+            uploadFiles(batch, { silent: true }).then(
+              function (refs) { sendChat(t, refs); },
+              function () { sendChat(t); },
+            );
           }
           input.addEventListener('keydown', function (e) {
             if (e.key !== 'Enter') return;

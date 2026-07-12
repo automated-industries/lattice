@@ -142,6 +142,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The chat file uploader works again.** Three fixes: the upload (paperclip) button opens
+  the file picker in the desktop app — its hidden file input was `display:none`, which the
+  webview won't let a `<label for>` activate, so it's now visually hidden but still rendered.
+  Sending files **without** a typed message now gets a reply from the assistant instead of
+  navigating away to the file record (the composer's Send always keeps focus on the chat).
+  And a typed message sent alongside files is no longer lost if the file ingest hiccups — the
+  message is still sent.
+
 - **Image (and scanned-PDF) descriptions now generate with a bring-your-own Claude API key.**
   Image captioning and scanned-PDF reading used a narrower credential check than chat and text
   enrichment — it accepted only a managed key or a connected Claude subscription and ignored a
