@@ -462,8 +462,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // paintSqlResults over /api/analytics/sql) replacing the Formatted/Markdown collection view
 // (removed collectionViewMode + rowsToMarkdown + fsComputedAiBanner + renderFilesRootView).
 // Net shrink. Recaptured.
-const ORIGINAL_LENGTH = 700648;
-const ORIGINAL_SHA256 = '84128181fa255cc91efc0ee87747ff49376daa5a4010602172b1ef86908e7c23';
+// Review fix: the SQL-runner row-click is decided PER ROW (r.id present + non-null) instead
+// of result-wide, so a null/aliased id never navigates to a dead /null record. Recaptured.
+const ORIGINAL_LENGTH = 700897;
+const ORIGINAL_SHA256 = 'c679651ec5fadbf6d8d9afbf90ab31eb66df6d7a5196b72252d923d72028da7a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

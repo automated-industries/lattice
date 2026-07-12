@@ -995,7 +995,6 @@ export const dashboardJs = `    // ───────────────
       rows.forEach(function (r) {
         Object.keys(r).forEach(function (k) { if (!seen[k]) { seen[k] = true; cols.push(k); } });
       });
-      var hasId = !!seen.id;
       var pageRef = { page: 0 };
       function paint() {
         var page = pageRef.page;
@@ -1003,7 +1002,11 @@ export const dashboardJs = `    // ───────────────
         var slice = rows.slice(start, start + SQL_PAGE);
         var thead = cols.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('');
         var body = slice.map(function (r) {
-          var href = hasId ? ('#/w/table/' + encodeURIComponent(table) + '/' + encodeURIComponent(r.id)) : '';
+          // Row-click opens the record only when THIS row has a real id — a result set
+          // with no id column, a null id, or an aggregate aliased as id never navigates
+          // to a dead /null record page.
+          var href = (r.id !== undefined && r.id !== null && r.id !== '')
+            ? ('#/w/table/' + encodeURIComponent(table) + '/' + encodeURIComponent(r.id)) : '';
           var cells = cols.map(function (c) { return '<td>' + fsCellText(table, r, c) + '</td>'; }).join('');
           return '<tr' + (href ? ' class="fs-row-click" data-href="' + href + '"' : '') + '>' + cells + '</tr>';
         }).join('');
