@@ -79,7 +79,6 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
          (URLs) that have no space to wrap at. JS auto-grows height to fit. */
       overflow-wrap: break-word; word-break: break-word;
     }
-    .rail-composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     /* While a voice note is being recorded/transcribed the textarea is read-only
        (shows a "Listening…" / "Transcribing…" placeholder, not editable). */
     .rail-composer textarea.recording { opacity: 0.6; cursor: not-allowed; }

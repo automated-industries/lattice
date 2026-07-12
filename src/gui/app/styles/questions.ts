@@ -26,7 +26,7 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     .q-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .q-opt {
       background: var(--surface); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+      border: 1px solid var(--border-strong);
       padding: 4px 12px; font-size: 13px; cursor: pointer;
     }
     .q-opt:hover { border-color: var(--accent); color: var(--accent-deep); }
@@ -65,7 +65,7 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     .dq-list { display: flex; flex-direction: column; gap: 12px; }
     .dq-list .q-card { max-width: none; }
     .dq-empty {
-      padding: 32px 16px; text-align: center; color: var(--text-muted);
+      padding: 32px 16px;
       font-size: 13px; border: 1px dashed var(--border); border-radius: var(--r-lg);
     }
 `;

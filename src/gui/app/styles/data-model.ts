@@ -4,8 +4,7 @@ export const dataModelCss = `    /* ── Placeholder / data-model stub ──�
     .placeholder {
       background: var(--surface); border: 1px dashed var(--border-strong);
       border-radius: var(--r-lg); padding: 40px;
-      max-width: 600px; text-align: center;
-      color: var(--text-muted);
+      max-width: 600px;
     }
     .placeholder h2 { margin: 0 0 8px; color: var(--text); }
 

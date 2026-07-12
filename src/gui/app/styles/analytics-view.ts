@@ -16,7 +16,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .configure-trigger {
       margin-left: auto;
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 12px; border-radius: var(--r-pill); cursor: pointer;
+      padding: 6px 12px; cursor: pointer;
       border: 1px solid var(--border); background: var(--surface-2);
       color: var(--text); font-size: 13px; font-weight: 600; line-height: 1;
     }
@@ -61,7 +61,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       font-size: 12px; color: var(--text-muted); font-weight: 400;
     }
     .dash-item .vis-indicator { justify-self: end; }
-    .dash-list-empty { color: var(--text-muted); font-size: 13px; padding: 14px 10px; text-align: center; }
+    .dash-list-empty { font-size: 13px; padding: 14px 10px; }
 
     /* ── Left-sidebar nav sections (Tables / Files) ── */
     .nav-section { border-top: 1px solid var(--border); }
@@ -111,7 +111,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-table-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
     .nav-item-ic { flex: 0 0 auto; }
     .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .nav-empty { color: var(--text-muted); font-size: 12px; padding: 8px 12px; }
+    .nav-empty { font-size: 12px; padding: 8px 12px; }
     #nav-tables-list { padding-bottom: 6px; }
 
     /* ── Column headers (identical style to the Configure view) ── */
@@ -120,9 +120,9 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
        (outputs). The Dashboards header holds a compact "+" on the right. */
     .col-dashboards { --col-accent: var(--accent-deep); justify-content: space-between; }
     .dash-new-btn {
-      flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-      width: 24px; height: 24px; border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text-muted); font-size: 15px; line-height: 1; border-radius: var(--r-sm); cursor: pointer;
+      flex: 0 0 auto; justify-content: center;
+      width: 24px; height: 24px; background: var(--surface-2);
+      color: var(--text-muted); font-size: 15px; line-height: 1;
     }
     .dash-new-btn:hover { background: var(--row-hover); color: var(--text); }
 
@@ -180,7 +180,6 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       border: 1px solid var(--border-strong); border-radius: var(--r-lg);
       padding: 12px 12px; font: inherit; font-size: 14px; line-height: 1.4;
     }
-    .analytics-home-prompt textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     .analytics-home-prompt .btn { flex: 0 0 auto; height: 42px; padding: 0 16px; border-radius: var(--r-lg); font-weight: 600; }
     .analytics-home-prompt .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
 

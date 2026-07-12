@@ -469,8 +469,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // composer Send always keeps focus on the chat (silent) so a files-only send gets a reply;
 // and the typed message survives an ingest failure (sendChat runs in the reject path too).
 // Recaptured.
-const ORIGINAL_LENGTH = 701783;
-const ORIGINAL_SHA256 = 'b4df3891f7ec57e43d78551178a4c6caa2da74d84f34d4cc89ec68c96ebebb36';
+// Design pass M3 — base classes added in markup: the import-wizard primary button carries
+// 'btn primary' and the dashboard-tab menu button carries 'btn' (matching its other
+// emitter), so the shared button chrome applies. Recaptured.
+const ORIGINAL_LENGTH = 701799;
+const ORIGINAL_SHA256 = '8932aa6840df6096b5ca24d2b49d1a73445265c45d8ff174844eadda2872a13b';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

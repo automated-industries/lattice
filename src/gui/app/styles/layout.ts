@@ -36,15 +36,7 @@ export const layoutCss = `    /* ── Layout ───────────
     body.collapse-outputs .col-outputs { justify-content: center; padding: 0; }
     body.collapse-outputs .col-outputs > *:not(.col-collapse) { display: none; }
     body.collapse-outputs .col-outputs .col-collapse { margin: 0; transform: scaleX(-1); }
-    /* ── Global Wire / Merge (buttons above the tab line + drag feedback) ─── */
-    .wm-actions { display: flex; align-items: center; gap: 6px; flex: none; margin: 0 8px; }
-    .wm-btn {
-      font-size: 12px; font-weight: 600; color: var(--text-muted);
-      background: var(--surface-2); border: 1px solid var(--border);
-      border-radius: var(--r-sm); padding: 4px 10px; cursor: pointer; white-space: nowrap;
-    }
-    .wm-btn:hover { color: var(--text); border-color: var(--accent); }
-    .wm-btn.on { color: var(--btn-text); background: var(--accent); border-color: var(--accent); }
+    /* ── Global Wire / Merge drag feedback ─── */
     .wm-picked { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-md); }
     .wm-drop-target {
       outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-md);
@@ -90,8 +82,6 @@ export const layoutCss = `    /* ── Layout ───────────
        padding) and pins flush to the top, level with the other column headers. */
     nav.sidebar > .col-header { margin: 0 -10px 10px; }
     .section-label {
-      font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.05em;
       padding: 0 12px; margin: 12px 0 6px;
     }
     .section-label:first-child { margin-top: 0; }

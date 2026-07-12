@@ -4,7 +4,7 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     .src-group { margin-bottom: 16px; }
     .src-note { font-size: 11px; color: var(--text-muted); padding: 8px 12px 4px; display: flex; align-items: center; gap: 6px; }
     .src-note-ic { font-size: 10px; flex: none; line-height: 1; }
-    .src-empty { font-size: 12px; color: var(--text-muted); padding: 4px 12px; }
+    .src-empty { font-size: 12px; padding: 4px 12px; }
     .src-add-row { display: flex; gap: 6px; padding: 4px 8px 0; }
     .src-add {
       flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm);

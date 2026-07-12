@@ -213,8 +213,15 @@ import { css } from '../../src/gui/app/css.js';
 // (values unchanged), and the five in-content dropdowns (file menu, sources add-menu, tab
 // overflow, emoji grid — each the sole floater in its own stacking context) merged at
 // --z-menu. Literals <= 10 (intra-component micro-order) stay by documented rule. Recaptured.
-const ORIGINAL_LENGTH = 157477;
-const ORIGINAL_SHA256 = '61b14c0e8b2881a1db747fa6665bf6132ca34f0efcfdb4ad0e3ea80bfbd9a546';
+// Design pass M3 — component consolidation: NEW components.ts (canonical modal moved from
+// teams.ts; backdrop-geometry, icon-button-chrome, card-DNA, pill-radius, empty-state,
+// kicker, toolbar alias groups; grouped focus ring; .panel/.pill/.empty-state/.kicker/
+// .toolbar primitives) + NEW utilities.ts (the .muted/.hint/.mono/.u-* vocabulary — the
+// global .muted rule is the sanctioned fix for ~43 bare class=muted usages). Dead CSS
+// deleted (.danger-btn, .wm-actions/.wm-btn, .modal-foot .btn overrides, .cd-btn dupes).
+// Recaptured.
+const ORIGINAL_LENGTH = 157951;
+const ORIGINAL_SHA256 = '0f42623eaa3bb2f207fd3026bf68aa568e977f1845f8daea2cef72c5416fecb5';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

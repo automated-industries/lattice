@@ -8,7 +8,7 @@ export const statusIndicatorCss = `    /* ── Top-right status indicator ─�
     .header-status-slot { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
     .app-status {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 4px 10px; border-radius: var(--r-pill);
+      padding: 4px 10px;
       background: var(--surface-2); border: 1px solid var(--border);
       color: var(--text-muted); font-size: 12px; white-space: nowrap;
       /* Cap the width and truncate long notifications with an ellipsis. */

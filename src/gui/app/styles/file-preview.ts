@@ -9,7 +9,7 @@ export const filePreviewCss = `    /* ── File preview (files detail page) �
     .file-preview .artifact-badge {
       display: inline-block; margin: 0 0 10px; padding: 2px 10px; font-size: 12px; font-weight: 600;
       letter-spacing: 0.02em; color: var(--accent); background: var(--accent-soft);
-      border: 1px solid var(--border); border-radius: var(--r-pill);
+      border: 1px solid var(--border);
     }
     .file-preview img { max-width: 100%; max-height: 60vh; border: 1px solid var(--border); border-radius: var(--r-md); display: block; }
     .file-preview iframe { width: 100%; height: 60vh; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }

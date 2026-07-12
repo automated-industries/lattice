@@ -66,48 +66,12 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
     .members-list .role-tag.role-expired { background: var(--danger-bg); color: var(--danger-ink); }
     .member-row-pending { opacity: 0.85; }
     .teams-empty {
-      padding: 32px; text-align: center; color: var(--text-muted);
+      padding: 32px;
       border: 1px dashed var(--border-strong); border-radius: var(--r-md);
     }
-    .danger-btn { background: color-mix(in srgb, var(--hue-orange) 12%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--hue-orange) 40%, transparent); }
-    .danger-btn:hover { background: color-mix(in srgb, var(--hue-orange) 20%, transparent); }
 
-    /* Modal — used by the teams flows. Self-contained so it doesn't
-       collide with any modal styles the GUI agent may add later. */
-    .modal-backdrop {
-      position: fixed; inset: 0; background: var(--overlay-dim);
-      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-      display: flex; align-items: center; justify-content: center;
-      z-index: var(--z-modal);
-    }
-    .modal {
-      background: rgba(255, 255, 255, 0.80);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border: 1px solid rgba(15, 23, 42, 0.04); border-radius: var(--r-xl);
-      box-shadow: var(--shadow-4), var(--hl-top);
-      min-width: 420px; max-width: 560px; max-height: 80vh;
-      display: flex; flex-direction: column; overflow: hidden;
-    }
-    .modal-head {
-      padding: 14px 18px; border-bottom: 1px solid var(--border);
-      font-size: 15px; font-weight: 600;
-    }
-    .modal-body {
-      padding: 16px 18px; overflow-y: auto; flex: 1;
-    }
-    .modal-foot {
-      padding: 12px 18px; border-top: 1px solid var(--border);
-      display: flex; gap: 8px; justify-content: flex-end;
-    }
-    .modal-foot .btn {
-      padding: 6px 14px; border: 1px solid var(--border-strong);
-      border-radius: var(--r-sm); background: var(--surface); color: var(--text);
-    }
-    .modal-foot .btn:hover { background: var(--row-hover); }
-    .modal-foot .btn.primary {
-      background: var(--accent); color: var(--btn-text); border-color: var(--accent-deep); font-weight: 600; box-shadow: none;
-    }
-    .modal-foot .btn.primary:hover { background: var(--accent-deep); border-color: var(--accent-glow); box-shadow: var(--shadow-2); }
+    /* Modal chrome (.modal-backdrop/.modal/.modal-head/.modal-body/.modal-foot)
+       lives in the shared components section; the field styles below stay here. */
     .modal .field { margin-bottom: 12px; }
     .modal .field label {
       display: block; margin-bottom: 4px; font-size: 12px;
@@ -131,8 +95,8 @@ export const teamsCss = `    /* ── Teams (Project Config + User Config) ─�
        radio jams against the text. Qualify the selector (0,3,1) so display:flex/gap win. */
     .modal .field label.wiz-kind-card {
       flex: 1 1 0; min-width: 132px; display: flex; align-items: center; gap: 10px;
-      padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
-      background: var(--surface); cursor: pointer;
+      padding: 10px 12px; border-radius: var(--r-md);
+      cursor: pointer;
       transition: border-color var(--dur-1) ease, background var(--dur-1) ease;
     }
     .wiz-kind-card:hover { border-color: var(--border-strong); }

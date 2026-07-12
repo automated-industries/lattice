@@ -14,13 +14,9 @@ export const inlineImportCss = `
     .cd-status.ok { color: var(--accent); }
     .cd-status.err { color: var(--danger); }
     .cd-status a { color: var(--accent); }
-    .cd-btn {
-      height: 34px; padding: 0 14px; border-radius: var(--r-sm); border: 1px solid var(--border);
-      background: transparent; color: var(--text); font-size: 13px;
-      font-weight: 600; cursor: pointer;
-    }
-    .cd-btn:hover { background: rgba(15, 23, 42, 0.04); }
-    .cd-btn.cd-primary { background: var(--accent); color: var(--btn-text); border-color: var(--accent); }
+    /* Markup carries the .btn/.primary base classes; only the deltas live here. */
+    .cd-btn { height: 34px; padding: 0 14px; }
+    .cd-btn.cd-primary { border-color: var(--accent); }
     .cd-btn.cd-primary:hover { filter: brightness(1.06); }
     .cd-import-list { margin: 10px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
     .cd-import-list li { margin: 2px 0; }

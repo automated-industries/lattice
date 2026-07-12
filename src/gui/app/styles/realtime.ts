@@ -16,7 +16,7 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
     }
     /* Pending offline-edit indicator in the top bar. */
     .offline-pill {
-      flex: 0 0 auto; padding: 4px 10px; border-radius: var(--r-pill);
+      flex: 0 0 auto; padding: 4px 10px;
       background: color-mix(in srgb, var(--hue-orange) 16%, transparent); color: var(--warn);
       font-size: 11px; font-weight: 600; white-space: nowrap;
     }
@@ -29,7 +29,7 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {
       display: inline-block; min-width: 16px; text-align: center;
-      margin-left: 4px; padding: 0 6px; border-radius: var(--r-pill);
+      margin-left: 4px; padding: 0 6px;
       background: var(--accent-soft); color: var(--accent);
       font-size: 10px; font-weight: 600; line-height: 16px; vertical-align: middle;
     }

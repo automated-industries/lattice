@@ -4,7 +4,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
     .toast {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
       background: var(--surface); color: var(--text); border: 1px solid var(--border);
-      padding: 10px 18px; border-radius: var(--r-pill);
+      padding: 10px 18px;
       display: flex; align-items: center; gap: 14px;
       box-shadow: var(--shadow-3);
       /* Above every overlay (.modal-backdrop is z-index 1000, drawers 120-130) so

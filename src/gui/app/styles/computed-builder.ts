@@ -19,10 +19,10 @@ export const computedBuilderCss = `    /* ── Computed-table builder (#/compu
       border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface);
       padding: 14px; margin: 12px 0; box-shadow: var(--shadow-1);
     }
-    .cb-label { display: block; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+    .cb-label { display: block; margin-bottom: 6px; }
     .cb-hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
-    .cb-fields-head { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
-    .cb-field { border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 12px; margin-bottom: 10px; background: var(--surface); }
+    .cb-fields-head { margin-bottom: 10px; }
+    .cb-field { border-radius: var(--r-md); padding: 10px 12px; margin-bottom: 10px; }
     .cb-field-main { display: flex; align-items: center; gap: 8px; }
     .cb-field-name { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); padding: 6px 8px; }
     .cb-field-kind { flex: 0 0 auto; padding: 6px 8px; }
@@ -42,11 +42,11 @@ export const computedBuilderCss = `    /* ── Computed-table builder (#/compu
     .cb-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
     .cb-chip {
       display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 8px;
-      border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface-2); font-size: 13px;
+      border: 1px solid var(--border); background: var(--surface-2); font-size: 13px;
     }
     .cb-chip-n {
       display: inline-flex; align-items: center; justify-content: center;
-      min-width: 15px; height: 15px; border-radius: var(--r-pill); background: var(--accent-soft);
+      min-width: 15px; height: 15px; background: var(--accent-soft);
       color: var(--accent); font-size: 11px; font-weight: 600;
     }
     .cb-chip-x { border: 0; background: none; cursor: pointer; color: var(--text-muted); font-size: 11px; padding: 0 2px; }
@@ -58,7 +58,7 @@ export const computedBuilderCss = `    /* ── Computed-table builder (#/compu
       margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
       background: var(--surface-2); font-size: 12px; max-height: 160px; overflow: auto; white-space: pre-wrap;
     }
-    .cb-preview-head { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 14px 0 6px; }
+    .cb-preview-head { margin: 14px 0 6px; }
     .cb-preview-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r-md); }
     .cb-preview-table { margin: 0; }
     .cb-sql { margin: 12px 0; }
@@ -70,7 +70,7 @@ export const computedBuilderCss = `    /* ── Computed-table builder (#/compu
 
     /* "Computed" badge + read-only note (record + collection pages). */
     .fs-computed-badge {
-      display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--r-pill);
+      display: inline-flex; align-items: center; padding: 2px 8px;
       border: 1px solid rgba(59, 130, 246, 0.35); background: var(--accent-soft); color: var(--accent);
       font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
     }

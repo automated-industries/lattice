@@ -7,7 +7,7 @@ export const dashboardCss = `    /* ── Dashboard ─────────
     }
     .card {
       position: relative; overflow: hidden;
-      background: var(--sheen), var(--surface); border: 1px solid var(--border);
+      background: var(--sheen), var(--surface);
       border-radius: var(--r-xl); padding: 24px;
       min-height: 160px;
       display: flex; flex-direction: column; gap: 8px;

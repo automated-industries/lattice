@@ -14,7 +14,10 @@ describe('3.2 GUI regression guards', () => {
   });
 
   it('#3 the top bar gets an explicit stacking context (dropdowns above cards)', () => {
-    expect(guiAppHtml).toContain('position: relative; z-index: 100;');
+    // The tier value lives in the token layer now (--z-topbar: 100) — the guard is that
+    // the topbar still declares an explicit stacking context at the topbar tier.
+    expect(guiAppHtml).toContain('position: relative; z-index: var(--z-topbar);');
+    expect(guiAppHtml).toContain('--z-topbar: 100;');
   });
 
   it('#7 the chat Private-mode toggle is checked+disabled on local workspaces', () => {

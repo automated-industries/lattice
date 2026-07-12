@@ -5,7 +5,9 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        share it): only the topbar stays visible; the trigger button highlights
        while open and clicking it again collapses. */
     .drawer-backdrop {
-      position: fixed; inset: 0; background: var(--overlay-dim-soft);
+      /* Box geometry comes from the shared backdrop group; the scrim here is
+         deliberately LIGHTER than the default so the header stays legible. */
+      background: var(--overlay-dim-soft);
       /* BELOW the topbar (z 100): the takeover replaces the workspace, but the
          header and its triggers must stay clickable — the clock/gear COLLAPSE
          the open panel. */
@@ -71,7 +73,6 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
 
     /* ── Connectors dialog (slides in from the LEFT) ────── */
     .connectors-backdrop {
-      position: fixed; inset: 0; background: var(--overlay-dim);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       z-index: var(--z-drawer-scrim); opacity: 0; transition: opacity 0.2s ease;
     }
@@ -96,8 +97,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-lead { margin: 4px 12px 10px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
     .conn-msg { margin: 0 12px 8px; font-size: 12px; color: var(--text-muted); min-height: 14px; }
     .conn-card {
-      margin: 0 12px 12px; padding: 12px; border: 1px solid var(--border);
-      border-radius: var(--r-lg); background: var(--surface);
+      margin: 0 12px 12px; padding: 12px;
     }
     .conn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .conn-card-title { font-size: 14px; font-weight: 600; }
@@ -112,8 +112,6 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-field select {
       width: 100%; box-sizing: border-box; line-height: 1.4;
     }
-    .conn-field input:focus,
-    .conn-field select:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     .conn-or { text-align: center; color: var(--text-muted); font-size: 12px; margin: 2px 0; }
     .conn-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 6px; }
     .conn-form-actions .btn { height: 36px; padding: 0 16px; border-radius: var(--r-md); font-weight: 600; }

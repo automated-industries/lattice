@@ -37,10 +37,9 @@ export const topbarCss = `    /* ── Top bar ──────────�
     /* Divides page-nav (Back/Forward) from data-edit (Undo/Redo) in the one group. */
     .history-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
     .history-btn {
-      display: inline-flex; align-items: center; justify-content: center;
+      justify-content: center;
       width: 32px; height: 32px;
-      background: transparent; border: 1px solid var(--border);
-      border-radius: var(--r-sm); cursor: pointer;
+      background: transparent;
       color: var(--text); font-size: 16px; text-decoration: none;
     }
     .history-btn:hover:not([disabled]) { background: rgba(15, 23, 42, 0.04); }
@@ -92,11 +91,10 @@ export const topbarCss = `    /* ── Top bar ──────────�
     /* DB switcher in the top bar */
     .db-switcher { position: relative; }
     .db-button {
-      display: inline-flex; align-items: center; gap: 6px;
+      gap: 6px;
       height: 32px; padding: 0 10px;
       background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border); border-radius: var(--r-sm);
-      font-size: 13px; cursor: pointer;
+      font-size: 13px;
     }
     /* Realtime connection status indicator inside .db-button.
        yellow=local SQLite, green=cloud+SSE connected, red=cloud+disconnected. */
@@ -170,7 +168,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .activity-pill { position: relative; }
     .activity-count {
       position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px;
-      padding: 0 4px; border-radius: var(--r-pill); background: var(--accent); color: var(--btn-text);
+      padding: 0 4px; background: var(--accent); color: var(--btn-text);
       font-size: 10px; font-weight: 700; line-height: 15px; text-align: center;
     }
     .activity-popover {
@@ -182,19 +180,16 @@ export const topbarCss = `    /* ── Top bar ──────────�
       box-shadow: var(--shadow-3), var(--hl-top); z-index: var(--z-popover); padding: 8px;
     }
     .activity-popover[hidden] { display: none; }
-    .activity-popover-head {
-      font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 6px 8px;
-    }
+    .activity-popover-head { padding: 2px 6px 8px; }
     .activity-feed { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
-    .activity-empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 14px 8px; }
+    .activity-empty { font-size: 13px; padding: 14px 8px; }
 
     /* Floating "Ask Lattice" trigger in the top bar */
     .ask-lattice { display: inline-flex; flex: 0 0 auto; }
     .ask-lattice-trigger {
       display: inline-flex; align-items: center; gap: 6px;
       height: 32px; padding: 0 12px; cursor: pointer;
-      border: 1px solid rgba(59, 130, 246, 0.35); border-radius: var(--r-pill);
+      border: 1px solid rgba(59, 130, 246, 0.35);
       background: var(--accent-soft); color: var(--accent);
       font: inherit; font-size: 13px; font-weight: 600;
       box-shadow: var(--glow-accent-soft);

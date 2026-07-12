@@ -119,7 +119,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
       display: flex; flex-direction: column; gap: 8px;
     }
-    .rail-empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 18px 8px; }
+    .rail-empty { font-size: 13px; padding: 18px 8px; }
     .feed-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px;
       align-items: baseline; padding: 8px 10px; border-radius: var(--r-md);
@@ -137,7 +137,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .feed-meta { margin-top: 2px; display: flex; align-items: center; gap: 6px; }
     .feed-source {
       font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
-      padding: 2px 6px; border-radius: var(--r-pill);
+      padding: 2px 6px;
       background: var(--accent-soft); color: var(--accent);
       box-shadow: none;
     }

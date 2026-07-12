@@ -38,7 +38,7 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
       -webkit-line-clamp: 2; -webkit-box-orient: vertical; max-height: 2.6em; line-height: 1.3;
     }
     .fs-folder-count { font-size: 11px; color: var(--text-muted); }
-    .fs-empty { color: var(--text-muted); font-style: italic; padding: 28px 4px; }
+    .fs-empty { font-style: italic; padding: 28px 4px; }
 
     /* ── Folders view (the default tab: objects as folders) ─────────── */
     .folders-view { padding: 2px 2px 24px; }

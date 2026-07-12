@@ -40,13 +40,13 @@ export const buttonsCss = `    /* ── Buttons ──────────�
        row-grant endpoints. */
     .grants-panel {
       margin: 4px 0 10px; padding: 10px 12px; max-width: 420px;
-      border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
+      border-radius: var(--r-sm); background: var(--surface-2);
       font-size: 13px;
     }
     .grants-panel .grants-title { font-weight: 600; margin-bottom: 6px; }
     .grants-panel .grants-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
     .grants-panel .grants-row input { accent-color: var(--accent); }
-    .grants-panel .grants-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .grants-panel .grants-actions { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
     .grants-panel .grants-dirty { font-size: 12px; }
 
     /* Inline create-row at the bottom of every table */

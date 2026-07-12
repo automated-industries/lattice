@@ -24,7 +24,6 @@ export const tableViewCss = `    /* ── Table view ────────�
       border: 1px solid var(--border); border-radius: var(--r-md);
       background: var(--surface); color: var(--text);
     }
-    .sql-editor:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     .sql-run { flex: 0 0 auto; align-self: flex-start; }
     .sql-error {
       padding: 8px 12px; border-radius: var(--r-md); font-size: 13px;

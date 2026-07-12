@@ -12,7 +12,6 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
       padding: 12px 14px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
     }
-    .mt-bar-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
     .mt-seg { display: inline-flex; }
     .mt-seg-btn {
       padding: 4px 12px; font: inherit; font-size: 13px; cursor: pointer;
@@ -70,13 +69,13 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;
     }
     .mt-tier-count {
-      display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: var(--r-pill);
+      display: inline-block; margin-left: 4px; padding: 0 6px;
       background: var(--surface-2); color: var(--text-muted); font-weight: 600;
     }
     /* A belongsTo-nested table indents under its parent (line = m2m only). */
     .mt-nest { border-left: 2px solid var(--border); padding-left: 8px; }
     .mt-tier-body { display: flex; flex-direction: column; gap: 8px; }
-    .mt-tier-empty { color: var(--text-muted); font-size: 12px; padding: 4px 2px; }
+    .mt-tier-empty { font-size: 12px; padding: 4px 2px; }
 
     .mt-card {
       display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
