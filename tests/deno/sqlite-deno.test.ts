@@ -32,6 +32,37 @@ Deno.test('DenoSqliteAdapter — CRUD, pragmas, introspection', () => {
   a.close();
 });
 
+Deno.test('DenoSqliteAdapter — statements are cached (no per-call native-statement leak)', () => {
+  // Regression: node:sqlite (unlike better-sqlite3) does not cache compiled statements,
+  // so preparing per call leaked a native sqlite3_stmt on every run/get/all. Under a
+  // bulk-write loop these piled up and aborted the desktop runtime mid-ingest. The
+  // adapter now caches by SQL text: a parameterized statement is compiled ONCE and
+  // reused for every execution.
+  const dir = Deno.makeTempDirSync();
+  const a = new DenoSqliteAdapter(`${dir}/cache.db`);
+  a.open();
+  a.run('CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT)');
+  const before = a.stmtCacheStats().misses;
+  for (let i = 0; i < 1000; i++) a.run('INSERT INTO t (n) VALUES (?)', [String(i)]);
+  for (let i = 0; i < 1000; i++) a.get('SELECT n FROM t WHERE id = ?', [i + 1]);
+  const compiles = a.stmtCacheStats().misses - before;
+  // 2000 executions across exactly TWO distinct SQL texts → 2 compiles, not 2000.
+  assertEquals(compiles, 2);
+  assertEquals(a.all('SELECT COUNT(*) AS c FROM t')[0].c, 1000);
+  a.close();
+});
+
+Deno.test('DenoSqliteAdapter — statement cache is bounded against dynamic SQL', () => {
+  // A pathological caller that inlines values into SQL (unbounded distinct text) must
+  // not reintroduce unbounded native-statement growth — the cache is capped.
+  const dir = Deno.makeTempDirSync();
+  const a = new DenoSqliteAdapter(`${dir}/bounded.db`);
+  a.open();
+  for (let i = 0; i < 2000; i++) a.get(`SELECT ${i} AS v`);
+  assert(a.stmtCacheStats().size <= 512);
+  a.close();
+});
+
 Deno.test('DenoSqliteAdapter — changeProbe stable when idle, changes on write', () => {
   const dir = Deno.makeTempDirSync();
   const a = new DenoSqliteAdapter(`${dir}/p.db`);
