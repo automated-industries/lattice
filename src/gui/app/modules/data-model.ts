@@ -64,7 +64,7 @@ export const dataModelJs = `    // ───────────────
             // and makes you the owner. (Password is never echoed back on a
             // re-render; it is retained in wizState.pg as you type.)
             cloudBlock =
-              '<p style="font-size:11px;color:var(--text-muted);margin:8px 0 6px">' +
+              '<p class="hint-xs" style="margin:8px 0 6px">' +
                 'Enter a <strong>fresh, empty</strong> Postgres database. Lattice creates the ' +
                 'workspace, installs row-level security, and makes you the owner.' +
               '</p>' +
@@ -76,7 +76,7 @@ export const dataModelJs = `    // ───────────────
                 user: wizState.pg.user,
               });
           } else if (kind === 'join') {
-            cloudBlock = '<p style="font-size:12px;color:var(--text-muted);margin:4px 0 0">Click Next to paste your cloud URL and invite token.</p>';
+            cloudBlock = '<p class="hint u-m-0 u-mt-1">Click Next to paste your cloud URL and invite token.</p>';
           }
           return '' +
             nameField +
@@ -95,7 +95,7 @@ export const dataModelJs = `    // ───────────────
                   '<span class="wiz-kind-name">Join a team <span class="wiz-kind-sub">invite</span></span>' +
                 '</label>' +
               '</div>' +
-              '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
+              '<p class="hint-xs" style="margin:6px 0 0">' +
                 'Local workspaces are single-user SQLite files on your machine. Cloud workspaces are Postgres, can be shared with invited members, and stream realtime updates. Join a team you were invited to with an invite token.' +
               '</p>' +
             '</div>' +
@@ -233,15 +233,15 @@ export const dataModelJs = `    // ───────────────
       // the member UI never handles a postgres:// string. You then connect
       // directly with your own scoped role; the database (RLS) enforces access.
       var bodyHtml =
-        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+        '<p class="dialog-lead">' +
           'Enter the email this invite was sent to and the invite token the cloud ' +
           'owner gave you.' +
         '</p>' +
         '<div class="field"><label>Email</label>' +
-          '<input id="join-email" type="email" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%"></div>' +
-        '<div class="field" style="margin-top:8px"><label>Invite token</label>' +
-          '<textarea id="join-token" rows="4" placeholder="paste the invite token" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;resize:vertical;font-family:JetBrains Mono,monospace;font-size:12px"></textarea></div>' +
-        '<div id="join-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+          '<input id="join-email" type="email" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false"></div>' +
+        '<div class="field u-mt-2"><label>Invite token</label>' +
+          '<textarea id="join-token" rows="4" placeholder="paste the invite token" autocapitalize="off" autocorrect="off" spellcheck="false" style="resize:vertical"></textarea></div>' +
+        '<div id="join-msg" class="hint" style="margin-top:10px"></div>';
       showModal('Join a cloud', bodyHtml, {
         primaryLabel: 'Join',
         onSubmit: function (scope) {
@@ -276,7 +276,7 @@ export const dataModelJs = `    // ───────────────
           '<div id="identity-host"><div class="placeholder" style="padding:18px">Loading identity…</div></div>' +
           '<div id="assistant-host"></div>' +
           '<div id="preferences-host"></div>' +
-          '<div id="workspaces-host" style="margin-top:8px"></div>' +
+          '<div id="workspaces-host" class="u-mt-2"></div>' +
         '</div>';
       renderIdentityPanel(document.getElementById('identity-host'));
       renderAssistantPanel(document.getElementById('assistant-host'));
@@ -291,13 +291,13 @@ export const dataModelJs = `    // ───────────────
       fetchJson('/api/assistant/config').then(function (cfg) {
         cfg = cfg || {};
         function rowHtml(idBase, label, has, placeholder) {
-          return '<div style="margin-bottom:12px">' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+          return '<div class="u-mb-3">' +
+            '<div class="u-row" style="margin-bottom:6px">' +
               '<strong style="font-size:13px">' + label + '</strong>' +
               '<span class="feed-source" style="background:' + (has ? 'var(--accent-soft)' : 'var(--surface-2)') +
                 ';color:' + (has ? 'var(--accent)' : 'var(--text-muted)') + '">' + (has ? 'Set' : 'Not set') + '</span>' +
             '</div>' +
-            '<div style="display:flex;gap:8px;align-items:center">' +
+            '<div class="u-row">' +
               // data-1p-ignore / data-lpignore: this is an API-token box, not a
               // login password — tell 1Password/LastPass/Bitwarden to leave it
               // alone so pasting a key doesn't trigger their warning/fill popups.
@@ -326,15 +326,15 @@ export const dataModelJs = `    // ───────────────
         var oaiFieldsHtml = asstOnOpenai
           ? '<div style="margin:2px 0 14px">' +
               '<strong style="font-size:13px;display:block;margin-bottom:8px">Model details</strong>' +
-              '<input id="asst-base" style="display:block;width:100%;margin-bottom:8px" placeholder="Base URL (e.g. https://api.openai.com/v1)" value="' + escapeHtml(asstOai.baseUrl || '') + '" autocomplete="off" spellcheck="false" />' +
-              '<input id="asst-key" type="password" style="display:block;width:100%;margin-bottom:8px" placeholder="API key (leave blank to keep current)" autocomplete="off" spellcheck="false" />' +
-              '<input id="asst-model" style="display:block;width:100%;margin-bottom:8px" placeholder="Model (e.g. gpt-4o)" value="' + escapeHtml(asstOai.model || '') + '" autocomplete="off" spellcheck="false" />' +
+              '<input id="asst-base" class="u-w-100 u-mb-2" style="display:block" placeholder="Base URL (e.g. https://api.openai.com/v1)" value="' + escapeHtml(asstOai.baseUrl || '') + '" autocomplete="off" spellcheck="false" />' +
+              '<input id="asst-key" type="password" class="u-w-100 u-mb-2" style="display:block" placeholder="API key (leave blank to keep current)" autocomplete="off" spellcheck="false" />' +
+              '<input id="asst-model" class="u-w-100 u-mb-2" style="display:block" placeholder="Model (e.g. gpt-4o)" value="' + escapeHtml(asstOai.model || '') + '" autocomplete="off" spellcheck="false" />' +
               '<button id="asst-save" class="btn primary">Save &amp; test</button>' +
             '</div>'
           : '';
         host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Assistant</h3>' +
+          '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
+            '<h3 class="u-m-0 u-mb-2">Assistant</h3>' +
             // Connect happens at the first-run wall. Disconnect is ALSO offered here (not
             // only the top-bar account menu) so it is discoverable — especially desktop.
             '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
@@ -384,8 +384,8 @@ export const dataModelJs = `    // ───────────────
           });
         }
       }).catch(function (e) {
-        host.innerHTML = '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px">' +
-          '<h3 style="margin:0 0 10px">Assistant</h3><div style="font-size:12px;color:var(--warn)">Could not load: ' +
+        host.innerHTML = '<div class="dbconfig-panel panel">' +
+          '<h3 class="u-m-0 u-mb-2">Assistant</h3><div style="font-size:12px;color:var(--warn)">Could not load: ' +
           escapeHtml(e.message) + '</div></div>';
       });
     }
@@ -393,9 +393,9 @@ export const dataModelJs = `    // ───────────────
     function renderPreferencesPanel(host) {
       var prefs = state.preferences || { show_system_tables: false, analytics: false };
       host.innerHTML =
-        '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-          '<h3 style="margin:0 0 10px">Preferences</h3>' +
-          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+        '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
+          '<h3 class="u-m-0 u-mb-2">Preferences</h3>' +
+          '<label class="u-row" style="cursor:pointer">' +
             '<input type="checkbox" id="pref-analytics"' +
               (prefs.analytics === true ? ' checked' : '') + '>' +
             '<span>Send anonymous analytics</span>' +
@@ -407,7 +407,7 @@ export const dataModelJs = `    // ───────────────
             'row data, queries, file names, or personal info are ever sent: only coarse, anonymized ' +
             'events. Respects Do-Not-Track.' +
           '</p>' +
-          '<div id="pref-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+          '<div id="pref-msg" class="hint u-mt-2"></div>' +
         '</div>';
       var msg = host.querySelector('#pref-msg');
       function savePref(body, after) {
@@ -444,17 +444,17 @@ export const dataModelJs = `    // ───────────────
     function renderIdentityPanel(host) {
       fetchJson('/api/userconfig/identity').then(function (id) {
         host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Identity</h3>' +
+          '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
+            '<h3 class="u-m-0 u-mb-2">Identity</h3>' +
             '<p class="lead" style="margin:0 0 10px">Display name + email used when creating or joining cloud workspaces. Saved to ~/.lattice/identity.json and mirrored into the active Lattice.</p>' +
-            '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
-              '<div><label class="field-label">Display name</label><input id="id-display-name" type="text" value="' + escapeHtml(id.display_name || '') + '" style="width:100%"></div>' +
-              '<div><label class="field-label">Email</label><input id="id-email" type="email" value="' + escapeHtml(id.email || '') + '" style="width:100%"></div>' +
+            '<div class="u-grid-2" style="gap:8px">' +
+              '<div><label class="field-label">Display name</label><input id="id-display-name" type="text" value="' + escapeHtml(id.display_name || '') + '" class="u-w-100"></div>' +
+              '<div><label class="field-label">Email</label><input id="id-email" type="email" value="' + escapeHtml(id.email || '') + '" class="u-w-100"></div>' +
             '</div>' +
             '<div class="team-actions" style="margin-top:10px">' +
               '<button class="btn primary" data-act="id-save">Save</button>' +
             '</div>' +
-            '<div id="id-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+            '<div id="id-msg" class="hint u-mt-2"></div>' +
           '</div>';
         host.querySelector('[data-act="id-save"]').addEventListener('click', function () {
           var body = {
@@ -514,8 +514,8 @@ export const dataModelJs = `    // ───────────────
         'This removes it from this lattice and, for a local workspace, deletes the underlying SQLite file. ' +
         'For a cloud workspace only the local connection is forgotten — the remote data is left untouched. ' +
         '<strong style="color:var(--danger)">This cannot be undone.</strong></p>' +
-        '<p style="margin:0 0 6px;font-size:12px;color:var(--text-muted)">Type <strong>' + escapeHtml(safeLabel) + '</strong> to confirm:</p>' +
-        '<input id="confirm-db-name" type="text" autocomplete="off" style="width:100%" />';
+        '<p class="hint" style="margin:0 0 6px">Type <strong>' + escapeHtml(safeLabel) + '</strong> to confirm:</p>' +
+        '<input id="confirm-db-name" type="text" autocomplete="off" class="u-w-100" />';
       showModal('Delete workspace', body, {
         primaryLabel: 'Delete workspace',
         primaryClass: 'destructive',
@@ -582,7 +582,7 @@ export const dataModelJs = `    // ───────────────
           host.innerHTML =
             '<div class="danger-zone">' +
               '<h3>Danger zone</h3>' +
-              '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+              '<p class="hint" style="margin:0 0 10px">' +
                 'Forget this cloud connection on this device and switch back to a local workspace. ' +
                 'The cloud keeps running for everyone else — this only affects your client.' +
               '</p>' +
@@ -603,7 +603,7 @@ export const dataModelJs = `    // ───────────────
         host.innerHTML =
           '<div class="danger-zone">' +
             '<h3>Danger zone</h3>' +
-            '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+            '<p class="hint" style="margin:0 0 10px">' +
               'Permanently delete this workspace. It is removed from this lattice and, for a local workspace, the underlying SQLite file is deleted. This cannot be undone.' +
             '</p>' +
             '<button class="btn destructive" id="db-delete-btn">Delete workspace</button>' +
@@ -651,31 +651,31 @@ export const dataModelJs = `    // ───────────────
         }
         var logoSection = isCloud
           ? ('<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">' +
-              '<div style="font-weight:600;margin-bottom:8px">Logo</div>' +
-              '<div style="display:flex;align-items:center;gap:14px">' +
+              '<div class="u-mb-2" style="font-weight:600">Logo</div>' +
+              '<div class="u-row" style="gap:14px">' +
                 '<div id="db-logo-preview" style="width:48px;height:48px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;overflow:hidden">' +
                   logoPreviewInner(cfg.logoEtag) +
                 '</div>' +
                 (cfg.isOwner
                   ? ('<div style="display:flex;flex-direction:column;gap:6px">' +
                       '<input type="file" id="db-logo-file" accept="image/png,image/jpeg" style="font-size:12px">' +
-                      '<div style="display:flex;gap:8px">' +
+                      '<div class="u-row">' +
                         '<button class="btn primary" id="db-logo-save">Save</button>' +
                         '<button class="btn" id="db-logo-remove"' + (cfg.logoEtag ? '' : ' disabled') + '>Remove</button>' +
                       '</div>' +
                     '</div>')
-                  : '<span style="font-size:12px;color:var(--text-muted)">Set by the workspace owner.</span>') +
+                  : '<span class="hint">Set by the workspace owner.</span>') +
               '</div>' +
-              '<div id="db-logo-msg" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>' +
+              '<div id="db-logo-msg" class="hint u-mt-2"></div>' +
               (cfg.isOwner
-                ? '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">Square PNG or JPEG, up to 64 KB. Replaces the Lattice mark in the topbar for every member.</p>'
+                ? '<p class="hint-xs" style="margin:6px 0 0">Square PNG or JPEG, up to 64 KB. Replaces the Lattice mark in the topbar for every member.</p>'
                 : '') +
             '</div>')
           : '';
         host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 10px">Display</h3>' +
-            '<div style="display:flex;align-items:center;gap:8px">' +
+          '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
+            '<h3 class="u-m-0 u-mb-2">Display</h3>' +
+            '<div class="u-row">' +
               '<input id="db-name-input" type="text" value="' + escapeHtml(name) + '" maxlength="200" style="flex:1"' + (canRename ? '' : ' disabled') + ' />' +
               '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:' +
                 (isCloud ? 'var(--accent-soft)' : 'rgba(15, 23, 42, 0.04)') +
@@ -683,7 +683,7 @@ export const dataModelJs = `    // ───────────────
                 ';text-transform:uppercase;letter-spacing:0.04em">' + kind + '</span>' +
               (canRename ? '<button class="btn primary" id="db-name-save">Save</button>' : '') +
             '</div>' +
-            '<p style="font-size:11px;color:var(--text-muted);margin:6px 0 0">' +
+            '<p class="hint-xs" style="margin:6px 0 0">' +
               (canRename
                 ? ('Friendly workspace name shown in the topbar and the dropdown. ' +
                   (isCloud
@@ -691,7 +691,7 @@ export const dataModelJs = `    // ───────────────
                     : 'Saved to the workspace registry (and the config name: key).'))
                 : 'Only the workspace owner can rename this cloud workspace.') +
             '</p>' +
-            '<div id="db-name-msg" style="margin-top:6px;font-size:12px;color:var(--text-muted)"></div>' +
+            '<div id="db-name-msg" class="hint" style="margin-top:6px"></div>' +
             logoSection +
           '</div>';
         // Logo upload / remove wiring (owner only; the controls don't render
@@ -797,14 +797,14 @@ export const dataModelJs = `    // ───────────────
           '</tr>';
         }).join('');
         host.innerHTML =
-          '<div class="dbconfig-panel" style="padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-              '<h3 style="margin:0">Workspaces</h3>' +
+          '<div class="dbconfig-panel panel">' +
+            '<div class="u-spread" style="margin-bottom:10px">' +
+              '<h3 class="u-m-0">Workspaces</h3>' +
               '<button class="btn primary" id="action-add-db">+ Add new workspace</button>' +
             '</div>' +
-            '<table style="width:100%;border-collapse:collapse">' +
-              '<thead><tr style="text-align:left"><th>Name</th><th>Kind</th><th>Location</th></tr></thead>' +
-              '<tbody>' + (rows || '<tr><td colspan="3" style="padding:8px;color:var(--text-muted)">No workspaces configured.</td></tr>') + '</tbody>' +
+            '<table style="border-collapse:collapse">' +
+              '<thead><tr><th>Name</th><th>Kind</th><th>Location</th></tr></thead>' +
+              '<tbody>' + (rows || '<tr><td colspan="3" class="muted" style="padding:8px">No workspaces configured.</td></tr>') + '</tbody>' +
             '</table>' +
           '</div>';
         host.querySelectorAll('tr.ws-row[data-switch-id]').forEach(function (row) {
@@ -836,9 +836,9 @@ export const dataModelJs = `    // ───────────────
         var badge = renderStateBadge(info);
         var body = renderStateBody(info);
         host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">' +
-              '<h3 style="margin:0">Database connection</h3>' +
+          '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
+            '<div class="u-spread u-mb-3">' +
+              '<h3 class="u-m-0">Database connection</h3>' +
               badge +
             '</div>' +
             body +
@@ -875,7 +875,7 @@ export const dataModelJs = `    // ───────────────
     function renderStateBody(info) {
       if (info.state === 'local') {
         return (
-          '<p style="margin:0 0 12px;color:var(--text-muted);font-size:13px">' +
+          '<p class="dialog-lead">' +
             'SQLite DB: <code>' + escapeHtml(info.dbFile || '(unknown)') + '</code>. ' +
             'Push this workspace to a cloud Postgres to collaborate. ' +
             '(To join a team, create a new workspace and choose “Join a team (invite)”.)' +
@@ -892,7 +892,7 @@ export const dataModelJs = `    // ───────────────
           renderConnectionSummary(info) +
           '<div style="margin-top:10px;font-size:13px">' +
             '<strong>Cloud:</strong> ' + escapeHtml(cloudLabel) +
-            (isOwner ? ' · <span style="color:var(--accent)">owner</span>' : ' · <span style="color:var(--text-muted)">member</span>') +
+            (isOwner ? ' · <span style="color:var(--accent)">owner</span>' : ' · <span class="muted">member</span>') +
           '</div>' +
           '<div class="team-actions" style="margin-top:10px">' +
             (isOwner ? '<button class="btn primary" data-act="open-invite">Invite a member</button>' : '') +
@@ -900,10 +900,10 @@ export const dataModelJs = `    // ───────────────
           // Owner: invite affordance below. Member: a short note. Row-level
           // security is enforced by the database, not this panel — there is
           // no server-side member registry to render.
-          '<div id="db-members-host" style="margin-top:12px"></div>'
+          '<div id="db-members-host" class="u-mt-3"></div>'
         );
       }
-      return '<p style="color:var(--text-muted)">Unknown database state.</p>';
+      return '<p class="muted">Unknown database state.</p>';
     }
 
     function renderConnectionSummary(info) {
@@ -912,7 +912,7 @@ export const dataModelJs = `    // ───────────────
       if (info.host) parts.push('<strong>Host:</strong> ' + escapeHtml(info.host) + ':' + (info.port || 5432));
       if (info.dbname) parts.push('<strong>DB:</strong> ' + escapeHtml(info.dbname));
       if (info.user) parts.push('<strong>User:</strong> ' + escapeHtml(info.user));
-      return '<p style="margin:0;color:var(--text-muted);font-size:13px;line-height:1.7">' + parts.join(' · ') + '</p>';
+      return '<p class="muted u-m-0" style="font-size:13px;line-height:1.7">' + parts.join(' · ') + '</p>';
     }
 
     function wireStateActions(host, info) {
@@ -950,10 +950,10 @@ export const dataModelJs = `    // ───────────────
       var membersHost = host.querySelector('#db-members-host');
       if (membersHost) {
         if (info.state === 'cloud-member') {
-          membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">You are a member of this cloud.</div>';
+          membersHost.innerHTML = '<div class="hint">You are a member of this cloud.</div>';
         } else {
           var loadMembers = function () {
-            membersHost.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading members…</div>';
+            membersHost.innerHTML = '<div class="hint">Loading members…</div>';
             fetchJson('/api/cloud/members').then(function (data) {
               membersHost.innerHTML = renderMembersList((data && data.members) || [], isOwner);
               membersHost.querySelectorAll('[data-kick]').forEach(function (btn) {
@@ -990,7 +990,7 @@ export const dataModelJs = `    // ───────────────
     function renderMembersList(members, canManage) {
       if (!members.length) {
         return '<div class="members-list"><h4>Members</h4>' +
-          '<div style="font-size:12px;color:var(--text-muted)">Just you.</div></div>';
+          '<div class="hint">Just you.</div></div>';
       }
       var rows = members.map(function (m) {
         var isOwner = m.status === 'owner';
@@ -1004,7 +1004,7 @@ export const dataModelJs = `    // ───────────────
         return '<div class="member-row" data-role="' + escapeHtml(m.role) + '">' +
           '<span>' + escapeHtml(label) +
             (m.isYou ? ' <span style="color:var(--accent);font-size:11px">(you)</span>' : '') +
-            (m.email ? ' <span style="color:var(--text-muted);font-size:11px">' + escapeHtml(m.email) + '</span>' : '') +
+            (m.email ? ' <span class="hint-xs">' + escapeHtml(m.email) + '</span>' : '') +
             ' <span class="role-tag' + (isOwner ? '' : ' role-member') + '">' + pill + '</span>' +
           '</span>' +
           kick +
@@ -1024,13 +1024,13 @@ export const dataModelJs = `    // ───────────────
       // authentication when iOS Safari turned the leading "p" into "P".
       var attrs = ' autocapitalize="off" autocorrect="off" spellcheck="false"';
       return (
-        '<div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">' +
-          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" style="width:100%"' + attrs + '></div>' +
-          '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" style="width:100%"' + attrs + '></div>' +
-          '<div><label class="field-label">Port</label><input type="number" id="w-port" placeholder="5432" value="' + escapeHtml(String(prefill.port || 5432)) + '" style="width:100%"></div>' +
-          '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" style="width:100%"' + attrs + '></div>' +
-          '<div><label class="field-label">User</label><input type="text" id="w-user" placeholder="lattice_user" value="' + escapeHtml(prefill.user || '') + '" style="width:100%"' + attrs + '></div>' +
-          '<div><label class="field-label">Password</label><input type="password" id="w-password" placeholder="••••••••" style="width:100%"' + attrs + '></div>' +
+        '<div class="grid u-grid-2" style="gap:8px">' +
+          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" class="u-w-100"' + attrs + '></div>' +
+          '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" class="u-w-100"' + attrs + '></div>' +
+          '<div><label class="field-label">Port</label><input type="number" id="w-port" placeholder="5432" value="' + escapeHtml(String(prefill.port || 5432)) + '" class="u-w-100"></div>' +
+          '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" class="u-w-100"' + attrs + '></div>' +
+          '<div><label class="field-label">User</label><input type="text" id="w-user" placeholder="lattice_user" value="' + escapeHtml(prefill.user || '') + '" class="u-w-100"' + attrs + '></div>' +
+          '<div><label class="field-label">Password</label><input type="password" id="w-password" placeholder="••••••••" class="u-w-100"' + attrs + '></div>' +
         '</div>'
       );
     }
@@ -1133,14 +1133,14 @@ export const dataModelJs = `    // ───────────────
       // not per-table at migrate time. Migrate copies the local SQLite into a
       // fresh Postgres, installs row-level security, and makes you the owner.
       var bodyHtml =
-        '<p style="margin:0 0 12px;font-size:13px;color:var(--text-muted)">' +
+        '<p class="dialog-lead">' +
           'Enter credentials for a <strong>fresh, empty</strong> Postgres database. ' +
           'Lattice will copy every row from your local SQLite into the new DB, ' +
           'install row-level security, make you the owner, then switch the project ' +
           'to read from the cloud. This action cannot be undone.' +
         '</p>' +
         postgresFormHtml({}) +
-        '<div id="w-msg" style="margin-top:10px;font-size:12px;color:var(--text-muted)"></div>';
+        '<div id="w-msg" class="hint" style="margin-top:10px"></div>';
       showModal('Migrate to cloud', bodyHtml, {
         primaryLabel: 'Migrate →',
         onSubmit: function (scope) {
@@ -1189,16 +1189,16 @@ export const dataModelJs = `    // ───────────────
         if (!cfg || cfg.supported !== true || cfg.canEdit !== true) return; // owner+cloud only
         var current = typeof cfg.prompt === 'string' ? cfg.prompt : '';
         host.innerHTML =
-          '<div class="dbconfig-panel" style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-            '<h3 style="margin:0 0 8px">System Prompt</h3>' +
-            '<p style="font-size:12px;color:var(--text-muted);margin:0 0 10px">' +
+          '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
+            '<h3 class="u-m-0 u-mb-2">System Prompt</h3>' +
+            '<p class="hint" style="margin:0 0 10px">' +
               'Added to every member chat in this cloud workspace. Members cannot see or edit it — only you, the owner, can.</p>' +
-            '<textarea id="chat-system-prompt" rows="10" style="width:100%;font-family:inherit;resize:vertical" ' +
+            '<textarea id="chat-system-prompt" rows="10" class="u-w-100" style="font-family:inherit;resize:vertical" ' +
               'placeholder="e.g. Always answer in a formal tone. Our fiscal year starts in July.">' +
               escapeHtml(current) + '</textarea>' +
-            '<div style="margin-top:10px;display:flex;align-items:center;gap:10px">' +
+            '<div class="u-row" style="margin-top:10px;gap:10px">' +
               '<button class="btn primary" id="chat-prompt-save">Save</button>' +
-              '<span id="chat-prompt-msg" style="font-size:12px;color:var(--text-muted)"></span>' +
+              '<span id="chat-prompt-msg" class="hint"></span>' +
             '</div>' +
           '</div>';
         var saveBtn = document.getElementById('chat-prompt-save');
@@ -1232,7 +1232,7 @@ export const dataModelJs = `    // ───────────────
       var bodyHtml =
         '<div class="field"><label>Invitee email</label>' +
         '<input name="email" type="email" placeholder="bob@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin:0">' +
+        '<p class="hint u-m-0">' +
         'The invite is bound to this email — only the recipient can redeem it.' +
         '</p>';
       showModal('Invite a member', bodyHtml, {
@@ -1261,7 +1261,7 @@ export const dataModelJs = `    // ───────────────
         '</code> (privately). They enter their email + this token in “Join a cloud”. It expires in ~7 days.</p>' +
         '<div class="copy-token" id="copy-invite" style="white-space:pre-wrap;word-break:break-all">' +
         escapeHtml(token) + '</div>' +
-        '<p style="font-size:12px;color:var(--text-muted);margin-bottom:0">Click the token to copy.</p>';
+        '<p class="hint" style="margin-bottom:0">Click the token to copy.</p>';
       var handle = showModal('Invite token', bodyHtml, { primaryLabel: 'Done', onSubmit: function () {} });
       var blockEl = document.getElementById('copy-invite');
       if (blockEl) {

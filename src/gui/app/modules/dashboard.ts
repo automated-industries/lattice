@@ -426,7 +426,7 @@ export const dashboardJs = `    // ───────────────
         buttons = '<button class="btn" id="detail-vis-toggle" data-vis-cur="' + vis + '" data-vis-next="' + next + '">' + btnLabel + '</button>' +
           '<button class="btn" id="detail-vis-manage">Specific people…</button>';
       }
-      return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;flex-wrap:wrap">' +
+      return '<div class="detail-vis u-row-wrap" style="margin:6px 0;font-size:13px">' +
         visIcon +
         '<span class="muted" id="detail-vis-info">' + escapeHtml(info) + '</span>' + buttons +
         '</div>' +
@@ -956,7 +956,7 @@ export const dashboardJs = `    // ───────────────
         if (!q) return;
         sqlByTable[table] = q;
         errEl.hidden = true; errEl.textContent = '';
-        resEl.innerHTML = '<div class="muted" style="padding:12px">Running…</div>';
+        resEl.innerHTML = '<div class="empty-state-sm">Running…</div>';
         fetch('/api/analytics/sql', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sql: q }),
         })
@@ -1615,7 +1615,7 @@ export const dashboardJs = `    // ───────────────
         ? '<div class="fs-context-edit" style="display:none"><div class="file-source">' +
             '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
             '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
-            '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
+            '<span class="hint">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
           '</div></div>'
         : '<div class="fs-context-edit" style="display:none"><pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre></div>';
       ctx.innerHTML =

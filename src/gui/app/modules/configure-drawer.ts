@@ -82,7 +82,7 @@ export const configureDrawerJs = `
       if (!body) return;
       body.innerHTML =
         '<div class="inputs-group">' +
-        '<div class="inputs-files-bar" style="display:flex;justify-content:flex-end;margin-bottom:8px">' +
+        '<div class="inputs-files-bar u-mb-2" style="display:flex;justify-content:flex-end">' +
         '<span class="inputs-files-toggle" id="inputs-files-toggle">' +
         '<button type="button" class="ift-btn" data-view="list" title="List view">☰</button>' +
         '<button type="button" class="ift-btn" data-view="grid" title="Grid view">▦</button></span></div>' +
