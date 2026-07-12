@@ -25,6 +25,20 @@ describe('composer file-attach UX', () => {
     );
   });
 
+  it('uploader fixes: sr-only file input, files-only stays in chat, text survives ingest failure', () => {
+    // Bug 1: the hidden file input must be sr-only (still RENDERED), NOT display:none — a
+    // <label for> cannot open the native picker for a display:none input in the desktop
+    // webview, so the clip button did nothing.
+    expect(appJs).toContain('type="file" id="chat-file" multiple');
+    expect(appJs).not.toContain('<input type="file" id="chat-file" multiple style="display:none">');
+    expect(appJs).toContain('clip:rect(0,0,0,0)'); // the sr-only style
+    // Bug 2: the composer Send ALWAYS keeps focus on the chat (silent) so a files-only
+    // send gets a Gladys response instead of navigating away to the file record.
+    expect(appJs).toContain('uploadFiles(batch, { silent: true })');
+    // Bug 3: a typed message survives an ingest failure — sendChat runs in the reject path.
+    expect(appJs).toContain('function () { sendChat(t); }');
+  });
+
   it('a drop attaches to Gladys on Analytics but ingests on the Inputs column in Configure', () => {
     // The drop is scoped to ONE surface per view: the chat window (#ask-dock) in
     // Analytics (stage into the composer), the Inputs column (nav.sidebar) in
