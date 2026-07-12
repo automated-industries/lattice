@@ -17,8 +17,17 @@ export const navSectionsJs = `
     function renderNavTables() {
       var host = document.getElementById('nav-tables-list');
       if (!host) return;
+      // Hide EMPTY connector / external-DB tables (0 live rows = never synced = noise),
+      // and — because a schema group only forms around the tables that survive this filter —
+      // a connector schema whose tables are all empty drops out entirely (header and all).
+      // The user's OWN entities (LATTICE schema, i.e. no connector schemaKey) always show,
+      // even when empty, so a table they just created still appears. rowCount null = unknown
+      // → keep, so a counting hiccup never hides real data.
       var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
-        return t && t.name && !t.linkTable && !t.sqlDenied;
+        if (!t || !t.name || t.linkTable || t.sqlDenied) return false;
+        var isConnectorSchema = !!(t.schemaKey && t.schemaKey !== 'lattice');
+        if (isConnectorSchema && t.rowCount === 0) return false;
+        return true;
       });
       var activeM = /^#\\/w\\/table\\/([^\\/]+)/.exec(location.hash);
       var activeName = activeM ? decodeURIComponent(activeM[1]) : '';
