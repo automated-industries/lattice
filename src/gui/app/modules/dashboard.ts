@@ -806,6 +806,10 @@ export const dashboardJs = `    // ───────────────
           parts.push('<a href="' + prefix + '">' + escapeHtml(c.rel.label) + '</a>');
         }
       });
+      // A lone, self-referential crumb — the current table/collection page in a Workspace
+      // tab (no root, no child crumbs) — just repeats the page title directly below it.
+      // Render nothing rather than a double title.
+      if (isW && (!crumbs || crumbs.length === 0)) return '';
       return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
     }
 
@@ -934,7 +938,17 @@ export const dashboardJs = `    // ───────────────
     function renderTableSqlRunner(content, table, section) {
       var myGen = renderGen;
       var d = displayFor(table);
-      var defaultSql = 'select * from "' + table + '" limit 100';
+      // Default to LIVE rows only: a merged/deleted (soft-deleted) row should not show in
+      // the table view — otherwise a successful consolidation looks like it did nothing.
+      // Only add the filter when the table actually has a deleted_at column; the user can
+      // still edit the SQL to include trashed rows.
+      var tsum = null;
+      var tarr = (state.entities && state.entities.tables) || [];
+      for (var ti = 0; ti < tarr.length; ti++) { if (tarr[ti] && tarr[ti].name === table) { tsum = tarr[ti]; break; } }
+      var hasDeletedAt = !!(tsum && tsum.columns && tsum.columns.indexOf('deleted_at') !== -1);
+      var defaultSql = hasDeletedAt
+        ? 'select * from "' + table + '" where deleted_at is null limit 100'
+        : 'select * from "' + table + '" limit 100';
       var sql = sqlByTable[table] || defaultSql;
       content.innerHTML =
         fsBreadcrumb([table], [], section) +
@@ -1379,26 +1393,26 @@ export const dashboardJs = `    // ───────────────
           '</a>';
         }).join('');
         currentRecordId = id;
+        // The record actions (\u22ef) menu sits on the BREADCRUMB row (top-right), not the
+        // title row \u2014 a computed row is read-only, so it gets no menu. Formatted = the
+        // rendered doc (or file preview); Markdown = the editable raw markdown, reached via
+        // the menu's "View Markdown" (which then reads "View Formatted").
+        var recordMenuHtml = isComputed ? '' :
+          '<div class="actions file-menu-wrap">' +
+            '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\u22ef</button>' +
+            '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+              '<button class="file-menu-item" data-act="markdown" role="menuitem">View Markdown</button>' +
+              '<button class="file-menu-item" data-act="fields" role="menuitem">Edit fields</button>' +
+              '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
+              '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
+            '</div>' +
+          '</div>';
         content.innerHTML =
-          fsBreadcrumb(segs, crumbs, section) +
+          '<div class="record-topbar">' + fsBreadcrumb(segs, crumbs, section) + recordMenuHtml + '</div>' +
           '<div class="view-header">' +
             '<span class="entity-icon">' + (isFile ? fileEmoji(row) : d.icon) + '</span>' +
             '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
             (isComputed ? '<span class="fs-computed-badge" title="A live, read-only view">Computed</span>' : '') +
-            // Formatted = the rendered doc (or file preview); Markdown = the
-            // editable raw markdown (or a file's source), reached via the \u22ef menu's
-            // "View Markdown" (which then reads "View Formatted"). A computed row is
-            // read-only \u2014 the actions menu is not offered.
-            (isComputed ? '' :
-            '<div class="actions file-menu-wrap">' +
-              '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\u22ef</button>' +
-              '<div class="file-menu" id="file-menu" role="menu" hidden>' +
-                '<button class="file-menu-item" data-act="markdown" role="menuitem">View Markdown</button>' +
-                '<button class="file-menu-item" data-act="fields" role="menuitem">Edit fields</button>' +
-                '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
-                '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
-              '</div>' +
-            '</div>') +
           '</div>' +
           (isComputed ? '<div class="fs-computed-note">This is a computed view \\u2014 its values come from the records it\\u2019s built from.</div>' : '') +
           detailVisLineEl(row) +
