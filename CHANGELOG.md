@@ -142,20 +142,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
-- **Ingesting a whole folder of images no longer crashes the desktop app.** Dragging in a
-  folder with many images ran several native image-processing pipelines at the same time, and
-  running that native library concurrently inside the packaged desktop runtime could crash the
-  whole app mid-ingest. The native image-normalization step is now serialized (one image at a
-  time), and its internal thread pool is pinned to a single thread — the model calls that
-  follow each image stay concurrent, so bulk ingest is just as fast, without the crash.
+- **Ingesting a whole folder no longer crashes the desktop app.** The desktop app's SQLite
+  backend compiled a brand-new native database statement for every single query and never
+  reused it — so ingesting a folder of many files piled up thousands of native statements
+  until the runtime ran out of memory and aborted partway through. Prepared statements are now
+  cached and reused by query (the way the non-desktop backend already does internally), keeping
+  the native-statement count flat so bulk ingest completes. (Native image normalization is also
+  serialized as a smaller robustness measure.)
 
-- **The chat file uploader works again.** Three fixes: the upload (paperclip) button opens
-  the file picker in the desktop app — its hidden file input was `display:none`, which the
-  webview won't let a `<label for>` activate, so it's now visually hidden but still rendered.
-  Sending files **without** a typed message now gets a reply from the assistant instead of
-  navigating away to the file record (the composer's Send always keeps focus on the chat).
-  And a typed message sent alongside files is no longer lost if the file ingest hiccups — the
-  message is still sent.
+- **Chat file attachments: send files with or without a message.** Sending files **without** a
+  typed message now gets a reply from the assistant instead of navigating away to the file
+  record (the composer's Send always keeps focus on the chat), and a typed message sent
+  alongside files is no longer lost if the file ingest hiccups — the message is still sent.
+  (In the desktop app, add files by dragging them into the chat — the paperclip button relies
+  on a native file picker the desktop webview does not provide.)
 
 - **Image (and scanned-PDF) descriptions now generate with a bring-your-own Claude API key.**
   Image captioning and scanned-PDF reading used a narrower credential check than chat and text

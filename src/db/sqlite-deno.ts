@@ -49,6 +49,9 @@ function runtimeRequire(): NodeJS.Require {
 // Module-level cache — load the ctor once, reuse for the process lifetime.
 let _ctor: NodeDatabaseSyncCtor | null = null;
 
+/** Upper bound on cached prepared statements (see DenoSqliteAdapter._prepared). */
+const MAX_CACHED_STMTS = 512;
+
 /**
  * Lazily acquire the `node:sqlite` `DatabaseSync` constructor. Kept out of
  * module-init (mirrors the lazy better-sqlite3 loader) so importing this module
@@ -75,6 +78,20 @@ export class DenoSqliteAdapter implements StorageAdapter {
   private readonly _wal: boolean;
   private readonly _busyTimeout: number;
 
+  /**
+   * Prepared-statement cache, keyed by SQL text. This is load-bearing, not an
+   * optimization: `node:sqlite`'s `DatabaseSync.prepare()` — unlike `better-sqlite3`,
+   * which caches compiled statements internally — compiles a FRESH native
+   * `sqlite3_stmt` on every call and never finalizes it eagerly. Preparing per call
+   * (as the raw adapter surface does) therefore leaks a native statement every
+   * `run`/`get`/`all`; under a bulk-write loop (e.g. ingesting a folder of files, or
+   * the change-probe watch loop) these accumulate far faster than GC reclaims them and
+   * abort the runtime with a native memory blowup. Caching by SQL text keeps the live
+   * native-statement count flat — the same behavior `better-sqlite3` gives for free.
+   */
+  private readonly _stmtCache = new Map<string, NodeStatementSync>();
+  private _stmtCacheMisses = 0;
+
   constructor(path: string, options?: { wal?: boolean; busyTimeout?: number }) {
     this._path = path;
     this._wal = options?.wal ?? true;
@@ -84,6 +101,30 @@ export class DenoSqliteAdapter implements StorageAdapter {
   get db(): NodeDatabaseSync {
     if (!this._db) throw new Error('DenoSqliteAdapter: not open — call open() first');
     return this._db;
+  }
+
+  /**
+   * Return the compiled statement for `sql`, reusing a cached one when present. A
+   * `node:sqlite` statement is reusable across executions (each `run`/`get`/`all`
+   * re-binds its params), and SQLite's `prepare_v2` auto-recompiles a cached statement
+   * across a schema change (ALTER TABLE) transparently — so reuse is safe. Bounded so a
+   * caller that inlines values into SQL (unbounded distinct text) can't grow it without
+   * limit; on overflow the whole cache is dropped (evicted statements finalize on GC)
+   * and rebuilt from the next calls.
+   */
+  private _prepared(sql: string): NodeStatementSync {
+    const cached = this._stmtCache.get(sql);
+    if (cached) return cached;
+    if (this._stmtCache.size >= MAX_CACHED_STMTS) this._stmtCache.clear();
+    const stmt = this.db.prepare(sql);
+    this._stmtCache.set(sql, stmt);
+    this._stmtCacheMisses += 1;
+    return stmt;
+  }
+
+  /** Diagnostics: live cached-statement count + total compiles (cache misses). */
+  stmtCacheStats(): { size: number; misses: number } {
+    return { size: this._stmtCache.size, misses: this._stmtCacheMisses };
   }
 
   open(): void {
@@ -96,24 +137,26 @@ export class DenoSqliteAdapter implements StorageAdapter {
   }
 
   close(): void {
+    // Drop cached statement references first so the DB can finalize them cleanly.
+    this._stmtCache.clear();
     this._db?.close();
     this._db = null;
   }
 
   run(sql: string, params: unknown[] = []): void {
-    this.db.prepare(sql).run(...params);
+    this._prepared(sql).run(...params);
   }
 
   get(sql: string, params: unknown[] = []): Row | undefined {
-    return this.db.prepare(sql).get(...params);
+    return this._prepared(sql).get(...params);
   }
 
   all(sql: string, params: unknown[] = []): Row[] {
-    return this.db.prepare(sql).all(...params);
+    return this._prepared(sql).all(...params);
   }
 
   prepare(sql: string): PreparedStatement {
-    const stmt = this.db.prepare(sql);
+    const stmt = this._prepared(sql);
     return {
       run: (...params: unknown[]) => {
         const info = stmt.run(...params);
@@ -163,9 +206,11 @@ export class DenoSqliteAdapter implements StorageAdapter {
    * has no `.pragma(name, { simple: true })` scalar helper.
    */
   changeProbe(): string {
-    const dataVersion = (this.db.prepare('PRAGMA data_version').get() as { data_version: number })
+    // Runs continuously on the watch loop — MUST reuse cached statements, or each tick
+    // leaks two native statements for the process lifetime.
+    const dataVersion = (this._prepared('PRAGMA data_version').get() as { data_version: number })
       .data_version;
-    const totalChanges = (this.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+    const totalChanges = (this._prepared('SELECT total_changes() AS n').get() as { n: number }).n;
     return `${String(dataVersion)}:${String(totalChanges)}`;
   }
 
@@ -211,12 +256,11 @@ export class DenoSqliteAdapter implements StorageAdapter {
 
   /** BEGIN/COMMIT around an awaited fn; ROLLBACK on throw. Mirror of SQLiteAdapter. */
   async withClient<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
-    const dbRef = this.db;
     const getSync = this.get.bind(this);
     const allSync = this.all.bind(this);
     const tx: TxClient = {
       run: (sql: string, params?: unknown[]) => {
-        const info = dbRef.prepare(sql).run(...(params ?? []));
+        const info = this._prepared(sql).run(...(params ?? []));
         return Promise.resolve({ changes: Number(info.changes) });
       },
       get: (sql: string, params?: unknown[]) => Promise.resolve(getSync(sql, params ?? [])),
