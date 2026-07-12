@@ -77,7 +77,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     /* Scoped to the chat window (Analytics): the inline top/left/width/height set
        the box, so clear the whole-window right/bottom and round it like a card. */
     .file-drop-overlay.scoped {
-      right: auto; bottom: auto; border-radius: 14px;
+      right: auto; bottom: auto; border-radius: var(--r-xl);
       background: rgba(15, 23, 42, 0.42);
     }
     body.dragging-file .file-drop-overlay { display: flex; }

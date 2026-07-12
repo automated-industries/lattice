@@ -15,7 +15,7 @@ export const provenanceCss = `
       letter-spacing: 0.05em; color: var(--text-muted); border-bottom: none;
     }
     .pvchip {
-      display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+      display: inline-block; padding: 1px 8px; border-radius: var(--r-pill); font-size: 11px;
       border: 1px solid var(--border-strong);
     }
     .pvchip-raw { color: var(--signal); border-color: var(--signal); }

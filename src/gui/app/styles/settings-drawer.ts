@@ -144,7 +144,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .inputs-group { margin-bottom: 20px; }
     .inputs-files-toggle { display: inline-flex; gap: 2px; }
     .ift-btn { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
-      width: 24px; height: 22px; border-radius: 5px; cursor: pointer; font-size: 12px; line-height: 1; }
+      width: 24px; height: 22px; border-radius: var(--r-sm); cursor: pointer; font-size: 12px; line-height: 1; }
     .ift-btn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
     /* "Edit columns & relationships" affordance in the Data Model detail panel. */
     .mt-detail-edit { display: inline-block; margin-top: 10px; margin-left: 10px; padding: 6px 12px;

@@ -29,6 +29,10 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       /* The RAIL itself never scrolls — the one open accordion section scrolls
          internally (below), so the three section headers are always on screen. */
       height: 100%; overflow: hidden;
+      /* A left/right gutter so the flush-left (caret-at-gutter) section headers +
+         their rows aren't jammed against the rail edge. Shifts headers AND items
+         together, preserving the tree indent. */
+      padding: 0 8px;
       background: var(--surface); border-right: 1px solid var(--border);
     }
     /* Fixed-header accordion: each section is a flex column whose header stays put and
