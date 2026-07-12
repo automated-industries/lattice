@@ -1,5 +1,6 @@
 import type { Lattice } from '../../lattice.js';
 import type { LlmClient } from './chat.js';
+import type { ClaudeAuth } from '../../ai/llm-client.js';
 import { createAnthropicClient, DEFAULT_MODEL } from './chat.js';
 import { createOpenAiCompatibleClient } from './openai-client.js';
 import { resolveClaudeAuth, isClaudeConnected, isManagedModelAuth } from '../assistant-routes.js';
@@ -104,6 +105,34 @@ export async function resolveLlmProvider(db: Lattice | null): Promise<ResolvedPr
 }
 
 /** The common case: just the active provider's client (or null if none configured). */
+/**
+ * Anthropic auth for VISION / PDF extraction (image captioning + scanned-PDF read).
+ * This unifies vision's credentials with the SAME set chat + text enrichment accept:
+ * managed env key, a connected Claude subscription (OAuth), AND a bring-your-own Claude
+ * API key configured as an OpenAI-compatible provider pointed at an Anthropic host.
+ *
+ * Without the BYO-key branch, `resolveClaudeAuth` returns null for a BYO-key user, so
+ * `extractImage` no-ops → the image ingests with empty `extracted_text` → the file view
+ * shows "No source text.", even though chat + text enrichment work with that same key.
+ *
+ * Order mirrors {@link resolveLlmProvider}: managed short-circuits inside
+ * resolveClaudeAuth; otherwise the user's ACTIVE provider kind decides whether the BYO
+ * key or the connected subscription is tried first. (ClaudeAuth carries no baseURL, so a
+ * NON-default Anthropic host is not honored for vision — the common api.anthropic.com BYO
+ * key works; a custom-host key falls through to the connected subscription, else null.)
+ */
+export async function resolveVisionAuth(db: Lattice | null): Promise<ClaudeAuth | null> {
+  const byoAnthropicKey = (): ClaudeAuth | null => {
+    const compat = readOpenAiCompatConfig();
+    if (!compat?.apiKey) return null;
+    return isAnthropicEndpoint(compat.baseUrl) ? { apiKey: compat.apiKey } : null;
+  };
+  if (!isManagedModelAuth() && activeProviderKind() === 'openai_compat') {
+    return byoAnthropicKey() ?? (await resolveClaudeAuth(db));
+  }
+  return (await resolveClaudeAuth(db)) ?? byoAnthropicKey();
+}
+
 export async function resolveLlmClient(db: Lattice | null): Promise<LlmClient | null> {
   return (await resolveLlmProvider(db))?.client ?? null;
 }

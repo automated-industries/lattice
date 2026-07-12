@@ -142,6 +142,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Image (and scanned-PDF) descriptions now generate with a bring-your-own Claude API key.**
+  Image captioning and scanned-PDF reading used a narrower credential check than chat and text
+  enrichment — it accepted only a managed key or a connected Claude subscription and ignored a
+  Claude API key configured as an API provider pointed at an Anthropic host. So a
+  bring-your-own-key user had working chat but images ingested with no description, and the
+  file view showed "No source text.". Vision extraction now accepts the same credentials as the
+  rest of the assistant.
+
 - **Clicking a just-connected connector or external-database table no longer errors "Unknown
   table".** Connecting a connector (or an external database) registers its tables, and they
   appear in the sidebar right away — but the row and read routes validated table names against
