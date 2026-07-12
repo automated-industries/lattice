@@ -178,6 +178,8 @@ export interface ActiveDb {
   onColumnsAdded?: (table: string, columns: string[]) => void;
   /** Auto-repairs dashboards after breaking model changes; disposed with the workspace. */
   dashboardRepair?: { dispose: () => void };
+  /** Background driver that fills AI computed columns on open + after writes. */
+  computedFieldFill?: { dispose: () => void };
   generateTableDescription?: (table: string, columns: string[]) => void;
   /**
    * Builds the model adapter the computed-table AI fill runs with (attached by
