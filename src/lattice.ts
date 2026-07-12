@@ -150,6 +150,11 @@ import {
   allComputedDeps,
 } from './schema/computed.js';
 import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
+import { compileComputedFields } from './schema/computed-field.js';
+import type { CompiledComputedField, AiFieldPlan } from './schema/computed-field.js';
+import { fillAiComputedFields } from './schema/computed-field-fill.js';
+import type { FieldFillReport } from './schema/computed-field-fill.js';
+import type { FillLlm } from './schema/computed-fill.js';
 import { registerComputedTables } from './schema/computed-table.js';
 import type {
   CloudCompileOptions,
@@ -354,6 +359,20 @@ export class Lattice {
   >();
   /** table → materialized rollup specs (P-VIEW). */
   private readonly _rollups = new Map<string, Record<string, MaterializedRollupSpec>>();
+  /** table → compiled DETERMINISTIC computed columns (same-row alias/calc, #10) for the
+   *  bounded write-path recompute UPDATE. Deferred kinds (aggregate/AI/belongsTo-path)
+   *  are produced by their own mechanisms and are NOT in this map. */
+  private readonly _computedFieldSql = new Map<
+    string,
+    { column: string; sql: string; deps: Set<string> }[]
+  >();
+  /** All compiled computed fields per table (incl. deferred) — for introspection + fill. */
+  private readonly _computedFieldPlans = new Map<string, CompiledComputedField[]>();
+  /** table → its AI computed fields (column + input deps + plan) — the async-fill hot path. */
+  private readonly _aiComputedFields = new Map<
+    string,
+    { column: string; deps: Set<string>; ai: AiFieldPlan }[]
+  >();
   /** Computed-table (read-only view) definitions from the YAML config. */
   private readonly _configComputedTables: { name: string; definition: ComputedTableDef }[] = [];
   /**
@@ -611,6 +630,34 @@ export class Lattice {
         arr.push({ parentTable: table, name, spec });
         this._rollupSources.set(spec.sourceTable, arr);
       }
+    }
+    if (def.computedFields) {
+      // #10 computed columns: the physical column already exists (a computed field is a
+      // declared field with a `type:`); only its DERIVATION is registered here. Compile
+      // the DETERMINISTIC same-row kinds (alias/calc) into recompute SQL; a field may
+      // reference only the entity's PLAIN columns (not other computed fields), so pass
+      // those as the resolution set. Deferred kinds (aggregate/AI/belongsTo-path) are
+      // handled by later mechanisms and simply aren't registered for the same-row path.
+      const computedNames = new Set(Object.keys(def.computedFields));
+      const plainCols = new Set(Object.keys(columns).filter((c) => !computedNames.has(c)));
+      const compiled = compileComputedFields(
+        table,
+        def.computedFields,
+        plainCols,
+        this.getDialect(),
+      );
+      this._computedFieldPlans.set(table, compiled);
+      const deterministic = compiled
+        .filter((c) => !c.deferred)
+        .map((c) => ({ column: c.column, sql: c.sql, deps: new Set(c.deps) }));
+      if (deterministic.length > 0) this._computedFieldSql.set(table, deterministic);
+      // AI fields (ai_classify/ai_transform): a real column filled asynchronously. Registered
+      // here so the write path can NULL a stale cell when an input changes; the fill itself is
+      // triggered by an injected FillLlm (out of the core DB layer) via fillComputedFields().
+      const ai = compiled.flatMap((c) =>
+        c.deferred === 'ai' && c.ai ? [{ column: c.column, deps: new Set(c.deps), ai: c.ai }] : [],
+      );
+      if (ai.length > 0) this._aiComputedFields.set(table, ai);
     }
 
     // Resolve the built-in template name (if any) for reverse-seed parsing
@@ -1551,6 +1598,10 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
+    // Derive this row's deterministic computed columns (#10) from its just-written values.
+    if (this._computedFieldSql.has(table)) {
+      await this._recomputeComputedFieldColumns(table, pkValue, null);
+    }
     // If this table feeds a parent rollup, recompute the affected parent.
     if (this._rollupSources.has(table)) await this._propagateRollupsFromRow(table, rowWithPk);
   }
@@ -1756,6 +1807,15 @@ export class Lattice {
       );
       if (fullRow) this._syncEmbedding(table, 'update', fullRow, auditId);
     }
+    // Re-derive deterministic computed columns (#10) whose dependencies just changed.
+    if (this._computedFieldSql.has(table)) {
+      await this._recomputeComputedFieldColumns(table, id, new Set(Object.keys(baseSanitized)));
+    }
+    // Invalidate AI computed cells whose input just changed (NULL now, refill later) — the
+    // "never serve stale" contract. The refill is triggered out-of-band by fillComputedFields().
+    if (this._aiComputedFields.has(table)) {
+      await this._nullStaleAiColumns(table, id, new Set(Object.keys(baseSanitized)));
+    }
     // If this table feeds a parent rollup, recompute the affected parent.
     if (this._rollupSources.has(table)) await this._propagateRollups(table, id);
   }
@@ -1796,6 +1856,102 @@ export class Lattice {
       ...sanitized,
     };
     return { ...sanitized, ...computeColumns(c.specs, c.order, merged) };
+  }
+
+  /**
+   * Recompute the DETERMINISTIC same-row computed columns (#10 alias/calc) for ONE row via
+   * a single bounded `UPDATE … WHERE pk` (one row, no scan). Runs AFTER the row
+   * is written, so the compiler-emitted SQL expressions read the row's own just-written
+   * columns. `changedCols` = the update payload keys (dep-gated recompute); pass `null` for
+   * an insert (recompute every computed column on the new row). The SET right-hand sides
+   * are compiler-generated SQL over validated, quoted column names — never user input.
+   */
+  private async _recomputeComputedFieldColumns(
+    table: string,
+    id: PkLookup,
+    changedCols: Set<string> | null,
+  ): Promise<void> {
+    const fields = this._computedFieldSql.get(table);
+    if (!fields || fields.length === 0) return;
+    const affected =
+      changedCols === null
+        ? fields
+        : fields.filter((f) => [...f.deps].some((d) => changedCols.has(d)));
+    if (affected.length === 0) return;
+    const setClause = affected.map((f) => `"${f.column}" = ${f.sql}`).join(', ');
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._exec(),
+      `UPDATE "${table}" SET ${setClause} WHERE ${clause}`,
+      params,
+    );
+  }
+
+  /**
+   * NULL the AI computed cells on ONE row whose input columns just changed (one bounded
+   * row update, no scan). The "never serve stale" contract: a changed input clears the derived value
+   * immediately; {@link fillComputedFields} repopulates it out-of-band.
+   */
+  private async _nullStaleAiColumns(
+    table: string,
+    id: PkLookup,
+    changedCols: Set<string>,
+  ): Promise<void> {
+    const fields = this._aiComputedFields.get(table);
+    if (!fields || fields.length === 0) return;
+    const stale = fields.filter((f) => [...f.deps].some((d) => changedCols.has(d)));
+    if (stale.length === 0) return;
+    const setClause = stale.map((f) => `"${f.column}" = NULL`).join(', ');
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._exec(),
+      `UPDATE "${table}" SET ${setClause} WHERE ${clause}`,
+      params,
+    );
+  }
+
+  /**
+   * The compiled computed-field plans for a table (all kinds, incl. deferred AI/aggregate) —
+   * for the GUI field editor + the fill/refresh machinery. Empty when the table has none.
+   */
+  getComputedFieldPlans(table: string): CompiledComputedField[] {
+    return this._computedFieldPlans.get(table) ?? [];
+  }
+
+  /** Whether a table has any AI computed fields awaiting fill. */
+  hasAiComputedFields(table: string): boolean {
+    return this._aiComputedFields.has(table);
+  }
+
+  /**
+   * Populate the un-filled (NULL) cells of a table's AI computed fields using the injected
+   * {@link FillLlm}. Kept OUT of the write path (no model calls in the core DB layer) — the GUI
+   * calls this fire-and-forget after a write and on open (backfill), a test injects a fake LLM.
+   * Bounded (scans `WHERE col IS NULL LIMIT n`, skips tombstones). Returns a report;
+   * never throws for a per-cell model failure (those are counted + surfaced in the report).
+   */
+  async fillComputedFields(
+    table: string,
+    llm: FillLlm,
+    opts?: { batchSize?: number; maxRows?: number },
+  ): Promise<FieldFillReport> {
+    const fields = this._aiComputedFields.get(table);
+    if (!fields || fields.length === 0) return { filled: 0, failed: 0, errors: [] };
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const hasDeletedAt = (this._columnCache.get(table) ?? new Set()).has('deleted_at');
+    return fillAiComputedFields(
+      this._exec(),
+      llm,
+      table,
+      pkCol,
+      fields.map((f) => ({ column: f.column, ai: f.ai })),
+      { ...opts, ...(hasDeletedAt ? { liveFilter: '"deleted_at" IS NULL' } : {}) },
+    );
+  }
+
+  /** Every table that has AI computed fields (for open-time backfill). */
+  aiComputedFieldTables(): string[] {
+    return [...this._aiComputedFields.keys()];
   }
 
   /** Recompute parent rollup(s) for the FK values carried on a source row. */

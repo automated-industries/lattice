@@ -73,6 +73,16 @@ export interface LatticeFieldDef {
    * migrate forward. A future major may drop this once configs have upgraded.
    */
   ref?: string;
+  /**
+   * Marks this field as a COMPUTED column: a real, materialized column on the base
+   * table whose value is derived (not hand-entered) using one of the computed field
+   * kinds (alias / calc / ai_classify / ai_transform / aggregate — the same vocabulary
+   * the retired computed-TABLE views used). Because it is a real column it is
+   * queryable/filterable/sortable and appears in `SELECT *`. A field is computed iff it
+   * carries `computed:`; deterministic kinds recompute synchronously on write, AI kinds
+   * fill asynchronously. See src/schema/computed-field.ts.
+   */
+  computed?: ComputedFieldDef;
 }
 
 /**

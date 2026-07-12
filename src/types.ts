@@ -587,6 +587,15 @@ export interface TableDefinition {
    */
   materializedRollups?: Record<string, import('./schema/computed.js').MaterializedRollupSpec>;
   /**
+   * Serializable computed COLUMNS (5.0+) — a real, materialized column derived by a
+   * computed field kind (alias / calc / ai_classify / ai_transform / aggregate; the
+   * same vocabulary the retired computed-TABLE views used). Because it is a real
+   * column it is queryable / filterable / sortable and appears in `SELECT *`.
+   * Deterministic kinds recompute on write (bounded, dep-gated); AI kinds fill
+   * asynchronously. Compiled + wired by {@link file://./schema/computed-field.ts}.
+   */
+  computedFields?: Record<string, import('./config/types.js').ComputedFieldDef>;
+  /**
    * Mark this table as a *connected data type* (4.3+) — its rows are ingested
    * from an external system through a connector rather than authored locally.
    * Adds connector-lineage columns (`_source_connector_id`, `_source_model`,
