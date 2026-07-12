@@ -129,6 +129,9 @@ export class DenoSqliteAdapter implements StorageAdapter {
 
   open(): void {
     const Ctor = loadNodeSqlite();
+    // Drop any statements cached against a previous handle — a re-open without an
+    // intervening close() would otherwise reuse statements bound to the old DB.
+    this._stmtCache.clear();
     this._db = new Ctor(this._path);
     this._db.exec(`PRAGMA busy_timeout = ${this._busyTimeout.toString()}`);
     if (this._wal) {

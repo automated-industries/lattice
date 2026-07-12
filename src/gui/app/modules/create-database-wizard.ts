@@ -316,6 +316,11 @@ export const createDatabaseWizardJs = `    // ───────────�
           // → add them AND chat, so Gladys always responds to an attachment.
           function submitComposer() {
             var t = input.value.trim();
+            // Gladys is still replying: sendChat's chatBusy guard would drop this turn AFTER
+            // we'd already cleared the tray + ingested the files, silently losing both. Bail
+            // now, keeping the staged files + typed text intact so the user can send once the
+            // reply finishes.
+            if (typeof chatBusy !== 'undefined' && chatBusy) return;
             if (!stagedFiles.length) { if (t) sendChat(t); return; }
             var batch = stagedFiles.slice();
             clearStaging();
