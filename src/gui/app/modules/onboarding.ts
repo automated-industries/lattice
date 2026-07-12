@@ -340,12 +340,13 @@ export const onboardingJs = `    // ──────────────�
       } else if (ev.type === 'text_delta') {
         turn.assembled += ev.delta;
         if (visible) { anToolStatus(null); if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, turn.assembled); var fe = railFeedEl(); if (fe) fe.scrollTop = fe.scrollHeight; }
-      // A tool round's streamed text was pre-tool preamble ("Let me search\\u2026"), not the
-      // answer — reap its bubble so only the final answer remains (the server likewise drops
-      // it from the persisted message). Text streams live before tool use is known, so this
-      // is where a preamble round is undone after the fact.
+      // A tool round's streamed text (e.g. "I see — I need a different approach…") is real
+      // narration the user should keep, so FINALIZE this round's bubble instead of reaping
+      // it — the next round opens a fresh bubble via assistant_message_start / the next
+      // text_delta. finalizeBubble drops an empty (no-text) round's typing bubble on its own,
+      // so a bare tool call with no narration leaves nothing behind.
       } else if (ev.type === 'assistant_message_end' && ev.hadTools) {
-        if (visible && turn.actx && turn.actx.msg) turn.actx.msg.remove();
+        if (visible) finalizeBubble(turn.actx);
         turn.actx = null; turn.assembled = '';
       // tool_use / tool_result are not painted as inline pills — the assistant's data
       // changes stream in as activity cards over the feed. The only in-chat acknowledgement

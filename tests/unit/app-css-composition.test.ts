@@ -220,8 +220,8 @@ import { css } from '../../src/gui/app/css.js';
 // global .muted rule is the sanctioned fix for ~43 bare class=muted usages). Dead CSS
 // deleted (.danger-btn, .wm-actions/.wm-btn, .modal-foot .btn overrides, .cd-btn dupes).
 // Recaptured.
-const ORIGINAL_LENGTH = 158211;
-const ORIGINAL_SHA256 = '5f9a0337a680b87d095c55b2fd7837b04e5a774c134036fbe8d36348f2bb938a';
+const ORIGINAL_LENGTH = 158556;
+const ORIGINAL_SHA256 = '8587dfa25a8d35a92dc21614030492467d933fd94cd99988572bf35e1acfa9bb';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

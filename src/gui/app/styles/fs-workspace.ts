@@ -9,6 +9,10 @@ export const fsWorkspaceCss = `    /* ── File-system workspace (default view
     .fs-crumbs a:hover { text-decoration: underline; }
     .fs-crumbs a:last-child { color: var(--text); }
     .fs-sep { color: var(--text-muted); font-size: 11px; }
+    /* Record page: breadcrumb on the left, the ⋯ actions menu aligned to it on the
+       right (not down on the title row). The row owns the breadcrumb's bottom gap. */
+    .record-topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+    .record-topbar .fs-crumbs { margin-bottom: 0; }
     .fs-grid {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: 14px; max-width: 1100px;
