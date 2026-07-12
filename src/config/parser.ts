@@ -217,6 +217,7 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   const columns: Record<string, string> = {};
   const fieldTypes: Record<string, string> = {};
   const columnAudience: Record<string, string> = {};
+  const computedFields: Record<string, ComputedFieldDef> = {};
   const relations: Record<string, BelongsToRelation> = {};
   let pkFromField: string | undefined;
 
@@ -247,6 +248,16 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
 
     if (field.primaryKey) {
       pkFromField = fieldName;
+    }
+
+    // A computed field carries `computed:` — a serializable derivation spec (alias /
+    // calc / ai_classify / ai_transform / aggregate). Validate it with the SAME
+    // validator the retired computed-table path used (one validator, both paths) and
+    // collect it for the recompute engine. The physical column is still a normal
+    // column (its `type:` above); `computed` only marks it as derived.
+    const rawComputed = (field as { computed?: unknown }).computed;
+    if (rawComputed !== undefined) {
+      computedFields[fieldName] = narrowComputedField(entityName, fieldName, rawComputed);
     }
   }
 
@@ -333,6 +344,7 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     ...(description !== undefined ? { description } : {}),
     ...(primaryKey !== undefined ? { primaryKey } : {}),
     ...(Object.keys(relations).length > 0 ? { relations } : {}),
+    ...(Object.keys(computedFields).length > 0 ? { computedFields } : {}),
   };
 }
 

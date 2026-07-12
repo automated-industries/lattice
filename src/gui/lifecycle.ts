@@ -37,6 +37,7 @@ import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
 import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
 import { buildComputedFillLlm } from './computed-llm.js';
+import { installComputedFieldFill } from './computed-field-fill.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
 import { installDashboardRepair } from './dashboard-repair.js';
 import type { AuditEntry } from './mutations.js';
@@ -610,6 +611,10 @@ export async function openConfig(
     validTables: () => active.validTables,
   });
 
+  // AI computed columns (#10): backfill NULL cells on open + refill after writes.
+  // Coalesced per table; model calls resolved per fill (out of the core DB layer).
+  active.computedFieldFill = installComputedFieldFill(active);
+
   // Owner-side convergence (native-entity adopt + the cloud RLS/grant/settings/
   // publish bootstrap) runs in the BACKGROUND, off the switch's critical path:
   // openConfig must return a usable ActiveDb instantly (it runs before disposeActive
@@ -958,6 +963,7 @@ export async function disposeActive(
   // debounced rewrite can't fire against a closing DB.
   try {
     active.dashboardRepair?.dispose();
+    active.computedFieldFill?.dispose();
   } catch {
     // best-effort
   }
