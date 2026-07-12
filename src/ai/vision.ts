@@ -96,19 +96,45 @@ export async function describePdf(
   return text.trim();
 }
 
-async function normalizeImage(path: string, maxBytes: number): Promise<Buffer> {
-  const sharpMod = (await import('sharp')) as unknown as { default: SharpFactory };
-  const sharp = sharpMod.default;
-  let quality = 80;
-  let buf = await renderJpeg(sharp, path, quality);
-  while (buf.length > maxBytes && quality > 35) {
-    quality -= 15;
-    buf = await renderJpeg(sharp, path, quality);
-  }
-  return buf;
+/**
+ * Native image work is serialized process-wide. `sharp` is a native (libvips)
+ * addon; running several JPEG pipelines at once inside the packaged desktop
+ * runtime crashed the whole process during a bulk folder ingest (many images
+ * normalized concurrently). Serializing just the native step removes the
+ * concurrent native access — the model calls that follow each normalization
+ * stay concurrent, so end-to-end throughput is essentially unchanged
+ * (normalization is fast; the vision call dominates). A rejection never poisons
+ * the next waiter.
+ */
+let nativeImageLock: Promise<unknown> = Promise.resolve();
+
+function runExclusiveNative<T>(fn: () => Promise<T>): Promise<T> {
+  const run = nativeImageLock.then(fn, fn);
+  nativeImageLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
-type SharpFactory = (input: string) => SharpPipeline;
+async function normalizeImage(path: string, maxBytes: number): Promise<Buffer> {
+  return runExclusiveNative(async () => {
+    const sharpMod = (await import('sharp')) as unknown as { default: SharpFactory };
+    const sharp = sharpMod.default;
+    // Also pin libvips' internal thread pool to one thread — belt-and-suspenders
+    // against concurrent native work from a single pipeline.
+    sharp.concurrency(1);
+    let quality = 80;
+    let buf = await renderJpeg(sharp, path, quality);
+    while (buf.length > maxBytes && quality > 35) {
+      quality -= 15;
+      buf = await renderJpeg(sharp, path, quality);
+    }
+    return buf;
+  });
+}
+
+type SharpFactory = ((input: string) => SharpPipeline) & { concurrency(threads: number): number };
 interface SharpPipeline {
   rotate(): SharpPipeline;
   resize(opts: {

@@ -142,6 +142,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Ingesting a whole folder of images no longer crashes the desktop app.** Dragging in a
+  folder with many images ran several native image-processing pipelines at the same time, and
+  running that native library concurrently inside the packaged desktop runtime could crash the
+  whole app mid-ingest. The native image-normalization step is now serialized (one image at a
+  time), and its internal thread pool is pinned to a single thread — the model calls that
+  follow each image stay concurrent, so bulk ingest is just as fast, without the crash.
+
 - **The chat file uploader works again.** Three fixes: the upload (paperclip) button opens
   the file picker in the desktop app — its hidden file input was `display:none`, which the
   webview won't let a `<label for>` activate, so it's now visually hidden but still rendered.
