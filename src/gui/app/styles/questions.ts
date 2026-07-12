@@ -10,11 +10,11 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     .q-card {
       background: var(--accent-soft);
       border: 1px solid var(--accent);
-      border-radius: 10px;
+      border-radius: var(--r-lg);
       padding: 10px 12px;
       font-size: 13px;
       color: var(--text);
-      animation: feedIn 0.18s ease-out;
+      animation: feedIn var(--dur-2) ease-out;
     }
     .q-head { display: flex; align-items: flex-start; gap: 8px; }
     .q-text { flex: 1; font-weight: 600; line-height: 1.4; }
@@ -26,24 +26,24 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     .q-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .q-opt {
       background: var(--surface); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 999px;
-      padding: 4px 12px; font-size: 12.5px; cursor: pointer;
+      border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+      padding: 4px 12px; font-size: 13px; cursor: pointer;
     }
     .q-opt:hover { border-color: var(--accent); color: var(--accent-deep); }
     .q-other { display: flex; gap: 6px; margin-top: 8px; }
     .q-other-input {
       flex: 1; min-width: 0; background: var(--surface); color: var(--text);
-      border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; font-size: 12.5px;
+      border: 1px solid var(--border); border-radius: var(--r-md); padding: 4px 8px; font-size: 13px;
     }
     .q-other-send {
       flex: none; background: var(--accent); color: var(--btn-text);
-      border: none; border-radius: 8px; padding: 4px 10px; font-size: 12.5px; cursor: pointer;
+      border: none; border-radius: var(--r-md); padding: 4px 10px; font-size: 13px; cursor: pointer;
     }
     .q-card button:disabled, .q-card input:disabled { opacity: 0.55; cursor: default; }
     .q-error { margin-top: 8px; color: var(--danger-deep); font-size: 12px; }
     .q-card.q-resolved {
       background: var(--surface-2); border-color: var(--border);
-      color: var(--text-muted); font-size: 12.5px; font-weight: 500;
+      color: var(--text-muted); font-size: 13px; font-weight: 500;
     }
     /* In-turn ask_user card: sits in the conversation flow like an assistant
        bubble (the wrapper carries the Gladys avatar), sized like one too. */
@@ -66,6 +66,6 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     .dq-list .q-card { max-width: none; }
     .dq-empty {
       padding: 32px 16px; text-align: center; color: var(--text-muted);
-      font-size: 13px; border: 1px dashed var(--border); border-radius: 10px;
+      font-size: 13px; border: 1px dashed var(--border); border-radius: var(--r-lg);
     }
 `;

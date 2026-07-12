@@ -10,12 +10,12 @@ export const detailViewCss = `    /* ── Detail view ────────
       display: grid; grid-template-columns: 180px 1fr;
       gap: 10px 24px;
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; padding: 20px; box-shadow: var(--shadow);
+      border-radius: var(--r-md); padding: 20px; box-shadow: var(--shadow);
       max-width: 900px;
     }
     .detail dt {
-      font-size: 12.5px; color: var(--text-muted); text-transform: uppercase;
-      letter-spacing: 0.04em; padding-top: 2px;
+      font-size: 13px; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.05em; padding-top: 2px;
     }
     .detail dd { margin: 0; font-size: 14px; }
 

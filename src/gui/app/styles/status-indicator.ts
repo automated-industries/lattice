@@ -8,7 +8,7 @@ export const statusIndicatorCss = `    /* ── Top-right status indicator ─�
     .header-status-slot { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
     .app-status {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 3px 10px; border-radius: 999px;
+      padding: 4px 10px; border-radius: var(--r-pill);
       background: var(--surface-2); border: 1px solid var(--border);
       color: var(--text-muted); font-size: 12px; white-space: nowrap;
       /* Cap the width and truncate long notifications with an ellipsis. */
@@ -23,7 +23,7 @@ export const statusIndicatorCss = `    /* ── Top-right status indicator ─�
     .app-status[hidden] { display: none; }
     .app-status .spinner { width: 11px; height: 11px; }
     .app-status-accent { color: var(--accent); border-color: var(--accent-soft); }
-    .app-status-warn { color: var(--warn, #d97706); }
-    .app-status-error { color: var(--danger, #c0392b); }
+    .app-status-warn { color: var(--warn); }
+    .app-status-error { color: var(--danger); }
 
 `;

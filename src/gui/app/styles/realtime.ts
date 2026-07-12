@@ -16,20 +16,20 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
     }
     /* Pending offline-edit indicator in the top bar. */
     .offline-pill {
-      flex: 0 0 auto; padding: 3px 9px; border-radius: 999px;
-      background: rgba(251, 146, 60, 0.16); color: var(--warn);
+      flex: 0 0 auto; padding: 4px 10px; border-radius: var(--r-pill);
+      background: color-mix(in srgb, var(--hue-orange) 16%, transparent); color: var(--warn);
       font-size: 11px; font-weight: 600; white-space: nowrap;
     }
     .app-version { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
     .app-version:empty { display: none; }
-    .app-update { flex: 0 0 auto; color: var(--accent, #3b82f6); font-size: 12px; white-space: nowrap; }
+    .app-update { flex: 0 0 auto; color: var(--accent); font-size: 12px; white-space: nowrap; }
     .app-update[hidden] { display: none; }
-    #app-update-link { flex: 0 0 auto; margin-left: 8px; color: var(--accent, #3b82f6); font-size: 12px; cursor: pointer; white-space: nowrap; }
+    #app-update-link { flex: 0 0 auto; margin-left: 8px; color: var(--accent); font-size: 12px; cursor: pointer; white-space: nowrap; }
     #app-update-link[hidden] { display: none; }
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {
       display: inline-block; min-width: 16px; text-align: center;
-      margin-left: 4px; padding: 0 5px; border-radius: 999px;
+      margin-left: 4px; padding: 0 6px; border-radius: var(--r-pill);
       background: var(--accent-soft); color: var(--accent);
       font-size: 10px; font-weight: 600; line-height: 16px; vertical-align: middle;
     }

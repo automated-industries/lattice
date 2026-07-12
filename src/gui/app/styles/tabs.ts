@@ -16,9 +16,9 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
       font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
       color: var(--col-accent, var(--text-muted)); white-space: nowrap;
     }
-    .col-inputs  { --col-accent: #2563eb; }
-    .col-model   { --col-accent: #7c3aed; }
-    .col-outputs { --col-accent: #0d9488; }
+    .col-inputs  { --col-accent: var(--accent-deep); }
+    .col-model   { --col-accent: var(--hue-violet-deep); }
+    .col-outputs { --col-accent: var(--hue-teal-deep); }
 
     /* ── Center "Model" header: label + seamless Graph|Tables tabs ── */
     #content { flex: 1; overflow: auto; padding: 24px; min-height: 0; }
@@ -40,15 +40,15 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     .tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .tab-close {
       display: inline-flex; align-items: center; justify-content: center; flex: none;
-      width: 16px; height: 16px; border-radius: 4px; font-size: 11px; color: var(--text-muted);
+      width: 16px; height: 16px; border-radius: var(--r-xs); font-size: 11px; color: var(--text-muted);
     }
     .tab-close:hover { background: var(--row-hover); color: var(--text); }
     /* Unread-count badge on the Data Questions tab. */
     .tab-badge {
       display: inline-flex; align-items: center; justify-content: center; flex: none;
-      min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-      font-size: 10.5px; font-weight: 700; line-height: 1;
-      background: var(--danger); color: #fff;
+      min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-md);
+      font-size: 11px; font-weight: 700; line-height: 1;
+      background: var(--danger); color: var(--btn-text);
     }
     /* Tab overflow: the "⋯ N" button + a dropdown listing the collapsed tabs. */
     .tab-overflow-wrap { position: relative; display: inline-flex; align-items: stretch; }
@@ -56,13 +56,13 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     .tab-overflow-menu {
       position: absolute; right: 0; top: calc(100% + 2px); z-index: 50;
       min-width: 220px; max-height: 60vh; overflow-y: auto;
-      display: flex; flex-direction: column; padding: 5px;
-      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      display: flex; flex-direction: column; padding: 6px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
     }
     .tab-overflow-menu[hidden] { display: none; }
     .tab-ov-item {
-      display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm);
       font-size: 13px; color: var(--text-muted); cursor: pointer;
     }
     .tab-ov-item:hover { background: var(--row-hover); color: var(--text); }
@@ -92,8 +92,8 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     .dm-entity-list { list-style: none; margin: 0; padding: 0; }
     .dm-entity-item {
       display: flex; align-items: center; gap: 8px; width: 100%;
-      padding: 7px 10px; border: 0; border-radius: 6px; background: transparent;
-      color: var(--text); font-size: 13.5px; text-align: left; cursor: pointer;
+      padding: 8px 10px; border: 0; border-radius: var(--r-sm); background: transparent;
+      color: var(--text); font-size: 14px; text-align: left; cursor: pointer;
     }
     .dm-entity-item:hover { background: var(--row-hover); }
     .dm-entity-item.active { background: var(--accent-soft); color: var(--accent); }

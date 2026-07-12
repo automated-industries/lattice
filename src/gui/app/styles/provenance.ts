@@ -9,24 +9,24 @@ export const provenanceCss = `
       border-bottom: 1px solid var(--border-strong); white-space: nowrap;
     }
     .pv-table thead th.num, .pv-table td.num { text-align: right; }
-    .pv-table tbody td { padding: 7px 10px; border-bottom: 1px solid var(--border); }
+    .pv-table tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
     .pv-table tr.pv-tier-row th {
       text-align: left; padding: 10px 10px 4px; font-size: 11px; text-transform: uppercase;
-      letter-spacing: 0.06em; color: var(--text-muted); border-bottom: none;
+      letter-spacing: 0.05em; color: var(--text-muted); border-bottom: none;
     }
     .pvchip {
       display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
       border: 1px solid var(--border-strong);
     }
     .pvchip-raw { color: var(--signal); border-color: var(--signal); }
-    .pvchip-derived { color: #0891b2; border-color: #0891b2; }
+    .pvchip-derived { color: var(--hue-cyan-deep); border-color: var(--hue-cyan-deep); }
     .pvchip-computed { color: var(--warn); border-color: var(--warn); }
     .pvchip-observation { color: var(--text-muted); }
-    .pvchip-related { color: #7c3aed; border-color: #7c3aed; }
-    .pvchip-created { color: #0d9488; border-color: #0d9488; }
+    .pvchip-related { color: var(--hue-violet-deep); border-color: var(--hue-violet-deep); }
+    .pvchip-created { color: var(--hue-teal-deep); border-color: var(--hue-teal-deep); }
     /* Files object page / folder drill-in rendered as a table (reuses .pv-table). */
     .fs-files-table .fs-files-path {
-      color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 11.5px;
+      color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 12px;
       max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     /* Object page = the table's rows (reuses .pv-table); the whole row is clickable. */

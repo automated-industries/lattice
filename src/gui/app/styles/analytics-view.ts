@@ -16,9 +16,9 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .configure-trigger {
       margin-left: auto;
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 5px 12px; border-radius: 999px; cursor: pointer;
+      padding: 6px 12px; border-radius: var(--r-pill); cursor: pointer;
       border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text); font-size: 12.5px; font-weight: 600; line-height: 1;
+      color: var(--text); font-size: 13px; font-weight: 600; line-height: 1;
     }
     .configure-trigger:hover { background: var(--row-hover); }
     .configure-trigger svg { width: 13px; height: 13px; }
@@ -49,7 +49,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .dash-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center;
       column-gap: 8px; width: 100%; text-align: left;
-      padding: 7px 9px; border: 0; border-radius: 8px; background: none;
+      padding: 8px 10px; border: 0; border-radius: var(--r-md); background: none;
       color: var(--text); font-size: 13px; cursor: pointer;
     }
     .dash-item:hover { background: var(--surface-2); }
@@ -58,10 +58,10 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .dash-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .dash-item-desc {
       grid-column: 2 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      font-size: 11.5px; color: var(--text-muted); font-weight: 400;
+      font-size: 12px; color: var(--text-muted); font-weight: 400;
     }
     .dash-item .vis-indicator { justify-self: end; }
-    .dash-list-empty { color: var(--text-muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
+    .dash-list-empty { color: var(--text-muted); font-size: 13px; padding: 14px 10px; text-align: center; }
 
     /* ── Left-sidebar nav sections (Tables / Files) ── */
     .nav-section { border-top: 1px solid var(--border); }
@@ -76,14 +76,14 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
        { font:inherit; color:var(--text-muted) } at higher specificity, so declaring these on
        .nav-section-head loses; the child span (no competing specificity) wins. */
     .nav-section-head .section-label-text {
-      font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: #2563eb;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--accent-deep);
     }
     /* Stay blue on hover too — a generic .section-toggle:hover .section-label-text
        (layout.ts, 0,3,0) would otherwise flip it to var(--text). DASHBOARDS never
        recolors on hover, so match that. This (0,4,0) beats it. */
-    .section-toggle.nav-section-head:hover .section-label-text { color: #2563eb; }
+    .section-toggle.nav-section-head:hover .section-label-text { color: var(--accent-deep); }
     .nav-tier-head {
-      padding: 4px 12px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+      padding: 4px 12px; font-size: 11px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.75;
     }
     /* Schema group header within TABLES — a clickable collapse toggle (caret + label). */
@@ -92,10 +92,10 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       padding: 4px 12px; border: 0; background: none; cursor: pointer; text-align: left;
     }
     .nav-schema-head .section-caret {
-      font-size: 9px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
+      font-size: 10px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
     }
     .nav-schema-label {
-      font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.05em; color: var(--text-muted); opacity: 0.85;
       min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
@@ -104,8 +104,8 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-schema > .section-body { padding-left: 0; }
     .nav-table-item {
       width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
-      padding: 5px 10px 5px 14px; border: 0; border-radius: 6px; background: none;
-      color: var(--text); font-size: 12.5px; cursor: pointer;
+      padding: 6px 10px 6px 14px; border: 0; border-radius: var(--r-sm); background: none;
+      color: var(--text); font-size: 13px; cursor: pointer;
     }
     .nav-table-item:hover { background: var(--surface-2); }
     .nav-table-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
@@ -118,11 +118,11 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     /* All three carry the shared .col-header chrome. Accents mirror Configure:
        Dashboards=blue (inputs), Workspace=purple (model), Ask Gladys=teal
        (outputs). The Dashboards header holds a compact "+" on the right. */
-    .col-dashboards { --col-accent: #2563eb; justify-content: space-between; }
+    .col-dashboards { --col-accent: var(--accent-deep); justify-content: space-between; }
     .dash-new-btn {
       flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
       width: 24px; height: 24px; border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text-muted); font-size: 15px; line-height: 1; border-radius: 6px; cursor: pointer;
+      color: var(--text-muted); font-size: 15px; line-height: 1; border-radius: var(--r-sm); cursor: pointer;
     }
     .dash-new-btn:hover { background: var(--row-hover); color: var(--text); }
 
@@ -145,8 +145,8 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
        AN_TAB_MIN_W in analytics-tabs.ts; once even that won't fit, the trailing tabs
        collapse into the "⋯ N" overflow menu (JS), so no horizontal scrollbar appears. */
     .antabstrip .tab {
-      border: 1px solid transparent; border-radius: 8px 8px 0 0;
-      padding: 7px 12px; margin: 0; background: transparent;
+      border: 1px solid transparent; border-radius: var(--r-md) var(--r-md) 0 0;
+      padding: 8px 12px; margin: 0; background: transparent;
       color: var(--text-muted); font-weight: 500;
       flex: 1 1 0; min-width: 38px; max-width: 180px;
     }
@@ -177,11 +177,11 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .analytics-home-prompt textarea {
       flex: 1 1 auto; resize: none; min-height: 42px; max-height: 200px;
       background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border-strong); border-radius: 10px;
-      padding: 11px 12px; font: inherit; font-size: 14px; line-height: 1.4;
+      border: 1px solid var(--border-strong); border-radius: var(--r-lg);
+      padding: 12px 12px; font: inherit; font-size: 14px; line-height: 1.4;
     }
     .analytics-home-prompt textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
-    .analytics-home-prompt .btn { flex: 0 0 auto; height: 42px; padding: 0 16px; border-radius: 10px; font-weight: 600; }
+    .analytics-home-prompt .btn { flex: 0 0 auto; height: 42px; padding: 0 16px; border-radius: var(--r-lg); font-weight: 600; }
     .analytics-home-prompt .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
 
     /* ── Ask Gladys dock: aligned header + adjustable width ── */
@@ -190,7 +190,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
        so it lines up with Dashboards + Workspace. Teal accent (outputs), plain
        surface — no gradient — matching the Configure column headers. */
     .ask-dock-head.col-header {
-      --col-accent: #0d9488;
+      --col-accent: var(--hue-teal-deep);
       justify-content: flex-start; gap: 8px;
       background: var(--surface);
     }
@@ -217,12 +217,12 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
        and gives .dash-frame a definite height to stretch into. */
     .dash-page { height: 100%; display: flex; flex-direction: column; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
     .dash-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-    .dash-title { margin: 0; font-size: 19px; font-weight: 700; flex: 0 1 auto; min-width: 0; }
+    .dash-title { margin: 0; font-size: 20px; font-weight: 700; flex: 0 1 auto; min-width: 0; }
     .dash-vis-slot { display: inline-flex; align-items: center; min-width: 0; }
     .dash-menu-wrap { margin-left: auto; position: relative; }
-    .dash-desc { font-size: 12.5px; }
-    .dash-history { flex: 0 0 auto; max-height: 40%; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; background: var(--surface); }
-    .dash-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+    .dash-desc { font-size: 13px; }
+    .dash-history { flex: 0 0 auto; max-height: 40%; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-md); padding: 4px 8px; background: var(--surface); }
+    .dash-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
 
     /* ── Assistant working status (dock) ────────────────── */
     .ask-status {

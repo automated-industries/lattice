@@ -20,7 +20,7 @@ export const layoutCss = `    /* ── Layout ───────────
     .col-collapse {
       margin-left: auto; flex: none; width: 22px; height: 22px; padding: 0;
       display: inline-flex; align-items: center; justify-content: center;
-      background: none; border: 0; border-radius: 6px; cursor: pointer;
+      background: none; border: 0; border-radius: var(--r-sm); cursor: pointer;
       color: var(--text-muted); font-size: 13px; line-height: 1;
     }
     .col-collapse:hover { background: var(--surface-2); color: var(--text); }
@@ -41,17 +41,17 @@ export const layoutCss = `    /* ── Layout ───────────
     .wm-btn {
       font-size: 12px; font-weight: 600; color: var(--text-muted);
       background: var(--surface-2); border: 1px solid var(--border);
-      border-radius: 7px; padding: 4px 10px; cursor: pointer; white-space: nowrap;
+      border-radius: var(--r-sm); padding: 4px 10px; cursor: pointer; white-space: nowrap;
     }
     .wm-btn:hover { color: var(--text); border-color: var(--accent); }
-    .wm-btn.on { color: #fff; background: var(--accent); border-color: var(--accent); }
-    .wm-picked { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px; }
+    .wm-btn.on { color: var(--btn-text); background: var(--accent); border-color: var(--accent); }
+    .wm-picked { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-md); }
     .wm-drop-target {
-      outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px;
+      outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-md);
       background: color-mix(in srgb, var(--accent) 16%, transparent);
     }
     body.wm-drag-merge .wm-drop-target {
-      outline-color: #f59e0b; background: color-mix(in srgb, #f59e0b 20%, transparent);
+      outline-color: var(--warn); background: color-mix(in srgb, var(--warn) 20%, transparent);
     }
     body.wm-dragging { cursor: grabbing; }
     body.wm-dragging .wm-drag-active { opacity: 0.4; }
@@ -91,7 +91,7 @@ export const layoutCss = `    /* ── Layout ───────────
     nav.sidebar > .col-header { margin: 0 -10px 10px; }
     .section-label {
       font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.06em;
+      text-transform: uppercase; letter-spacing: 0.05em;
       padding: 0 12px; margin: 12px 0 6px;
     }
     .section-label:first-child { margin-top: 0; }
@@ -112,7 +112,7 @@ export const layoutCss = `    /* ── Layout ───────────
       padding-left: 0;
     }
     .section-toggle .section-caret {
-      font-size: 9px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
+      font-size: 10px; line-height: 1; color: var(--text-muted); width: 10px; flex: none;
     }
     .section-toggle:hover .section-label-text { color: var(--text); }
     /* Indent each group's body so its rows sit inset under the group header
@@ -122,8 +122,8 @@ export const layoutCss = `    /* ── Layout ───────────
     nav ul { list-style: none; padding: 0; margin: 0; }
     nav li a {
       display: flex; align-items: center; gap: 10px;
-      padding: 7px 12px; border-radius: 6px;
-      color: var(--text); font-size: 13.5px;
+      padding: 8px 12px; border-radius: var(--r-sm);
+      color: var(--text); font-size: 14px;
     }
     nav li a .nav-icon { width: 18px; text-align: center; font-size: 14px; }
     nav li a:hover { background: var(--row-hover); }

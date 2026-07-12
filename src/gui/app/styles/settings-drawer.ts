@@ -5,7 +5,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        share it): only the topbar stays visible; the trigger button highlights
        while open and clicking it again collapses. */
     .drawer-backdrop {
-      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.15);
+      position: fixed; inset: 0; background: var(--overlay-dim-soft);
       /* BELOW the topbar (z 100): the takeover replaces the workspace, but the
          header and its triggers must stay clickable — the clock/gear COLLAPSE
          the open panel. */
@@ -14,7 +14,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .drawer-backdrop.open { opacity: 1; }
     .settings-drawer {
       position: fixed; left: 0; right: 0; bottom: 0; top: 49px; /* refined by JS to the real header height */
-      background: var(--surface, #fff);
+      background: var(--surface);
       border-top: 1px solid rgba(15, 23, 42, 0.06);
       z-index: 95; display: flex; flex-direction: column;
       /* Slide in from the top (down from behind the header) on open, back up on close.
@@ -34,7 +34,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     body.drawer-open { overflow: hidden; }
     .settings-drawer .drawer-body { max-width: 980px; width: 100%; margin: 0 auto; }
     /* Highlight the header trigger whose takeover is open. */
-    .history-btn.on, #configure-trigger.on { background: var(--accent-soft, rgba(79,70,229,0.12)); color: var(--accent, #4f46e5); }
+    .history-btn.on, #configure-trigger.on { background: var(--accent-soft); color: var(--accent); }
     .drawer-head {
       flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
       padding: 14px 18px; border-bottom: 1px solid var(--border);
@@ -42,7 +42,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .drawer-title { font-size: 16px; font-weight: 600; }
     .drawer-close {
       margin-left: auto; width: 30px; height: 30px; border: 1px solid var(--border);
-      border-radius: 6px; background: transparent; color: var(--text-muted);
+      border-radius: var(--r-sm); background: transparent; color: var(--text-muted);
       cursor: pointer; font-size: 16px; line-height: 1;
     }
     .drawer-close:hover { background: var(--row-hover); color: var(--text); }
@@ -54,8 +54,8 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        class rule above out-specifies bare [hidden], hence this explicit rule. */
     .drawer-tabs[hidden] { display: none; }
     .drawer-tab {
-      padding: 7px 14px; border: 1px solid var(--border); border-bottom: none;
-      border-radius: 6px 6px 0 0; background: var(--surface-2); color: var(--text-muted);
+      padding: 8px 14px; border: 1px solid var(--border); border-bottom: none;
+      border-radius: var(--r-sm) var(--r-sm) 0 0; background: var(--surface-2); color: var(--text-muted);
       font-size: 13px; cursor: pointer;
     }
     .drawer-tab.active { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--border-strong); }
@@ -71,7 +71,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
 
     /* ── Connectors dialog (slides in from the LEFT) ────── */
     .connectors-backdrop {
-      position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+      position: fixed; inset: 0; background: var(--overlay-dim);
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       z-index: 120; opacity: 0; transition: opacity 0.2s ease;
     }
@@ -97,7 +97,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-msg { margin: 0 12px 8px; font-size: 12px; color: var(--text-muted); min-height: 14px; }
     .conn-card {
       margin: 0 12px 12px; padding: 12px; border: 1px solid var(--border);
-      border-radius: 10px; background: var(--surface);
+      border-radius: var(--r-lg); background: var(--surface);
     }
     .conn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .conn-card-title { font-size: 14px; font-weight: 600; }
@@ -116,13 +116,13 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-field select:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow-focus); }
     .conn-or { text-align: center; color: var(--text-muted); font-size: 12px; margin: 2px 0; }
     .conn-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 6px; }
-    .conn-form-actions .btn { height: 36px; padding: 0 16px; border-radius: 8px; font-weight: 600; }
+    .conn-form-actions .btn { height: 36px; padding: 0 16px; border-radius: var(--r-md); font-weight: 600; }
     .conn-form-actions .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
     .conn-help { font-size: 12px; color: var(--text-muted); }
     .conn-connected { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .conn-status { font-size: 12px; text-transform: capitalize; }
     .conn-sub { font-size: 12px; color: var(--text-muted); }
-    .conn-err { margin-top: 6px; font-size: 12px; color: var(--danger, #c0392b); }
+    .conn-err { margin-top: 6px; font-size: 12px; color: var(--danger); }
     /* Sidebar connector row: logo with a small status dot overlay. */
     .src-conn-ic { position: relative; display: inline-flex; flex: none; }
     .src-conn-dot {
@@ -132,7 +132,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
 
     /* ── Configure drawer: Data Model + Inputs tabs ── */
     .dm-subtabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-    .dm-subtabs .tab { border: 0; background: none; padding: 7px 12px; cursor: pointer;
+    .dm-subtabs .tab { border: 0; background: none; padding: 8px 12px; cursor: pointer;
       color: var(--text-muted); font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; }
     .dm-subtabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .dm-tables-merge { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
@@ -150,7 +150,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .ift-btn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
     /* "Edit columns & relationships" affordance in the Data Model detail panel. */
     .mt-detail-edit { display: inline-block; margin-top: 10px; margin-left: 10px; padding: 6px 12px;
-      border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
-      color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+      border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2);
+      color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
     .mt-detail-edit:hover { background: var(--row-hover); }
 `;

@@ -201,8 +201,16 @@ import { css } from '../../src/gui/app/css.js';
 // font stacks, overlay/selection) in a second :root block + the fallback-policy and
 // value-scale doc comments. Purely additive: histogram diff = 63 additions, 0 removals;
 // nothing references the new tokens yet, so rendered output is unchanged. Recaptured.
-const ORIGINAL_LENGTH = 155357;
-const ORIGINAL_SHA256 = 'b6fd8234cad4083d3505943b555cd7289a3dfbb857fc139124dfc530d1f16dc9';
+// Design pass M2a — value normalization across the styles files: color literals swapped to the
+// token layer (hue palette, accent/danger/warn color-mix steps, status pairs, --btn-text/
+// --surface whites), dead root-token fallbacks stripped (incl. the undefined --panel/
+// --text-dim/--mono/--danger-soft fallbacks), odd paddings/margins + half-pixel font sizes
+// snapped to the documented scales, letter-spacing unified at .05em, border-radius moved to
+// the --r-* tokens, exact-match durations to --dur-*, and font stacks to --font-ui/--font-mono.
+// Four sanctioned contrast fixes (op-schema chip, import errors, shared-yellow, role-expired
+// bg) + three hue absorptions. z-index untouched (next commit). Recaptured.
+const ORIGINAL_LENGTH = 157229;
+const ORIGINAL_SHA256 = '2a15680fdd1f283bc9f11f2aa5cd45ac74e0d434fc9c956a008ce2152f437fe0';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

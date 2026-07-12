@@ -156,13 +156,13 @@ export const tokensCss = `
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: var(--font-ui);
       color: var(--text);
       background: var(--bg);
       font-size: 14px;
     }
     code, kbd, samp, pre {
-      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--font-mono);
     }
     /* Form controls take the theme tokens so they're consistent across every
        surface (a bare input on a modal, the Database wizard, User Config, etc.):
@@ -181,8 +181,8 @@ export const tokensCss = `
       color: var(--text);
       background: var(--surface);
       border: 1px solid var(--border-strong);
-      border-radius: 9px;
-      padding: 9px 12px;
+      border-radius: var(--r-md);
+      padding: 10px 12px;
       box-sizing: border-box;
     }
     input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
@@ -195,7 +195,7 @@ export const tokensCss = `
 
     /* Light-blue focus ring for keyboard nav (mouse focus unaffected) */
     :where(button, a, [tabindex]):focus-visible {
-      outline: none; box-shadow: var(--glow-focus); border-radius: 6px;
+      outline: none; box-shadow: var(--glow-focus); border-radius: var(--r-sm);
     }
     input:focus-visible, select:focus-visible, textarea:focus-visible {
       outline: none; border-color: var(--accent-deep); box-shadow: 0 0 0 3px var(--accent-soft);

@@ -15,16 +15,16 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-bar-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
     .mt-seg { display: inline-flex; }
     .mt-seg-btn {
-      padding: 4px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+      padding: 4px 12px; font: inherit; font-size: 13px; cursor: pointer;
       border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);
     }
-    .mt-seg-btn:first-child { border-radius: 6px 0 0 6px; }
-    .mt-seg-btn:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+    .mt-seg-btn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+    .mt-seg-btn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; border-left: 0; }
     .mt-seg-btn.on { background: var(--accent-soft); color: var(--accent); border-color: rgba(59, 130, 246, 0.35); }
     /* "+ Wire" — toggles wiring mode (click a source table, then a target). */
     .mt-wire {
-      margin-left: auto; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
-      border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
+      margin-left: auto; padding: 4px 12px; font: inherit; font-size: 13px; font-weight: 600;
+      border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
       color: var(--accent); text-decoration: none; cursor: pointer;
     }
     .mt-wire:hover { background: var(--accent-soft); border-color: rgba(59, 130, 246, 0.35); }
@@ -35,12 +35,12 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
        remove the emptied source). Sits next to "+ Wire"; a warm accent signals a
        structural (but reversible) change. */
     .mt-merge {
-      margin-left: 6px; padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
-      border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2);
-      color: #b45309; cursor: pointer;
+      margin-left: 6px; padding: 4px 12px; font: inherit; font-size: 13px; font-weight: 600;
+      border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
+      color: var(--hue-amber-ink); cursor: pointer;
     }
-    .mt-merge:hover { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); }
-    .mt-merge.on { background: #d97706; color: var(--btn-text); border-color: #d97706; }
+    .mt-merge:hover { background: var(--warn-soft); border-color: var(--warn-border); }
+    .mt-merge.on { background: var(--hue-amber-deep); color: var(--btn-text); border-color: var(--hue-amber-deep); }
 
     .mt-main { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
     .mt-tiers {
@@ -54,7 +54,7 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
        keeps the cards clickable. Solid strokes (no dashes). */
     svg.mt-edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible; }
     .mt-edge { fill: none; stroke-width: 1.75; }
-    .mt-edge-m2m { stroke: #7c3aed; opacity: 0.6; }
+    .mt-edge-m2m { stroke: var(--hue-violet-deep); opacity: 0.6; }
     .mt-tier { min-width: 0; position: relative; z-index: 1; }
     /* Wiring / merging affordances. */
     .mt.mt-wiring .mt-card { cursor: crosshair; }
@@ -64,13 +64,13 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     /* The card currently being dragged onto a target. */
     .mt-card.mt-drag-active { opacity: 0.6; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
     /* In merge mode, tint the held source amber to match the Merge action. */
-    .mt.mt-mode-merge .mt-card.mt-wire-from { border-color: #d97706; box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18), var(--shadow-2); }
+    .mt.mt-mode-merge .mt-card.mt-wire-from { border-color: var(--hue-amber-deep); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 18%, transparent), var(--shadow-2); }
     .mt-tier-head {
       font-size: 11px; font-weight: 700; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;
     }
     .mt-tier-count {
-      display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px;
+      display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: var(--r-pill);
       background: var(--surface-2); color: var(--text-muted); font-weight: 600;
     }
     /* A belongsTo-nested table indents under its parent (line = m2m only). */
@@ -80,8 +80,8 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
 
     .mt-card {
       display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
-      padding: 9px 11px; border-radius: 9px; cursor: pointer;
-      background: var(--sheen), var(--surface-2); border: 1px solid rgba(15, 23, 42, 0.05);
+      padding: 10px 12px; border-radius: var(--r-md); cursor: pointer;
+      background: var(--sheen), var(--surface-2); border: 1px solid var(--edge-faint);
       box-shadow: var(--shadow-1); font: inherit;
       /* Drag-to-wire/merge uses pointer events; suppress the browser's touch pan/
          zoom AND native text-selection so a drag can't hand the pointer stream to
@@ -90,30 +90,30 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       touch-action: none; -webkit-user-select: none; user-select: none;
       transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
     }
-    .mt-card:hover { border-color: rgba(59, 130, 246, 0.4); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+    .mt-card:hover { border-color: var(--accent-border); box-shadow: var(--shadow-2); transform: translateY(-1px); }
     .mt-card-ic { flex: none; font-size: 15px; }
-    .mt-card-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13.5px; font-weight: 500; }
+    .mt-card-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 14px; font-weight: 500; }
     /* Computed-table flag (a live read-only projection) on a card. */
     .mt-card-flag { flex: none; font-size: 11px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--accent); }
     .mt-card-meta { flex: none; font-size: 11px; color: var(--text-muted); }
     .mt-fields { list-style: none; margin: 4px 0 2px; padding: 0 0 0 6px; display: flex; flex-direction: column; gap: 2px; }
     .mt-field {
       display: flex; align-items: baseline; gap: 8px; font-size: 12px;
-      padding: 1px 0 1px 8px; border-left: 2px solid var(--border-strong); cursor: pointer;
+      padding: 2px 0 2px 8px; border-left: 2px solid var(--border-strong); cursor: pointer;
     }
     .mt-field:hover { background: var(--row-hover); }
     .mt-field-name { color: var(--text); }
     .mt-field-type { margin-left: auto; color: var(--text-muted); font-family: ui-monospace, monospace; font-size: 11px; }
 
     /* Field-tint concept colours (border accent) */
-    .mt-c-key { border-left-color: #94a3b8; }
-    .mt-c-identity { border-left-color: #60a5fa; }
-    .mt-c-contact { border-left-color: #22d3ee; }
-    .mt-c-content { border-left-color: #a78bfa; }
-    .mt-c-measure { border-left-color: #34d399; }
-    .mt-c-state { border-left-color: #fbbf24; }
-    .mt-c-time { border-left-color: #fb923c; }
-    .mt-c-secret { border-left-color: #f87171; }
+    .mt-c-key { border-left-color: var(--hue-slate); }
+    .mt-c-identity { border-left-color: var(--accent-glow); }
+    .mt-c-contact { border-left-color: var(--hue-cyan); }
+    .mt-c-content { border-left-color: var(--hue-violet); }
+    .mt-c-measure { border-left-color: var(--hue-emerald); }
+    .mt-c-state { border-left-color: var(--hue-amber); }
+    .mt-c-time { border-left-color: var(--hue-orange); }
+    .mt-c-secret { border-left-color: var(--hue-red); }
 
     /* Detail panel (slides in on the right of the tiers area) */
     .mt-detail {
@@ -123,30 +123,30 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-detail[hidden] { display: none; }
     .mt-detail-head { display: flex; align-items: center; gap: 8px; }
     .mt-detail-title { font-size: 15px; font-weight: 600; color: var(--text); flex: 1 1 auto; min-width: 0; }
-    .mt-detail-close { flex: none; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
+    .mt-detail-close { flex: none; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
     .mt-detail-sub { font-size: 12px; color: var(--text-muted); margin: 4px 0 14px; }
-    .mt-detail-sec h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin: 12px 0 6px; }
+    .mt-detail-sec h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 12px 0 6px; }
     .mt-detail-field {
-      display: flex; align-items: baseline; gap: 8px; font-size: 12.5px;
-      padding: 3px 0 3px 8px; border-left: 2px solid var(--border-strong);
+      display: flex; align-items: baseline; gap: 8px; font-size: 13px;
+      padding: 4px 0 4px 8px; border-left: 2px solid var(--border-strong);
     }
     .mt-detail-open { display: inline-block; margin-top: 14px; font-size: 13px; color: var(--accent); text-decoration: none; }
     .mt-detail-open:hover { text-decoration: underline; }
-    .mt-detail-field.mt-field-focus { background: var(--accent-soft); border-radius: 4px; }
+    .mt-detail-field.mt-field-focus { background: var(--accent-soft); border-radius: var(--r-xs); }
 
     /* ── Lineage: selection highlight on the tier cards + the detail chips ── */
     /* Selecting a table rings it (accent) and tints its directly-connected cards:
        upstream sources (violet) and downstream consumers (teal). */
     .mt-card.mt-sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-2); }
-    .mt-card.mt-up { border-color: #7c3aed; box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.35); }
-    .mt-card.mt-down { border-color: #0d9488; box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.35); }
+    .mt-card.mt-up { border-color: var(--hue-violet-deep); box-shadow: 0 0 0 1px color-mix(in srgb, var(--hue-violet-deep) 35%, transparent); }
+    .mt-card.mt-down { border-color: var(--hue-teal-deep); box-shadow: 0 0 0 1px color-mix(in srgb, var(--hue-teal-deep) 35%, transparent); }
     .mt-lin { display: flex; flex-direction: column; gap: 4px; }
     .mt-lin-chip {
       display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
-      padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px;
-      background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+      padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
+      background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
     }
-    .mt-lin-chip:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--row-hover); }
+    .mt-lin-chip:hover { border-color: var(--accent-border); background: var(--row-hover); }
     .mt-lin-via {
       margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted);
       /* The via can be a long junction name; truncate it so it never pushes the
@@ -160,13 +160,13 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-lin-chip-wrap .mt-lin-chip { flex: 1 1 auto; width: auto; min-width: 0; overflow: hidden; }
     .mt-lin-x {
       flex: none; display: inline-flex; align-items: center; justify-content: center;
-      width: 24px; border: 1px solid var(--border); border-radius: 7px;
+      width: 24px; border: 1px solid var(--border); border-radius: var(--r-sm);
       background: var(--surface-2); color: var(--text-muted); cursor: pointer;
       font-size: 11px; line-height: 1; user-select: none;
     }
-    .mt-lin-x:hover { color: #ef4444; border-color: rgba(239, 68, 68, 0.5); background: color-mix(in srgb, #ef4444 12%, transparent); }
+    .mt-lin-x:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
     .mt-lin-x-busy { opacity: 0.5; pointer-events: none; }
-    .mt-fl { font-size: 12px; color: var(--text-muted); padding: 3px 0; font-family: ui-monospace, monospace; }
+    .mt-fl { font-size: 12px; color: var(--text-muted); padding: 4px 0; font-family: ui-monospace, monospace; }
     .mt-fl-f { color: var(--accent); }
     .mt-fl-t { color: var(--text); }
     .mt-fl-none { font-family: inherit; }
