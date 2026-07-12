@@ -520,6 +520,39 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
       }
       return { ok: true, result: { table, duplicateGroups: groupsMerged, rowsMerged: merged } };
     }
+    case 'merge_rows': {
+      // Targeted, reference-safe consolidation: relink every junction edge from the
+      // duplicates onto the survivor, then soft-delete the duplicates. Uses the same
+      // crash-safe primitive as `dedup`, but with an explicit survivor + id list so the
+      // assistant can combine rows the user named as the same (differently-titled rows
+      // a similarity pass would not group). Returns the TRUE counts so the assistant
+      // reports what actually happened, not an assumed outcome.
+      const table = requireTable(args.table, ctx.validTables);
+      const survivorId = requireString(args.survivor_id, 'survivor_id');
+      if (!Array.isArray(args.duplicate_ids) || args.duplicate_ids.length === 0) {
+        return { ok: false, error: 'duplicate_ids must be a non-empty array of row ids' };
+      }
+      const duplicateIds = args.duplicate_ids.map((v, i) =>
+        requireString(v, `duplicate_ids[${String(i)}]`),
+      );
+      const svc: DedupServiceCtx = {
+        db: ctx.db,
+        feed: ctx.feed,
+        softDeletable: ctx.softDeletable,
+        configPath: ctx.configPath ?? '',
+        outputDir: ctx.outputDir ?? '',
+      };
+      const r = await mergeDuplicates(svc, table, survivorId, duplicateIds);
+      return {
+        ok: true,
+        result: {
+          table,
+          survivor: survivorId,
+          rowsMerged: r.merged,
+          referencesRelinked: r.relinked,
+        },
+      };
+    }
     case 'update_row': {
       const table = requireTable(args.table, ctx.validTables);
       const id = requireString(args.id, 'id');

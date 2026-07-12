@@ -96,11 +96,14 @@ test('"Add a Connector" opens the connectors dialog', async ({ page }) => {
 
 test('the Files table opens as a SQL runner (like every table)', async ({ page }) => {
   // Files is now a table in the LATTICE schema — clicking it opens the uniform SQL
-  // runner (default `select * from "files" limit 100`), not a bespoke folder tree.
+  // runner, not a bespoke folder tree. The default query shows LIVE rows only (files is
+  // soft-deletable), so a soft-deleted/merged file doesn't linger in the view.
   // (On-disk folder roots are still managed in the Configure drawer's Files tab.)
   await page.goto(gui.url + '#/w/table/files');
   await expect(page.locator('.sql-runner')).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('#sql-editor')).toHaveValue(/select \* from "files" limit 100/i);
+  await expect(page.locator('#sql-editor')).toHaveValue(
+    /select \* from "files" where deleted_at is null limit 100/i,
+  );
   await expect(page.locator('#sql-run')).toBeVisible();
 });
 

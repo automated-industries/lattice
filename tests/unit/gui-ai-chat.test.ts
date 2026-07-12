@@ -130,7 +130,7 @@ describe('chat tool loop', () => {
   it('marks a tool round hadTools:true and the final answer hadTools:false', async () => {
     // Live streaming emits a round's text before tool use is known, so
     // assistant_message_end carries `hadTools` to tell the client/route which round
-    // was pre-tool preamble (drop it) vs the final answer (keep it).
+    // called a tool (its narration is kept as its own bubble) vs the final answer.
     const client = scriptedClient([
       {
         text: 'Let me add that',
