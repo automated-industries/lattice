@@ -464,8 +464,13 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Net shrink. Recaptured.
 // Review fix: the SQL-runner row-click is decided PER ROW (r.id present + non-null) instead
 // of result-wide, so a null/aliased id never navigates to a dead /null record. Recaptured.
-const ORIGINAL_LENGTH = 700897;
-const ORIGINAL_SHA256 = 'c679651ec5fadbf6d8d9afbf90ab31eb66df6d7a5196b72252d923d72028da7a';
+// Chat file-uploader fixes: the clip button opens the picker (the hidden <input type=file>
+// is sr-only, not display:none, so its <label for> works in the desktop webview); the
+// composer Send always keeps focus on the chat (silent) so a files-only send gets a reply;
+// and the typed message survives an ingest failure (sendChat runs in the reject path too).
+// Recaptured.
+const ORIGINAL_LENGTH = 701783;
+const ORIGINAL_SHA256 = 'b4df3891f7ec57e43d78551178a4c6caa2da74d84f34d4cc89ec68c96ebebb36';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
