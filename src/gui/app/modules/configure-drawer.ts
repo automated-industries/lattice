@@ -116,7 +116,7 @@ export const configureDrawerJs = `
               var ic = typeof fileEmoji === 'function' ? fileEmoji(r) : '📄';
               return fsTileHtml('#/w/file/' + encodeURIComponent(r.id), ic, nm, 'files', '', 'file');
             }).join('') + '</div>'
-          : '<div class="src-empty">No files yet.</div>';
+          : '<div class="src-empty">No files yet — add files or a whole folder below.</div>';
         host.querySelectorAll('.fs-tile[data-href]').forEach(function (t) {
           t.addEventListener('click', function () { location.hash = t.getAttribute('data-href'); });
         });
@@ -137,7 +137,7 @@ export const configureDrawerJs = `
         '<button type="button" class="ift-btn" data-view="grid" title="Grid view">▦</button></span></div>' +
         '<div id="inputs-files-tree"></div>' +
         '<div class="src-add-row src-add-files-wrap">' +
-        '<button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ File(s)</button>' +
+        '<button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ Add files or folder</button>' +
         '<div class="src-add-menu" id="src-add-files-menu" role="menu" hidden>' +
         '<button type="button" class="src-add-menu-item" data-pick="file" role="menuitem">Add file(s)…</button>' +
         '<button type="button" class="src-add-menu-item" data-pick="folder" role="menuitem">Add a folder…</button>' +

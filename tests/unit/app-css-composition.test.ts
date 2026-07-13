@@ -230,8 +230,10 @@ import { css } from '../../src/gui/app/css.js';
 // .db-table / .db-form-grid full-width table + form styles. Recaptured.
 // MCP Connectors tab redesign reuses the .db-table/.db-* styles for its
 // full-width connected-servers table (no new connector-table CSS). Recaptured.
-const ORIGINAL_LENGTH = 161416;
-const ORIGINAL_SHA256 = '8d46ce409c10ce63a4e858ebb4913bf6c74a367960584287370f8e917326eb3b';
+// Rebase recapture: assistant-rail CSS tweak (workspace-registry-hygiene PR) on
+// top of the connectors/databases full-width table styles. Recaptured.
+const ORIGINAL_LENGTH = 161629;
+const ORIGINAL_SHA256 = '1e4ff4e45fcd92b5a2a46ec2d6a086f1d8cd2017de57a3c78fb2fefd886f0f3f';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

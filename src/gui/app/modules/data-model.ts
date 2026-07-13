@@ -814,8 +814,7 @@ export const dataModelJs = `    // ───────────────
             // Switch the workspace AND close the settings drawer at the same time —
             // close immediately (concurrent with the switch) so it isn't left open.
             closeSettingsDrawer();
-            fetch('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) })
-              .then(function (r) { return r.json(); })
+            fetchJson('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) })
               .then(function () { return reloadEverything(); })
               .catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
           });
