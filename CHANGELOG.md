@@ -56,6 +56,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The assistant no longer tries to reshape a connected external table.** Asking the assistant
+  to add a column to (or delete) a table synced from a connected data source — a live mirror whose
+  shape comes from the source — used to quietly ALTER the local copy, adding a column the next sync
+  drops; the nonsensical result then confused the assistant into claiming the table "isn't in the
+  workspace" (even though it could see it). Those schema-shape edits now refuse deterministically
+  and steer to the right move — add the field in the source, build a derived (computed) table from
+  it, or link a separate object — the same "steer, don't just block" behavior already used for
+  computed views and managed built-in tables. Reads, links, and computed tables built ON a
+  connected table are unaffected.
+
 - **A table created after you opened the workspace shows up without a reload.** When a schema
   change lands while the GUI is open — most often the assistant creating a computed table — the
   new table and its relationships now appear in the Data Model explorer, the graph, and the

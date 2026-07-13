@@ -57,6 +57,29 @@ type RawAdapter = {
   dialect: 'sqlite' | 'postgres';
 };
 
+/**
+ * A live view of a connected external data source (a db-source / Gmail / Jira /
+ * … connector table) cannot be reshaped from inside Lattice: its columns and
+ * rows are SYNCED from the source, so an ALTER here is dropped on the next sync,
+ * and unregistering it just re-registers on the next open. When `table` is such a
+ * connected table, return a user-facing message that steers to the right move;
+ * otherwise return null. Wording carries no schema jargon so the assistant can
+ * relay it verbatim. This mirrors the deterministic "steer, don't just block"
+ * refusals already used for computed views and managed native objects.
+ */
+function connectedSourceSteer(
+  active: ActiveDb,
+  table: string,
+  action: 'add-column' | 'delete',
+): string | null {
+  const src = active.db.getConnectedSource(table);
+  if (!src) return null;
+  const label = src.model || table;
+  return action === 'add-column'
+    ? `"${label}" is a live view of a connected external data source, so its columns are synced from there — a column added in Lattice would be dropped on the next sync. To add a field: add it in the source system (it will sync in), build a derived (computed) table from "${label}" that adds it, or create a separate object in Lattice and link these records to it.`
+    : `"${label}" is a live view of a connected external data source. Remove it by disconnecting that connector (which removes all of its synced tables) — deleting just this table re-syncs it back on the next open.`;
+}
+
 /** All physical user tables in the DB (excludes Lattice-internal `_%` tables). */
 async function listPhysicalUserTables(active: ActiveDb): Promise<string[]> {
   const adapter = (active.db as unknown as { _adapter: RawAdapter })._adapter;
@@ -517,6 +540,13 @@ export async function addUserColumn(
       error: `"${table}" is a computed view — its fields come from its definition, so add the new field there instead.`,
     };
   }
+  // A connected external mirror (db-source / Gmail / Jira / …) is synced FROM its
+  // source: an ALTER here would be dropped on the next sync. Refuse deterministically
+  // and steer, so the assistant relays a correct explanation instead of silently
+  // "succeeding" with a dead column (which then confuses it into claiming the table
+  // isn't there).
+  const connectedAdd = connectedSourceSteer(active, table, 'add-column');
+  if (connectedAdd) return { ok: false, error: connectedAdd };
   if (
     active.junctionTables.has(table) ||
     table.startsWith('_lattice_') ||
@@ -611,6 +641,10 @@ export async function softDeleteUserEntity(
       `"${name}" is a computed table — delete it from its computed-table definition instead.`,
     );
   }
+  // A connected external mirror re-registers on the next open — refuse the bare
+  // table delete and steer to disconnecting the connector (mirrors aiDeleteEntity).
+  const connectedDelete = connectedSourceSteer(active, name, 'delete');
+  if (connectedDelete) throw new Error(connectedDelete);
   // Fail loudly (naming the dependents, no cascade) while any computed table
   // still reads from this one — deleting a source would break live projections.
   assertNotComputedSource(active, name);
@@ -725,6 +759,11 @@ export async function aiDeleteEntity(
       error: `"${name}" is a computed view — remove its definition instead of deleting it like a table.`,
     };
   }
+  // A connected external mirror re-registers on the next open (its connector is
+  // still connected), so deleting just the table is a confusing no-op. Steer to
+  // disconnecting the connector instead.
+  const connectedDelete = connectedSourceSteer(active, name, 'delete');
+  if (connectedDelete) return { ok: false, error: connectedDelete };
   // Refuse BEFORE any data moves: a computed table reading from this one would
   // break, and the merge path must never fail after rows have been relocated.
   try {
