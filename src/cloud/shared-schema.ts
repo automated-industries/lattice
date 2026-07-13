@@ -52,16 +52,13 @@ export async function publishSharedSchema(db: Lattice, configPath: string): Prom
   // legacy ROOT-level outputFile values (STATES.md at the Context root — the
   // orphan-rollup bug). Members hydrate this spec verbatim, so publish the
   // healed shape (same rewrite as the config upgrade) rather than replicating
-  // the breakage into every member's workspace.
+  // the breakage into every member's workspace. Rewrite ONLY the EXACT upper-cased
+  // legacy default the buggy create path wrote — never a deliberately-authored
+  // lowercase filename (e.g. the documented `outputFile: tickets.md`).
   for (const [name, def] of Object.entries(entities)) {
     if (def && typeof def === 'object') {
       const d = def as { outputFile?: unknown };
-      if (
-        typeof d.outputFile === 'string' &&
-        !d.outputFile.includes('/') &&
-        !d.outputFile.includes('\\') &&
-        d.outputFile.toLowerCase().endsWith('.md')
-      ) {
+      if (typeof d.outputFile === 'string' && d.outputFile === `${name.toUpperCase()}.md`) {
         d.outputFile = `.schema-only/${name}.md`;
       }
     }

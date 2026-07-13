@@ -142,6 +142,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **AI computed columns refill reliably after an input edit.** Editing a column that feeds an
+  `ai_classify` / `ai_transform` field could leave the derived cell permanently blank for the rest
+  of the session: the refill pass scanned for empty cells a moment before the write path cleared
+  the now-stale one, so it saw nothing to fill. Writes now clear the stale cell **before** signalling
+  the refill, so the fill always sees it. (Same ordering fix applied to every write path — update,
+  upsert, upsert-by-key, and enrich.)
+
+- **Manual edits to rendered files are captured before an auto-render overwrites them.** The
+  pre-render pass that ingests on-disk edits was suppressed by the very render it runs ahead of, so
+  edits made just before a render could be silently overwritten. The pre-render ingest now runs
+  regardless; the background file watcher still defers while a render is writing.
+
+- **Computed fields that can't be materialized now fail loudly instead of staying blank.** Declaring
+  an `aggregate`, or an `alias`/`calc` that reaches through a relation (a dotted path), on an
+  **entity** column previously compiled to a column nothing ever filled — a permanently-empty cell
+  with no error. These now raise a clear configuration error at load time pointing you to a computed
+  table (which does support them). Aggregates and relation paths on computed **tables** are
+  unaffected.
+
+- **The legacy root-level `outputFile` cleanup no longer touches a filename you chose.** The one-time
+  migration that re-homes an orphaned auto-generated rollup now rewrites only the exact
+  auto-generated name it was meant to fix, and leaves any deliberately-authored `outputFile` (e.g.
+  `outputFile: tickets.md`) exactly as written.
+
 - **Ingesting a whole folder no longer crashes the desktop app.** The desktop app's SQLite
   backend compiled a brand-new native database statement for every single query and never
   reused it — so ingesting a folder of many files piled up thousands of native statements

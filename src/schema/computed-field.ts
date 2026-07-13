@@ -79,13 +79,6 @@ export function compileComputedField(
   entityColumns: ReadonlySet<string>,
   dialect: CalcDialect,
 ): CompiledComputedField {
-  const deferred = (reason: DeferredReason): CompiledComputedField => ({
-    column: fieldName,
-    sql: '',
-    deps: [],
-    deferred: reason,
-  });
-
   /** A same-row input column must be a real column of the entity — loud otherwise. */
   const requireOwnColumn = (col: string, role: string): void => {
     if (col.includes('.')) {
@@ -135,36 +128,25 @@ export function compileComputedField(
         ai: { kind: 'transform', inputs, prompt: def.prompt, model: def.model ?? 'default' },
       };
     }
-    case 'aggregate': {
-      const dot = def.via.indexOf('.');
-      if (dot <= 0 || dot === def.via.length - 1) {
-        throw new Error(
-          `Lattice: computed field "${entity}.${fieldName}" (aggregate) has an invalid \`via\` ` +
-            `"${def.via}" — expected "<junctionTable>.<remoteRelationOrColumn>".`,
-        );
-      }
-      if (def.fn !== 'count' && (def.column === undefined || def.column === '')) {
-        throw new Error(
-          `Lattice: computed field "${entity}.${fieldName}" (aggregate) uses fn "${def.fn}", which ` +
-            `requires a \`column\` to aggregate (only \`count\` may omit it).`,
-        );
-      }
-      return {
-        column: fieldName,
-        sql: '',
-        deps: [],
-        deferred: 'aggregate',
-        aggregate: {
-          junction: def.via.slice(0, dot),
-          remote: def.via.slice(dot + 1),
-          fn: def.fn,
-          ...(def.column !== undefined ? { column: def.column } : {}),
-        },
-      };
-    }
+    case 'aggregate':
+      // Not yet materialized on an ENTITY (no recompute mechanism consumes an entity-level
+      // aggregate plan) — reject loudly rather than register a column that would stay
+      // silently NULL forever. Aggregates are supported via `materializedRollups` or a
+      // computed table today.
+      throw new Error(
+        `Lattice: computed field "${entity}.${fieldName}" (aggregate) is not yet supported on an ` +
+          `entity — use \`materializedRollups\` or a computed table for aggregates.`,
+      );
     case 'alias': {
-      // A belongsTo path (dotted) is not a same-row value — defer to the path recompute.
-      if (def.source.includes('.')) return deferred('path');
+      // A belongsTo path (dotted) is not a same-row value and has no recompute mechanism on an
+      // entity yet — reject loudly instead of leaving the column permanently NULL.
+      if (def.source.includes('.')) {
+        throw new Error(
+          `Lattice: computed field "${entity}.${fieldName}" aliases the belongsTo path ` +
+            `"${def.source}", which is not yet supported on an entity — alias a same-row column, ` +
+            `or use a computed table.`,
+        );
+      }
       if (!entityColumns.has(def.source)) {
         throw new Error(
           `Lattice: computed field "${entity}.${fieldName}" aliases "${def.source}", which is ` +
@@ -174,13 +156,21 @@ export function compileComputedField(
       return { column: fieldName, sql: quoteIdent(def.source), deps: [def.source] };
     }
     case 'calc': {
-      // Accept a belongsTo-path ref so the calc parses (we DEFER it below); a
-      // single-segment ref must be a real same-row column, else it's a config error.
+      // Accept a belongsTo-path ref so the calc parses; a single-segment ref must be a real
+      // same-row column, else it's a config error.
       const expr = parseCalcExpr(def.expr, (path) =>
         path.length === 1 ? entityColumns.has(path[0] ?? '') : true,
       );
-      // A belongsTo-path (multi-segment) ref makes this not a same-row value — defer it.
-      if (expr.columnPaths.some((p) => p.length !== 1)) return deferred('path');
+      // A belongsTo-path (multi-segment) ref is not a same-row value and has no recompute
+      // mechanism on an entity yet — reject loudly instead of leaving the column NULL.
+      const dottedPath = expr.columnPaths.find((p) => p.length !== 1);
+      if (dottedPath) {
+        throw new Error(
+          `Lattice: computed field "${entity}.${fieldName}" (calc) references the belongsTo path ` +
+            `"${dottedPath.join('.')}", which is not yet supported on an entity — reference ` +
+            `same-row columns only, or use a computed table.`,
+        );
+      }
       const sql = emitCalcExpr(expr, {
         dialect,
         columnSql: (path) => quoteIdent(path[0] ?? ''),

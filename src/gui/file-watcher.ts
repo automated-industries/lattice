@@ -84,18 +84,22 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
     }
   };
 
-  const run = async (): Promise<void> => {
+  const run = async (force = false): Promise<void> => {
     if (running) {
       pending = true;
       return;
     }
-    // Never reverse-sync while a render is in flight. A render rewrites the
-    // context files + manifest; a pass now would read the render's own (possibly
-    // half-written) output before its manifest hash catches up, mismatch the echo
-    // check, and re-ingest the render's writes as spurious "file-edit" changes
-    // (e.g. "Updated 9006 rows … file-edit"). Defer until the render settles —
-    // reschedule so we re-check after the debounce rather than dropping the pass.
-    if (deps.db.isRendering()) {
+    // Never reverse-sync while a render is in flight, UNLESS this is the render's
+    // own pre-render drain (force). A background/auto render marks itself in-flight
+    // and THEN calls this drain to ingest pending manual edits before it overwrites
+    // the files — so at drain time isRendering() is already true by design, and the
+    // files on disk are the PRIOR (manifest-consistent) render plus the manual edits
+    // we must capture. Honouring the guard here would make the drain a no-op and let
+    // the render clobber those edits. The fs-watch debounced path (force=false) still
+    // defers: a pass mid-render would read the render's own half-written output before
+    // its manifest hash catches up and re-ingest those writes as spurious "file-edit"
+    // changes — reschedule so we re-check after the debounce rather than dropping it.
+    if (!force && deps.db.isRendering()) {
       schedule();
       return;
     }
@@ -146,7 +150,9 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
         clearTimeout(timer);
         timer = null;
       }
-      await run();
+      // Force past the isRendering() guard: flush IS the render's pre-render drain,
+      // so isRendering() is already true here by design — see run()'s guard comment.
+      await run(true);
     },
     start(): void {
       if (watcher) return;

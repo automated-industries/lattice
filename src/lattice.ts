@@ -1685,15 +1685,16 @@ export class Lattice {
     // Canonical pk (full composite key); single-column keys are the bare value.
     const pkValue = this._serializeRowPk(table, rowWithPk);
     this._sanitizer.emitAudit(table, 'update', pkValue);
+    // Derive computed columns BEFORE firing hooks (the hook-driven AI fill must see nulled
+    // stale cells, not race the NULL). The connector sync + seed bulk-write paths reach the DB
+    // through upsert (not insert()/update()), so without this a computed field on a
+    // synced/enriched table would never populate. upsert is a full-row write → recompute all.
+    await this._deriveComputedAfterWrite(table, pkValue, null);
     // Fire write hooks so sync / outbox / cache-invalidation subscribers see the
     // upsert (it previously only scheduled an auto-render and silently skipped
     // them). _fireWriteHooks self-schedules the auto-render, so this replaces the
     // explicit call above rather than adding to it.
     await this._fireWriteHooks(table, 'update', rowWithPk, pkValue, Object.keys(sanitized));
-    // Derive computed columns. The connector sync + seed bulk-write paths reach the DB
-    // through upsert (not insert()/update()), so without this a computed field on a
-    // synced/enriched table would never populate. upsert is a full-row write → recompute all.
-    await this._deriveComputedAfterWrite(table, pkValue, null);
     return pkValue;
   }
 
@@ -1800,6 +1801,12 @@ export class Lattice {
       provenance,
     );
     this._sanitizer.emitAudit(table, 'update', auditId);
+    // Re-derive deterministic computed columns + invalidate stale AI cells BEFORE firing the
+    // write hooks. A write hook is the "write completed, react now" seam — the AI-fill driver
+    // subscribes to it and scans `WHERE col IS NULL`. If the stale cell isn't NULLed until
+    // AFTER the hook, the fill races the NULL and can skip the row, leaving it stale until the
+    // next event. Making invalidation part of the write (pre-hook) closes that race.
+    await this._deriveComputedAfterWrite(table, id, new Set(Object.keys(baseSanitized)));
     await this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     // Re-fetch full row for embedding recomputation
     const def = this._schema.getTables().get(table);
@@ -1810,15 +1817,6 @@ export class Lattice {
         pkParams,
       );
       if (fullRow) this._syncEmbedding(table, 'update', fullRow, auditId);
-    }
-    // Re-derive deterministic computed columns (#10) whose dependencies just changed.
-    if (this._computedFieldSql.has(table)) {
-      await this._recomputeComputedFieldColumns(table, id, new Set(Object.keys(baseSanitized)));
-    }
-    // Invalidate AI computed cells whose input just changed (NULL now, refill later) — the
-    // "never serve stale" contract. The refill is triggered out-of-band by fillComputedFields().
-    if (this._aiComputedFields.has(table)) {
-      await this._nullStaleAiColumns(table, id, new Set(Object.keys(baseSanitized)));
     }
     // If this table feeds a parent rollup, recompute the affected parent.
     if (this._rollupSources.has(table)) await this._propagateRollups(table, id);
@@ -2339,17 +2337,17 @@ export class Lattice {
         ...entries.map(([, v]) => v),
         existing.id,
       ]);
+      await this._deriveComputedAfterWrite(
+        table,
+        existing.id as string,
+        new Set(Object.keys(sanitized)),
+      );
       await this._fireWriteHooks(
         table,
         'update',
         withConventions,
         existing.id as string,
         Object.keys(sanitized),
-      );
-      await this._deriveComputedAfterWrite(
-        table,
-        existing.id as string,
-        new Set(Object.keys(sanitized)),
       );
       return existing.id as string;
     }
@@ -2375,8 +2373,13 @@ export class Lattice {
       `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
       Object.values(encInserted),
     );
-    await this._fireWriteHooks(table, 'insert', filtered, id);
+    // Derive BEFORE the write hooks: a hook (the GUI AI-fill driver) kicks an async
+    // fill that skips any non-null cell, so the stale cell must already be NULL when the
+    // hook fires. On a fresh insert the AI cells are NULL already, but keeping the order
+    // uniform with update/upsert removes the fragile dependency on the fill being slower
+    // than this method's synchronous tail.
     await this._deriveComputedAfterWrite(table, id, null); // full-row insert → recompute all
+    await this._fireWriteHooks(table, 'insert', filtered, id);
     return id;
   }
 
@@ -2417,17 +2420,17 @@ export class Lattice {
       ...withTs.map(([, v]) => v),
       existing.id,
     ]);
+    await this._deriveComputedAfterWrite(
+      table,
+      existing.id as string,
+      new Set(entries.map(([k]) => k)),
+    );
     await this._fireWriteHooks(
       table,
       'update',
       Object.fromEntries(entries),
       existing.id as string,
       entries.map(([k]) => k),
-    );
-    await this._deriveComputedAfterWrite(
-      table,
-      existing.id as string,
-      new Set(entries.map(([k]) => k)),
     );
     return true;
   }
