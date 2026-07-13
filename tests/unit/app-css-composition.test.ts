@@ -228,6 +228,8 @@ import { css } from '../../src/gui/app/css.js';
 // Databases tab redesign: removed the unused .connectors-dialog/.connectors-backdrop
 // side-drawer rules (both connectors + databases are inline now) and added the
 // .db-table / .db-form-grid full-width table + form styles. Recaptured.
+// MCP Connectors tab redesign reuses the .db-table/.db-* styles for its
+// full-width connected-servers table (no new connector-table CSS). Recaptured.
 const ORIGINAL_LENGTH = 161416;
 const ORIGINAL_SHA256 = '8d46ce409c10ce63a4e858ebb4913bf6c74a367960584287370f8e917326eb3b';
 

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
+import { allAsyncOrSync } from '../db/adapter.js';
 import { sendJson, readJson } from './http.js';
 import type { Connector, CredentialField } from '../connectors/types.js';
 import { isCredentialConnector, isMcpConnector } from '../connectors/types.js';
@@ -218,6 +219,21 @@ export async function dispatchConnectorsRoute(
       const connected = (await listConnectors(db, connectedBy)).filter((c) =>
         byToolkit.has(c.toolkit),
       );
+      // Per-connection synced-item counts for the table view — ONE aggregate
+      // over mcp_items (never a row load). The table may not exist before the
+      // first connect; that simply means zero counts.
+      const itemCounts = new Map<string, number>();
+      try {
+        const rows = (await allAsyncOrSync(
+          db.adapter,
+          `SELECT "_source_connector_id" AS cid, COUNT(*) AS n FROM "mcp_items" WHERE "deleted_at" IS NULL GROUP BY "_source_connector_id"`,
+          [],
+          // Postgres returns COUNT(*) as a string, SQLite as a number — coerce.
+        )) as { cid: string; n: number | string }[];
+        for (const r of rows) if (r.cid) itemCounts.set(r.cid, Number(r.n));
+      } catch {
+        // mcp_items not created yet — no connections have synced anything.
+      }
       const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
       for (const c of connectors) {
         for (const tk of c.toolkits()) toolkits.push(toolkitDescriptor(c, tk));
@@ -240,6 +256,8 @@ export async function dispatchConnectorsRoute(
             lastSyncAt: c.lastSyncAt,
             lastError: c.lastError,
             serverUrl,
+            // Synced rows are lineage-stamped with the registry row id.
+            itemCount: itemCounts.get(c.id) ?? 0,
           };
         }),
       });

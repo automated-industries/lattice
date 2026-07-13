@@ -9,6 +9,7 @@ import { seedWelcomeDashboard } from './welcome-dashboard.js';
 import { readIdentity, getOrCreateMasterKey, healRawDbUrl } from '../framework/user-config.js';
 import { registerNativeEntities, adoptNativeEntities } from '../framework/native-entities.js';
 import { reregisterDbSourceTables } from '../connectors/db-source/reregister.js';
+import { reregisterMcpConnectorTables } from '../connectors/mcp/reregister.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
@@ -328,21 +329,28 @@ export async function openConfig(
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
   // Replay the schema registration for connected external-database ("db-source")
-  // connections. defineLate at connect time is in-memory only, so on a fresh open
-  // the imported tables + rows persist on disk but are absent from the live schema
-  // — without this they vanish from /api/entities, the graph, and the Objects/
-  // Tables views after every restart. Must run BEFORE validTables is built (below)
-  // so the re-registered tables flow into it. Fault-isolated: a failure logs and
-  // the open continues; skipped for introspect-only member opens.
+  // connections AND MCP connectors. defineLate at connect time is in-memory only,
+  // so on a fresh open the imported/synced tables + rows persist on disk but are
+  // absent from the live schema — without this they vanish from /api/entities, the
+  // graph, the Tables sidebar, and the assistant's table catalog after every
+  // restart (the boot sync-if-stale pass does NOT cover MCP: it no-ops when the
+  // connector synced recently). Must run BEFORE validTables is built (below) so
+  // the re-registered tables flow into it. Fault-isolated: a failure logs and the
+  // open continues; skipped for introspect-only member opens.
   if (!memberOpen) {
-    try {
-      await reregisterDbSourceTables(db);
-    } catch (e) {
-      console.warn(
-        `[openConfig] db-source schema re-registration failed (open continues): ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
+    for (const [label, fn] of [
+      ['db-source', reregisterDbSourceTables],
+      ['mcp-connector', reregisterMcpConnectorTables],
+    ] as const) {
+      try {
+        await fn(db);
+      } catch (e) {
+        console.warn(
+          `[openConfig] ${label} schema re-registration failed (open continues): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     }
   }
 

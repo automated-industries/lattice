@@ -160,11 +160,12 @@ const BASE_SYSTEM_PROMPT = [
  * never aborts the turn.
  */
 export async function buildSchemaContext(d: DispatchCtx): Promise<string> {
+  const connected = d.connectedSources ?? '';
   const names = [...d.validTables]
     .filter((n) => !n.startsWith('_') && !ASSISTANT_HIDDEN_TABLES.has(n))
     .sort();
   if (names.length === 0) {
-    return '(no tables yet — the user must create one before you can add rows)';
+    return '(no tables yet — the user must create one before you can add rows)' + connected;
   }
   // Authored/auto-generated definitions sharpen the model's categorization +
   // extraction. Best-effort: a scoped cloud member may lack SELECT on the meta
@@ -224,7 +225,7 @@ export async function buildSchemaContext(d: DispatchCtx): Promise<string> {
       .filter((x): x is string => x != null);
     if (annotated.length > 0) lines.push(annotated.join('\n'));
   }
-  return lines.join('\n');
+  return lines.join('\n') + connected;
 }
 
 /** A record the user is referring to (viewing, or linked by a local GUI URL),

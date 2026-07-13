@@ -165,10 +165,18 @@ export const configureDrawerJs = `
     }
     function renderConnectorsTab(body) {
       if (!body) return;
-      body.innerHTML = '<div class="inputs-group"><div id="mcp-connectors-panel"></div></div>';
-      if (typeof renderConnectorsPanel === 'function') {
-        renderConnectorsPanel(body.querySelector('#mcp-connectors-panel'));
-      }
+      // Full-width (the body carries dm-wide for this tab). Inline, no drawer.
+      // The connected-servers TABLE (#mcp-connectors-list) and the add form
+      // (#mcp-connectors-form) are separate mounts: the table can refresh while
+      // the form persists, so a half-typed URL is never wiped.
+      body.innerHTML =
+        '<div class="db-panel">' +
+        '<p class="db-lead">Connect any MCP server by URL. You authorize each server directly ' +
+        'with its own sign-in; tokens are stored encrypted on this machine and synced data stays ' +
+        'local. Synced items appear as an <code>mcp_items</code> table in the sidebar.</p>' +
+        '<div id="mcp-connectors-list"></div>' +
+        '<div id="mcp-connectors-form" class="db-form-host"></div></div>';
+      if (typeof renderConnectorsPanel === 'function') renderConnectorsPanel();
     }
     function renderDatabasesTab(body) {
       if (!body) return;

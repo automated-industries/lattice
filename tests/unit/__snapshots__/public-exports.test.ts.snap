@@ -112,6 +112,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "deleteToken",
   "deriveCanonicalContexts",
   "deriveKey",
+  "describeConnectedSources",
   "describeImage",
   "describePdf",
   "detectAsOf",
