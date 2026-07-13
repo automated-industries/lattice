@@ -472,8 +472,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Design pass M3 — base classes added in markup: the import-wizard primary button carries
 // 'btn primary' and the dashboard-tab menu button carries 'btn' (matching its other
 // emitter), so the shared button chrome applies. Recaptured.
-const ORIGINAL_LENGTH = 711597;
-const ORIGINAL_SHA256 = '23bc562269f4e2c693017b37aa3adc5f48599b0c3bf1de26d732dd90823aa7cf';
+const ORIGINAL_LENGTH = 713922;
+const ORIGINAL_SHA256 = '648ba604359229c14d0bc5eb0a4ebbdfae2ae0b0a592f97b94e2adc40277b93a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

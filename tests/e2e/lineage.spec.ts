@@ -28,10 +28,22 @@ const YAML = [
 ].join('\n');
 
 let gui: BootedGui;
+async function linkFiles(table: string) {
+  const r = await fetch(`${gui.url}/api/schema/junctions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ left: 'files', right: table }),
+  });
+  if (!r.ok) throw new Error('junction create failed: ' + r.status);
+}
 test.beforeEach(async () => {
   gui = await bootGui({ yaml: YAML });
   const c = (await createRow(gui.url, 'companies', { name: 'Acme' })) as { id: string };
   await createRow(gui.url, 'deals', { title: 'Acme round', company_id: c.id });
+  // Both entities are extracted from documents → a files_<table> junction, which is what
+  // makes Files their upstream ingestion source in the lineage.
+  await linkFiles('companies');
+  await linkFiles('deals');
 });
 test.afterEach(async () => {
   await gui.close();

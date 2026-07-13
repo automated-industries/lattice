@@ -124,6 +124,32 @@ export const modelTablesJs = `
       return { upstream: upstream, downstream: downstream, byName: byName };
     }
 
+    // Map each DERIVED table → the SOURCE-tier inputs it is extracted from, inferred from
+    // the source-to-derived junction tables (e.g. files_companies links Files to Companies).
+    // No table exists without a source, but a table extracted from documents is linked to
+    // Files, while a native table (e.g. Notes) is not — so this is accurate per table, not a
+    // blanket "everything comes from Files". These junctions are HIDDEN from the brain graph
+    // (Files/connectors aren't graph nodes), so they're read from the entity list directly.
+    function mtInputSources() {
+      var tabs = (state.entities && state.entities.tables) || [];
+      var names = {}, sources = [];
+      tabs.forEach(function (t) {
+        names[t.name] = true;
+        if (mtClassifyTier(t) === 'source' && t.name !== 'secrets') sources.push(t.name);
+      });
+      var map = {}; // derived table name → [source input names]
+      tabs.forEach(function (t) {
+        if (mtClassifyTier(t) === 'source' || isJunction(t)) return;
+        for (var i = 0; i < sources.length; i++) {
+          var s = sources[i];
+          if (names[s + '_' + t.name] || names[t.name + '_' + s]) {
+            (map[t.name] = map[t.name] || []).push(s);
+          }
+        }
+      });
+      return map;
+    }
+
     // Highlight the selected card + its directly connected cards in the tier
     // columns (the "see how tables are connected" affordance, without a fragile
     // absolute-positioned edge overlay). Re-applied on every selection.
@@ -217,11 +243,15 @@ export const modelTablesJs = `
         var level = mtLevel();
         var up = (lineage.upstream[table] || []).slice();
         var down = lineage.downstream[table] || [];
-        // No table exists without a source: a non-source (derived) table is ingested from
-        // Files, so surface Files as its root source when nothing else already covers it.
-        if (e.tier !== 'source' && lineage.byName.files) {
-          var hasFiles = up.some(function (x) { return x.table === 'files'; });
-          if (!hasFiles) up.unshift({ table: 'files', field: '', kind: 'ingest' });
+        // A derived table is extracted from its input SOURCE(s) — the Files it was read from
+        // (or a connector), inferred from the source↔derived junctions. Surface those as its
+        // upstream so the table's real provenance shows, not just its belongsTo parents.
+        if (e.tier !== 'source') {
+          (mtInputSources()[table] || []).forEach(function (s) {
+            if (lineage.byName[s] && !up.some(function (x) { return x.table === s; })) {
+              up.unshift({ table: s, field: '', kind: 'ingest' });
+            }
+          });
         }
         if (!up.length && !down.length) { host.innerHTML = ''; return; }
         var cardOf = function (x) {
@@ -598,42 +628,22 @@ export const modelTablesJs = `
       svg.setAttribute('height', String(H));
       svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
       var sx = tiers.scrollLeft, sy = tiers.scrollTop;
-      (mtEdgesCache || []).forEach(function (e) {
-        // Connector LINES are for many-to-many links plus computed-table
-        // projections (drawn dashed) — a belongsTo (1:N) shows as
-        // nesting/indentation in the tier list, not a line.
-        if (e.type !== 'manyToMany' && e.type !== 'computes') return;
-        var s = String(e.source).replace(/^table:/, '');
-        var t = String(e.target).replace(/^table:/, '');
-        if (s === t) return;
-        var a = tiers.querySelector('.mt-card[data-table="' + s + '"]');
-        var b = tiers.querySelector('.mt-card[data-table="' + t + '"]');
+      // Draw ONE connector between two cards. Same-column cards (their x-ranges overlap)
+      // bow out into a side gutter; cards in different columns get a horizontal S-curve.
+      var drawEdge = function (a, b, cls) {
         if (!a || !b) return;
         var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
         var ay = ra.top - gr.top + sy + ra.height / 2;
         var by = rb.top - gr.top + sy + rb.height / 2;
         var d;
-        // Same-column cards (their x-ranges overlap) would have a straight link
-        // run hidden behind the stacked cards. Loop it out into a side gutter
-        // where it reads clearly; the bow scales with the vertical gap. Cards in
-        // different columns keep the horizontal S-curve across the gap between them.
         var overlapX = Math.max(ra.left, rb.left) < Math.min(ra.right, rb.right);
         if (overlapX) {
-          // The tiers grid wraps to fewer/narrower columns when the Model pane is
-          // narrow, so a card's right edge can sit flush against the container's
-          // right edge. .mt-tiers is overflow:auto, so a bow past the content box
-          // is CLIPPED — the link vanishes even though it's drawn (the "linked but
-          // no line in table view" bug). Bow toward whichever side has more room
-          // and clamp the control point inside [pad, W-pad] so it can never be
-          // clipped; the bow depth still scales with the vertical gap.
+          // Clamp the bow inside [pad, W-pad] so an overflow:auto clip can never hide it.
           var pad = 4;
-          var ax = ra.right - gr.left + sx;
-          var bx = rb.right - gr.left + sx;
-          var lax = ra.left - gr.left + sx;
-          var lbx = rb.left - gr.left + sx;
+          var ax = ra.right - gr.left + sx, bx = rb.right - gr.left + sx;
+          var lax = ra.left - gr.left + sx, lbx = rb.left - gr.left + sx;
           var bow = Math.max(44, Math.abs(by - ay) * 0.6);
-          var rightAnchor = Math.max(ax, bx);
-          var leftAnchor = Math.min(lax, lbx);
+          var rightAnchor = Math.max(ax, bx), leftAnchor = Math.min(lax, lbx);
           if (W - rightAnchor >= leftAnchor) {
             var gr2 = Math.min(rightAnchor + bow, W - pad);
             d = 'M ' + ax + ' ' + ay + ' C ' + gr2 + ' ' + ay + ', ' + gr2 + ' ' + by + ', ' + bx + ' ' + by;
@@ -649,8 +659,26 @@ export const modelTablesJs = `
         }
         var path = document.createElementNS(SVGNS, 'path');
         path.setAttribute('d', d);
-        path.setAttribute('class', e.type === 'computes' ? 'mt-edge mt-edge-computes' : 'mt-edge mt-edge-m2m');
+        path.setAttribute('class', cls);
         svg.appendChild(path);
+      };
+      var cardEl = function (name) { return tiers.querySelector('.mt-card[data-table="' + name + '"]'); };
+      // Many-to-many links + computed-table projections (a belongsTo 1:N shows as
+      // nesting/indentation in the tier list, not a line).
+      (mtEdgesCache || []).forEach(function (e) {
+        if (e.type !== 'manyToMany' && e.type !== 'computes') return;
+        var s = String(e.source).replace(/^table:/, ''), t = String(e.target).replace(/^table:/, '');
+        if (s === t) return;
+        drawEdge(cardEl(s), cardEl(t), e.type === 'computes' ? 'mt-edge mt-edge-computes' : 'mt-edge mt-edge-m2m');
+      });
+      // Ingestion connectors: each SOURCE input → the DERIVED tables it feeds (the
+      // source↔derived junctions, which the brain graph hides). Matches the table-view
+      // lineage, where a derived table shows its input(s) upstream.
+      var srcMap = mtInputSources();
+      Object.keys(srcMap).forEach(function (derived) {
+        srcMap[derived].forEach(function (src) {
+          drawEdge(cardEl(src), cardEl(derived), 'mt-edge mt-edge-ingest');
+        });
       });
     }
 
@@ -741,12 +769,30 @@ export const modelTablesJs = `
             '<details id="mt-computed-sql"><summary>Definition (SQL)</summary><pre class="mt-computed-sqlpre" id="mt-computed-sqlpre"></pre></details>' +
           '</div>'
         : '';
+      // A DERIVED table has no SQL — it is AI-extracted from its input SOURCE(s). Surface
+      // that derivation as its "Definition", parallel to a computed table's SQL, so every
+      // derived table shows what it is built from. Click a source to open it.
+      var derivSources =
+        e.computedTable || e.tier === 'source' ? [] : mtInputSources()[e.name] || [];
+      var derivationHtml = derivSources.length
+        ? '<div class="mt-detail-sec mt-deriv-sec"><h4>Definition</h4>' +
+            '<div class="mt-deriv">Extracted from ' +
+            derivSources
+              .map(function (s) {
+                return '<button type="button" class="mt-lin-chip mt-deriv-src" data-lin="' + escapeHtml(s) + '">' +
+                  '<span class="mt-card-ic">' + icOf(s) + '</span>' + escapeHtml(labOf(s)) + '</button>';
+              })
+              .join('') +
+            ' by AI ingestion — records are read out of your documents, so this table is defined ' +
+            'by that extraction rather than a SQL query.</div></div>'
+        : '';
       panel.innerHTML =
         '<div class="mt-detail-head"><span class="mt-card-ic">' + e.icon + '</span>' +
           '<span class="mt-detail-title">' + escapeHtml(e.label) + '</span>' +
           '<button type="button" class="mt-detail-close" id="mt-detail-close" aria-label="Close">\\u2715</button></div>' +
         '<div class="mt-detail-sub">' + sub + '</div>' +
         computedHtml +
+        derivationHtml +
         flHtml + upHtml + downHtml +
         '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>' +
         '<a class="mt-detail-open" href="#/w/table/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>' +
