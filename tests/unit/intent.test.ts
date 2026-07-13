@@ -113,4 +113,37 @@ describe('runIntent', () => {
     expect(sent.toLowerCase()).toContain('not ambiguous');
     expect(r.needs_work).toBe(true);
   });
+
+  it('passes recent conversation so a bare "yes" is resolved in context, not judged in a vacuum', async () => {
+    // Regression: a context-dependent reply ("yes" answering the assistant's offer to
+    // create a record) was classified with NO history, so the intent pass saw a standalone
+    // "yes", flagged it needs_more_info, and short-circuited the turn with a fresh greeting
+    // ("Hi! …what would you like me to do?") instead of continuing.
+    const { client, calls } = fakeClient(
+      '```json\n{"ack_message":"On it — creating that record…","needs_work":true,"needs_more_info":false}\n```',
+    );
+    const recentContext =
+      'User: why are there only 2 people listed\n' +
+      'Assistant: Jordan Lee is missing. Would you like me to create a person record for Jordan Lee?';
+    const r = await runIntent(client, 'yes', {
+      operatorName: 'Ada',
+      tableNames: ['people'],
+      recentContext,
+    });
+    const sent = JSON.stringify(calls[0]!.messages);
+    // The prior turn reaches the prompt, and the classifier is told a short continuation
+    // reply is NOT ambiguous and should route to the real work.
+    expect(sent).toContain('create a person record for Jordan Lee');
+    expect(sent.toLowerCase()).toContain('continuation');
+    expect(r.needs_work).toBe(true);
+  });
+
+  it('omits the recent-conversation block entirely when there is no history (first turn)', async () => {
+    const { client, calls } = fakeClient(
+      '```json\n{"ack_message":"Hi! How can I help?","needs_work":false,"needs_more_info":false}\n```',
+    );
+    await runIntent(client, 'hey there', { operatorName: 'Ada' });
+    const sent = JSON.stringify(calls[0]!.messages);
+    expect(sent.toLowerCase()).not.toContain('recent conversation');
+  });
 });

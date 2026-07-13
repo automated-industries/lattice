@@ -50,8 +50,8 @@ export const workspaceSwitchProgressJs = `    // ──────────�
     // Workspace home, rather than a center tab. Returns {tab, subtab} or null.
     function configureRouteFor(hash) {
       hash = hash || '';
-      if (hash === '#/graph') return { tab: 'datamodel', subtab: 'graph' };
-      if (hash === '#/tables') return { tab: 'datamodel', subtab: 'tables' };
+      if (hash === '#/graph') return { tab: 'graph' };
+      if (hash === '#/tables') return { tab: 'datamodel' };
       if (hash === '#/settings/history') return { tab: 'history' };
       // Lattice tab merged into User.
       if (hash === '#/settings/lattice') return { tab: 'user' };

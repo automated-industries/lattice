@@ -9,7 +9,7 @@ import { bootGui, createRow, type BootedGui } from './helpers.js';
  * one populates the `files` entity (visible in the sidebar Files section /
  * Configure drawer Inputs) but must NOT add a node to the brain graph, which
  * shows object↔object relationships only. The graph now lives in the Configure
- * drawer's Data Model → Graph subtab (#graph-mount), reached via the `#/graph`
+ * drawer's own Graph tab (#graph-mount), reached via the `#/graph`
  * deep link; its nodes are still `g.gnode[data-id]`. This guards the "files is
  * hidden from the graph" invariant (GRAPH_HIDDEN_TABLES) end-to-end, and that
  * the graph keeps rendering real objects across an ingest.

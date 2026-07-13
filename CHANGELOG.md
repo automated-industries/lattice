@@ -8,7 +8,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **Graph is now its own Configure tab, full width.** The schema graph moved out of the Data
+  Model tab into its own top-level Configure tab (Data Model · **Graph** · Files · Connectors ·
+  Databases · Workspace · User). Both Data Model and Graph now span the full width of the
+  Configure drawer — the fixed side panel is gone. On the graph, **Link** and **Merge** are
+  available (click the button, then two nodes), and clicking a table node drills into that
+  table's rows shown as a graph. Selecting a table in Data Model shows its detail; opening the
+  column/relationship editor stays optional.
+
+- **The Welcome dashboard fills its tab.** The onboarding dashboard template now renders full
+  width (no centered narrow column) and drops its in-page "Welcome to Lattice!" heading, since
+  the tab already carries that title. Existing workspaces refresh to the new layout on open
+  (a user-edited Welcome dashboard is left untouched).
+
+### Fixed
+
+- **The assistant no longer loses the thread on a short reply.** Answering the assistant's
+  question or offer with a bare "yes" (or "the first one", "do that") is now understood as a
+  continuation: the fast intake step sees the last couple of turns, so a context-dependent
+  reply routes to the real work instead of being treated as a standalone message and answered
+  with a fresh "how can I help?".
+
 ### Added
+
+- **See a table's data lineage above its rows.** Opening a table now shows a lineage map over
+  the rows: the table and its fields in the centre, the upstream sources / transformations /
+  links that feed it on the left, and the downstream tables that consume it on the right —
+  using the same chips as the Data Model explorer. Click any linked table to open it, selected,
+  in the Data Model tab.
 
 - **Share a dashboard and its data comes with it.** On a shared cloud workspace, sharing a
   dashboard — to everyone, or with specific people — now also shares the data that dashboard

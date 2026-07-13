@@ -36,7 +36,10 @@ describe('Welcome onboarding dashboard seed', () => {
     > | null;
     expect(row).toBeTruthy();
     expect(row?.title).toBe(WELCOME_DASHBOARD_TITLE);
-    expect(String(row?.html)).toContain('Welcome to Lattice!');
+    // The redundant "Welcome to Lattice!" heading was removed from the HTML — the tab
+    // title already carries it (the template renders full width without it).
+    expect(String(row?.html)).not.toContain('<h1>Welcome to Lattice!</h1>');
+    expect(String(row?.html)).not.toContain('max-width: 860px');
     expect(String(row?.html)).toContain('Ask your company anything');
     expect(String(row?.html)).toContain('Things you can do with Lattice');
     // The assistant works from `spec`, never the executable `html`.

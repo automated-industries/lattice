@@ -178,10 +178,78 @@ export const modelTablesJs = `
     }
     function renderModelTables(host) {
       if (!host) return;
-      if (mtEdgesCache) { mtRenderTables(host, mtEdgesCache); return; }
+      if (mtEdgesCache) { mtRenderTables(host, mtEdgesCache); mtApplyPendingSelect(); return; }
       fetchJson('/api/graph?schema=1')
-        .then(function (g) { mtEdgesCache = (g && g.edges) || []; mtRenderTables(host, mtEdgesCache); })
-        .catch(function () { mtRenderTables(host, []); });
+        .then(function (g) { mtEdgesCache = (g && g.edges) || []; mtRenderTables(host, mtEdgesCache); mtApplyPendingSelect(); })
+        .catch(function () { mtRenderTables(host, []); mtApplyPendingSelect(); });
+    }
+
+    // A table to auto-select once the Data Model explorer has rendered (set by
+    // openDataModelForTable, e.g. a lineage-node click in the table view).
+    var mtPendingSelect = null;
+    function openDataModelForTable(table) {
+      mtPendingSelect = table || null;
+      if (typeof openConfigureDrawer === 'function') openConfigureDrawer('datamodel');
+    }
+    function mtApplyPendingSelect() {
+      if (!mtPendingSelect) return;
+      var t = mtPendingSelect; mtPendingSelect = null;
+      var entities = mtBuildModel();
+      var lineage = mtLineage(entities, mtEdgesCache || []);
+      if (lineage.byName[t] && typeof mtOpenDetail === 'function') mtOpenDetail(t, null, entities, lineage);
+    }
+
+    // The DATA LINEAGE panel shown above a table's rows (the SQL-runner view): the
+    // current table + its fields centred, its upstream sources/transformations/links on
+    // the LEFT and its downstream consumers on the RIGHT — the same chips + adjacency the
+    // Configure → Data Model explorer uses. Clicking any linked table opens it selected in
+    // the Data Model tab. Empty (a table with no links) → the panel renders nothing.
+    function renderTableLineage(host, table) {
+      if (!host) return;
+      var draw = function (edges) {
+        var live = document.getElementById('table-lineage');
+        if (live) host = live;
+        if (!host) return;
+        var entities = mtBuildModel();
+        var lineage = mtLineage(entities, edges);
+        var e = lineage.byName[table];
+        if (!e) { host.innerHTML = ''; return; }
+        var up = lineage.upstream[table] || [];
+        var down = lineage.downstream[table] || [];
+        if (!up.length && !down.length) { host.innerHTML = ''; return; }
+        var icOf = function (t) { var d = lineage.byName[t]; return d ? d.icon : '\\ud83d\\udce6'; };
+        var labOf = function (t) { var d = lineage.byName[t]; return d ? d.label : t; };
+        var chip = function (x) {
+          return '<button type="button" class="lin-node" data-lin-table="' + escapeHtml(x.table) + '">' +
+            '<span class="lin-node-ic">' + icOf(x.table) + '</span>' +
+            '<span class="lin-node-lab">' + escapeHtml(labOf(x.table)) + '</span>' +
+            (x.field ? '<span class="lin-node-via">' + escapeHtml(x.field) + '</span>' : '') +
+            '</button>';
+        };
+        var col = function (items, cls, heading) {
+          return '<div class="lin-col ' + cls + '"><div class="lin-col-h">' + heading + '</div>' +
+            (items.length ? items.map(chip).join('') : '<div class="lin-col-none">\\u2014</div>') + '</div>';
+        };
+        var fieldsHtml = e.fields.map(function (f) {
+          return '<div class="lin-field mt-c-' + f.cls + '">' + escapeHtml(f.name) + '</div>';
+        }).join('');
+        var center =
+          '<div class="lin-center"><div class="lin-center-node"><span class="lin-node-ic">' + e.icon + '</span>' +
+          '<span class="lin-center-lab">' + escapeHtml(e.label) + '</span></div>' +
+          '<div class="lin-fields">' + fieldsHtml + '</div></div>';
+        host.innerHTML =
+          '<details class="lineage-wrap" open><summary class="lineage-sum">Data lineage</summary>' +
+          '<div class="lineage-grid">' +
+            col(up, 'lin-up', 'Upstream \\u00b7 sources') + center + col(down, 'lin-down', 'Downstream \\u00b7 consumers') +
+          '</div></details>';
+        host.querySelectorAll('.lin-node[data-lin-table]').forEach(function (b) {
+          b.addEventListener('click', function () { openDataModelForTable(b.getAttribute('data-lin-table')); });
+        });
+      };
+      if (mtEdgesCache) draw(mtEdgesCache);
+      else fetchJson('/api/graph?schema=1')
+        .then(function (g) { mtEdgesCache = (g && g.edges) || []; draw(mtEdgesCache); })
+        .catch(function () { draw([]); });
     }
 
     function mtRenderTables(host, edges) {

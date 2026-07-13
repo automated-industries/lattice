@@ -129,18 +129,23 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     }
 
     /* ── Configure drawer: Data Model + Inputs tabs ── */
-    .dm-subtabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
-    .dm-subtabs .tab { border: 0; background: none; padding: 8px 12px; cursor: pointer;
-      color: var(--text-muted); font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; }
-    .dm-subtabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-    .dm-tables-merge { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+    /* Data Model + Graph are their own Configure tabs and run EDGE-TO-EDGE — the drawer's
+       980px reading cap is lifted for them so the explorer / graph canvas span the pane. */
+    .settings-drawer .drawer-body.dm-wide { max-width: none; }
     .dm-panel { min-width: 0; }
-    /* The Graph subtab shares this grid. .brain-graph is height:100%, but a grid cell
-       in an align-items:start, auto-height grid is an indefinite containing block, so
-       that percentage would collapse the graph canvas to 0. Pin it to the same 64vh the
-       standalone #graph-mount uses so the force-graph canvas has a real height. */
-    .dm-tables-merge .brain-graph { height: 64vh; }
-    @media (max-width: 900px) { .dm-tables-merge { grid-template-columns: 1fr; } }
+    /* Data Model tab: the tiered Tables explorer full width. The optional
+       column/relationship editor drops in BELOW it (full width), never a fixed side
+       column, so selecting an object keeps the explorer spanning the whole pane. */
+    .dm-fullwidth { display: block; }
+    .dm-fullwidth #model-tables-host { width: 100%; }
+    .dm-fullwidth .dm-panel { margin-top: 12px; }
+    .dm-fullwidth .dm-panel:empty { margin-top: 0; }
+    /* Graph tab: a Link/Merge (+ drill Back) toolbar over a full-height graph canvas. */
+    .graph-tab { display: flex; flex-direction: column; height: 76vh; }
+    .graph-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .graph-tools-spacer { flex: 1 1 auto; }
+    .graph-drill-label { font-weight: 600; font-size: 14px; }
+    .graph-tab .brain-graph { flex: 1 1 auto; height: auto; min-height: 0; }
     .inputs-group { margin-bottom: 20px; }
     .inputs-files-toggle { display: inline-flex; gap: 2px; }
     .ift-btn { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted);

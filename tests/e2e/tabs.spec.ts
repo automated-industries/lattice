@@ -3,19 +3,18 @@ import { bootGui, createRow, type BootedGui } from './helpers.js';
 
 /**
  * Single-layout reframe — the old two-view "Model" area (a fixed Objects / Graph /
- * Tables tab strip with sticky per-section highlighting) is GONE. The schema
- * surfaces now live in the Configure drawer's Data Model tab, which has two
- * subtabs: Tables (the tiered explorer) and Graph (the brain graph). The old
- * Objects/Folders index view was removed entirely; a table's rows are opened as a
- * single Workspace table tab (#/w/table/<name>), and every legacy record namespace
- * (#/fs/*, #/tables/*, #/graph/<obj>) converges onto that ONE tab.
+ * Tables tab strip) is GONE. The schema surfaces live in the Configure drawer, where
+ * Data Model (the tiered Tables explorer, full width) and Graph (the brain graph, full
+ * width) are now their OWN top-level Configure tabs — no in-Data-Model subtabs. A
+ * table's rows open as a single Workspace table tab (#/w/table/<name>); every legacy
+ * record namespace (#/fs/*, #/tables/*, #/graph/<obj>) converges onto that ONE tab.
  *
  * These tests re-express the original intents on the new surfaces:
- *  - Data Model exposes exactly the Tables + Graph subtabs, Tables default.
- *  - Switching subtabs swaps the explorer ⇄ graph.
+ *  - Configure exposes Data Model and Graph as separate tabs.
+ *  - Data Model shows the tiered explorer full width; Graph shows the brain graph.
  *  - A non-empty object appears as a node in the graph.
  *  - Record drill-ins never spawn a second tab; legacy namespaces converge.
- *  - The drawer explorer's "Open object" opens the table's rows as a Workspace tab.
+ *  - The Data Model explorer's "Open object" opens the table's rows as a Workspace tab.
  */
 
 let gui: BootedGui;
@@ -41,58 +40,56 @@ async function bootReady(page: import('@playwright/test').Page) {
   });
 }
 
-// Navigate (in-page, no reload — keeps state.entities) to a Configure-drawer route
-// and wait for the drawer to open. `#/tables` / `#/graph` open Data Model to that
-// subtab; `#/settings/data-model` opens Data Model with no forced subtab (default).
-async function openDataModel(
+// Navigate (in-page, no reload — keeps state.entities) to a Configure-drawer route and
+// wait for the drawer to open on the expected tab. `#/tables` / `#/settings/data-model`
+// open the Data Model tab; `#/graph` opens the Graph tab.
+async function openConfigure(
   page: import('@playwright/test').Page,
   hash: '#/tables' | '#/graph' | '#/settings/data-model',
+  activeTab: 'datamodel' | 'graph',
 ) {
   await page.evaluate((h) => {
     window.location.hash = h;
   }, hash);
   await page.waitForSelector('#settings-drawer.open', { timeout: 10000 });
-  await page.waitForSelector('.drawer-tab[data-tab="datamodel"].active', { timeout: 10000 });
+  await page.waitForSelector(`.drawer-tab[data-tab="${activeTab}"].active`, { timeout: 10000 });
 }
 
-test('Data Model exposes the Tables + Graph subtabs; Tables is the default; Graph renders on click', async ({
+test('Configure exposes Data Model and Graph as separate top-level tabs', async ({ page }) => {
+  await bootReady(page);
+  await openConfigure(page, '#/settings/data-model', 'datamodel');
+  // Both Data Model and Graph are peer Configure tabs (not subtabs of one another).
+  await expect(page.locator('.drawer-tab[data-tab="datamodel"]')).toBeVisible();
+  await expect(page.locator('.drawer-tab[data-tab="graph"]')).toBeVisible();
+  // No in-Data-Model subtab strip survives.
+  await expect(page.locator('.dm-subtabs')).toHaveCount(0);
+  // Data Model lands on the tiered explorer, full width.
+  await expect(page.locator('.drawer-body.dm-wide #model-tables-host .mt')).toBeVisible({
+    timeout: 5000,
+  });
+});
+
+test('the Data Model tab shows the explorer; the Graph tab shows the brain graph', async ({
   page,
 }) => {
   await bootReady(page);
-  // Open Data Model with no forced subtab — the default subtab must be Tables.
-  await openDataModel(page, '#/settings/data-model');
-  const tablesSub = page.locator('.dm-subtabs .tab[data-dmsub="tables"]');
-  const graphSub = page.locator('.dm-subtabs .tab[data-dmsub="graph"]');
-  await expect(tablesSub).toBeVisible({ timeout: 5000 });
-  await expect(graphSub).toBeVisible();
-  await expect(tablesSub).toHaveText(/tables/i);
-  await expect(graphSub).toHaveText(/graph/i);
-  await expect(tablesSub).toHaveClass(/active/); // the landing subtab
-  // Exactly two subtabs, neither closable (the drawer surface has no tab-close).
-  await expect(page.locator('.dm-subtabs .tab')).toHaveCount(2);
-  await expect(page.locator('.dm-subtabs .tab .tab-close')).toHaveCount(0);
-  // Graph renders into the drawer body when its subtab is clicked.
-  await graphSub.click();
-  await expect(page.locator('.brain-graph #graph-mount')).toBeVisible();
-});
-
-test('the Tables subtab shows the tiered explorer; Graph restores the graph', async ({ page }) => {
-  await bootReady(page);
-  await openDataModel(page, '#/tables');
-  await expect(page.locator('.dm-subtabs .tab[data-dmsub="tables"]')).toHaveClass(/active/);
+  await openConfigure(page, '#/tables', 'datamodel');
   await expect(page.locator('#model-tables-host .mt')).toBeVisible({ timeout: 5000 });
-  // Switching to Graph swaps the explorer for the brain graph.
-  await page.locator('.dm-subtabs .tab[data-dmsub="graph"]').click();
-  await expect(page.locator('.dm-subtabs .tab[data-dmsub="graph"]')).toHaveClass(/active/);
-  await expect(page.locator('.brain-graph #graph-mount')).toBeVisible();
-  // …and back to Tables restores the explorer.
-  await page.locator('.dm-subtabs .tab[data-dmsub="tables"]').click();
+  // The Graph tab is a peer Configure tab — clicking it swaps to the brain graph.
+  await page.locator('.drawer-tab[data-tab="graph"]').click();
+  await expect(page.locator('.drawer-tab[data-tab="graph"].active')).toBeVisible();
+  await expect(page.locator('.graph-tab .brain-graph #graph-mount')).toBeVisible();
+  // Link / Merge controls are present on the graph.
+  await expect(page.locator('#wm-wire-btn')).toBeVisible();
+  await expect(page.locator('#wm-merge-btn')).toBeVisible();
+  // …and back to Data Model restores the explorer.
+  await page.locator('.drawer-tab[data-tab="datamodel"]').click();
   await expect(page.locator('#model-tables-host .mt')).toBeVisible({ timeout: 5000 });
 });
 
 test('a non-empty object appears as a node in the graph', async ({ page }) => {
   await bootReady(page);
-  await openDataModel(page, '#/graph');
+  await openConfigure(page, '#/graph', 'graph');
   // `items` has a row → its node is present in the graph. Assert topology (the node
   // exists), not the force-graph reveal animation (slow in headless CI; covered by
   // graph-layout.spec).
@@ -129,14 +126,14 @@ test('record drill-ins never spawn a second tab; legacy namespaces converge on o
   await expect(page.locator('#antabstrip-tabs .tab[data-key="table:items"]')).toHaveClass(/active/);
 });
 
-// Regression: the drawer Tables explorer and the Workspace object page are wired
-// together — the explorer's "Open object" opens that table's rows as a Workspace
-// table tab (the single-layout replacement for the old Tables-section object page).
-test('the Tables explorer "Open object" opens the table rows as a Workspace tab', async ({
+// Regression: the Data Model explorer and the Workspace object page are wired together —
+// the explorer's "Open object" opens that table's rows as a Workspace table tab (the
+// single-layout replacement for the old Tables-section object page).
+test('the Data Model explorer "Open object" opens the table rows as a Workspace tab', async ({
   page,
 }) => {
   await bootReady(page);
-  await openDataModel(page, '#/tables');
+  await openConfigure(page, '#/tables', 'datamodel');
   // Open the `items` card's detail panel, then its "Open object →" link.
   await page.locator('#model-tables-host .mt-card[data-table="items"]').click();
   const openLink = page.locator('#mt-detail .mt-detail-open[href="#/w/table/items"]');

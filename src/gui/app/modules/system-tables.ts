@@ -15,6 +15,9 @@ export const systemTablesJs = `    // ──────────────
     // Bumped on every schema-graph render so an in-flight progressive reveal from a
     // previous render (or a navigation) cancels instead of feeding a stale handle.
     var graphRevealGen = 0;
+    // What a plain (non-wire/merge) schema-graph node click does. The Graph Configure tab
+    // sets this to drill into that table's rows; null falls back to opening the row view.
+    var schemaNodeDrill = null;
 
     /** Columns that are structurally part of every entity and shouldn't be
      * renamed or removed from the GUI. id is the primary key; deleted_at is
@@ -72,12 +75,10 @@ export const systemTablesJs = `    // ──────────────
     function renderEntityGraph(content, table) {
       if (!content) content = document.getElementById('content');
       if (!content) return;
-      dmActiveTable = null;
       if (!tableByName(table)) {
         content.innerHTML = '<div class="brain-graph"><div class="empty-state">Unknown object: ' + escapeHtml(table) + '</div></div>';
         return;
       }
-      var myGen = ++graphRevealGen;
       var d = displayFor(table);
       content.innerHTML =
         '<div class="brain-graph entity-graph">' +
@@ -87,6 +88,17 @@ export const systemTablesJs = `    // ──────────────
           '</div>' +
           '<div id="graph-mount"><div class="graph-loading"><div class="graph-spinner"></div></div></div>' +
         '</div>';
+      renderEntityGraphInto(document.getElementById('graph-mount'), table, {});
+    }
+    // Render one entity's rows as nodes into the given mount (each row linked to the parent
+    // rows its FKs name). opts.onRecord(table,id) overrides a row-node click.
+    function renderEntityGraphInto(mount, table, opts) {
+      opts = opts || {};
+      if (!mount) return;
+      dmActiveTable = null;
+      if (!tableByName(table)) { mount.innerHTML = '<div class="empty-state">Unknown object: ' + escapeHtml(table) + '</div>'; return; }
+      var myGen = ++graphRevealGen;
+      var d = displayFor(table);
       var modP = loadForceGraph();
       var t = tableByName(table);
       var belongs = [];
@@ -142,12 +154,13 @@ export const systemTablesJs = `    // ──────────────
               nodes: [], edges: [],
               reducedMotion: graphReducedMotion(),
               onNode: function (node) {
-                // Click a node → that record's entity page, kept in the Graph section
-                // (#/graph/<table>/<id>) so the Graph tab stays lit + breadcrumb roots
-                // at Graph. The shared record renderer handles it via section='graph'.
+                // Click a row node → that record. opts.onRecord overrides the target (the
+                // Graph tab opens the record's row view); default is the #/graph record route.
                 var sep = node.id.indexOf(':');
                 if (sep < 0) return;
-                location.hash = '#/graph/' + encodeURIComponent(node.id.slice(0, sep)) + '/' + encodeURIComponent(node.id.slice(sep + 1));
+                var nt = node.id.slice(0, sep), nid = node.id.slice(sep + 1);
+                if (typeof opts.onRecord === 'function') opts.onRecord(nt, nid);
+                else location.hash = '#/graph/' + encodeURIComponent(nt) + '/' + encodeURIComponent(nid);
               },
             });
             revealGraphInWaves(nodes, edges, myGen);
@@ -274,27 +287,27 @@ export const systemTablesJs = `    // ──────────────
             reducedMotion: graphReducedMotion(),
             onNode: function (node) {
               // In Wire/Merge mode a node click picks a source then a target (drag
-              // stays off the graph, which owns node repositioning). Otherwise the
-              // graph lives in the Configure → Data Model → Graph drawer, so a click
-              // opens that entity's editor in the side panel (#dm-panel) — there is
-              // no separate entity-graph route in the single layout.
+              // stays off the graph, which owns node repositioning). Otherwise drill
+              // into that table's rows (the Graph tab sets schemaNodeDrill); with no
+              // drill hook, open the table's row view.
               if (typeof wmModeClick === 'function' && wmModeClick(node.id)) return;
-              dmShowEntityEditor(node.id);
               if (schemaGraphHandle) schemaGraphHandle.setSelected(node.id);
+              if (typeof schemaNodeDrill === 'function' && schemaNodeDrill) schemaNodeDrill(node.id);
+              else location.hash = '#/w/table/' + encodeURIComponent(node.id);
             },
             onEdge: function (edge) {
-              // m2m → open the junction table; FK → open the child (source) table.
+              // m2m → drill the junction table; FK → drill the child (source) table.
+              var target = edge.source;
               if (edge.marker === 'm2m') {
                 var j = junctionsFor(edge.source).find(function (x) { return x.remoteRel.table === edge.target; }) ||
                         junctionsFor(edge.target).find(function (x) { return x.remoteRel.table === edge.source; });
-                dmShowEntityEditor(j ? j.junction : edge.source);
-              } else {
-                dmShowEntityEditor(edge.source);
+                target = j ? j.junction : edge.source;
               }
+              if (typeof schemaNodeDrill === 'function' && schemaNodeDrill) schemaNodeDrill(target);
+              else location.hash = '#/w/table/' + encodeURIComponent(target);
             },
           });
           revealGraphInWaves(data.nodes, data.edges, myGen);
-          if (dmActiveTable) { dmShowEntityEditor(dmActiveTable); schemaGraphHandle.setSelected(dmActiveTable); }
         }).catch(function (err) {
           var m = document.getElementById('graph-mount');
           if (m) m.innerHTML = '<div class="empty-state">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
