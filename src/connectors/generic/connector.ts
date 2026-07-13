@@ -21,6 +21,7 @@
  * introspective mode, and obvious write tools are never called.
  */
 
+import { createHash } from 'node:crypto';
 import {
   McpConnectorBase,
   type McpModelBinding,
@@ -29,6 +30,17 @@ import {
 import { mcpModel, str, jsonCol, arrayField } from '../mcp/connected-model.js';
 import { letterIcon } from '../mcp/icon.js';
 import { getMcpServerUrl } from '../mcp/oauth.js';
+import {
+  getMcpSchemaDescriptor,
+  setMcpSchemaDescriptor,
+  buildMcpModelDefs,
+  kindFromTool,
+  inferKind,
+  connectionIdFromToolkit,
+  type McpKindDesc,
+  type McpSchemaDescriptor,
+} from '../mcp/schema-cache.js';
+import { slugify } from '../db-source/schema-cache.js';
 import type {
   ConnectedModelDef,
   ExternalRecord,
@@ -36,6 +48,47 @@ import type {
   McpServerSpec,
   ToolkitPresentation,
 } from '../types.js';
+
+/** Pull the array of records out of a tool result (the array itself, or wrapped). */
+function itemsOf(result: unknown): unknown[] {
+  const found = arrayField(result, ['items', 'results', 'data', 'records', 'value', 'entries']);
+  return found.length > 0 ? found : result != null ? [result] : [];
+}
+
+/** A stable natural key for an item lacking an id field — a content hash namespaced by tool,
+ *  so re-syncs upsert on unchanged content (and a changed item prunes + re-adds). */
+function contentKey(tool: string, item: unknown): string {
+  return (
+    tool +
+    ':' +
+    createHash('sha1')
+      .update(JSON.stringify(item ?? null))
+      .digest('hex')
+      .slice(0, 20)
+  );
+}
+
+/** Map one raw item onto a typed row for its kind: scalar modeled columns + a `data` JSON
+ *  overflow. Returns the ExternalRecord (id = the natural-key value or a content hash). */
+function typedRecord(kind: McpKindDesc, item: unknown): ExternalRecord {
+  const obj =
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? (item as Record<string, unknown>)
+      : { value: item };
+  const row: Record<string, unknown> = {};
+  for (const c of kind.columns) {
+    const v = obj[c.name];
+    // Only scalars become columns; null/undefined/nested go to the `data` overflow. Narrowed
+    // so String() is never applied to an object (base-to-string).
+    if (typeof v === 'string') row[c.name] = v;
+    else if (typeof v === 'number') row[c.name] = c.sqlSpec === 'TEXT' ? String(v) : v;
+    else if (typeof v === 'boolean') row[c.name] = String(v);
+  }
+  const dj = jsonCol(item);
+  if (dj !== undefined) row.data = dj;
+  const idVal = kind.naturalKey !== '_pk' ? str(obj[kind.naturalKey]) : undefined;
+  return { id: idVal ?? contentKey(kind.tool, item), row };
+}
 
 /** Per-tool item cap, so a chatty server can't flood the local DB (bounded reads). */
 const MAX_ITEMS_PER_TOOL = 500;
@@ -79,7 +132,7 @@ export interface IntrospectiveSpec {
   servers: McpServerSpec[];
 }
 
-class IntrospectiveMcpConnector extends McpConnectorBase {
+export class IntrospectiveMcpConnector extends McpConnectorBase {
   readonly connector: string;
   private readonly model: ConnectedModelDef;
 
@@ -117,14 +170,62 @@ class IntrospectiveMcpConnector extends McpConnectorBase {
   presentation(_toolkit: string): ToolkitPresentation {
     return { label: this.spec.label, icon: letterIcon(this.spec.iconLetter, this.spec.iconColor) };
   }
-  models(_toolkit: string): ConnectedModelDef[] {
+  models(toolkit: string): ConnectedModelDef[] {
+    // A per-connection toolkit (`mcp:<id>`) with a persisted descriptor → the TYPED tables,
+    // one per record kind. Without a descriptor (legacy / not-yet-introspected) → the single
+    // flat `mcp_items` model, so existing connections keep working until migrated.
+    const id = connectionIdFromToolkit(toolkit);
+    if (id) {
+      const descriptor = getMcpSchemaDescriptor(id);
+      if (descriptor && descriptor.kinds.length > 0) return buildMcpModelDefs(id, descriptor);
+    }
     return [this.model];
   }
   mcpServers(_toolkit: string): McpServerSpec[] {
     return this.spec.servers;
   }
   protected bindings(_toolkit: string): McpModelBinding[] {
-    return []; // unused — listChanges is introspective
+    return []; // unused — listChanges is introspective / descriptor-routed
+  }
+
+  /**
+   * Discover the server's record shapes and persist a typed schema descriptor: call each
+   * non-write read tool once, infer a kind + typed columns from a sample, and store it under
+   * the connection. `models()` then emits one typed table per kind. Best-effort — returns null
+   * when the server exposes nothing modelable (the caller keeps the flat `mcp_items` fallback).
+   * `prefix` namespaces the tables (the server brand, e.g. `justworks`).
+   */
+  async introspect(
+    connectionId: string,
+    toolkit: string,
+    prefix: string,
+  ): Promise<McpSchemaDescriptor | null> {
+    const transport = await this.openServerTransport(toolkit, connectionId);
+    try {
+      const kinds: McpKindDesc[] = [];
+      const seen = new Set<string>();
+      for (const tool of await transport.listTools()) {
+        if (looksLikeWrite(tool.name)) continue;
+        let result: unknown;
+        try {
+          result = await transport.callTool({ tool: tool.name, args: {} });
+        } catch {
+          continue; // needs arguments / not bare-callable — skip in introspective mode
+        }
+        const items = itemsOf(result).slice(0, MAX_ITEMS_PER_TOOL);
+        if (items.length === 0) continue;
+        let kindName = kindFromTool(tool.name);
+        while (seen.has(kindName)) kindName = kindName + '_' + tool.name; // de-collide
+        seen.add(kindName);
+        kinds.push(inferKind(kindName, tool.name, items));
+      }
+      if (kinds.length === 0) return null;
+      const descriptor: McpSchemaDescriptor = { prefix: slugify(prefix), kinds };
+      setMcpSchemaDescriptor(connectionId, descriptor);
+      return descriptor;
+    } finally {
+      await transport.close();
+    }
   }
 
   override async *listChanges(
@@ -132,6 +233,28 @@ class IntrospectiveMcpConnector extends McpConnectorBase {
     model: string,
     ctx: ListChangesContext,
   ): AsyncIterable<ExternalRecord> {
+    const id = connectionIdFromToolkit(toolkit);
+    const descriptor = id ? getMcpSchemaDescriptor(id) : null;
+    if (descriptor && descriptor.kinds.length > 0) {
+      // Typed routing: this model IS a record kind — call ITS tool and map to typed rows.
+      const kind = descriptor.kinds.find((k) => k.kind === model);
+      if (!kind) return;
+      const t = await this.openServerTransport(toolkit, ctx.connectionId);
+      try {
+        const result = await t.callTool({ tool: kind.tool, args: {} });
+        let n = 0;
+        for (const item of itemsOf(result)) {
+          if (n >= MAX_ITEMS_PER_TOOL) break;
+          n++;
+          yield typedRecord(kind, item);
+        }
+      } finally {
+        await t.close();
+      }
+      return;
+    }
+
+    // Legacy flat path: everything into one `mcp_items` table (model === 'item').
     if (model !== 'item') return;
     const transport = await this.openServerTransport(toolkit, ctx.connectionId);
     // The server hostname rides every row so items from different connected
@@ -206,12 +329,12 @@ class IntrospectiveMcpConnector extends McpConnectorBase {
 export function introspectiveConnector(
   spec: IntrospectiveSpec,
   deps: McpConnectorDeps = {},
-): McpConnectorBase {
+): IntrospectiveMcpConnector {
   return new IntrospectiveMcpConnector(spec, deps);
 }
 
 /** The generic MCP connector — point it at any reachable MCP server (no default url). */
-export function genericConnector(deps: McpConnectorDeps = {}): McpConnectorBase {
+export function genericConnector(deps: McpConnectorDeps = {}): IntrospectiveMcpConnector {
   return introspectiveConnector(
     {
       connector: 'mcp',
