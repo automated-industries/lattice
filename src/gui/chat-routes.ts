@@ -1215,6 +1215,9 @@ export async function dispatchChatRoute(
         tableNames: [...ctx.validTables],
         ...(activeView.label ? { activeView: activeView.label } : {}),
         ...(recentContext ? { recentContext } : {}),
+        // The intent pass answers "are you connected to X?" inline (no heavy loop), so it
+        // needs the connected-sources list or it wrongly says not connected.
+        ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
       });
     } catch (e) {
       // Best-effort — never drop the user's message; fall through to the real loop.

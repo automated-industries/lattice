@@ -74,6 +74,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   list every connection (they are one user's own machine); cloud workspaces still scope
   per-member.
 
+- **Selecting a table in the Data Model shows its detail directly.** Clicking an object card now
+  opens its fields + lineage in place — the extra "Open object →" link and "Edit columns &
+  relationships" button are gone. Selecting the object is enough. (Computed tables keep their
+  "Edit definition →" link, since a computed table has no other detail to edit.)
+
+- **The assistant recognizes a connected source by its brand, on every answer path.** Asking
+  "are you connected to <service>?" failed two ways: (1) the fast intake pass that answers such
+  general questions inline wasn't given the connected-sources list at all, and (2) even the list it
+  reads named a server only by its self-advertised name ("partner-api-mcp") and host — the brand a
+  user actually types ("justworks") never appeared literally, so the model couldn't match it. Now
+  the intake pass receives the authoritative list, AND each connected source leads with the brand
+  read from its host (`mcp.justworks.com` → **Justworks**), keeping the server's own name as a
+  secondary alias.
+
+- **The connectors sidebar group reads "CONNECTORS", not "MCP".** The generic MCP connector's
+  table group now headers as CONNECTORS instead of the jargon toolkit slug.
+
 - **Asking the assistant to add a column to a connected external table now builds a computed
   table for you.** A table synced from a connected data source is a live, read-only mirror whose
   shape comes from the source. The assistant used to quietly ALTER the local copy (adding a column

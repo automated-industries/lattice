@@ -76,6 +76,11 @@ export interface IntentOptions {
    *  the assistant just said instead of being judged in a vacuum and mis-flagged as
    *  ambiguous. Without this, "yes" following an offer reads as a standalone message. */
   recentContext?: string;
+  /** The pre-formatted, member-scoped "Connected data sources" block (from
+   *  describeConnectedSources). The intent pass answers general questions INLINE without
+   *  the heavy loop, so without this it can't answer "are you connected to X?" and wrongly
+   *  says no. Grounds that inline answer in the real connection list. */
+  connectedSources?: string;
   temperature?: number;
 }
 
@@ -117,6 +122,18 @@ export async function runIntent(
       `and if the assistant just offered to create/update/link a record or build something, ` +
       `set needs_work true. Do NOT restart with a greeting or ask what they want.\n`
     : '';
+  // The connected external sources — the intent pass answers "are you connected to X?"
+  // INLINE (no heavy loop), so it must see this list or it will wrongly say "not connected".
+  // The list is authoritative; match a service name against a source's name OR its server
+  // host ("justworks" matches "mcp.justworks.com").
+  const connected = opts.connectedSources
+    ? `${opts.connectedSources}\nIf the user asks whether a service/integration/source is connected ` +
+      `(e.g. "are you connected to X?"), answer INLINE from the "Connected data sources" list above — ` +
+      `it is AUTHORITATIVE. If X matches an entry by name OR by its server host (e.g. "justworks" ` +
+      `matches "mcp.justworks.com"), confirm it IS connected (this is a general question, not needs_work); ` +
+      `never say it is not connected when it appears in that list. Only say it isn't connected if it is ` +
+      `genuinely absent from the list.\n`
+    : '';
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
     // Small budget: the ack/inline-answer is short by construction. Keeps latency + cost low.
@@ -125,7 +142,7 @@ export async function runIntent(
     messages: [
       {
         role: 'user',
-        content: `${who}${tables}${viewing}${recent}\nUser message:\n${message.slice(0, 8000)}\n\nReturn the JSON object.`,
+        content: `${who}${tables}${connected}${viewing}${recent}\nUser message:\n${message.slice(0, 8000)}\n\nReturn the JSON object.`,
       },
     ],
     tools: [],

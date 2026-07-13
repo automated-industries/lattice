@@ -490,8 +490,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (renderConnectorsTable/renderConnectorsAddForm in separate mounts), mirroring
 // the Databases tab; connectors + databases both run edge-to-edge (dm-wide). Recaptured.
 // Workspaces-panel switch failures now surface via fetchJson + toast (no silent reload); folder/file ingest results reported (ingested/skipped counts); files add-button relabeled "Add files or folder". Recaptured.
-const ORIGINAL_LENGTH = 715355;
-const ORIGINAL_SHA256 = '5322f070d0a4ec07e88b9dcc35164a418cf0b76d85ef4c6ad255382a8bf4d99e';
+// Data Model detail: "Open object" link + "Edit columns & relationships" button removed
+// (select-to-detail). Recaptured.
+const ORIGINAL_LENGTH = 714649;
+const ORIGINAL_SHA256 = 'acb26da113d12fa54725dc5b204d0668fe8deb130e1e716f52213e766a6d1b0e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -13,6 +13,27 @@ function hostnameOf(u: string | null): string | null {
 }
 
 /**
+ * The brand a hostname reads as — its registrable-domain label, title-cased. This lets the
+ * assistant match a user's plain "justworks" to a server at "mcp.justworks.com": the brand
+ * is surfaced LITERALLY in the context, instead of being buried in the host or the server's
+ * self-advertised name ("partner-api-mcp"). Returns null when no meaningful label exists.
+ * The label is a DNS label (alphanumeric + hyphen), so it needs no prompt-injection sanitize.
+ */
+export function brandFromHost(host: string | null): string | null {
+  if (!host) return null;
+  const labels = host.toLowerCase().split('.').filter(Boolean);
+  if (labels.length < 2) return null;
+  // The registrable name is the label before the TLD; for a common two-part public suffix
+  // (co.uk / com.au) step back one more so we don't return "Co"/"Com".
+  const TWO_PART = new Set(['co', 'com', 'org', 'net', 'gov', 'ac']);
+  let idx = labels.length - 2;
+  if (idx > 0 && TWO_PART.has(labels[idx] ?? '')) idx -= 1;
+  const name = labels[idx];
+  if (!name || name.length < 2 || name === 'www') return null;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
  * A compact summary of the workspace's connected external sources for the
  * assistant's context, so it can answer "are you connected to X?" and knows
  * which table holds each source's data. Returns '' when nothing is connected.
@@ -41,8 +62,15 @@ export async function describeConnectedSources(db: Lattice, connectedBy: string)
     const rawHost = c.connectionRef ? hostnameOf(getMcpServerUrl(c.connectionRef)) : null;
     const host = rawHost ? sanitizeConnectorLabel(rawHost) : null;
     const where = host ? ` at ${host}` : '';
+    // Lead with the brand read from the host (so a plain "justworks" matches
+    // "mcp.justworks.com"), keeping the server's self-advertised name as a secondary alias.
+    const brand = brandFromHost(rawHost);
+    const primary = brand ?? (name !== '' ? name : 'MCP server');
+    const showAlias =
+      name !== '' && name !== 'MCP server' && name.toLowerCase() !== brand?.toLowerCase();
+    const alias = showAlias ? ` (server name "${name}")` : '';
     lines.push(
-      `- ${name || 'MCP server'} (MCP server${where}) — connected. Its synced items are in the \`mcp_items\` table.`,
+      `- ${primary}${alias} — an MCP server${where}, connected. Its synced items are in the \`mcp_items\` table.`,
     );
   }
   for (const c of dbs) {

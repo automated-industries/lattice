@@ -126,21 +126,18 @@ test('record drill-ins never spawn a second tab; legacy namespaces converge on o
   await expect(page.locator('#antabstrip-tabs .tab[data-key="table:items"]')).toHaveClass(/active/);
 });
 
-// Regression: the Data Model explorer and the Workspace object page are wired together —
-// the explorer's "Open object" opens that table's rows as a Workspace table tab (the
-// single-layout replacement for the old Tables-section object page).
-test('the Data Model explorer "Open object" opens the table rows as a Workspace tab', async ({
+// Selecting a Data Model object shows its detail DIRECTLY — no "Open object" link and no
+// "Edit columns & relationships" button (the fields + lineage in the panel are the detail).
+test('clicking a Data Model card opens its detail directly, with no extra Open/Edit buttons', async ({
   page,
 }) => {
   await bootReady(page);
   await openConfigure(page, '#/tables', 'datamodel');
-  // Open the `items` card's detail panel, then its "Open object →" link.
   await page.locator('#model-tables-host .mt-card[data-table="items"]').click();
-  const openLink = page.locator('#mt-detail .mt-detail-open[href="#/w/table/items"]');
-  await expect(openLink).toBeVisible({ timeout: 5000 });
-  await openLink.click();
-  // It lands on the single Workspace table tab showing the table's rows.
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/items');
-  await expect(page.locator('#antabstrip-tabs .tab[data-key="table:items"]')).toHaveClass(/active/);
-  await expect(page.locator('.fs-rows-table')).toBeVisible({ timeout: 5000 });
+  // The detail panel shows the object's fields directly on selection.
+  await expect(page.locator('#mt-detail')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#mt-detail .mt-detail-sec')).toBeVisible();
+  // The removed affordances are gone — selecting the object is enough.
+  await expect(page.locator('#mt-detail .mt-detail-open')).toHaveCount(0);
+  await expect(page.locator('#mt-detail #mt-detail-edit')).toHaveCount(0);
 });
