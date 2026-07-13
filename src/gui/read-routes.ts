@@ -15,6 +15,8 @@ import { allAsyncOrSync, type StorageAdapter } from '../db/adapter.js';
 import { runDashboardSql, isSqlProtectedTable } from './dashboard-sql.js';
 import { classifySchema } from './schema-classify.js';
 import { listConnectors } from '../connectors/registry.js';
+import { getMcpServerUrl } from '../connectors/mcp/oauth.js';
+import { brandFromHost } from '../connectors/describe-connected.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 import type { GuiRequestContext } from './request-context.js';
 import {
@@ -188,14 +190,27 @@ async function enrichEntityTables(
     }
   }
 
-  // Schema grouping: build the external-database label map once — a single bounded read
-  // of the tiny connector registry (never a whole-table scan). Only `db_source:<id>`
-  // connections need a lookup; a connector schema's label comes from its toolkit slug.
+  // Schema grouping: build the connector-connection label map once — a single bounded read
+  // of the tiny connector registry (never a whole-table scan). A `db_source:<id>` connection
+  // is labeled by its database name; a per-connection MCP toolkit (`mcp:<id>`) is labeled by
+  // its server brand (from the host), so each MCP server reads as e.g. JUSTWORKS.
   const dbLabels = new Map<string, string>();
   try {
     for (const c of await listConnectors(db)) {
-      if (c.toolkit.startsWith('db_source:') && c.displayName)
+      if (c.toolkit.startsWith('db_source:') && c.displayName) {
         dbLabels.set(c.toolkit, c.displayName);
+      } else if (c.toolkit.startsWith('mcp:')) {
+        let host: string | null = null;
+        try {
+          host = c.connectionRef
+            ? new URL(getMcpServerUrl(c.connectionRef) ?? '').hostname || null
+            : null;
+        } catch {
+          /* stdio / no stored URL */
+        }
+        const label = brandFromHost(host) ?? c.displayName;
+        if (label) dbLabels.set(c.toolkit, label);
+      }
     }
   } catch (err) {
     // A scoped cloud member has no SELECT grant on the registry; schema labels then

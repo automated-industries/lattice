@@ -15,6 +15,7 @@
  */
 
 const DB_SOURCE_PREFIX = 'db_source:';
+const MCP_PREFIX = 'mcp:';
 
 export interface SchemaInfo {
   kind: 'lattice' | 'connector' | 'db_source';
@@ -55,8 +56,17 @@ export function classifySchema(
     const fallback = trimmed !== '' ? trimmed : connId !== '' ? connId : 'Database';
     return { kind: 'db_source', key: 'db:' + connId, label: dbLabels.get(src) ?? fallback };
   }
-  // The generic MCP connector groups under a "CONNECTORS" header (CSS uppercases the
-  // label) rather than the jargon toolkit slug "MCP". A branded toolkit keeps its name.
+  // A per-connection MCP toolkit (`mcp:<connId>`) → its own schema group, labeled by the server
+  // brand (from `dbLabels`, populated per connection) — so each server reads as e.g. JUSTWORKS,
+  // mirroring how a db_source reads as its database name. Falls back to the connection id.
+  if (src.startsWith(MCP_PREFIX)) {
+    const connId = src.slice(MCP_PREFIX.length);
+    const trimmed = (fallbackLabel ?? '').trim();
+    const fallback = trimmed !== '' ? trimmed : connId !== '' ? connId : 'Connector';
+    return { kind: 'connector', key: 'conn:' + src, label: dbLabels.get(src) ?? fallback };
+  }
+  // The legacy generic MCP connector (single `mcp` toolkit, pre-typed-tables) groups under a
+  // "CONNECTORS" header rather than the jargon slug "MCP". A branded toolkit keeps its name.
   return {
     kind: 'connector',
     key: 'conn:' + src,

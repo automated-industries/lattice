@@ -190,7 +190,19 @@ export async function updateConnectorConnection(
   db: Lattice,
   id: string,
   connectionRef: string,
+  toolkit?: string,
 ): Promise<void> {
+  // A reconnect can also re-key the toolkit: an MCP connection's toolkit is per-connection
+  // (`mcp:<connectionRef>`), so a new connectionRef means a new toolkit. Passing it keeps the
+  // registry row, its descriptor, and its typed tables all keyed to the current connection.
+  if (toolkit !== undefined) {
+    await runAsyncOrSync(
+      db.adapter,
+      `UPDATE "${CONNECTORS_TABLE}" SET "composio_connection_id" = ?, "toolkit" = ?, "status" = 'connected', "updated_at" = ? WHERE "id" = ?`,
+      [connectionRef, toolkit, new Date().toISOString(), id],
+    );
+    return;
+  }
   await runAsyncOrSync(
     db.adapter,
     `UPDATE "${CONNECTORS_TABLE}" SET "composio_connection_id" = ?, "status" = 'connected', "updated_at" = ? WHERE "id" = ?`,

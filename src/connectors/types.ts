@@ -296,6 +296,13 @@ export interface McpConnector extends Connector {
     serverName?: string;
     targetConnectorId?: string;
   }>;
+  /**
+   * OPTIONAL: discover the server's record shapes and persist a typed schema descriptor for
+   * this connection, so {@link Connector.models} emits one typed table per record kind (namespaced
+   * by `prefix`, the server brand). Present on the introspective generic connector; absent on
+   * fixed-schema connectors. Best-effort — resolves null when the server exposes nothing modelable.
+   */
+  introspect?(connectionId: string, toolkit: string, prefix: string): Promise<unknown>;
 }
 
 /** True when `c` is an {@link McpConnector} (connects via an MCP server, not credentials). */
