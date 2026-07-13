@@ -24,6 +24,14 @@ let gui: BootedGui;
 test.beforeEach(async () => {
   gui = await bootGui({ yaml: YAML });
   await createRow(gui.url, 'points', { name: 'p1' });
+  // Extracted from documents → a files_points junction, so the table has a lineage panel
+  // (Files upstream) even before the computed view exists.
+  const r = await fetch(`${gui.url}/api/schema/junctions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ left: 'files', right: 'points' }),
+  });
+  if (!r.ok) throw new Error('junction create failed: ' + r.status);
 });
 test.afterEach(async () => {
   await gui.close();

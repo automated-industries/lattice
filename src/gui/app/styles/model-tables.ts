@@ -54,6 +54,9 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     svg.mt-edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible; }
     .mt-edge { fill: none; stroke-width: 1.75; }
     .mt-edge-m2m { stroke: var(--hue-violet-deep); opacity: 0.6; }
+    /* Ingestion connector: a SOURCE input feeding a DERIVED table (Files → Companies) —
+       a cool "data flows in" hue, distinct from the violet many-to-many peer links. */
+    .mt-edge-ingest { stroke: var(--hue-cyan-deep); opacity: 0.5; }
     .mt-tier { min-width: 0; position: relative; z-index: 1; }
     /* Wiring / merging affordances. */
     .mt.mt-wiring .mt-card { cursor: crosshair; }
@@ -157,6 +160,12 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
        fixed-width ✕ stays visible within the panel. */
     .mt-lin-chip-wrap { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
     .mt-lin-chip-wrap .mt-lin-chip { flex: 1 1 auto; width: auto; min-width: 0; overflow: hidden; }
+    /* Derivation ("Definition") of a derived table: prose + inline source chips. */
+    .mt-deriv { font-size: 13px; line-height: 1.6; color: var(--text-muted); }
+    .mt-deriv-src {
+      display: inline-flex; width: auto; vertical-align: middle; margin: 0 2px;
+      padding: 2px 8px; gap: 4px;
+    }
     .mt-lin-x {
       flex: none; display: inline-flex; align-items: center; justify-content: center;
       width: 24px; border: 1px solid var(--border); border-radius: var(--r-sm);

@@ -56,6 +56,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Every derived table shows what it's built from — and the Data Model connects inputs to
+  them.** A derived table's detail panel now shows a **Definition**: the input source(s) it was
+  extracted from (e.g. Files), stated plainly as AI extraction — the honest analogue of a
+  computed table's SQL, since a derived table is read out of your documents, not defined by a
+  query. The Data Model view also draws **ingestion connector lines** from each input to the
+  derived tables it feeds, matching the table-view lineage. The source is inferred from the
+  actual document-to-record links, so a native table with no such link (e.g. Notes) correctly
+  shows no input source.
+
 - **See a table's data lineage below its rows.** Opening a table now shows a lineage map
   beneath the rows: the table in the centre, the upstream sources / transformations / links
   that feed it on the left, and the downstream tables that consume it on the right — drawn with
