@@ -79,12 +79,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   relationships" button are gone. Selecting the object is enough. (Computed tables keep their
   "Edit definition →" link, since a computed table has no other detail to edit.)
 
-- **The assistant recognizes a connected source even when it answers inline.** Asking "are you
-  connected to <service>?" is a general question the fast intake pass answers without running the
-  full tool loop — but that pass wasn't given the connected-sources list, so it wrongly said "not
-  connected" for a service that IS connected (e.g. an MCP server at `mcp.justworks.com` when asked
-  about "justworks"). The intake pass now sees the authoritative connected-sources list and matches
-  a service name against a source's name or its server host.
+- **The assistant recognizes a connected source by its brand, on every answer path.** Asking
+  "are you connected to <service>?" failed two ways: (1) the fast intake pass that answers such
+  general questions inline wasn't given the connected-sources list at all, and (2) even the list it
+  reads named a server only by its self-advertised name ("partner-api-mcp") and host — the brand a
+  user actually types ("justworks") never appeared literally, so the model couldn't match it. Now
+  the intake pass receives the authoritative list, AND each connected source leads with the brand
+  read from its host (`mcp.justworks.com` → **Justworks**), keeping the server's own name as a
+  secondary alias.
 
 - **The connectors sidebar group reads "CONNECTORS", not "MCP".** The generic MCP connector's
   table group now headers as CONNECTORS instead of the jargon toolkit slug.

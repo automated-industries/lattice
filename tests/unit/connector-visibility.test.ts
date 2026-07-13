@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { createConnector } from '../../src/connectors/registry.js';
 import { reregisterMcpConnectorTables } from '../../src/connectors/mcp/reregister.js';
-import { describeConnectedSources } from '../../src/connectors/describe-connected.js';
+import {
+  describeConnectedSources,
+  brandFromHost,
+} from '../../src/connectors/describe-connected.js';
 import { setMcpServerUrl } from '../../src/connectors/mcp/oauth.js';
 
 /**
@@ -112,6 +115,39 @@ describe('describeConnectedSources', () => {
     expect(summary).toContain('analytics-pg');
   });
 
+  it('surfaces the brand read from the host so a plain "are you connected to <brand>?" matches (regression)', async () => {
+    // The recurring bug: the summary carried the server's SELF-ADVERTISED name
+    // ("partner-api-mcp") and the host, but NOT the brand the user actually types, so the
+    // assistant answered "not connected to justworks" while mcp.justworks.com was connected.
+    // Fixture MCP server addressed at a latticesql.com test host + the real justworks case.
+    db = new Lattice(':memory:');
+    await db.init();
+    await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: 'ref-jw',
+      connectedBy: 'local',
+    });
+    setMcpServerUrl('ref-jw', 'https://mcp.justworks.com/');
+    await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'dummy-mcp',
+      connectionRef: 'ref-lat',
+      connectedBy: 'local',
+    });
+    setMcpServerUrl('ref-lat', 'https://test-mcp.latticesql.com/mcp');
+
+    const summary = await describeConnectedSources(db, 'local');
+    // The brand appears LITERALLY so the model matches the user's word, not just the host.
+    expect(summary).toContain('Justworks');
+    expect(summary).toContain('Latticesql');
+    // The host + the server's own name remain as secondary signals.
+    expect(summary).toContain('mcp.justworks.com');
+    expect(summary).toContain('partner-api-mcp');
+  });
+
   it('on a LOCAL workspace lists connections regardless of the stamped identity', async () => {
     // The bug: a connector stamped with one identity (e.g. an email later changed
     // in settings) went invisible to the assistant, which resolved a DIFFERENT
@@ -172,5 +208,20 @@ describe('describeConnectedSources', () => {
     });
     await db.update('__lattice_connectors', { id }, { status: 'disconnected' });
     expect(await describeConnectedSources(db, 'local')).toBe('');
+  });
+});
+
+describe('brandFromHost', () => {
+  it('reads the registrable brand from a host — subdomains stripped, two-part suffixes handled', () => {
+    expect(brandFromHost('mcp.justworks.com')).toBe('Justworks');
+    expect(brandFromHost('justworks.com')).toBe('Justworks');
+    expect(brandFromHost('test-mcp.latticesql.com')).toBe('Latticesql');
+    expect(brandFromHost('api.example.co.uk')).toBe('Example');
+    expect(brandFromHost('www.acme.io')).toBe('Acme');
+  });
+  it('returns null when there is no meaningful brand', () => {
+    expect(brandFromHost(null)).toBeNull();
+    expect(brandFromHost('localhost')).toBeNull();
+    expect(brandFromHost('')).toBeNull();
   });
 });
