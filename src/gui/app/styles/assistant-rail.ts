@@ -108,7 +108,11 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .ask-dock:has(.chat-typing) .ask-lattice-panel-title { animation: askPulse 1.6s ease-in-out infinite; }
     .rail-threads {
       flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px; padding: 4px 6px;
+      border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px;
+      /* Room for the native select arrow on the right, and ellipsize long
+         thread titles so they can't run into it. */
+      padding: 4px 24px 4px 6px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .rail-newchat {
       flex: 0 0 auto; width: 26px; height: 26px; border: 1px solid var(--border);

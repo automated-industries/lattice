@@ -224,25 +224,28 @@ describe('gui-bootstrap: pruneEphemeralWorkspaces', () => {
     expect(listWorkspaces(root)).toHaveLength(0);
   });
 
-  it.runIf(process.platform === 'win32')('keeps a missing config on another drive (never prunes across drives)', () => {
-    const base = tmp();
-    const root = rootAt(base);
-    // On Windows, path.relative across drives returns an ABSOLUTE path (no '..'
-    // prefix) — without an isAbsolute guard a workspace on an unmounted drive
-    // would be misclassified as "under tmpDir" and wrongly pruned. Register the
-    // record directly (the config can't be read — the drive doesn't exist).
-    addAdoptedWorkspace(root, {
-      displayName: 'Unmounted',
-      db: './data/app.db',
-      configPath: 'Z:\\somewhere\\lattice.config.yml',
-      contextDir: 'Z:\\somewhere\\context',
-      makeActive: false,
-    });
-    expect(listWorkspaces(root)).toHaveLength(1);
-    const pruned = pruneEphemeralWorkspaces(root, base);
-    expect(pruned).toBe(0);
-    expect(listWorkspaces(root)).toHaveLength(1);
-  });
+  it.runIf(process.platform === 'win32')(
+    'keeps a missing config on another drive (never prunes across drives)',
+    () => {
+      const base = tmp();
+      const root = rootAt(base);
+      // On Windows, path.relative across drives returns an ABSOLUTE path (no '..'
+      // prefix) — without an isAbsolute guard a workspace on an unmounted drive
+      // would be misclassified as "under tmpDir" and wrongly pruned. Register the
+      // record directly (the config can't be read — the drive doesn't exist).
+      addAdoptedWorkspace(root, {
+        displayName: 'Unmounted',
+        db: './data/app.db',
+        configPath: 'Z:\\somewhere\\lattice.config.yml',
+        contextDir: 'Z:\\somewhere\\context',
+        makeActive: false,
+      });
+      expect(listWorkspaces(root)).toHaveLength(1);
+      const pruned = pruneEphemeralWorkspaces(root, base);
+      expect(pruned).toBe(0);
+      expect(listWorkspaces(root)).toHaveLength(1);
+    },
+  );
 });
 
 describe('gui-bootstrap: ensureRootForGui', () => {
