@@ -99,6 +99,24 @@ describe('runIntent', () => {
     expect(sent).toContain('projects');
   });
 
+  it('injects the connected-sources list so an inline "are you connected to X?" is grounded, not wrongly denied', async () => {
+    // The intent pass answers general questions INLINE (no heavy loop), so it must see the
+    // connected-sources list or it will hallucinate "not connected" for a connected service.
+    const { client, calls } = fakeClient(
+      '```json\n{"ack_message":"Yes — that source is connected.","needs_work":false,"needs_more_info":false}\n```',
+    );
+    await runIntent(client, 'are you connected to justworks?', {
+      tableNames: ['mcp_items'],
+      connectedSources:
+        '\n\n# Connected data sources\n- partner-api-mcp (MCP server at mcp.justworks.com) — connected. Its synced items are in the `mcp_items` table.',
+    });
+    const sent = JSON.stringify(calls[0]!.messages);
+    // The list AND the authoritative "answer from this list" instruction reach the prompt.
+    expect(sent).toContain('Connected data sources');
+    expect(sent).toContain('mcp.justworks.com');
+    expect(sent).toMatch(/AUTHORITATIVE/);
+  });
+
   it('grounds the classifier in what the user is viewing so a complaint is actionable, not ambiguous', async () => {
     const { client, calls } = fakeClient(
       '```json\n{"ack_message":"Checking what went wrong…","needs_work":true,"needs_more_info":false}\n```',

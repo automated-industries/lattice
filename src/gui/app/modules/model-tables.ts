@@ -794,22 +794,13 @@ export const modelTablesJs = `
         computedHtml +
         derivationHtml +
         flHtml + upHtml + downHtml +
-        '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>' +
-        '<a class="mt-detail-open" href="#/w/table/' + encodeURIComponent(e.name) + '">Open object \\u2192</a>' +
-        // Merge the explorer with the schema editor: open the full columns +
-        // relationships editor for this entity in the side panel (#dm-panel).
-        (e.computedTable ? '' : '<button type="button" class="mt-detail-edit" id="mt-detail-edit">Edit columns &amp; relationships</button>');
+        '<div class="mt-detail-sec"><h4>Fields</h4>' + fields + '</div>';
+      // Selecting an object shows its detail directly — no "Open object" link and no
+      // "Edit columns & relationships" button. The fields + lineage above ARE the detail.
       panel.hidden = false;
       if (e.computedTable) mtWireComputedDetail(e.name);
       var close = document.getElementById('mt-detail-close');
       if (close) close.addEventListener('click', function () { panel.hidden = true; mtHighlight(null, lineage); });
-      // Wire the "Edit columns & relationships" affordance → the full schema editor
-      // in #dm-panel (the Data Model tab hosts both; on the old Settings surface the
-      // editor's target is absent, so dmShowEntityEditor no-ops safely).
-      var editBtn = document.getElementById('mt-detail-edit');
-      if (editBtn && typeof dmShowEntityEditor === 'function') {
-        editBtn.addEventListener('click', function () { dmShowEntityEditor(e.name); });
-      }
       // Lineage chips navigate the detail panel to the linked table.
       panel.querySelectorAll('.mt-lin-chip').forEach(function (b) {
         b.addEventListener('click', function () { mtOpenDetail(b.getAttribute('data-lin'), null, entities, lineage); });

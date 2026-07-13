@@ -55,5 +55,11 @@ export function classifySchema(
     const fallback = trimmed !== '' ? trimmed : connId !== '' ? connId : 'Database';
     return { kind: 'db_source', key: 'db:' + connId, label: dbLabels.get(src) ?? fallback };
   }
-  return { kind: 'connector', key: 'conn:' + src, label: titleCaseToolkit(src) };
+  // The generic MCP connector groups under a "CONNECTORS" header (CSS uppercases the
+  // label) rather than the jargon toolkit slug "MCP". A branded toolkit keeps its name.
+  return {
+    kind: 'connector',
+    key: 'conn:' + src,
+    label: src === 'mcp' ? 'Connectors' : titleCaseToolkit(src),
+  };
 }

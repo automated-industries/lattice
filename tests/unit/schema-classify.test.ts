@@ -29,6 +29,15 @@ describe('classifySchema — provenance schema grouping', () => {
     });
   });
 
+  it('the generic MCP connector groups under a "Connectors" header, not the "MCP" slug', () => {
+    // CSS uppercases the label to "CONNECTORS" in the sidebar — "MCP" reads as jargon.
+    expect(classifySchema('mcp', noLabels)).toEqual({
+      kind: 'connector',
+      key: 'conn:mcp',
+      label: 'Connectors',
+    });
+  });
+
   it('two tables of the same toolkit share one schema key (keyed by toolkit, not instance)', () => {
     expect(classifySchema('jira', noLabels).key).toBe(classifySchema('jira', noLabels).key);
   });
