@@ -159,7 +159,17 @@ const handle = await startGuiServer({
     openInSystemBrowser(url);
   },
 });
-console.log(`[desktop] Lattice ${VERSION} serving at ${handle.url}`);
+// The heap ceiling is baked into the compiled runtime by the build scripts'
+// --v8-flags; log the effective limit so a memory-starved build is visible at
+// a glance instead of only as a mid-ingest crash. Diagnostic only.
+let heapNote = '';
+try {
+  const { getHeapStatistics } = await import('node:v8');
+  heapNote = ` (V8 heap limit ${String(Math.round(getHeapStatistics().heap_size_limit / 1048576))} MB)`;
+} catch {
+  // node:v8 unavailable in this runtime — skip the note rather than block launch.
+}
+console.log(`[desktop] Lattice ${VERSION} serving at ${handle.url}${heapNote}`);
 
 // ── Native window + system-browser bridge ────────────────────────────────────
 type Win = {

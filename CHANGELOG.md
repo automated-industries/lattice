@@ -25,6 +25,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Bulk document ingest no longer runs the desktop app out of memory.** The packaged
+  desktop runtime shipped with JavaScript's conservative default memory ceiling — a
+  fraction of what the CLI gets on the same machine — so ingesting a folder of large
+  documents (multi-MB spreadsheets, decks, PDFs) could exhaust the heap mid-batch and
+  crash the whole app. The desktop build now carries a 4 GB heap ceiling, and extraction
+  adds a heavy lane: files over 8 MB extract one at a time while smaller files keep full
+  concurrency, so several large documents can no longer multiply peak memory. Browser
+  uploads also release their in-memory request copy before extraction starts, and the app
+  logs its heap limit at startup so a memory-starved build is visible at a glance.
+
 - **The assistant no longer loses the thread on a short reply.** Answering the assistant's
   question or offer with a bare "yes" (or "the first one", "do that") is now understood as a
   continuation: the fast intake step sees the last couple of turns, so a context-dependent

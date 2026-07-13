@@ -7,6 +7,7 @@ import type { Lattice } from '../lattice.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, type MutationCtx } from './mutations.js';
 import { parseFile, describe, type ExtractResult } from './ai/extract.js';
+import { gateExtractionByPath } from './ai/extract-gate.js';
 import { describeImage, describePdf } from '../ai/vision.js';
 import type { FileJunction } from './data.js';
 import { attachBlob } from '../framework/blob-store.js';
@@ -288,29 +289,37 @@ async function extractImage(
  * PDF with no text layer, which has no text to extract — Claude's native PDF
  * document read as a fallback. Best-effort + AI-gated: with no Claude auth it
  * degrades to parseFile's result (a `skipped` row).
+ *
+ * Large inputs run through the heavy-extraction lane: the transients here
+ * (archive inflation, PDF parse graphs, the scanned-PDF base64 request body)
+ * scale with input size, and the ingest pool runs several files at once —
+ * serializing just the big ones keeps peak memory flat without slowing the
+ * long tail of ordinary documents.
  */
-async function extractSource(
+function extractSource(
   db: Lattice,
   path: string,
   mime: string,
   name: string,
 ): Promise<ExtractResult> {
-  const vision = await extractImage(db, path, mime);
-  if (vision) return vision;
-  const parsed = await parseFile(path, mime, name);
-  if (!parsed.skip) return parsed;
-  if (mime === 'application/pdf') {
-    const auth = await resolveVisionAuth(db);
-    if (auth) {
-      try {
-        const text = await describePdf(auth, path);
-        if (text.trim()) return { ...parsed, text, skip: false };
-      } catch (e) {
-        console.warn('[ingest] Claude PDF read failed:', (e as Error).message);
+  return gateExtractionByPath(path, async () => {
+    const vision = await extractImage(db, path, mime);
+    if (vision) return vision;
+    const parsed = await parseFile(path, mime, name);
+    if (!parsed.skip) return parsed;
+    if (mime === 'application/pdf') {
+      const auth = await resolveVisionAuth(db);
+      if (auth) {
+        try {
+          const text = await describePdf(auth, path);
+          if (text.trim()) return { ...parsed, text, skip: false };
+        } catch (e) {
+          console.warn('[ingest] Claude PDF read failed:', (e as Error).message);
+        }
       }
     }
-  }
-  return parsed;
+    return parsed;
+  });
 }
 
 /** A pasted body that is exactly one http(s) URL — a candidate to crawl. */
@@ -599,7 +608,7 @@ export async function dispatchIngestRoute(
         realPath = rawFilePath;
       }
     }
-    let buf: Buffer;
+    let buf: Buffer | null;
     try {
       buf = await readBuffer(req);
     } catch (e) {
@@ -610,6 +619,12 @@ export async function dispatchIngestRoute(
       sendJson(res, { error: 'empty upload' }, 400);
       return true;
     }
+    // Size, hash, and S3 config are taken up front so the request bytes can be
+    // dropped before extraction — otherwise a large upload's in-memory copy sits
+    // alongside the extraction transients for the whole handler.
+    const sizeBytes = buf.length;
+    const uploadSha = createHash('sha256').update(buf).digest('hex');
+    const s3cfg = resolveActiveS3Config(ctx.configPath);
     const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
     let result;
     let blob: { blob_path: string; sha256: string } | null = null;
@@ -617,8 +632,12 @@ export async function dispatchIngestRoute(
     // imported as a new dated snapshot (in addition to being kept as a file).
     let autoImport: AutoImportResult | null = null;
     let importWarnings: string[] = [];
+    // Bytes retained only for the S3 put below; everything else reads from tmp.
+    let s3Bytes: Buffer | null = null;
     try {
       await writeFile(tmp, buf);
+      if (s3cfg) s3Bytes = buf;
+      buf = null;
       result = await extractSource(ctx.db, tmp, mime, name);
       // Smart import while the bytes are still on disk (tmp is removed below).
       // Best-effort: a structured-import failure never fails the file upload.
@@ -665,20 +684,19 @@ export async function dispatchIngestRoute(
     // the bytes from S3, so a silently-dropped PUT would 404 for everyone but the
     // uploader, who still has the local blob.
     let s3Status: { status: 'stored' | 'failed'; key?: string; error?: string } | null = null;
-    const s3cfg = resolveActiveS3Config(ctx.configPath);
-    if (s3cfg) {
-      const sha256 = blob?.sha256 ?? createHash('sha256').update(buf).digest('hex');
+    if (s3cfg && s3Bytes) {
+      const sha256 = blob?.sha256 ?? uploadSha;
       const key = s3Key(s3cfg.prefix, sha256);
       try {
         const store = await createS3Store(s3cfg);
-        await store.put(key, buf, { contentType: mime });
+        await store.put(key, s3Bytes, { contentType: mime });
         s3Ref = {
           ref_uri: `s3://${s3cfg.bucket}/${key}`,
           source_json: JSON.stringify({
             bucket: s3cfg.bucket,
             key,
             region: s3cfg.region,
-            size_bytes: buf.length,
+            size_bytes: sizeBytes,
           }),
           sha256,
         };
@@ -696,14 +714,14 @@ export async function dispatchIngestRoute(
     // Content hash set UNCONDITIONALLY (not just when a blob/S3 ref exists) so
     // the post-insert auto-dedup can recognize a byte-identical re-upload even on
     // the text-only native schema. createRow drops it if the schema lacks the col.
-    const fileSha = blob?.sha256 ?? s3Ref?.sha256 ?? createHash('sha256').update(buf).digest('hex');
+    const fileSha = blob?.sha256 ?? s3Ref?.sha256 ?? uploadSha;
     const uploadRow: Record<string, unknown> = {
       id: fileId,
       ...fileIdentity(name, fileId),
       original_name: name,
       mime,
       sha256: fileSha,
-      size_bytes: buf.length,
+      size_bytes: sizeBytes,
       extracted_text: result.text,
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
