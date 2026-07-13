@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { sendJson, readJson } from './http.js';
-import { isLoopbackHost } from './origin-guard.js';
 import type { Connector, CredentialField } from '../connectors/types.js';
 import { isCredentialConnector, isMcpConnector } from '../connectors/types.js';
 import type { McpConnector } from '../connectors/types.js';
@@ -16,7 +15,12 @@ import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
 import { ConnectorUnavailableError } from '../connectors/errors.js';
-import { peekPendingConnect } from '../connectors/mcp/oauth.js';
+import {
+  peekPendingConnect,
+  takePendingConnect,
+  clearMcpConnection,
+  getMcpServerUrl,
+} from '../connectors/mcp/oauth.js';
 
 /**
  * Connectors settings routes — connect/refresh/disconnect external sources and
@@ -93,9 +97,26 @@ function toolkitDescriptor(connector: Connector, toolkit: string): ToolkitDescri
  * captured code is unusable anyway (PKCE code_verifier stays server-side), so
  * falling back to bare 127.0.0.1 on a bad Host is the safe failure.
  */
+/**
+ * True for a loopback Host authority, tolerating a trailing `:port` and IPv6
+ * brackets — the GUI runs on whatever local port was free, so the real Host
+ * header carries that port. (The strict bind-host predicate in origin-guard has
+ * no port stripping; using it here would reject `localhost:4317` and collapse
+ * the redirect below to a portless — :80 — URL the browser can't reach.)
+ */
+function isLoopbackAuthority(host: string): boolean {
+  const h = host
+    .replace(/:\d+$/, '')
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
 function mcpOAuthRedirectUri(req: IncomingMessage): string {
   const rawHost = req.headers.host ?? '127.0.0.1';
-  const host = isLoopbackHost(rawHost) ? rawHost : '127.0.0.1';
+  // Keep the real host:port (the browser must return to the running GUI); only
+  // fall back when the Host isn't loopback (a forged/proxied header we distrust).
+  const host = isLoopbackAuthority(rawHost) ? rawHost : '127.0.0.1';
   return `http://${host}/api/connectors/oauth/callback`;
 }
 
@@ -112,10 +133,23 @@ function oauthResultPage(message: string): string {
   );
 }
 
+/** The hostname of a server URL, as display-name material. */
+function hostnameOf(serverUrl: string | null | undefined): string | null {
+  if (!serverUrl) return null;
+  try {
+    return new URL(serverUrl).hostname || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Upsert the registry row for an established MCP connection, define + secure its
- * connected tables, and run the initial sync. Shared by the direct connect path
- * (open/stdio server) and the OAuth callback.
+ * Record an established MCP connection, define + secure its connected tables,
+ * and run the initial sync. Shared by the direct connect path (open/stdio
+ * server) and the OAuth callback. Every NEW connect creates its own registry
+ * row — a member can connect several MCP servers side by side. A reconnect
+ * (`targetConnectorId`) repoints the existing row instead, after an ownership
+ * check, retiring the old connection's secrets.
  */
 async function finishMcpConnection(
   deps: ConnectorsRouteDeps,
@@ -123,13 +157,24 @@ async function finishMcpConnection(
   toolkit: string,
   connectionId: string,
   displayName: string | null,
+  targetConnectorId?: string,
 ): Promise<{ connectorId: string; result: unknown }> {
   const { db, connectedBy } = deps;
-  const existing = await getConnectorByToolkit(db, toolkit, connectedBy);
   let connectorId: string;
-  if (existing) {
+  if (targetConnectorId) {
+    const existing = await getConnector(db, targetConnectorId);
+    // Ownership AND kind must match — a member may only repoint their own row,
+    // and only a row of THIS connector kind (never a db_source or retired row
+    // reached by id through the MCP route).
+    if (existing?.connectedBy !== connectedBy || existing.connector !== connector.connector) {
+      throw new ConnectorUnavailableError('Connector not found — it may have been removed.');
+    }
     if (existing.connectionRef && existing.connectionRef !== connectionId) {
-      await connector.disconnect(existing.connectionRef);
+      // The old connection is fully superseded (the new connectionId carries its
+      // own stored URL), so PURGE it — a plain disconnect would leave the old
+      // connection's server-URL key orphaned with nothing referencing it.
+      await (connector.purgeConnection?.(existing.connectionRef) ??
+        connector.disconnect(existing.connectionRef));
     }
     await updateConnectorConnection(db, existing.id, connectionId);
     connectorId = existing.id;
@@ -166,11 +211,12 @@ export async function dispatchConnectorsRoute(
     // (each with its presentation + credential form so the GUI renders no per-
     // connector code).
     if (pathname === '/api/connectors' && method === 'GET') {
-      // External databases (db_source rows) live in the Inputs > DATABASES section
-      // via /api/db-sources — exclude them here so a connected database never ALSO
-      // appears under CONNECTORS (they were double-listed before this filter).
-      const connected = (await listConnectors(db, connectedBy)).filter(
-        (c) => c.connector !== 'db_source',
+      // Only rows whose toolkit has a live implementation in this catalog. That
+      // excludes external databases (db_source rows render under Inputs >
+      // DATABASES via /api/db-sources) and rows from retired connector kinds
+      // (pre-MCP-only builds) that have no serving code left.
+      const connected = (await listConnectors(db, connectedBy)).filter((c) =>
+        byToolkit.has(c.toolkit),
       );
       const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
       for (const c of connectors) {
@@ -178,14 +224,24 @@ export async function dispatchConnectorsRoute(
       }
       sendJson(res, {
         toolkits,
-        connectors: connected.map((c) => ({
-          id: c.id,
-          toolkit: c.toolkit,
-          displayName: c.displayName,
-          status: c.status,
-          lastSyncAt: c.lastSyncAt,
-          lastError: c.lastError,
-        })),
+        connectors: connected.map((c) => {
+          const impl = byToolkit.get(c.toolkit);
+          // The URL is retained across disconnects (it is not a secret), so the
+          // GUI can offer Reconnect without re-asking for it. MCP rows only.
+          const serverUrl =
+            impl && isMcpConnector(impl) && c.connectionRef
+              ? getMcpServerUrl(c.connectionRef)
+              : null;
+          return {
+            id: c.id,
+            toolkit: c.toolkit,
+            displayName: c.displayName,
+            status: c.status,
+            lastSyncAt: c.lastSyncAt,
+            lastError: c.lastError,
+            serverUrl,
+          };
+        }),
       });
       return true;
     }
@@ -220,6 +276,15 @@ export async function dispatchConnectorsRoute(
         res.end(oauthResultPage(msg));
       };
       if (errParam) {
+        // The user denied or the AS errored before any token exchange. Consume
+        // the pending record and purge the abandoned connection's local state so
+        // its verifier/URL/pending keys don't accumulate. This is the NEW
+        // connectionId (a reconnect's existing row keeps its own stored URL under
+        // its old connectionRef), so a full clear is safe.
+        if (state) {
+          const abandoned = takePendingConnect(state);
+          if (abandoned) clearMcpConnection(abandoned.connectionId);
+        }
         htmlErr(`Authorization was denied or failed (${errParam}). You can close this tab.`);
         return true;
       }
@@ -239,16 +304,39 @@ export async function dispatchConnectorsRoute(
         htmlErr('Unknown connector for this authorization.');
         return true;
       }
+      let exchangedConnectionId: string | undefined;
       try {
-        const { connectionId, displayName } = await mcp.completeConnect(state, { code });
-        await finishMcpConnection(deps, mcp, pending.toolkit, connectionId, displayName);
+        const done = await mcp.completeConnect(state, { code });
+        exchangedConnectionId = done.connectionId;
+        // Prefer the server's self-reported name, then its hostname — the generic
+        // toolkit label ("MCP server") identifies nothing once several are connected.
+        const name = done.serverName ?? hostnameOf(pending.serverUrl) ?? done.displayName;
+        await finishMcpConnection(
+          deps,
+          mcp,
+          pending.toolkit,
+          done.connectionId,
+          name,
+          done.targetConnectorId,
+        );
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(
           oauthResultPage(
-            `Connected ${mcp.presentation(pending.toolkit).label}. You can close this tab and return to Lattice.`,
+            `Connected ${name ?? mcp.presentation(pending.toolkit).label}. You can close this tab and return to Lattice.`,
           ),
         );
       } catch (e) {
+        // The token exchange may have already persisted access/refresh tokens
+        // under the new connectionId. If no registry row ended up referencing it
+        // (the failure happened before/at row creation), those tokens are a live
+        // grant nothing could ever revoke — purge them. If a row DOES reference
+        // it (a later step like the initial sync failed), leave them: the row
+        // owns the grant and Disconnect can revoke it.
+        if (exchangedConnectionId) {
+          const rows = await listConnectors(db, connectedBy);
+          const owned = rows.some((r) => r.connectionRef === exchangedConnectionId);
+          if (!owned) clearMcpConnection(exchangedConnectionId);
+        }
         if (isActionable(e)) {
           htmlErr(e.message, 422);
           return true;
@@ -284,14 +372,75 @@ export async function dispatchConnectorsRoute(
         // or — for an open/stdio server — connect + sync immediately.
         if (isMcpConnector(connector)) {
           const raw = await readJson(req).catch(() => ({}) as Record<string, unknown>);
-          const serverUrl =
-            typeof raw.serverUrl === 'string' && raw.serverUrl.trim()
-              ? raw.serverUrl.trim()
-              : undefined;
-          const begin = await connector.beginConnect(connectedBy, toolkit, {
-            redirectUri: mcpOAuthRedirectUri(req),
-            ...(serverUrl ? { serverUrl } : {}),
-          });
+          const str = (k: string): string | undefined =>
+            typeof raw[k] === 'string' && raw[k].trim() ? raw[k].trim() : undefined;
+          let serverUrl = str('serverUrl');
+          const clientId = str('clientId');
+          const clientSecret = str('clientSecret');
+          // Reconnect: re-authorize an EXISTING row (ownership-checked). Its
+          // server URL was retained across the disconnect, so the caller need
+          // not resend it.
+          const targetConnectorId = str('connectorId');
+          if (targetConnectorId) {
+            const rec = await getConnector(db, targetConnectorId);
+            // Ownership AND connector-kind must match: the MCP route may never
+            // reach a db_source or retired-kind row by id.
+            if (rec?.connectedBy !== connectedBy || rec.connector !== connector.connector) {
+              sendJson(res, { error: 'connector not found' }, 404);
+              return true;
+            }
+            if (!serverUrl && rec.connectionRef) {
+              serverUrl = getMcpServerUrl(rec.connectionRef) ?? undefined;
+            }
+            if (!serverUrl) {
+              sendJson(
+                res,
+                { error: 'This connector has no stored server URL — add it again.' },
+                422,
+              );
+              return true;
+            }
+          }
+          let begin;
+          try {
+            begin = await connector.beginConnect(connectedBy, toolkit, {
+              redirectUri: mcpOAuthRedirectUri(req),
+              ...(serverUrl ? { serverUrl } : {}),
+              ...(clientId
+                ? {
+                    clientInfo: {
+                      client_id: clientId,
+                      ...(clientSecret ? { client_secret: clientSecret } : {}),
+                    },
+                  }
+                : {}),
+              ...(targetConnectorId ? { targetConnectorId } : {}),
+            });
+          } catch (e) {
+            // The SDK's terminal "no way to identify this client" failures: the
+            // authorization server has no registration endpoint ("does not
+            // support dynamic client registration"), OR its registration
+            // endpoint rejected the request ("dynamic client registration
+            // failed: …"). Either way the fix is a pre-registered client, so a
+            // distinct code lets the GUI switch the form into that mode instead
+            // of dead-ending. (Both messages contain "dynamic client
+            // registration"; matching that phrase covers both without swallowing
+            // unrelated errors, which are rethrown to the loud 500.)
+            const msg = e instanceof Error ? e.message : String(e);
+            if (/dynamic client registration/i.test(msg)) {
+              sendJson(
+                res,
+                {
+                  error:
+                    'This MCP server requires a pre-registered OAuth client. Enter the client ID (and secret, if it has one) issued by the provider.',
+                  code: 'client_registration_unsupported',
+                },
+                422,
+              );
+              return true;
+            }
+            throw e;
+          }
           if (begin.kind === 'redirect') {
             sendJson(res, { redirectUrl: begin.redirectUrl, pendingId: begin.pendingId });
             return true;
@@ -301,7 +450,8 @@ export async function dispatchConnectorsRoute(
             connector,
             toolkit,
             begin.connectionId,
-            begin.displayName,
+            begin.displayName ?? hostnameOf(serverUrl),
+            targetConnectorId,
           );
           sendJson(res, out);
           return true;
@@ -377,7 +527,10 @@ export async function dispatchConnectorsRoute(
       ): Promise<{ id: string } | { error: string; status: number }> => {
         if (typeof bodyId === 'string') {
           const rec = await getConnector(db, bodyId);
-          if (rec?.connectedBy !== connectedBy) {
+          // Ownership AND connector-kind must match — a caller-supplied id must be
+          // this member's AND of the kind this route serves, so refresh/disconnect
+          // on /api/connectors/<toolkit> can never reach a db_source or retired row.
+          if (rec?.connectedBy !== connectedBy || rec.connector !== connector.connector) {
             return { error: 'connector not found', status: 404 };
           }
           return { id: rec.id };

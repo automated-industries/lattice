@@ -9,42 +9,36 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-// The connectors panel opens in a LEFT-sliding dialog from the Configure drawer's
-// Inputs tab ("+ Add a Connector"), and is fully data-driven off /api/connectors.
-// It once rendered nothing because the module sat OUTSIDE the client IIFE and threw
+// The MCP Connectors panel renders INSIDE the Configure drawer's tab (the old
+// left-sliding dialog is gone), fully data-driven off /api/connectors. The panel
+// once rendered nothing because the module sat OUTSIDE the client IIFE and threw
 // "fetchJson is not defined"; keeping it inside the wrapper is what makes the
-// in-IIFE helpers visible. This fails loudly if that regresses, and asserts both
-// connector cards render from their field specs (with logos).
-test('the connectors dialog renders data-driven cards (helpers in scope)', async ({ page }) => {
+// in-IIFE helpers visible. This fails loudly if that regresses, and asserts the
+// add-by-URL form renders in the tab body.
+test('the MCP Connectors tab renders the panel with the add-by-URL form', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
-  // "+ Add a Connector" lives in the Configure drawer's Connectors tab; the
-  // #/settings/connectors hash opens the drawer to that tab and renders the button.
+  // The #/settings/connectors hash opens the Configure drawer to the tab.
   await page.goto(gui.url + '#/settings/connectors');
   await expect(page.locator('#settings-drawer.open')).toBeVisible({ timeout: 5000 });
-  await page.waitForSelector('#drawer-body #src-add-connector', {
-    state: 'visible',
-    timeout: 5000,
-  });
-  await page.locator('#src-add-connector').click();
 
-  const dlg = page.locator('#connectors-dialog');
-  await expect(dlg).toBeVisible({ timeout: 5000 });
+  // The tab is labelled "MCP Connectors" and hosts the panel directly.
+  await expect(page.locator('.drawer-tab[data-tab="connectors"]')).toHaveText('MCP Connectors');
+  const panel = page.locator('#mcp-connectors-panel');
+  await expect(panel).toBeVisible({ timeout: 5000 });
 
-  const body = page.locator('#connectors-dialog-body');
-  // 5.0: connectors are data-driven MCP cards from /api/connectors. Bring-your-own
-  // toolkits render a server-URL field; branded ones (a default MCP endpoint)
-  // render a Connect button. None have the old credential fields anymore.
-  await expect(body.getByText('Gmail', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(body.getByText('Jira', { exact: true })).toBeVisible();
-  await expect(body.getByText('Custom MCP server', { exact: true })).toBeVisible();
-  // The generic connector renders its MCP server-URL input — proof the per-card
-  // form (not just the dialog shell) rendered.
-  await expect(body.locator('#mcp-url-mcp')).toBeVisible();
-  // The retired credential path is gone (Jira is now MCP, no #cred-jira-site).
-  await expect(body.locator('#cred-jira-site')).toHaveCount(0);
-  await expect(body.locator('.connector-icon').first()).toBeVisible();
+  // The inline add form renders (URL field + Connect), with the pre-registered
+  // client fields present but hidden until a server demands them.
+  await expect(panel.getByText('Add an MCP connector')).toBeVisible({ timeout: 5000 });
+  await expect(panel.locator('#mcp-add-url')).toBeVisible();
+  await expect(panel.locator('#mcp-client-fields')).toBeHidden();
+  await expect(panel.locator('button[data-act="connect"]')).toBeVisible();
+
+  // No branded connectors and no left-sliding connectors dialog anymore.
+  await expect(panel.getByText('Gmail', { exact: true })).toHaveCount(0);
+  await expect(panel.getByText('Jira', { exact: true })).toHaveCount(0);
+  await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 
   // The scope bug surfaced as an uncaught "fetchJson is not defined" before the
   // body was written — assert no page error escaped.

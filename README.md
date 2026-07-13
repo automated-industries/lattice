@@ -124,7 +124,7 @@ opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
 - [Pluggable backends (v1.6+)](#pluggable-backends-v16)
 - [Architecture](#architecture)
 - [Examples](#examples)
-- [Connectors (v4.3+)](#connectors-v43)
+- [MCP Connectors](#mcp-connectors)
 - [Staying up to date](#staying-up-to-date)
   - [Auto-update](#auto-update-v11)
 - [Telemetry](#telemetry)
@@ -2885,76 +2885,57 @@ See Scarf's own [privacy documentation](https://docs.scarf.sh) for the upstream 
 
 ---
 
-## Connectors (v4.3+)
+## MCP Connectors
 
 Connectors sync data from external systems into Lattice as **connected data
 types** — tables whose rows are ingested from a source rather than authored
-locally. A connector talks to one external product directly using your own
-credentials. The built-in connector is **Jira**, which talks to Jira Cloud's
-REST + Agile APIs via [`jira.js`](https://github.com/MrRefactoring/jira.js) — no
-broker service, no extra API key.
+locally. Every connector is a standard **MCP connection**: Lattice runs as a
+local [Model Context Protocol](https://modelcontextprotocol.io) client and
+talks to the server directly from your machine — no broker, no provider-specific
+code. A provider is just another MCP server URL.
 
-`jira.js` is an **optional dependency** — install it only to use the connector:
+In the **GUI**, open **Configure → MCP Connectors**: paste a server URL, sign in
+with the provider's own OAuth in your browser (client identity via a client-ID
+metadata document, dynamic registration, or a pre-registered client id — the
+form asks only when the server requires one), and the server's readable items
+and advertised resources sync into the `mcp_items` connected table. Connect any
+number of servers side by side; each row shows status, last sync, and
+Refresh / Disconnect / Reconnect. Tokens are stored encrypted on your machine
+and synced data stays local.
 
-```bash
-npm install jira.js
-```
-
-Connect, sync, and disconnect programmatically:
+Programmatically, the same engine is exposed as a library surface:
 
 ```typescript
 import {
-  JiraConnector,
+  genericConnector,
   createConnector,
   syncConnector,
   syncIfStale,
   disconnectConnector,
 } from 'latticesql';
 
-const connector = new JiraConnector();
-
-// 1. Validate + store the member's Atlassian credentials (site + email + API token):
-const { connectionId, displayName } = await connector.connect({
-  site: 'https://your-domain.atlassian.net',
-  email: 'you@example.com',
-  apiToken: process.env.JIRA_API_TOKEN!,
-});
-
-// 2. Register + sync (defines the six jira_* connected tables and ingests):
+const connector = genericConnector();
 const connectorId = await createConnector(db, {
-  connector: 'jira',
-  toolkit: 'jira',
-  displayName: displayName ?? 'jira',
-  connectionRef: connectionId,
+  connector: 'mcp',
+  toolkit: 'mcp',
+  displayName: 'My MCP server',
+  connectionRef: connectionId, // from the OAuth/stdio connect flow
   connectedBy: 'user-123',
 });
-await syncConnector(db, connector, connectorId);
-
-// 3. Keep fresh — no scheduler: re-sync on load if older than an hour.
-await syncIfStale(db, connector, connectorId);
-
-// 4. Disconnect — soft-deletes the ingested rows + drops the stored credentials.
-await disconnectConnector(db, connector, connectorId);
+await syncConnector(db, connector, connectorId); // ingest (idempotent upserts)
+await syncIfStale(db, connector, connectorId); // re-sync on load if > 1h old
+await disconnectConnector(db, connector, connectorId); // soft teardown
 ```
 
-Connected tables (`jira_projects`, `jira_issues`, `jira_comments`, `jira_users`,
-`jira_boards`, `jira_sprints`) are full Lattice tables: queryable, full-text
-searchable, rendered to context, and linked on the graph (issue → project,
-comment → issue, …). Each row carries immutable lineage (`_source_connector_id`,
-`_source_model`); a re-sync upserts on the natural key and soft-deletes rows that
-vanished from the source.
+Connected rows are full Lattice rows: queryable, full-text searchable, rendered
+to context, per-member `private` by default on a cloud
+(`enableConnectorRls(db, connector, 'mcp')`), and stamped with immutable lineage
+(`_source_connector_id`, `_source_model`). A re-sync upserts on the natural key
+and soft-deletes rows that vanished from the source.
 
-On a cloud workspace, the owner calls `enableConnectorRls(db, connector, 'jira')`
-to scope connected rows per member (private by default, or shared per type).
-
-In the **GUI**, all of this is point-and-click: open **Settings → Connectors**,
-enter your Jira site URL + email + API token, and connect / refresh / disconnect.
-Connected data types show a "Connected" badge in the Objects list.
-
-See [docs/connectors.md](docs/connectors.md) for the full guide and the connector
-SPI (to add a new connector).
-
----
+See [docs/connectors.md](docs/connectors.md) for the full guide — the OAuth
+client-identity mechanisms, the privacy model, the `mcp_items` schema, and the
+connector SPI for embedding a specific provider.
 
 ## Contributing
 

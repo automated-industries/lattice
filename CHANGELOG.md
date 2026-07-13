@@ -10,6 +10,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Connectors are now pure MCP — one "MCP Connectors" tab, any server by URL.** The
+  Configure tab is renamed **MCP Connectors** and now hosts everything inline: every
+  connected server (name from the MCP handshake, URL, status, last sync) with per-server
+  **Refresh / Disconnect / Reconnect**, plus an add-by-URL form — the separate left-sliding
+  "Add a Connector" dialog is gone. Every added server is its own connection, so any number
+  of MCP servers connect side by side. The branded Gmail / Calendar / Drive / Jira / Trello /
+  monday connectors are removed (their exports leave the library surface): a provider is
+  just another MCP server URL, with no provider-specific code. Disconnect now retains the
+  server URL (it is not a secret), which is what makes one-click Reconnect possible; a hard
+  teardown still purges it. Synced rows land in `mcp_items`, which gains `kind`
+  (`item`/`resource`) and `server` (hostname) columns. A brand-new workspace creates the
+  table with those columns; an `mcp_items` table left over from an earlier pre-release build
+  is not altered in place, so drop it (or the workspace) once to pick up the new shape.
+
+- **Connectors also list the server's files.** Alongside read-tool items, a sync now pulls
+  the server's advertised resources — the standard MCP `resources/list`, its "available
+  files" — into `mcp_items` as `kind='resource'` rows (title, description, URI, MIME type).
+  Servers without the resources capability are unaffected.
+
+- **OAuth works with servers that don't support dynamic client registration.** Connecting a
+  server whose authorization server has no registration endpoint used to dead-end with
+  "Incompatible auth server: does not support dynamic client registration". Lattice now
+  identifies itself with a **client-ID metadata document** (the modern MCP mechanism — the
+  client_id is a stable HTTPS URL to a static JSON identity document, hosted at
+  latticedesktop.com and overridable via `LATTICE_MCP_CLIENT_METADATA_URL`) when the server
+  supports it, falls back to dynamic registration when offered, and — for servers that
+  support neither — the add form now asks for a **pre-registered client ID (+ optional
+  secret)** instead of failing. The identity document is static app metadata fetched only by
+  the provider's authorization server: no user data, and MCP traffic still flows directly
+  between your machine and the server.
+
 - **Graph is now its own Configure tab, full width.** The schema graph moved out of the Data
   Model tab into its own top-level Configure tab (Data Model · **Graph** · Files · Connectors ·
   Databases · Workspace · User). Both Data Model and Graph now span the full width of the

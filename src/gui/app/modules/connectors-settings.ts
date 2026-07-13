@@ -1,10 +1,13 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// connectors UI: a LEFT-sliding "Add a connector" dialog (opened from the Sources
-// sidebar) listing each toolkit as a card with its logo. Fully data-driven off
-// GET /api/connectors — every connector declares its label, icon, and credential
-// fields, so adding a connector needs no GUI change. A thin client over the
-// route-tested /api/connectors endpoints; credentials are validated server-side
-// on connect and stored encrypted on this machine.
+// MCP Connectors panel, rendered INSIDE the Configure drawer's "MCP Connectors"
+// tab (there is no separate dialog): every connected MCP server as a card with
+// status + Refresh/Disconnect/Reconnect, plus an inline add-by-URL form. Fully
+// data-driven off GET /api/connectors. OAuth runs in the system browser against
+// the server's own authorization server; tokens are stored encrypted on this
+// machine and no connector data touches any Lattice-hosted service. When a
+// provider supports neither a client-ID metadata document nor dynamic
+// registration, the server answers 422 `client_registration_unsupported` and
+// the form reveals pre-registered client-ID fields.
 export const connectorsSettingsJs = `
     function connectorIconHtml(pres) {
       if (pres && pres.icon) return '<img class="connector-icon" src="' + escapeHtml(pres.icon) + '" alt="">';
@@ -16,81 +19,93 @@ export const connectorsSettingsJs = `
         data = data || {};
         var toolkits = data.toolkits || [];
         var connectors = data.connectors || [];
-        var byToolkit = {};
-        connectors.forEach(function (c) { byToolkit[c.toolkit] = c; });
+        var tk = toolkits[0] || { toolkit: 'mcp', label: 'MCP server' };
+        var tkName = tk.toolkit || 'mcp';
+        // Set when a Reconnect is in flight so the manual-client fields (revealed
+        // on a 422) resubmit against the SAME registry row, not a new one.
+        var reconnectId = null;
 
         function statusChip(c) {
           var color = c.status === 'connected' ? 'var(--accent)'
             : (c.status === 'error' ? 'var(--danger, #c0392b)' : 'var(--text-muted)');
           return '<span class="conn-status" style="color:' + color + '">' + escapeHtml(c.status) + '</span>';
         }
-        function credForm(tk) {
-          var fields = tk.credentialFields || [];
-          var rows = fields.map(function (f) {
-            return '<label class="conn-field">' + escapeHtml(f.label) +
-              '<input id="cred-' + escapeHtml(tk.toolkit) + '-' + escapeHtml(f.key) + '" type="' +
-                (f.type === 'password' ? 'password' : 'text') + '" autocomplete="off" data-1p-ignore ' +
-                'data-lpignore="true" placeholder="' + escapeHtml(f.placeholder || '') + '"></label>';
-          }).join('');
-          var help = tk.helpUrl
-            ? '<a class="conn-help" href="' + escapeHtml(tk.helpUrl) + '" target="_blank" rel="noopener">Where do I find these? ↗</a>'
-            : '';
-          return '<div class="conn-form">' + rows +
-            '<div class="conn-form-actions"><button class="btn primary" data-act="connect" data-tk="' +
-              escapeHtml(tk.toolkit) + '">Connect</button>' + help + '</div></div>';
-        }
-        function mcpUrlForm(tk) {
-          return '<div class="conn-form">' +
-            '<label class="conn-field">MCP server URL' +
-              '<input id="mcp-url-' + escapeHtml(tk.toolkit) + '" type="text" autocomplete="off" ' +
-                'data-1p-ignore data-lpignore="true" placeholder="https://your-mcp-server/sse"></label>' +
-            '<div class="conn-form-actions"><button class="btn primary" data-act="connect" data-tk="' +
-              escapeHtml(tk.toolkit) + '">Connect</button></div></div>';
-        }
-        function card(tk) {
-          var c = byToolkit[tk.toolkit];
-          var inner;
-          if (c) {
-            inner = '<div class="conn-connected">' + statusChip(c) +
-                (c.lastSyncAt ? '<span class="conn-sub">last synced ' + escapeHtml(c.lastSyncAt) + '</span>' : '') +
-                '<button class="btn" data-act="refresh" data-tk="' + escapeHtml(tk.toolkit) + '">Refresh</button>' +
-                '<button class="btn" data-act="disconnect" data-tk="' + escapeHtml(tk.toolkit) + '">Disconnect</button>' +
-              '</div>' +
-              (c.lastError ? '<div class="conn-err">' + escapeHtml(c.lastError) + '</div>' : '');
-          } else if (tk.connectVia === 'mcp' && tk.needsServerUrl) {
-            inner = mcpUrlForm(tk);
-          } else {
-            inner = (tk.credentialFields && tk.credentialFields.length)
-              ? credForm(tk)
-              : '<button class="btn primary" data-act="connect" data-tk="' + escapeHtml(tk.toolkit) + '">Connect</button>';
-          }
+        function serverCard(c) {
+          var actions = c.status === 'disconnected'
+            ? '<button class="btn primary" data-act="reconnect" data-id="' + escapeHtml(c.id) + '">Reconnect</button>'
+            : '<button class="btn" data-act="refresh" data-id="' + escapeHtml(c.id) + '">Refresh</button>' +
+              '<button class="btn" data-act="disconnect" data-id="' + escapeHtml(c.id) + '">Disconnect</button>';
           return '<div class="conn-card">' +
             '<div class="conn-card-head">' + connectorIconHtml(tk) +
-              '<span class="conn-card-title">' + escapeHtml(tk.label || tk.toolkit) + '</span></div>' +
-            inner + '</div>';
+              '<span class="conn-card-title">' + escapeHtml(c.displayName || 'MCP server') + '</span>' +
+              statusChip(c) + '</div>' +
+            (c.serverUrl ? '<div class="conn-sub">' + escapeHtml(c.serverUrl) + '</div>' : '') +
+            '<div class="conn-connected">' +
+              (c.lastSyncAt ? '<span class="conn-sub">last synced ' + escapeHtml(c.lastSyncAt) + '</span>' : '') +
+              actions + '</div>' +
+            (c.lastError ? '<div class="conn-err">' + escapeHtml(c.lastError) + '</div>' : '') +
+            '</div>';
+        }
+        function addForm() {
+          return '<div class="conn-card">' +
+            '<div class="conn-card-head"><span class="conn-card-title">Add an MCP connector</span></div>' +
+            '<div class="conn-form">' +
+              '<label class="conn-field">MCP server URL' +
+                '<input id="mcp-add-url" type="text" autocomplete="off" data-1p-ignore ' +
+                  'data-lpignore="true" placeholder="https://mcp.example.com"></label>' +
+              '<div id="mcp-client-fields" hidden>' +
+                '<label class="conn-field">OAuth client ID' +
+                  '<input id="mcp-add-client-id" type="text" autocomplete="off" data-1p-ignore data-lpignore="true"></label>' +
+                '<label class="conn-field">OAuth client secret (optional)' +
+                  '<input id="mcp-add-client-secret" type="password" autocomplete="off" data-1p-ignore data-lpignore="true"></label>' +
+              '</div>' +
+              '<div class="conn-form-actions">' +
+                '<button class="btn primary" data-act="connect">Connect</button></div>' +
+            '</div></div>';
         }
         host.innerHTML =
-          '<p class="conn-lead">Sync an external source into Lattice as connected data types. ' +
-          'Your credentials are validated on connect and stored encrypted on this machine.</p>' +
+          '<p class="conn-lead">Connect any MCP server by URL. You authorize each server directly ' +
+          'with its own sign-in; tokens are stored encrypted on this machine and synced data stays local.</p>' +
           '<div id="connectors-msg" class="conn-msg"></div>' +
-          (toolkits.length ? toolkits.map(card).join('') : '<div class="conn-sub">No connectors available.</div>');
+          (connectors.length ? connectors.map(serverCard).join('') : '<div class="conn-sub">No MCP servers connected yet.</div>') +
+          addForm();
         var msg = host.querySelector('#connectors-msg');
         function setMsg(t) { if (msg) msg.textContent = t; }
         function reload() { renderConnectorsPanel(host); }
+        function showClientFields() {
+          var el = host.querySelector('#mcp-client-fields');
+          if (el) el.hidden = false;
+        }
         // MCP OAuth: open the provider's sign-in in the browser (the desktop app
-        // routes window.open for external origins to the system browser), then poll
-        // until the loopback callback records the connection and re-render.
-        function openAuthRedirect(u, tkName) {
+        // routes window.open for external origins to the system browser), then
+        // poll until the loopback callback lands. Completion = a connector id we
+        // did not have before, or a known id whose status CHANGED (a reconnect
+        // repoints an existing row: its id is unchanged and it ends 'connected',
+        // but its status still changes from disconnected/error). A toolkit-name
+        // check cannot work with several servers on one toolkit.
+        function openAuthRedirect(u) {
           setMsg('Finish signing in in your browser, then return here…');
+          var before = {};
+          connectors.forEach(function (c) { before[c.id] = c.status; });
           try { window.open(u, '_blank', 'noopener'); } catch (e) {}
           var tries = 0;
           var iv = window.setInterval(function () {
             tries++;
             fetchJson('/api/connectors').then(function (d) {
               var cs = (d && d.connectors) || [];
-              var found = false;
-              for (var i = 0; i < cs.length; i++) if (cs[i].toolkit === tkName) { found = true; break; }
-              if (found || tries > 40) { window.clearInterval(iv); reload(); }
+              var done = false;
+              for (var i = 0; i < cs.length; i++) {
+                var known = Object.prototype.hasOwnProperty.call(before, cs[i].id);
+                if (!known || cs[i].status !== before[cs[i].id]) { done = true; break; }
+              }
+              if (done) { window.clearInterval(iv); reload(); return; }
+              if (tries > 40) {
+                // Give up polling but resync with server state either way, so a
+                // late-completing sign-in isn't left invisible behind a stale view.
+                window.clearInterval(iv);
+                setMsg("Sign-in didn't complete — try Connect again.");
+                reload();
+              }
             }).catch(function () {});
           }, 3000);
         }
@@ -99,46 +114,63 @@ export const connectorsSettingsJs = `
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}),
           }).then(function (r) { return r.json(); });
         }
+        function submitConnect(body) {
+          setMsg('Connecting…');
+          postJson('/api/connectors/' + encodeURIComponent(tkName) + '/connect', body)
+            .then(function (d) {
+              if (d && d.code === 'client_registration_unsupported') {
+                showClientFields();
+                setMsg(d.error || 'This server needs a pre-registered OAuth client.');
+                return;
+              }
+              if (d.error) { setMsg('Failed: ' + d.error); return; }
+              if (d.redirectUrl) { openAuthRedirect(d.redirectUrl); return; }
+              reload();
+            })
+            .catch(function (e) { setMsg('Failed: ' + e.message); });
+        }
         host.querySelectorAll('button[data-act]').forEach(function (b) {
           b.addEventListener('click', function () {
             var act = b.getAttribute('data-act');
-            var tkName = b.getAttribute('data-tk');
-            var tk = null;
-            for (var i = 0; i < toolkits.length; i++) if (toolkits[i].toolkit === tkName) { tk = toolkits[i]; break; }
+            var id = b.getAttribute('data-id');
             if (act === 'connect') {
-              var fields = (tk && tk.credentialFields) || [];
+              var urlEl = host.querySelector('#mcp-add-url');
+              var urlV = urlEl && urlEl.value ? urlEl.value.trim() : '';
+              // A typed URL is always a FRESH connection — never fold it onto a
+              // row left targeted by an earlier, abandoned Reconnect. Only a bare
+              // Connect (no URL) continues a reconnect (the manual-client 422
+              // resubmit path), where the server resolves the stored URL.
+              if (urlV) reconnectId = null;
+              if (!urlV && !reconnectId) { setMsg('Enter the MCP server URL.'); return; }
               var body = {};
-              var missing = false;
-              fields.forEach(function (f) {
-                var el = host.querySelector('#cred-' + tkName + '-' + f.key);
-                var v = el && el.value ? el.value.trim() : '';
-                if (f.required !== false && !v) missing = true;
-                body[f.key] = v;
-              });
-              if (missing) { setMsg('Fill in every field.'); return; }
-              if (tk && tk.connectVia === 'mcp' && tk.needsServerUrl) {
-                var urlEl = host.querySelector('#mcp-url-' + tkName);
-                var urlV = urlEl && urlEl.value ? urlEl.value.trim() : '';
-                if (!urlV) { setMsg('Enter the MCP server URL.'); return; }
-                body.serverUrl = urlV;
+              if (urlV) body.serverUrl = urlV;
+              if (reconnectId) body.connectorId = reconnectId;
+              var cidEl = host.querySelector('#mcp-add-client-id');
+              var csecEl = host.querySelector('#mcp-add-client-secret');
+              var fieldsEl = host.querySelector('#mcp-client-fields');
+              if (fieldsEl && !fieldsEl.hidden) {
+                var cid = cidEl && cidEl.value ? cidEl.value.trim() : '';
+                if (!cid) { setMsg('Enter the OAuth client ID.'); return; }
+                body.clientId = cid;
+                var csec = csecEl && csecEl.value ? csecEl.value.trim() : '';
+                if (csec) body.clientSecret = csec;
               }
-              setMsg(tk && tk.connectVia === 'mcp' ? 'Connecting…' : 'Validating + syncing…');
-              postJson('/api/connectors/' + encodeURIComponent(tkName) + '/connect', body)
-                .then(function (d) {
-                  if (d.error) { setMsg('Failed: ' + d.error); return; }
-                  if (d.redirectUrl) { openAuthRedirect(d.redirectUrl, tkName); return; }
-                  reload();
-                })
-                .catch(function (e) { setMsg('Failed: ' + e.message); });
+              submitConnect(body);
+            } else if (act === 'reconnect') {
+              reconnectId = id;
+              // The server resolves the stored URL for this row; a 422 flips the
+              // form into pre-registered-client mode, still targeting this row.
+              submitConnect({ connectorId: id });
             } else if (act === 'refresh') {
               setMsg('Refreshing…');
-              postJson('/api/connectors/' + encodeURIComponent(tkName) + '/refresh')
+              postJson('/api/connectors/' + encodeURIComponent(tkName) + '/refresh', { connectorId: id })
                 .then(function (d) { if (d.error) { setMsg('Failed: ' + d.error); return; } reload(); })
                 .catch(function (e) { setMsg('Failed: ' + e.message); });
             } else if (act === 'disconnect') {
               setMsg('Disconnecting…');
               fetch('/api/connectors/' + encodeURIComponent(tkName), {
-                method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}',
+                method: 'DELETE', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ connectorId: id }),
               })
                 .then(function (r) { return r.json(); })
                 .then(function (d) { if (d.error) { setMsg('Failed: ' + d.error); return; } reload(); })
@@ -151,41 +183,6 @@ export const connectorsSettingsJs = `
           host.innerHTML = '<div class="conn-err">Failed to load connectors: ' +
             escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
         }
-      });
-    }
-
-    // The connectors panel opens in a LEFT-sliding dialog from the Sources sidebar
-    // ("+ Add a Connector" / clicking a connected source), not the Settings drawer.
-    function openConnectorsDialog() {
-      var dlg = document.getElementById('connectors-dialog');
-      var back = document.getElementById('connectors-backdrop');
-      if (!dlg || !back) return;
-      back.hidden = false;
-      dlg.hidden = false;
-      window.requestAnimationFrame(function () { dlg.classList.add('open'); back.classList.add('open'); });
-      wireConnectorsDialog();
-      renderConnectorsPanel(document.getElementById('connectors-dialog-body'));
-    }
-    function closeConnectorsDialog() {
-      var dlg = document.getElementById('connectors-dialog');
-      var back = document.getElementById('connectors-backdrop');
-      if (!dlg || !back) return;
-      dlg.classList.remove('open');
-      back.classList.remove('open');
-      window.setTimeout(function () { dlg.hidden = true; back.hidden = true; }, 220);
-    }
-    var connectorsDialogWired = false;
-    function wireConnectorsDialog() {
-      if (connectorsDialogWired) return;
-      connectorsDialogWired = true;
-      var closeBtn = document.getElementById('connectors-dialog-close');
-      if (closeBtn) closeBtn.addEventListener('click', closeConnectorsDialog);
-      var back = document.getElementById('connectors-backdrop');
-      if (back) back.addEventListener('click', closeConnectorsDialog);
-      document.addEventListener('keydown', function (e) {
-        if (e.key !== 'Escape') return;
-        var dlg = document.getElementById('connectors-dialog');
-        if (dlg && !dlg.hidden) closeConnectorsDialog();
       });
     }
 `;

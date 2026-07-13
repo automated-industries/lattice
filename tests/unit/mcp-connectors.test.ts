@@ -2,13 +2,18 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gmailConnector, GMAIL_MODELS } from '../../src/connectors/gmail/connector.js';
 import { genericConnector } from '../../src/connectors/generic/connector.js';
 import { SimpleMcpConnector } from '../../src/connectors/mcp/connector-base.js';
+import {
+  setMcpServerUrl,
+  getMcpServerUrl,
+  LatticeOAuthProvider,
+} from '../../src/connectors/mcp/oauth.js';
 import type {
   McpTransport,
   McpToolCall,
   McpToolInfo,
+  McpResourceInfo,
   McpServerRef,
 } from '../../src/connectors/mcp/transport.js';
 import type { McpOAuthDriver } from '../../src/connectors/mcp/connector-base.js';
@@ -42,6 +47,8 @@ class FakeTransport implements McpTransport {
   constructor(
     private readonly tools: McpToolInfo[],
     private readonly results: Record<string, ToolResult>,
+    private readonly resources: McpResourceInfo[] = [],
+    private readonly name?: string,
   ) {}
   listTools(): Promise<McpToolInfo[]> {
     return Promise.resolve(this.tools);
@@ -52,6 +59,12 @@ class FakeTransport implements McpTransport {
     return Promise.resolve(
       typeof r === 'function' ? (r as (a: Record<string, unknown>) => unknown)(call.args) : r,
     );
+  }
+  listResources(): Promise<McpResourceInfo[]> {
+    return Promise.resolve(this.resources);
+  }
+  serverInfo(): { name?: string } | undefined {
+    return this.name ? { name: this.name } : undefined;
   }
   close(): Promise<void> {
     this.closed = true;
@@ -74,98 +87,21 @@ async function collect(it: AsyncIterable<ExternalRecord>): Promise<ExternalRecor
 
 const CTX: ListChangesContext = { connectionId: 'c1', userId: 'u1' };
 
-describe('Gmail connector', () => {
-  it('defines three connected tables, parents before children, all private', () => {
-    expect(GMAIL_MODELS.map((m) => m.table)).toEqual([
-      'gmail_labels',
-      'gmail_threads',
-      'gmail_messages',
-    ]);
-    for (const m of GMAIL_MODELS) {
-      expect(m.definition.source?.defaultVisibility).toBe('private');
-      expect(m.definition.source?.connector).toBe('gmail');
-    }
-    const messages = GMAIL_MODELS.find((m) => m.table === 'gmail_messages');
-    expect(messages?.parent?.table).toBe('gmail_threads');
-    expect(messages?.graphEdges?.[0]?.dstTable).toBe('gmail_threads');
-  });
-
-  it('maps list_labels output to label rows', async () => {
-    const conn = gmailConnector({
-      transportFactory: factoryFor(
-        new FakeTransport([{ name: 'list_labels' }], {
-          list_labels: { labels: [{ id: 'L1', name: 'Inbox', type: 'system' }] },
-        }),
-      ),
-    });
-    const rows = await collect(conn.listChanges('gmail', 'label', CTX));
-    expect(rows).toEqual([{ id: 'L1', row: { name: 'Inbox', type: 'system' } }]);
-  });
-
-  it('pages threads via next_page_token', async () => {
-    const t = new FakeTransport([{ name: 'search_threads' }], {
-      search_threads: (args) =>
-        args.page_token === 'p2'
-          ? { threads: [{ id: 't2', snippet: 'second' }] }
-          : { threads: [{ id: 't1', snippet: 'first' }], next_page_token: 'p2' },
-    });
-    const conn = gmailConnector({ transportFactory: factoryFor(t) });
-    const rows = await collect(conn.listChanges('gmail', 'thread', CTX));
-    expect(rows.map((r) => r.id)).toEqual(['t1', 't2']);
-    expect(t.closed).toBe(true);
-  });
-
-  it('maps get_thread messages per parent thread, stamping the FK', async () => {
-    const conn = gmailConnector({
-      transportFactory: factoryFor(
-        new FakeTransport([{ name: 'get_thread' }], {
-          get_thread: { messages: [{ id: 'm1', from: 'a@x.com', subject: 'Hi', body: 'Body' }] },
-        }),
-      ),
-    });
-    const rows = await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't1' }));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.id).toBe('m1');
-    expect(rows[0]?.row).toMatchObject({
-      thread_id: 't1',
-      from_addr: 'a@x.com',
-      subject: 'Hi',
-      body_text: 'Body',
-    });
-  });
-});
-
-describe('sync session reuses ONE transport across parent keys (#8)', () => {
-  function messagesConn() {
-    const seen: McpServerRef[] = [];
-    const t = new FakeTransport([{ name: 'get_thread' }], {
-      get_thread: { messages: [{ id: 'm1', from: 'a@x.com', subject: 'Hi', body: 'B' }] },
-    });
-    const conn = gmailConnector({ transportFactory: factoryFor(t, seen) });
-    return { conn, t, seen };
-  }
-
-  it('opens a fresh transport per listChanges when NO session is active (unchanged single-shot path)', async () => {
-    const { conn, seen } = messagesConn();
-    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't1' }));
-    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't2' }));
-    expect(seen).toHaveLength(2); // the old N+1: one connect per parent key
-  });
-
-  it('opens ONE transport for the whole session, reuses it, and closes it on endSyncSession', async () => {
-    const { conn, t, seen } = messagesConn();
-    await conn.beginSyncSession('c1');
-    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't1' }));
-    await collect(conn.listChanges('gmail', 'message', { ...CTX, parentKey: 't2' }));
-    expect(seen).toHaveLength(1); // reused across both parent keys
-    expect(t.closed).toBe(false); // not closed mid-session
-    await conn.endSyncSession('c1');
-    expect(t.closed).toBe(true); // closed exactly once, at session end
-  });
-});
-
 describe('Generic (introspective) connector', () => {
+  it('defines one private mcp_items table with kind/tool/server columns', () => {
+    const conn = genericConnector();
+    const models = conn.models('mcp');
+    expect(models.map((m) => m.table)).toEqual(['mcp_items']);
+    const def = models[0]?.definition;
+    expect(def?.source?.defaultVisibility).toBe('private');
+    const cols = Object.keys(def?.columns ?? {});
+    for (const c of ['kind', 'tool', 'server', 'title', 'summary', 'data']) {
+      expect(cols).toContain(c);
+    }
+  });
+
   it('calls read tools, skips write tools, and maps items into mcp_items', async () => {
+    setMcpServerUrl(CTX.connectionId, 'https://mcp.example.com/mcp');
     const conn = genericConnector({
       transportFactory: factoryFor(
         new FakeTransport([{ name: 'list_things' }, { name: 'create_thing' }], {
@@ -178,12 +114,131 @@ describe('Generic (introspective) connector', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe('list_things:x1');
     expect(rows[0]?.row).toMatchObject({
+      kind: 'item',
       tool: 'list_things',
+      server: 'mcp.example.com',
       title: 'Thing One',
       summary: 'desc',
     });
     const row0 = rows[0]?.row;
     expect(typeof row0?.data).toBe('string');
+  });
+
+  it("lists the server's resources as kind='resource' rows alongside tool items", async () => {
+    setMcpServerUrl(CTX.connectionId, 'https://mcp.example.com/mcp');
+    const conn = genericConnector({
+      transportFactory: factoryFor(
+        new FakeTransport(
+          [{ name: 'list_things' }],
+          { list_things: { items: [{ id: 'x1', title: 'Thing One' }] } },
+          [
+            {
+              name: 'Q1 report',
+              uri: 'file:///reports/q1.pdf',
+              description: 'Quarterly report',
+              mimeType: 'application/pdf',
+            },
+          ],
+        ),
+      ),
+    });
+    const rows = await collect(conn.listChanges('mcp', 'item', CTX));
+    expect(rows.map((r) => r.id)).toEqual(['list_things:x1', 'resource:file:///reports/q1.pdf']);
+    const resource = rows[1];
+    expect(resource?.row).toMatchObject({
+      kind: 'resource',
+      server: 'mcp.example.com',
+      title: 'Q1 report',
+      summary: 'Quarterly report',
+    });
+    expect(String(resource?.row.data)).toContain('file:///reports/q1.pdf');
+    expect(String(resource?.row.data)).toContain('application/pdf');
+  });
+
+  it('yields no resource rows when the server has none (capability optional)', async () => {
+    const conn = genericConnector({
+      transportFactory: factoryFor(
+        new FakeTransport([{ name: 'list_things' }], {
+          list_things: { items: [{ id: 'x1', title: 'T' }] },
+        }),
+      ),
+    });
+    const rows = await collect(conn.listChanges('mcp', 'item', CTX));
+    expect(rows).toHaveLength(1);
+  });
+});
+
+// A minimal TYPED connector standing in for any library consumer of
+// SimpleMcpConnector — locks the binding/paging/session engine the branded
+// connectors used to exercise.
+function typedSpec(overrides: Record<string, unknown> = {}) {
+  return {
+    connector: 'x',
+    presentation: { label: 'X' },
+    models: [],
+    bindings: [
+      {
+        model: 'note',
+        tool: 'get_notes',
+        buildArgs: (ctx: { parentKey?: string; cursor?: string | null }) => ({
+          parent: ctx.parentKey,
+          page: ctx.cursor ?? undefined,
+        }),
+        items: (r: unknown) => (r as { notes?: unknown[] }).notes ?? [],
+        map: (item: unknown, ctx: { parentKey?: string }) => {
+          const o = item as { id: string; text: string };
+          return { id: o.id, row: { text: o.text, parent: ctx.parentKey ?? null } };
+        },
+        nextCursor: (r: unknown) => (r as { next?: string }).next ?? null,
+      },
+    ],
+    servers: [{ name: 'x', url: 'https://mcp.example/x', transport: 'http' as const }],
+    ...overrides,
+  };
+}
+
+describe('typed bindings: paging + per-parent mapping (SimpleMcpConnector)', () => {
+  it('pages via nextCursor and stamps the parent key', async () => {
+    const t = new FakeTransport([{ name: 'get_notes' }], {
+      get_notes: (args) =>
+        args.page === 'p2'
+          ? { notes: [{ id: 'n2', text: 'second' }] }
+          : { notes: [{ id: 'n1', text: 'first' }], next: 'p2' },
+    });
+    const conn = new SimpleMcpConnector(typedSpec(), { transportFactory: factoryFor(t) });
+    const rows = await collect(conn.listChanges('x', 'note', { ...CTX, parentKey: 'P' }));
+    expect(rows.map((r) => r.id)).toEqual(['n1', 'n2']);
+    expect(rows[0]?.row).toMatchObject({ text: 'first', parent: 'P' });
+    expect(t.closed).toBe(true);
+  });
+});
+
+describe('sync session reuses ONE transport across parent keys (#8)', () => {
+  function sessionConn() {
+    const seen: McpServerRef[] = [];
+    const t = new FakeTransport([{ name: 'get_notes' }], {
+      get_notes: { notes: [{ id: 'n1', text: 'hello' }] },
+    });
+    const conn = new SimpleMcpConnector(typedSpec(), { transportFactory: factoryFor(t, seen) });
+    return { conn, t, seen };
+  }
+
+  it('opens a fresh transport per listChanges when NO session is active (unchanged single-shot path)', async () => {
+    const { conn, seen } = sessionConn();
+    await collect(conn.listChanges('x', 'note', { ...CTX, parentKey: 'p1' }));
+    await collect(conn.listChanges('x', 'note', { ...CTX, parentKey: 'p2' }));
+    expect(seen).toHaveLength(2); // the old N+1: one connect per parent key
+  });
+
+  it('opens ONE transport for the whole session, reuses it, and closes it on endSyncSession', async () => {
+    const { conn, t, seen } = sessionConn();
+    await conn.beginSyncSession('c1');
+    await collect(conn.listChanges('x', 'note', { ...CTX, parentKey: 'p1' }));
+    await collect(conn.listChanges('x', 'note', { ...CTX, parentKey: 'p2' }));
+    expect(seen).toHaveLength(1); // reused across both parent keys
+    expect(t.closed).toBe(false); // not closed mid-session
+    await conn.endSyncSession('c1');
+    expect(t.closed).toBe(true); // closed exactly once, at session end
   });
 });
 
@@ -199,6 +254,19 @@ describe('MCP connect flow', () => {
     const r = await conn.beginConnect('u1', 'x');
     expect(r.kind).toBe('connected');
     expect(seen[0]?.transport).toBe('stdio');
+  });
+
+  it("uses the server's self-reported name for an open server's display name", async () => {
+    const conn = new SimpleMcpConnector(
+      { ...emptyModels, servers: [{ name: 'x', url: 'https://mcp.example/x', oauth: false }] },
+      {
+        transportFactory: factoryFor(new FakeTransport([{ name: 'list' }], {}, [], 'Notes Server')),
+      },
+    );
+    const r = await conn.beginConnect('u1', 'x');
+    expect(r.kind).toBe('connected');
+    if (r.kind !== 'connected') return;
+    expect(r.displayName).toBe('Notes Server');
   });
 
   it('returns an OAuth redirect for an HTTP server, then completes the connection', async () => {
@@ -227,5 +295,67 @@ describe('MCP connect flow', () => {
     expect(done.displayName).toBe('Y');
     // Pending state is one-shot: a second completion fails loudly.
     await expect(conn.completeConnect(begun.pendingId, { code: 'again' })).rejects.toThrow();
+  });
+
+  it("prefers the MCP handshake's server name over the toolkit label after OAuth", async () => {
+    const oauth: McpOAuthDriver = {
+      begin: () =>
+        Promise.resolve({ authorizationUrl: 'https://auth.example/authorize', toolNames: [] }),
+      complete: () => Promise.resolve({ toolNames: ['t'], serverName: 'Payroll MCP' }),
+    };
+    const conn = new SimpleMcpConnector(
+      { ...emptyModels, servers: [{ name: 'x', url: 'https://mcp.example/x', oauth: true }] },
+      { oauth },
+    );
+    const begun = await conn.beginConnect('u1', 'x', {
+      redirectUri: 'http://127.0.0.1/api/connectors/oauth/callback',
+    });
+    if (begun.kind !== 'redirect') throw new Error('expected redirect');
+    const done = await conn.completeConnect(begun.pendingId, { code: 'c' });
+    expect(done.displayName).toBe('Payroll MCP');
+    expect(done.serverName).toBe('Payroll MCP');
+  });
+
+  it('stores a user-supplied pre-registered client and echoes the reconnect target', async () => {
+    const oauth: McpOAuthDriver = {
+      begin: () =>
+        Promise.resolve({ authorizationUrl: 'https://auth.example/authorize', toolNames: [] }),
+      complete: () => Promise.resolve({ toolNames: [] }),
+    };
+    const conn = new SimpleMcpConnector(
+      { ...emptyModels, servers: [{ name: 'x', url: 'https://mcp.example/x', oauth: true }] },
+      { oauth },
+    );
+    const begun = await conn.beginConnect('u1', 'x', {
+      redirectUri: 'http://127.0.0.1/api/connectors/oauth/callback',
+      clientInfo: { client_id: 'preregistered-id', client_secret: 's3cret' },
+      targetConnectorId: 'row-42',
+    });
+    if (begun.kind !== 'redirect') throw new Error('expected redirect');
+    const done = await conn.completeConnect(begun.pendingId, { code: 'c' });
+    // The reconnect target rode the pending state across begin → complete.
+    expect(done.targetConnectorId).toBe('row-42');
+    // The pre-registered client landed in the store the SDK's clientInformation()
+    // short-circuit reads — this is what skips registration entirely.
+    const provider = new LatticeOAuthProvider(done.connectionId, 'http://127.0.0.1/cb');
+    expect(provider.clientInformation()).toMatchObject({
+      client_id: 'preregistered-id',
+      client_secret: 's3cret',
+    });
+  });
+
+  it('retains the stored server URL across disconnect (reconnect keeps the address)', async () => {
+    const conn = new SimpleMcpConnector(
+      { ...emptyModels, servers: [{ name: 'x', url: 'https://mcp.example/x', oauth: false }] },
+      { transportFactory: factoryFor(new FakeTransport([{ name: 'list' }], {})) },
+    );
+    const r = await conn.beginConnect('u1', 'x');
+    if (r.kind !== 'connected') throw new Error('expected connected');
+    expect(getMcpServerUrl(r.connectionId)).toBe('https://mcp.example/x');
+    await conn.disconnect(r.connectionId);
+    expect(getMcpServerUrl(r.connectionId)).toBe('https://mcp.example/x');
+    // Hard purge removes it too — nothing outlives the registry row.
+    await conn.purgeConnection(r.connectionId);
+    expect(getMcpServerUrl(r.connectionId)).toBeNull();
   });
 });

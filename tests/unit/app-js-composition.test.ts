@@ -472,8 +472,18 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Design pass M3 — base classes added in markup: the import-wizard primary button carries
 // 'btn primary' and the dashboard-tab menu button carries 'btn' (matching its other
 // emitter), so the shared button chrome applies. Recaptured.
-const ORIGINAL_LENGTH = 713922;
-const ORIGINAL_SHA256 = '648ba604359229c14d0bc5eb0a4ebbdfae2ae0b0a592f97b94e2adc40277b93a';
+// MCP Connectors overhaul: the left-sliding connectors dialog is deleted (the
+// panel renders inside the Configure drawer's renamed "MCP Connectors" tab);
+// connectors-settings is rewritten as a multi-server list + inline add-by-URL
+// form with a pre-registered-client fallback; sidebar rows navigate to the tab;
+// the dashboard add-connector action opens the tab (no button click). Recaptured.
+// Adversarial-review fixes: serverCard() closes its outer card div; the OAuth
+// poll treats ANY status change on a known row as completion and reload()s on
+// timeout; a typed URL always starts a fresh connection (clears a stale
+// reconnect target); the dead sidebar renderSourcesConnectors is removed.
+// Recaptured (on top of #144's schema-graph-refresh recapture).
+const ORIGINAL_LENGTH = 711758;
+const ORIGINAL_SHA256 = '1c8b3708b68abe0c1efdad407e3a7b63a2888563f7fd25a1f334bfc984fbde94';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

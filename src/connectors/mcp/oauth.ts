@@ -3,10 +3,19 @@
  *
  * Lattice is the MCP client (mechanism 2): the user authorizes each MCP server
  * directly with that server's own OAuth (RFC 9728 protected-resource discovery →
- * RFC 8414 authorization-server metadata → optional dynamic client registration →
+ * RFC 8414 authorization-server metadata → client identity via a client-ID
+ * metadata document, dynamic registration, or a stored pre-registered client →
  * PKCE authorization-code), and Lattice stores the resulting token in the
  * machine-local encrypted credential store. Nothing is routed through a cloud
  * middleman; the token never enters the registry table, responses, or logs.
+ *
+ * Client identity: the SDK picks, in order, (1) a stored client (`mcp_client:`,
+ * written by dynamic registration or by the user supplying a pre-registered
+ * client id), (2) the hosted client-ID metadata document URL below when the
+ * authorization server advertises `client_id_metadata_document_supported`, or
+ * (3) dynamic registration. The metadata document is fully static app-identity
+ * JSON — the same file for every install, no user data — and is fetched only by
+ * the PROVIDER's authorization server, never by Lattice or the user's browser.
  *
  * Types are hand-written (not imported from `@modelcontextprotocol/sdk`) so
  * `latticesql` compiles without the optional dependency — mirroring how the Jira
@@ -57,6 +66,27 @@ export interface McpPendingConnect {
   redirectUri: string;
   /** The HTTP transport used at begin — must match at token exchange. */
   transportKind: 'http' | 'sse';
+  /** Set when this connect re-authorizes an existing registry row (reconnect). */
+  targetConnectorId?: string;
+}
+
+/**
+ * The hosted client-ID metadata document (CIMD). Authorization servers that
+ * advertise `client_id_metadata_document_supported` fetch this URL to identify
+ * the client instead of requiring dynamic registration — some (e.g. servers
+ * with no `registration_endpoint`) support ONLY this mechanism.
+ */
+export const DEFAULT_CLIENT_METADATA_URL = 'https://latticedesktop.com/oauth/client-metadata.json';
+
+/**
+ * The effective client-ID metadata document URL. Overridable for self-hosters
+ * and staging via `LATTICE_MCP_CLIENT_METADATA_URL`; an empty value disables
+ * the mechanism entirely (falls back to dynamic registration / stored client).
+ */
+export function mcpClientMetadataUrl(): string | undefined {
+  const env = process.env.LATTICE_MCP_CLIENT_METADATA_URL;
+  if (env !== undefined) return env.trim() || undefined;
+  return DEFAULT_CLIENT_METADATA_URL;
 }
 
 const tokKey = (id: string): string => `mcp_tokens:${id}`;
@@ -90,11 +120,31 @@ export function setMcpServerUrl(connectionId: string, url: string): void {
   setAssistantCredential(srvKey(connectionId), url);
 }
 
-/** Remove every stored secret + metadata for a connection (disconnect/teardown). */
-export function clearMcpConnection(connectionId: string): void {
+/**
+ * Store a pre-registered OAuth client (user-supplied client id + optional
+ * secret) for a connection. The provider's `clientInformation()` then returns
+ * it, which makes the SDK skip registration entirely — the path for
+ * authorization servers that support neither a client-ID metadata document nor
+ * dynamic registration.
+ */
+export function setMcpClientInformation(connectionId: string, info: McpClientInformation): void {
+  setAssistantCredential(cliKey(connectionId), JSON.stringify(info));
+}
+
+/**
+ * Revoke a connection's secrets (tokens, client registration, PKCE verifier)
+ * but KEEP the stored server URL — it is not a secret, and retaining it is what
+ * lets a disconnected connector be reconnected without re-entering the URL.
+ */
+export function revokeMcpSecrets(connectionId: string): void {
   deleteAssistantCredential(tokKey(connectionId));
   deleteAssistantCredential(cliKey(connectionId));
   deleteAssistantCredential(verKey(connectionId));
+}
+
+/** Remove every stored secret + metadata for a connection (hard teardown). */
+export function clearMcpConnection(connectionId: string): void {
+  revokeMcpSecrets(connectionId);
   deleteAssistantCredential(srvKey(connectionId));
 }
 
@@ -133,6 +183,16 @@ export class LatticeOAuthProvider {
 
   get redirectUrl(): string {
     return this.redirectUri;
+  }
+
+  /**
+   * The hosted client-ID metadata document URL (CIMD). When the authorization
+   * server advertises support, the SDK uses this URL itself as the client_id —
+   * no registration round-trip — which is the only workable path for servers
+   * without a `registration_endpoint`. Static app identity; see module doc.
+   */
+  get clientMetadataUrl(): string | undefined {
+    return mcpClientMetadataUrl();
   }
 
   get clientMetadata(): McpClientMetadata {

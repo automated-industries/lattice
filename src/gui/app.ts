@@ -170,7 +170,7 @@ export const guiAppHtml = `<!doctype html>
       <button class="drawer-tab" data-tab="datamodel">Data Model</button>
       <button class="drawer-tab" data-tab="graph">Graph</button>
       <button class="drawer-tab" data-tab="files">Files</button>
-      <button class="drawer-tab" data-tab="connectors">Connectors</button>
+      <button class="drawer-tab" data-tab="connectors">MCP Connectors</button>
       <button class="drawer-tab" data-tab="databases">Databases</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>
       <button class="drawer-tab" data-tab="user">User</button>
@@ -179,16 +179,8 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-version" title="Lattice version">Lattice <span class="app-version" id="app-version"><!--LATTICE_VERSION--></span></div>
   </aside>
 
-  <div class="connectors-backdrop" id="connectors-backdrop" hidden></div>
-  <aside class="connectors-dialog" id="connectors-dialog" hidden aria-label="Connectors">
-    <div class="drawer-head">
-      <span class="drawer-title">Add a Connector</span>
-      <button class="drawer-close" id="connectors-dialog-close" title="Close" aria-label="Close connectors">✕</button>
-    </div>
-    <div class="drawer-body" id="connectors-dialog-body"></div>
-  </aside>
-
-  <!-- Connect-a-database: the SAME side-drawer chrome as Add a Connector. -->
+  <!-- MCP connectors live entirely in the Configure drawer's "MCP Connectors"
+       tab; the database connect flow below reuses the side-drawer chrome. -->
   <div class="connectors-backdrop" id="db-connect-backdrop" hidden></div>
   <aside class="connectors-dialog" id="db-connect-dialog" hidden aria-label="Connect a database">
     <div class="drawer-head">
