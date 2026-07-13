@@ -278,7 +278,8 @@ export class RenderEngine {
     for (const [name, def] of this._schema.getTables()) {
       // Bail before each table if the render was aborted (e.g. a workspace
       // switch). Returns the partial manifest, which the caller discards.
-      if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
+      if (signal?.aborted)
+        return this._abortedResult(filesWritten, counters, start, outputDir, tableFilesFresh);
       // Opt-in: a spec-less table renders to an empty `.schema-only` file, so
       // when skipEmpty is on we skip both the full-table read and the write —
       // avoiding pulling a whole (possibly large) table off the wire for an
@@ -381,7 +382,8 @@ export class RenderEngine {
 
     // Multi-table renders (phase 2 — fast; lightweight table-done only).
     for (const [name, def] of this._schema.getMultis()) {
-      if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
+      if (signal?.aborted)
+        return this._abortedResult(filesWritten, counters, start, outputDir, tableFilesFresh);
       // Incremental: a multi rolls up its declared source tables, so re-render it
       // only when one of those changed. (A multi with no declared `tables` derives
       // its keys from an opaque function — render it on any change, never stale.)
@@ -446,7 +448,7 @@ export class RenderEngine {
     // An abort during entity rendering surfaces as a null manifest; bail with
     // the partial result so the caller can discard it.
     if (entityContextManifest === null) {
-      return this._abortedResult(filesWritten, counters, start);
+      return this._abortedResult(filesWritten, counters, start, outputDir, tableFilesFresh);
     }
 
     // Write manifest if there are any entity contexts. On an INCREMENTAL render
@@ -603,12 +605,45 @@ export class RenderEngine {
     filesWritten: string[],
     counters: { skipped: number },
     start: number,
+    outputDir: string,
+    tableFilesFresh: Record<string, TableFileManifestInfo>,
   ): RenderResult {
+    // Record the rollup files this aborted pass actually wrote so a superseding render
+    // sees the true on-disk bytes as its baseline — not a stale manifest — and never
+    // mis-reports an atomic rollup write as a hand edit ("… was edited on disk"). Only
+    // tableFiles is touched; an abort leaves the entity tree untouched, so this never
+    // commits a partial tree.
+    this._flushRollupsOnAbort(outputDir, tableFilesFresh);
     return {
       filesWritten,
       filesSkipped: counters.skipped,
       durationMs: Date.now() - start,
     };
+  }
+
+  /**
+   * On an aborted render, merge the rollup hashes this pass wrote over the prior
+   * manifest so the manifest never lags the atomic per-table rollup writes. The rollup
+   * files (phase 1) are complete atomic writes; only the manifest that records their
+   * hashes is written last, so an abort would otherwise leave the files ahead of the
+   * manifest and the next render would false-flag them as hand-edited. Best-effort: a
+   * later complete render self-heals the manifest regardless.
+   */
+  private _flushRollupsOnAbort(
+    outputDir: string,
+    tableFilesFresh: Record<string, TableFileManifestInfo>,
+  ): void {
+    if (Object.keys(tableFilesFresh).length === 0) return;
+    const prior = readManifest(outputDir);
+    if (!prior) return; // no baseline to preserve; a later complete render writes one
+    try {
+      writeManifest(outputDir, {
+        ...prior,
+        tableFiles: { ...(prior.tableFiles ?? {}), ...tableFilesFresh },
+      });
+    } catch {
+      /* best-effort — the next complete render self-heals the manifest */
+    }
   }
 
   /**

@@ -25,6 +25,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A table created after you opened the workspace shows up without a reload.** When a schema
+  change lands while the GUI is open — most often the assistant creating a computed table — the
+  new table and its relationships now appear in the Data Model explorer, the graph, and the
+  table-view lineage immediately, instead of only after a restart. (The client was refreshing
+  the table list on a schema change but keeping a stale copy of the relationship graph.)
+
+- **Interrupting a render no longer triggers a false "edited on disk" warning.** A table rollup
+  file is written before the manifest that records it, so a render cancelled partway (e.g. a
+  quick succession of edits, where a newer render supersedes an in-flight one) could leave the
+  file ahead of the manifest — and the next render would mistake its own generated file for a
+  hand edit and warn about it. An interrupted render now records what it wrote, so the warning
+  only fires on a genuine manual edit.
+
 - **Bulk document ingest no longer runs the desktop app out of memory.** The packaged
   desktop runtime shipped with JavaScript's conservative default memory ceiling — a
   fraction of what the CLI gets on the same machine — so ingesting a folder of large
