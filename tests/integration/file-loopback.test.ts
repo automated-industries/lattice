@@ -185,4 +185,42 @@ describe('file loopback (default derivation → changelog-aware apply)', () => {
     expect(events.some((e) => (e.summary ?? '').includes('not auto-importable'))).toBe(false);
     db.close();
   });
+
+  it('flush() (the pre-render drain) ingests edits even while a render is in flight', async () => {
+    const { db, outputDir } = await setupDb();
+    await db.insert('agents', {
+      id: 'a1',
+      name: 'Alpha',
+      slug: 'alpha',
+      role: 'Scout',
+      status: 'active',
+    });
+    await db.reconcile(outputDir); // render + manifest
+
+    // Edit the rendered file on disk (as the user would in their editor).
+    const agentFile = join(outputDir, 'agents', 'alpha', 'AGENT.md');
+    const original = readFileSync(agentFile, 'utf8');
+    writeFileSync(agentFile, original.replace('role: Scout', 'role: Commander'));
+
+    // The auto-render cycle marks itself in-flight and THEN calls flush() as its
+    // pre-render drain — so isRendering() is true at drain time by design. Simulate
+    // that: flush() must still ingest the pending edit (force past the guard), or the
+    // render that follows would clobber it. Before the fix, flush() saw isRendering()
+    // and returned without draining.
+    db.isRendering = (): boolean => true;
+
+    const feed = new FeedBus();
+    const watcher = createFileLoopbackWatcher({
+      db,
+      feed,
+      softDeletable: new Set<string>(),
+      outputDir,
+    });
+    await watcher.flush();
+    watcher.stop();
+
+    const row = await db.get('agents', 'a1');
+    expect(row?.role).toBe('Commander'); // drained despite isRendering() === true
+    db.close();
+  });
 });

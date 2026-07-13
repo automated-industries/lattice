@@ -33,13 +33,16 @@ async function bootWithContext() {
       '    fields:',
       '      id: { type: uuid, primaryKey: true }',
       '      title: { type: text }',
-      '    outputFile: tasks.md',
+      // The table rollup lives under `.schema-only/` — the location every GUI table
+      // writer defaults to (a hidden home so it doesn't clutter the Context root).
+      '    outputFile: .schema-only/tasks.md',
       '',
     ].join('\n'),
   );
   const outputDir = join(root, 'context');
-  // Seed a rendered context tree: a top-level entity .md, a per-entity dir with a
-  // row .md, and an internal dot-dir that must NOT appear in the tree.
+  // Seed a rendered context tree: a per-entity dir with a row .md, an internal
+  // dot-dir that must NOT appear in the tree, and a root-level `TASKS.md` that no
+  // table claims (its rollup is `.schema-only/tasks.md`) so it trails as a stray.
   mkdirSync(join(outputDir, 'Tasks'), { recursive: true });
   mkdirSync(join(outputDir, '.lattice'), { recursive: true });
   writeFileSync(join(outputDir, 'TASKS.md'), '# Tasks\n\nThe tasks entity.\n');
@@ -136,18 +139,18 @@ describe('GET /api/context/resolve', () => {
       s,
       '/api/context/resolve?content=1&path=' + encodeURIComponent('TASKS.md'),
     );
-    // TASKS.md is a stray here (the config outputFile is `tasks.md`, lower-case),
+    // TASKS.md is a stray here (the config outputFile is `.schema-only/tasks.md`),
     // so this asserts the stray path; the rollup-with-content path is exercised
-    // by the config outputFile below.
+    // by the `.schema-only/` rollup below.
     expect(r.status).toBe(200);
   });
 
   it('resolves a table rollup to {table, content} + lists it (the "no rendered markdown" bug)', async () => {
     const { s, outputDir } = await bootWithContext();
-    // Rollups live under .schema-only/ (the config upgrade re-homes root-level
-    // outputFiles there). A table whose rollup exists must resolve to its
-    // content — the collection Markdown view showed "no rendered markdown yet"
-    // because a table's rollup wasn't being resolved.
+    // The tasks rollup lives at its configured `.schema-only/tasks.md`. A table
+    // whose rollup exists must resolve to its content — the collection Markdown
+    // view showed "no rendered markdown yet" because a table's rollup wasn't being
+    // resolved.
     mkdirSync(join(outputDir, '.schema-only'), { recursive: true });
     writeFileSync(join(outputDir, '.schema-only', 'tasks.md'), '# Tasks rollup\n\n- a\n- b\n');
     const r = await getJson(

@@ -55,10 +55,14 @@ function upgradeRefShorthand(doc: ReturnType<typeof parseDocument>): boolean {
  * default `.schema-only/<name>.md`, but existing configs were never migrated — so
  * every render kept re-creating a root-level rollup (e.g. STATES.md) right next
  * to the table's per-record folder (States/), an orphan the user can't delete
- * (it reappears on the next render). A root-level rollup is always an anomaly:
- * the compiled default has been `.schema-only/<table>.md` since the fix, so any
- * bare `<X>.md` (no directory) is rewritten. Idempotent — values containing a
- * path separator are never touched.
+ * (it reappears on the next render). Only the EXACT legacy default is rewritten:
+ * the buggy create path wrote the entity name UPPER-CASED (`STATES.md`,
+ * `FILES_CERTIFICATE_HOLDERS.md`), so we match precisely that string. A
+ * deliberately-authored bare `outputFile` — including the documented lowercase
+ * `outputFile: tickets.md` / `articles.md` shapes, which differ from the
+ * upper-cased default — is left untouched. Idempotent: values containing a path
+ * separator (already homed) never match, and once rewritten the new value has a
+ * separator so a second pass is a no-op.
  */
 function upgradeLegacyRootOutputFile(doc: ReturnType<typeof parseDocument>): boolean {
   const entities: unknown = doc.get('entities');
@@ -68,8 +72,9 @@ function upgradeLegacyRootOutputFile(doc: ReturnType<typeof parseDocument>): boo
     const entityName = String(entItem.key);
     const val: unknown = doc.getIn(['entities', entityName, 'outputFile']);
     if (typeof val !== 'string') continue;
-    if (val.includes('/') || val.includes('\\')) continue; // already homed somewhere
-    if (!val.toLowerCase().endsWith('.md')) continue;
+    // Match ONLY the exact upper-cased legacy default — never a lowercase or
+    // otherwise-cased filename the operator chose on purpose.
+    if (val !== `${entityName.toUpperCase()}.md`) continue;
     doc.setIn(['entities', entityName, 'outputFile'], `.schema-only/${entityName}.md`);
     changed = true;
   }

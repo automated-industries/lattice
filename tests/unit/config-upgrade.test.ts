@@ -278,4 +278,39 @@ entities:
     expect(upgradeConfigShape(path)).toBe(false);
     expect(readFileSync(path, 'utf8')).toBe(before);
   });
+
+  it('preserves a deliberately-authored bare outputFile (only the UPPER-CASED legacy default is an orphan)', () => {
+    // The buggy create path wrote the entity name upper-cased (STATES.md). Anything else —
+    // a distinct custom name, OR the documented lowercase `outputFile: tickets.md` /
+    // `articles.md` shapes (docs/MIGRATING-4.0.md, docs/configuration.md) — is a filename the
+    // operator chose on purpose and must survive the upgrade untouched, even when the base
+    // name equals the entity's own (lowercase) name.
+    const path = write(
+      'custom-root.yml',
+      [
+        'entities:',
+        '  states:',
+        '    outputFile: annual-report.md', // distinct custom name
+        '    fields:',
+        '      name: text',
+        '  ticket:',
+        '    outputFile: tickets.md', // documented shape; differs from entity name
+        '    fields:',
+        '      title: text',
+        '  articles:',
+        '    outputFile: articles.md', // documented shape; base name == entity name, lowercase
+        '    fields:',
+        '      body: text',
+        '',
+      ].join('\n'),
+    );
+    const before = readFileSync(path, 'utf8');
+    expect(upgradeConfigShape(path)).toBe(false);
+    const after = readFileSync(path, 'utf8');
+    expect(after).toBe(before);
+    expect(after).toContain('outputFile: annual-report.md');
+    expect(after).toContain('outputFile: tickets.md');
+    expect(after).toContain('outputFile: articles.md');
+    expect(after).not.toContain('.schema-only');
+  });
 });

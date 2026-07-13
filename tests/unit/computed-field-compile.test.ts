@@ -113,70 +113,49 @@ describe('compileComputedField', () => {
     ).toThrow(/belongsTo path/);
   });
 
-  it('aggregate → deferred: aggregate, parses via into a junction/remote/fn plan', () => {
-    const c = compileComputedField(
-      'ticket',
-      'tag_count',
-      { kind: 'aggregate', via: 'ticket_tags.tag', fn: 'count' },
-      COLS,
-      'sqlite',
-    );
-    expect(c.deferred).toBe('aggregate');
-    expect(c.deps).toEqual([]);
-    expect(c.aggregate).toEqual({ junction: 'ticket_tags', remote: 'tag', fn: 'count' });
-  });
-
-  it('aggregate with a value fn carries its column; sum without a column fails loudly', () => {
-    const c = compileComputedField(
-      'ticket',
-      'points',
-      { kind: 'aggregate', via: 'ticket_tags.tag', fn: 'sum', column: 'weight' },
-      COLS,
-      'sqlite',
-    );
-    expect(c.aggregate).toEqual({
-      junction: 'ticket_tags',
-      remote: 'tag',
-      fn: 'sum',
-      column: 'weight',
-    });
+  it('an entity-level aggregate rejects loudly (not yet materialized on an entity)', () => {
+    // No same-row recompute mechanism consumes an entity aggregate plan — a compiled-but-unfilled
+    // column would stay silently NULL forever, so the compiler refuses it up front.
+    expect(() =>
+      compileComputedField(
+        'ticket',
+        'tag_count',
+        { kind: 'aggregate', via: 'ticket_tags.tag', fn: 'count' },
+        COLS,
+        'sqlite',
+      ),
+    ).toThrow(/aggregate.*not yet supported on an entity/);
+    // Rejected regardless of fn/column shape — the whole kind is unsupported on an entity.
     expect(() =>
       compileComputedField(
         'ticket',
         'points',
-        { kind: 'aggregate', via: 'ticket_tags.tag', fn: 'sum' },
+        { kind: 'aggregate', via: 'ticket_tags.tag', fn: 'sum', column: 'weight' },
         COLS,
         'sqlite',
       ),
-    ).toThrow(/requires a `column`/);
+    ).toThrow(/aggregate.*not yet supported on an entity/);
+  });
+
+  it('a belongsTo-path alias / calc rejects loudly (not a same-row value)', () => {
     expect(() =>
       compileComputedField(
         'ticket',
-        'points',
-        { kind: 'aggregate', via: 'bad_no_dot', fn: 'count' },
+        'team',
+        { kind: 'alias', source: 'assignee.team.name' },
         COLS,
         'sqlite',
       ),
-    ).toThrow(/invalid `via`/);
-  });
-
-  it('a belongsTo-path alias / calc → deferred: path (not same-row)', () => {
-    const a = compileComputedField(
-      'ticket',
-      'team',
-      { kind: 'alias', source: 'assignee.team.name' },
-      COLS,
-      'sqlite',
-    );
-    expect(a.deferred).toBe('path');
-    const c = compileComputedField(
-      'ticket',
-      'team_calc',
-      { kind: 'calc', expr: 'assignee.team.name' },
-      COLS,
-      'sqlite',
-    );
-    expect(c.deferred).toBe('path');
+    ).toThrow(/belongsTo path.*not yet supported on an entity/);
+    expect(() =>
+      compileComputedField(
+        'ticket',
+        'team_calc',
+        { kind: 'calc', expr: 'assignee.team.name' },
+        COLS,
+        'sqlite',
+      ),
+    ).toThrow(/belongsTo path.*not yet supported on an entity/);
   });
 
   it('an alias to an unknown same-row column fails loudly', () => {
