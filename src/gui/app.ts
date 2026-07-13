@@ -179,16 +179,8 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-version" title="Lattice version">Lattice <span class="app-version" id="app-version"><!--LATTICE_VERSION--></span></div>
   </aside>
 
-  <!-- MCP connectors live entirely in the Configure drawer's "MCP Connectors"
-       tab; the database connect flow below reuses the side-drawer chrome. -->
-  <div class="connectors-backdrop" id="db-connect-backdrop" hidden></div>
-  <aside class="connectors-dialog" id="db-connect-dialog" hidden aria-label="Connect a database">
-    <div class="drawer-head">
-      <span class="drawer-title">Connect a database</span>
-      <button class="drawer-close" id="db-connect-close" title="Close" aria-label="Close">✕</button>
-    </div>
-    <div class="drawer-body" id="db-connect-body"></div>
-  </aside>
+  <!-- MCP connectors and databases both live entirely in their Configure drawer
+       tabs (inline lists + add/edit forms); there are no side-sliding drawers. -->
 
   <script>${analyticsJs}</script>
   <script>${appJs}</script>

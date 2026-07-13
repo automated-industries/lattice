@@ -40,24 +40,32 @@ describe('gui displayFor — clean labels for machine-namespaced connected table
 });
 
 /**
- * A connected external database can be edited in place: an Edit affordance opens
- * the same drawer pre-filled with the non-secret parts and saves via /reconnect,
- * keeping the password unless retyped.
+ * A connected external database can be edited in place: the full-width Databases
+ * table's per-row Edit action loads the non-secret connection parts into the
+ * same inline form (no drawer), which saves via /reconnect and keeps the
+ * password unless retyped.
  */
 describe('gui db-source edit connection', () => {
-  it('renders an Edit affordance and loads the connection for pre-fill', () => {
-    expect(appJs).toContain('class="src-db-edit"');
-    expect(appJs).toContain('function openDbEditDrawer(id)');
+  it('renders a per-row Edit action and loads the connection for pre-fill', () => {
+    expect(appJs).toContain('data-db-act="edit"');
     expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(id) + '/connection'");
+    // The edit reuses the inline form, not a side-drawer.
+    expect(appJs).not.toContain('openDbConnectDrawer');
+    expect(appJs).not.toContain('db-connect-dialog');
   });
 
   it('saves edits to /reconnect with a keep-current-password hint', () => {
-    expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(edit.id) + '/reconnect'");
+    expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(dbEditId) + '/reconnect'");
     expect(appJs).toContain('leave blank to keep current');
   });
 
-  it('styles the row action buttons', () => {
-    expect(css).toContain('.src-db-edit');
+  it('renders the connected databases as a multi-column table', () => {
+    expect(css).toContain('.db-table');
+    expect(appJs).toContain('class="db-table"');
+    // Verbose columns: host, database, and table count are all shown.
+    expect(appJs).toContain('<th>Host</th>');
+    expect(appJs).toContain('<th>Database</th>');
+    expect(appJs).toContain('<th>Tables</th>');
   });
 });
 

@@ -56,12 +56,20 @@ export async function dispatchDbSourcesRoute(
     const rows = (await listConnectors(db, connectedBy)).filter((c) => c.connector === 'db_source');
     const sources = rows.map((c) => {
       const descriptor = c.connectionRef ? getSchemaDescriptor(c.connectionRef) : null;
+      // The (non-secret) host + database are surfaced so the full-width
+      // Databases table can show which server/db each row points at without a
+      // per-row fetch. The password is never included (same contract as the
+      // /connection endpoint).
+      const parts = c.connectionRef ? describeDbSourceConnection(c.connectionRef) : null;
       return {
         id: c.id,
         displayName: c.displayName,
         status: c.status,
         lastSyncAt: c.lastSyncAt,
         lastError: c.lastError,
+        host: parts?.host ?? null,
+        database: parts?.database ?? null,
+        schema: parts?.schema ?? null,
         tableCount: descriptor ? descriptor.tables.filter((t) => t.selected).length : 0,
       };
     });

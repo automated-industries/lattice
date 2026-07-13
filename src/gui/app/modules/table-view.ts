@@ -97,9 +97,13 @@ export const tableViewJs = `    // ───────────────
       if (tabsRow) tabsRow.hidden = (tab === 'history');
       var body = document.getElementById('drawer-body');
       if (!body) return;
-      // Data Model + Graph run edge-to-edge (no 980px cap, no side panel) — the rest of
-      // the Configure tabs stay in the centered reading column.
-      body.classList.toggle('dm-wide', tab === 'datamodel' || tab === 'graph');
+      // Data Model + Graph + Databases run edge-to-edge (no 980px cap) — Data
+      // Model/Graph for the canvas, Databases for its multi-column table. The
+      // rest of the Configure tabs stay in the centered reading column.
+      body.classList.toggle(
+        'dm-wide',
+        tab === 'datamodel' || tab === 'graph' || tab === 'databases',
+      );
       var title = document.querySelector('#settings-drawer .drawer-title');
       if (title) title.textContent = tab === 'history' ? 'Version history' : 'Configure';
       if (tab === 'history') renderHistory(body);
