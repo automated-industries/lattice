@@ -213,13 +213,13 @@ export const dashboardJs = `    // ───────────────
         if (inp) { if (q) inp.value = q; inp.focus(); }
         return;
       }
-      var addBtn = { 'add-file': 'src-add-files', 'add-database': 'src-add-database' };
+      var addBtn = { 'add-file': 'src-add-files' };
       var addTab = { 'add-file': 'files', 'add-connector': 'connectors', 'add-database': 'databases' };
       if (Object.prototype.hasOwnProperty.call(addTab, name)) {
         // The add-source surfaces live in their own Configure tab (Files/MCP
         // Connectors/Databases) — open the RIGHT one, then click the add button
-        // where one exists. The MCP Connectors tab has its add form inline, so
-        // opening the tab IS the add surface.
+        // where one exists. The MCP Connectors and Databases tabs have their add
+        // forms inline, so opening the tab IS the add surface.
         if (typeof openConfigureDrawer === 'function') openConfigureDrawer(addTab[name]);
         else if (typeof goConfigure === 'function') goConfigure();
         var id = addBtn[name];

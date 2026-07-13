@@ -482,8 +482,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // timeout; a typed URL always starts a fresh connection (clears a stale
 // reconnect target); the dead sidebar renderSourcesConnectors is removed.
 // Recaptured (on top of #144's schema-graph-refresh recapture).
-const ORIGINAL_LENGTH = 711758;
-const ORIGINAL_SHA256 = '1c8b3708b68abe0c1efdad407e3a7b63a2888563f7fd25a1f334bfc984fbde94';
+// Databases tab redesign: the left Connect-a-database drawer is deleted; the
+// Databases Configure tab renders a full-width, multi-column table of connected
+// databases plus an inline add/edit form (renderDatabasesPanel/renderDbForm);
+// the dashboard add-database action opens the tab. Recaptured.
+const ORIGINAL_LENGTH = 712541;
+const ORIGINAL_SHA256 = '5c4196f88971b5d6da942778b2d2a2a8ebe3cd233e0a6588797266968cb12011';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -71,28 +71,8 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     }
     .drawer-version .app-version { color: var(--text); }
 
-    /* ── Left side-drawer chrome (used by the Connect-a-database dialog; the
-          .conn-* card/form styles below are shared with the MCP Connectors
-          Configure tab) ────── */
-    .connectors-backdrop {
-      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-      z-index: var(--z-drawer-scrim); opacity: 0; transition: opacity 0.2s ease;
-    }
-    .connectors-backdrop.open { opacity: 1; }
-    .connectors-dialog {
-      position: fixed; top: 0; left: 0; height: 100vh;
-      width: min(460px, 92vw); background: rgba(255, 255, 255, 0.86);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-right: 1px solid rgba(15, 23, 42, 0.04);
-      box-shadow: 12px 0 32px rgba(15, 23, 42, 0.08), var(--shadow-4);
-      /* A true MODAL side-drawer: its backdrop (z 120) dims the whole app, the
-         header included, so the dialog MUST sit ABOVE the backdrop. (The
-         takeover-panel z-fix wrongly dropped this to 95 — below the backdrop —
-         which dimmed the dialog itself and faded the whole screen.) */
-      z-index: var(--z-drawer); display: flex; flex-direction: column;
-      transform: translateX(-100%); transition: transform 0.22s ease;
-    }
-    .connectors-dialog.open { transform: translateX(0); }
+    /* ── Connector / database panel cards + forms (MCP Connectors + Databases
+          Configure tabs both render inline; there are no side-drawers) ────── */
     /* Standardized connector logo — uniform box regardless of source aspect ratio. */
     .connector-icon { width: 16px; height: 16px; object-fit: contain; flex: none; vertical-align: middle; }
     .conn-card-head .connector-icon { width: 22px; height: 22px; }
@@ -129,6 +109,38 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px;
       border-radius: 50%; border: 1px solid var(--bg);
     }
+
+    /* ── Databases tab: a full-width, multi-column table of connected databases
+          plus the inline add/edit form. ────── */
+    .db-panel { padding: 4px 8px 8px; }
+    .db-lead { margin: 4px 0 16px; font-size: 13px; color: var(--text-muted); line-height: 1.5; max-width: 720px; }
+    .db-empty { padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;
+      border: 1px dashed var(--border); border-radius: var(--r-md); margin-bottom: 20px; }
+    .db-table-wrap { width: 100%; overflow-x: auto; margin-bottom: 24px;
+      border: 1px solid var(--border); border-radius: var(--r-md); }
+    .db-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .db-table thead th {
+      text-align: left; font-weight: 600; color: var(--text-muted); font-size: 11px;
+      text-transform: uppercase; letter-spacing: 0.04em; padding: 12px 16px;
+      border-bottom: 1px solid var(--border); background: var(--surface-2); white-space: nowrap;
+    }
+    .db-table tbody td { padding: 14px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .db-table tbody tr:last-child td { border-bottom: none; }
+    .db-table .db-row:hover td { background: var(--surface-2); }
+    .db-name { font-weight: 600; color: var(--text); }
+    .db-mono { font-family: var(--font-mono, ui-monospace, monospace); color: var(--text-muted); font-size: 12px; }
+    .db-num { color: var(--text); white-space: nowrap; }
+    .db-muted { color: var(--text-muted); white-space: nowrap; }
+    .db-status { display: inline-flex; align-items: center; gap: 6px; text-transform: capitalize; white-space: nowrap; }
+    .db-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .db-actions { text-align: right; white-space: nowrap; }
+    .db-actions .btn { margin-left: 8px; }
+    .db-err-row td { padding-top: 0; border-bottom: 1px solid var(--border); }
+    /* The add/edit form: a card with a responsive multi-column field grid. */
+    .db-form-host { max-width: 720px; }
+    .db-form-card { margin: 0; padding: 18px; border: 1px solid var(--border); border-radius: var(--r-md); }
+    .db-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+    @media (max-width: 640px) { .db-form-grid { grid-template-columns: 1fr; } }
 
     /* ── Configure drawer: Data Model + Inputs tabs ── */
     /* Data Model + Graph are their own Configure tabs and run EDGE-TO-EDGE — the drawer's

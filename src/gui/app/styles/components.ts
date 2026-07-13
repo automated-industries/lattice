@@ -11,7 +11,7 @@ export const componentsCss = `    /* ── Shared components (alias-first conso
     /* Dim-backdrop box geometry + scrim shared by the three overlay backdrops.
        Display/open-close machinery, blur and z-index stay with each owner;
        .drawer-backdrop keeps its lighter scrim (--overlay-dim-soft) locally. */
-    .modal-backdrop, .drawer-backdrop, .connectors-backdrop {
+    .modal-backdrop, .drawer-backdrop {
       position: fixed; inset: 0; background: var(--overlay-dim);
     }
 

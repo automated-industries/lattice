@@ -172,9 +172,17 @@ export const configureDrawerJs = `
     }
     function renderDatabasesTab(body) {
       if (!body) return;
+      // Full-width (the body carries dm-wide for this tab). Inline, no drawer.
+      // The connected-databases TABLE (#src-databases-list) and the add/edit FORM
+      // (#db-form-host) are separate mounts: the table refreshes on realtime ticks
+      // while the form persists, so a half-typed connection is never wiped.
       body.innerHTML =
-        '<div class="inputs-group"><div id="src-databases-list"></div>' +
-        '<button class="src-add" id="src-add-database" type="button">＋ Connect a Database</button></div>';
-      if (typeof renderInputsDatabases === 'function') renderInputsDatabases();
+        '<div class="db-panel">' +
+        '<p class="db-lead">Connect an external Postgres database (AWS RDS, Supabase, or generic ' +
+        'Postgres). Its tables are imported as a READ-ONLY data source — Lattice never writes to ' +
+        'it. Use a read-only database user where possible.</p>' +
+        '<div id="src-databases-list"></div>' +
+        '<div id="db-form-host" class="db-form-host"></div></div>';
+      if (typeof renderDatabasesPanel === 'function') renderDatabasesPanel();
     }
 `;

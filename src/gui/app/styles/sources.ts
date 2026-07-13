@@ -37,17 +37,5 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     .src-ic { width: 16px; text-align: center; flex: none; }
     .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .src-children { list-style: none; margin: 0; padding: 0; }
-    .src-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-    .src-conn .src-row { gap: 8px; }
-    /* Per-connection row actions (edit / disconnect). The name takes the slack so
-       the icons sit flush-right; hover tints them by intent. */
-    .src-db .src-name { flex: 1 1 auto; }
-    .src-db-edit, .src-db-x {
-      flex: none; border: none; background: none; cursor: pointer;
-      color: var(--text-muted); font-size: 13px; line-height: 1;
-      padding: 2px 6px; border-radius: var(--r-xs);
-    }
-    .src-db-edit:hover { color: var(--accent); background: var(--row-hover); }
-    .src-db-x:hover { color: var(--danger); background: var(--row-hover); }
 
 `;

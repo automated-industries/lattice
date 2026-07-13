@@ -63,7 +63,7 @@ test('the Configure drawer has Files / Connectors / Databases tabs', async ({ pa
   await page.locator('.drawer-tab[data-tab="connectors"]').click();
   await expect(page.locator('#drawer-body #mcp-connectors-panel')).toBeVisible({ timeout: 5000 });
   await page.locator('.drawer-tab[data-tab="databases"]').click();
-  await expect(page.locator('#drawer-body #src-add-database')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#drawer-body #src-databases-list')).toBeVisible({ timeout: 5000 });
 });
 
 test('a registered folder renders as a tree and lazily expands one level', async ({ page }) => {
@@ -106,25 +106,26 @@ test('the Files table opens as a SQL runner (like every table)', async ({ page }
   await expect(page.locator('#sql-run')).toBeVisible();
 });
 
-// Regression: the Connect-a-database dialog is a MODAL — its backdrop (which
-// dims the whole app) must sit BELOW the dialog, or the dialog fades out with
-// everything else. A z-order slip once put the dialog under its own backdrop.
-test('Connect-a-database opens ABOVE its backdrop (the dialog is not dimmed)', async ({ page }) => {
-  await openConfigureTab(page, 'databases', '#src-add-database');
-  await page.locator('#src-add-database').click();
-  const dialog = page.locator('#db-connect-dialog');
-  const backdrop = page.locator('#db-connect-backdrop');
-  await expect(dialog).toBeVisible({ timeout: 5000 });
-  await expect(backdrop).toBeVisible();
+// The Databases tab renders its whole panel inline (the left-sliding
+// Connect-a-database drawer is gone): the connected-databases area and the
+// add form both live in the tab body, full-width.
+test('the Databases tab hosts the connect form inline (no dialog)', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
 
-  const zOf = (loc: ReturnType<typeof page.locator>) =>
-    loc.evaluate((el) => Number(getComputedStyle(el).zIndex) || 0);
-  const dialogZ = await zOf(dialog);
-  const backdropZ = await zOf(backdrop);
-  expect(dialogZ).toBeGreaterThan(backdropZ); // dialog on top of its own scrim
+  await openConfigureTab(page, 'databases', '#src-databases-list');
 
-  // Behavioral proof: the Connect button actually receives the click (it is not
-  // covered by the backdrop) — Playwright's actionability check throws if it is.
-  await expect(page.locator('#db-connect-dialog #db-ok')).toBeVisible();
-  await page.locator('#db-connect-dialog #db-ok').click({ trial: true });
+  // The inline add form renders in its own mount (a sibling of the table) so a
+  // background table refresh can't wipe it. It carries the Postgres fields.
+  const form = page.locator('#db-form-host');
+  await expect(form.getByText('Add a database')).toBeVisible({ timeout: 5000 });
+  await expect(form.locator('#db-host')).toBeVisible();
+  await expect(form.locator('#db-name')).toBeVisible();
+  await expect(form.locator('#db-ok')).toBeVisible();
+
+  // The old side-drawer is gone, and the tab runs full-width (dm-wide on the body).
+  await expect(page.locator('#db-connect-dialog')).toHaveCount(0);
+  await expect(page.locator('#settings-drawer .drawer-body.dm-wide')).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
 });

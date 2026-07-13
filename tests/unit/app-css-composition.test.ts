@@ -225,8 +225,11 @@ import { css } from '../../src/gui/app/css.js';
 // MCP Connectors overhaul: the connectors-dialog section comment now describes
 // the shared side-drawer chrome (kept for the DB dialog; .conn-* styles are
 // reused by the MCP Connectors tab panel). Recaptured (on top of #146).
-const ORIGINAL_LENGTH = 160932;
-const ORIGINAL_SHA256 = '58434123384e0ea21aeb373a56c1b9c33de0cb8d148cb3ccaa7dba932bd07c6c';
+// Databases tab redesign: removed the unused .connectors-dialog/.connectors-backdrop
+// side-drawer rules (both connectors + databases are inline now) and added the
+// .db-table / .db-form-grid full-width table + form styles. Recaptured.
+const ORIGINAL_LENGTH = 161416;
+const ORIGINAL_SHA256 = '8d46ce409c10ce63a4e858ebb4913bf6c74a367960584287370f8e917326eb3b';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

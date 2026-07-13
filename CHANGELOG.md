@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **The Databases tab is a full-width, multi-column table with an inline connect form.**
+  Connected external databases now render edge-to-edge as a professional table — name, host,
+  database, table count, status, and last-synced — with per-row **Edit** and **Disconnect**,
+  and a failing connection shows its error inline under its row. Adding or editing a database
+  happens in an inline form right in the tab (a responsive two-column field grid); the
+  left-sliding "Connect a database" drawer is gone. `GET /api/db-sources` now returns each
+  connection's non-secret host + database so the table can show them without a per-row fetch
+  (the password is never included). Same connect / edit-in-place / disconnect behavior as
+  before, just inline and full-width — matching the MCP Connectors tab.
+
 - **Connectors are now pure MCP — one "MCP Connectors" tab, any server by URL.** The
   Configure tab is renamed **MCP Connectors** and now hosts everything inline: every
   connected server (name from the MCP handshake, URL, status, last sync) with per-server
