@@ -341,6 +341,29 @@ function collapseSameRole(msgs: LlmMessage[]): LlmMessage[] {
 }
 
 /**
+ * Render the tail of the conversation as a compact "Role: text" transcript, so the fast
+ * intent pass can resolve a context-dependent reply ("yes", "the first one") against what
+ * the assistant just said instead of judging it in a vacuum. Text blocks only — tool
+ * calls/results carry no user-facing meaning for the classifier and would just add noise.
+ */
+function renderRecentContext(history: LlmMessage[], maxMessages: number): string {
+  const textOf = (c: string | ContentBlock[]): string =>
+    typeof c === 'string'
+      ? c
+      : c
+          .map((b) => (b.type === 'text' ? b.text : ''))
+          .join(' ')
+          .trim();
+  const lines: string[] = [];
+  for (const m of history.slice(-maxMessages)) {
+    const t = textOf(m.content).trim();
+    if (!t) continue;
+    lines.push(`${m.role === 'assistant' ? 'Assistant' : 'User'}: ${t.slice(0, 800)}`);
+  }
+  return lines.join('\n');
+}
+
+/**
  * Rebuild the model's prior-turn context from the persisted thread so it retains
  * row ids it read earlier. The text-only client history drops those ids, which
  * is what made the assistant guess an id (→ "Could not update row") or fabricate
@@ -1171,10 +1194,12 @@ export async function dispatchChatRoute(
     }, INTENT_ACK_WATCHDOG_MS);
     let intent: IntentResult | null = null;
     try {
+      const recentContext = renderRecentContext(history, 4);
       intent = await runIntent(provider.client, message, {
         operatorName: readIdentity().display_name,
         tableNames: [...ctx.validTables],
         ...(activeView.label ? { activeView: activeView.label } : {}),
+        ...(recentContext ? { recentContext } : {}),
       });
     } catch (e) {
       // Best-effort — never drop the user's message; fall through to the real loop.

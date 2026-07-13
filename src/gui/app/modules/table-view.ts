@@ -97,10 +97,14 @@ export const tableViewJs = `    // ───────────────
       if (tabsRow) tabsRow.hidden = (tab === 'history');
       var body = document.getElementById('drawer-body');
       if (!body) return;
+      // Data Model + Graph run edge-to-edge (no 980px cap, no side panel) — the rest of
+      // the Configure tabs stay in the centered reading column.
+      body.classList.toggle('dm-wide', tab === 'datamodel' || tab === 'graph');
       var title = document.querySelector('#settings-drawer .drawer-title');
       if (title) title.textContent = tab === 'history' ? 'Version history' : 'Configure';
       if (tab === 'history') renderHistory(body);
       else if (tab === 'datamodel' && typeof renderDataModelTab === 'function') renderDataModelTab(body);
+      else if (tab === 'graph' && typeof renderGraphTab === 'function') renderGraphTab(body);
       else if (tab === 'files' && typeof renderFilesTab === 'function') renderFilesTab(body);
       else if (tab === 'connectors' && typeof renderConnectorsTab === 'function') renderConnectorsTab(body);
       else if (tab === 'databases' && typeof renderDatabasesTab === 'function') renderDatabasesTab(body);

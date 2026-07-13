@@ -26,6 +26,14 @@ const WELCOME_SEED_SENTINEL = 'internal:seed:welcome-dashboard:v1';
  * overwritten. On a freshly-seeded (already light) row it matches nothing = no-op.
  */
 const WELCOME_REFRESH_SENTINEL = 'internal:seed:welcome-dashboard:v2-light';
+/**
+ * One-time refresh to the FULL-WIDTH template (no 860px centered column, and the
+ * redundant "Welcome to Lattice!" heading dropped since the tab title already carries it).
+ * Guarded on the old centered marker (`max-width: 860px`) so a user-edited/replaced
+ * dashboard is never overwritten; the new HTML lacks that marker, so it is a no-op on a
+ * freshly-seeded or already-refreshed row.
+ */
+const WELCOME_REFRESH_SENTINEL_V3 = 'internal:seed:welcome-dashboard:v3-fullwidth';
 export const WELCOME_DASHBOARD_TITLE = 'Welcome to Lattice!';
 const WELCOME_DESCRIPTION =
   'Your starting point — what Lattice does and how to bring in your data.';
@@ -53,10 +61,9 @@ export function welcomeDashboardHtml(): string {
   :root { color-scheme: light; --bg: #ffffff; --card: #f8fafc; --text: #0f172a; --muted: #64748b; --border: #e2e8f0; --accent: #4f46e5; --accent-soft: #eef2ff; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 28px 64px; }
+  .wrap { padding: 28px 40px 64px; }
   .hero { text-align: center; margin-bottom: 8px; }
-  .hero h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 8px; }
-  .hero p { font-size: 16px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+  .hero p { font-size: 16px; color: var(--muted); margin: 0 auto; max-width: 64ch; }
   .section { margin-top: 32px; }
   .section h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; }
@@ -83,7 +90,6 @@ export function welcomeDashboardHtml(): string {
 </style>
 <div class="wrap">
   <div class="hero">
-    <h1>Welcome to Lattice!</h1>
     <p>Lattice turns your company's documents, spreadsheets, and connected tools into one place you can search, organise, and simply <em>ask questions about</em> — in plain English.</p>
   </div>
 
@@ -192,8 +198,17 @@ export async function seedWelcomeDashboard(db: Lattice): Promise<void> {
     : `UPDATE dashboards SET html = ${sqliteLiteral(html)}
        WHERE id = '${WELCOME_DASHBOARD_ID}' AND html LIKE '%0b1220%'`;
 
+  // Refresh an existing centered row (max-width:860px + heading) to the full-width HTML,
+  // guarded on the old centered marker so a user-edited dashboard is never touched.
+  const refreshFullWidthSql = pg
+    ? `UPDATE dashboards SET html = $whtml$${html}$whtml$
+       WHERE id = '${WELCOME_DASHBOARD_ID}' AND html LIKE '%max-width: 860px%'`
+    : `UPDATE dashboards SET html = ${sqliteLiteral(html)}
+       WHERE id = '${WELCOME_DASHBOARD_ID}' AND html LIKE '%max-width: 860px%'`;
+
   await db.migrate([
     { version: WELCOME_SEED_SENTINEL, sql },
     { version: WELCOME_REFRESH_SENTINEL, sql: refreshSql },
+    { version: WELCOME_REFRESH_SENTINEL_V3, sql: refreshFullWidthSql },
   ]);
 }

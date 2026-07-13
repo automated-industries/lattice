@@ -71,6 +71,11 @@ export interface IntentOptions {
    *  so a complaint like "why is this broken" is understood as actionable (investigate
    *  it), NOT flagged as too ambiguous. */
   activeView?: string;
+  /** A compact transcript of the last turn or two ("Assistant: …\nUser: …"), so a short
+   *  context-dependent reply ("yes", "the first one", "do that") is resolved against what
+   *  the assistant just said instead of being judged in a vacuum and mis-flagged as
+   *  ambiguous. Without this, "yes" following an offer reads as a standalone message. */
+  recentContext?: string;
   temperature?: number;
 }
 
@@ -98,6 +103,20 @@ export async function runIntent(
       `what they are viewing and is NOT ambiguous — set needs_work true (the assistant will ` +
       `investigate it); do NOT ask them what is wrong.\n`
     : '';
+  // The last turn or two, so a context-dependent reply is resolved in context rather than
+  // judged in a vacuum. A bare "yes"/"do it"/"the first one" answering the assistant's
+  // previous question or offer is a CONTINUATION — never treat it as ambiguous or as a
+  // fresh greeting; if that prior turn offered to do data work, set needs_work true so the
+  // real work runs.
+  const recent = opts.recentContext
+    ? `Recent conversation so far (oldest first; the user's latest message is below, NOT ` +
+      `repeated here):\n${opts.recentContext.slice(0, 4000)}\n\nThe user's latest message may be ` +
+      `a direct reply to the assistant's previous message. If it is a short confirmation, ` +
+      `answer, or selection that only makes sense as a continuation (e.g. "yes", "do it", ` +
+      `"the first one", "that one"), treat it as continuing that thread — it is NOT ambiguous, ` +
+      `and if the assistant just offered to create/update/link a record or build something, ` +
+      `set needs_work true. Do NOT restart with a greeting or ask what they want.\n`
+    : '';
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
     // Small budget: the ack/inline-answer is short by construction. Keeps latency + cost low.
@@ -106,7 +125,7 @@ export async function runIntent(
     messages: [
       {
         role: 'user',
-        content: `${who}${tables}${viewing}\nUser message:\n${message.slice(0, 8000)}\n\nReturn the JSON object.`,
+        content: `${who}${tables}${viewing}${recent}\nUser message:\n${message.slice(0, 8000)}\n\nReturn the JSON object.`,
       },
     ],
     tools: [],

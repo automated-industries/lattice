@@ -168,6 +168,7 @@ export const guiAppHtml = `<!doctype html>
          header clock (🕐). These tabs are the Settings takeover only. -->
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="datamodel">Data Model</button>
+      <button class="drawer-tab" data-tab="graph">Graph</button>
       <button class="drawer-tab" data-tab="files">Files</button>
       <button class="drawer-tab" data-tab="connectors">Connectors</button>
       <button class="drawer-tab" data-tab="databases">Databases</button>

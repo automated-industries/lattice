@@ -50,12 +50,12 @@ describe('reframe review fix #1 — computed-table builder is reachable', () => 
   });
 });
 
-describe('reframe review re-verify fix — Graph drawer subtab has a real height', () => {
-  it('pins .brain-graph to a definite height inside the Data Model grid so the canvas is not 0px', () => {
-    // Re-verify follow-up: .dm-tables-merge is an auto-height grid, so .brain-graph's
-    // height:100% would collapse the force-graph canvas to 0. A scoped rule restores it.
-    expect(css).toContain('.dm-tables-merge .brain-graph');
-    expect(css).toMatch(/\.dm-tables-merge \.brain-graph\s*\{\s*height:\s*64vh/);
+describe('Graph Configure tab canvas has a real height (not collapsed to 0)', () => {
+  it('gives .graph-tab a definite height and flex-grows .brain-graph into it', () => {
+    // The Graph tab is now its own full-width Configure tab: a flex column with a definite
+    // height whose .brain-graph flex-grows to fill it, so the force-graph canvas is never 0px.
+    expect(css).toMatch(/\.graph-tab\s*\{[^}]*height:\s*\d+vh/);
+    expect(css).toContain('.graph-tab .brain-graph');
   });
 });
 
@@ -63,14 +63,17 @@ describe('reframe review fix #1b/#2 — graph node drill-in never dead-ends', ()
   it('normalizes a stray #/graph/<entity> hash to that entity table tab', () => {
     expect(appJs).toContain('/^#\\/graph\\/(.+)$/.exec(hash)');
   });
-  it('a graph-node click opens the in-drawer entity editor, not the removed #/graph route', () => {
-    expect(appJs).toContain('dmShowEntityEditor(node.id)');
-    // The old dead-end navigation is gone.
-    expect(appJs).not.toContain("location.hash = '#/graph/' + encodeURIComponent(node.id)");
+  it('a graph-node click drills into that table (schemaNodeDrill), or opens its rows — not the schema editor', () => {
+    // The Graph tab has no side editor panel: a plain node click drills into that table's
+    // rows (the Graph tab sets schemaNodeDrill); with no drill hook it opens the row view.
+    expect(appJs).toContain('schemaNodeDrill(node.id)');
+    expect(appJs).toContain("location.hash = '#/w/table/' + encodeURIComponent(node.id)");
   });
-  it('the Graph drawer subtab renders a #dm-panel so the editor has a target', () => {
-    // Graph subtab now uses the same two-column merge layout as the Tables subtab.
-    expect(appJs).toContain('brain-graph');
+  it('Graph is its own full-width Configure tab; the Data Model tab keeps the #dm-panel', () => {
+    // Graph is a peer Configure tab rendered full width (no fixed side panel).
+    expect(appJs).toContain('function renderGraphTab');
+    expect(appJs).toContain('graph-tab');
+    // The Data Model tab still hosts the optional column/relationship editor panel.
     expect(appJs).toContain('id="dm-panel"');
   });
 });
