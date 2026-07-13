@@ -199,11 +199,11 @@ export const modelTablesJs = `
       if (lineage.byName[t] && typeof mtOpenDetail === 'function') mtOpenDetail(t, null, entities, lineage);
     }
 
-    // The DATA LINEAGE panel shown above a table's rows (the SQL-runner view): the
-    // current table + its fields centred, its upstream sources/transformations/links on
-    // the LEFT and its downstream consumers on the RIGHT — the same chips + adjacency the
-    // Configure → Data Model explorer uses. Clicking any linked table opens it selected in
-    // the Data Model tab. Empty (a table with no links) → the panel renders nothing.
+    // The DATA LINEAGE panel shown BELOW a table's rows (the SQL-runner view). It reuses
+    // the exact Configure → Data Model cards + the Entity/Field toggle: upstream SOURCES on
+    // the left, THIS table in the middle, downstream CONSUMERS on the right, with connecting
+    // lines. Every non-source table is derived from ingestion, so Files is shown as its root
+    // source. Clicking a card opens that table selected in the Data Model tab.
     function renderTableLineage(host, table) {
       if (!host) return;
       var draw = function (edges) {
@@ -214,42 +214,89 @@ export const modelTablesJs = `
         var lineage = mtLineage(entities, edges);
         var e = lineage.byName[table];
         if (!e) { host.innerHTML = ''; return; }
-        var up = lineage.upstream[table] || [];
+        var level = mtLevel();
+        var up = (lineage.upstream[table] || []).slice();
         var down = lineage.downstream[table] || [];
+        // No table exists without a source: a non-source (derived) table is ingested from
+        // Files, so surface Files as its root source when nothing else already covers it.
+        if (e.tier !== 'source' && lineage.byName.files) {
+          var hasFiles = up.some(function (x) { return x.table === 'files'; });
+          if (!hasFiles) up.unshift({ table: 'files', field: '', kind: 'ingest' });
+        }
         if (!up.length && !down.length) { host.innerHTML = ''; return; }
-        var icOf = function (t) { var d = lineage.byName[t]; return d ? d.icon : '\\ud83d\\udce6'; };
-        var labOf = function (t) { var d = lineage.byName[t]; return d ? d.label : t; };
-        var chip = function (x) {
-          return '<button type="button" class="lin-node" data-lin-table="' + escapeHtml(x.table) + '">' +
-            '<span class="lin-node-ic">' + icOf(x.table) + '</span>' +
-            '<span class="lin-node-lab">' + escapeHtml(labOf(x.table)) + '</span>' +
-            (x.field ? '<span class="lin-node-via">' + escapeHtml(x.field) + '</span>' : '') +
-            '</button>';
+        var cardOf = function (x) {
+          var ent = lineage.byName[x.table];
+          return ent ? mtCardHtml(ent, level) : '';
         };
-        var col = function (items, cls, heading) {
-          return '<div class="lin-col ' + cls + '"><div class="lin-col-h">' + heading + '</div>' +
-            (items.length ? items.map(chip).join('') : '<div class="lin-col-none">\\u2014</div>') + '</div>';
+        var colBody = function (items) {
+          return items.length ? items.map(cardOf).join('') : '<div class="lin-col-none">\\u2014</div>';
         };
-        var fieldsHtml = e.fields.map(function (f) {
-          return '<div class="lin-field mt-c-' + f.cls + '">' + escapeHtml(f.name) + '</div>';
-        }).join('');
-        var center =
-          '<div class="lin-center"><div class="lin-center-node"><span class="lin-node-ic">' + e.icon + '</span>' +
-          '<span class="lin-center-lab">' + escapeHtml(e.label) + '</span></div>' +
-          '<div class="lin-fields">' + fieldsHtml + '</div></div>';
         host.innerHTML =
-          '<details class="lineage-wrap" open><summary class="lineage-sum">Data lineage</summary>' +
-          '<div class="lineage-grid">' +
-            col(up, 'lin-up', 'Upstream \\u00b7 sources') + center + col(down, 'lin-down', 'Downstream \\u00b7 consumers') +
+          '<details class="lineage-wrap" open>' +
+          '<summary class="lineage-sum">Data lineage' +
+            '<span class="mt-seg lin-level">' +
+              '<button type="button" class="mt-seg-btn' + (level === 'entity' ? ' on' : '') + '" data-lin-level="entity">Entity</button>' +
+              '<button type="button" class="mt-seg-btn' + (level === 'field' ? ' on' : '') + '" data-lin-level="field">Field</button>' +
+            '</span>' +
+          '</summary>' +
+          '<div class="lineage-grid mt-tiers" id="lin-tiers">' +
+            '<div class="lin-col mt-tier" id="lin-up"><div class="lin-col-h">Upstream \\u00b7 sources</div>' + colBody(up) + '</div>' +
+            '<div class="lin-col mt-tier lin-center-col" id="lin-center"><div class="lin-col-h">This table</div>' + mtCardHtml(e, level) + '</div>' +
+            '<div class="lin-col mt-tier" id="lin-down"><div class="lin-col-h">Downstream \\u00b7 consumers</div>' + colBody(down) + '</div>' +
           '</div></details>';
-        host.querySelectorAll('.lin-node[data-lin-table]').forEach(function (b) {
-          b.addEventListener('click', function () { openDataModelForTable(b.getAttribute('data-lin-table')); });
+        // Field/Entity toggle → re-render (shares the explorer's level so both stay in sync).
+        host.querySelectorAll('[data-lin-level]').forEach(function (b) {
+          b.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            mtSetLevel(b.getAttribute('data-lin-level'));
+            draw(edges);
+          });
         });
+        // Card click → open that table selected in the Data Model tab.
+        host.querySelectorAll('.mt-card[data-table]').forEach(function (b) {
+          b.addEventListener('click', function () { openDataModelForTable(b.getAttribute('data-table')); });
+        });
+        // Connecting lines: each source → this table, and this table → each consumer.
+        linDrawEdges(table);
+        window.requestAnimationFrame(function () { linDrawEdges(table); });
+        window.setTimeout(function () { linDrawEdges(table); }, 160);
       };
       if (mtEdgesCache) draw(mtEdgesCache);
       else fetchJson('/api/graph?schema=1')
         .then(function (g) { mtEdgesCache = (g && g.edges) || []; draw(mtEdgesCache); })
         .catch(function () { draw([]); });
+    }
+    // Draw the lineage connecting lines: from each upstream source card's right edge to the
+    // centre card's left edge, and from the centre card's right edge to each consumer's left.
+    function linDrawEdges(table) {
+      var tiers = document.getElementById('lin-tiers');
+      if (!tiers) return;
+      var SVGNS = 'http://www.w3.org/2000/svg';
+      var svg = tiers.querySelector('svg.mt-edges');
+      if (!svg) { svg = document.createElementNS(SVGNS, 'svg'); svg.setAttribute('class', 'mt-edges'); tiers.insertBefore(svg, tiers.firstChild); }
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      var gr = tiers.getBoundingClientRect();
+      var W = tiers.scrollWidth, H = tiers.scrollHeight;
+      svg.setAttribute('width', String(W)); svg.setAttribute('height', String(H)); svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      var sx = tiers.scrollLeft, sy = tiers.scrollTop;
+      var center = tiers.querySelector('#lin-center .mt-card[data-table="' + table + '"]');
+      if (!center) return;
+      var rc = center.getBoundingClientRect();
+      var cy = rc.top - gr.top + sy + rc.height / 2;
+      var cLeft = rc.left - gr.left + sx, cRight = rc.right - gr.left + sx;
+      var line = function (fx, fy, tx, ty) {
+        var dx = Math.max(24, Math.abs(tx - fx) * 0.5);
+        var d = 'M ' + fx + ' ' + fy + ' C ' + (fx + dx) + ' ' + fy + ', ' + (tx - dx) + ' ' + ty + ', ' + tx + ' ' + ty;
+        var p = document.createElementNS(SVGNS, 'path'); p.setAttribute('d', d); p.setAttribute('class', 'mt-edge mt-edge-m2m'); svg.appendChild(p);
+      };
+      tiers.querySelectorAll('#lin-up .mt-card[data-table]').forEach(function (a) {
+        var r = a.getBoundingClientRect();
+        line(r.right - gr.left + sx, r.top - gr.top + sy + r.height / 2, cLeft, cy);
+      });
+      tiers.querySelectorAll('#lin-down .mt-card[data-table]').forEach(function (b) {
+        var r = b.getBoundingClientRect();
+        line(cRight, cy, r.left - gr.left + sx, r.top - gr.top + sy + r.height / 2);
+      });
     }
 
     function mtRenderTables(host, edges) {

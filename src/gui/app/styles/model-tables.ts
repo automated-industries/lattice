@@ -170,51 +170,31 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
     .mt-fl-t { color: var(--text); }
     .mt-fl-none { font-family: inherit; }
 
-    /* ── Data lineage map (shown above a table's rows) ─────────
-       Upstream sources (left) · this table + its fields (centre) · downstream consumers
-       (right), reusing the Data Model explorer's chip look. Click a node → open it in the
-       Data Model tab. */
-    .table-lineage { margin: 4px 0 14px; }
+    /* ── Data lineage map (shown BELOW a table's rows) ─────────
+       Reuses the Data Model explorer cards (.mt-card) + the Entity/Field toggle + the same
+       svg.mt-edges connecting lines. Fixed three columns: upstream sources (left) · this
+       table (centre) · downstream consumers (right). */
+    .table-lineage { margin: 18px 0 8px; }
     .table-lineage:empty { display: none; }
     .lineage-wrap { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
     .lineage-sum {
-      cursor: pointer; padding: 10px 14px; font-size: 11px; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); list-style: none;
+      display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 10px 14px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-muted); list-style: none;
     }
     .lineage-sum::-webkit-details-marker { display: none; }
-    .lineage-grid {
-      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr);
-      gap: 16px; align-items: start; padding: 0 14px 14px;
+    .lin-level { margin-left: auto; }
+    /* .mt-tiers supplies the relative positioning context + the edge SVG overlay; the
+       lineage pins it to a fixed three-column layout and lets it grow with its content. */
+    .lineage-grid.mt-tiers {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr); overflow: visible;
     }
-    .lin-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .lin-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
     .lin-col-h {
       font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
       color: var(--text-muted); margin-bottom: 2px;
     }
     .lin-col-none { font-size: 12px; color: var(--text-muted); }
-    .lin-node {
-      display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; min-width: 0;
-      padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
-      background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
-    }
-    .lin-node:hover { border-color: var(--accent-border); background: var(--row-hover); }
-    .lin-node-ic { flex: none; font-size: 15px; }
-    .lin-node-lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lin-node-via {
-      margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted);
-      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .lin-center { display: flex; flex-direction: column; gap: 8px; }
-    .lin-center-node {
-      display: flex; align-items: center; gap: 8px; justify-content: center; padding: 10px;
-      border: 1px solid var(--accent-border); border-radius: var(--r-md); background: var(--accent-wash); font-weight: 700;
-    }
-    .lin-center-lab { font-size: 14px; }
-    .lin-fields { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
-    .lin-field {
-      font-size: 11px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--r-pill);
-      background: var(--surface-2); color: var(--text-muted);
-    }
-    @media (max-width: 760px) { .lineage-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 760px) { .lineage-grid.mt-tiers { grid-template-columns: 1fr; } }
 
 `;

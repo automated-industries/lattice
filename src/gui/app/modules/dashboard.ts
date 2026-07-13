@@ -953,7 +953,6 @@ export const dashboardJs = `    // ───────────────
       content.innerHTML =
         fsBreadcrumb([table], [], section) +
         '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1></div>' +
-        '<div class="table-lineage" id="table-lineage"></div>' +
         '<div class="sql-runner">' +
           '<div class="sql-editor-row">' +
             '<textarea class="sql-editor" id="sql-editor" spellcheck="false" rows="2" aria-label="SQL query">' + escapeHtml(sql) + '</textarea>' +
@@ -961,9 +960,10 @@ export const dashboardJs = `    // ───────────────
           '</div>' +
           '<div class="sql-error" id="sql-error" hidden></div>' +
           '<div class="sql-results" id="sql-results"></div>' +
-        '</div>';
-      // The data-lineage map for this table (upstream sources · this · downstream
-      // consumers), reusing the Data Model explorer's chips + adjacency.
+        '</div>' +
+        // Below the rows: the data-lineage map (upstream sources · this table · downstream
+        // consumers), reusing the Data Model explorer's cards + Entity/Field toggle.
+        '<div class="table-lineage" id="table-lineage"></div>';
       if (typeof renderTableLineage === 'function') {
         renderTableLineage(content.querySelector('#table-lineage'), table);
       }
