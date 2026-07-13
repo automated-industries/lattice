@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **MCP connectors model each server into typed, per-server tables.** A connected MCP server used
+  to dump everything into one flat `mcp_items` JSON-blob table under a generic "Connectors" group.
+  Now each server is introspected at connect and its data is modeled into **one typed table per
+  record kind** (scalar fields → real columns, nested → a `data` JSON overflow), namespaced per
+  connection and grouped under a **per-server header named by the server's brand** (e.g. an MCP
+  server at `mcp.justworks.com` → a **JUSTWORKS** group with `company`, `deduction_types`, … tables)
+  — mirroring how an external database groups under its own name. Existing flat connections migrate
+  automatically on the next GUI-load sync (introspect once, re-key, populate); a server that exposes
+  nothing modelable keeps the flat `mcp_items` fallback. Two servers never collide, and each reads as
+  its own brand. Built on the unchanged connector sync/prune/edge/ACL substrate (the same
+  descriptor → `models()` pattern as the external-database connector).
+
 - **The Databases tab is a full-width, multi-column table with an inline connect form.**
   Connected external databases now render edge-to-edge as a professional table — name, host,
   database, table count, status, and last-synced — with per-row **Edit** and **Disconnect**,

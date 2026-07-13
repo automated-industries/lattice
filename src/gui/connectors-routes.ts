@@ -22,6 +22,8 @@ import {
   clearMcpConnection,
   getMcpServerUrl,
 } from '../connectors/mcp/oauth.js';
+import { mcpToolkitFor, connectionIdFromToolkit } from '../connectors/mcp/schema-cache.js';
+import { brandFromHost } from '../connectors/describe-connected.js';
 
 /**
  * Connectors settings routes — connect/refresh/disconnect external sources and
@@ -60,6 +62,19 @@ function indexByToolkit(connectors: Connector[]): Map<string, Connector> {
     }
   }
   return map;
+}
+
+/**
+ * Resolve the connector implementation for a registry ROW's toolkit. MCP connections use a
+ * per-connection toolkit (`mcp:<connId>`) that the catalog doesn't index (the catalog only knows
+ * the connector TYPE `mcp`), so map any `mcp:<id>` back to the generic MCP connector.
+ */
+function connectorForRowToolkit(
+  byToolkit: Map<string, Connector>,
+  toolkit: string,
+): Connector | undefined {
+  if (connectionIdFromToolkit(toolkit)) return byToolkit.get('mcp');
+  return byToolkit.get(toolkit);
 }
 
 interface ToolkitDescriptor {
@@ -155,12 +170,41 @@ function hostnameOf(serverUrl: string | null | undefined): string | null {
 async function finishMcpConnection(
   deps: ConnectorsRouteDeps,
   connector: McpConnector,
-  toolkit: string,
+  _toolkit: string,
   connectionId: string,
   displayName: string | null,
   targetConnectorId?: string,
 ): Promise<{ connectorId: string; result: unknown }> {
   const { db, connectedBy } = deps;
+  // MCP is modeled PER CONNECTION (like db_source:<id>): the toolkit carries the connection id,
+  // so each server groups under its own schema header + gets its own typed tables.
+  const toolkit = mcpToolkitFor(connectionId);
+  // The server brand (from its host) names the tables + the sidebar group.
+  let host: string | null = null;
+  try {
+    host = new URL(getMcpServerUrl(connectionId) ?? '').hostname || null;
+  } catch {
+    /* stdio / no stored URL */
+  }
+  const brand = brandFromHost(host);
+  // Introspect the server into a typed schema descriptor — one table per record kind. Best-effort:
+  // on failure the connection still works via the flat `mcp_items` fallback (models() returns it
+  // when no descriptor exists).
+  if (connector.introspect) {
+    try {
+      await connector.introspect(
+        connectionId,
+        toolkit,
+        brand ?? displayName ?? connector.connector,
+      );
+    } catch (e) {
+      console.warn(
+        `[connectors] MCP introspection failed for ${connectionId} (flat fallback): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
   let connectorId: string;
   if (targetConnectorId) {
     const existing = await getConnector(db, targetConnectorId);
@@ -177,13 +221,14 @@ async function finishMcpConnection(
       await (connector.purgeConnection?.(existing.connectionRef) ??
         connector.disconnect(existing.connectionRef));
     }
-    await updateConnectorConnection(db, existing.id, connectionId);
+    // Re-key the toolkit to the new connection (its typed tables live under mcp:<newId>).
+    await updateConnectorConnection(db, existing.id, connectionId, toolkit);
     connectorId = existing.id;
   } else {
     connectorId = await createConnector(db, {
       connector: connector.connector,
       toolkit,
-      displayName: displayName ?? toolkit,
+      displayName: displayName ?? brand ?? connector.connector,
       connectionRef: connectionId,
       connectedBy,
     });
@@ -192,6 +237,43 @@ async function finishMcpConnection(
   await enableConnectorRls(db, connector, toolkit);
   const result = await syncConnector(db, connector, connectorId);
   return { connectorId, result };
+}
+
+/**
+ * Migrate a LEGACY MCP connection (flat `mcp_items`, toolkit `mcp`) to typed per-kind tables:
+ * introspect the server, re-key the row's toolkit to `mcp:<connId>`, register the typed tables,
+ * and force a sync to populate them. Idempotent + best-effort — returns false (leaving the flat
+ * connection untouched) if the connector can't introspect or the server exposes nothing modelable.
+ * Runs on the GUI-load sync-if-stale path (NOT the open hot path), so its network introspection
+ * never blocks a workspace open. Once migrated, reopen re-registers the typed tables with no network.
+ */
+async function migrateLegacyMcpConnection(
+  deps: ConnectorsRouteDeps,
+  connector: McpConnector,
+  row: { id: string; connectionRef: string | null; displayName: string | null },
+): Promise<boolean> {
+  const { db } = deps;
+  const connectionId = row.connectionRef;
+  if (!connectionId || !connector.introspect) return false;
+  const toolkit = mcpToolkitFor(connectionId);
+  let host: string | null = null;
+  try {
+    host = new URL(getMcpServerUrl(connectionId) ?? '').hostname || null;
+  } catch {
+    /* stdio / no stored URL */
+  }
+  const brand = brandFromHost(host);
+  const descriptor = await connector.introspect(
+    connectionId,
+    toolkit,
+    brand ?? row.displayName ?? connector.connector,
+  );
+  if (!descriptor) return false; // nothing modelable → keep the flat mcp_items fallback
+  await updateConnectorConnection(db, row.id, connectionId, toolkit);
+  for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+  await enableConnectorRls(db, connector, toolkit);
+  await syncConnector(db, connector, row.id); // force-populate the typed tables now
+  return true;
 }
 
 export async function dispatchConnectorsRoute(
@@ -216,8 +298,8 @@ export async function dispatchConnectorsRoute(
       // excludes external databases (db_source rows render under Inputs >
       // DATABASES via /api/db-sources) and rows from retired connector kinds
       // (pre-MCP-only builds) that have no serving code left.
-      const connected = (await listConnectors(db, connectedBy)).filter((c) =>
-        byToolkit.has(c.toolkit),
+      const connected = (await listConnectors(db, connectedBy)).filter(
+        (c) => connectorForRowToolkit(byToolkit, c.toolkit) !== undefined,
       );
       // Per-connection synced-item counts for the table view — ONE aggregate
       // over mcp_items (never a row load). The table may not exist before the
@@ -241,7 +323,7 @@ export async function dispatchConnectorsRoute(
       sendJson(res, {
         toolkits,
         connectors: connected.map((c) => {
-          const impl = byToolkit.get(c.toolkit);
+          const impl = connectorForRowToolkit(byToolkit, c.toolkit);
           // The URL is retained across disconnects (it is not a secret), so the
           // GUI can offer Reconnect without re-asking for it. MCP rows only.
           const serverUrl =
@@ -269,6 +351,26 @@ export async function dispatchConnectorsRoute(
     if (pathname === '/api/connectors/sync-if-stale' && method === 'POST') {
       let synced = 0;
       let failed = 0;
+      // First, migrate any legacy flat-`mcp_items` connections to typed per-kind tables
+      // (introspect once, re-key the toolkit, populate). One-time per connection; fault-isolated
+      // so a slow/unreachable server never fails the load refresh.
+      const mcpImpl = byToolkit.get('mcp');
+      if (mcpImpl && isMcpConnector(mcpImpl)) {
+        const legacy = (await listConnectors(db, connectedBy)).filter(
+          (c) => c.connector === 'mcp' && c.toolkit === 'mcp' && c.status !== 'disconnected',
+        );
+        for (const row of legacy) {
+          try {
+            await migrateLegacyMcpConnection(deps, mcpImpl, row);
+          } catch (e) {
+            console.warn(
+              `[connectors] MCP typed-table migration failed for ${row.id} (flat fallback kept): ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            );
+          }
+        }
+      }
       for (const connector of connectors) {
         // Owner-only no-op: ensure connected tables created in any member's session
         // are RLS-secured on the cloud (the owner auto-secures on open).
@@ -368,7 +470,7 @@ export async function dispatchConnectorsRoute(
     const rest = pathname.slice('/api/connectors/'.length).split('/');
     const toolkit = rest[0] ?? '';
     const action = rest[1] ?? '';
-    const connector = toolkit ? byToolkit.get(toolkit) : undefined;
+    const connector = toolkit ? connectorForRowToolkit(byToolkit, toolkit) : undefined;
     if (toolkit && connector) {
       // GET /api/connectors/<toolkit>/models — the connected data types + visibility.
       if (action === 'models' && method === 'GET') {

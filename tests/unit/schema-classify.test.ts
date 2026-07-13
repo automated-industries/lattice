@@ -29,13 +29,24 @@ describe('classifySchema — provenance schema grouping', () => {
     });
   });
 
-  it('the generic MCP connector groups under a "Connectors" header, not the "MCP" slug', () => {
+  it('the legacy generic MCP connector groups under a "Connectors" header, not the "MCP" slug', () => {
     // CSS uppercases the label to "CONNECTORS" in the sidebar — "MCP" reads as jargon.
     expect(classifySchema('mcp', noLabels)).toEqual({
       kind: 'connector',
       key: 'conn:mcp',
       label: 'Connectors',
     });
+  });
+
+  it('a per-connection MCP toolkit gets its own group labeled by the server brand', () => {
+    const labels = new Map([['mcp:abc-123', 'Justworks']]);
+    expect(classifySchema('mcp:abc-123', labels)).toEqual({
+      kind: 'connector',
+      key: 'conn:mcp:abc-123',
+      label: 'Justworks',
+    });
+    // No brand label yet → falls back to the connection id (never the raw "mcp:" slug).
+    expect(classifySchema('mcp:abc-123', noLabels).label).toBe('abc-123');
   });
 
   it('two tables of the same toolkit share one schema key (keyed by toolkit, not instance)', () => {

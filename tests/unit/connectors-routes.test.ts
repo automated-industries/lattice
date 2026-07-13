@@ -706,8 +706,10 @@ describe('connectors routes (MCP multi-instance)', () => {
     const list = (await call(mcp, 'GET', '/api/connectors')).body as {
       connectors: { toolkit: string }[];
     };
+    // The retired-kind `gmail` row (no live impl) is hidden; the MCP connection shows — now
+    // under its per-connection toolkit `mcp:<connId>` (resolved back to the generic MCP connector).
     expect(list.connectors).toHaveLength(1);
-    expect(list.connectors[0]?.toolkit).toBe('mcp');
+    expect(list.connectors[0]?.toolkit).toMatch(/^mcp:/);
   });
 
   it('the stored server URL survives DELETE (soft disconnect keeps reconnect possible)', async () => {
