@@ -61,7 +61,7 @@ test('the Configure drawer has Files / Connectors / Databases tabs', async ({ pa
   await expect(page.locator('#drawer-body .inputs-group-head')).toHaveCount(0);
   // Each tab renders its own body.
   await page.locator('.drawer-tab[data-tab="connectors"]').click();
-  await expect(page.locator('#drawer-body #mcp-connectors-panel')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#drawer-body #mcp-connectors-list')).toBeVisible({ timeout: 5000 });
   await page.locator('.drawer-tab[data-tab="databases"]').click();
   await expect(page.locator('#drawer-body #src-databases-list')).toBeVisible({ timeout: 5000 });
 });
@@ -87,9 +87,9 @@ test('a registered folder renders as a tree and lazily expands one level', async
   await expect(tree.getByText('deep.txt', { exact: true })).toHaveCount(0);
 });
 
-test('the MCP Connectors tab hosts the panel inline (no dialog)', async ({ page }) => {
-  await openConfigureTab(page, 'connectors', '#mcp-connectors-panel');
-  await expect(page.locator('#mcp-connectors-panel')).toContainText('Add an MCP connector');
+test('the MCP Connectors tab hosts the table + add form inline (no dialog)', async ({ page }) => {
+  await openConfigureTab(page, 'connectors', '#mcp-connectors-list');
+  await expect(page.locator('#mcp-connectors-form')).toContainText('Add an MCP connector');
   await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 });
 

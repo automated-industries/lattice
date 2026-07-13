@@ -23,21 +23,23 @@ test('the MCP Connectors tab renders the panel with the add-by-URL form', async 
   await page.goto(gui.url + '#/settings/connectors');
   await expect(page.locator('#settings-drawer.open')).toBeVisible({ timeout: 5000 });
 
-  // The tab is labelled "MCP Connectors" and hosts the panel directly.
+  // The tab is labelled "MCP Connectors" and hosts a full-width table + an
+  // inline add form in its own mount (no dialog).
   await expect(page.locator('.drawer-tab[data-tab="connectors"]')).toHaveText('MCP Connectors');
-  const panel = page.locator('#mcp-connectors-panel');
-  await expect(panel).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#mcp-connectors-list')).toBeVisible({ timeout: 5000 });
+  const form = page.locator('#mcp-connectors-form');
+  await expect(form).toBeVisible({ timeout: 5000 });
 
   // The inline add form renders (URL field + Connect), with the pre-registered
   // client fields present but hidden until a server demands them.
-  await expect(panel.getByText('Add an MCP connector')).toBeVisible({ timeout: 5000 });
-  await expect(panel.locator('#mcp-add-url')).toBeVisible();
-  await expect(panel.locator('#mcp-client-fields')).toBeHidden();
-  await expect(panel.locator('button[data-act="connect"]')).toBeVisible();
+  await expect(form.getByText('Add an MCP connector')).toBeVisible({ timeout: 5000 });
+  await expect(form.locator('#mcp-add-url')).toBeVisible();
+  await expect(form.locator('#mcp-client-fields')).toBeHidden();
+  await expect(form.locator('button[data-conn-act="connect"]')).toBeVisible();
 
   // No branded connectors and no left-sliding connectors dialog anymore.
-  await expect(panel.getByText('Gmail', { exact: true })).toHaveCount(0);
-  await expect(panel.getByText('Jira', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Gmail', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Jira', { exact: true })).toHaveCount(0);
   await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 
   // The scope bug surfaced as an uncaught "fetchJson is not defined" before the

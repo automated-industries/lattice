@@ -72,6 +72,9 @@ export interface DispatchCtx {
   validTables: Set<string>;
   /** Junction tables eligible for link/unlink. */
   junctionTables: Set<string>;
+  /** Pre-formatted, member-scoped "Connected data sources" section appended to
+   *  the schema context so the assistant knows which servers/DBs are connected. */
+  connectedSources?: string;
   /**
    * Names of the registered computed tables (live, read-only projections).
    * Used to tag them in the schema context and `list_entities` (so the model

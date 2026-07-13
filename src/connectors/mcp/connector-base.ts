@@ -13,6 +13,7 @@
  */
 
 import { ConnectorUnavailableError } from '../errors.js';
+import { sanitizeConnectorLabel } from '../sanitize-label.js';
 import type {
   McpConnector,
   ConnectedModelDef,
@@ -183,7 +184,7 @@ export abstract class McpConnectorBase implements McpConnector {
       return {
         kind: 'connected',
         connectionId,
-        displayName: serverName ?? this.displayNameFor(toolkit),
+        displayName: serverName ? sanitizeConnectorLabel(serverName) : this.displayNameFor(toolkit),
       };
     }
 
@@ -217,7 +218,9 @@ export abstract class McpConnectorBase implements McpConnector {
       return {
         kind: 'connected',
         connectionId,
-        displayName: begin.serverName ?? this.displayNameFor(toolkit),
+        displayName: begin.serverName
+          ? sanitizeConnectorLabel(begin.serverName)
+          : this.displayNameFor(toolkit),
       };
     }
     putPendingConnect(state, {
@@ -257,8 +260,10 @@ export abstract class McpConnectorBase implements McpConnector {
     const done = await this.oauth.complete(completeArgs);
     return {
       connectionId: pending.connectionId,
-      displayName: done.serverName ?? this.displayNameFor(pending.toolkit),
-      ...(done.serverName ? { serverName: done.serverName } : {}),
+      displayName: done.serverName
+        ? sanitizeConnectorLabel(done.serverName)
+        : this.displayNameFor(pending.toolkit),
+      ...(done.serverName ? { serverName: sanitizeConnectorLabel(done.serverName) } : {}),
       ...(pending.targetConnectorId ? { targetConnectorId: pending.targetConnectorId } : {}),
     };
   }

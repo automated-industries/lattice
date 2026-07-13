@@ -96,3 +96,5 @@ export { disconnectConnector } from './teardown.js';
 export type { DisconnectOptions, DisconnectResult } from './teardown.js';
 
 export { enableConnectorRls, secureConnectorTables } from './acl.js';
+
+export { describeConnectedSources } from './describe-connected.js';

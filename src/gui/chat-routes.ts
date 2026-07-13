@@ -69,6 +69,9 @@ interface ChatContext {
   computedTables?: Set<string>;
   /** Computed-table primitives for the assistant's computed-table tools. */
   computedOps?: DispatchCtx['computedOps'];
+  /** Member-scoped "Connected data sources" section for the assistant's context,
+   *  so it knows which MCP servers / databases are connected. Omitted when none. */
+  connectedSources?: string;
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
   configPath?: string;
   outputDir?: string;
@@ -883,10 +886,22 @@ export async function dispatchChatRoute(
       // "Private mode" chat toggle: force rows the assistant creates this turn private
       // regardless of the table default (a transient per-request choice).
       privateMode: body.privateMode === true,
-      validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
+      // Live-aware table set: the open-time snapshot PLUS anything registered
+      // since (a connector connected this session), minus internal + hidden. A
+      // defineLate connector table (mcp_items) is otherwise absent from the
+      // snapshot, so the assistant would reject it as "Unknown table".
+      validTables: new Set(
+        [...ctx.validTables, ...ctx.db.getRegisteredTableNames()].filter(
+          (t) =>
+            !ASSISTANT_HIDDEN_TABLES.has(t) &&
+            !t.startsWith('__lattice') &&
+            !t.startsWith('_lattice'),
+        ),
+      ),
       junctionTables: new Set(
         [...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t)),
       ),
+      ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
       softDeletable: ctx.softDeletable,
       onColumnsAdded: columnDescriptionHook(ctx.db),
       aggressiveness: getAggressiveness(),

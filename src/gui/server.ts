@@ -55,7 +55,11 @@ import { dispatchImportRoute, readImportSourceFromFile } from './import-routes.j
 import { importDataFaithfully } from './import-auto.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
 import { dispatchDbSourcesRoute } from './db-sources-routes.js';
-import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index.js';
+import {
+  builtinConnectors,
+  resolveConnectorIdentity,
+  describeConnectedSources,
+} from '../connectors/index.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -968,9 +972,22 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           {
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/chat')) return false;
+              // Tell the assistant which external sources are connected (scoped to
+              // this member so a cloud never leaks another member's connections),
+              // so "are you connected to X?" is answered from state, not guessed.
+              const chatIdent = readIdentity();
+              const chatConnectedBy = await resolveConnectorIdentity(
+                active.db,
+                chatIdent.email || chatIdent.display_name || 'local',
+              );
+              const connectedSources = await describeConnectedSources(
+                active.db,
+                chatConnectedBy,
+              ).catch(() => '');
               return await dispatchChatRoute(req, res, {
                 db: active.db,
                 feed: active.feed,
+                ...(connectedSources ? { connectedSources } : {}),
                 // Async transport: the route acks 202 and runs the turn as a background
                 // job, streaming each event to this per-workspace bus (the /api/stream
                 // forwarder gates delivery per user). The FIFO serializes turns so a

@@ -486,8 +486,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Databases Configure tab renders a full-width, multi-column table of connected
 // databases plus an inline add/edit form (renderDatabasesPanel/renderDbForm);
 // the dashboard add-database action opens the tab. Recaptured.
-const ORIGINAL_LENGTH = 712541;
-const ORIGINAL_SHA256 = '5c4196f88971b5d6da942778b2d2a2a8ebe3cd233e0a6588797266968cb12011';
+// MCP Connectors tab redesign: the panel is now a full-width multi-column table
+// (renderConnectorsTable/renderConnectorsAddForm in separate mounts), mirroring
+// the Databases tab; connectors + databases both run edge-to-edge (dm-wide). Recaptured.
+const ORIGINAL_LENGTH = 714129;
+const ORIGINAL_SHA256 = 'e00de16111042b84ffdb1526385dbc680177c86d649908063b54671398049f26';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
