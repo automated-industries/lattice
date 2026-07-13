@@ -79,9 +79,15 @@ export async function disconnectConnector(
     await connector.disconnect(record.connectionRef);
   }
 
-  // 4. Only after a successful revoke, finalize local registry state.
-  if (mode === 'hard') await deleteConnectorRecord(db, connectorId);
-  else await setConnectorStatus(db, connectorId, 'disconnected');
+  // 4. Only after a successful revoke, finalize local registry state. Hard mode
+  //    also purges any non-secret reconnect state the connector retained (e.g.
+  //    a stored server URL) — nothing should outlive the registry row.
+  if (mode === 'hard') {
+    await deleteConnectorRecord(db, connectorId);
+    if (record.connectionRef) await connector.purgeConnection?.(record.connectionRef);
+  } else {
+    await setConnectorStatus(db, connectorId, 'disconnected');
+  }
 
   return { connectorId, mode, softDeleted };
 }

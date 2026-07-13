@@ -26,6 +26,14 @@ export interface McpToolInfo {
   description?: string;
 }
 
+/** A resource advertised by the server (`resources/list`) — its "available files". */
+export interface McpResourceInfo {
+  name: string;
+  uri: string;
+  description?: string;
+  mimeType?: string;
+}
+
 /**
  * A live connection to one MCP server. Implementations MUST NOT hold the
  * connection open across calls unless {@link close} is honored — connectors open
@@ -36,6 +44,13 @@ export interface McpTransport {
   listTools(): Promise<McpToolInfo[]>;
   /** Call one read tool; returns the parsed JSON content the tool produced. */
   callTool(call: McpToolCall): Promise<unknown>;
+  /**
+   * List the server's advertised resources (standard MCP `resources/list`).
+   * Servers without the resources capability yield `[]`, never an error.
+   */
+  listResources(): Promise<McpResourceInfo[]>;
+  /** The server's self-reported identity from the `initialize` handshake, if known. */
+  serverInfo?(): { name?: string; title?: string; version?: string } | undefined;
   /** Close the underlying client/session. */
   close(): Promise<void>;
 }

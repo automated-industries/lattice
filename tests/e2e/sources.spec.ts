@@ -8,8 +8,8 @@ import { bootGui, type BootedGui } from './helpers.js';
  * Inputs — the Configure drawer's three input tabs (Files / Connectors /
  * Databases), split out of the old single "Inputs" tab. A registered on-disk
  * folder renders (on the Files tab) as a lazy tree that fetches one level per
- * expand; the "Add a Connector" entry (Connectors tab) opens the Connectors
- * dialog. The native OS picker can't run headless, so roots are registered via
+ * expand; the MCP Connectors tab hosts the whole connectors panel inline (no
+ * dialog). The native OS picker can't run headless, so roots are registered via
  * the real API (the same endpoint the picker feeds).
  */
 
@@ -61,7 +61,7 @@ test('the Configure drawer has Files / Connectors / Databases tabs', async ({ pa
   await expect(page.locator('#drawer-body .inputs-group-head')).toHaveCount(0);
   // Each tab renders its own body.
   await page.locator('.drawer-tab[data-tab="connectors"]').click();
-  await expect(page.locator('#drawer-body #src-add-connector')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#drawer-body #mcp-connectors-panel')).toBeVisible({ timeout: 5000 });
   await page.locator('.drawer-tab[data-tab="databases"]').click();
   await expect(page.locator('#drawer-body #src-add-database')).toBeVisible({ timeout: 5000 });
 });
@@ -87,11 +87,10 @@ test('a registered folder renders as a tree and lazily expands one level', async
   await expect(tree.getByText('deep.txt', { exact: true })).toHaveCount(0);
 });
 
-test('"Add a Connector" opens the connectors dialog', async ({ page }) => {
-  await openConfigureTab(page, 'connectors', '#src-add-connector');
-  await page.locator('#src-add-connector').click();
-  await expect(page.locator('#connectors-dialog')).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('#connectors-dialog-body')).toContainText('Jira');
+test('the MCP Connectors tab hosts the panel inline (no dialog)', async ({ page }) => {
+  await openConfigureTab(page, 'connectors', '#mcp-connectors-panel');
+  await expect(page.locator('#mcp-connectors-panel')).toContainText('Add an MCP connector');
+  await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 });
 
 test('the Files table opens as a SQL runner (like every table)', async ({ page }) => {

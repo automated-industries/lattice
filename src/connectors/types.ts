@@ -172,8 +172,14 @@ export interface Connector {
    */
   beginSyncSession?(connectionId: string): Promise<void>;
   endSyncSession?(connectionId: string): Promise<void>;
-  /** Revoke a connected account (teardown). */
+  /** Revoke a connected account (teardown). May retain non-secret reconnect state. */
   disconnect(connectionId: string): Promise<void>;
+  /**
+   * Remove ALL local state for a connection, including anything `disconnect`
+   * retained for reconnect (e.g. a stored server URL). Called on hard teardown,
+   * after the registry row is deleted. Optional; omit when disconnect is total.
+   */
+  purgeConnection?(connectionId: string): Promise<void>;
 }
 
 /**
@@ -259,21 +265,37 @@ export interface McpConnector extends Connector {
    * server, validate via `tools/list` and return the connection immediately.
    * `redirectUri` is where the GUI receives the code; `serverUrl` overrides the
    * toolkit default (used by the generic bring-your-own-URL connector).
+   * `clientInfo` is a pre-registered OAuth client (id + optional secret) for
+   * authorization servers that support neither a client-ID metadata document nor
+   * dynamic registration. `targetConnectorId` marks a reconnect of an existing
+   * registry row rather than a new connection.
    */
   beginConnect(
     userId: string,
     toolkit: string,
-    opts?: { redirectUri?: string; serverUrl?: string },
+    opts?: {
+      redirectUri?: string;
+      serverUrl?: string;
+      clientInfo?: { client_id: string; client_secret?: string };
+      targetConnectorId?: string;
+    },
   ): Promise<McpBeginResult>;
   /**
    * Finish an OAuth connect: exchange the `code`, store the token under
-   * `mcp_creds:<connectionId>`, and return the connection. Throws loudly on a
-   * mismatched state or a failed exchange — never returns a silent default.
+   * `mcp_creds:<connectionId>`, and return the connection. `serverName` is the
+   * server's self-reported name from the MCP handshake (display-name material);
+   * `targetConnectorId` echoes the reconnect target recorded at begin. Throws
+   * loudly on a mismatched state or a failed exchange — never a silent default.
    */
   completeConnect(
     pendingId: string,
     params: { code: string; state?: string },
-  ): Promise<{ connectionId: string; displayName: string | null }>;
+  ): Promise<{
+    connectionId: string;
+    displayName: string | null;
+    serverName?: string;
+    targetConnectorId?: string;
+  }>;
 }
 
 /** True when `c` is an {@link McpConnector} (connects via an MCP server, not credentials). */

@@ -61,12 +61,8 @@ export type {
 } from './mcp/transport.js';
 export { connectDirect } from './mcp/direct-transport.js';
 export { mcpModel } from './mcp/connected-model.js';
-export { gmailConnector, GMAIL_MODELS } from './gmail/connector.js';
-export { calendarConnector, CALENDAR_MODELS } from './calendar/connector.js';
-export { driveConnector, DRIVE_MODELS } from './drive/connector.js';
 export { genericConnector, introspectiveConnector } from './generic/connector.js';
 export type { IntrospectiveSpec } from './generic/connector.js';
-export { jiraConnector, trelloConnector, mondayConnector } from './providers.js';
 
 export {
   DatabaseConnector,

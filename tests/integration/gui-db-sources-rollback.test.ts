@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
 import { FeedBus } from '../../src/gui/feed.js';
 import { dispatchDbSourcesRoute } from '../../src/gui/db-sources-routes.js';
+import { genericConnector } from '../../src/connectors/generic/connector.js';
 import { dispatchConnectorsRoute } from '../../src/gui/connectors-routes.js';
 import { createConnector, listConnectors } from '../../src/connectors/registry.js';
 import {
@@ -206,7 +207,10 @@ describe('db-source connect failure semantics', () => {
       void (async () => {
         const deps = { db, outputDir: tmp, connectedBy: 'tester', feed: new FeedBus() };
         if (await dispatchDbSourcesRoute(req, res, { ...deps, connectorOverride: fake })) return;
-        if (await dispatchConnectorsRoute(req, res, { ...deps, connectors: [] })) return;
+        // The generic MCP connector is mounted (as the real GUI server does) so
+        // the implementation-based GET filter has a live 'mcp' toolkit to keep.
+        if (await dispatchConnectorsRoute(req, res, { ...deps, connectors: [genericConnector()] }))
+          return;
         res.statusCode = 404;
         res.end('{}');
       })().catch((e: unknown) => {
@@ -362,9 +366,12 @@ describe('db-source connect failure semantics', () => {
       connectionRef: 'x1',
       connectedBy: 'tester',
     });
+    // A toolkit with a live implementation in the GUI catalog (the generic MCP
+    // connector) IS listed; the db_source row — whose toolkit has no
+    // implementation in that catalog — is not.
     await createConnector(db, {
-      connector: 'fake',
-      toolkit: 'demo',
+      connector: 'mcp',
+      toolkit: 'mcp',
       displayName: 'A real connector',
       connectionRef: 'c1',
       connectedBy: 'tester',
@@ -372,7 +379,7 @@ describe('db-source connect failure semantics', () => {
     const r = await fetch(`${base}/api/connectors`);
     const body = (await r.json()) as { connectors: { toolkit: string }[] };
     const toolkits = body.connectors.map((c) => c.toolkit);
-    expect(toolkits).toContain('demo');
+    expect(toolkits).toContain('mcp');
     expect(toolkits.some((t) => t.startsWith('db_source:'))).toBe(false);
   });
 

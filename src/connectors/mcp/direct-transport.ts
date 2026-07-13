@@ -12,11 +12,18 @@
 
 import { ConnectorUnavailableError } from '../errors.js';
 import { assertSafeUrl, safeFetch } from '../../sources/url-safety.js';
-import type { McpTransport, McpToolCall, McpToolInfo, McpServerRef } from './transport.js';
+import type {
+  McpTransport,
+  McpToolCall,
+  McpToolInfo,
+  McpResourceInfo,
+  McpServerRef,
+} from './transport.js';
 import {
   LatticeOAuthProvider,
   setMcpServerUrl,
   getMcpServerUrl,
+  revokeMcpSecrets,
   type McpClientMetadata,
 } from './oauth.js';
 
@@ -36,10 +43,20 @@ interface SdkCallToolResult {
   structuredContent?: unknown;
   isError?: boolean;
 }
+interface SdkResource {
+  name?: string;
+  uri: string;
+  description?: string;
+  mimeType?: string;
+}
 interface SdkClient {
   connect(transport: unknown): Promise<void>;
   listTools(): Promise<{ tools?: SdkTool[] }>;
   callTool(args: { name: string; arguments?: Record<string, unknown> }): Promise<SdkCallToolResult>;
+  listResources?(params?: {
+    cursor?: string;
+  }): Promise<{ resources?: SdkResource[]; nextCursor?: string }>;
+  getServerVersion?(): { name?: string; title?: string; version?: string } | undefined;
   close(): Promise<void>;
 }
 type SdkClientCtor = new (
@@ -123,6 +140,9 @@ function extractToolResult(res: SdkCallToolResult): unknown {
   }
 }
 
+/** Hard cap on resources pulled from one server (a paginating server can't loop unbounded). */
+const MAX_RESOURCES = 2000;
+
 /** A live {@link McpTransport} over a connected SDK client. */
 class DirectMcpTransport implements McpTransport {
   constructor(private readonly client: SdkClient) {}
@@ -139,6 +159,35 @@ class DirectMcpTransport implements McpTransport {
   async callTool(call: McpToolCall): Promise<unknown> {
     const res = await this.client.callTool({ name: call.tool, arguments: call.args });
     return extractToolResult(res);
+  }
+
+  async listResources(): Promise<McpResourceInfo[]> {
+    if (typeof this.client.listResources !== 'function') return [];
+    const out: McpResourceInfo[] = [];
+    let cursor: string | undefined;
+    try {
+      do {
+        const res = await this.client.listResources(cursor ? { cursor } : undefined);
+        for (const r of res.resources ?? []) {
+          if (!r.uri) continue;
+          const info: McpResourceInfo = { name: r.name ?? r.uri, uri: r.uri };
+          if (r.description !== undefined) info.description = r.description;
+          if (r.mimeType !== undefined) info.mimeType = r.mimeType;
+          out.push(info);
+          if (out.length >= MAX_RESOURCES) return out;
+        }
+        cursor = res.nextCursor ?? undefined;
+      } while (cursor);
+    } catch {
+      // The resources capability is optional; a server that rejects the request
+      // simply has no listable resources. Tool data is unaffected.
+      return out;
+    }
+    return out;
+  }
+
+  serverInfo(): { name?: string; title?: string; version?: string } | undefined {
+    return this.client.getServerVersion?.();
   }
 
   async close(): Promise<void> {
@@ -245,7 +294,7 @@ export interface BeginOAuthArgs {
  */
 export async function beginOAuth(
   args: BeginOAuthArgs,
-): Promise<{ authorizationUrl: string | undefined; toolNames: string[] }> {
+): Promise<{ authorizationUrl: string | undefined; toolNames: string[]; serverName?: string }> {
   // SSRF guard FIRST (before persisting or loading the SDK): the user supplies
   // this URL, so DNS-resolve and reject private/loopback/link-local/metadata hosts.
   const safeUrl = await assertSafeUrl(args.serverUrl);
@@ -263,13 +312,30 @@ export async function beginOAuth(
     await client.connect(transport);
     // Connected without a redirect — validate + close.
     const tools = await client.listTools();
+    const serverName = client.getServerVersion?.()?.name;
     await client.close();
-    return { authorizationUrl: undefined, toolNames: (tools.tools ?? []).map((t) => t.name) };
+    return {
+      authorizationUrl: undefined,
+      toolNames: (tools.tools ?? []).map((t) => t.name),
+      ...(serverName ? { serverName } : {}),
+    };
   } catch (err) {
     // The provider captured the authorization URL iff the SDK decided a redirect
     // is required — a reliable signal independent of the error class.
     if (provider.capturedAuthorizationUrl) {
-      return { authorizationUrl: provider.capturedAuthorizationUrl.toString(), toolNames: [] };
+      // The SDK builds this URL from the SERVER's advertised authorization
+      // endpoint with no scheme validation, and the GUI hands it straight to the
+      // user's browser (window.open). A malicious server could point it at
+      // `javascript:`, a custom protocol, or an internal http(s) host to abuse
+      // the browser's ambient authority. Only http(s) may reach the browser;
+      // anything else is a hostile server and is rejected loudly.
+      const authz = provider.capturedAuthorizationUrl;
+      if (authz.protocol !== 'https:' && authz.protocol !== 'http:') {
+        throw new ConnectorUnavailableError(
+          `MCP server "${args.serverUrl}" returned a non-http(s) authorization URL (${authz.protocol}) — refusing to open it.`,
+        );
+      }
+      return { authorizationUrl: authz.toString(), toolNames: [] };
     }
     throw err; // genuine connect failure — surface it loudly
   }
@@ -291,7 +357,9 @@ export interface CompleteOAuthArgs {
  * stores the token via the provider), then validate by listing tools. Returns the
  * discovered tool names for the caller to sanity-check.
  */
-export async function completeOAuth(args: CompleteOAuthArgs): Promise<{ toolNames: string[] }> {
+export async function completeOAuth(
+  args: CompleteOAuthArgs,
+): Promise<{ toolNames: string[]; serverName?: string }> {
   const serverUrl = getMcpServerUrl(args.connectionId);
   if (!serverUrl) {
     throw new ConnectorUnavailableError('No pending MCP connection — restart the connect flow.');
@@ -305,12 +373,27 @@ export async function completeOAuth(args: CompleteOAuthArgs): Promise<{ toolName
   if (args.state !== undefined) providerOpts.state = args.state;
   const provider = new LatticeOAuthProvider(args.connectionId, args.redirectUri, providerOpts);
   const transport = makeAuthTransport(sdk, safeUrl, provider, args.transportKind);
+  // finishAuth exchanges the code and the SDK persists access+refresh tokens via
+  // the provider. If the post-exchange validation then fails, those tokens are a
+  // live grant that no registry row will reference yet — revoke them here so a
+  // retry (fresh connectionId) can't strand an unreachable, unrevokable grant.
   await transport.finishAuth(args.code);
-  const client = new sdk.Client(CLIENT_INFO, { capabilities: {} });
-  await client.connect(transport);
-  const tools = await client.listTools();
-  await client.close();
-  return { toolNames: (tools.tools ?? []).map((t) => t.name) };
+  let tools: { tools?: { name: string }[] };
+  let serverName: string | undefined;
+  try {
+    const client = new sdk.Client(CLIENT_INFO, { capabilities: {} });
+    await client.connect(transport);
+    tools = await client.listTools();
+    serverName = client.getServerVersion?.()?.name;
+    await client.close();
+  } catch (err) {
+    revokeMcpSecrets(args.connectionId);
+    throw err;
+  }
+  return {
+    toolNames: (tools.tools ?? []).map((t) => t.name),
+    ...(serverName ? { serverName } : {}),
+  };
 }
 
 // Re-export for tests + connectors that build custom client metadata.

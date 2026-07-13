@@ -3,7 +3,7 @@
 // Graph) and Inputs (Files | Connectors | Databases) — dispatched from
 // selectDrawerTab (table-view.ts). Reuses the existing renderers + element ids so
 // their render/wire fns work unchanged. Must stay INSIDE the client IIFE (uses
-// fetchJson/renderModelTables/renderSchemaGraph/renderSourcesConnectors/…);
+// fetchJson/renderModelTables/renderSchemaGraph/…);
 // registered before createDatabaseWizardJs.
 export const configureDrawerJs = `
     // Open the Configure drawer to a tab. Guarded call to openSettingsDrawer (the drawer
@@ -165,11 +165,10 @@ export const configureDrawerJs = `
     }
     function renderConnectorsTab(body) {
       if (!body) return;
-      body.innerHTML =
-        '<div class="inputs-group"><div id="src-connectors-list"></div>' +
-        '<button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button></div>';
-      if (typeof renderSourcesConnectors === 'function') renderSourcesConnectors();
-      if (typeof wireSourcesButtons === 'function') wireSourcesButtons();
+      body.innerHTML = '<div class="inputs-group"><div id="mcp-connectors-panel"></div></div>';
+      if (typeof renderConnectorsPanel === 'function') {
+        renderConnectorsPanel(body.querySelector('#mcp-connectors-panel'));
+      }
     }
     function renderDatabasesTab(body) {
       if (!body) return;

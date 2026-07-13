@@ -1,7 +1,8 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// Sources sidebar: three peer sections — Files (a lazy, infinitely-nestable tree
-// of on-disk roots, local-only), Artifacts (Lattice-created files), and
-// Connectors. renderSources() is called wherever renderSidebar() is. Must stay
+// Sources sidebar: Files (a lazy, infinitely-nestable tree of on-disk roots,
+// local-only) + Artifacts (Lattice-created files). MCP connectors live entirely
+// in the Configure drawer's MCP Connectors tab, not the sidebar.
+// renderSources() is called wherever renderSidebar() is. Must stay
 // INSIDE the client IIFE (uses fetchJson/escapeHtml/loadAllRows/openSettingsDrawer),
 // inserted before createDatabaseWizardJs.
 export const sourcesJs = `
@@ -10,7 +11,6 @@ export const sourcesJs = `
     var sourcesFilesByPath = {};
 
     function renderSources() {
-      renderSourcesConnectors();
       renderInputsDatabases();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
@@ -201,36 +201,6 @@ export const sourcesJs = `
         .catch(function () {});
     }
 
-    function renderSourcesConnectors() {
-      var host = document.getElementById('src-connectors-list');
-      if (!host) return;
-      fetchJson('/api/connectors')
-        .then(function (data) {
-          var connectors = (data && data.connectors) || [];
-          var presById = {};
-          ((data && data.toolkits) || []).forEach(function (t) { presById[t.toolkit] = t; });
-          host.innerHTML = connectors.length
-            ? '<ul class="src-tree">' + connectors.map(function (c) {
-                var pres = presById[c.toolkit] || {};
-                var color = c.status === 'connected' ? 'var(--accent)'
-                  : (c.status === 'error' ? 'var(--danger, #c0392b)' : 'var(--text-muted)');
-                // Each connected source shows its logo, with the status as a small
-                // colored ring/dot overlay.
-                var mark = pres.icon
-                  ? '<span class="src-conn-ic"><img class="connector-icon" src="' + escapeHtml(pres.icon) + '" alt="">' +
-                      '<span class="src-conn-dot" style="background:' + color + '"></span></span>'
-                  : '<span class="src-dot" style="background:' + color + '"></span>';
-                var label = pres.label || (c.toolkit.charAt(0).toUpperCase() + c.toolkit.slice(1));
-                return '<li class="src-node src-conn"><div class="src-row" style="padding-left:14px">' +
-                  mark + '<span class="src-name">' + escapeHtml(label) + '</span></div></li>';
-              }).join('') + '</ul>'
-            : '<div class="src-empty">None connected.</div>';
-          host.querySelectorAll('.src-conn > .src-row').forEach(function (row) {
-            row.addEventListener('click', function () { openConnectorsDialog(); });
-          });
-        })
-        .catch(function () { host.innerHTML = ''; });
-    }
 
     // The add buttons live in the static shell, so wire them ONCE (renderSources
     // runs on every sidebar refresh).
@@ -351,11 +321,6 @@ export const sourcesJs = `
         // Dismiss on an outside click / Escape.
         document.addEventListener('click', closeAddMenu);
         document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAddMenu(); });
-      }
-      var addConn = document.getElementById('src-add-connector');
-      if (addConn && !addConn.__wired) {
-        addConn.__wired = true;
-        addConn.addEventListener('click', function () { openConnectorsDialog(); });
       }
     }
 

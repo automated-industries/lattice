@@ -71,7 +71,9 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     }
     .drawer-version .app-version { color: var(--text); }
 
-    /* ── Connectors dialog (slides in from the LEFT) ────── */
+    /* ── Left side-drawer chrome (used by the Connect-a-database dialog; the
+          .conn-* card/form styles below are shared with the MCP Connectors
+          Configure tab) ────── */
     .connectors-backdrop {
       -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       z-index: var(--z-drawer-scrim); opacity: 0; transition: opacity 0.2s ease;

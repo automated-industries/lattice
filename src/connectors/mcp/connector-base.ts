@@ -38,6 +38,9 @@ import {
   putPendingConnect,
   takePendingConnect,
   setMcpServerUrl,
+  getMcpServerUrl,
+  setMcpClientInformation,
+  revokeMcpSecrets,
   clearMcpConnection,
 } from './oauth.js';
 
@@ -68,8 +71,8 @@ export interface McpModelBinding {
 export interface McpOAuthDriver {
   begin(
     args: BeginOAuthArgs,
-  ): Promise<{ authorizationUrl: string | undefined; toolNames: string[] }>;
-  complete(args: CompleteOAuthArgs): Promise<{ toolNames: string[] }>;
+  ): Promise<{ authorizationUrl: string | undefined; toolNames: string[]; serverName?: string }>;
+  complete(args: CompleteOAuthArgs): Promise<{ toolNames: string[]; serverName?: string }>;
 }
 
 const DEFAULT_OAUTH_DRIVER: McpOAuthDriver = { begin: beginOAuth, complete: completeOAuth };
@@ -132,7 +135,14 @@ export abstract class McpConnectorBase implements McpConnector {
     toolkit: string,
     connectionId: string,
   ): Promise<McpTransport> {
-    const server = this.resolveServer(toolkit);
+    let server = this.resolveServer(toolkit);
+    if (!server.url && !server.command) {
+      // A bring-your-own-URL toolkit has no URL in its spec — the connection's
+      // stored URL is authoritative. Resolving it here (not just inside the
+      // transport) lets transportKind see an `/sse` suffix.
+      const stored = getMcpServerUrl(connectionId);
+      if (stored) server = { ...server, url: stored };
+    }
     const kind = this.transportKind(server);
     const ref = this.buildRef(server, connectionId, kind);
     return this.transportFactory(ref);
@@ -143,23 +153,38 @@ export abstract class McpConnectorBase implements McpConnector {
   async beginConnect(
     _userId: string,
     toolkit: string,
-    opts?: { redirectUri?: string; serverUrl?: string },
+    opts?: {
+      redirectUri?: string;
+      serverUrl?: string;
+      clientInfo?: { client_id: string; client_secret?: string };
+      targetConnectorId?: string;
+    },
   ): Promise<McpBeginResult> {
     const server = this.resolveServer(toolkit, opts?.serverUrl);
     const kind = this.transportKind(server);
     const connectionId = newConnectionId();
+    // A user-supplied pre-registered client (for authorization servers with no
+    // client-ID-metadata-document support and no dynamic registration): stored
+    // up front so the SDK's clientInformation() short-circuit skips registration.
+    if (opts?.clientInfo?.client_id) setMcpClientInformation(connectionId, opts.clientInfo);
 
     if (!this.needsOAuth(server, kind)) {
       // Local stdio server or an open HTTP/SSE server — validate via tools/list, no redirect.
       if (kind !== 'stdio' && server.url) setMcpServerUrl(connectionId, server.url);
       const ref = this.buildRef(server, connectionId, kind);
       const transport = await this.transportFactory(ref);
+      let serverName: string | undefined;
       try {
         await transport.listTools();
+        serverName = transport.serverInfo?.()?.name;
       } finally {
         await transport.close();
       }
-      return { kind: 'connected', connectionId, displayName: this.displayNameFor(toolkit) };
+      return {
+        kind: 'connected',
+        connectionId,
+        displayName: serverName ?? this.displayNameFor(toolkit),
+      };
     }
 
     // OAuth HTTP/SSE server.
@@ -174,6 +199,7 @@ export abstract class McpConnectorBase implements McpConnector {
       throw new ConnectorUnavailableError('Missing OAuth redirect URI for the MCP connect flow.');
     }
     const httpKind: 'http' | 'sse' = kind === 'sse' ? 'sse' : 'http';
+    const targetConnectorId = opts.targetConnectorId;
     const state = newState();
     const beginArgs: BeginOAuthArgs = {
       connectionId,
@@ -188,7 +214,11 @@ export abstract class McpConnectorBase implements McpConnector {
 
     if (!begin.authorizationUrl) {
       // The server accepted the connection without a redirect (open / pre-authorized).
-      return { kind: 'connected', connectionId, displayName: this.displayNameFor(toolkit) };
+      return {
+        kind: 'connected',
+        connectionId,
+        displayName: begin.serverName ?? this.displayNameFor(toolkit),
+      };
     }
     putPendingConnect(state, {
       connectionId,
@@ -197,6 +227,7 @@ export abstract class McpConnectorBase implements McpConnector {
       serverUrl,
       redirectUri,
       transportKind: httpKind,
+      ...(targetConnectorId ? { targetConnectorId } : {}),
     });
     return { kind: 'redirect', redirectUrl: begin.authorizationUrl, pendingId: state };
   }
@@ -204,7 +235,12 @@ export abstract class McpConnectorBase implements McpConnector {
   async completeConnect(
     pendingId: string,
     params: { code: string; state?: string },
-  ): Promise<{ connectionId: string; displayName: string | null }> {
+  ): Promise<{
+    connectionId: string;
+    displayName: string | null;
+    serverName?: string;
+    targetConnectorId?: string;
+  }> {
     const pending = takePendingConnect(pendingId);
     if (!pending) {
       throw new ConnectorUnavailableError('No pending MCP connection — restart the connect flow.');
@@ -218,14 +254,24 @@ export abstract class McpConnectorBase implements McpConnector {
     };
     const scope = this.scope(pending.toolkit);
     if (scope !== undefined) completeArgs.scope = scope;
-    await this.oauth.complete(completeArgs);
+    const done = await this.oauth.complete(completeArgs);
     return {
       connectionId: pending.connectionId,
-      displayName: this.displayNameFor(pending.toolkit),
+      displayName: done.serverName ?? this.displayNameFor(pending.toolkit),
+      ...(done.serverName ? { serverName: done.serverName } : {}),
+      ...(pending.targetConnectorId ? { targetConnectorId: pending.targetConnectorId } : {}),
     };
   }
 
   disconnect(connectionId: string): Promise<void> {
+    // Secrets only — the stored server URL stays so a disconnected connector can
+    // be reconnected without re-entering it. Hard teardown removes the URL too,
+    // via purgeConnection.
+    revokeMcpSecrets(connectionId);
+    return Promise.resolve();
+  }
+
+  purgeConnection(connectionId: string): Promise<void> {
     clearMcpConnection(connectionId);
     return Promise.resolve();
   }

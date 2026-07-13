@@ -4,17 +4,18 @@
  * Point it at ANY reachable MCP server (a URL you supply, or a local stdio
  * command) and it pulls that server's readable items in as context without a
  * hand-authored schema: it introspects the server's tools (`tools/list`), calls
- * each no-argument read tool, and stores the returned items in one connected
- * `*_items` table (typed columns for tool/title/summary + a JSON `data` blob,
- * FTS on title/summary, per-member `private` visibility — the same connector-table
- * conventions every typed connector uses).
+ * each no-argument read tool, and ALSO lists the server's advertised resources
+ * (`resources/list` — its "available files"). Everything lands in one connected
+ * `*_items` table (typed columns for kind/tool/server/title/summary + a JSON
+ * `data` blob, FTS on title/summary, per-member `private` visibility — the same
+ * connector-table conventions the sync engine expects).
  *
  * Two uses:
- *  - {@link genericConnector} — a bring-your-own-URL connector (no default server).
- *  - {@link introspectiveConnector} — the same engine pre-pointed at a specific
- *    provider's MCP endpoint with its own branded table (Jira / Trello / monday),
- *    so those connect + pull data reliably even where a fully-typed schema can't
- *    be pinned without verifying the provider's exact tool contract.
+ *  - {@link genericConnector} — the built-in bring-your-own-URL connector; every
+ *    added server is its own connection (one registry row per server).
+ *  - {@link introspectiveConnector} — the same engine pre-pointed at a fixed
+ *    endpoint with its own table name, for library consumers that embed a
+ *    specific provider.
  *
  * Only read-shaped tools are called: tools that require arguments are skipped in
  * introspective mode, and obvious write tools are never called.
@@ -27,6 +28,7 @@ import {
 } from '../mcp/connector-base.js';
 import { mcpModel, str, jsonCol, arrayField } from '../mcp/connected-model.js';
 import { letterIcon } from '../mcp/icon.js';
+import { getMcpServerUrl } from '../mcp/oauth.js';
 import type {
   ConnectedModelDef,
   ExternalRecord,
@@ -93,7 +95,14 @@ class IntrospectiveMcpConnector extends McpConnectorBase {
       table: spec.table,
       model: 'item',
       naturalKey: 'item_id',
-      columns: { tool: 'TEXT', title: 'TEXT', summary: 'TEXT', data: 'TEXT' },
+      columns: {
+        kind: 'TEXT',
+        tool: 'TEXT',
+        server: 'TEXT',
+        title: 'TEXT',
+        summary: 'TEXT',
+        data: 'TEXT',
+      },
       def: {
         description: `Items pulled from the ${spec.label} MCP server`,
         render: 'default-list',
@@ -125,6 +134,14 @@ class IntrospectiveMcpConnector extends McpConnectorBase {
   ): AsyncIterable<ExternalRecord> {
     if (model !== 'item') return;
     const transport = await this.openServerTransport(toolkit, ctx.connectionId);
+    // The server hostname rides every row so items from different connected
+    // servers stay tellable-apart in the shared table.
+    let serverHost: string | undefined;
+    try {
+      serverHost = new URL(getMcpServerUrl(ctx.connectionId) ?? '').hostname || undefined;
+    } catch {
+      /* stdio / no stored URL — leave unset */
+    }
     try {
       const tools = await transport.listTools();
       for (const tool of tools) {
@@ -152,17 +169,32 @@ class IntrospectiveMcpConnector extends McpConnectorBase {
             it && typeof it === 'object' ? (it as Record<string, unknown>) : { value: it };
           const idPart = str(obj.id) ?? str(obj.key) ?? str(obj.uid) ?? str(obj.name) ?? String(i);
           const row: Record<string, unknown> = {
+            kind: 'item',
             tool: tool.name,
             // idPart is always a string (falls back to the index), so title is too.
             title:
               str(obj.title) ?? str(obj.name) ?? str(obj.subject) ?? str(obj.summary) ?? idPart,
           };
+          if (serverHost !== undefined) row.server = serverHost;
           const summary = str(obj.description) ?? str(obj.snippet) ?? str(obj.summary);
           if (summary !== undefined) row.summary = summary;
           const data = jsonCol(it);
           if (data !== undefined) row.data = data;
           yield { id: `${tool.name}:${idPart}`, row };
         }
+      }
+      // The server's advertised resources — its "available files" — via the
+      // standard resources/list. Servers without the capability yield [].
+      for (const r of await transport.listResources()) {
+        const row: Record<string, unknown> = {
+          kind: 'resource',
+          title: r.name,
+        };
+        if (serverHost !== undefined) row.server = serverHost;
+        if (r.description !== undefined) row.summary = r.description;
+        const data = jsonCol({ uri: r.uri, ...(r.mimeType ? { mimeType: r.mimeType } : {}) });
+        if (data !== undefined) row.data = data;
+        yield { id: `resource:${r.uri}`, row };
       }
     } finally {
       await transport.close();
@@ -183,11 +215,13 @@ export function genericConnector(deps: McpConnectorDeps = {}): McpConnectorBase 
   return introspectiveConnector(
     {
       connector: 'mcp',
-      label: 'Custom MCP server',
+      label: 'MCP server',
       iconLetter: '+',
       iconColor: '#6b7280',
       table: 'mcp_items',
-      servers: [{ name: 'generic', transport: 'http', oauth: true }],
+      // No pinned transport: the kind is inferred from the user-supplied URL
+      // (an `/sse` suffix selects the legacy SSE transport).
+      servers: [{ name: 'generic', oauth: true }],
     },
     deps,
   );

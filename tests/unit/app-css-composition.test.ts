@@ -222,8 +222,11 @@ import { css } from '../../src/gui/app/css.js';
 // global .muted rule is the sanctioned fix for ~43 bare class=muted usages). Dead CSS
 // deleted (.danger-btn, .wm-actions/.wm-btn, .modal-foot .btn overrides, .cd-btn dupes).
 // Recaptured.
-const ORIGINAL_LENGTH = 160807;
-const ORIGINAL_SHA256 = 'f9170c736145d58f379d934c8b169cf48c634a9a0cfc0850514d106935f09b99';
+// MCP Connectors overhaul: the connectors-dialog section comment now describes
+// the shared side-drawer chrome (kept for the DB dialog; .conn-* styles are
+// reused by the MCP Connectors tab panel). Recaptured (on top of #146).
+const ORIGINAL_LENGTH = 160932;
+const ORIGINAL_SHA256 = '58434123384e0ea21aeb373a56c1b9c33de0cb8d148cb3ccaa7dba932bd07c6c';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

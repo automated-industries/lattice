@@ -4,11 +4,12 @@ import { connectorsSettingsJs } from '../../src/gui/app/modules/connectors-setti
 import { appJs } from '../../src/gui/app/script.js';
 
 /**
- * 4.3 — the data-driven Connectors panel (client), rendered into the left-sliding
- * "Add a Connector" dialog. Executed in a jsdom window with stubbed fetchJson/fetch
- * so we assert the REAL rendered DOM (cards built from each toolkit's declared
- * fields) + that the buttons call the right endpoints — the part that can't be
- * checked server-side.
+ * The MCP Connectors panel (client), rendered INSIDE the Configure drawer's
+ * "MCP Connectors" tab — the left-sliding connectors dialog is gone. Executed
+ * in a jsdom window with stubbed fetchJson/fetch so we assert the REAL rendered
+ * DOM (server cards + the inline add-by-URL form) and that every action calls
+ * the right endpoint with the CONNECTOR ID (multi-instance — several servers
+ * share one toolkit).
  */
 
 interface FetchCall {
@@ -17,17 +18,23 @@ interface FetchCall {
   body?: string;
 }
 
-// A toolkit descriptor as GET /api/connectors now returns it (presentation + fields).
-const JIRA_TK = {
-  toolkit: 'jira',
-  label: 'Jira',
+// The single generic toolkit descriptor GET /api/connectors returns now.
+const MCP_TK = {
+  toolkit: 'mcp',
+  label: 'MCP server',
   icon: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
-  credentialFields: [
-    { key: 'site', label: 'Site URL', type: 'text', placeholder: 'https://your.atlassian.net' },
-    { key: 'email', label: 'Email', type: 'text' },
-    { key: 'token', label: 'API token', type: 'password' },
-  ],
-  helpUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+  connectVia: 'mcp',
+  needsServerUrl: true,
+};
+
+const CONNECTED = {
+  id: 'c1',
+  toolkit: 'mcp',
+  displayName: 'Payroll MCP',
+  status: 'connected',
+  lastSyncAt: '2026-07-13T00:00:00Z',
+  lastError: null,
+  serverUrl: 'https://mcp.example.com',
 };
 
 function loadPanel(data: unknown, calls: FetchCall[]): (host: HTMLElement) => void {
@@ -49,108 +56,141 @@ function loadPanel(data: unknown, calls: FetchCall[]): (host: HTMLElement) => vo
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-describe('connectors panel (jsdom)', () => {
+describe('MCP connectors panel (jsdom)', () => {
   let host: HTMLElement;
   beforeEach(() => {
     host = document.createElement('div');
     document.body.appendChild(host);
   });
 
-  it('renders a data-driven credential form from the toolkit fields when not connected', async () => {
-    const render = loadPanel({ toolkits: [JIRA_TK], connectors: [] }, []);
+  it('renders the inline add-by-URL form when nothing is connected', async () => {
+    const render = loadPanel({ toolkits: [MCP_TK], connectors: [] }, []);
     render(host);
     await flush();
-    expect(host.innerHTML).toContain('Jira');
-    // One input per declared credential field, id'd as cred-<toolkit>-<key>.
-    expect(host.querySelector('#cred-jira-site')).toBeTruthy();
-    expect(host.querySelector('#cred-jira-email')).toBeTruthy();
-    expect(host.querySelector('#cred-jira-token')).toBeTruthy();
-    // The logo renders from the toolkit's icon.
-    expect(host.querySelector('img.connector-icon')).toBeTruthy();
-    const connect = host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!;
-    expect(connect).toBeTruthy();
-    expect(connect.disabled).toBe(false);
+    expect(host.innerHTML).toContain('Add an MCP connector');
+    expect(host.innerHTML).toContain('No MCP servers connected');
+    expect(host.querySelector('#mcp-add-url')).toBeTruthy();
+    // The pre-registered-client fields exist but stay hidden until a server needs them.
+    const clientFields = host.querySelector<HTMLElement>('#mcp-client-fields')!;
+    expect(clientFields).toBeTruthy();
+    expect(clientFields.hidden).toBe(true);
   });
 
-  it('shows Refresh + Disconnect + status for a connected toolkit', async () => {
+  it('lists every connected server with its name, URL, status, and per-row actions', async () => {
     const render = loadPanel(
       {
-        toolkits: [JIRA_TK],
+        toolkits: [MCP_TK],
         connectors: [
-          { id: 'c1', toolkit: 'jira', status: 'connected', lastSyncAt: '2026-06-23T00:00:00Z' },
+          CONNECTED,
+          { ...CONNECTED, id: 'c2', displayName: 'Notes MCP', serverUrl: 'https://two.example' },
         ],
       },
       [],
     );
     render(host);
     await flush();
-    expect(host.innerHTML).toContain('connected');
+    expect(host.innerHTML).toContain('Payroll MCP');
+    expect(host.innerHTML).toContain('Notes MCP');
+    expect(host.innerHTML).toContain('https://mcp.example.com');
+    expect(host.innerHTML).toContain('https://two.example');
     expect(host.innerHTML).toContain('last synced');
-    expect(host.querySelector('button[data-act="refresh"]')).toBeTruthy();
-    expect(host.querySelector('button[data-act="disconnect"]')).toBeTruthy();
-    // No credential form once connected.
-    expect(host.querySelector('#cred-jira-token')).toBeNull();
+    expect(host.querySelectorAll('button[data-act="refresh"]')).toHaveLength(2);
+    expect(host.querySelectorAll('button[data-act="disconnect"]')).toHaveLength(2);
   });
 
-  it('Connect posts the entered credentials to the connect endpoint', async () => {
+  it('Connect posts the entered URL to the connect endpoint', async () => {
     const calls: FetchCall[] = [];
-    const render = loadPanel({ toolkits: [JIRA_TK], connectors: [] }, calls);
+    const render = loadPanel({ toolkits: [MCP_TK], connectors: [] }, calls);
     render(host);
     await flush();
-
-    host.querySelector<HTMLInputElement>('#cred-jira-site')!.value = 'https://x.atlassian.net';
-    host.querySelector<HTMLInputElement>('#cred-jira-email')!.value = 'a@x.com';
-    host.querySelector<HTMLInputElement>('#cred-jira-token')!.value = 'sk-test';
+    host.querySelector<HTMLInputElement>('#mcp-add-url')!.value = 'https://mcp.justco.example';
     host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!.click();
     await flush();
-
-    const post = calls.find((c) => c.url === '/api/connectors/jira/connect' && c.method === 'POST');
+    const post = calls.find((c) => c.url === '/api/connectors/mcp/connect' && c.method === 'POST');
     expect(post).toBeTruthy();
-    expect(post!.body).toContain('x.atlassian.net');
-    expect(post!.body).toContain('sk-test');
+    expect(post!.body).toContain('mcp.justco.example');
   });
 
-  it('Refresh hits the refresh endpoint', async () => {
+  it('reveals the pre-registered client fields on client_registration_unsupported and resubmits with them', async () => {
     const calls: FetchCall[] = [];
-    const render = loadPanel(
-      { toolkits: [JIRA_TK], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
-      calls,
+    const w = globalThis as unknown as Record<string, unknown>;
+    const render = loadPanel({ toolkits: [MCP_TK], connectors: [] }, calls);
+    // First connect answers with the distinct error code.
+    let first = true;
+    w.fetch = (url: string, opts?: { method?: string; body?: string }) => {
+      calls.push({ url, method: opts?.method ?? 'GET', body: opts?.body });
+      const body = first
+        ? { error: 'needs a pre-registered client', code: 'client_registration_unsupported' }
+        : { redirectUrl: 'https://auth.example/authorize' };
+      first = false;
+      return Promise.resolve({ ok: true, status: 422, json: () => Promise.resolve(body) });
+    };
+    render(host);
+    await flush();
+    host.querySelector<HTMLInputElement>('#mcp-add-url')!.value = 'https://strict.example';
+    host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!.click();
+    await flush();
+    const clientFields = host.querySelector<HTMLElement>('#mcp-client-fields')!;
+    expect(clientFields.hidden).toBe(false);
+    // Resubmit with the client id — the POST body must carry it.
+    host.querySelector<HTMLInputElement>('#mcp-add-client-id')!.value = 'preregistered-id';
+    host.querySelector<HTMLButtonElement>('button[data-act="connect"]')!.click();
+    await flush();
+    const posts = calls.filter(
+      (c) => c.url === '/api/connectors/mcp/connect' && c.method === 'POST',
     );
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body).toContain('preregistered-id');
+  });
+
+  it('Refresh + Disconnect target the row by connectorId', async () => {
+    const calls: FetchCall[] = [];
+    const render = loadPanel({ toolkits: [MCP_TK], connectors: [CONNECTED] }, calls);
     render(host);
     await flush();
     host.querySelector<HTMLButtonElement>('button[data-act="refresh"]')!.click();
     await flush();
-    expect(calls.some((c) => c.url === '/api/connectors/jira/refresh' && c.method === 'POST')).toBe(
-      true,
+    const refresh = calls.find(
+      (c) => c.url === '/api/connectors/mcp/refresh' && c.method === 'POST',
     );
+    expect(refresh?.body).toContain('c1');
+    host.querySelector<HTMLButtonElement>('button[data-act="disconnect"]')!.click();
+    await flush();
+    const del = calls.find((c) => c.url === '/api/connectors/mcp' && c.method === 'DELETE');
+    expect(del?.body).toContain('c1');
   });
 
-  it('Disconnect hits the DELETE endpoint', async () => {
+  it('a disconnected server offers Reconnect, which reuses its stored row', async () => {
     const calls: FetchCall[] = [];
     const render = loadPanel(
-      { toolkits: [JIRA_TK], connectors: [{ id: 'c1', toolkit: 'jira', status: 'connected' }] },
+      { toolkits: [MCP_TK], connectors: [{ ...CONNECTED, status: 'disconnected' }] },
       calls,
     );
     render(host);
     await flush();
-    host.querySelector<HTMLButtonElement>('button[data-act="disconnect"]')!.click();
+    expect(host.querySelector('button[data-act="refresh"]')).toBeNull();
+    const reconnect = host.querySelector<HTMLButtonElement>('button[data-act="reconnect"]')!;
+    expect(reconnect).toBeTruthy();
+    reconnect.click();
     await flush();
-    expect(calls.some((c) => c.url === '/api/connectors/jira' && c.method === 'DELETE')).toBe(true);
+    const post = calls.find((c) => c.url === '/api/connectors/mcp/connect' && c.method === 'POST');
+    expect(post).toBeTruthy();
+    expect(post!.body).toContain('c1');
+    // No serverUrl resent — the stored one is authoritative.
+    expect(post!.body).not.toContain('mcp.example.com');
   });
 });
 
 describe('connectors panel wiring (structural + parse-safety)', () => {
-  it('the connect FORM is the left-sliding dialog; the Connectors tab only hosts the list + entry', () => {
+  it('the panel lives in the Configure tab; the left-sliding connectors dialog is gone', () => {
     expect(appJs).toContain('function renderConnectorsPanel(host)');
-    expect(appJs).toContain('function openConnectorsDialog()');
-    // There IS now a Connectors Configure tab, but it renders the connectors LIST
-    // (renderConnectorsTab → renderSourcesConnectors) + the "Add a Connector" entry —
-    // the connect FORM (renderConnectorsPanel) still lives only in the left-sliding
-    // dialog, never embedded in the drawer body.
+    // The tab dispatch renders the panel directly…
     expect(appJs).toContain("tab === 'connectors'");
     expect(appJs).toContain('renderConnectorsTab');
-    // The "Add a Connector" button opens that dialog.
-    expect(appJs).toContain('openConnectorsDialog()');
+    expect(appJs).toContain('mcp-connectors-panel');
+    // …and the old dialog plumbing no longer exists anywhere in the bundle.
+    expect(appJs).not.toContain('openConnectorsDialog');
+    expect(appJs).not.toContain('connectors-dialog-body');
   });
 
   it('the composed client script is syntactically valid (no broken template)', () => {
