@@ -66,15 +66,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
-- **The assistant no longer tries to reshape a connected external table.** Asking the assistant
-  to add a column to (or delete) a table synced from a connected data source — a live mirror whose
-  shape comes from the source — used to quietly ALTER the local copy, adding a column the next sync
-  drops; the nonsensical result then confused the assistant into claiming the table "isn't in the
-  workspace" (even though it could see it). Those schema-shape edits now refuse deterministically
-  and steer to the right move — add the field in the source, build a derived (computed) table from
-  it, or link a separate object — the same "steer, don't just block" behavior already used for
-  computed views and managed built-in tables. Reads, links, and computed tables built ON a
-  connected table are unaffected.
+- **Asking the assistant to add a column to a connected external table now builds a computed
+  table for you.** A table synced from a connected data source is a live, read-only mirror whose
+  shape comes from the source. The assistant used to quietly ALTER the local copy (adding a column
+  the next sync drops) and then confuse itself into claiming the table "isn't in the workspace."
+  Now an add-column request against such a table is redirected **deterministically**: the tool
+  creates — or reuses — a computed table derived from the mirror (carrying its columns over), and
+  the assistant then defines your new field on that derived table with the right formula (a lookup
+  from a linked table, a calc, or an AI field). It never alters the mirror and never asks you to
+  change the source system. Deleting a connected table still steers you to disconnect its connector
+  (which re-syncs back otherwise). Reads, links, and computed tables built ON a connected table are
+  unaffected.
 
 - **A table created after you opened the workspace shows up without a reload.** When a schema
   change lands while the GUI is open — most often the assistant creating a computed table — the

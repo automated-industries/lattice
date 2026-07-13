@@ -76,7 +76,7 @@ function connectedSourceSteer(
   if (!src) return null;
   const label = src.model || table;
   return action === 'add-column'
-    ? `"${label}" is a live view of a connected external data source, so its columns are synced from there — a column added in Lattice would be dropped on the next sync. To add a field: add it in the source system (it will sync in), build a derived (computed) table from "${label}" that adds it, or create a separate object in Lattice and link these records to it.`
+    ? `"${label}" is a live view of a connected external data source, so its columns come from that source and can't be added to here. To add a field, build a derived (computed) table from "${label}" that adds it, or create a separate object in Lattice and link these records to it.`
     : `"${label}" is a live view of a connected external data source. Remove it by disconnecting that connector (which removes all of its synced tables) — deleting just this table re-syncs it back on the next open.`;
 }
 
