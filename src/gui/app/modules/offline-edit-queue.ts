@@ -203,6 +203,11 @@ export const offlineEditQueueJs = `    // ────────────�
         // A schema change can alter any table's shape → full wipe (no table arg);
         // a row/link change scopes invalidation to its own table.
         if (data && (data.table || data.op === 'schema')) {
+          // A schema change (e.g. an assistant-created computed table adds a computes
+          // edge) can change the relationship graph too — drop the cached schema-graph
+          // edges so the Data Model explorer, brain graph, and table-view lineage refetch
+          // fresh instead of showing a stale model until the next reload.
+          if (data.op === 'schema') mtEdgesCache = null;
           scheduleRealtimeRefresh(data.op === 'schema' ? null : data.table);
         }
         // Dashboards live in the Analytics sidebar/home, which the generic

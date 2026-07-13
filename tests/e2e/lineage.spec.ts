@@ -55,10 +55,8 @@ test('a derived child table shows Files + its belongsTo parent upstream, with co
     const runner = document.querySelector('.sql-runner');
     const lineage = document.querySelector('#table-lineage');
     if (!runner || !lineage) return 'missing';
-    // eslint-disable-next-line no-bitwise
-    return runner.compareDocumentPosition(lineage) & Node.DOCUMENT_POSITION_FOLLOWING
-      ? 'below'
-      : 'above';
+    const rel = runner.compareDocumentPosition(lineage);
+    return (rel & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 ? 'below' : 'above';
   });
   expect(order).toBe('below');
 
