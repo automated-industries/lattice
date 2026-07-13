@@ -127,6 +127,19 @@ export async function handleWorkspacesRoutes(
       return true;
     }
     const paths = resolveWorkspacePaths(latticeRoot, ws);
+    // Check if an adopted-in-place workspace's config file is gone.
+    if (ws.configPath && !existsSync(ws.configPath)) {
+      sendJson(
+        res,
+        {
+          error:
+            `Workspace "${ws.displayName}" can't be opened — its config file no longer exists (${ws.configPath}). ` +
+            'Remove it from the workspace list or restore the file.',
+        },
+        410,
+      );
+      return true;
+    }
     let opened: { db: ActiveDb } | { timedOut: true };
     try {
       opened = await openWithinTimeout(() =>

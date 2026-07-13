@@ -107,6 +107,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   reply routes to the real work instead of being treated as a standalone message and answered
   with a fresh "how can I help?".
 
+- **Workspace registry no longer adopts temporary test/bootstrap workspaces.** On some platforms
+  (notably Windows) the OS temp directory sits under the user profile, so the upward root walk could
+  escape a tmpdir sandbox and adopt workspaces into the developer's real `~/.lattice`
+  registry, or load stale workspaces created in tmpdir during a prior test. The GUI now
+  prunes registry entries whose adopted config files lived in the OS temp directory and no
+  longer exist on disk, and bootstrap tests anchor themselves to an isolated temporary root
+  via `LATTICE_ROOT` to prevent upward walks entirely.
+
+- **Settings Workspaces panel now surfaces switch failures instead of reloading silently.**
+  Workspace switches that failed (e.g. database unreachable, config file gone) were being
+  swallowed by raw fetch without `r.ok` checks, causing a silent reload of the current
+  workspace that looked like a no-op. The panel now uses `fetchJson`, which throws on
+  non-OK responses, so failures show in a toast. Additionally, a 410 error is now returned
+  when a workspace's adopted config file is missing, with a clear message to remove it
+  from the workspace list or restore the file.
+
+- **File and folder ingest now report results (ingested/skipped counts).** After uploading
+  files or a folder, the user now sees feedback: the number of files ingested and (when
+  applicable) the number skipped (unsupported, too large, or unreadable). Special-cases
+  include "nothing ingested" for empty folders and "file was not ingested" for a single
+  file that couldn't be read. The button label changed from "＋ File(s)" to
+  "＋ Add files or folder" to make folder upload discoverable, and the empty-state message
+  now says "No files yet — add files or a whole folder below."
+
 ### Added
 
 - **Every derived table shows what it's built from — and the Data Model connects inputs to

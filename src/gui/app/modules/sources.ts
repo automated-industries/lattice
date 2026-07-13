@@ -119,7 +119,7 @@ export const sourcesJs = `
             if (ul0 && !ul0.hidden) openFolders[li.getAttribute('data-path')] = ul0.innerHTML;
           });
           if (!rootsHtml && !looseHtml) {
-            host.innerHTML = '<div class="src-empty">No files yet.</div>';
+            host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below.</div>';
             return;
           }
           host.innerHTML = rootsHtml + looseHtml;
@@ -295,7 +295,7 @@ export const sourcesJs = `
     function wireSourcesButtons() {
       wireSidebarGroupToggles();
       applySidebarGroupStates();
-      // One "＋ File(s)" button covers both: click opens a small menu to add
+      // One "＋ Add files or folder" button covers both: click opens a small menu to add
       // file(s) OR a folder (the OS picker for each differs, so they stay two
       // menu items behind one button rather than two sidebar buttons).
       var addFiles = document.getElementById('src-add-files');
@@ -351,6 +351,31 @@ export const sourcesJs = `
             .then(function (r) { return r.json(); })
             .then(function (res) {
               if (res.error) { showToast('Add failed: ' + res.error, {}); return; }
+              // Show result feedback: ingested/skipped counts.
+              var result = res.result;
+              var msg = '';
+              if (kind === 'folder' && result) {
+                var ingested = result.ingested || 0;
+                var skipped = result.skipped || 0;
+                if (ingested === 0 && skipped === 0) {
+                  msg = 'Folder added, but it contains no files — nothing ingested.';
+                } else if (ingested === 0 && skipped > 0) {
+                  msg = 'No files ingested — ' + skipped + ' skipped (unsupported, too large, or unreadable).';
+                } else {
+                  msg = 'Ingested ' + ingested + ' file' + (ingested === 1 ? '' : 's');
+                  if (skipped > 0) {
+                    msg += ', ' + skipped + ' skipped';
+                  }
+                  msg += '.';
+                }
+              } else if (kind === 'file') {
+                if (res.id) {
+                  msg = 'Ingested 1 file.';
+                } else {
+                  msg = 'File was not ingested (unsupported, too large, or unreadable).';
+                }
+              }
+              if (msg) showToast(msg, {});
               renderSources();
             });
         })

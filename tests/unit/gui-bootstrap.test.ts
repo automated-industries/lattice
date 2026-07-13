@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureLatticeRoot } from '../../src/framework/lattice-root.js';
 import {
+  addAdoptedWorkspace,
   listWorkspaces,
   getActiveWorkspace,
   findWorkspaceByConfigPath,
@@ -16,6 +17,7 @@ import {
   adoptConfigAsWorkspace,
   reconcileWorkspaceRegistry,
   ensureRootForGui,
+  pruneEphemeralWorkspaces,
 } from '../../src/framework/gui-bootstrap.js';
 
 const dirs: string[] = [];
@@ -160,9 +162,101 @@ describe('gui-bootstrap: registerOrUpdateCloudWorkspace + remove + rename', () =
   });
 });
 
-describe('gui-bootstrap: ensureRootForGui', () => {
-  it('creates a root and adopts the launch config as the active workspace', () => {
+describe('gui-bootstrap: pruneEphemeralWorkspaces', () => {
+  it('removes a registry entry with configPath under tmpDir when the file no longer exists', () => {
     const base = tmp();
+    const root = rootAt(base);
+    const staleDir = tmp();
+    const tmpPath = join(staleDir, 'config.yml');
+    writeFileSync(tmpPath, 'name: Temp\ndb: ./data/app.db\nentities: {}\n', 'utf8');
+    adoptConfigAsWorkspace(root, tmpPath);
+    expect(listWorkspaces(root)).toHaveLength(1);
+    // Delete the config file, then prune with its dir as tmpDir — an entry in an
+    // ephemeral location whose file is gone must be removed.
+    rmSync(tmpPath);
+    const pruned = pruneEphemeralWorkspaces(root, staleDir);
+    expect(pruned).toBe(1);
+    expect(listWorkspaces(root)).toHaveLength(0);
+  });
+
+  it('keeps a registry entry with configPath outside tmpDir even if the file is missing', () => {
+    const base = tmp();
+    const root = rootAt(base);
+    const cfg = writeConfig(base, 'outside.yml', './data/app.db');
+    adoptConfigAsWorkspace(root, cfg);
+    expect(listWorkspaces(root)).toHaveLength(1);
+    // Delete the config, then prune with a tmpDir that does NOT contain it — a
+    // missing config outside the ephemeral dir (e.g. an unmounted drive) must
+    // never be pruned.
+    rmSync(cfg);
+    const otherTmpDir = join(tmp(), 'elsewhere');
+    const pruned = pruneEphemeralWorkspaces(root, otherTmpDir);
+    expect(pruned).toBe(0);
+    expect(listWorkspaces(root)).toHaveLength(1);
+  });
+
+  it('keeps a registry entry under tmpDir whose config file still exists', () => {
+    const base = tmp();
+    const root = rootAt(base);
+    const cfg = writeConfig(base, 'config.yml', './data/app.db');
+    adoptConfigAsWorkspace(root, cfg);
+    expect(listWorkspaces(root)).toHaveLength(1);
+    // The config file exists, so even though it sits under tmpDir it is alive
+    // right now — it must NOT be removed.
+    const pruned = pruneEphemeralWorkspaces(root, base);
+    expect(pruned).toBe(0);
+    expect(listWorkspaces(root)).toHaveLength(1);
+  });
+
+  it('clears activeWorkspaceId when pruning removes the active workspace', () => {
+    const base = tmp();
+    const root = rootAt(base);
+    const staleDir = tmp();
+    const tmpPath = join(staleDir, 'active.yml');
+    writeFileSync(tmpPath, 'name: Active\ndb: ./data/app.db\nentities: {}\n', 'utf8');
+    adoptConfigAsWorkspace(root, tmpPath, { makeActive: true });
+    expect(getActiveWorkspace(root)).not.toBeNull();
+    rmSync(tmpPath);
+    const pruned = pruneEphemeralWorkspaces(root, staleDir);
+    expect(pruned).toBe(1);
+    // The only workspace was pruned — the registry must not keep pointing at it.
+    expect(getActiveWorkspace(root)).toBeNull();
+    expect(listWorkspaces(root)).toHaveLength(0);
+  });
+
+  it.runIf(process.platform === 'win32')('keeps a missing config on another drive (never prunes across drives)', () => {
+    const base = tmp();
+    const root = rootAt(base);
+    // On Windows, path.relative across drives returns an ABSOLUTE path (no '..'
+    // prefix) — without an isAbsolute guard a workspace on an unmounted drive
+    // would be misclassified as "under tmpDir" and wrongly pruned. Register the
+    // record directly (the config can't be read — the drive doesn't exist).
+    addAdoptedWorkspace(root, {
+      displayName: 'Unmounted',
+      db: './data/app.db',
+      configPath: 'Z:\\somewhere\\lattice.config.yml',
+      contextDir: 'Z:\\somewhere\\context',
+      makeActive: false,
+    });
+    expect(listWorkspaces(root)).toHaveLength(1);
+    const pruned = pruneEphemeralWorkspaces(root, base);
+    expect(pruned).toBe(0);
+    expect(listWorkspaces(root)).toHaveLength(1);
+  });
+});
+
+describe('gui-bootstrap: ensureRootForGui', () => {
+  // Sandbox each test to prevent the upward root walk from escaping the temp
+  // directory and adopting the developer's real ~/.lattice root (tmpdir sits
+  // under the user profile on Windows, so an unanchored search walks up into it).
+  const beforeEachInDescribe = () => {
+    const base = tmp();
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    return base;
+  };
+
+  it('creates a root and adopts the launch config as the active workspace', () => {
+    const base = beforeEachInDescribe();
     const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
     const boot = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: false });
     expect(existsSync(boot.root)).toBe(true);
@@ -172,7 +266,7 @@ describe('gui-bootstrap: ensureRootForGui', () => {
   });
 
   it('reuses the existing root + active workspace on a plain re-launch', () => {
-    const base = tmp();
+    const base = beforeEachInDescribe();
     const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
     const first = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: false });
     const second = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: false });
@@ -181,7 +275,7 @@ describe('gui-bootstrap: ensureRootForGui', () => {
   });
 
   it('reconciles a stray joined config into the registry on launch (joined-workspace bug fix)', () => {
-    const base = tmp();
+    const base = beforeEachInDescribe();
     const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
     const joined = writeConfig(base, 'demo-team.yml', '${LATTICE_DB:demo-team}', 'Demo Team');
     const boot = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: false });
@@ -194,7 +288,7 @@ describe('gui-bootstrap: ensureRootForGui', () => {
     // 3.3 Feature B: no more force-created "My Workspace". A first launch with
     // nothing to adopt yields a virgin bootstrap so the GUI shows its welcome
     // screen; the registry stays empty until the user creates or joins one.
-    const base = tmp();
+    const base = beforeEachInDescribe();
     const boot = ensureRootForGui({
       startDir: base,
       configPath: join(base, 'lattice.config.yml'),
@@ -212,7 +306,7 @@ describe('gui-bootstrap: ensureRootForGui', () => {
     // Desktop regression: the app boots with no launch config (it passes a path
     // that doesn't exist), so it must resolve the active workspace from the root
     // and open it — NOT fall through to the welcome screen when workspaces exist.
-    const base = tmp();
+    const base = beforeEachInDescribe();
     const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
     const first = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: false });
     expect(first.workspaceId).not.toBeNull();
@@ -228,7 +322,7 @@ describe('gui-bootstrap: ensureRootForGui', () => {
   });
 
   it('still adopts + activates an explicit config (no virgin state when a config exists)', () => {
-    const base = tmp();
+    const base = beforeEachInDescribe();
     const cfg = writeConfig(base, 'lattice.config.yml', './data/app.db', 'My App');
     const boot = ensureRootForGui({ startDir: base, configPath: cfg, explicitConfig: true });
     expect(boot.workspaceId).not.toBeNull();

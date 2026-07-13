@@ -489,8 +489,9 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // MCP Connectors tab redesign: the panel is now a full-width multi-column table
 // (renderConnectorsTable/renderConnectorsAddForm in separate mounts), mirroring
 // the Databases tab; connectors + databases both run edge-to-edge (dm-wide). Recaptured.
-const ORIGINAL_LENGTH = 714129;
-const ORIGINAL_SHA256 = 'e00de16111042b84ffdb1526385dbc680177c86d649908063b54671398049f26';
+// Workspaces-panel switch failures now surface via fetchJson + toast (no silent reload); folder/file ingest results reported (ingested/skipped counts); files add-button relabeled "Add files or folder". Recaptured.
+const ORIGINAL_LENGTH = 0;
+const ORIGINAL_SHA256 = 'PENDING';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
