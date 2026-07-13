@@ -13,14 +13,23 @@ function hostnameOf(u: string | null): string | null {
 }
 
 /**
- * A compact, MEMBER-SCOPED summary of the workspace's connected external sources
- * for the assistant's context, so it can answer "are you connected to X?" and
- * knows which table holds each source's data. Scoped by `connectedBy` — never
- * surface another member's connections on a cloud. Returns '' when nothing is
- * connected (the caller omits the section entirely).
+ * A compact summary of the workspace's connected external sources for the
+ * assistant's context, so it can answer "are you connected to X?" and knows
+ * which table holds each source's data. Returns '' when nothing is connected.
+ *
+ * On a CLOUD (Postgres) workspace this is scoped by `connectedBy` so a member
+ * never sees another member's connections. On a LOCAL (SQLite) single-user
+ * workspace the `connected_by` stamp is meaningless and can drift when the
+ * user's saved identity changes (a connector stamped with an old email would
+ * then be invisible), so every connection is listed — matching how the sidebar
+ * re-registers connector tables locally. This is the same trust boundary: a
+ * local workspace is one user's own machine.
  */
 export async function describeConnectedSources(db: Lattice, connectedBy: string): Promise<string> {
-  const rows = (await listConnectors(db, connectedBy)).filter((c) => c.status !== 'disconnected');
+  const scoped = db.getDialect() === 'postgres';
+  const rows = (await listConnectors(db, scoped ? connectedBy : undefined)).filter(
+    (c) => c.status !== 'disconnected',
+  );
   const mcp = rows.filter((c) => c.connector === 'mcp');
   const dbs = rows.filter((c) => c.connector === 'db_source');
   if (mcp.length === 0 && dbs.length === 0) return '';

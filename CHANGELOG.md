@@ -66,6 +66,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The assistant now knows about your connected sources on a local workspace.** The
+  "Connected data sources" it reads was filtered by the identity that stamped each connection;
+  on a single-user local workspace that stamp can drift (e.g. after you change your saved
+  email), so a genuinely-connected server went invisible and the assistant answered "not
+  connected" even though its data was synced and visible in the sidebar. Local workspaces now
+  list every connection (they are one user's own machine); cloud workspaces still scope
+  per-member.
+
 - **Asking the assistant to add a column to a connected external table now builds a computed
   table for you.** A table synced from a connected data source is a live, read-only mirror whose
   shape comes from the source. The assistant used to quietly ALTER the local copy (adding a column

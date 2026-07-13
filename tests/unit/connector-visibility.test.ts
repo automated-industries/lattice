@@ -83,7 +83,7 @@ describe('describeConnectedSources', () => {
     db = undefined;
   });
 
-  it('names each connected source + the table holding its data, scoped by member', async () => {
+  it('names each connected source + the table holding its data', async () => {
     db = new Lattice(':memory:');
     await db.init();
     await createConnector(db, {
@@ -91,7 +91,7 @@ describe('describeConnectedSources', () => {
       toolkit: 'mcp',
       displayName: 'partner-api-mcp',
       connectionRef: 'ref-a',
-      connectedBy: 'alice',
+      connectedBy: 'local',
     });
     setMcpServerUrl('ref-a', 'https://mcp.acme-payroll.example/');
     await createConnector(db, {
@@ -99,18 +99,10 @@ describe('describeConnectedSources', () => {
       toolkit: 'db_source:x',
       displayName: 'analytics-pg',
       connectionRef: 'ref-b',
-      connectedBy: 'alice',
-    });
-    // Another member's connector must NOT appear in alice's summary.
-    await createConnector(db, {
-      connector: 'mcp',
-      toolkit: 'mcp',
-      displayName: 'bob-secret-server',
-      connectionRef: 'ref-c',
-      connectedBy: 'bob',
+      connectedBy: 'local',
     });
 
-    const summary = await describeConnectedSources(db, 'alice');
+    const summary = await describeConnectedSources(db, 'local');
     expect(summary).toContain('# Connected data sources');
     expect(summary).toContain('partner-api-mcp');
     // The server hostname rides the summary so the assistant can match a
@@ -118,8 +110,26 @@ describe('describeConnectedSources', () => {
     expect(summary).toContain('mcp.acme-payroll.example');
     expect(summary).toContain('mcp_items');
     expect(summary).toContain('analytics-pg');
-    // Cloud scoping: never leak another member's connection.
-    expect(summary).not.toContain('bob-secret-server');
+  });
+
+  it('on a LOCAL workspace lists connections regardless of the stamped identity', async () => {
+    // The bug: a connector stamped with one identity (e.g. an email later changed
+    // in settings) went invisible to the assistant, which resolved a DIFFERENT
+    // identity and scoped it out — even though the sidebar (which never scopes
+    // locally) still showed the synced table. On SQLite (single-user) the
+    // connected_by stamp must NOT hide a connection.
+    db = new Lattice(':memory:');
+    await db.init();
+    await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: 'ref-a',
+      connectedBy: 'old-email@example.com',
+    });
+    // Called with a DIFFERENT identity than the row was stamped with.
+    const summary = await describeConnectedSources(db, 'new-email@example.com');
+    expect(summary).toContain('partner-api-mcp');
   });
 
   it('neutralizes an adversarial server name so it cannot inject into the prompt', async () => {
