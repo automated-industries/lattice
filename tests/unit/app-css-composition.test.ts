@@ -172,9 +172,11 @@ import { css } from '../../src/gui/app/css.js';
 // The connection-form fields (.conn-field, used by Connect-a-Database / Migrate-to-cloud) drop
 // their own box styling and inherit the global bubble base so they match every other form.
 // Recaptured.
-// Single-layout reframe re-verify fix: the Graph subtab shares the Data Model grid, so
-// .brain-graph gets a definite 64vh height there (.dm-tables-merge .brain-graph) — without
-// it the height:100% chain collapsed the graph canvas to 0. Recaptured.
+// Graph is its own full-width Configure tab (.graph-tab, a flex column with a definite
+// height) into which .brain-graph flex-grows, so the force-graph canvas is never 0px.
+// Data Model + Graph run edge-to-edge (.drawer-body.dm-wide lifts the 980px cap). Recaptured.
+// A data-lineage map (.lineage-grid: upstream · this · downstream) sits above a table's
+// rows, reusing the explorer chips. Recaptured.
 // Single-layout polish: .dash-page fills the pane (height:100%, not inert flex:1); sidebar
 // full-height + scroll (.dash-sidebar height:100%/overflow); nav heads styled like
 // DASHBOARDS (blue #2563eb, 11px/0.08em, sticky); drawer scroll-lock (body.drawer-open
@@ -220,8 +222,8 @@ import { css } from '../../src/gui/app/css.js';
 // global .muted rule is the sanctioned fix for ~43 bare class=muted usages). Dead CSS
 // deleted (.danger-btn, .wm-actions/.wm-btn, .modal-foot .btn overrides, .cd-btn dupes).
 // Recaptured.
-const ORIGINAL_LENGTH = 158688;
-const ORIGINAL_SHA256 = 'e04851cfac55d7b8d9cfdfa185941e1ebd0162886a9a700e4bfead424c537d82';
+const ORIGINAL_LENGTH = 161374;
+const ORIGINAL_SHA256 = '23be2030c2cf6c80baf9d9463720a2dff43bb7d1eae59aa4ba75ae4fdfa0d598';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

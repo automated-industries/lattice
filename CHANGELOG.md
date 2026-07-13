@@ -33,6 +33,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **See a table's data lineage above its rows.** Opening a table now shows a lineage map over
+  the rows: the table and its fields in the centre, the upstream sources / transformations /
+  links that feed it on the left, and the downstream tables that consume it on the right —
+  using the same chips as the Data Model explorer. Click any linked table to open it, selected,
+  in the Data Model tab.
+
 - **Share a dashboard and its data comes with it.** On a shared cloud workspace, sharing a
   dashboard — to everyone, or with specific people — now also shares the data that dashboard
   reads with the same audience, so recipients open a populated page instead of an empty one.

@@ -74,13 +74,16 @@ test('the Configure trigger opens the drawer and reaches the Tables data-model s
   await expect(page.locator('#settings-drawer')).toHaveClass(/open/);
   await expect(page.locator('.layout')).toBeVisible();
 
-  // Reach the Tables data-model surface via its hash → Data Model → Tables.
+  // Reach the Tables data-model surface via its hash → the Data Model tab (full-width
+  // tiered explorer; Graph is now its own peer Configure tab, no subtabs).
   await page.evaluate(() => {
     location.hash = '#/tables';
   });
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/tables');
   await expect(page.locator('.drawer-tab[data-tab="datamodel"]')).toHaveClass(/active/);
-  await expect(page.locator('.dm-subtabs .tab[data-dmsub="tables"]')).toHaveClass(/active/);
+  await expect(page.locator('.drawer-body.dm-wide #model-tables-host')).toBeVisible({
+    timeout: 5000,
+  });
 
   // Closing returns to the workspace home (the drawer hash resets to #/).
   await page.locator('#drawer-close').click();
@@ -112,11 +115,12 @@ test('app Back / Forward walk across the workspace ↔ Configure boundary', asyn
 
 test('a Configure deep link boots straight into the Configure drawer', async ({ page }) => {
   // A deep link to a Configure route opens the drawer on that surface at boot —
-  // no redirect away, and the single layout is mounted beneath it.
+  // no redirect away, and the single layout is mounted beneath it. #/graph opens the
+  // Graph tab (its own top-level Configure tab).
   await page.goto(gui.url + '#/graph');
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/graph');
   await expect(page.locator('.layout')).toBeVisible();
   await expect(page.locator('#settings-drawer')).toHaveClass(/open/);
-  await expect(page.locator('.drawer-tab[data-tab="datamodel"]')).toHaveClass(/active/);
-  await expect(page.locator('.dm-subtabs .tab[data-dmsub="graph"]')).toHaveClass(/active/);
+  await expect(page.locator('.drawer-tab[data-tab="graph"]')).toHaveClass(/active/);
+  await expect(page.locator('.graph-tab .brain-graph #graph-mount')).toBeVisible({ timeout: 5000 });
 });
