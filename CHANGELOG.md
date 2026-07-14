@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Connector tables refresh when you actually read them.** On top of the existing on-load
+  refresh, running a table-view query or loading a dashboard that reads a connector-backed table
+  (MCP-synced, external-DB) now kicks a **throttled background refresh** of that connection, so the
+  data you're looking at is recent without you asking. Bounded so it never hammers the source (at
+  most one sync per connection per minute, and only when the copy is older than a few minutes) and
+  fire-and-forget so it never blocks or fails the read. Local workspaces (cloud keeps its
+  member-scoped on-load refresh).
+
 - **MCP connectors model each server into typed, per-server tables.** A connected MCP server used
   to dump everything into one flat `mcp_items` JSON-blob table under a generic "Connectors" group.
   Now each server is introspected at connect and its data is modeled into **one typed table per

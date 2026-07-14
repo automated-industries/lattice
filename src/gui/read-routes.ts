@@ -17,6 +17,8 @@ import { classifySchema } from './schema-classify.js';
 import { listConnectors } from '../connectors/registry.js';
 import { getMcpServerUrl } from '../connectors/mcp/oauth.js';
 import { brandFromHost } from '../connectors/describe-connected.js';
+import { touchConnectorTable } from '../connectors/freshness.js';
+import type { Connector } from '../connectors/types.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 import type { GuiRequestContext } from './request-context.js';
 import {
@@ -73,6 +75,9 @@ export interface ReadRoutesDeps {
    * is absent), the route 404s and the GUI degrades — voice falls back or hides.
    */
   guiAssetsDir: string;
+  /** The connector implementations, for on-access freshness: a query or dashboard that reads a
+   *  connector table kicks a throttled background refresh of that connection (local workspaces). */
+  connectors: Connector[];
 }
 
 /** Static MIME types for the vendored GUI assets. Defaults to octet-stream. */
@@ -642,6 +647,13 @@ export async function handleReadRoutes(
       sendJson(res, { error: result.error }, 400);
     } else {
       sendJson(res, result);
+    }
+    // On-access freshness: a table-view query or a dashboard render that reads a connector table
+    // kicks a throttled background refresh of that connection. Fire-and-forget AFTER the response
+    // (never blocks the read); the throttle bounds it. Which connector tables the SQL references is
+    // matched by name against the workspace's connector tables (a small, bounded set).
+    for (const t of active.validTables) {
+      if (raw.includes(t)) void touchConnectorTable(active.db, deps.connectors, t);
     }
     return true;
   }
