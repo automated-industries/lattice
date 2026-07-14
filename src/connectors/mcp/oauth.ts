@@ -29,6 +29,7 @@ import {
   setAssistantCredential,
   deleteAssistantCredential,
 } from '../../framework/user-config.js';
+import { clearMcpSchemaDescriptor } from './schema-cache.js';
 
 /** OAuth token set persisted per connection (the shape the SDK reads/writes). */
 export interface McpOAuthTokens {
@@ -146,6 +147,9 @@ export function revokeMcpSecrets(connectionId: string): void {
 export function clearMcpConnection(connectionId: string): void {
   revokeMcpSecrets(connectionId);
   deleteAssistantCredential(srvKey(connectionId));
+  // Drop the introspected typed-schema descriptor too — otherwise a purge/reconnect/hard-teardown
+  // leaves an orphaned `mcp_schema:<id>` in the encrypted store with nothing referencing it.
+  clearMcpSchemaDescriptor(connectionId);
 }
 
 /** Record a pending OAuth connect (begin), keyed by the CSRF state token. */

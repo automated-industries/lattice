@@ -1,8 +1,11 @@
 /**
  * On-ACCESS connector freshness. A connector table (MCP-synced, external-DB, …) is a local
- * mirror; reading it — a table-view query, a dashboard render — should pull a recent-enough copy
- * without blocking the read. {@link touchConnectorTable} fires a THROTTLED, stale-gated background
- * refresh when such a table is accessed.
+ * mirror; reading it should pull a recent-enough copy without blocking the read.
+ * {@link touchConnectorTable} fires a THROTTLED, stale-gated background refresh when such a table
+ * is accessed. It is wired on the dashboard SQL-read path (`POST /api/analytics/sql`) — i.e. a
+ * dashboard tile render or an ad-hoc SQL-runner query that references the table — which, with the
+ * on-LOAD `sync-if-stale` pass, is the intended coverage; plain table-grid browsing is not a
+ * trigger.
  *
  * Bounded by design (external sources share one egress budget): at most one sync per connection
  * per throttle window, and only when the connection is older than the on-access staleness window. This is
@@ -62,12 +65,22 @@ async function refreshIfDue(
     (c) => c.toolkit === toolkit && c.status !== 'disconnected',
   );
   for (const rec of rows) {
+    const connector = connectors.find((c) => c.connector === rec.connector);
+    if (!connector) {
+      // A connected row whose connector implementation isn't in the set we were handed. Do NOT
+      // silently skip: that hides a wiring gap (an on-access refresh that never fires because the
+      // caller passed the wrong connector set). Surface it, and do NOT stamp the throttle — so
+      // once the wiring is corrected, the very next touch refreshes rather than being rate-limited.
+      console.warn(
+        `[connectors] on-access refresh has no connector implementation for kind '${rec.connector}' (connection ${rec.id}); its table was left un-refreshed`,
+      );
+      continue;
+    }
     const key = rec.connectionRef ?? rec.id;
     const prev = lastTrigger.get(key);
     if (prev !== undefined && now - prev < TRIGGER_THROTTLE_MS) continue; // recently triggered
     lastTrigger.set(key, now);
-    const connector = connectors.find((c) => c.connector === rec.connector);
-    if (connector) await syncIfStale(db, connector, rec.id, ACCESS_STALE_MS);
+    await syncIfStale(db, connector, rec.id, ACCESS_STALE_MS);
   }
 }
 

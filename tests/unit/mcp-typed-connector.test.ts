@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { genericConnector } from '../../src/connectors/generic/connector.js';
 import { setMcpServerUrl, clearMcpConnection } from '../../src/connectors/mcp/oauth.js';
-import { clearMcpSchemaDescriptor } from '../../src/connectors/mcp/schema-cache.js';
+import {
+  clearMcpSchemaDescriptor,
+  setMcpSchemaDescriptor,
+  mcpToolkitFor,
+} from '../../src/connectors/mcp/schema-cache.js';
 import type {
   McpTransport,
   McpToolCall,
@@ -132,5 +136,81 @@ describe('#5 typed MCP connector', () => {
     const models = conn.models('mcp');
     expect(models).toHaveLength(1);
     expect(models[0]!.table).toBe('mcp_items');
+  });
+});
+
+describe('#5 typed MCP connector — split-model edge cases (regressions)', () => {
+  it('does not invent a phantom kind for an EMPTY wrapped result ({items: []})', async () => {
+    // An empty account's read tool returns `{ items: [] }`. That must yield NO kind — it was
+    // previously misread as a single envelope item, inventing a table + one garbage row per sync.
+    const CONN = 'c-empty';
+    setMcpServerUrl(CONN, 'https://mcp.example.com/');
+    const t = new FakeTransport([{ name: 'list_things' }, { name: 'list_empties' }], {
+      list_things: { items: [{ id: 'a', name: 'A' }] },
+      list_empties: { items: [] },
+    });
+    const conn = genericConnector({ transportFactory: () => Promise.resolve(t) });
+    const desc = await conn.introspect(CONN, mcpToolkitFor(CONN), 'example');
+    expect(desc).not.toBeNull();
+    expect(desc!.kinds.map((k) => k.kind)).toEqual(['things']); // NOT 'empties'
+    clearMcpSchemaDescriptor(CONN);
+    clearMcpConnection(CONN);
+  });
+
+  it('drops an out-of-spec value into the JSON overflow (INTEGER column, later float) so SQLite and Postgres agree, and reads case-folded keys', async () => {
+    const CONN = 'c-spec';
+    setMcpServerUrl(CONN, 'https://mcp.example.com/');
+    const TK = mcpToolkitFor(CONN);
+    // Descriptor declares `employees` INTEGER (inferred from an integer sample earlier).
+    setMcpSchemaDescriptor(CONN, {
+      prefix: 'ex',
+      kinds: [
+        {
+          kind: 'company',
+          tool: 'get_company',
+          naturalKey: 'id',
+          columns: [
+            { name: 'employees', sqlSpec: 'INTEGER' },
+            { name: 'name', sqlSpec: 'TEXT' },
+          ],
+        },
+      ],
+    });
+    // At sync time the tool returns a NON-integer for the INTEGER column, and capitalized keys.
+    const t = new FakeTransport([{ name: 'get_company' }], {
+      get_company: { id: 'co_9', Name: 'Acme', Employees: 3.14 },
+    });
+    const conn = genericConnector({ transportFactory: () => Promise.resolve(t) });
+    const rows = await collect(
+      conn.listChanges(TK, 'company', { connectionId: CONN, userId: 'u1' }),
+    );
+    expect(rows).toHaveLength(1);
+    // Case-folded read: `Name` → the `name` column.
+    expect(rows[0]!.row.name).toBe('Acme');
+    // The INTEGER cell is NOT written the float (would round on PG / diverge on SQLite affinity)…
+    expect(rows[0]!.row.employees).toBeUndefined();
+    // …but the raw value is preserved in the `data` JSON overflow.
+    expect(JSON.parse(rows[0]!.row.data as string).Employees).toBe(3.14);
+    clearMcpSchemaDescriptor(CONN);
+    clearMcpConnection(CONN);
+  });
+
+  it('de-collides two long distinct kinds that slugify+truncate to the same table name', async () => {
+    const CONN = 'c-coll';
+    setMcpServerUrl(CONN, 'https://mcp.example.com/');
+    const TK = mcpToolkitFor(CONN);
+    const a = 'x'.repeat(50); // slugify+truncate(40) → 40 x's
+    const b = 'x'.repeat(40) + 'y'.repeat(10); // also truncates to 40 x's → would collide
+    const t = new FakeTransport([{ name: 'list_' + a }, { name: 'list_' + b }], {
+      ['list_' + a]: { items: [{ id: '1' }] },
+      ['list_' + b]: { items: [{ id: '2' }] },
+    });
+    const conn = genericConnector({ transportFactory: () => Promise.resolve(t) });
+    await conn.introspect(CONN, TK, 'ex');
+    const tables = conn.models(TK).map((m) => m.table);
+    expect(tables).toHaveLength(2);
+    expect(new Set(tables).size).toBe(2); // two DISTINCT tables — neither schema silently dropped
+    clearMcpSchemaDescriptor(CONN);
+    clearMcpConnection(CONN);
   });
 });

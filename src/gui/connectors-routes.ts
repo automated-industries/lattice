@@ -12,7 +12,7 @@ import {
   getConnectorByToolkit,
   updateConnectorConnection,
 } from '../connectors/registry.js';
-import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
+import { syncConnector, syncStaleConnectors, collectConnectorKeys } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
 import { ConnectorUnavailableError } from '../connectors/errors.js';
@@ -273,6 +273,17 @@ async function migrateLegacyMcpConnection(
   for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
   await enableConnectorRls(db, connector, toolkit);
   await syncConnector(db, connector, row.id); // force-populate the typed tables now
+  // Retire the pre-migration flat `mcp_items` rows for this connection: their data now lives in
+  // the typed tables, so leaving them would double the data live, inflate the item count, and
+  // survive a later disconnect (which tears down only the current toolkit's typed tables).
+  // Soft-delete (never hard) so they stay recoverable and drop out of context/search/counts now.
+  try {
+    const now = new Date().toISOString();
+    const staleKeys = await collectConnectorKeys(db, 'mcp_items', 'item_id', row.id);
+    for (const key of staleKeys) await db.update('mcp_items', key, { deleted_at: now });
+  } catch {
+    /* mcp_items absent or already clean — nothing to retire */
+  }
   return true;
 }
 
@@ -301,20 +312,32 @@ export async function dispatchConnectorsRoute(
       const connected = (await listConnectors(db, connectedBy)).filter(
         (c) => connectorForRowToolkit(byToolkit, c.toolkit) !== undefined,
       );
-      // Per-connection synced-item counts for the table view — ONE aggregate
-      // over mcp_items (never a row load). The table may not exist before the
-      // first connect; that simply means zero counts.
+      // Per-connection synced-item counts for the table view. A typed connection writes to its
+      // own `mcp_<prefix>_<kind>` tables (NOT `mcp_items`), so aggregating only `mcp_items` would
+      // report 0 for every typed connection. Resolve each connection's real tables via its
+      // connector impl and sum a bounded COUNT(*) per table (never a row load), de-duped so a
+      // table is scanned once. A legacy flat connection resolves to `mcp_items` as before.
       const itemCounts = new Map<string, number>();
-      try {
-        const rows = (await allAsyncOrSync(
-          db.adapter,
-          `SELECT "_source_connector_id" AS cid, COUNT(*) AS n FROM "mcp_items" WHERE "deleted_at" IS NULL GROUP BY "_source_connector_id"`,
-          [],
-          // Postgres returns COUNT(*) as a string, SQLite as a number — coerce.
-        )) as { cid: string; n: number | string }[];
-        for (const r of rows) if (r.cid) itemCounts.set(r.cid, Number(r.n));
-      } catch {
-        // mcp_items not created yet — no connections have synced anything.
+      const countedTables = new Set<string>();
+      for (const c of connected) {
+        const impl = connectorForRowToolkit(byToolkit, c.toolkit);
+        if (!impl) continue;
+        for (const m of impl.models(c.toolkit)) {
+          if (countedTables.has(m.table)) continue;
+          countedTables.add(m.table);
+          try {
+            const rows = (await allAsyncOrSync(
+              db.adapter,
+              `SELECT "_source_connector_id" AS cid, COUNT(*) AS n FROM "${m.table}" WHERE "deleted_at" IS NULL GROUP BY "_source_connector_id"`,
+              [],
+              // Postgres returns COUNT(*) as a string, SQLite as a number — coerce.
+            )) as { cid: string; n: number | string }[];
+            for (const r of rows)
+              if (r.cid) itemCounts.set(r.cid, (itemCounts.get(r.cid) ?? 0) + Number(r.n));
+          } catch {
+            // Table not created yet (no sync) — contributes zero.
+          }
+        }
       }
       const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
       for (const c of connectors) {

@@ -60,6 +60,8 @@ import {
   resolveConnectorIdentity,
   describeConnectedSources,
 } from '../connectors/index.js';
+// Internal helper (not part of the public API surface) — the on-access-refresh connector set.
+import { freshnessConnectors } from '../connectors/catalog.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
@@ -634,7 +636,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     guiAppHtml,
     sendText,
     guiAssetsDir,
-    connectors: builtinConnectors(),
+    // Freshness set (includes db_source), not just builtinConnectors — the on-access refresh in
+    // read-routes must resolve an impl for external-DB tables too, or it silently never fires.
+    connectors: freshnessConnectors(),
   };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
@@ -987,14 +991,26 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 active.db,
                 chatIdent.email || chatIdent.display_name || 'local',
               );
-              const connectedSources = await describeConnectedSources(
-                active.db,
-                chatConnectedBy,
-              ).catch(() => '');
+              let connectedSources = '';
+              let connectionsUnknown = false;
+              try {
+                connectedSources = await describeConnectedSources(active.db, chatConnectedBy);
+              } catch (e) {
+                // Surface, never swallow to '' (no silent failure). Critically, a FAILED
+                // enumeration must not read as "nothing connected" — that would answer "are you
+                // connected to X?" with a confident false "no". Flag it so the intent pass defers
+                // the question to the tool loop instead of asserting a negative from missing data.
+                console.error(
+                  '[chat] could not enumerate connected data sources; connection questions will defer to the tool loop:',
+                  e,
+                );
+                connectionsUnknown = true;
+              }
               return await dispatchChatRoute(req, res, {
                 db: active.db,
                 feed: active.feed,
                 ...(connectedSources ? { connectedSources } : {}),
+                ...(connectionsUnknown ? { connectionsUnknown: true } : {}),
                 // Async transport: the route acks 202 and runs the turn as a background
                 // job, streaming each event to this per-workspace bus (the /api/stream
                 // forwarder gates delivery per user). The FIFO serializes turns so a

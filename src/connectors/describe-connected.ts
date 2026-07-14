@@ -1,6 +1,11 @@
 import type { Lattice } from '../lattice.js';
 import { listConnectors } from './registry.js';
 import { getMcpServerUrl } from './mcp/oauth.js';
+import {
+  connectionIdFromToolkit,
+  getMcpSchemaDescriptor,
+  mcpTableName,
+} from './mcp/schema-cache.js';
 import { sanitizeConnectorLabel } from './sanitize-label.js';
 
 function hostnameOf(u: string | null): string | null {
@@ -21,7 +26,11 @@ function hostnameOf(u: string | null): string | null {
  */
 export function brandFromHost(host: string | null): string | null {
   if (!host) return null;
-  const labels = host.toLowerCase().split('.').filter(Boolean);
+  const h = host.toLowerCase();
+  // An IPv4 literal (e.g. 203.0.113.5) has no brand — its labels are numeric. Return null so
+  // the caller falls back to the server's self-advertised name rather than leading with "113".
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return null;
+  const labels = h.split('.').filter(Boolean);
   if (labels.length < 2) return null;
   // The registrable name is the label before the TLD; for a common two-part public suffix
   // (co.uk / com.au) step back one more so we don't return "Co"/"Com".
@@ -29,7 +38,10 @@ export function brandFromHost(host: string | null): string | null {
   let idx = labels.length - 2;
   if (idx > 0 && TWO_PART.has(labels[idx] ?? '')) idx -= 1;
   const name = labels[idx];
-  if (!name || name.length < 2 || name === 'www') return null;
+  // Reject www, too-short, all-numeric (a stray IP label), and punycode/IDN (`xn--…`) labels —
+  // none of them read as a human brand; better to fall back to the server's self-advertised name.
+  if (!name || name.length < 2 || name === 'www' || /^\d+$/.test(name) || name.startsWith('xn--'))
+    return null;
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
@@ -69,9 +81,23 @@ export async function describeConnectedSources(db: Lattice, connectedBy: string)
     const showAlias =
       name !== '' && name !== 'MCP server' && name.toLowerCase() !== brand?.toLowerCase();
     const alias = showAlias ? ` (server name "${name}")` : '';
-    lines.push(
-      `- ${primary}${alias} — an MCP server${where}, connected. Its synced items are in the \`mcp_items\` table.`,
-    );
+    // Point the assistant at the table(s) where THIS connection's data actually lives. A typed
+    // connection (per-connection toolkit `mcp:<id>` with an introspected descriptor) writes to
+    // one `mcp_<prefix>_<kind>` table per record kind; only a legacy/unmodeled connection uses
+    // the flat `mcp_items`. Naming `mcp_items` for a typed connection sends it to an empty table.
+    const connId = connectionIdFromToolkit(c.toolkit);
+    const descriptor = connId ? getMcpSchemaDescriptor(connId) : null;
+    let dataPhrase = 'Its synced items are in the `mcp_items` table.';
+    if (descriptor && descriptor.kinds.length > 0) {
+      const list = descriptor.kinds
+        .map((k) => `\`${mcpTableName(descriptor.prefix, k.kind)}\``)
+        .join(', ');
+      dataPhrase =
+        descriptor.kinds.length === 1
+          ? `Its synced data is in the ${list} table.`
+          : `Its synced data is in these tables: ${list}.`;
+    }
+    lines.push(`- ${primary}${alias} — an MCP server${where}, connected. ${dataPhrase}`);
   }
   for (const c of dbs) {
     const name = sanitizeConnectorLabel(c.displayName ?? 'database');

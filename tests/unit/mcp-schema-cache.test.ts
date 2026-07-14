@@ -59,6 +59,28 @@ describe('inferKind', () => {
     expect(k.columns.find((c) => c.name === 'id')).toBeUndefined(); // the key isn't a data column
     expect(k.columns.find((c) => c.name === 'employees')?.sqlSpec).toBe('INTEGER');
   });
+
+  it('case-folds column names so Name/name and id/ID collapse to one column (SQLite identifiers are case-insensitive)', () => {
+    // Declaring both `Name` and `name` (or `id` and `ID`) fails CREATE TABLE — SQLite folds case.
+    const k = inferKind('user', 'list_users', [
+      { ID: 'u1', Name: 'Ada', name: 'ada-lower', Active: true },
+      { id: 'u2', name: 'Bob' },
+    ]);
+    // The natural key resolves case-insensitively — ID/id → the `id` PK.
+    expect(k.naturalKey).toBe('id');
+    const names = k.columns.map((c) => c.name);
+    expect(new Set(names).size).toBe(names.length); // no duplicate identifiers
+    expect(names).toEqual(names.map((n) => n.toLowerCase())); // all lowercase
+    expect(names).toContain('name');
+    expect(names).not.toContain('Name');
+    expect(names).not.toContain('id'); // the (case-folded) natural key is never a data column
+  });
+
+  it('never models a field literally named `data` — it is the reserved JSON overflow column', () => {
+    const k = inferKind('thing', 'list_things', [{ id: 't1', data: 42, label: 'x' }]);
+    expect(k.columns.find((c) => c.name === 'data')).toBeUndefined();
+    expect(k.columns.find((c) => c.name === 'label')?.sqlSpec).toBe('TEXT');
+  });
 });
 
 describe('buildMcpModelDefs', () => {
