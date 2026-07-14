@@ -167,9 +167,12 @@ describe('enrich extraction clarify gate', () => {
     ]);
     // v1: the answer records intent (action none); a free-form answer enriches
     // the (existing) target entity's definition. Nothing re-runs automatically.
+    // The subject names the file the question is about, so the card can show
+    // and open it — during a batch ingest "this file" is otherwise ambiguous.
     expect(parseQuestionContext(pending[0]?.context_json ?? null)).toEqual({
       action: { kind: 'none' },
       enrich: [{ target: 'table_definition', table: 'suppliers' }],
+      subject: { table: 'files', rowId: fileId, label: 'orders.txt' },
     });
     // Open GUIs learned live.
     expect(feedEvents.some((e) => e.op === 'question' && e.source === 'ingest')).toBe(true);
