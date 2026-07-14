@@ -384,6 +384,9 @@ export async function enrichWithLlm(
                   enrich: existing.has(obj.entity)
                     ? [{ target: 'table_definition', table: obj.entity }]
                     : [],
+                  // Name the file this question is about so the card displays
+                  // "Re: <filename>" and can navigate to the source file.
+                  subject: { table: 'files', rowId: fileId, label: name },
                 },
                 feedSource: mctx.source,
               });

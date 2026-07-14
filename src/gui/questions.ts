@@ -84,10 +84,23 @@ export interface EnrichTarget {
   rowId?: string;
 }
 
+/**
+ * What the question is about — a record reference for display + navigation.
+ * Used to label clarification-question cards (e.g., "Re: <label>") and link
+ * the card to that record when clicked.
+ */
+export interface QuestionSubject {
+  table: string;
+  rowId: string;
+  label: string;
+}
+
 /** The `context_json` payload: what answering this question should do. */
 export interface QuestionContext {
   action?: DeferredAction;
   enrich?: EnrichTarget[];
+  /** The record this question is about (optional, for display + navigation). */
+  subject?: QuestionSubject;
 }
 
 /** A stored question row, options/context still JSON-encoded. */

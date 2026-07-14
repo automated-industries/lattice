@@ -69,8 +69,10 @@ export const questionsJs = `
     // Build one interactive question card: the question text, one button per
     // option, a free-form "Other" input, and (for store-backed cards) a subtle
     // dismiss. spec: { question, options, allowOther, onAnswer(text, card),
-    // onDismiss(card) | null }. Shared by the pending-store cards (POST
-    // answer/dismiss) and the in-turn chat card (answer = next chat message).
+    // onDismiss(card) | null, subject?: { table, rowId, label } }. Shared by
+    // the pending-store cards (POST answer/dismiss) and the in-turn chat card
+    // (answer = next chat message). The subject (if present) displays as a
+    // secondary line under the question text, clickable to navigate to that record.
     function buildQuestionCard(spec) {
       var card = document.createElement('div');
       card.className = 'q-card';
@@ -78,6 +80,15 @@ export const questionsJs = `
       var text = document.createElement('div'); text.className = 'q-text';
       text.textContent = spec.question;
       head.appendChild(text);
+      // Display the subject (the record this question is about) as a secondary line.
+      if (spec.subject) {
+        var subhead = document.createElement('div'); subhead.className = 'q-subject';
+        var sublink = document.createElement('a');
+        sublink.href = '#/fs/' + encodeURIComponent(spec.subject.table) + '/' + encodeURIComponent(spec.subject.rowId);
+        sublink.textContent = 'Re: ' + escapeHtml(spec.subject.label);
+        subhead.appendChild(sublink);
+        head.appendChild(subhead);
+      }
       if (spec.onDismiss) {
         var dis = document.createElement('button');
         dis.className = 'q-dismiss'; dis.type = 'button';
@@ -150,10 +161,22 @@ export const questionsJs = `
     function renderPendingQuestion(q) {
       var host = qContainer();
       if (!host || qCards[q.id]) return;
+      // Parse the context_json to extract the subject (what the question is about).
+      var context = null;
+      var subject = null;
+      if (q.context_json) {
+        try {
+          context = JSON.parse(q.context_json);
+          if (context && context.subject) subject = context.subject;
+        } catch (e) {
+          // malformed context_json — just proceed without subject
+        }
+      }
       var card = buildQuestionCard({
         question: q.question,
         options: q.options || [],
         allowOther: q.allowOther !== false,
+        subject: subject,
         onAnswer: function (text, card) {
           qCardBusy(card, true);
           postQuestionAction(q.id, 'answer', { answer: text }).then(function () {
@@ -311,10 +334,22 @@ export const questionsJs = `
         }
         list.innerHTML = '';
         qs.forEach(function (q) {
+          // Parse the context_json to extract the subject (what the question is about).
+          var context = null;
+          var subject = null;
+          if (q.context_json) {
+            try {
+              context = JSON.parse(q.context_json);
+              if (context && context.subject) subject = context.subject;
+            } catch (e) {
+              // malformed context_json — just proceed without subject
+            }
+          }
           var card = buildQuestionCard({
             question: q.question,
             options: q.options || [],
             allowOther: q.allowOther !== false,
+            subject: subject,
             onAnswer: function (text, c) {
               qCardBusy(c, true);
               postQuestionAction(q.id, 'answer', { answer: text }).then(function () {

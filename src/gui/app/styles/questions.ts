@@ -18,6 +18,9 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     }
     .q-head { display: flex; align-items: flex-start; gap: 8px; }
     .q-text { flex: 1; font-weight: 600; line-height: 1.4; }
+    .q-subject { flex: 1; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .q-subject a { color: var(--text-muted); text-decoration: none; }
+    .q-subject a:hover { color: var(--accent-deep); text-decoration: underline; }
     .q-dismiss {
       flex: none; background: none; border: none; cursor: pointer;
       color: var(--text-muted); font-size: 12px; padding: 0 2px; line-height: 1.4;
