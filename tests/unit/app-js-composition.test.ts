@@ -492,8 +492,9 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Workspaces-panel switch failures now surface via fetchJson + toast (no silent reload); folder/file ingest results reported (ingested/skipped counts); files add-button relabeled "Add files or folder". Recaptured.
 // Data Model detail: "Open object" link + "Edit columns & relationships" button removed
 // (select-to-detail). Recaptured.
-const ORIGINAL_LENGTH = 714649;
-const ORIGINAL_SHA256 = 'acb26da113d12fa54725dc5b204d0668fe8deb130e1e716f52213e766a6d1b0e';
+// Recaptured (includes question-subject + cap-copy + live ingest progress state modules).
+const ORIGINAL_LENGTH = 720652;
+const ORIGINAL_SHA256 = '641447e573b1a71b4a4107cdd745c0e2a54790b1e409024d3415bcc19de5795c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

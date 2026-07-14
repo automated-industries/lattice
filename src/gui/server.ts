@@ -1159,6 +1159,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 configPath: active.configPath,
                 pathname,
                 method,
+                feed: active.feed,
               });
             },
           },
