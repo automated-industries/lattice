@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
 import { createConnector } from '../../src/connectors/registry.js';
 import { touchConnectorTable, _resetConnectorFreshness } from '../../src/connectors/freshness.js';
+import { builtinConnectors, freshnessConnectors } from '../../src/connectors/catalog.js';
 import type {
   Connector,
   ConnectedModelDef,
@@ -103,5 +104,75 @@ describe('touchConnectorTable', () => {
     const { db } = await setup();
     // No fake in the list → nothing to sync, but the connector table exists → must not throw.
     await expect(touchConnectorTable(db, [], TABLE, 1_000)).resolves.toBeUndefined();
+  });
+});
+
+// An external-DB (db_source) connector, minimal — mirrors FakeConnector but for the db_source
+// kind, so on-access freshness can be exercised for imported `db_…` tables too.
+const DB_TABLE = 'db_x_books';
+function dbDef(): ConnectedModelDef['definition'] {
+  return {
+    columns: { bid: 'TEXT PRIMARY KEY', deleted_at: 'TEXT', title: 'TEXT' },
+    primaryKey: 'bid',
+    source: { connector: 'db_source', toolkit: 'db_source:x', model: 'book', naturalKey: 'bid' },
+    render: () => '',
+    outputFile: 'b.md',
+  };
+}
+class FakeDbSourceConnector implements Connector {
+  readonly connector = 'db_source';
+  syncCalls = 0;
+  toolkits(): string[] {
+    return ['db_source:x'];
+  }
+  models(): ConnectedModelDef[] {
+    return [{ model: 'book', table: DB_TABLE, naturalKey: 'bid', definition: dbDef() }];
+  }
+  async authorize(): Promise<{ redirectUrl: string }> {
+    return { redirectUrl: '' };
+  }
+  async completeAuth(): Promise<{ connectionId: string }> {
+    return { connectionId: '' };
+  }
+  async disconnect(): Promise<void> {}
+  async *listChanges(
+    _t: string,
+    _m: string,
+    _c: ListChangesContext,
+  ): AsyncIterable<ExternalRecord> {
+    this.syncCalls++;
+    yield* [];
+  }
+}
+
+describe('on-access freshness connector set', () => {
+  afterEach(() => {
+    _resetConnectorFreshness();
+  });
+
+  it('freshnessConnectors includes db_source, builtinConnectors does not (regression: db_source refresh was a silent no-op)', () => {
+    // The bug: read-routes passed builtinConnectors() (MCP only), so touching an imported
+    // external-DB table resolved no connector impl and never refreshed. The freshness set is a
+    // superset that includes db_source.
+    expect(builtinConnectors().some((c) => c.connector === 'db_source')).toBe(false);
+    expect(freshnessConnectors().some((c) => c.connector === 'db_source')).toBe(true);
+    expect(freshnessConnectors().some((c) => c.connector === 'mcp')).toBe(true);
+  });
+
+  it('refreshes an external-DB (db_source) table when the db_source connector is in the set', async () => {
+    _resetConnectorFreshness();
+    const db = new Lattice(':memory:');
+    db.define(DB_TABLE, dbDef());
+    await db.init();
+    await createConnector(db, {
+      connector: 'db_source',
+      toolkit: 'db_source:x',
+      connectionRef: 'c',
+      connectedBy: 'u1',
+    });
+    const fakeDb = new FakeDbSourceConnector();
+    await touchConnectorTable(db, [fakeDb], DB_TABLE, 1_000);
+    expect(fakeDb.syncCalls).toBe(1); // never synced → stale → refreshed (not silently skipped)
+    db.close();
   });
 });

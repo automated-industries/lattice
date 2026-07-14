@@ -86,6 +86,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Typed MCP connections: coherence fixes across the flat→typed split.** The new per-server
+  typed-table modeling left several places still assuming the old flat `mcp_items` table:
+  - The assistant's "Connected data sources" context now names each typed connection's **real**
+    tables (`mcp_<server>_<kind>`) instead of always pointing at `mcp_items` — so it no longer
+    reads an empty table and wrongly reports a modeled server as unusable.
+  - The connectors panel's per-connection **item count** is summed across a connection's actual
+    typed tables (it previously counted only `mcp_items`, so every typed connection showed 0).
+  - Migrating a legacy flat connection to typed tables now **soft-deletes the old `mcp_items`
+    rows** for that connection, so its data is no longer duplicated live (and a later disconnect
+    hides it).
+  - A connection's introspected schema descriptor is now removed on purge / reconnect / hard
+    teardown (it was left orphaned in the local store).
+- **Typed modeling: robustness against real-world server payloads.**
+  - Column names are **case-folded**, so items whose keys differ only in case (`Name`/`name`,
+    `id`/`ID`) no longer produce duplicate identifiers that fail `CREATE TABLE`.
+  - A value whose runtime type doesn't match its inferred column type (e.g. a float arriving in a
+    column typed `INTEGER` from the sample) is routed to the `data` JSON overflow instead of being
+    written raw — keeping SQLite and cloud Postgres consistent and never losing the value.
+  - An **empty wrapped result** (`{ "items": [] }`, e.g. an empty account) no longer invents a
+    phantom table + a garbage row every sync.
+  - Two long, distinct record kinds that truncate to the same physical table name are now
+    **de-collided**, so neither kind's schema is silently dropped — including the **cloud
+    (Postgres) case**, where identifiers are silently truncated to 63 bytes: the physical table
+    name is now bounded to 63 bytes at the single point every path names it, so two long names can
+    no longer collapse to one table on Postgres (SQLite has no such limit).
+  - A source field literally named `data` no longer collides with the reserved JSON-overflow column.
+  - The legacy→typed **migration is now atomic from the retry's perspective**: the toolkit re-key
+    is rolled back if any later step (populate the typed tables, retire the flat rows) fails, so a
+    transient error can never leave a typed-but-empty connection with its data stranded — the whole
+    migration simply retries on the next load.
+- **On-access refresh now covers external-DB (`db_source`) tables too.** Reading an imported
+  database table kicks the same throttled background refresh as an MCP table (it previously
+  resolved no connector and silently never refreshed). Connector-table matching against a query is
+  now by whole SQL identifier, not a raw substring, so an unrelated table name in a string literal
+  or a longer identifier no longer triggers a spurious sync.
+- **Connection questions never answered from missing data.** If the connected-sources list can't be
+  enumerated for a chat turn, the assistant now defers "are you connected to X?" to its data loop
+  (which checks directly) instead of confidently answering "not connected" from the failure.
+- **Brand detection ignores non-brand hosts.** A server addressed by a raw IPv4 address or a
+  punycode/IDN host no longer surfaces a meaningless "brand" in the assistant's context; it falls
+  back to the server's self-advertised name.
+
 - **The assistant now knows about your connected sources on a local workspace.** The
   "Connected data sources" it reads was filtered by the identity that stamped each connection;
   on a single-user local workspace that stamp can drift (e.g. after you change your saved

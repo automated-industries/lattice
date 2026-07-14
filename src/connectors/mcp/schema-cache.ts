@@ -9,6 +9,7 @@
  * never collide and each auto-groups under its own GUI schema header (via `mcp:<connId>` toolkit).
  */
 
+import { createHash } from 'node:crypto';
 import {
   getAssistantCredential,
   setAssistantCredential,
@@ -92,11 +93,34 @@ export function clearMcpSchemaDescriptor(connectionId: string): void {
 
 /** The imported Lattice table name for a record kind (namespaced by the connection prefix). */
 export function mcpTableName(prefix: string, kind: string): string {
-  return `mcp_${prefix}_${slugify(kind)}`;
+  const raw = `mcp_${prefix}_${slugify(kind)}`;
+  // Postgres silently truncates an identifier to 63 bytes; two names differing only past byte 63
+  // would collapse to ONE physical table on cloud (SQLite has no such limit, so tests never see
+  // it). Bound the FULL name here — the single namer every caller routes through — so the
+  // app-level name is byte-identical to what the DB stores, and the de-collision that compares
+  // these names operates on the real name. `raw` is pure ASCII (mcp_ + slug + slug), so a
+  // character slice is a byte slice; 56 + '_' + 6 hex = 63.
+  if (Buffer.byteLength(raw, 'utf8') <= 63) return raw;
+  const h = createHash('sha1').update(raw).digest('hex').slice(0, 6);
+  return raw.slice(0, 56) + '_' + h;
 }
 
-// Reserved column names never modeled as data columns (they are added by the lifecycle/base).
-const RESERVED = new Set(['id', '_pk', 'deleted_at', 'created_at', 'updated_at']);
+// Reserved column names never modeled as their own data column: the lifecycle/base columns,
+// plus `data` — which is the always-present JSON overflow column (a source field literally
+// named `data` would otherwise be overwritten by the whole-item blob). Compared case-folded.
+const RESERVED = new Set(['id', '_pk', 'deleted_at', 'created_at', 'updated_at', 'data']);
+
+/**
+ * A case-folded view of an object: keys lowercased, later duplicates winning. Modeled column
+ * names are lowercase (SQLite identifiers are case-insensitive, so `Name` and `name` are ONE
+ * column — declaring both fails CREATE TABLE), so item values are read back through this view
+ * so an item's `Name`/`ID` still populates the `name`/`id` column.
+ */
+export function lowerKeys(o: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) out[k.toLowerCase()] = v;
+  return out;
+}
 /** Stable id-ish fields preferred, in order, as the natural key when present + scalar. `name`
  *  is intentionally excluded — it is not a stable/unique identifier, so a kind with only a name
  *  synthesizes `_pk` instead. */
@@ -108,9 +132,10 @@ function specFor(v: unknown): McpSqlSpec {
   return 'TEXT';
 }
 
-/** Derive a record-kind slug from a read tool name: strip a leading list_/get_/search_/fetch_
- *  verb + a trailing plural `s`, so `list_deduction_types` → `deduction_types`, `get_company`
- *  → `company`. Falls back to the slugified tool name. */
+/** Derive a record-kind slug from a read tool name: strip a leading list_/get_/search_/fetch_/
+ *  read_/find_/query_ verb, so `list_deduction_types` → `deduction_types`, `get_company` →
+ *  `company`. (The remaining noun is kept as-is — no plural stripping.) Falls back to the
+ *  slugified tool name. */
 export function kindFromTool(tool: string): string {
   const base = tool.replace(/^(list|get|search|fetch|read|find|query)_/i, '');
   return slugify(base) || slugify(tool) || 'item';
@@ -124,9 +149,15 @@ export function kindFromTool(tool: string): string {
 export function inferKind(kind: string, tool: string, items: unknown[]): McpKindDesc {
   const cols = new Map<string, McpSqlSpec>();
   let naturalKey = '_pk';
-  const objects = items.filter(
-    (it): it is Record<string, unknown> => !!it && typeof it === 'object' && !Array.isArray(it),
-  );
+  // Case-fold every item first: modeled column names are lowercase (SQLite identifiers are
+  // case-insensitive), so `Name`/`name` and `id`/`ID` collapse to one column instead of
+  // producing duplicate identifiers that CREATE TABLE rejects. ID_FIELDS + RESERVED are
+  // already lowercase, so all comparisons below are consistent.
+  const objects = items
+    .filter(
+      (it): it is Record<string, unknown> => !!it && typeof it === 'object' && !Array.isArray(it),
+    )
+    .map(lowerKeys);
   // Pick the natural key: the first ID-ish field that is present + scalar across the sample.
   for (const cand of ID_FIELDS) {
     if (objects.length > 0 && objects.every((o) => ['string', 'number'].includes(typeof o[cand]))) {

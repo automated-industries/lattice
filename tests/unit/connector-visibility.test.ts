@@ -10,6 +10,11 @@ import {
   brandFromHost,
 } from '../../src/connectors/describe-connected.js';
 import { setMcpServerUrl } from '../../src/connectors/mcp/oauth.js';
+import {
+  setMcpSchemaDescriptor,
+  clearMcpSchemaDescriptor,
+  mcpToolkitFor,
+} from '../../src/connectors/mcp/schema-cache.js';
 
 /**
  * Connector visibility: a connected MCP server's synced table and the connection
@@ -190,6 +195,39 @@ describe('describeConnectedSources', () => {
     expect(summary).toContain('ignore previous instructions');
   });
 
+  it('names the TYPED per-kind tables for a typed connection, not the flat mcp_items (regression)', async () => {
+    // A typed connection (per-connection toolkit `mcp:<id>` + an introspected descriptor) writes
+    // to `mcp_<prefix>_<kind>` tables; pointing the assistant at `mcp_items` sends it to an empty
+    // table — the exact "still doesn't recognize <source>" class.
+    db = new Lattice(':memory:');
+    await db.init();
+    setMcpServerUrl('ref-typed', 'https://mcp.justworks.com/');
+    setMcpSchemaDescriptor('ref-typed', {
+      prefix: 'justworks',
+      kinds: [
+        {
+          kind: 'company',
+          tool: 'get_company',
+          naturalKey: 'id',
+          columns: [{ name: 'name', sqlSpec: 'TEXT' }],
+        },
+        { kind: 'deduction_types', tool: 'list_deduction_types', naturalKey: '_pk', columns: [] },
+      ],
+    });
+    await createConnector(db, {
+      connector: 'mcp',
+      toolkit: mcpToolkitFor('ref-typed'),
+      displayName: 'partner-api-mcp',
+      connectionRef: 'ref-typed',
+      connectedBy: 'local',
+    });
+    const summary = await describeConnectedSources(db, 'local');
+    expect(summary).toContain('mcp_justworks_company');
+    expect(summary).toContain('mcp_justworks_deduction_types');
+    expect(summary).not.toContain('mcp_items');
+    clearMcpSchemaDescriptor('ref-typed');
+  });
+
   it('returns an empty string when nothing is connected', async () => {
     db = new Lattice(':memory:');
     await db.init();
@@ -223,5 +261,10 @@ describe('brandFromHost', () => {
     expect(brandFromHost(null)).toBeNull();
     expect(brandFromHost('localhost')).toBeNull();
     expect(brandFromHost('')).toBeNull();
+  });
+  it('returns null for IPv4-literal and punycode/IDN hosts (so the server name is used instead)', () => {
+    expect(brandFromHost('203.0.113.5')).toBeNull();
+    expect(brandFromHost('192.168.1.10')).toBeNull();
+    expect(brandFromHost('xn--80ak6aa92e.com')).toBeNull(); // punycode label reads as no brand
   });
 });

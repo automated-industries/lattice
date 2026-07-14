@@ -117,6 +117,23 @@ describe('runIntent', () => {
     expect(sent).toMatch(/AUTHORITATIVE/);
   });
 
+  it('defers a connection question to the tool loop when the connected-sources list could not be loaded (no false "not connected")', async () => {
+    // The list enumeration threw this turn. The inline pass must NOT assert "not connected" from
+    // missing data — it flags needs_work so the tool loop can check the connector state directly.
+    const { client, calls } = fakeClient(
+      '```json\n{"ack_message":"Let me check that for you…","needs_work":true,"needs_more_info":false}\n```',
+    );
+    await runIntent(client, 'are you connected to justworks?', {
+      tableNames: ['mcp_items'],
+      connectionsUnknown: true,
+    });
+    const sent = JSON.stringify(calls[0]!.messages);
+    expect(sent).toContain('could not be loaded');
+    expect(sent).toContain('needs_work true');
+    // It must NOT pretend an authoritative list is present.
+    expect(sent).not.toMatch(/AUTHORITATIVE/);
+  });
+
   it('grounds the classifier in what the user is viewing so a complaint is actionable, not ambiguous', async () => {
     const { client, calls } = fakeClient(
       '```json\n{"ack_message":"Checking what went wrong…","needs_work":true,"needs_more_info":false}\n```',

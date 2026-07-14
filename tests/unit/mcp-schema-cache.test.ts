@@ -59,6 +59,28 @@ describe('inferKind', () => {
     expect(k.columns.find((c) => c.name === 'id')).toBeUndefined(); // the key isn't a data column
     expect(k.columns.find((c) => c.name === 'employees')?.sqlSpec).toBe('INTEGER');
   });
+
+  it('case-folds column names so Name/name and id/ID collapse to one column (SQLite identifiers are case-insensitive)', () => {
+    // Declaring both `Name` and `name` (or `id` and `ID`) fails CREATE TABLE — SQLite folds case.
+    const k = inferKind('user', 'list_users', [
+      { ID: 'u1', Name: 'Ada', name: 'ada-lower', Active: true },
+      { id: 'u2', name: 'Bob' },
+    ]);
+    // The natural key resolves case-insensitively — ID/id → the `id` PK.
+    expect(k.naturalKey).toBe('id');
+    const names = k.columns.map((c) => c.name);
+    expect(new Set(names).size).toBe(names.length); // no duplicate identifiers
+    expect(names).toEqual(names.map((n) => n.toLowerCase())); // all lowercase
+    expect(names).toContain('name');
+    expect(names).not.toContain('Name');
+    expect(names).not.toContain('id'); // the (case-folded) natural key is never a data column
+  });
+
+  it('never models a field literally named `data` — it is the reserved JSON overflow column', () => {
+    const k = inferKind('thing', 'list_things', [{ id: 't1', data: 42, label: 'x' }]);
+    expect(k.columns.find((c) => c.name === 'data')).toBeUndefined();
+    expect(k.columns.find((c) => c.name === 'label')?.sqlSpec).toBe('TEXT');
+  });
 });
 
 describe('buildMcpModelDefs', () => {
@@ -108,5 +130,25 @@ describe('buildMcpModelDefs', () => {
     // The company kind keys on `id` (auto-projected), not _pk.
     expect(defs[1]!.definition.columns.id).toBe('TEXT PRIMARY KEY');
     expect(mcpTableName('justworks', 'company')).toBe('mcp_justworks_company');
+  });
+});
+
+describe('mcpTableName byte-bounding (Postgres 63-byte identifier limit)', () => {
+  it('leaves a short name unchanged', () => {
+    expect(mcpTableName('justworks', 'company')).toBe('mcp_justworks_company');
+  });
+
+  it('bounds the full name to <= 63 bytes AND keeps two long kinds that would truncate-collide distinct', () => {
+    // Long prefix + two kinds differing only past byte 63: under raw Postgres identifier
+    // truncation both would collapse to one physical table (silently mixing rows); the bounded
+    // namer must keep them distinct.
+    const prefix = 'p'.repeat(40);
+    const a = 'k'.repeat(18) + 'a' + 'z'.repeat(15);
+    const b = 'k'.repeat(18) + 'b' + 'z'.repeat(15);
+    const ta = mcpTableName(prefix, a);
+    const tb = mcpTableName(prefix, b);
+    expect(Buffer.byteLength(ta, 'utf8')).toBeLessThanOrEqual(63);
+    expect(Buffer.byteLength(tb, 'utf8')).toBeLessThanOrEqual(63);
+    expect(ta).not.toBe(tb);
   });
 });

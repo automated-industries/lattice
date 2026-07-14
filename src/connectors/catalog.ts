@@ -17,6 +17,7 @@
 
 import type { Connector } from './types.js';
 import { genericConnector } from './generic/connector.js';
+import { DatabaseConnector } from './db-source/connector.js';
 
 /**
  * The built-in connectors, fresh instances per call. The GUI server passes the
@@ -24,4 +25,16 @@ import { genericConnector } from './generic/connector.js';
  */
 export function builtinConnectors(): Connector[] {
   return [genericConnector()];
+}
+
+/**
+ * Connectors eligible for ON-ACCESS refresh ({@link import('./freshness.js').touchConnectorTable}).
+ * A superset of {@link builtinConnectors}: it ALSO includes the external-DB (`db_source`)
+ * connector, which is deliberately absent from the built-in list — it is surfaced through the
+ * dedicated Inputs › Databases UI, not the generic Connectors grid — but its imported `db_…`
+ * tables must still refresh on access. Without `db_source` here, touching an imported table would
+ * resolve no connector implementation and silently never refresh.
+ */
+export function freshnessConnectors(): Connector[] {
+  return [genericConnector(), new DatabaseConnector()];
 }

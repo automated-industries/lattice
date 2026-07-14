@@ -72,6 +72,10 @@ interface ChatContext {
   /** Member-scoped "Connected data sources" section for the assistant's context,
    *  so it knows which MCP servers / databases are connected. Omitted when none. */
   connectedSources?: string;
+  /** True when the connected-sources list could NOT be determined this turn (enumeration
+   *  threw). Distinct from "none connected": the intent pass must then NOT answer a
+   *  connection question with a false negative — it defers to the tool loop instead. */
+  connectionsUnknown?: boolean;
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
   configPath?: string;
   outputDir?: string;
@@ -1218,6 +1222,7 @@ export async function dispatchChatRoute(
         // The intent pass answers "are you connected to X?" inline (no heavy loop), so it
         // needs the connected-sources list or it wrongly says not connected.
         ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
+        ...(ctx.connectionsUnknown ? { connectionsUnknown: true } : {}),
       });
     } catch (e) {
       // Best-effort — never drop the user's message; fall through to the real loop.

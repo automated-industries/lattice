@@ -647,13 +647,16 @@ export async function handleReadRoutes(
       sendJson(res, { error: result.error }, 400);
     } else {
       sendJson(res, result);
-    }
-    // On-access freshness: a table-view query or a dashboard render that reads a connector table
-    // kicks a throttled background refresh of that connection. Fire-and-forget AFTER the response
-    // (never blocks the read); the throttle bounds it. Which connector tables the SQL references is
-    // matched by name against the workspace's connector tables (a small, bounded set).
-    for (const t of active.validTables) {
-      if (raw.includes(t)) void touchConnectorTable(active.db, deps.connectors, t);
+      // On-access freshness: a dashboard tile render or SQL-runner query that reads a connector
+      // table kicks a throttled background refresh of that connection. Fire-and-forget AFTER the
+      // response (never blocks the read); the throttle bounds it. Only on a SUCCESSFUL read, and
+      // matched against whole SQL identifier TOKENS (not a raw substring) — so a table name that
+      // is a substring of another identifier, a column, or a string literal does not trigger a
+      // spurious sync (bounded external egress).
+      const tokens = new Set(raw.toLowerCase().match(/[a-z_][a-z0-9_]*/g) ?? []);
+      for (const t of active.validTables) {
+        if (tokens.has(t.toLowerCase())) void touchConnectorTable(active.db, deps.connectors, t);
+      }
     }
     return true;
   }

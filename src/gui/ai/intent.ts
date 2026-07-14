@@ -81,6 +81,11 @@ export interface IntentOptions {
    *  the heavy loop, so without this it can't answer "are you connected to X?" and wrongly
    *  says no. Grounds that inline answer in the real connection list. */
   connectedSources?: string;
+  /** True when the connected-sources list could NOT be determined this turn (enumeration
+   *  failed). The inline pass must then avoid answering a connection question from missing
+   *  data — it treats such a question as `needs_work` so the tool loop can check directly,
+   *  rather than asserting a false "not connected". */
+  connectionsUnknown?: boolean;
   temperature?: number;
 }
 
@@ -133,7 +138,13 @@ export async function runIntent(
       `matches "mcp.justworks.com"), confirm it IS connected (this is a general question, not needs_work); ` +
       `never say it is not connected when it appears in that list. Only say it isn't connected if it is ` +
       `genuinely absent from the list.\n`
-    : '';
+    : opts.connectionsUnknown
+      ? // The list couldn't be loaded this turn. Do NOT guess "not connected" — defer any
+        // connection question to the tool loop, which can check the connector tables directly.
+        `The list of connected external sources could not be loaded this turn. If the user asks ` +
+        `whether a service/integration/source is connected, do NOT answer that it is not connected — ` +
+        `set needs_work true so the assistant can check the connector state directly.\n`
+      : '';
   const turn = await client.runTurn({
     model: DEFAULT_MODEL,
     // Small budget: the ack/inline-answer is short by construction. Keeps latency + cost low.

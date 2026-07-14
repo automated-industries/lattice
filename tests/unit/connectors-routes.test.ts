@@ -3,8 +3,72 @@ import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Lattice } from '../../src/lattice.js';
 import { dispatchConnectorsRoute } from '../../src/gui/connectors-routes.js';
-import { getConnectorByToolkit } from '../../src/connectors/registry.js';
+import { getConnectorByToolkit, createConnector } from '../../src/connectors/registry.js';
+import { genericConnector } from '../../src/connectors/generic/connector.js';
+import { setMcpServerUrl, clearMcpConnection } from '../../src/connectors/mcp/oauth.js';
+import {
+  mcpToolkitFor,
+  setMcpSchemaDescriptor,
+  clearMcpSchemaDescriptor,
+} from '../../src/connectors/mcp/schema-cache.js';
+import type {
+  McpTransport,
+  McpToolCall,
+  McpToolInfo,
+  McpResourceInfo,
+} from '../../src/connectors/mcp/transport.js';
 import type { Connector, ConnectedModelDef, ExternalRecord } from '../../src/connectors/types.js';
+
+/** Minimal canned MCP transport for the typed-connector routes tests (no network / SDK). */
+class RtFakeTransport implements McpTransport {
+  constructor(
+    private readonly tools: McpToolInfo[],
+    private readonly results: Record<string, unknown>,
+  ) {}
+  listTools(): Promise<McpToolInfo[]> {
+    return Promise.resolve(this.tools);
+  }
+  callTool(call: McpToolCall): Promise<unknown> {
+    return Promise.resolve(this.results[call.tool] ?? {});
+  }
+  listResources(): Promise<McpResourceInfo[]> {
+    return Promise.resolve([]);
+  }
+  serverInfo(): { name?: string } | undefined {
+    return { name: 'partner-api-mcp' };
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/** Like RtFakeTransport but throws once `failAfter` successful callTool()s have happened — so
+ *  introspection can succeed (call #1) and the subsequent migration sync fails (call #2). */
+class CountingFailTransport implements McpTransport {
+  private calls = 0;
+  constructor(
+    private readonly tools: McpToolInfo[],
+    private readonly results: Record<string, unknown>,
+    private readonly failAfter: number,
+  ) {}
+  listTools(): Promise<McpToolInfo[]> {
+    return Promise.resolve(this.tools);
+  }
+  callTool(call: McpToolCall): Promise<unknown> {
+    this.calls++;
+    if (this.calls > this.failAfter) return Promise.reject(new Error('sync boom'));
+    return Promise.resolve(this.results[call.tool] ?? {});
+  }
+  listResources(): Promise<McpResourceInfo[]> {
+    return Promise.resolve([]);
+  }
+  serverInfo(): { name?: string } | undefined {
+    return { name: 'partner-api-mcp' };
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 
 /**
  * 4.3 — connectors GUI routes (SQLite, fake connector). Exercises the connect →
@@ -628,6 +692,126 @@ describe('connectors routes (MCP multi-instance)', () => {
     const urls = list.connectors.map((c) => c.serverUrl).sort();
     expect(urls).toEqual(['https://one.example/mcp', 'https://two.example/mcp']);
     expect(list.connectors[0]?.displayName).toBe('Fake Server');
+  });
+
+  it('reports itemCount for a TYPED connection from its per-kind tables, not mcp_items (regression)', async () => {
+    // A typed connection writes to `mcp_<prefix>_<kind>`; aggregating only `mcp_items` reported 0.
+    db = new Lattice(':memory:');
+    await db.init();
+    const conn = genericConnector();
+    const connId = 'rt-typed';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    const toolkit = mcpToolkitFor(connId);
+    setMcpSchemaDescriptor(connId, {
+      prefix: 'justworks',
+      kinds: [
+        {
+          kind: 'company',
+          tool: 'get_company',
+          naturalKey: 'id',
+          columns: [{ name: 'name', sqlSpec: 'TEXT' }],
+        },
+      ],
+    });
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit,
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    for (const m of conn.models(toolkit)) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_justworks_company', {
+      id: 'co_1',
+      name: 'Acme',
+      _source_connector_id: cid,
+    });
+    const list = (await call(conn as unknown as FakeMcpConnector, 'GET', '/api/connectors'))
+      .body as { connectors: { id: string; itemCount: number }[] };
+    expect(list.connectors.find((c) => c.id === cid)?.itemCount).toBe(1);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
+  });
+
+  it('migrating a legacy flat connection to typed tables soft-deletes the old mcp_items rows (regression: data was doubled)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const connId = 'rt-mig';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    // A legacy flat connection (toolkit `mcp`) with a row already in `mcp_items`.
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    const flat = genericConnector();
+    for (const m of flat.models('mcp')) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_items', {
+      item_id: 'list_deduction_types:MED',
+      kind: 'item',
+      tool: 'list_deduction_types',
+      title: 'Medical',
+      _source_connector_id: cid,
+    });
+    // A typed connector that introspects one kind from the server; sync-if-stale runs the migration.
+    const transport = new RtFakeTransport([{ name: 'list_deduction_types' }], {
+      list_deduction_types: { items: [{ id: 'MED', name: 'Medical (pretax)' }] },
+    });
+    const typed = genericConnector({ transportFactory: () => Promise.resolve(transport) });
+    await call(typed as unknown as FakeMcpConnector, 'POST', '/api/connectors/sync-if-stale', {});
+    // The pre-migration flat rows are soft-deleted (recoverable, but hidden)…
+    const flatRows = await db.query('mcp_items', {
+      filters: [{ col: '_source_connector_id', op: 'eq', val: cid }],
+    });
+    expect(flatRows.length).toBeGreaterThan(0);
+    expect(flatRows.every((r) => r.deleted_at)).toBe(true);
+    // …and the data now lives in the typed table.
+    const typedRows = await db.query('mcp_justworks_deduction_types', {});
+    expect(typedRows.length).toBeGreaterThan(0);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
+  });
+
+  it('a post-re-key failure during migration rolls back to the flat toolkit (retriable) and never prematurely deletes mcp_items (regression)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const connId = 'rt-rollback';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    const flat = genericConnector();
+    for (const m of flat.models('mcp')) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_items', {
+      item_id: 'list_deduction_types:MED',
+      kind: 'item',
+      tool: 'list_deduction_types',
+      title: 'Medical',
+      _source_connector_id: cid,
+    });
+    // Introspection (call #1) succeeds; the post-re-key sync (call #2) throws.
+    const transport = new CountingFailTransport(
+      [{ name: 'list_deduction_types' }],
+      { list_deduction_types: { items: [{ id: 'MED', name: 'Medical (pretax)' }] } },
+      1,
+    );
+    const typed = genericConnector({ transportFactory: () => Promise.resolve(transport) });
+    await call(typed as unknown as FakeMcpConnector, 'POST', '/api/connectors/sync-if-stale', {});
+    // Rolled back to the flat toolkit so the whole migration retries next load…
+    expect((await getConnector(db, cid))?.toolkit).toBe('mcp');
+    // …and the flat rows were NOT deleted (their data was never safely typed).
+    const flatRows = await db.query('mcp_items', {
+      filters: [{ col: '_source_connector_id', op: 'eq', val: cid }],
+    });
+    expect(flatRows.some((r) => !r.deleted_at)).toBe(true);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
   });
 
   it('reconnect by connectorId repoints the SAME row via the stored URL and retires the old secrets', async () => {

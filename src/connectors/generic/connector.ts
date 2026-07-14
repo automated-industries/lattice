@@ -27,7 +27,7 @@ import {
   type McpModelBinding,
   type McpConnectorDeps,
 } from '../mcp/connector-base.js';
-import { mcpModel, str, jsonCol, arrayField } from '../mcp/connected-model.js';
+import { mcpModel, str, jsonCol } from '../mcp/connected-model.js';
 import { letterIcon } from '../mcp/icon.js';
 import { getMcpServerUrl } from '../mcp/oauth.js';
 import {
@@ -37,6 +37,8 @@ import {
   kindFromTool,
   inferKind,
   connectionIdFromToolkit,
+  lowerKeys,
+  mcpTableName,
   type McpKindDesc,
   type McpSchemaDescriptor,
 } from '../mcp/schema-cache.js';
@@ -49,10 +51,34 @@ import type {
   ToolkitPresentation,
 } from '../types.js';
 
-/** Pull the array of records out of a tool result (the array itself, or wrapped). */
+/** Field names a tool result may wrap its record array under. */
+const WRAP_KEYS = ['items', 'results', 'data', 'records', 'value', 'entries'];
+
+/**
+ * The record array under one of {@link WRAP_KEYS} (or the result itself if it IS an array),
+ * or `null` when NO recognized list field is present. Distinguishing "list field present but
+ * empty" (→ `[]`) from "no list field" (→ `null`) matters: an empty wrapped result like
+ * `{ items: [] }` (an empty account — a common state) must yield an empty list, NOT be treated
+ * as a single envelope item, or introspection invents a phantom kind and every sync injects one
+ * garbage envelope row.
+ */
+function listField(result: unknown): unknown[] | null {
+  if (Array.isArray(result)) return result as unknown[];
+  if (result && typeof result === 'object') {
+    for (const k of WRAP_KEYS) {
+      const v = (result as Record<string, unknown>)[k];
+      if (Array.isArray(v)) return v as unknown[]; // present (even if empty) → an intentional list
+    }
+  }
+  return null;
+}
+
+/** Pull the array of records out of a tool result (the array itself, wrapped, or — for a bare
+ *  single object with no list field — a one-item envelope). */
 function itemsOf(result: unknown): unknown[] {
-  const found = arrayField(result, ['items', 'results', 'data', 'records', 'value', 'entries']);
-  return found.length > 0 ? found : result != null ? [result] : [];
+  const list = listField(result);
+  if (list) return list; // a list field was present (possibly empty) → use it as-is
+  return result != null ? [result] : []; // a bare object → single-item envelope
 }
 
 /** A stable natural key for an item lacking an id field — a content hash namespaced by tool,
@@ -75,18 +101,29 @@ function typedRecord(kind: McpKindDesc, item: unknown): ExternalRecord {
     item && typeof item === 'object' && !Array.isArray(item)
       ? (item as Record<string, unknown>)
       : { value: item };
+  // Read values through a case-folded view — modeled columns are lowercase (see lowerKeys).
+  const lower = lowerKeys(obj);
   const row: Record<string, unknown> = {};
   for (const c of kind.columns) {
-    const v = obj[c.name];
-    // Only scalars become columns; null/undefined/nested go to the `data` overflow. Narrowed
-    // so String() is never applied to an object (base-to-string).
-    if (typeof v === 'string') row[c.name] = v;
-    else if (typeof v === 'number') row[c.name] = c.sqlSpec === 'TEXT' ? String(v) : v;
-    else if (typeof v === 'boolean') row[c.name] = String(v);
+    const v = lower[c.name];
+    if (v === null || v === undefined || typeof v === 'object') continue; // → `data` overflow
+    // Write ONLY a value that matches the column's DECLARED spec. The spec is inferred from a
+    // bounded sample at introspect time; an out-of-sample value of a different type (a float
+    // in an INTEGER column, a string in a numeric column) would round/throw on Postgres and
+    // diverge from SQLite affinity. A non-conforming value is dropped from the typed cell — it
+    // is never lost, because the whole raw item is preserved in the `data` JSON overflow below.
+    if (c.sqlSpec === 'TEXT') {
+      if (typeof v === 'string') row[c.name] = v;
+      else if (typeof v === 'number' || typeof v === 'boolean') row[c.name] = String(v);
+    } else if (c.sqlSpec === 'REAL') {
+      if (typeof v === 'number') row[c.name] = v;
+    } else if (typeof v === 'number' && Number.isInteger(v)) {
+      row[c.name] = v; // INTEGER: only a true integer
+    }
   }
   const dj = jsonCol(item);
   if (dj !== undefined) row.data = dj;
-  const idVal = kind.naturalKey !== '_pk' ? str(obj[kind.naturalKey]) : undefined;
+  const idVal = kind.naturalKey !== '_pk' ? str(lower[kind.naturalKey]) : undefined;
   return { id: idVal ?? contentKey(kind.tool, item), row };
 }
 
@@ -203,7 +240,8 @@ export class IntrospectiveMcpConnector extends McpConnectorBase {
     const transport = await this.openServerTransport(toolkit, connectionId);
     try {
       const kinds: McpKindDesc[] = [];
-      const seen = new Set<string>();
+      const prefixSlug = slugify(prefix);
+      const seenTables = new Set<string>();
       for (const tool of await transport.listTools()) {
         if (looksLikeWrite(tool.name)) continue;
         let result: unknown;
@@ -215,12 +253,19 @@ export class IntrospectiveMcpConnector extends McpConnectorBase {
         const items = itemsOf(result).slice(0, MAX_ITEMS_PER_TOOL);
         if (items.length === 0) continue;
         let kindName = kindFromTool(tool.name);
-        while (seen.has(kindName)) kindName = kindName + '_' + tool.name; // de-collide
-        seen.add(kindName);
+        // De-collide on the FINAL physical table name (mcpTableName re-slugifies + truncates to
+        // 40 chars), NOT the kind string — two distinct long kinds can truncate to the same table,
+        // which would silently drop the second kind's schema and mix their rows. A short stable
+        // hash of the tool name (unique per tool) keeps each kind on its own table within budget.
+        if (seenTables.has(mcpTableName(prefixSlug, kindName))) {
+          const h = createHash('sha1').update(tool.name).digest('hex').slice(0, 6);
+          kindName = slugify(kindName).slice(0, 33) + '_' + h;
+        }
+        seenTables.add(mcpTableName(prefixSlug, kindName));
         kinds.push(inferKind(kindName, tool.name, items));
       }
       if (kinds.length === 0) return null;
-      const descriptor: McpSchemaDescriptor = { prefix: slugify(prefix), kinds };
+      const descriptor: McpSchemaDescriptor = { prefix: prefixSlug, kinds };
       setMcpSchemaDescriptor(connectionId, descriptor);
       return descriptor;
     } finally {
@@ -275,15 +320,7 @@ export class IntrospectiveMcpConnector extends McpConnectorBase {
         } catch {
           continue; // needs arguments / not callable bare — skip in introspective mode
         }
-        const found = arrayField(result, [
-          'items',
-          'results',
-          'data',
-          'records',
-          'value',
-          'entries',
-        ]);
-        const list = found.length > 0 ? found : result != null ? [result] : [];
+        const list = itemsOf(result);
         let i = 0;
         for (const it of list) {
           if (i >= MAX_ITEMS_PER_TOOL) break;

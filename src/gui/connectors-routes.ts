@@ -12,7 +12,7 @@ import {
   getConnectorByToolkit,
   updateConnectorConnection,
 } from '../connectors/registry.js';
-import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
+import { syncConnector, syncStaleConnectors, collectConnectorKeys } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
 import { ConnectorUnavailableError } from '../connectors/errors.js';
@@ -269,10 +269,33 @@ async function migrateLegacyMcpConnection(
     brand ?? row.displayName ?? connector.connector,
   );
   if (!descriptor) return false; // nothing modelable → keep the flat mcp_items fallback
+  // The re-key must happen BEFORE syncConnector (which reads the toolkit off the row to pick the
+  // typed models). But the re-key is the only step the retry gate keys on (it re-selects
+  // `toolkit==='mcp'`), so if any later step fails after re-keying, roll the toolkit back to
+  // `mcp` — otherwise the row is left typed-but-empty with its data stranded in mcp_items and the
+  // migration never retries. Better a retriable flat connection than a silent half-migration.
   await updateConnectorConnection(db, row.id, connectionId, toolkit);
-  for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-  await enableConnectorRls(db, connector, toolkit);
-  await syncConnector(db, connector, row.id); // force-populate the typed tables now
+  try {
+    for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+    await enableConnectorRls(db, connector, toolkit);
+    await syncConnector(db, connector, row.id); // force-populate the typed tables now
+    // Retire the pre-migration flat `mcp_items` rows for this connection: their data now lives in
+    // the typed tables, so leaving them would double the data live, inflate the item count, and
+    // survive a later disconnect (which tears down only the current toolkit's typed tables).
+    // Soft-delete (never hard) so they stay recoverable and drop out of context/search/counts.
+    // Skip cleanly when there is no mcp_items table; a real DB error propagates to the rollback.
+    if (db.getRegisteredTableNames().includes('mcp_items')) {
+      const now = new Date().toISOString();
+      const staleKeys = await collectConnectorKeys(db, 'mcp_items', 'item_id', row.id);
+      for (const key of staleKeys) await db.update('mcp_items', key, { deleted_at: now });
+    }
+  } catch (e) {
+    // Roll the re-key back so the ENTIRE migration retries on the next load (idempotently:
+    // introspect re-sets the descriptor, syncConnector upserts). The caller logs the failure —
+    // and with the row back on `mcp`, its "flat fallback kept" message is now accurate.
+    await updateConnectorConnection(db, row.id, connectionId, 'mcp');
+    throw e;
+  }
   return true;
 }
 
@@ -301,20 +324,32 @@ export async function dispatchConnectorsRoute(
       const connected = (await listConnectors(db, connectedBy)).filter(
         (c) => connectorForRowToolkit(byToolkit, c.toolkit) !== undefined,
       );
-      // Per-connection synced-item counts for the table view — ONE aggregate
-      // over mcp_items (never a row load). The table may not exist before the
-      // first connect; that simply means zero counts.
+      // Per-connection synced-item counts for the table view. A typed connection writes to its
+      // own `mcp_<prefix>_<kind>` tables (NOT `mcp_items`), so aggregating only `mcp_items` would
+      // report 0 for every typed connection. Resolve each connection's real tables via its
+      // connector impl and sum a bounded COUNT(*) per table (never a row load), de-duped so a
+      // table is scanned once. A legacy flat connection resolves to `mcp_items` as before.
       const itemCounts = new Map<string, number>();
-      try {
-        const rows = (await allAsyncOrSync(
-          db.adapter,
-          `SELECT "_source_connector_id" AS cid, COUNT(*) AS n FROM "mcp_items" WHERE "deleted_at" IS NULL GROUP BY "_source_connector_id"`,
-          [],
-          // Postgres returns COUNT(*) as a string, SQLite as a number — coerce.
-        )) as { cid: string; n: number | string }[];
-        for (const r of rows) if (r.cid) itemCounts.set(r.cid, Number(r.n));
-      } catch {
-        // mcp_items not created yet — no connections have synced anything.
+      const countedTables = new Set<string>();
+      for (const c of connected) {
+        const impl = connectorForRowToolkit(byToolkit, c.toolkit);
+        if (!impl) continue;
+        for (const m of impl.models(c.toolkit)) {
+          if (countedTables.has(m.table)) continue;
+          countedTables.add(m.table);
+          try {
+            const rows = (await allAsyncOrSync(
+              db.adapter,
+              `SELECT "_source_connector_id" AS cid, COUNT(*) AS n FROM "${m.table}" WHERE "deleted_at" IS NULL GROUP BY "_source_connector_id"`,
+              [],
+              // Postgres returns COUNT(*) as a string, SQLite as a number — coerce.
+            )) as { cid: string; n: number | string }[];
+            for (const r of rows)
+              if (r.cid) itemCounts.set(r.cid, (itemCounts.get(r.cid) ?? 0) + Number(r.n));
+          } catch {
+            // Table not created yet (no sync) — contributes zero.
+          }
+        }
       }
       const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
       for (const c of connectors) {
