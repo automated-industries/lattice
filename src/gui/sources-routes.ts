@@ -245,18 +245,41 @@ function readdirSafe(dir: string) {
 
 // --- Bounded folder ingest (BFS) --------------------------------------------
 
+interface IngestFolderCaps {
+  maxFiles?: number;
+  maxScan?: number;
+  maxDepth?: number;
+}
+
+interface IngestFolderResult {
+  ingested: number;
+  skipped: number;
+  /** Total file paths collected in phase 1 before stopping. */
+  scanned: number;
+  /** True if phase 1 stopped collection at MAX_INGEST_SCAN / caps.maxScan. */
+  scanTruncated: boolean;
+  /** True if phase 2 stopped at MAX_INGEST_FILES / caps.maxFiles success cap. */
+  capped: boolean;
+}
+
 async function ingestFolder(
   abs: string,
   ingestFile: (p: string) => Promise<LocalFileIngestResult>,
   db: Lattice,
-): Promise<{ ingested: number; skipped: number }> {
+  caps?: IngestFolderCaps,
+): Promise<IngestFolderResult> {
+  const maxFiles = caps?.maxFiles ?? MAX_INGEST_FILES;
+  const maxScan = caps?.maxScan ?? MAX_INGEST_SCAN;
+  const maxDepth = caps?.maxDepth ?? MAX_INGEST_DEPTH;
+
   // Phase 1 — bounded BFS to COLLECT the files to ingest. The directory walk is cheap
   // (readdir only) and stays sequential + ordered so the depth bound is deterministic
-  // and the file order matches the old loop. Collection stops at MAX_INGEST_SCAN purely
-  // as a memory guard — the meaningful cap (MAX_INGEST_FILES successful ingests) is
+  // and the file order matches the old loop. Collection stops at maxScan purely
+  // as a memory guard — the meaningful cap (maxFiles successful ingests) is
   // applied in phase 2, so skipped files here don't reduce how many real files ingest.
   const files: string[] = [];
   const queue: { dir: string; depth: number }[] = [{ dir: abs, depth: 0 }];
+  let scanTruncated = false;
   walk: while (queue.length) {
     const item = queue.shift();
     if (!item) break;
@@ -268,22 +291,25 @@ async function ingestFolder(
       if (d.isSymbolicLink()) continue;
       const full = join(dir, d.name);
       if (d.isDirectory()) {
-        if (depth + 1 <= MAX_INGEST_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+        if (depth + 1 <= maxDepth) queue.push({ dir: full, depth: depth + 1 });
       } else if (d.isFile()) {
         files.push(full);
-        if (files.length >= MAX_INGEST_SCAN) break walk;
+        if (files.length >= maxScan) {
+          scanTruncated = true;
+          break walk;
+        }
       }
     }
   }
 
   // Phase 2 — ingest the collected files with a bounded concurrent worker pool.
-  // Suspend auto-render for the WHOLE batch: each of up to MAX_INGEST_FILES writes would
+  // Suspend auto-render for the WHOLE batch: each of up to maxFiles writes would
   // otherwise schedule its own render, and because the writes are separated by seconds of
   // LLM latency the debounce can't coalesce them — so each render re-scanned the growing
   // file set (O(N²)). The finally arms exactly ONE coalesced render over everything.
   //
   // A hand-rolled pool (not mapWithConcurrency) because it needs two properties the plain
-  // map lacks: (1) STOP once MAX_INGEST_FILES files have SUCCESSFULLY ingested — matching
+  // map lacks: (1) STOP once maxFiles files have SUCCESSFULLY ingested — matching
   // the old sequential loop's "cap on successes, not on files examined", so a run of
   // too-large/unreadable files never shrinks how many real files get in; and (2) a file
   // that throws (ingestLocalFile is meant not to, but persist()/createRow can still raise
@@ -292,11 +318,15 @@ async function ingestFolder(
   db.pauseAutoRender();
   let ingested = 0;
   let skipped = 0;
+  let capped = false;
   try {
     let nextIdx = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
-        if (ingested >= MAX_INGEST_FILES) return; // success cap reached — stop pulling
+        if (ingested >= maxFiles) {
+          capped = true; // success cap reached — mark as capped if there are more files
+          return;
+        }
         const file = files[nextIdx++];
         if (file === undefined) return; // past the last file
         let r: LocalFileIngestResult | null = null;
@@ -315,7 +345,15 @@ async function ingestFolder(
     };
     const poolSize = Math.max(1, Math.min(INGEST_CONCURRENCY, files.length));
     await Promise.all(Array.from({ length: poolSize }, () => worker()));
-    return { ingested, skipped };
+    // capped is only meaningful if we actually hit the limit AND there were more files
+    const hitFileCap = ingested >= maxFiles && nextIdx < files.length;
+    return {
+      ingested,
+      skipped,
+      scanned: files.length,
+      scanTruncated,
+      capped: hitFileCap,
+    };
   } finally {
     db.resumeAutoRender();
   }
@@ -376,7 +414,7 @@ export async function dispatchSourcesRoute(
       writeRoots(configPath, roots);
     }
     // Ingest on add (drives the brain-graph animation via source:'ingest' feed).
-    let result: { ingested: number; skipped: number } | LocalFileIngestResult;
+    let result: IngestFolderResult | LocalFileIngestResult;
     if (kind === 'folder') result = await ingestFolder(abs, ingestFile, deps.db);
     else result = await ingestFile(abs);
     sendJson(res, { root, result });
