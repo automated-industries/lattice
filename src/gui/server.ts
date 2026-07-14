@@ -628,7 +628,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // Process-constant dependencies for the extracted read-route dispatcher
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
-  const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText, guiAssetsDir };
+  const readDeps: ReadRoutesDeps = {
+    host,
+    guiVersion,
+    guiAppHtml,
+    sendText,
+    guiAssetsDir,
+    connectors: builtinConnectors(),
+  };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const computedDeps: ComputedRoutesDeps = { host };
