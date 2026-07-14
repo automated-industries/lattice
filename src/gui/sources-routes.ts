@@ -318,15 +318,11 @@ async function ingestFolder(
   db.pauseAutoRender();
   let ingested = 0;
   let skipped = 0;
-  let capped = false;
   try {
     let nextIdx = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
-        if (ingested >= maxFiles) {
-          capped = true; // success cap reached — mark as capped if there are more files
-          return;
-        }
+        if (ingested >= maxFiles) return; // success cap reached — stop pulling
         const file = files[nextIdx++];
         if (file === undefined) return; // past the last file
         let r: LocalFileIngestResult | null = null;

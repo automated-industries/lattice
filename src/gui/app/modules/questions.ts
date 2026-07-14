@@ -84,8 +84,15 @@ export const questionsJs = `
       if (spec.subject) {
         var subhead = document.createElement('div'); subhead.className = 'q-subject';
         var sublink = document.createElement('a');
-        sublink.href = '#/fs/' + encodeURIComponent(spec.subject.table) + '/' + encodeURIComponent(spec.subject.rowId);
-        sublink.textContent = 'Re: ' + escapeHtml(spec.subject.label);
+        sublink.href = '#'; // link styling only; navigation via click handler
+        sublink.textContent = 'Re: ' + spec.subject.label; // textContent doesn't parse HTML, so no escapeHtml needed
+        // Navigate to the subject record when clicked (same pattern as openSearchHit).
+        sublink.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (typeof openSearchHit === 'function') {
+            openSearchHit(spec.subject.table, spec.subject.rowId);
+          }
+        });
         subhead.appendChild(sublink);
         head.appendChild(subhead);
       }
