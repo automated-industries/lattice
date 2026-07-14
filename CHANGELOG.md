@@ -107,8 +107,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   - An **empty wrapped result** (`{ "items": [] }`, e.g. an empty account) no longer invents a
     phantom table + a garbage row every sync.
   - Two long, distinct record kinds that truncate to the same physical table name are now
-    **de-collided**, so neither kind's schema is silently dropped.
+    **de-collided**, so neither kind's schema is silently dropped — including the **cloud
+    (Postgres) case**, where identifiers are silently truncated to 63 bytes: the physical table
+    name is now bounded to 63 bytes at the single point every path names it, so two long names can
+    no longer collapse to one table on Postgres (SQLite has no such limit).
   - A source field literally named `data` no longer collides with the reserved JSON-overflow column.
+  - The legacy→typed **migration is now atomic from the retry's perspective**: the toolkit re-key
+    is rolled back if any later step (populate the typed tables, retire the flat rows) fails, so a
+    transient error can never leave a typed-but-empty connection with its data stranded — the whole
+    migration simply retries on the next load.
 - **On-access refresh now covers external-DB (`db_source`) tables too.** Reading an imported
   database table kicks the same throttled background refresh as an MCP table (it previously
   resolved no connector and silently never refreshed). Connector-table matching against a query is

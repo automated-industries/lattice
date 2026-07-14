@@ -269,20 +269,32 @@ async function migrateLegacyMcpConnection(
     brand ?? row.displayName ?? connector.connector,
   );
   if (!descriptor) return false; // nothing modelable → keep the flat mcp_items fallback
+  // The re-key must happen BEFORE syncConnector (which reads the toolkit off the row to pick the
+  // typed models). But the re-key is the only step the retry gate keys on (it re-selects
+  // `toolkit==='mcp'`), so if any later step fails after re-keying, roll the toolkit back to
+  // `mcp` — otherwise the row is left typed-but-empty with its data stranded in mcp_items and the
+  // migration never retries. Better a retriable flat connection than a silent half-migration.
   await updateConnectorConnection(db, row.id, connectionId, toolkit);
-  for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-  await enableConnectorRls(db, connector, toolkit);
-  await syncConnector(db, connector, row.id); // force-populate the typed tables now
-  // Retire the pre-migration flat `mcp_items` rows for this connection: their data now lives in
-  // the typed tables, so leaving them would double the data live, inflate the item count, and
-  // survive a later disconnect (which tears down only the current toolkit's typed tables).
-  // Soft-delete (never hard) so they stay recoverable and drop out of context/search/counts now.
   try {
-    const now = new Date().toISOString();
-    const staleKeys = await collectConnectorKeys(db, 'mcp_items', 'item_id', row.id);
-    for (const key of staleKeys) await db.update('mcp_items', key, { deleted_at: now });
-  } catch {
-    /* mcp_items absent or already clean — nothing to retire */
+    for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
+    await enableConnectorRls(db, connector, toolkit);
+    await syncConnector(db, connector, row.id); // force-populate the typed tables now
+    // Retire the pre-migration flat `mcp_items` rows for this connection: their data now lives in
+    // the typed tables, so leaving them would double the data live, inflate the item count, and
+    // survive a later disconnect (which tears down only the current toolkit's typed tables).
+    // Soft-delete (never hard) so they stay recoverable and drop out of context/search/counts.
+    // Skip cleanly when there is no mcp_items table; a real DB error propagates to the rollback.
+    if (db.getRegisteredTableNames().includes('mcp_items')) {
+      const now = new Date().toISOString();
+      const staleKeys = await collectConnectorKeys(db, 'mcp_items', 'item_id', row.id);
+      for (const key of staleKeys) await db.update('mcp_items', key, { deleted_at: now });
+    }
+  } catch (e) {
+    // Roll the re-key back so the ENTIRE migration retries on the next load (idempotently:
+    // introspect re-sets the descriptor, syncConnector upserts). The caller logs the failure —
+    // and with the row back on `mcp`, its "flat fallback kept" message is now accurate.
+    await updateConnectorConnection(db, row.id, connectionId, 'mcp');
+    throw e;
   }
   return true;
 }

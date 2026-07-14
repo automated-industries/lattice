@@ -42,6 +42,34 @@ class RtFakeTransport implements McpTransport {
   }
 }
 
+/** Like RtFakeTransport but throws once `failAfter` successful callTool()s have happened — so
+ *  introspection can succeed (call #1) and the subsequent migration sync fails (call #2). */
+class CountingFailTransport implements McpTransport {
+  private calls = 0;
+  constructor(
+    private readonly tools: McpToolInfo[],
+    private readonly results: Record<string, unknown>,
+    private readonly failAfter: number,
+  ) {}
+  listTools(): Promise<McpToolInfo[]> {
+    return Promise.resolve(this.tools);
+  }
+  callTool(call: McpToolCall): Promise<unknown> {
+    this.calls++;
+    if (this.calls > this.failAfter) return Promise.reject(new Error('sync boom'));
+    return Promise.resolve(this.results[call.tool] ?? {});
+  }
+  listResources(): Promise<McpResourceInfo[]> {
+    return Promise.resolve([]);
+  }
+  serverInfo(): { name?: string } | undefined {
+    return { name: 'partner-api-mcp' };
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 /**
  * 4.3 — connectors GUI routes (SQLite, fake connector). Exercises the connect →
  * sync → refresh → disconnect HTTP surface without any real SDK and without
@@ -742,6 +770,46 @@ describe('connectors routes (MCP multi-instance)', () => {
     // …and the data now lives in the typed table.
     const typedRows = await db.query('mcp_justworks_deduction_types', {});
     expect(typedRows.length).toBeGreaterThan(0);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
+  });
+
+  it('a post-re-key failure during migration rolls back to the flat toolkit (retriable) and never prematurely deletes mcp_items (regression)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const connId = 'rt-rollback';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    const flat = genericConnector();
+    for (const m of flat.models('mcp')) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_items', {
+      item_id: 'list_deduction_types:MED',
+      kind: 'item',
+      tool: 'list_deduction_types',
+      title: 'Medical',
+      _source_connector_id: cid,
+    });
+    // Introspection (call #1) succeeds; the post-re-key sync (call #2) throws.
+    const transport = new CountingFailTransport(
+      [{ name: 'list_deduction_types' }],
+      { list_deduction_types: { items: [{ id: 'MED', name: 'Medical (pretax)' }] } },
+      1,
+    );
+    const typed = genericConnector({ transportFactory: () => Promise.resolve(transport) });
+    await call(typed as unknown as FakeMcpConnector, 'POST', '/api/connectors/sync-if-stale', {});
+    // Rolled back to the flat toolkit so the whole migration retries next load…
+    expect((await getConnector(db, cid))?.toolkit).toBe('mcp');
+    // …and the flat rows were NOT deleted (their data was never safely typed).
+    const flatRows = await db.query('mcp_items', {
+      filters: [{ col: '_source_connector_id', op: 'eq', val: cid }],
+    });
+    expect(flatRows.some((r) => !r.deleted_at)).toBe(true);
     clearMcpSchemaDescriptor(connId);
     clearMcpConnection(connId);
   });

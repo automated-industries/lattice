@@ -132,3 +132,23 @@ describe('buildMcpModelDefs', () => {
     expect(mcpTableName('justworks', 'company')).toBe('mcp_justworks_company');
   });
 });
+
+describe('mcpTableName byte-bounding (Postgres 63-byte identifier limit)', () => {
+  it('leaves a short name unchanged', () => {
+    expect(mcpTableName('justworks', 'company')).toBe('mcp_justworks_company');
+  });
+
+  it('bounds the full name to <= 63 bytes AND keeps two long kinds that would truncate-collide distinct', () => {
+    // Long prefix + two kinds differing only past byte 63: under raw Postgres identifier
+    // truncation both would collapse to one physical table (silently mixing rows); the bounded
+    // namer must keep them distinct.
+    const prefix = 'p'.repeat(40);
+    const a = 'k'.repeat(18) + 'a' + 'z'.repeat(15);
+    const b = 'k'.repeat(18) + 'b' + 'z'.repeat(15);
+    const ta = mcpTableName(prefix, a);
+    const tb = mcpTableName(prefix, b);
+    expect(Buffer.byteLength(ta, 'utf8')).toBeLessThanOrEqual(63);
+    expect(Buffer.byteLength(tb, 'utf8')).toBeLessThanOrEqual(63);
+    expect(ta).not.toBe(tb);
+  });
+});

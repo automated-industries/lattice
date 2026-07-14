@@ -9,6 +9,7 @@
  * never collide and each auto-groups under its own GUI schema header (via `mcp:<connId>` toolkit).
  */
 
+import { createHash } from 'node:crypto';
 import {
   getAssistantCredential,
   setAssistantCredential,
@@ -92,7 +93,16 @@ export function clearMcpSchemaDescriptor(connectionId: string): void {
 
 /** The imported Lattice table name for a record kind (namespaced by the connection prefix). */
 export function mcpTableName(prefix: string, kind: string): string {
-  return `mcp_${prefix}_${slugify(kind)}`;
+  const raw = `mcp_${prefix}_${slugify(kind)}`;
+  // Postgres silently truncates an identifier to 63 bytes; two names differing only past byte 63
+  // would collapse to ONE physical table on cloud (SQLite has no such limit, so tests never see
+  // it). Bound the FULL name here — the single namer every caller routes through — so the
+  // app-level name is byte-identical to what the DB stores, and the de-collision that compares
+  // these names operates on the real name. `raw` is pure ASCII (mcp_ + slug + slug), so a
+  // character slice is a byte slice; 56 + '_' + 6 hex = 63.
+  if (Buffer.byteLength(raw, 'utf8') <= 63) return raw;
+  const h = createHash('sha1').update(raw).digest('hex').slice(0, 6);
+  return raw.slice(0, 56) + '_' + h;
 }
 
 // Reserved column names never modeled as their own data column: the lifecycle/base columns,
