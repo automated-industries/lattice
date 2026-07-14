@@ -61,8 +61,13 @@ export interface FeedEvent {
   ts: string;
   /** Optional human-readable one-liner (e.g. "Created row in People"). */
   summary?: string;
-  /** Ingest progress snapshot (present only on op: 'ingest_progress'). */
-  progress?: { done: number; total: number };
+  /**
+   * Ingest progress snapshot (present only on op: 'ingest_progress').
+   * `terminal` marks the batch's final event explicitly — the client cannot
+   * infer completion from `done >= total`, because a capped folder ingest
+   * legitimately finishes with fewer files ingested than were found.
+   */
+  progress?: { done: number; total: number; terminal?: boolean };
 }
 
 /** A feed event before the bus has assigned its sequence number + timestamp. */

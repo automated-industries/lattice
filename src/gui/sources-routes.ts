@@ -299,7 +299,9 @@ interface IngestFolderResult {
   capped: boolean;
 }
 
-async function ingestFolder(
+// Exported for tests: the `caps` override is the only way to exercise the cap
+// paths without creating hundreds of files, and it is not exposed via any route.
+export async function ingestFolder(
   abs: string,
   ingestFile: (p: string) => Promise<LocalFileIngestResult>,
   db: Lattice,
@@ -347,7 +349,7 @@ async function ingestFolder(
       op: 'ingest_progress',
       rowId: null,
       source: 'ingest',
-      summary: `Ingesting 0 of ${files.length} files…`,
+      summary: `Ingesting 0 of ${String(files.length)} files…`,
       progress: { done: 0, total: files.length },
     });
   }
@@ -398,7 +400,7 @@ async function ingestFolder(
             op: 'ingest_progress',
             rowId: null,
             source: 'ingest',
-            summary: `Ingesting ${ingested} of ${files.length} files…`,
+            summary: `Ingesting ${String(ingested)} of ${String(files.length)} files…`,
             progress: { done: ingested, total: files.length },
           });
         }
@@ -409,15 +411,17 @@ async function ingestFolder(
     // capped is only meaningful if we actually hit the limit AND there were more files
     const hitFileCap = ingested >= maxFiles && nextIdx < files.length;
 
-    // Publish terminal progress event if feed is available.
+    // Publish the terminal progress event if feed is available. `terminal` is
+    // explicit because a capped run ends with done < total — the client must
+    // not have to guess completion from the counts.
     if (feed) {
       feed.publish({
         table: null,
         op: 'ingest_progress',
         rowId: null,
         source: 'ingest',
-        summary: `Ingested ${ingested} of ${files.length} files`,
-        progress: { done: ingested, total: files.length },
+        summary: `Ingested ${String(ingested)} of ${String(files.length)} files`,
+        progress: { done: ingested, total: files.length, terminal: true },
       });
     }
 

@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
-import { dispatchSourcesRoute } from '../../src/gui/sources-routes.js';
+import { dispatchSourcesRoute, ingestFolder } from '../../src/gui/sources-routes.js';
 import { FeedBus } from '../../src/gui/feed.js';
 import type { LocalFileIngestResult } from '../../src/gui/ingest-routes.js';
 
@@ -123,7 +123,7 @@ describe('ingest progress feed emission', () => {
     }
 
     const feed = new FeedBus();
-    const events: Array<{ op: string; progress?: { done: number; total: number } }> = [];
+    const events: { op: string; progress?: { done: number; total: number } }[] = [];
     feed.subscribe((e) => {
       if (e.op === 'ingest_progress') {
         events.push({ op: e.op, progress: e.progress });
@@ -142,10 +142,40 @@ describe('ingest progress feed emission', () => {
     expect(events.length).toBeGreaterThanOrEqual(2);
     // First event is initial: done=0.
     expect(events[0]).toEqual({ op: 'ingest_progress', progress: { done: 0, total: 3 } });
-    // Last event is terminal: done=total.
+    // Last event is terminal — flagged explicitly, since a capped run ends with
+    // done < total and the client must not infer completion from the counts.
     const last = events[events.length - 1];
+    expect(last?.progress?.terminal).toBe(true);
     expect(last?.progress?.done).toBe(last?.progress?.total);
     expect(last?.progress?.total).toBe(3);
+  });
+
+  it('marks the terminal event even when the success cap truncates the run', async () => {
+    // The cap stops workers from PULLING more files once reached; files already
+    // in flight still complete, so a pool of 4 can overshoot a small cap. Use a
+    // cap far below the file count so truncation is guaranteed regardless of
+    // completion interleaving, and assert invariants rather than exact counts.
+    for (let i = 0; i < 12; i++) writeFileSync(join(workDir, `c${i}.txt`), `c${i}`);
+    const feed = new FeedBus();
+    const events: { progress?: { done: number; total: number; terminal?: boolean } }[] = [];
+    feed.subscribe((e) => {
+      if (e.op === 'ingest_progress') events.push({ progress: e.progress });
+    });
+    let n = 0;
+    const fakeIngest = (): Promise<LocalFileIngestResult> =>
+      Promise.resolve({ id: 'row-' + ++n, extraction_status: 'extracted' });
+
+    const result = await ingestFolder(workDir, fakeIngest, db, { maxFiles: 2 }, feed);
+
+    // The run is capped and the terminal event still fires, flagged explicitly,
+    // with done < total — the client-side hang this guards against is a bar
+    // stuck at "Ingesting N of M" forever because done never reaches total.
+    expect(result.capped).toBe(true);
+    const last = events[events.length - 1];
+    expect(last?.progress?.terminal).toBe(true);
+    expect(last?.progress?.done).toBe(result.ingested);
+    expect(last?.progress?.done).toBeLessThan(12);
+    expect(last?.progress?.total).toBe(12);
   });
 
   it('is a no-op when feed is absent', async () => {

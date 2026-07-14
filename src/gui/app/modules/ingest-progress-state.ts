@@ -21,7 +21,13 @@ export const ingestProgressStateJs = `    // ───────────�
           kind: kind,
         };
       } else {
-        // Update total if it differs (e.g., server ingest starts after browser batch).
+        // A new batch is reusing live state (e.g. a second ingest starts right
+        // after one finished). Cancel any pending terminal clear-out first, or
+        // the old batch's timeout would remove the new batch's bar mid-run.
+        if (ingestProgressState.__clearTimeout) {
+          clearTimeout(ingestProgressState.__clearTimeout);
+          ingestProgressState.__clearTimeout = null;
+        }
         ingestProgressState.total = total;
         ingestProgressState.kind = kind;
         ingestProgressState.terminal = false;
@@ -56,19 +62,29 @@ export const ingestProgressStateJs = `    // ───────────�
         feedEl.insertBefore(node, feedEl.firstChild);
       }
       var s = ingestProgressState;
-      var label = s.kind === 'server' ? 'Ingesting' : 'Analyzing';
-      var labelText = s.terminal
-        ? (label + ' ' + s.total + ' file' + (s.total === 1 ? '' : 's'))
-        : (label + ' ' + s.done + ' of ' + s.total + ' files…');
+      // Terminal labels are past-tense and honest about a capped run: a server
+      // ingest can finish with done < total (per-import limit), so it reports
+      // "Ingested N of M files" rather than pretending the whole set landed.
+      var labelText;
+      if (s.terminal) {
+        labelText = s.kind === 'server'
+          ? ('Ingested ' + s.done + ' of ' + s.total + ' files')
+          : ('Analyzed ' + s.total + ' file' + (s.total === 1 ? '' : 's'));
+      } else {
+        labelText = (s.kind === 'server' ? 'Ingesting' : 'Analyzing') + ' ' + s.done + ' of ' + s.total + ' files…';
+      }
       node.innerHTML =
         '<div class="ingest-progress-label">' + labelText + '</div>' +
         '<div class="ingest-progress-track"><div class="ingest-progress-fill"></div></div>';
       var fill = node.querySelector('.ingest-progress-fill');
       if (fill) fill.style.width = Math.round((s.done / s.total) * 100) + '%';
-      // After terminal, clear state and remove the node in ~2.5s.
+      // After terminal, clear state and remove the node in ~2.5s. Re-query the
+      // feed at fire time (not the captured feedEl) so a rail rebuilt during
+      // the wait can't strand a zombie bar in the new tree.
       if (s.terminal && !ingestProgressState.__clearTimeout) {
         ingestProgressState.__clearTimeout = setTimeout(function () {
-          var toRemove = feedEl.querySelector('.ingest-progress');
+          var liveFeed = document.getElementById('rail-feed');
+          var toRemove = liveFeed && liveFeed.querySelector('.ingest-progress');
           if (toRemove && toRemove.parentNode) toRemove.parentNode.removeChild(toRemove);
           ingestProgressState = null;
         }, 2500);
