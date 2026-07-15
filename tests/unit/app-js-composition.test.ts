@@ -496,8 +496,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Ingest-progress hardening: explicit terminal flag on progress events (a capped run ends
 // done < total, so counts can't signal completion), stale clear-timeout cancelled when a
 // new batch reuses live state, past-tense terminal labels. Recaptured.
-const ORIGINAL_LENGTH = 721750;
-const ORIGINAL_SHA256 = '0cb90bd2b68c0c24533af3f7a995e359d6fae832cf1079ffecbd5c3aa489c95e';
+// Pending-question banner: store-backed cards collapse behind a one-line count banner
+// (workspace-scoped store vs thread-scoped rail); expand in place on click. Recaptured.
+const ORIGINAL_LENGTH = 724142;
+const ORIGINAL_SHA256 = '1b46a119d3e4714cbfe96b265ad0968e064985ae5184a8bba4611fe11f2d3944';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
