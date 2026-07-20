@@ -125,7 +125,12 @@ export async function resolveVisionAuth(db: Lattice | null): Promise<ClaudeAuth 
   const byoAnthropicKey = (): ClaudeAuth | null => {
     const compat = readOpenAiCompatConfig();
     if (!compat?.apiKey) return null;
-    return isAnthropicEndpoint(compat.baseUrl) ? { apiKey: compat.apiKey } : null;
+    // Carry the endpoint through so vision reaches the SAME custom Anthropic host chat uses
+    // (a self-hosted endpoint / proxy) — without it the vision call goes to api.anthropic.com
+    // with a host-specific key and 401s (the reported "No source text" on a custom-host key).
+    return isAnthropicEndpoint(compat.baseUrl)
+      ? { apiKey: compat.apiKey, baseURL: anthropicBaseFromEndpoint(compat.baseUrl) }
+      : null;
   };
   if (!isManagedModelAuth() && activeProviderKind() === 'openai_compat') {
     return byoAnthropicKey() ?? (await resolveClaudeAuth(db));

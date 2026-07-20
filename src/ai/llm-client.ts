@@ -74,6 +74,9 @@ export interface ClaudeAuth {
   apiKey?: string | undefined;
   authToken?: string | undefined;
   betaHeader?: string | undefined;
+  /** Override the Anthropic API host (the SDK's `baseURL`). Needed for a BYO custom-host key
+   *  or a proxy; when unset the SDK reads `process.env.ANTHROPIC_BASE_URL` or the default host. */
+  baseURL?: string | undefined;
 }
 
 // ── Real client (lazy-loaded SDK) ───────────────────────────────────────────
@@ -86,6 +89,7 @@ interface AnthropicClientConfig {
   apiKey?: string | null;
   authToken?: string;
   defaultHeaders?: Record<string, string>;
+  baseURL?: string;
 }
 type AnthropicCtor = new (config: AnthropicClientConfig) => AnthropicSdk;
 interface AnthropicSdk {
@@ -146,6 +150,7 @@ export function buildAnthropicConfig(auth: ClaudeAuth): AnthropicClientConfig {
     config.apiKey = null;
   }
   if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
+  if (auth.baseURL) config.baseURL = auth.baseURL;
   return config;
 }
 

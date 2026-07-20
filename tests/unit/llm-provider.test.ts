@@ -206,8 +206,12 @@ describe('LLM provider selection', () => {
     setAssistantCredential(ACTIVE_PROVIDER_KIND, 'openai_compat');
     // Root cause: the narrow resolver returns null in exactly this state…
     expect(await resolveClaudeAuth(null)).toBeNull();
-    // …while the unified vision resolver returns the usable key, so captions can generate.
-    expect(await resolveVisionAuth(null)).toEqual({ apiKey: 'sk-ant-byo' });
+    // …while the unified vision resolver returns the usable key AND carries the endpoint host, so
+    // the vision call reaches the same host chat does (consistent with the chat client).
+    expect(await resolveVisionAuth(null)).toEqual({
+      apiKey: 'sk-ant-byo',
+      baseURL: 'https://api.anthropic.com',
+    });
   });
 
   it('resolveVisionAuth gives NO vision auth for a non-Anthropic OpenAI-compat endpoint', async () => {
