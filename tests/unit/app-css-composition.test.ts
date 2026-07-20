@@ -235,8 +235,11 @@ import { css } from '../../src/gui/app/css.js';
 // Question cards: .q-subject secondary line (the record a clarification is
 // about) — muted, hover underline. Recaptured.
 // .q-banner collapsed pending-questions banner + #q-stack hidden rule. Recaptured.
-const ORIGINAL_LENGTH = 164910;
-const ORIGINAL_SHA256 = '99565f1bd167014d3fbb0a07db6da242b19341ada61849e88b83da1b18e5f9e4';
+// Traceable rendered context: .chip-trace inline trace chips, .source-chips-row /
+// .source-chip per-file source summaries, .provenance-card* floating card (tokens
+// only — z tier via var(--z-popover)). Recaptured.
+const ORIGINAL_LENGTH = 167476;
+const ORIGINAL_SHA256 = 'fd7effc140b32604b96101ac32fc8c02f487d1283114864c4d95dfa4452eb5ca';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

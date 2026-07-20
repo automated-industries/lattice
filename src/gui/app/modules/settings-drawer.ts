@@ -53,7 +53,6 @@ export const settingsDrawerJs = `    // ─────────────�
       card.style.top = (rect.bottom + 4) + 'px';
       card.style.left = Math.min(rect.left, window.innerWidth - 300) + 'px';
       card.style.maxWidth = '300px';
-      card.style.zIndex = '10000';
       card.innerHTML = '<div class="provenance-card-body">' +
         '<div class="provenance-card-header">' + escapeHtml(chip.textContent) + '</div>' +
         '<div class="provenance-card-meta">' + escapeHtml(tableVal) + '\\u00a0·\\u00a0<code>' + escapeHtml(idVal) + '</code></div>' +

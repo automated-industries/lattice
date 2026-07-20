@@ -498,8 +498,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // new batch reuses live state, past-tense terminal labels. Recaptured.
 // Pending-question banner: store-backed cards collapse behind a one-line count banner
 // (workspace-scoped store vs thread-scoped rail); expand in place on click. Recaptured.
-const ORIGINAL_LENGTH = 731145;
-const ORIGINAL_SHA256 = '0ab07e2ddeaf6059d7886f83ecc3bead95fef4d320c7b698b1501acce63a2858';
+// Traceable rendered context: lattice:// references in the record context doc render as
+// trace chips opening a provenance card (row fields + tier + Open), and per-file source
+// chips summarize each context file's origin table/count. Recaptured.
+const ORIGINAL_LENGTH = 739494;
+const ORIGINAL_SHA256 = 'dcd98b9bfb236f4657962c299661c48ae377f38435279aac5fbc9b5e4226a9a1';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
