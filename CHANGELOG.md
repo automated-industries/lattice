@@ -18,7 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   "Open" button. Links do NOT appear in the entity's own self file (write-back constraints), but
   custom user-supplied render functions can emit them anywhere. The context API response now
   includes `source` metadata for each file (type, table, and row count for related sources),
-  enabling future UI features like table-scoped filtering and rollup statistics.
+  enabling future UI features like table-scoped filtering and rollup statistics. Assistant chat
+  answers get the same treatment: `lattice://` object references in a reply open the provenance
+  card in place (the card's Open action navigates), so a value in an answer traces to its source
+  row without leaving the conversation.
 
 ### Changed
 

@@ -501,8 +501,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Traceable rendered context: lattice:// references in the record context doc render as
 // trace chips opening a provenance card (row fields + tier + Open), and per-file source
 // chips summarize each context file's origin table/count. Recaptured.
-const ORIGINAL_LENGTH = 739494;
-const ORIGINAL_SHA256 = 'dcd98b9bfb236f4657962c299661c48ae377f38435279aac5fbc9b5e4226a9a1';
+// Chat pills trace-first: a lattice-ref pill in an assistant answer opens the provenance
+// card in place (card's Open navigates) instead of jumping straight to the record. Recaptured.
+const ORIGINAL_LENGTH = 739723;
+const ORIGINAL_SHA256 = '4f245af35d01597539c67b9718246e80938232f65e92ecc1aa8f385eb8f2a72c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
