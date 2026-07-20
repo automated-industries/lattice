@@ -269,6 +269,10 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
           id,
           table: 'dashboards',
           open: true,
+          // A ready-made clickable link for the assistant to include in its reply
+          // (the [label](lattice://…) pill form the chat renderer turns into a chip).
+          title,
+          link: `lattice://dashboards/${id}`,
           ...(qaIssues.length > 0 ? { qaIssues } : {}),
         },
       };
@@ -336,6 +340,8 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
           id: targetId,
           table: 'dashboards',
           open: true,
+          // Ready-made clickable link for the assistant's reply (see create_dashboard).
+          link: `lattice://dashboards/${targetId}`,
           ...(qaIssues.length > 0 ? { qaIssues } : {}),
         },
       };

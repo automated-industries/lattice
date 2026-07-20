@@ -11,6 +11,13 @@ export const renderProgressStateJs = `    // ───────────�
       // This is the single mapping the assistant's open events, lattice:// link
       // pills, and activity-card clicks all route through.
       if (table === 'dashboards') {
+        // Open the Dashboards sidebar panel if it's collapsed, so the highlighted
+        // dashboard is actually visible — the nav is a single-open accordion that
+        // defaults to Tables. toggleSidebarGroup no-ops when already open.
+        if (typeof sidebarGroupCollapsed === 'function' && sidebarGroupCollapsed('nav-dashboards') &&
+            typeof toggleSidebarGroup === 'function') {
+          toggleSidebarGroup('nav-dashboards');
+        }
         location.hash = '#/analytics/' + encodeURIComponent(id);
         return;
       }
