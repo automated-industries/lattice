@@ -190,6 +190,11 @@ export async function computeContextFileSourceCounts(
 ): Promise<void> {
   if (!schemaDef) return; // manifest-only path: counts unavailable
 
+  // A composite PK falls back to its first column: relation sources reference a
+  // single column, so the first PK column is the only usable join key here.
+  const pkRaw = db.getPrimaryKey(table);
+  const pkCol = Array.isArray(pkRaw) ? pkRaw[0] : pkRaw;
+
   for (const [filename, fileSpec] of Object.entries(schemaDef.files)) {
     const source = fileSources[filename];
     if (!source || source.type === 'self' || source.type === 'custom' || source.type === 'enriched') {
@@ -202,9 +207,6 @@ export async function computeContextFileSourceCounts(
       if (source.type === 'hasMany' && fileSpec.source.type === 'hasMany') {
         // COUNT(*) FROM <source.table> WHERE <fk> = ?
         const fk = fileSpec.source.foreignKey;
-        const pkCol = Array.isArray(db.getPrimaryKey(table))
-          ? (db.getPrimaryKey(table) as string[])[0]
-          : db.getPrimaryKey(table);
         const refCol = fileSpec.source.references ?? pkCol ?? 'id';
         const pkVal = row[refCol];
         if (pkVal != null) {
@@ -216,9 +218,6 @@ export async function computeContextFileSourceCounts(
         // COUNT(*) FROM <junctionTable> WHERE localKey = ?
         // (junction-row count is the display semantic for m2m rollups)
         const src = fileSpec.source;
-        const pkCol = Array.isArray(db.getPrimaryKey(table))
-          ? (db.getPrimaryKey(table) as string[])[0]
-          : db.getPrimaryKey(table);
         const refCol = src.references ?? pkCol ?? 'id';
         const pkVal = row[refCol];
         if (pkVal != null) {
