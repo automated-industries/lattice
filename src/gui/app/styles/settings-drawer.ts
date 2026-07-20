@@ -187,7 +187,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       border-radius: var(--r-sm); background: var(--surface-2);
     }
     .source-chip {
-      display: inline-flex; align-items: center; gap: 3px;
+      display: inline-flex; align-items: center; gap: 4px;
       padding: 4px 8px; border-radius: var(--r-sm);
       background: var(--surface); border: 1px solid var(--border);
       color: var(--text); font-size: 12px; font-weight: 500; white-space: nowrap;
@@ -198,7 +198,7 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       display: flex; flex-direction: column;
       background: var(--surface); border: 1px solid var(--border-strong);
       border-radius: var(--r-md); box-shadow: var(--shadow-lg);
-      z-index: 10000; pointer-events: auto;
+      z-index: var(--z-popover); pointer-events: auto;
     }
     .provenance-card-body {
       padding: 12px; display: flex; flex-direction: column; gap: 8px;
