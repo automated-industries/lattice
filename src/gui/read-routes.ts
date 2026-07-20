@@ -1088,7 +1088,23 @@ export async function handleReadRoutes(
       sendJson(res, { files: [] });
       return true;
     }
-    sendJson(res, { files: readRowContext(active.outputDir, locator, secretCols) });
+    let files = readRowContext(active.outputDir, locator, secretCols);
+    // Render-on-demand fallback. The debounced auto-render can miss a record created moments ago
+    // during the assistant's rapid create_entity → create_row sequence (it renders the empty
+    // entity, then the post-insert render is coalesced/skipped), leaving this view empty. If a
+    // valid, existing record has no rendered content and auto-render is on, render this table's
+    // context NOW — scoped to the table + its dependents (not the whole tree), single-flight-
+    // guarded so it can't collide with the background auto-render — then re-read. Bounded: once
+    // the record is rendered it hits the file on every later view, so this fires at most once.
+    if (active.autoRender && !files.some((f) => f.content)) {
+      try {
+        await active.db.render(active.outputDir, { changedTables: new Set([ctxTable]) });
+        files = readRowContext(active.outputDir, locator, secretCols);
+      } catch {
+        /* best-effort — serve whatever is on disk rather than fail the read */
+      }
+    }
+    sendJson(res, { files });
     return true;
   }
 
