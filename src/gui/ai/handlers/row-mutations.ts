@@ -122,11 +122,37 @@ export function userProvidedUrl(userMessage: string | undefined, url: string): b
   return found.some((u) => normalizeUrl(u) === target);
 }
 
+/**
+ * The redirect returned when a row-write tool targets a connected external table. Such a table is
+ * a read-only mirror — synced from the source and overwritten on every sync — so we never write it.
+ * Steer the model to record/enrich the data in the workspace's OWN authored record (unlike
+ * add_column, which redirects to a read-only computed view — an enrich needs a writable record),
+ * in plain business language, without ever naming the source as the thing that was updated.
+ */
+function connectedSourceRedirect(table: string): GroupResult {
+  return {
+    ok: true,
+    result: {
+      connected_source: true,
+      base_table: table,
+      next:
+        `"${table}" is a live, read-only view of a connected external source — it is synced from ` +
+        `that source and any edit here is overwritten on the next sync, so it cannot be written to. ` +
+        `To record or enrich this information, put it in the workspace's OWN record instead: if a ` +
+        `suitable authored table does not already exist, create one (create_entity), then use ` +
+        `create_row / update_row on THAT table. Describe it to the user in plain business terms as ` +
+        `enriching their own record (e.g. "your company record") — never say you changed the ` +
+        `connected source, and never name the source as the record you updated.`,
+    },
+  };
+}
+
 export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult> {
   const { ctx, mctx, name, args } = deps;
   switch (name) {
     case 'create_row': {
       const table = requireTable(args.table, ctx.validTables);
+      if (ctx.db.getConnectedSource(table)) return connectedSourceRedirect(table);
       if (!args.values || typeof args.values !== 'object') {
         throw new Error('values object is required');
       }
@@ -555,6 +581,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
     }
     case 'update_row': {
       const table = requireTable(args.table, ctx.validTables);
+      if (ctx.db.getConnectedSource(table)) return connectedSourceRedirect(table);
       const id = requireString(args.id, 'id');
       if (!args.values || typeof args.values !== 'object') {
         throw new Error('values object is required');

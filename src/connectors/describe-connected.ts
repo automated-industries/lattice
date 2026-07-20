@@ -108,7 +108,9 @@ export async function describeConnectedSources(db: Lattice, connectedBy: string)
   return (
     `\n\n# Connected data sources\n` +
     `These external sources ARE connected to this workspace right now; their data is synced into the tables noted. ` +
-    `When asked whether a source is connected, treat this list as authoritative, and query the noted tables to answer questions about that source's data.\n` +
+    `When asked whether a source is connected, treat this list as authoritative, and query the noted tables to answer questions about that source's data. ` +
+    `These synced tables are READ-ONLY mirrors — their rows are replaced on every sync, so never write to them (no create/update/delete). ` +
+    `To record or enrich data that belongs to a connected source, write it into the workspace's own record instead.\n` +
     lines.join('\n')
   );
 }

@@ -431,6 +431,19 @@ function assertNotComputedTable(db: Lattice, table: string): void {
   }
 }
 
+// A connected table is a LOCAL, read-only mirror of an external source (its rows are replaced on
+// every sync). Writing to it "succeeds" locally but is silently overwritten on the next sync — a
+// meaningless edit. Refuse it at the chokepoint so a write fails loudly instead of vanishing, and
+// so the assistant can't narrate a fake "I updated your <source> record". (Connector sync writes
+// go through db.upsert / db.update directly, NOT this path, so syncing the mirror is unaffected.)
+function assertNotConnectedTable(db: Lattice, table: string): void {
+  if (db.getConnectedSource(table)) {
+    throw writeConflict(
+      `"${table}" is a live, read-only view of a connected external source and can't be edited directly — record or enrich the data in your own workspace record instead.`,
+    );
+  }
+}
+
 /** Infer a column type for an auto-created column from its first written value. */
 function inferColumnType(v: unknown): string {
   if (typeof v === 'number') return Number.isInteger(v) ? 'INTEGER' : 'REAL';
@@ -550,6 +563,7 @@ export async function createRow(
   editId?: string,
 ): Promise<{ id: string; row: Row | null; idempotent: boolean }> {
   assertNotComputedTable(ctx.db, table);
+  assertNotConnectedTable(ctx.db, table);
   guardReservedColumns(ctx, table, values);
   // #3.6 — offline-replay idempotency. Scoped to callers that carry an edit-id
   // (the GUI row-write path; the assistant/ingest paths pass none and keep their
@@ -634,6 +648,7 @@ export async function updateRow(
   values: Partial<Row>,
 ): Promise<{ row: Row | null }> {
   assertNotComputedTable(ctx.db, table);
+  assertNotConnectedTable(ctx.db, table);
   guardReservedColumns(ctx, table, values);
   const before = await ctx.db.get(table, id);
   // Never silently "succeed" against a row that doesn't exist. A
@@ -701,6 +716,7 @@ export async function deleteRow(
   hard: boolean,
 ): Promise<void> {
   assertNotComputedTable(ctx.db, table);
+  assertNotConnectedTable(ctx.db, table);
   const before = await ctx.db.get(table, id);
   // Deleting a non-existent row is a no-op that would still record a
   // bogus audit/feed entry. Surface the bad id instead of faking success.
