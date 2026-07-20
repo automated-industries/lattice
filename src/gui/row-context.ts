@@ -189,7 +189,6 @@ export async function computeContextFileSourceCounts(
   fileSources: Record<string, ContextFileSource>,
 ): Promise<void> {
   if (!schemaDef) return; // manifest-only path: counts unavailable
-  const adapter = (db as unknown as { _adapter: { dialect: string } })._adapter;
 
   for (const [filename, fileSpec] of Object.entries(schemaDef.files)) {
     const source = fileSources[filename];
@@ -214,9 +213,8 @@ export async function computeContextFileSourceCounts(
           });
         }
       } else if (source.type === 'manyToMany' && fileSpec.source.type === 'manyToMany') {
-        // COUNT(*) FROM <remoteTable> WHERE id IN (
-        //   SELECT remoteKey FROM <junctionTable> WHERE localKey = ?
-        // )
+        // COUNT(*) FROM <junctionTable> WHERE localKey = ?
+        // (junction-row count is the display semantic for m2m rollups)
         const src = fileSpec.source;
         const pkCol = Array.isArray(db.getPrimaryKey(table))
           ? (db.getPrimaryKey(table) as string[])[0]
@@ -224,31 +222,16 @@ export async function computeContextFileSourceCounts(
         const refCol = src.references ?? pkCol ?? 'id';
         const pkVal = row[refCol];
         if (pkVal != null) {
-          // Use a subquery: count remote rows via the junction table.
-          // For now, best-effort via the query API if supported; otherwise null.
-          const junctionRows = await db.query(src.junctionTable, {
+          // Bounded count: only junction rows matching localKey.
+          count = await db.count(src.junctionTable, {
             filters: [{ col: src.localKey, op: 'eq', val: pkVal }],
           });
-          const remoteIds = junctionRows.map((r) => r[src.remoteKey] as unknown).filter((id) => id != null);
-          if (remoteIds.length > 0) {
-            count = await db.count(src.remoteTable, {
-              filters: [{ col: src.references ?? 'id', op: 'in', val: remoteIds }],
-            });
-          } else {
-            count = 0;
-          }
         }
       } else if (source.type === 'belongsTo' && fileSpec.source.type === 'belongsTo') {
         // belongsTo always returns 0 or 1 row. Check if the FK is populated.
         const fk = fileSpec.source.foreignKey;
         const fkVal = row[fk];
-        if (fkVal != null) {
-          // One row if it exists; we don't need to query, just set count to 1
-          // (the renderfunction would have returned empty if it didn't exist).
-          count = 1;
-        } else {
-          count = 0;
-        }
+        count = fkVal != null ? 1 : 0;
       }
 
       if (count !== null) {
