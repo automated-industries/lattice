@@ -56,6 +56,7 @@ export const questionsJs = `
         banner.id = 'q-banner';
         banner.className = 'q-banner';
         banner.type = 'button';
+        banner.setAttribute('aria-controls', 'q-stack');
         banner.addEventListener('click', function () {
           qStackExpanded = !qStackExpanded;
           qRenderBanner();
@@ -445,6 +446,11 @@ export const questionsJs = `
         if (twin.parentNode) twin.parentNode.removeChild(twin);
       }
       qPendingCount = Math.max(0, qPendingCount - 1);
+      // Repaint the banner synchronously — the sibling resolve paths (qMarkResolved,
+      // refreshQuestions, resetQuestionsState) all do; without it a resolve from the
+      // Configure Data Questions tab leaves a stale "▸ N data questions waiting" banner
+      // until a later feed event happens to reconcile.
+      qRenderBanner();
       if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
       updateQuestionDot();
       setTimeout(function () { if (card && card.parentNode) card.parentNode.removeChild(card); }, 6000);

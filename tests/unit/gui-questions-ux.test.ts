@@ -93,8 +93,10 @@ describe('clarification questions — non-destructive surfacing (jsdom)', () => 
     const w = loadQuestions([{ id: 'q1', question: 'Track suppliers?', options: ['Yes', 'No'] }]);
     await w.refreshQuestions(false);
     await flush();
-    const dock = document.getElementById('question-cards')!;
-    expect(dock.children.length).toBe(1); // dock twin present
+    // Cards now live in the #q-stack collapsible region (a #q-banner sibling summarizes it).
+    const stack = document.getElementById('q-stack')!;
+    expect(stack.children.length).toBe(1); // dock twin present in the stack
+    expect(document.getElementById('q-banner')).not.toBeNull(); // banner summarizes 1 pending
     // The user answers it from the Data Questions tab: qDqAfterResolve must remove the
     // dock twin's DOM node (not just its qCards entry), or a stale, still-clickable card
     // lingers in the dock that refreshQuestions can no longer reap.
@@ -102,7 +104,9 @@ describe('clarification questions — non-destructive surfacing (jsdom)', () => 
       globalThis as unknown as { qDqAfterResolve: (id: string, c: unknown) => void }
     ).qDqAfterResolve;
     qDqAfterResolve('q1', document.createElement('div'));
-    expect(document.getElementById('question-cards')!.children.length).toBe(0); // twin gone
+    expect(document.getElementById('q-stack')!.children.length).toBe(0); // twin gone
+    // …and the banner is repainted to zero (removed), not left stale (the qDqAfterResolve fix).
+    expect(document.getElementById('q-banner')).toBeNull();
   });
 
   it('pluralizes the pending-count accessible name', async () => {

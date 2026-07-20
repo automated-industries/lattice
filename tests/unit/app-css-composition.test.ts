@@ -235,8 +235,8 @@ import { css } from '../../src/gui/app/css.js';
 // Question cards: .q-subject secondary line (the record a clarification is
 // about) — muted, hover underline. Recaptured.
 // .q-banner collapsed pending-questions banner + #q-stack hidden rule. Recaptured.
-const ORIGINAL_LENGTH = 162492;
-const ORIGINAL_SHA256 = '4d51549801265a43acd656c9ccdb854205bf10189cc53e753650d08f065d970a';
+const ORIGINAL_LENGTH = 162498;
+const ORIGINAL_SHA256 = '0b1c842c0c001731b5b27db2dbb484ad5c5906fecd5c07d7b72e3e265a71242c';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

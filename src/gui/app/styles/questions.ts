@@ -11,9 +11,9 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
        workspace-scoped while the rail shows one thread, so the full stack only
        expands on request. One line, count-first, whole row clickable. */
     .q-banner {
-      display: block; width: calc(100% - 20px); margin: 8px 10px; padding: 7px 10px;
+      display: block; width: calc(100% - 20px); margin: 8px 10px; padding: 6px 10px;
       background: var(--accent-soft); border: 1px solid var(--accent);
-      border-radius: 8px; color: var(--text); font-size: 12.5px; font-weight: 600;
+      border-radius: var(--r-lg); color: var(--text); font-size: 13px; font-weight: 600;
       text-align: left; cursor: pointer;
     }
     .q-banner:hover { filter: brightness(0.97); }
