@@ -46,7 +46,12 @@ const INTENT_SYSTEM =
   'building or editing a dashboard, or anything grounded in the actual data. When you are ' +
   'unsure, set this TRUE — it is always safe to do the real work.\n' +
   '- "needs_more_info": true ONLY if the request is too ambiguous to even begin (you would ' +
-  'have to guess at something essential). Prefer false — most requests can be attempted.\n' +
+  'have to guess at something essential). Prefer false — most requests can be attempted. For a ' +
+  'request to EDIT / CHANGE / UPDATE the object the user is currently viewing, do NOT set ' +
+  'needs_more_info merely because the specific change is not restated in THIS message: if the ' +
+  'recent conversation already named the change (e.g. a tagline they chose a few turns ago), set ' +
+  'needs_work true and proceed. Only ask when NEITHER the message NOR the recent conversation ' +
+  'indicates what to change.\n' +
   '- "ack_message": \n' +
   '    * if needs_more_info is true → ONE short, friendly clarifying question.\n' +
   '    * else if needs_work is true → a SHORT, contextual acknowledgement in the present ' +
@@ -125,7 +130,10 @@ export async function runIntent(
       `answer, or selection that only makes sense as a continuation (e.g. "yes", "do it", ` +
       `"the first one", "that one"), treat it as continuing that thread — it is NOT ambiguous, ` +
       `and if the assistant just offered to create/update/link a record or build something, ` +
-      `set needs_work true. Do NOT restart with a greeting or ask what they want.\n`
+      `set needs_work true. Do NOT restart with a greeting or ask what they want. Symmetric ` +
+      `case: if the USER earlier stated a specific change (e.g. "use the second tagline") and now ` +
+      `says a short go-ahead ("can you edit it", "do that", "go ahead", "yes"), ACT on that ` +
+      `earlier change — set needs_work true; do NOT ask them to restate what to change.\n`
     : '';
   // The connected external sources — the intent pass answers "are you connected to X?"
   // INLINE (no heavy loop), so it must see this list or it will wrongly say "not connected".
