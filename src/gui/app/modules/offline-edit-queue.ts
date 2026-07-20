@@ -189,6 +189,18 @@ export const offlineEditQueueJs = `    // ────────────�
           try { if (typeof refreshThreadList === 'function') refreshThreadList(); } catch (_) { /* best-effort */ }
           return;
         }
+        // A folder ingest progress event — update the shared progress bar state.
+        // Completion comes from the event's explicit terminal flag: a capped
+        // ingest finishes with done < total, so counts alone can't signal it.
+        // done >= total is kept as a fallback for a missing flag.
+        if (data && data.op === 'ingest_progress' && data.progress) {
+          try {
+            var bar = ingestProgress(data.progress.total, 'server');
+            bar.update(data.progress.done, data.progress.total, 'server');
+            if (data.progress.terminal || data.progress.done >= data.progress.total) bar.done();
+          } catch (_) { /* best-effort */ }
+          return;
+        }
         // renderFeedItem now flashes each change as a transient top-right status
         // (the realtime update) — no rail pills.
         try { renderFeedItem(data); } catch (_) { /* best-effort */ }

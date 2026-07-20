@@ -232,8 +232,10 @@ import { css } from '../../src/gui/app/css.js';
 // full-width connected-servers table (no new connector-table CSS). Recaptured.
 // Rebase recapture: assistant-rail CSS tweak (workspace-registry-hygiene PR) on
 // top of the connectors/databases full-width table styles. Recaptured.
-const ORIGINAL_LENGTH = 161629;
-const ORIGINAL_SHA256 = '1e4ff4e45fcd92b5a2a46ec2d6a086f1d8cd2017de57a3c78fb2fefd886f0f3f';
+// Question cards: .q-subject secondary line (the record a clarification is
+// about) — muted, hover underline. Recaptured.
+const ORIGINAL_LENGTH = 161869;
+const ORIGINAL_SHA256 = '8ff3d06fc6542baeaef5da744b8921cebe605671d1864994cd418d8866ae87a2';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

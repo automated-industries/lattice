@@ -492,8 +492,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // Workspaces-panel switch failures now surface via fetchJson + toast (no silent reload); folder/file ingest results reported (ingested/skipped counts); files add-button relabeled "Add files or folder". Recaptured.
 // Data Model detail: "Open object" link + "Edit columns & relationships" button removed
 // (select-to-detail). Recaptured.
-const ORIGINAL_LENGTH = 714649;
-const ORIGINAL_SHA256 = 'acb26da113d12fa54725dc5b204d0668fe8deb130e1e716f52213e766a6d1b0e';
+// Recaptured (includes question-subject + cap-copy + live ingest progress state modules).
+// Ingest-progress hardening: explicit terminal flag on progress events (a capped run ends
+// done < total, so counts can't signal completion), stale clear-timeout cancelled when a
+// new batch reuses live state, past-tense terminal labels. Recaptured.
+const ORIGINAL_LENGTH = 721750;
+const ORIGINAL_SHA256 = '0cb90bd2b68c0c24533af3f7a995e359d6fae832cf1079ffecbd5c3aa489c95e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

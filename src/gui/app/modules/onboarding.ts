@@ -34,8 +34,9 @@ export const onboardingJs = `    // ──────────────�
       // The rail is conversation-scoped: clearing or switching a conversation
       // drops both its chat bubbles AND its activity cards (each conversation
       // replays its own data-change cards from the persisted per-turn events).
+      // Also clear any in-progress ingest bar (orphaned by the conversation switch).
       // Reset the grouping anchors so a freshly loaded thread starts clean.
-      var nodes = feedEl.querySelectorAll('.chat-msg, .feed-item');
+      var nodes = feedEl.querySelectorAll('.chat-msg, .feed-item, .ingest-progress');
       for (var i = 0; i < nodes.length; i++) nodes[i].remove();
       feedGroups = {};
       // Restore the empty hint only when the rail is now completely empty.
@@ -44,13 +45,15 @@ export const onboardingJs = `    // ──────────────�
       }
     }
     // Drop the activity cards (e.g. when switching to another workspace, whose
-    // events are a different set). Resets the grouping anchor too.
+    // events are a different set). Resets the grouping anchor too. Restore the
+    // ingest progress bar if it was in progress, so it survives the clear.
     function clearActivityFeed() {
       var feedEl = railFeedEl();
       if (!feedEl) return;
       var items = feedEl.querySelectorAll('.feed-item');
       for (var i = 0; i < items.length; i++) items[i].remove();
       feedGroups = {};
+      remountIngestProgressBar();
     }
     function newChat() {
       gaTrack('assistant_thread_new', {});

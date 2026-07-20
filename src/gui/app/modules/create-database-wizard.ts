@@ -33,35 +33,10 @@ export const createDatabaseWizardJs = `    // ───────────�
         for (var i = 0; i < Math.min(limit, total); i++) startNext();
       });
     }
-    // A batch-upload progress bar pinned to the top of the rail feed
-    // ("Analyzing N of M…"). The per-file "Analyzing <name>…" cards still
-    // appear, but only INGEST_MAX_CONCURRENCY at a time; this gives the
-    // whole-batch view that the individual cards can't. Returns
-    // { update(done, total), done() }.
-    function ingestProgress(total) {
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return { update: function () {}, done: function () {} };
-      railEmptyGone();
-      var wrap = document.createElement('div');
-      wrap.className = 'ingest-progress';
-      wrap.innerHTML =
-        '<div class="ingest-progress-label">Analyzing 0 of ' + total + '…</div>' +
-        '<div class="ingest-progress-track"><div class="ingest-progress-fill"></div></div>';
-      feedEl.insertBefore(wrap, feedEl.firstChild);
-      var label = wrap.querySelector('.ingest-progress-label');
-      var fill = wrap.querySelector('.ingest-progress-fill');
-      return {
-        update: function (n, t) {
-          if (label) label.textContent = 'Analyzing ' + n + ' of ' + t + '…';
-          if (fill) fill.style.width = Math.round((n / t) * 100) + '%';
-        },
-        done: function () {
-          if (fill) fill.style.width = '100%';
-          if (label) label.textContent = 'Analyzed ' + total + ' file' + (total === 1 ? '' : 's');
-          setTimeout(function () { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); }, 2500);
-        },
-      };
-    }
+    // Ingest progress bar is now defined in ingest-progress-state.ts as a shared,
+    // state-driven component that survives DOM re-renders and is used by both
+    // browser batch uploads (kind: 'browser') and server folder ingests (kind: 'server').
+    // Use: var bar = ingestProgress(total, 'browser'); bar.update(done, t); bar.done();
     // Append a transient "Analyzing <file>…" row to the feed so the user sees
     // the ingest is processing in the background; returns a disposer. The real
     // create/link feed events stream in over SSE as the server materializes them.
@@ -142,7 +117,7 @@ export const createDatabaseWizardJs = `    // ───────────�
       }
       // Multi-file: drain through the bounded-concurrency queue (so a big drop
       // can't saturate the connection budget) with a batch progress bar.
-      var bar = ingestProgress(files.length);
+      var bar = ingestProgress(files.length, 'browser');
       var refs = [];
       var thunks = [];
       for (var i = 0; i < files.length; i++) {

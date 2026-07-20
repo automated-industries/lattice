@@ -13,6 +13,7 @@ import { realtimeFeedJs } from './realtime-feed.js';
 import { statusIndicatorJs } from './status-indicator.js';
 import { offlineEditQueueJs } from './offline-edit-queue.js';
 import { eventStreamJs } from './event-stream.js';
+import { ingestProgressStateJs } from './ingest-progress-state.js';
 import { renderProgressJs } from './render-progress.js';
 import { renderProgressStateJs } from './render-progress-state.js';
 import { activityHelpersJs } from './activity-helpers.js';
@@ -64,6 +65,7 @@ export const appJs = [
   statusIndicatorJs,
   offlineEditQueueJs,
   eventStreamJs,
+  ingestProgressStateJs,
   renderProgressJs,
   renderProgressStateJs,
   activityHelpersJs,

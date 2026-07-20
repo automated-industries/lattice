@@ -119,7 +119,7 @@ export const sourcesJs = `
             if (ul0 && !ul0.hidden) openFolders[li.getAttribute('data-path')] = ul0.innerHTML;
           });
           if (!rootsHtml && !looseHtml) {
-            host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below.</div>';
+            host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below. (Folder imports ingest up to 500 files per add.)</div>';
             return;
           }
           host.innerHTML = rootsHtml + looseHtml;
@@ -351,22 +351,34 @@ export const sourcesJs = `
             .then(function (r) { return r.json(); })
             .then(function (res) {
               if (res.error) { showToast('Add failed: ' + res.error, {}); return; }
-              // Show result feedback: ingested/skipped counts.
+              // Show result feedback: ingested/skipped counts + truncation awareness.
               var result = res.result;
               var msg = '';
               if (kind === 'folder' && result) {
                 var ingested = result.ingested || 0;
                 var skipped = result.skipped || 0;
+                var scanned = result.scanned || 0;
+                var scanTruncated = result.scanTruncated || false;
+                var capped = result.capped || false;
                 if (ingested === 0 && skipped === 0) {
                   msg = 'Folder added, but it contains no files — nothing ingested.';
                 } else if (ingested === 0 && skipped > 0) {
                   msg = 'No files ingested — ' + skipped + ' skipped (unsupported, too large, or unreadable).';
+                } else if (capped) {
+                  // Hit the per-import file limit while files remained.
+                  var foundCount = scanTruncated ? (scanned + '+') : String(scanned);
+                  msg = 'Ingested ' + ingested + ' of ' + foundCount + ' files — the per-import limit (500 files) was reached. ';
+                  msg += 'Add the remaining files by clicking them in the file tree.';
                 } else {
                   msg = 'Ingested ' + ingested + ' file' + (ingested === 1 ? '' : 's');
                   if (skipped > 0) {
                     msg += ', ' + skipped + ' skipped';
                   }
-                  msg += '.';
+                  if (scanTruncated) {
+                    msg += ' (500+ files found — scan limit reached; remaining files can be added individually).';
+                  } else {
+                    msg += '.';
+                  }
                 }
               } else if (kind === 'file') {
                 if (res.id) {
