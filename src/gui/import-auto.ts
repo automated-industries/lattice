@@ -70,6 +70,11 @@ function existingDataTables(db: Lattice): ExistingTable[] {
   const out: ExistingTable[] = [];
   for (const t of db.getRegisteredTableNames()) {
     if (native.has(t)) continue;
+    // Never offer a connected external mirror or a computed view as an import DESTINATION: both
+    // are read-only (a connected table syncs from its source; a computed view is derived), so an
+    // import that matched + wrote into one would either be overwritten on the next sync or corrupt
+    // a projection. This keeps the importer's "matches an existing dataset → append" path off them.
+    if (db.getConnectedSource(t) || db.isComputedTable(t)) continue;
     const columns = Object.keys(db.getRegisteredColumns(t) ?? {});
     if (columns.length > 0) out.push({ name: t, columns });
   }

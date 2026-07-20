@@ -489,6 +489,19 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `"${oldName}" is a computed table and cannot be renamed` }, 400);
       return true;
     }
+    // A connected external table is a live, read-only mirror: its rows sync under THIS name, so a
+    // renamed copy would just re-sync under the original name and orphan the renamed one. Refuse
+    // the shape change (mirrors the row-write + add/rename-column guards) — the mirror is read-only.
+    if (active.db.getConnectedSource(oldName)) {
+      sendJson(
+        res,
+        {
+          error: `"${oldName}" is a live, read-only view of a connected external source and can't be renamed. To change what it's called, rename it in the source (or disconnect the connector).`,
+        },
+        400,
+      );
+      return true;
+    }
     // A computed table's compiled SQL references its sources by name — a rename
     // would break those projections, so refuse while any depend on this table.
     try {

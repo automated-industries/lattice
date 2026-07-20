@@ -133,6 +133,34 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     expect(db.getRegisteredTableNames()).not.toContain('orders'); // created only on Apply
   });
 
+  it('never offers a connected external mirror as an import DESTINATION (it is read-only)', async () => {
+    const { db, configPath, base } = await freshWorkspace();
+    // A connected external mirror whose columns match the drop below — WITHOUT the guard the
+    // importer would match it and silently append into the read-only mirror.
+    await db.defineLate('db_ext_orders', {
+      columns: {
+        order_id: 'TEXT PRIMARY KEY',
+        sku: 'TEXT',
+        qty: 'INTEGER',
+        buyer: 'TEXT',
+        deleted_at: 'TEXT',
+      },
+      primaryKey: 'order_id',
+      source: { connector: 'db_source', toolkit: 'db_source:x', model: 'orders', naturalKey: 'order_id' },
+      render: () => '',
+      outputFile: 'o.md',
+    });
+    await db.upsert('db_ext_orders', { order_id: '1', sku: 'X', qty: 3, buyer: 'Bob' });
+    const p = join(base, 'orders.json');
+    writeFileSync(p, JSON.stringify({ orders: [{ order_id: 2, sku: 'Y', qty: 5, buyer: 'Sue' }] }));
+    const r = await autoImportStructured(db, configPath, p, 'orders.json');
+    // The connected mirror is excluded from destinations → a NEW dataset proposal, never a silent
+    // append into the read-only mirror, which stays at its one synced row.
+    expect(r?.imported).toBe(false);
+    expect(r?.tables ?? []).not.toContain('db_ext_orders');
+    expect(await db.count('db_ext_orders')).toBe(1);
+  });
+
   it('leaves a truly-unstructured file as a plain reference (null)', async () => {
     const { db, configPath, base } = await freshWorkspace();
     const p = join(base, 'note.json'); // valid JSON but no record arrays → 0 entities
