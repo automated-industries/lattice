@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openConfig, type ActiveDb } from '../../src/gui/server.js';
 import { createRow, updateRow, deleteRow, type MutationCtx } from '../../src/gui/mutations.js';
+import { buildMcpModelDefs } from '../../src/connectors/mcp/schema-cache.js';
 
 /**
  * A connected external table is a LIVE, READ-ONLY MIRROR: its rows are replaced on every sync.
@@ -115,5 +116,45 @@ describe('row-write mutations refuse connected external tables', () => {
     // A sync writes the mirror directly via db.upsert (NOT createRow), so it is unaffected.
     await active.db.upsert('jira_issues', { issue_key: 'X-9', summary: 'synced', status: 'open' });
     expect(await active.db.count('jira_issues')).toBe(1);
+  });
+
+  it('refuses a write to an MCP TYPED table (the "enrich the Justworks company" scenario, exact path)', async () => {
+    // Reproduce the real mcp_justworks_company registration via buildMcpModelDefs — the path the
+    // enrich flow hit. The guard must recognize it as connected and refuse the write (before the
+    // fix it landed in the mirror, then a sync overwrote it → the enrichment was lost).
+    const active = await boot();
+    await new Promise((r) => setTimeout(r, 0));
+    const defs = buildMcpModelDefs('conn-jw', {
+      prefix: 'justworks',
+      kinds: [
+        {
+          kind: 'company',
+          tool: 'get_company',
+          naturalKey: 'id',
+          columns: [
+            { name: 'display_name', sqlSpec: 'TEXT' },
+            { name: 'legal_name', sqlSpec: 'TEXT' },
+          ],
+        },
+      ],
+    });
+    const m = defs[0]!;
+    expect(m.table).toBe('mcp_justworks_company');
+    await active.db.defineLate(m.table, m.definition);
+    active.validTables.add(m.table);
+    expect(active.db.getConnectedSource(m.table)).toBeTruthy();
+
+    const mctx = {
+      db: active.db,
+      feed: active.feed,
+      softDeletable: new Set([m.table]),
+      source: 'gui',
+    } as unknown as MutationCtx;
+    await expect(
+      updateRow(mctx, m.table, 'row1', { legal_name: 'Automated Industries — AI consulting' }),
+    ).rejects.toThrow(/read-only view of a connected external source/i);
+    await expect(
+      createRow(mctx, m.table, { id: 'row2', display_name: 'X' }),
+    ).rejects.toThrow(/read-only view of a connected external source/i);
   });
 });
