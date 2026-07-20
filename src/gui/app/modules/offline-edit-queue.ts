@@ -224,7 +224,7 @@ export const offlineEditQueueJs = `    // ────────────�
         }
         // Dashboards live in the Analytics sidebar/home, which the generic
         // realtime refresh above does not touch — refresh them explicitly so a
-        // Gladys-built dashboard appears without a manual reload.
+        // Lattice-built dashboard appears without a manual reload.
         if (data && data.table === 'dashboards' && typeof refreshDashboardsLive === 'function') {
           refreshDashboardsLive();
         }

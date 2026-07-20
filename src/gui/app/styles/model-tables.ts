@@ -93,6 +93,13 @@ export const modelTablesCss = `    /* ── Model "Tables" route container ─�
       transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
     }
     .mt-card:hover { border-color: var(--accent-border); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+    /* External source node (a connector / external DB) in a table's lineage: it is not a
+       Lattice table, so it reads as a distinct, non-interactive provenance root. */
+    .mt-card.mt-card-ext {
+      cursor: default; border-style: dashed; border-color: var(--accent-border);
+      background: var(--accent-wash);
+    }
+    .mt-card.mt-card-ext:hover { box-shadow: var(--shadow-1); transform: none; }
     .mt-card-ic { flex: none; font-size: 15px; }
     .mt-card-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 14px; font-weight: 500; }
     /* Computed-table flag (a live read-only projection) on a card. */

@@ -103,14 +103,14 @@ export const guiAppHtml = `<!doctype html>
     </div>
     <!-- Single-layout: one Configure button (wrench) toggles the Configure drawer
          (Data Model / Inputs / Workspace / Lattice / User). There is no view flip —
-         the Workspace + Ask Gladys dock are always visible. -->
+         the Workspace + Ask Lattice dock are always visible. -->
     <button class="configure-trigger" id="configure-trigger" title="Configure this workspace" aria-label="Open Configure">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
     </button>
   </header>
   <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Tables /
        Files nav sections, added by nav-sections.ts) │ center Workspace tabs │ the
-       persistent Ask Gladys dock. The former Inputs sidebar + Model tab strip moved
+       persistent Ask Lattice dock. The former Inputs sidebar + Model tab strip moved
        into the left sidebar + the Configure drawer; a table's/record's markdown is now
        reached via its "View Markdown" action, not a separate sidebar tree. -->
   <div class="layout" id="layout">
@@ -136,10 +136,10 @@ export const guiAppHtml = `<!doctype html>
       <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
       <div id="content"></div>
     </main>
-    <aside class="ask-dock" id="ask-dock" aria-label="Ask Gladys">
+    <aside class="ask-dock" id="ask-dock" aria-label="Ask Lattice">
       <div class="ask-dock-resize" id="ask-dock-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
       <div class="ask-dock-head col-header col-outputs">
-        <span class="ask-lattice-panel-title col-header-text"><span class="ask-lattice-mark" aria-hidden="true">👵🏻</span> Ask Gladys</span>
+        <span class="ask-lattice-panel-title col-header-text"><span class="ask-lattice-mark" aria-hidden="true"></span> Ask Lattice</span>
         <select class="rail-threads" id="rail-threads" title="Conversations"></select>
         <button class="dash-new-btn rail-newchat" id="rail-newchat" title="New chat" aria-label="New chat">＋</button>
       </div>

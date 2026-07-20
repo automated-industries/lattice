@@ -36,9 +36,9 @@ describe('userProvidedUrl accepts a bare domain the user wrote (regression)', ()
     ).toBe(true);
   });
   it('still matches a scheme-prefixed URL', () => {
-    expect(userProvidedUrl('please read https://example.com/page', 'https://example.com/page')).toBe(
-      true,
-    );
+    expect(
+      userProvidedUrl('please read https://example.com/page', 'https://example.com/page'),
+    ).toBe(true);
   });
   it('still matches a scheme-prefixed IP-host URL (the widened regex must not drop these)', () => {
     expect(

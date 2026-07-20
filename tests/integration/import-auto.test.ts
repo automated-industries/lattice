@@ -146,7 +146,12 @@ describe('autoImportStructured (assistant-door smart import)', () => {
         deleted_at: 'TEXT',
       },
       primaryKey: 'order_id',
-      source: { connector: 'db_source', toolkit: 'db_source:x', model: 'orders', naturalKey: 'order_id' },
+      source: {
+        connector: 'db_source',
+        toolkit: 'db_source:x',
+        model: 'orders',
+        naturalKey: 'order_id',
+      },
       render: () => '',
       outputFile: 'o.md',
     });

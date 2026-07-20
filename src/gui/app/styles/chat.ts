@@ -4,12 +4,15 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
-    /* Gladys, the assistant, speaks with her own avatar so replies read as coming
-       from her. One emoji glyph per assistant turn (incl. the "typing…" bubble),
-       to the left of the bubble; user turns are unaffected. */
+    /* The assistant speaks with the Lattice mark as its avatar (same grid glyph as the
+       brand logo / favicon) so replies read as coming from Lattice. One mark per
+       assistant turn (incl. the "typing…" bubble), to the left of the bubble; user
+       turns are unaffected. */
     .chat-msg.assistant::before {
-      content: "👵🏻"; flex: none; align-self: flex-start;
-      font-size: 18px; line-height: 1.2; margin-right: 8px;
+      content: ""; flex: none; align-self: flex-start;
+      width: 20px; height: 20px; margin-right: 8px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='.5' y='.5' width='23' height='23' rx='5' fill='%23eff6ff' stroke='%23dbeafe'/%3E%3Cpath stroke='%233b82f6' stroke-width='1.25' stroke-linecap='round' d='M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12'/%3E%3Cg fill='%233b82f6'%3E%3Ccircle cx='6' cy='6' r='1.7'/%3E%3Ccircle cx='12' cy='6' r='1.7'/%3E%3Ccircle cx='18' cy='6' r='1.7'/%3E%3Ccircle cx='6' cy='12' r='1.7'/%3E%3Ccircle cx='12' cy='12' r='2.4'/%3E%3Ccircle cx='18' cy='12' r='1.7'/%3E%3Ccircle cx='6' cy='18' r='1.7'/%3E%3Ccircle cx='12' cy='18' r='1.7'/%3E%3Ccircle cx='18' cy='18' r='1.7'/%3E%3C/g%3E%3C/svg%3E");
+      background-size: contain; background-repeat: no-repeat; background-position: center;
     }
     .chat-bubble {
       max-width: 85%; padding: 8px 12px; font-size: 14px; line-height: 1.45;

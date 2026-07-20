@@ -4,7 +4,7 @@ export const statusIndicatorCss = `    /* ── Top-right status indicator ─�
     /* The header slot the status pill homes into — where the version used to sit
        (the version moved into the Settings drawer footer). */
     /* Shrinkable (min-width:0) so a long ingestion status yields space instead of
-       pushing the "Ask Gladys"/Configure toggle onto a second line. */
+       pushing the "Ask Lattice"/Configure toggle onto a second line. */
     .header-status-slot { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; }
     .app-status {
       display: inline-flex; align-items: center; gap: 6px;

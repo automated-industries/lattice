@@ -90,7 +90,11 @@ describe('folder ingest with truncation/cap reporting', () => {
 
     const r = await call('POST', '/api/sources/roots', { path: workDir, kind: 'folder' });
     expect(r.status).toBe(200);
-    const result = (r.body as { result: { ingested: number; scanned: number; scanTruncated: boolean; capped: boolean } }).result;
+    const result = (
+      r.body as {
+        result: { ingested: number; scanned: number; scanTruncated: boolean; capped: boolean };
+      }
+    ).result;
 
     // Verify the new fields are present in the response
     expect(result).toHaveProperty('scanned');
@@ -131,8 +135,13 @@ describe('ingest progress feed emission', () => {
     });
 
     // Use the registration endpoint which triggers ingest automatically and passes feed.
-    const r = await call('POST', '/api/sources/roots', { path: workDir, kind: 'folder' },
-      join(cfgDir, 'workspace.yml'), feed);
+    const r = await call(
+      'POST',
+      '/api/sources/roots',
+      { path: workDir, kind: 'folder' },
+      join(cfgDir, 'workspace.yml'),
+      feed,
+    );
     expect(r.status).toBe(200);
     expect(r.handled).toBe(true);
 
@@ -184,8 +193,12 @@ describe('ingest progress feed emission', () => {
     await call('POST', '/api/sources/roots', { path: workDir, kind: 'folder' });
 
     // Now call ingest-folder without a feed to verify it's a no-op.
-    const r = await call('POST', '/api/sources/ingest-folder', { path: workDir },
-      join(cfgDir, 'workspace.yml'));
+    const r = await call(
+      'POST',
+      '/api/sources/ingest-folder',
+      { path: workDir },
+      join(cfgDir, 'workspace.yml'),
+    );
     expect(r.status).toBe(200);
     expect(r.handled).toBe(true);
   });
@@ -205,10 +218,21 @@ describe('ingest progress feed emission', () => {
     });
 
     // Register the root first, then call ingest-folder to test throttling.
-    await call('POST', '/api/sources/roots', { path: workDir, kind: 'folder' }, join(cfgDir, 'workspace.yml'), feed);
+    await call(
+      'POST',
+      '/api/sources/roots',
+      { path: workDir, kind: 'folder' },
+      join(cfgDir, 'workspace.yml'),
+      feed,
+    );
     // Call again to ingest just the folder (events array should accumulate both calls).
-    const r = await call('POST', '/api/sources/ingest-folder', { path: workDir },
-      join(cfgDir, 'workspace.yml'), feed);
+    const r = await call(
+      'POST',
+      '/api/sources/ingest-folder',
+      { path: workDir },
+      join(cfgDir, 'workspace.yml'),
+      feed,
+    );
     expect(r.status).toBe(200);
 
     // We should have events from both the registration (which ingests) and the explicit ingest call.
@@ -222,4 +246,3 @@ describe('ingest progress feed emission', () => {
     }
   });
 });
-

@@ -3,7 +3,7 @@
 export const renderProgressStateJs = `    // ────────────────────────────────────────────────────────────
     // openSearchHit — jump to a row's record page. Retained for the activity feed,
     // the create-database wizard, and onboarding. (The old top search BOX was
-    // removed — the assistant, "Ask Gladys", is the single search surface.)
+    // removed — the assistant, "Ask Lattice", is the single search surface.)
     // ────────────────────────────────────────────────────────────
     function openSearchHit(table, id) {
       // Dashboards open in the Analytics view (their record page is only a

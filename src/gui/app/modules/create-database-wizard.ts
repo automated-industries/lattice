@@ -288,10 +288,10 @@ export const createDatabaseWizardJs = `    // ───────────�
           // Files FIRST (await ingest), then run the chat against those just-added
           // files — so the assistant works on exactly what was attached, any file
           // type, single or many. Text only → just chat. Files (with or WITHOUT text)
-          // → add them AND chat, so Gladys always responds to an attachment.
+          // → add them AND chat, so Lattice always responds to an attachment.
           function submitComposer() {
             var t = input.value.trim();
-            // Gladys is still replying: sendChat's chatBusy guard would drop this turn AFTER
+            // Lattice is still replying: sendChat's chatBusy guard would drop this turn AFTER
             // we'd already cleared the tray + ingested the files, silently losing both. Bail
             // now, keeping the staged files + typed text intact so the user can send once the
             // reply finishes.
@@ -300,7 +300,7 @@ export const createDatabaseWizardJs = `    // ───────────�
             var batch = stagedFiles.slice();
             clearStaging();
             // The composer Send ALWAYS keeps focus on the chat (silent) — a files-only
-            // send should get a Gladys response, not navigate off to the file record.
+            // send should get a Lattice response, not navigate off to the file record.
             // If ingest fails, still run the turn with the user's text so a typed
             // message is never lost (a files-only send with a failed ingest no-ops in
             // sendChat, which is correct — there is nothing to say).

@@ -421,7 +421,7 @@ export const onboardingJs = `    // ──────────────�
     function sendChat(text, attachedFiles) {
       var hasFiles = !!(attachedFiles && attachedFiles.length);
       if (chatBusy || (!text && !hasFiles)) return;
-      // A files-only send (no message): give Gladys a directive so it still responds to
+      // A files-only send (no message): give Lattice a directive so it still responds to
       // the attachment (the server's attached-files note tells it what was added).
       var effectiveText = text || (attachedFiles && attachedFiles.length > 1 ? 'Take a look at these files.' : 'Take a look at this file.');
       chatBusy = true;

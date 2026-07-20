@@ -14,7 +14,7 @@ export const askLatticeJs = `
 
     // File drag-drop. The drop is ALWAYS scoped to one surface — there is no
     // whole-window drop — and the surface depends on the view:
-    //   • Analytics (the Gladys chat dock is on screen): the surface is the chat
+    //   • Analytics (the Lattice chat dock is on screen): the surface is the chat
     //     window (#ask-dock). A file dropped onto it is STAGED into the composer
     //     (removable chips above the chat box) for review + send.
     //   • Configure: the surface is the Inputs column (nav.sidebar) only. A drop
@@ -60,7 +60,7 @@ export const askLatticeJs = `
         positionOverlay();
         if (overlayLabel) {
           overlayLabel.textContent = isAnalyticsHash(location.hash)
-            ? 'Drop to attach to Gladys'
+            ? 'Drop to attach to Lattice'
             : 'Drop a file or folder to ingest it';
         }
       }

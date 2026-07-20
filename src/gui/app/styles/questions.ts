@@ -60,7 +60,7 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
       color: var(--text-muted); font-size: 13px; font-weight: 500;
     }
     /* In-turn ask_user card: sits in the conversation flow like an assistant
-       bubble (the wrapper carries the Gladys avatar), sized like one too. */
+       bubble (the wrapper carries the Lattice avatar), sized like one too. */
     .chat-msg.q-inline .q-card { max-width: 85%; }
     /* Notification dot on the Ask trigger while questions wait off-screen
        (i.e. the Analytics view — where the cards live — is not showing). */
