@@ -45,15 +45,16 @@ export const onboardingJs = `    // ──────────────�
       }
     }
     // Drop the activity cards (e.g. when switching to another workspace, whose
-    // events are a different set). Resets the grouping anchor too. Restore the
-    // ingest progress bar if it was in progress, so it survives the clear.
+    // events are a different set). Resets the grouping anchor too. Clear any
+    // in-progress ingest bar: it belongs to the workspace we're leaving and must
+    // not bleed into the new one (its feed events go to the old workspace's feed).
     function clearActivityFeed() {
       var feedEl = railFeedEl();
       if (!feedEl) return;
       var items = feedEl.querySelectorAll('.feed-item');
       for (var i = 0; i < items.length; i++) items[i].remove();
       feedGroups = {};
-      remountIngestProgressBar();
+      clearIngestProgress();
     }
     function newChat() {
       gaTrack('assistant_thread_new', {});

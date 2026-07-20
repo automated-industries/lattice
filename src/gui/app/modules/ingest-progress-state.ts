@@ -59,6 +59,12 @@ export const ingestProgressStateJs = `    // ───────────�
         railEmptyGone();
         node = document.createElement('div');
         node.className = 'ingest-progress';
+        // Build the structure ONCE. Rebuilding innerHTML every tick recreated the
+        // fill node, so its width CSS transition never played (the bar jumped);
+        // below we update the label text + fill width IN PLACE so it animates.
+        node.innerHTML =
+          '<div class="ingest-progress-label"></div>' +
+          '<div class="ingest-progress-track"><div class="ingest-progress-fill"></div></div>';
         feedEl.insertBefore(node, feedEl.firstChild);
       }
       var s = ingestProgressState;
@@ -73,9 +79,8 @@ export const ingestProgressStateJs = `    // ───────────�
       } else {
         labelText = (s.kind === 'server' ? 'Ingesting' : 'Analyzing') + ' ' + s.done + ' of ' + s.total + ' files…';
       }
-      node.innerHTML =
-        '<div class="ingest-progress-label">' + labelText + '</div>' +
-        '<div class="ingest-progress-track"><div class="ingest-progress-fill"></div></div>';
+      var label = node.querySelector('.ingest-progress-label');
+      if (label) label.textContent = labelText;
       var fill = node.querySelector('.ingest-progress-fill');
       if (fill) fill.style.width = Math.round((s.done / s.total) * 100) + '%';
       // After terminal, clear state and remove the node in ~2.5s. Re-query the
@@ -90,10 +95,17 @@ export const ingestProgressStateJs = `    // ───────────�
         }, 2500);
       }
     }
-    // Re-mount the ingest progress bar after the feed is rebuilt (e.g., thread/workspace switch).
-    function remountIngestProgressBar() {
-      if (ingestProgressState && !ingestProgressState.terminal) {
-        refreshIngestProgressBar();
+    // Clear the ingest progress bar AND its state entirely — used on a WORKSPACE switch.
+    // An in-progress ingest belongs to the workspace you just left (its feed events go to
+    // that workspace's feed, not the new one), so re-mounting it here would bleed a stale
+    // bar into a workspace where nothing is ingesting. Remove the node + drop the state.
+    function clearIngestProgress() {
+      if (ingestProgressState && ingestProgressState.__clearTimeout) {
+        clearTimeout(ingestProgressState.__clearTimeout);
       }
+      ingestProgressState = null;
+      var feedEl = document.getElementById('rail-feed');
+      var node = feedEl && feedEl.querySelector('.ingest-progress');
+      if (node && node.parentNode) node.parentNode.removeChild(node);
     }
 `;
