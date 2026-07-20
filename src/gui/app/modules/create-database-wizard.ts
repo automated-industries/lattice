@@ -33,35 +33,10 @@ export const createDatabaseWizardJs = `    // ───────────�
         for (var i = 0; i < Math.min(limit, total); i++) startNext();
       });
     }
-    // A batch-upload progress bar pinned to the top of the rail feed
-    // ("Analyzing N of M…"). The per-file "Analyzing <name>…" cards still
-    // appear, but only INGEST_MAX_CONCURRENCY at a time; this gives the
-    // whole-batch view that the individual cards can't. Returns
-    // { update(done, total), done() }.
-    function ingestProgress(total) {
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return { update: function () {}, done: function () {} };
-      railEmptyGone();
-      var wrap = document.createElement('div');
-      wrap.className = 'ingest-progress';
-      wrap.innerHTML =
-        '<div class="ingest-progress-label">Analyzing 0 of ' + total + '…</div>' +
-        '<div class="ingest-progress-track"><div class="ingest-progress-fill"></div></div>';
-      feedEl.insertBefore(wrap, feedEl.firstChild);
-      var label = wrap.querySelector('.ingest-progress-label');
-      var fill = wrap.querySelector('.ingest-progress-fill');
-      return {
-        update: function (n, t) {
-          if (label) label.textContent = 'Analyzing ' + n + ' of ' + t + '…';
-          if (fill) fill.style.width = Math.round((n / t) * 100) + '%';
-        },
-        done: function () {
-          if (fill) fill.style.width = '100%';
-          if (label) label.textContent = 'Analyzed ' + total + ' file' + (total === 1 ? '' : 's');
-          setTimeout(function () { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); }, 2500);
-        },
-      };
-    }
+    // Ingest progress bar is now defined in ingest-progress-state.ts as a shared,
+    // state-driven component that survives DOM re-renders and is used by both
+    // browser batch uploads (kind: 'browser') and server folder ingests (kind: 'server').
+    // Use: var bar = ingestProgress(total, 'browser'); bar.update(done, t); bar.done();
     // Append a transient "Analyzing <file>…" row to the feed so the user sees
     // the ingest is processing in the background; returns a disposer. The real
     // create/link feed events stream in over SSE as the server materializes them.
@@ -142,7 +117,7 @@ export const createDatabaseWizardJs = `    // ───────────�
       }
       // Multi-file: drain through the bounded-concurrency queue (so a big drop
       // can't saturate the connection budget) with a batch progress bar.
-      var bar = ingestProgress(files.length);
+      var bar = ingestProgress(files.length, 'browser');
       var refs = [];
       var thunks = [];
       for (var i = 0; i < files.length; i++) {
@@ -185,9 +160,11 @@ export const createDatabaseWizardJs = `    // ───────────�
     function renderStagingTray() {
       removeStagingTray();
       if (!stagedFiles.length) return;
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return;
-      railEmptyGone();
+      // The tray sits in its OWN host directly above the composer (not in the
+      // message feed) so the "files to add" list is always visible right above the
+      // chat box while you type — each chip removable via its ✕.
+      var host = document.getElementById('staging-tray-host');
+      if (!host) return;
       var n = stagedFiles.length;
       var rows = stagedFiles.map(function (f, idx) {
         return '<li class="staging-file">' +
@@ -204,10 +181,7 @@ export const createDatabaseWizardJs = `    // ───────────�
         '<ul class="staging-list">' + rows + '</ul>';
       // The tray just DISPLAYS the staged files (each removable with its ✕); the
       // main composer Send ingests them — no separate Send/Cancel here.
-      // Same bottom-pin rule as the pending cards: don't bury a streaming turn.
-      var anchor = feedTypingAnchor(feedEl);
-      if (anchor) feedEl.insertBefore(tray, anchor); else feedEl.appendChild(tray);
-      feedEl.scrollTop = feedEl.scrollHeight;
+      host.appendChild(tray);
       tray.querySelectorAll('.staging-file-x').forEach(function (b) {
         b.addEventListener('click', function () {
           stagedFiles.splice(Number(b.getAttribute('data-idx')), 1);
@@ -215,47 +189,6 @@ export const createDatabaseWizardJs = `    // ───────────�
         });
       });
     }
-    // Mobile: tapping the handle expands/collapses the bottom drawer.
-    function initRailDrawer() {
-      var handle = document.getElementById('rail-handle');
-      var rail = document.getElementById('assistant-rail');
-      if (handle && rail) handle.addEventListener('click', function () { rail.classList.toggle('expanded'); });
-    }
-    function initRailDragDrop() {
-      var rail = document.getElementById('assistant-rail'); if (!rail) return;
-      // Only react to FILE drags (not text/selection drags).
-      function isFileDrag(e) {
-        var t = e.dataTransfer && e.dataTransfer.types;
-        return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
-      }
-      // enter/leave counter: leaving via a child element fires dragleave then a
-      // dragenter, so the depth stays > 0 until the cursor actually exits the rail.
-      var depth = 0;
-      function clearOverlay() { depth = 0; rail.classList.remove('dragging-file'); }
-      rail.addEventListener('dragenter', function (e) {
-        if (!isFileDrag(e)) return;
-        e.preventDefault(); depth++; rail.classList.add('dragging-file');
-      });
-      rail.addEventListener('dragover', function (e) {
-        if (!isFileDrag(e)) return;
-        e.preventDefault(); rail.classList.add('dragging-file');
-      });
-      rail.addEventListener('dragleave', function () {
-        depth = Math.max(0, depth - 1);
-        if (depth === 0) rail.classList.remove('dragging-file');
-      });
-      rail.addEventListener('drop', function (e) {
-        e.preventDefault();
-        clearOverlay();
-        // Stage the dropped files for review (Send / ✕) rather than ingesting now.
-        if (e.dataTransfer && e.dataTransfer.files) stageFiles(e.dataTransfer.files);
-      });
-      // Backstops: a drag cancelled outside the window, or a drop anywhere, must
-      // clear the overlay — the per-element dragleave can miss those exits.
-      window.addEventListener('dragend', clearOverlay);
-      window.addEventListener('drop', clearOverlay);
-    }
-
     // Surface a notice when files/secrets aren't bound as native objects — the
     // assistant key storage + ingest need them. Normally they auto-create on
     // open; this only shows in the edge case where a pre-existing plaintext
@@ -282,22 +215,28 @@ export const createDatabaseWizardJs = `    // ───────────�
 
     function renderComposer() {
       var host = document.getElementById('rail-composer'); if (!host) return;
-      fetchJson('/api/assistant/config').then(function (cfg) {
-        if (claudeAuth(cfg).any) {
+      fetchJson('/api/assistant/config').then(function () {
+          // The composer is always active — a connected Claude subscription is
+          // guaranteed past the first-run wall (or supplied by a managed deployment),
+          // so there is no key-gated setup prompt anymore.
           // Dictation is always on-device + keyless, so the mic always shows; there
           // is no provider choice in the GUI (the cloud route stays API-only).
           var micHtml = '<button class="composer-mic" id="chat-mic" title="Record voice">🎙</button>';
           host.innerHTML =
             '<div class="composer-row">' +
-              '<button class="composer-clip" id="chat-clip" title="Upload files" aria-label="Upload files">' +
+              // A <label for> the hidden file input opens the picker NATIVELY on
+              // click — the prior <button> + fileInput.click() was a no-op in the
+              // desktop webview (programmatic .click() on a display:none input is
+              // blocked there), so the upload button did nothing.
+              '<label class="composer-clip" id="chat-clip" for="chat-file" role="button" tabindex="0" title="Upload files" aria-label="Upload files">' +
                 '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
                   '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
                   '<polyline points="17 8 12 3 7 8"/>' +
                   '<line x1="12" y1="3" x2="12" y2="15"/>' +
                 '</svg>' +
-              '</button>' +
+              '</label>' +
               micHtml +
-              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct… (Enter to send)"></textarea>' +
+              '<textarea id="chat-input" rows="1" placeholder="Ask or instruct…"></textarea>' +
               '<button class="composer-send" id="chat-send">Send</button>' +
             '</div>' +
             // Private mode — when checked, items the assistant adds on this send
@@ -311,13 +250,24 @@ export const createDatabaseWizardJs = `    // ───────────�
                 (cloudMode ? 'New items I add stay private to you' : 'Local workspaces are always private') +
               '</span>' +
             '</label>' +
-            '<input type="file" id="chat-file" multiple style="display:none">';
+            // Visually hidden but STILL RENDERED (not display:none): a <label for> can
+            // only open the native picker for an input the engine considers rendered —
+            // a display:none file input is inert in the desktop webview, so the clip
+            // button did nothing. This sr-only style keeps it activatable + off-screen.
+            '<input type="file" id="chat-file" multiple ' +
+              'style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0,0,0,0);border:0;padding:0;margin:-1px;">';
           var input = document.getElementById('chat-input');
           var sendBtn = document.getElementById('chat-send');
           var clipBtn = document.getElementById('chat-clip');
           var fileInput = document.getElementById('chat-file');
           if (clipBtn && fileInput) {
-            clipBtn.addEventListener('click', function () { fileInput.click(); });
+            // The label opens the picker natively on click (its for-target is the
+            // hidden input) — do NOT also call fileInput.click() (that
+            // double-triggers, opening then instantly cancelling the dialog). Only
+            // add keyboard activation for the role=button.
+            clipBtn.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+            });
             fileInput.addEventListener('change', function () { stageFiles(fileInput.files); fileInput.value = ''; });
           }
           // Grow the textarea to fit its content (wrapped lines included), capped
@@ -337,18 +287,40 @@ export const createDatabaseWizardJs = `    // ───────────�
           // The ONE Send button (and Enter). When files are staged, ADD them to
           // Files FIRST (await ingest), then run the chat against those just-added
           // files — so the assistant works on exactly what was attached, any file
-          // type, single or many. Files only → just add them. Text only → just chat.
+          // type, single or many. Text only → just chat. Files (with or WITHOUT text)
+          // → add them AND chat, so Lattice always responds to an attachment.
           function submitComposer() {
             var t = input.value.trim();
+            // Lattice is still replying: sendChat's chatBusy guard would drop this turn AFTER
+            // we'd already cleared the tray + ingested the files, silently losing both. Bail
+            // now, keeping the staged files + typed text intact so the user can send once the
+            // reply finishes.
+            if (typeof chatBusy !== 'undefined' && chatBusy) return;
             if (!stagedFiles.length) { if (t) sendChat(t); return; }
             var batch = stagedFiles.slice();
             clearStaging();
-            uploadFiles(batch, { silent: !!t }).then(function (refs) {
-              if (t) sendChat(t, refs);
-            });
+            // The composer Send ALWAYS keeps focus on the chat (silent) — a files-only
+            // send should get a Lattice response, not navigate off to the file record.
+            // If ingest fails, still run the turn with the user's text so a typed
+            // message is never lost (a files-only send with a failed ingest no-ops in
+            // sendChat, which is correct — there is nothing to say).
+            uploadFiles(batch, { silent: true }).then(
+              function (refs) { sendChat(t, refs); },
+              function () { sendChat(t); },
+            );
           }
           input.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComposer(); }
+            if (e.key !== 'Enter') return;
+            // Cmd/Ctrl+Enter (and Shift+Enter) insert a line break; plain Enter sends.
+            if (e.metaKey || e.ctrlKey) {
+              e.preventDefault();
+              var s = input.selectionStart, en = input.selectionEnd;
+              input.value = input.value.slice(0, s) + '\\n' + input.value.slice(en);
+              input.selectionStart = input.selectionEnd = s + 1;
+              input.dispatchEvent(new Event('input')); // re-run the auto-grow sizer
+              return;
+            }
+            if (!e.shiftKey) { e.preventDefault(); submitComposer(); }
           });
           sendBtn.addEventListener('click', function () { submitComposer(); });
           var micBtn = document.getElementById('chat-mic');
@@ -360,10 +332,6 @@ export const createDatabaseWizardJs = `    // ───────────�
             });
             refreshMicAvailability(micBtn);
           }
-        } else {
-          host.innerHTML = '<div class="composer-setup">Set a Claude API token in ' +
-            '<a href="#/settings/user-config">User Settings → Assistant</a> to chat.</div>';
-        }
       }).catch(function () {
         host.innerHTML = '<div class="composer-setup">Assistant unavailable.</div>';
       });

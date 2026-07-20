@@ -9,12 +9,23 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-/** Enable the composer (store a test Claude key + reload) and return the input. */
+/** Ensure the "Ask Gladys" dock (which hosts the composer: input / mic / send) is
+ *  present. In the single-layout reframe the dock is a persistent third column, so
+ *  it is always visible with no toggle — asserting it renders is the boot gate before
+ *  any composer element is used. */
+async function openAskLattice(page: import('@playwright/test').Page) {
+  // The single layout always shows the persistent Ask Gladys dock (and composer).
+  await expect(page.locator('#ask-dock')).toBeVisible();
+}
+
+/** Enable the composer (store a test Claude key + reload), open the Ask Lattice
+ *  panel, and return the input. */
 async function enableComposer(page: import('@playwright/test').Page, url: string) {
   await page.request.put(`${url}/api/assistant/key`, {
     data: { kind: 'anthropic', key: 'sk-ant-e2e-test-key' },
   });
   await page.goto(url);
+  await openAskLattice(page);
   await expect(page.locator('#chat-input')).toBeVisible();
   return page.locator('#chat-input');
 }

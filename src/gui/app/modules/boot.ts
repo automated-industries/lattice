@@ -18,18 +18,23 @@ export const bootJs = `    // ────────────────�
     }
 
     function init() {
-      // Restore the persisted rail width synchronously, before any fetch, so it's
-      // applied on the first paint (no width flash) and isn't gated behind the
-      // async bootstrap. initRailResize re-applies it (idempotent) + wires the
-      // drag handle once the app has booted.
-      var savedRail = parseInt(window.localStorage.getItem(RAIL_KEY) || '', 10);
-      if (!isNaN(savedRail)) applyRailWidth(savedRail);
+      // Restore the persisted Outputs-column width synchronously, before any fetch,
+      // so it's applied on the first paint (no width flash) and isn't gated behind
+      // the async bootstrap. initOutputsResize re-applies it (idempotent) + wires
+      // the drag handle once the app has booted.
+      var savedOutputs = parseInt(window.localStorage.getItem(OUT_KEY) || '', 10);
+      if (!isNaN(savedOutputs)) applyOutputsWidth(savedOutputs);
       // The version chip + manual-upgrade link live in the static shell (present
       // from first paint, in both the normal and virgin-state boots), so wire the
       // click handler and run the first availability check here — independent of
       // the async workspace bootstrap. checkServerVersion() refreshes it later.
       wireUpdateLink();
       checkUpdateAvailable();
+      // Re-poll on a slow cadence so a window left open for hours/days still
+      // surfaces a newer version. checkServerVersion() also refreshes this on
+      // every socket reconnect, but a stable connection never reconnects, so a
+      // long-open desktop/web window would otherwise never re-check.
+      setInterval(checkUpdateAvailable, 30 * 60 * 1000);
       // Failsafe: never leave the overlay up forever if a fetch hangs without
       // rejecting, or a future early-return (e.g. the virgin-state screen)
       // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.
@@ -40,12 +45,18 @@ export const bootJs = `    // ────────────────�
       // an empty workspace list: a plain --config GUI has an active DB but no
       // .lattice registry (empty list) and must still boot normally.
       fetchJson('/api/workspaces').catch(function () { return null; }).then(function (wsBoot) {
-        if (wsBoot && wsBoot.virgin === true) {
-          renderVirginState();
-          hideAppLoading();
-          return undefined;
-        }
-        return bootWorkspace();
+        // Connect wall: a connected Claude subscription is mandatory. Gate the
+        // whole app behind it BEFORE any workspace loads — unless a managed
+        // deployment supplies the credential (managedModelAuth). On a successful
+        // connect the wall calls back into continueBoot to resume the normal boot.
+        return fetchJson('/api/assistant/config').catch(function () { return {}; }).then(function (cfg) {
+          if (cfg && cfg.connected === false && cfg.managedModelAuth !== true) {
+            showConnectWall(function () { continueBoot(wsBoot); });
+            hideAppLoading();
+            return undefined;
+          }
+          return continueBoot(wsBoot);
+        });
       }).catch(function (err) {
         var content = document.getElementById('content');
         if (content) content.innerHTML =
@@ -54,21 +65,59 @@ export const bootJs = `    // ────────────────�
       });
     }
 
+    function continueBoot(wsBoot) {
+      // The account control (disconnect) shows once connected; it self-hides in a
+      // managed deployment. Safe to wire on every boot (idempotent element lookup).
+      initAccountMenu();
+      // Show the usage-limit banner if Claude is already over its limit at boot.
+      refreshLimitBlock();
+      if (wsBoot && wsBoot.virgin === true) {
+        renderVirginState();
+        hideAppLoading();
+        return undefined;
+      }
+      return bootWorkspace();
+    }
+
     function bootWorkspace() {
       return Promise.all([
-        fetchJson('/api/entities'),
+        // Own catch so a read-degraded active workspace (its first data read 500s)
+        // can't reject the whole boot — otherwise renderWsSwitcher below never runs
+        // and the user is BRICKED (can't switch away from the broken workspace).
+        fetchJson('/api/entities-summary').catch(function () { return { tables: [], __failed: true }; }),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
         fetchJson('/api/userconfig/preferences').catch(function () { return { show_system_tables: false, analytics: true }; }),
         fetchJson('/api/workspaces').catch(function () { return null; }),
         fetchJson('/api/dbconfig').catch(function () { return {}; }),
+        // Does this workspace have the seeded "Welcome to Lattice!" dashboard? Used
+        // only to pick the empty-hash landing (open it vs the Analytics home). A miss
+        // (deleted, never seeded, or not visible to a member) lands on the home.
+        fetchJson('/api/tables/dashboards/rows/welcome-lattice').catch(function () { return null; }),
       ]).then(function (results) {
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[2] || {};
         state.systemTables = (results[3] && results[3].tables) || [];
         state.preferences = results[4] || { show_system_tables: false, analytics: true };
+        // Land on Analytics: an empty/home hash boots into the Analytics view
+        // (location.replace — no phantom history entry). Runs BEFORE the nav
+        // stack is seeded below so Back never steps to a Configure home the
+        // user was never shown. Explicit deep links (#/graph, #/fs/…) are
+        // untouched and still boot straight into Configure.
+        if (!location.hash || location.hash === '#/' || location.hash === '#') {
+          // Open the seeded Welcome dashboard in the middle pane when it exists, so a
+          // new workspace starts on something useful; otherwise the Analytics home.
+          var welcome = results[7];
+          var hasWelcome = !!(welcome && welcome.id && !welcome.error);
+          var landing = hasWelcome ? '#/analytics/welcome-lattice' : '#/analytics';
+          location.replace((location.href.split('#')[0] || '') + landing);
+        }
+        // Key the per-workspace navigation history to the booted workspace.
+        if (results[5] && results[5].current && typeof navSetWorkspace === 'function') {
+          navSetWorkspace(results[5].current, true);
+        }
         state.analyticsEffective = !!(results[4] && results[4].analytics_effective);
         // local_open defaults true (the server defaults it on) — drives whether the
         // file view offers "Open in Finder". Treat a missing field as enabled.
@@ -126,15 +175,34 @@ export const bootJs = `    // ────────────────�
         wireHistoryControls();
         refreshHistoryState();
         renderRoute();
+        // The active workspace opened but its data couldn't be read — the switcher
+        // is mounted (above), so surface a clear escape hatch instead of a blank pane.
+        if (results[0] && results[0].__failed) {
+          var failEl = document.getElementById('content');
+          if (failEl) failEl.innerHTML =
+            '<div class="placeholder"><h2>This workspace could not load</h2>' +
+            '<p>Its data could not be read. Pick another workspace from the switcher above, ' +
+            'or check the database connection, then reload.</p></div>';
+        }
         startEventStream();
-        initSearch();
+        // Kick the stale-connector sync (fire-and-forget): in a fresh process
+        // connector/database tables only exist after their first sync registers
+        // them — without this they stay invisible until a manual refresh. The
+        // server no-ops when nothing is stale.
+        fetch('/api/connectors/sync-if-stale', { method: 'POST' }).catch(function () {});
+        fetch('/api/db-sources/sync-if-stale', { method: 'POST' }).catch(function () {});
         initLastEdited();
         initOffline();
-        initRailResize();
-        initRailDrawer();
-        initRailDragDrop();
+        initOutputsResize();
+        initColumnCollapse();
+        initWireMerge();
+        initAskLattice();
+        initActivityHeader();
         renderComposer();
         initThreadControls();
+        // Pending clarification questions: render any waiting cards + the
+        // trigger dot. Best-effort by construction (its fetch self-catches).
+        initQuestions();
         // Warm up on-device voice in the background shortly after boot so dictation
         // is ready on first use — no visible model-loading step, ever.
         if (typeof voicePreload === 'function') setTimeout(voicePreload, 1500);

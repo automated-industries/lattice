@@ -36,20 +36,46 @@ export async function publishSharedSchema(db: Lattice, configPath: string): Prom
   const cfg = loadConfigDoc(configPath).toJSON() as {
     entities?: Record<string, unknown>;
     entityContexts?: Record<string, unknown>;
+    computed?: Record<string, unknown>;
   };
   const entities = cfg.entities ?? {};
   if (Object.keys(entities).length === 0) return;
+  // Self-heal the additive computed_json column before writing it: the RLS
+  // bootstrap adds it on the owner's converge, but publish is also reachable
+  // right after a runtime computed-table edit — an older cloud whose converge
+  // has not re-run yet must not fail the publish. Idempotent.
   await runAsyncOrSync(
     db.adapter,
-    `INSERT INTO "__lattice_shared_schema" ("id","entities_json","contexts_json","updated_at")
-       VALUES ('singleton', $1, $2, $3)
+    `ALTER TABLE "__lattice_shared_schema" ADD COLUMN IF NOT EXISTS "computed_json" TEXT`,
+  );
+  // Sanitize the published layout: a not-yet-upgraded owner config can carry
+  // legacy ROOT-level outputFile values (STATES.md at the Context root — the
+  // orphan-rollup bug). Members hydrate this spec verbatim, so publish the
+  // healed shape (same rewrite as the config upgrade) rather than replicating
+  // the breakage into every member's workspace. Rewrite ONLY the EXACT upper-cased
+  // legacy default the buggy create path wrote — never a deliberately-authored
+  // lowercase filename (e.g. the documented `outputFile: tickets.md`).
+  for (const [name, def] of Object.entries(entities)) {
+    if (def && typeof def === 'object') {
+      const d = def as { outputFile?: unknown };
+      if (typeof d.outputFile === 'string' && d.outputFile === `${name.toUpperCase()}.md`) {
+        d.outputFile = `.schema-only/${name}.md`;
+      }
+    }
+  }
+  await runAsyncOrSync(
+    db.adapter,
+    `INSERT INTO "__lattice_shared_schema" ("id","entities_json","contexts_json","computed_json","updated_at")
+       VALUES ('singleton', $1, $2, $3, $4)
        ON CONFLICT ("id") DO UPDATE SET
          "entities_json" = EXCLUDED."entities_json",
          "contexts_json" = EXCLUDED."contexts_json",
+         "computed_json" = EXCLUDED."computed_json",
          "updated_at"    = EXCLUDED."updated_at"`,
     [
       JSON.stringify(entities),
       JSON.stringify(cfg.entityContexts ?? null),
+      JSON.stringify(cfg.computed ?? null),
       new Date().toISOString(),
     ],
   );
@@ -102,6 +128,29 @@ export async function hydrateMemberConfigFromCloud(
       if (row.contexts_json != null) {
         const ctx = JSON.parse(row.contexts_json as string) as unknown;
         if (ctx) doc.setIn(['entityContexts'], ctx);
+      }
+      // Computed-table definitions ride the same published layout. Read in a
+      // SEPARATE guarded query: on a cloud published before the computed_json
+      // column existed, this read fails — the member must still hydrate
+      // entities/contexts rather than lose the whole layout.
+      try {
+        const computedRow = await getAsyncOrSync(
+          peek.adapter,
+          'SELECT "computed_json" FROM "__lattice_shared_schema" WHERE "id" = $1',
+          ['singleton'],
+        );
+        if (computedRow?.computed_json != null) {
+          const computed = JSON.parse(computedRow.computed_json as string) as Record<
+            string,
+            unknown
+          > | null;
+          if (computed && Object.keys(computed).length > 0) doc.setIn(['computed'], computed);
+        }
+      } catch (e) {
+        console.warn(
+          '[hydrateMemberConfigFromCloud] skipped computed-table hydration (pre-computed cloud?):',
+          (e as Error).message,
+        );
       }
       saveConfigDoc(configPath, doc);
       return true;

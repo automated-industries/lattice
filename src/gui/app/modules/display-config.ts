@@ -65,6 +65,7 @@ export const displayConfigJs = `
         return /^[a-z0-9_-]+$/.test(sub) ? 'settings_' + sub : 'settings_root';
       }
       if (top === 'fs' || top === 'objects' || top === 'system') return top;
+      if (top === 'analytics') return 'analytics'; // coarse segment only — never the dashboard id
       return 'other';
     }
 
@@ -98,11 +99,35 @@ export const displayConfigJs = `
       return typeof v === 'string' && v.slice(0, 4) === 'enc:';
     }
 
+    // Server-provided display labels for tables whose physical name title-cases
+    // into noise (external-DB tables: db_<database>_<connid>_<table>). Memoized on
+    // the identity of state.entities.tables so it rebuilds only when the payload
+    // is replaced (boot, workspace switch, realtime refresh), not on every render.
+    var _entityLabelCache = { src: null, map: {} };
+    function entityLabelMap() {
+      var tables = (state.entities && state.entities.tables) || [];
+      if (_entityLabelCache.src !== tables) {
+        var m = {};
+        for (var i = 0; i < tables.length; i++) {
+          var t = tables[i];
+          if (t && t.name && t.entityLabel) m[t.name] = t.entityLabel;
+        }
+        _entityLabelCache = { src: tables, map: m };
+      }
+      return _entityLabelCache.map;
+    }
+
     function displayFor(name) {
+      // Artifacts is a virtual object (files carrying an artifact_type), not a real
+      // table — give it a stable label + icon.
+      if (name === 'artifacts') return { label: 'Artifacts', icon: '🧩' };
       var override = state.iconOverrides[name];
       var base = DISPLAY[name];
       var icon = (override && override.icon) || (base && base.icon) || autoEmojiFor(name) || DEFAULT_ICON;
-      var label = (base && base.label) || titleCase(name);
+      // A built-in DISPLAY label wins; then a server-supplied clean label (title-
+      // cased) for machine-namespaced connected tables; else the de-underscored name.
+      var serverLabel = entityLabelMap()[name];
+      var label = (base && base.label) || (serverLabel ? titleCase(serverLabel) : titleCase(name));
       return { label: label, icon: icon };
     }
     // Pick an apt emoji from an entity's NAME when the user hasn't set one and it
@@ -260,20 +285,25 @@ export const displayConfigJs = `
       return s.length > n ? s.slice(0, n) + '…' : s;
     }
 
-    // Lockstep mirror of isJunctionTable in src/gui/data.ts: a junction joins
-    // exactly two entities and carries no payload — 2 belongsTo relations AND
-    // every column is one of the 2 FK columns or a system column. A table with
-    // extra data columns (e.g. tasks with a title) is a first-class entity, not
-    // a junction. Keep this predicate identical to the server's.
+    // DISPLAY predicate — mirror of isHiddenLinkTable in src/gui/data.ts. Hides
+    // pure link tables from object lists / sidebars / graph nodes / the Markdown +
+    // Tables panels. Catches BOTH a relation-declared junction (exactly 2 belongsTo,
+    // only FK / system / name columns) AND a *physical* link table created without
+    // declared relations — an AI-built files_<entity> shaped (id, name, x_id, y_id).
+    // A display-only "name" label doesn't make a link table a first-class object.
+    // Used ONLY for hiding from display/nav — never for deletion. Keep in lockstep.
     function isJunction(table) {
+      var cols = table.columns || [];
+      var sys = { id: 1, created_at: 1, updated_at: 1, deleted_at: 1, name: 1 };
       var rels = Object.values(table.relations || {});
-      if (rels.length !== 2 || !rels.every(function (r) { return r.type === 'belongsTo'; })) {
-        return false;
+      if (rels.length === 2 && rels.every(function (r) { return r.type === 'belongsTo'; })) {
+        var fk = {};
+        rels.forEach(function (r) { fk[r.foreignKey] = 1; });
+        if (cols.every(function (c) { return fk[c] || sys[c]; })) return true;
       }
-      var sys = { id: 1, created_at: 1, updated_at: 1, deleted_at: 1 };
-      var fk = {};
-      rels.forEach(function (r) { fk[r.foreignKey] = 1; });
-      return (table.columns || []).every(function (c) { return fk[c] || sys[c]; });
+      // Physical link table (no / non-2 declared relations): exactly two *_id columns.
+      var payload = cols.filter(function (c) { return !sys[c]; });
+      return payload.length === 2 && payload.every(function (c) { return /_id$/.test(c); });
     }
 
     function tableByName(name) {
@@ -285,20 +315,6 @@ export const displayConfigJs = `
         if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || r.statusText); });
         return r.json();
       });
-    }
-
-    // SINGLE SOURCE OF TRUTH for the assistant's Claude connection state, derived
-    // from /api/assistant/config's claudeAuthKind (oauth | key | null). EVERY
-    // place that shows "Connected with Claude" / opens the API-key panel / gates
-    // on "the assistant has auth" MUST go through this — never re-derive from raw
-    // fields, or the signals disagree (a stray "or hasAnthropicKey" once made
-    // onboarding show "Connected with Claude" for an API-key-only setup while the
-    // settings panel showed not-connected).
-    //   .oauth -> a Claude SUBSCRIPTION is connected ("Connected with Claude")
-    //   .any   -> some working auth exists (subscription OR API key)
-    function claudeAuth(cfg) {
-      var kind = (cfg && cfg.claudeAuthKind) || null; // 'oauth' | 'key' | null
-      return { kind: kind, oauth: kind === 'oauth', any: kind != null };
     }
 
     // Disable a button + show an inline spinner for the duration of an

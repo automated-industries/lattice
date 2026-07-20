@@ -20,43 +20,60 @@ test.afterEach(async () => {
 
 const ROW_DELAY_MS = 800;
 
-test('navigation paints the new view immediately even when row data is slow', async ({ page }) => {
-  for (let i = 0; i < 20; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
+test('navigation paints the new view immediately even when data is slow', async ({ page }) => {
+  let firstItemId = '';
+  for (let i = 0; i < 20; i++) {
+    const r = (await createRow(gui.url, 'items', { name: 'Item ' + String(i) })) as { id: string };
+    if (i === 0) firstItemId = r.id;
+  }
 
-  // Make every row fetch slow, to simulate a large local table / a cloud open.
-  // (Entities/dashboard are NOT delayed, so the shell still boots normally.)
+  // Slow the row fetches that gate the table-collection + record Workspace tabs,
+  // to simulate a large local table / a cloud open. The collection and record
+  // renderers both await these before painting their real content, so this makes
+  // the freeze deterministic. (Entities/dashboard are NOT delayed, so the shell
+  // still boots normally. Provenance is now a lazy, collapsed panel on the record
+  // view — off the initial-render path — but we keep it slowed for good measure.)
+  await page.route('**/api/provenance**', async (route) => {
+    await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
+    await route.continue();
+  });
   await page.route('**/api/tables/**/rows**', async (route) => {
     await new Promise((r) => setTimeout(r, ROW_DELAY_MS));
     await route.continue();
   });
 
-  await page.goto(gui.url);
-  await expect(page.locator('nav.sidebar')).toBeVisible();
+  // Boot the single-layout shell; wait for entities so the table nav resolves to
+  // the real collection/record renderers rather than the pre-entities loading gate.
+  const entitiesLoaded = page.waitForResponse((r) => r.url().includes('/api/entities-summary'));
+  await page.goto(gui.url + '#/');
+  await entitiesLoaded;
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
-  // Navigate to the items collection. A loading frame must appear well before
-  // the 800ms data — the view never blocks on the fetch.
+  // Open the items table collection tab. A loading frame must appear well before
+  // the 800ms row data — the view never blocks on the fetch.
   await page.evaluate(() => {
-    window.location.hash = '#/fs/items';
+    window.location.hash = '#/w/table/items';
   });
-  // A loading frame must appear well before the 800ms data — the view never
-  // blocks on the fetch.
-  await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …then the entity nodes fill in.
-  await expect(page.locator('.ognode-entity').first()).toBeVisible({ timeout: 5000 });
+  // The table page is a SQL runner: its header + editor paint synchronously (never
+  // blocking on data), so the shell is there at once.
+  await expect(page.locator('.sql-editor')).toBeVisible({ timeout: 1000 });
+  // …then the result grid fills in (the SQL query runs against /api/analytics/sql).
+  await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
-  // Click into an entity node: the graph must be REPLACED by the item frame
-  // immediately (well under the 800ms item-data delay), not persist until the
-  // item's data arrives. This is the exact freeze the user hit.
-  await page.locator('.ognode-entity').first().click();
-  await expect(page.locator('.object-graph')).toHaveCount(0, { timeout: 400 });
+  // Open a record (the row detail) directly: the nav must paint the new frame
+  // immediately (a loading state), not freeze on the slow row fetch.
+  await page.evaluate((id) => {
+    window.location.hash = '#/w/table/items/' + id;
+  }, firstItemId);
   await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
-  // …and the item content eventually loads.
-  await expect(page.locator('.fs-doc')).toBeVisible({ timeout: 5000 });
+  // …and the item content eventually loads (the record view header).
+  await expect(page.locator('.view-header')).toBeVisible({ timeout: 5000 });
 
   // The GUI stays responsive: navigating again while data is still in flight
   // immediately repaints (no freeze, no stale view).
   await page.evaluate(() => {
-    window.location.hash = '#/fs/items';
+    window.location.hash = '#/w/table/items';
   });
-  await expect(page.locator('.route-loading')).toBeVisible({ timeout: 400 });
+  // Back to the SQL runner — its editor repaints immediately, no freeze.
+  await expect(page.locator('.sql-editor')).toBeVisible({ timeout: 1000 });
 });

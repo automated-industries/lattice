@@ -35,24 +35,30 @@ async function ingestFile(page: import('@playwright/test').Page): Promise<string
   return body.result.id;
 }
 
-test('doc view: actions dropdown + View source mode', async ({ page }) => {
+test('a file gets the UNIFIED record page: toggle + sharing + provenance + menu', async ({
+  page,
+}) => {
   const id = await ingestFile(page);
-  await page.goto(gui.url + '#/fs/files/' + id);
-  // Formatted view by default (the field dump is suppressed).
+  await page.goto(gui.url + '#/w/file/' + id);
+  // Formatted view by default: the inline preview inside the shared chrome.
   await expect(page.locator('#file-preview')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.fs-doc')).toHaveCount(0);
-  // The actions live in a dropdown beside the title.
+  // No standalone toggle; the visibility/sharing line + Data provenance panel remain.
+  await expect(page.locator('.fs-view-toggle')).toHaveCount(0);
+  await expect(page.locator('#row-provenance')).toContainText('Data provenance');
+  // The ⋯ menu carries "View Markdown" + history + delete (no separate "source" item).
   await expect(page.locator('#file-menu-btn')).toBeVisible();
   await page.locator('#file-menu-btn').click();
-  await expect(page.locator('.file-menu-item[data-act="source"]')).toBeVisible();
+  await expect(page.locator('.file-menu-item[data-act="markdown"]')).toHaveText('View Markdown');
   await expect(page.locator('.file-menu-item[data-act="history"]')).toBeVisible();
   await expect(page.locator('.file-menu-item[data-act="delete"]')).toBeVisible();
-  // View source → the raw text shows (full-page mode replaces the body).
-  await page.locator('.file-menu-item[data-act="source"]').click();
+  await expect(page.locator('.file-menu-item[data-act="source"]')).toHaveCount(0);
+  // "View Markdown" → the raw source pre.
+  await page.locator('.file-menu-item[data-act="markdown"]').click();
   await expect(page.locator('.file-source-pre')).toContainText('original body', { timeout: 5000 });
-  // Back to the formatted view via the dropdown.
+  // Reopen → "View Formatted" → back to the preview.
   await page.locator('#file-menu-btn').click();
-  await page.locator('.file-menu-item[data-act="display"]').click();
+  await page.locator('.file-menu-item[data-act="markdown"]').click();
   await expect(page.locator('#file-preview')).toBeVisible();
 });
 
@@ -85,7 +91,7 @@ test('in-place content edit mutates the same row and is kept in history', async 
 
 test('Delete soft-deletes the record but never the on-disk file', async ({ page }) => {
   const id = await ingestFile(page);
-  await page.goto(gui.url + '#/fs/files/' + id);
+  await page.goto(gui.url + '#/w/file/' + id);
   await page.locator('#file-menu-btn').click();
   await page.locator('.file-menu-item[data-act="delete"]').click();
   // The row is soft-deleted (recoverable from trash), not hard-deleted…

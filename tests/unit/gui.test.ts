@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   buildGuiGraph,
   getGuiEntities,
+  loadGuiData,
   isJunctionTable,
   type GuiTableSummary,
 } from '../../src/gui/data.js';
@@ -196,6 +197,65 @@ describe('GUI graph builder', () => {
     ).toBe(true);
   });
 
+  it('caps row/file detail nodes for large workspaces but keeps the full table topology', () => {
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const full = buildGuiGraph(configPath, outputDir);
+    const capped = buildGuiGraph(configPath, outputDir, {
+      maxDetailNodes: 1,
+      maxEntityNodesPerTable: 1,
+    });
+    const tableNodes = (g: typeof full) => g.nodes.filter((n) => n.type === 'table').length;
+    const detailNodes = (g: typeof full) => g.nodes.filter((n) => n.type !== 'table').length;
+    // The cap is reported, not silent.
+    expect(capped.truncated).toBe(true);
+    expect(capped.totalEntities ?? 0).toBeGreaterThan(1);
+    // Table topology always renders in full (the schema is the point of the graph).
+    expect(tableNodes(capped)).toBe(tableNodes(full));
+    // Row/file detail nodes are bounded well below the uncapped count.
+    expect(detailNodes(capped)).toBeGreaterThanOrEqual(1);
+    expect(detailNodes(capped)).toBeLessThanOrEqual(2);
+    expect(detailNodes(capped)).toBeLessThan(detailNodes(full));
+    // The default (no cap option) leaves a small fixture untouched.
+    expect(full.truncated).toBe(false);
+  });
+
+  it('schemaOnly returns the table topology with zero row/file detail nodes', () => {
+    // The 5.0 brain graph fetches ?schema=1 by default (instant + scales to any row
+    // count): table topology only, never the per-row/file detail nodes.
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const full = buildGuiGraph(configPath, outputDir);
+    const schema = buildGuiGraph(configPath, outputDir, { schemaOnly: true });
+    const tableNodes = (g: typeof full) => g.nodes.filter((n) => n.type === 'table').length;
+    const detailNodes = (g: typeof full) => g.nodes.filter((n) => n.type !== 'table').length;
+    // Same table topology as the full graph...
+    expect(tableNodes(schema)).toBe(tableNodes(full));
+    expect(tableNodes(schema)).toBeGreaterThan(0);
+    // ...but ZERO detail nodes (the schema-only payload draws no rows/files).
+    expect(detailNodes(schema)).toBe(0);
+    expect(detailNodes(full)).toBeGreaterThan(0); // the fixture DOES have detail nodes
+    // Not a capped view — complete at the schema level, so no truncation flag.
+    expect(schema.truncated).toBeUndefined();
+    // Edges stay referentially consistent: every endpoint is a present table node.
+    const ids = new Set(schema.nodes.map((n) => n.id));
+    for (const e of schema.edges) {
+      expect(ids.has(e.source)).toBe(true);
+      expect(ids.has(e.target)).toBe(true);
+    }
+  });
+
+  it('loadGuiData(includeEntities=false) skips the O(files) rendered-file scan', () => {
+    // The fixture renders entity files, so the DEFAULT load collects them...
+    const { configPath, outputDir } = writeFixture(tempDir());
+    const full = loadGuiData(configPath, outputDir);
+    expect(full.entities.length).toBeGreaterThan(0);
+    // ...but the hot-path load (boot / workspace switch / Objects list) skips the
+    // disk scan: same tables + manifest, empty entities.
+    const fast = loadGuiData(configPath, outputDir, false);
+    expect(fast.entities).toEqual([]);
+    expect(fast.tables.map((t) => t.name).sort()).toEqual(full.tables.map((t) => t.name).sort());
+    expect(fast.manifest).toEqual(full.manifest);
+  });
+
   it('adds extraTables (native entities / team-shared) as graph nodes', () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const graph = buildGuiGraph(configPath, outputDir, {
@@ -205,8 +265,11 @@ describe('GUI graph builder', () => {
       ],
     });
     const nodeIds = graph.nodes.map((n) => n.id);
-    // Native entities, absent from the YAML, now show in the Data Model.
-    expect(nodeIds).toContain('table:files');
+    // Native entities, absent from the YAML, now show in the Data Model —
+    // except `files`, which is a SOURCE and is intentionally hidden from the
+    // brain graph (GRAPH_HIDDEN_TABLES) while staying a first-class entity
+    // everywhere else (Objects list, /api/entities, Sources tree).
+    expect(nodeIds).not.toContain('table:files');
     expect(nodeIds).toContain('table:secrets');
     // YAML tables still present.
     expect(nodeIds).toContain('table:agents');
@@ -233,6 +296,64 @@ describe('GUI graph builder', () => {
       expect(presentIds.has(edge.source)).toBe(true);
       expect(presentIds.has(edge.target)).toBe(true);
     }
+  });
+
+  it('emits a computes edge (base → computed view) for each computed definition', () => {
+    // Computed tables live in the config's `computed:` section (not `entities:`),
+    // so the builder reads them from the parsed config and emits one edge per
+    // definition. The view's node normally arrives via extraTables (the live
+    // registry); the builder also adds it itself so the edge is never dangling.
+    const root = tempDir();
+    const outputDir = join(root, 'context');
+    mkdirSync(outputDir, { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  tickets:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '      priority: { type: integer }',
+        '    render: default-list',
+        '    outputFile: tickets.md',
+        '',
+        'computed:',
+        '  ticket_summary:',
+        '    base: tickets',
+        '    fields:',
+        '      title: { kind: alias, source: title }',
+        '      is_urgent: { kind: calc, expr: "priority >= 3", type: boolean }',
+      ].join('\n'),
+    );
+
+    const graph = buildGuiGraph(configPath, outputDir, { schemaOnly: true });
+    const nodeIds = graph.nodes.map((n) => n.id);
+    expect(nodeIds).toContain('table:tickets');
+    expect(nodeIds).toContain('table:ticket_summary');
+    expect(
+      graph.edges.some(
+        (e) =>
+          e.type === 'computes' &&
+          e.source === 'table:tickets' &&
+          e.target === 'table:ticket_summary',
+      ),
+    ).toBe(true);
+
+    // The full (non-schemaOnly) payload carries the same edge.
+    const full = buildGuiGraph(configPath, outputDir);
+    expect(full.edges.some((e) => e.type === 'computes')).toBe(true);
+
+    // A visibility filter that hides the computed view drops its node + edge.
+    const filtered = buildGuiGraph(configPath, outputDir, {
+      schemaOnly: true,
+      visibleFilter: (t) => t !== 'ticket_summary',
+    });
+    expect(filtered.nodes.map((n) => n.id)).not.toContain('table:ticket_summary');
+    expect(filtered.edges.some((e) => e.type === 'computes')).toBe(false);
   });
 
   it('returns an empty entity list when the manifest is missing', () => {
@@ -294,10 +415,12 @@ describe('GUI server', () => {
     expect(graph.edges.length).toBeGreaterThan(0);
 
     // Native entities (files, secrets) are registered at runtime, not in
-    // the YAML — they must still appear in the Data Model graph and the
-    // entity list. Regression guard for the "Data Model is empty" bug.
+    // the YAML. `secrets` appears in the Data Model graph (regression guard for
+    // the "Data Model is empty" bug); `files` is intentionally hidden from the
+    // graph (it's a SOURCE — see GRAPH_HIDDEN_TABLES) but MUST still appear in
+    // the entity list and everywhere else it's first-class.
     const graphNodeIds = graph.nodes.map((n) => n.id);
-    expect(graphNodeIds).toContain('table:files');
+    expect(graphNodeIds).not.toContain('table:files');
     expect(graphNodeIds).toContain('table:secrets');
     const entityNames = entities.tables.map((t) => t.name);
     expect(entityNames).toContain('files');
@@ -904,17 +1027,21 @@ describe('isJunctionTable', () => {
 });
 
 describe('GUI server — native entities + table allowlist', () => {
-  it('makes native files/secrets queryable (regression: "Unknown table")', async () => {
+  it('makes native files queryable but REFUSES the secrets credential store (regression: "Unknown table" + S4)', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
     servers.push(server);
 
-    for (const table of ['files', 'secrets']) {
-      const res = await fetch(`${server.url}/api/tables/${table}/rows`);
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { rows: unknown[] };
-      expect(Array.isArray(body.rows)).toBe(true);
-    }
+    // `files` is a registered native table — queryable.
+    const filesRes = await fetch(`${server.url}/api/tables/files/rows`);
+    expect(filesRes.status).toBe(200);
+    expect(Array.isArray(((await filesRes.json()) as { rows: unknown[] }).rows)).toBe(true);
+
+    // `secrets` is refused on the generic route: `value` is encrypted-at-rest and decrypted on
+    // read, so it must never ship over this API (S4).
+    const secretsRes = await fetch(`${server.url}/api/tables/secrets/rows`);
+    expect(secretsRes.status).toBe(403);
+    expect(JSON.stringify(await secretsRes.json())).not.toContain('value');
 
     // And a row round-trips through the native files table.
     const post = await fetch(`${server.url}/api/tables/files/rows`, {
@@ -950,6 +1077,7 @@ describe('GUI server — native entities + table allowlist', () => {
     expect(res.bindings.map((b) => b.entity).sort()).toEqual([
       'chat_messages',
       'chat_threads',
+      'dashboards',
       'files',
       'notes',
       'secrets',

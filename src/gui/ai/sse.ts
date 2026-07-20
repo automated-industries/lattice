@@ -16,10 +16,27 @@ export type ChatStreamEvent =
   // A tool asked the GUI to open a row it just created (e.g. create_artifact) in
   // the main viewer. The client navigates to it once the turn finishes streaming.
   | { type: 'open'; table: string; id: string }
-  | { type: 'assistant_message_end' }
+  // The model called ask_user: show this multiple-choice question inline in the
+  // chat and end the turn — the user's pick (or free-form reply) arrives as the
+  // next chat message. Never persisted to the question store; in-turn only.
+  | { type: 'question'; question: string; options: string[]; allowOther: boolean }
+  // Ends one round. `hadTools` is true when this round called tools — its streamed
+  // text was pre-tool preamble ("Let me search…"), NOT the answer, so the client
+  // reaps that round's bubble and the route drops it from the persisted message.
+  // (Text now streams LIVE as it arrives, before tool use is known, so this flag is
+  // how a preamble round is distinguished from the final answer after the fact.)
+  | { type: 'assistant_message_end'; hadTools?: boolean }
+  // A fast, contextual acknowledgement published the instant a turn is accepted, BEFORE
+  // the (possibly slow) tool loop starts — "Got it, pulling your Q3 invoices…". Rendered
+  // as a transient bubble; the real answer streams into its own bubble after. Not
+  // persisted (only the final answer is), so it never replays on reload.
+  | { type: 'ack'; message: string }
   | { type: 'done' }
   // Non-fatal notice (e.g. the tool-step cap was reached with work outstanding).
   | { type: 'warn'; message: string }
+  // Claude usage limit reached — the standard "you've hit your Claude limit"
+  // notice; resetAt (ISO) when known. Distinct from a plain error.
+  | { type: 'limit'; message: string; resetAt?: string }
   | { type: 'error'; message: string };
 
 /** A feed event delivered over the same SSE channel as chat events. */

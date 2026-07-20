@@ -9,51 +9,66 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-function sidebarWidth(page: import('@playwright/test').Page): Promise<number> {
-  return page.evaluate(() =>
-    parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10),
-  );
+// Measure the rendered width of the Ask Gladys dock. The dock width is driven by
+// the `--ask-dock-width` grid column, but that custom property is only set on the
+// root once the user drags (or on restore from localStorage) — so read the real
+// laid-out width off the element itself, which is valid before and after a drag.
+function dockWidth(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(() => {
+    const dock = document.getElementById('ask-dock');
+    return dock ? Math.round(dock.getBoundingClientRect().width) : NaN;
+  });
 }
 
-test('mobile: the rail handle toggles the bottom drawer', async ({ page }) => {
-  await page.setViewportSize({ width: 400, height: 800 });
-  await page.goto(gui.url);
-  const rail = page.locator('#assistant-rail');
-  const handle = page.locator('#rail-handle');
-  await expect(handle).toBeVisible();
-  await expect(rail).not.toHaveClass(/expanded/);
+test('the wrench toggles the Configure drawer over the always-visible workspace', async ({
+  page,
+}) => {
+  await page.goto(gui.url + '#/');
+  // Single layout: the workspace + the Ask Gladys dock are ALWAYS visible (there is
+  // no view flip). The Configure drawer starts closed.
+  await expect(page.locator('.layout')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeVisible();
+  await expect(page.locator('#settings-drawer')).toBeHidden();
 
-  await handle.click();
-  await expect(rail).toHaveClass(/expanded/);
+  // The wrench opens the Configure drawer; the workspace + dock stay visible beneath it.
+  await page.locator('#configure-trigger').click();
+  await expect(page.locator('#settings-drawer')).toBeVisible();
+  await expect(page.locator('.layout')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeVisible();
 
-  await handle.click();
-  await expect(rail).not.toHaveClass(/expanded/);
+  // Clicking the wrench again collapses the drawer, back to the bare workspace.
+  await page.locator('#configure-trigger').click();
+  await expect(page.locator('#settings-drawer')).toBeHidden();
+  await expect(page.locator('.layout')).toBeVisible();
+  await expect(page.locator('#ask-dock')).toBeVisible();
 });
 
-test('desktop: dragging the resize handle changes and persists the rail width', async ({
+test('desktop: dragging the resize handle changes and persists the Ask Gladys dock width', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto(gui.url);
-  const before = await sidebarWidth(page);
+  await page.goto(gui.url + '#/');
+  await expect(page.locator('.layout')).toBeVisible();
+  const before = await dockWidth(page);
 
-  const handle = page.locator('#rail-resize');
+  const handle = page.locator('#ask-dock-resize');
   const box = await handle.boundingBox();
   if (!box) throw new Error('resize handle has no bounding box');
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
-  // The rail is on the right; dragging the handle left widens it.
+  // The Ask Gladys dock is the rightmost column; dragging its left-edge handle left widens it.
   await page.mouse.move(cx, cy);
   await page.mouse.down();
   await page.mouse.move(cx - 90, cy, { steps: 10 });
   await page.mouse.up();
 
-  const after = await sidebarWidth(page);
+  const after = await dockWidth(page);
   expect(after).toBeGreaterThan(before);
   expect(after).toBeLessThanOrEqual(640);
 
-  // Width persists across reload (localStorage).
+  // Width persists across reload (localStorage: lattice.askDockWidth).
   await page.reload();
-  const persisted = await sidebarWidth(page);
+  await expect(page.locator('.layout')).toBeVisible();
+  const persisted = await dockWidth(page);
   expect(persisted).toBe(after);
 });

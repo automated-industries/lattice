@@ -18,11 +18,16 @@ const servers: GuiServerHandle[] = [];
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  delete process.env.LATTICE_ROOT;
 });
 
 async function bootVirgin(): Promise<GuiServerHandle> {
   const base = mkdtempSync(join(tmpdir(), 'lattice-virgin-'));
   dirs.push(base);
+  // Anchor the root inside the sandbox: the upward root walk would otherwise
+  // escape the temp dir and find a real user-level root on machines that have
+  // one (tmpdir sits under the user profile on Windows).
+  process.env.LATTICE_ROOT = join(base, '.lattice');
   const boot = ensureRootForGui({
     startDir: base,
     configPath: join(base, 'lattice.config.yml'),
@@ -101,6 +106,9 @@ describe('GUI virgin (zero-workspace) state', () => {
     // so /api/workspaces must NOT report virgin, and data routes must work.
     const base = mkdtempSync(join(tmpdir(), 'lattice-plaincfg-'));
     dirs.push(base);
+    // Anchor the root lookup inside the sandbox (never created → empty registry);
+    // see bootVirgin for why the unanchored upward walk is unsafe here.
+    process.env.LATTICE_ROOT = join(base, '.lattice');
     mkdirSync(join(base, 'data'), { recursive: true });
     const configPath = join(base, 'lattice.config.yml');
     writeFileSync(
@@ -203,6 +211,8 @@ describe('GUI virgin (zero-workspace) state', () => {
     // workspace was un-removable. It must be deletable with no active DB.
     const base = mkdtempSync(join(tmpdir(), 'lattice-virgin-del-'));
     dirs.push(base);
+    // Anchor the root inside the sandbox; see bootVirgin.
+    process.env.LATTICE_ROOT = join(base, '.lattice');
     const boot = ensureRootForGui({
       startDir: base,
       configPath: join(base, 'lattice.config.yml'),

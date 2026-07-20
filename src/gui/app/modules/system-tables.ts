@@ -5,9 +5,19 @@ export const systemTablesJs = `    // ──────────────
     // (row-level link/unlink lives on the row detail page now)
     // ────────────────────────────────────────────────────────────
     var dmActiveTable = null;
-    // The last rendered brain-graph model, so the ingest animation can diff the
-    // delta (new nodes/edges) and seed their start positions from the prior layout.
+    // The last rendered brain-graph model, kept so the ingest animation can feed
+    // the live renderer the authoritative node/edge set as data streams in.
     var graphModelCache = null;
+    // The live force-graph handle (from the out-of-band /gui-assets renderer) and a
+    // cached dynamic import of it, so the asset is fetched once per session.
+    var schemaGraphHandle = null;
+    var _forceGraphModule = null;
+    // Bumped on every schema-graph render so an in-flight progressive reveal from a
+    // previous render (or a navigation) cancels instead of feeding a stale handle.
+    var graphRevealGen = 0;
+    // What a plain (non-wire/merge) schema-graph node click does. The Graph Configure tab
+    // sets this to drill into that table's rows; null falls back to opening the row view.
+    var schemaNodeDrill = null;
 
     /** Columns that are structurally part of every entity and shouldn't be
      * renamed or removed from the GUI. id is the primary key; deleted_at is
@@ -35,18 +45,141 @@ export const systemTablesJs = `    // ──────────────
     var DM_FK_COLOR = '#3b82f6'; // belongsTo — an enforced reference
     var DM_M2M_COLOR = '#3b82f6'; // every relationship is many-to-many now (FK deprecated) — green
 
-    // The brain graph as the center pane's main view — the schema graph, full
-    // size, with no inline entity editor (schema/column editing lives in
-    // Settings → Data Model). Clicking a node opens that object's tab.
+    // The Model view (center pane): a Graph | Tables toggle over one of two
+    // renderings of the same schema — the live force-directed brain graph, or the
+    // tiered Tables explorer. The choice persists across renders. Schema/column
+    // editing still lives in Settings → Data Model. Clicking a graph node opens
+    // that object's tab; clicking a Tables card opens its detail panel.
+    // Graph vs Tables is a top-level tab (a route — #/graph and #/tables), NOT an
+    // in-pane toggle. So the center pane renders a SINGLE view (no nested toggle
+    // bar / div-in-div); the tab strip in the Model header switches between them.
     function renderBrainGraph(content) {
       if (!content) content = document.getElementById('content');
       if (!content) return;
       dmActiveTable = null; // no inline editor in the center view
+      // Graph view — keep the #graph-mount id the live renderer + ingest animation expect.
+      // A neutral spinner (no placeholder copy) shows until the graph has settled +
+      // centred; the force renderer keeps its own spinner once it takes over the mount.
       content.innerHTML =
         '<div class="brain-graph"><div id="graph-mount">' +
-          '<div class="muted" style="padding:24px">A live force-directed graph that builds as Claude streams.</div>' +
+          '<div class="graph-loading"><div class="graph-spinner"></div></div>' +
         '</div></div>';
       renderSchemaGraph();
+    }
+
+    // Graph section, Object Page: the DRILLED-DOWN graph for one entity — its rows
+    // as nodes (labeled by name/id), each linked to the related rows it points at
+    // (forward belongsTo). Click a node → that record's entity page. A breadcrumb
+    // (rooted at "Graph") keeps the Graph section highlighted, mirroring the folder
+    // drill-in. Reuses the same force renderer + wave reveal as the entity graph.
+    function renderEntityGraph(content, table) {
+      if (!content) content = document.getElementById('content');
+      if (!content) return;
+      if (!tableByName(table)) {
+        content.innerHTML = '<div class="brain-graph"><div class="empty-state">Unknown object: ' + escapeHtml(table) + '</div></div>';
+        return;
+      }
+      var d = displayFor(table);
+      content.innerHTML =
+        '<div class="brain-graph entity-graph">' +
+          '<div class="folders-crumbs graph-crumbs"><a href="#/graph">Graph</a>' +
+            '<span class="folders-crumb-sep">/</span>' +
+            '<span class="folders-crumb-cur">' + d.icon + ' ' + escapeHtml(d.label) + '</span>' +
+          '</div>' +
+          '<div id="graph-mount"><div class="graph-loading"><div class="graph-spinner"></div></div></div>' +
+        '</div>';
+      renderEntityGraphInto(document.getElementById('graph-mount'), table, {});
+    }
+    // Render one entity's rows as nodes into the given mount (each row linked to the parent
+    // rows its FKs name). opts.onRecord(table,id) overrides a row-node click.
+    function renderEntityGraphInto(mount, table, opts) {
+      opts = opts || {};
+      if (!mount) return;
+      dmActiveTable = null;
+      if (!tableByName(table)) { mount.innerHTML = '<div class="empty-state">Unknown object: ' + escapeHtml(table) + '</div>'; return; }
+      var myGen = ++graphRevealGen;
+      var d = displayFor(table);
+      var modP = loadForceGraph();
+      var t = tableByName(table);
+      var belongs = [];
+      var rels = (t && t.relations) || {};
+      for (var k in rels) { if (Object.prototype.hasOwnProperty.call(rels, k) && rels[k] && rels[k].type === 'belongsTo' && rels[k].foreignKey) belongs.push(rels[k]); }
+      fetchRowsPage(table, { limit: 150 }).then(function (page) {
+        if (myGen !== graphRevealGen) return;
+        var rows = page.rows;
+        var mount = document.getElementById('graph-mount');
+        if (!rows.length) { if (mount) mount.innerHTML = '<div class="empty-state">No items yet in ' + escapeHtml(d.label) + '.</div>'; return; }
+        // This entity's rows are the primary nodes (id encodes table:rowId).
+        var nodes = rows.map(function (r) {
+          return { id: table + ':' + r.id, label: fsDisplayName(r) || String(r.id).slice(0, 8), icon: d.icon, radius: 16, cls: '', title: fsDisplayName(r) };
+        });
+        var have = {}; nodes.forEach(function (n) { have[n.id] = true; });
+        // Forward belongsTo → an edge from each row to the parent row its FK names.
+        var edges = [];
+        var parentIds = {}; // relTable → { parentId: true }
+        belongs.forEach(function (rel) {
+          rows.forEach(function (r) {
+            var pid = r[rel.foreignKey];
+            if (pid == null || pid === '') return;
+            edges.push({ source: table + ':' + r.id, target: rel.table + ':' + pid, marker: 'fk', cls: 'dm-edge-fk', title: '' });
+            (parentIds[rel.table] = parentIds[rel.table] || {})[pid] = true;
+          });
+        });
+        // Label the linked parent rows (bounded fetch per related table).
+        var relTables = Object.keys(parentIds);
+        Promise.all(relTables.map(function (rt) {
+          return fetchRowsPage(rt, { limit: 300 }).then(function (pp) { return { rt: rt, rows: pp.rows }; }).catch(function () { return { rt: rt, rows: [] }; });
+        })).then(function (pages) {
+          if (myGen !== graphRevealGen) return;
+          var labelOf = {};
+          pages.forEach(function (pg) {
+            pg.rows.forEach(function (pr) { labelOf[pg.rt + ':' + pr.id] = fsDisplayName(pr) || String(pr.id).slice(0, 8); });
+          });
+          // Add a node for each referenced parent that isn't already present.
+          var added = {};
+          edges.forEach(function (e) {
+            if (have[e.target] || added[e.target]) return;
+            added[e.target] = true;
+            var sep = e.target.indexOf(':');
+            var pt = e.target.slice(0, sep), pid = e.target.slice(sep + 1);
+            nodes.push({ id: e.target, label: labelOf[e.target] || String(pid).slice(0, 8), icon: displayFor(pt).icon, radius: 13, cls: 'gnode-linked', title: displayFor(pt).label });
+          });
+          modP.then(function (mod) {
+            if (myGen !== graphRevealGen) return;
+            var liveMount = document.getElementById('graph-mount');
+            if (!liveMount) return;
+            if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
+            liveMount.innerHTML = '';
+            schemaGraphHandle = mod.createForceGraph(liveMount, {
+              nodes: [], edges: [],
+              reducedMotion: graphReducedMotion(),
+              onNode: function (node) {
+                // Click a row node → that record. opts.onRecord overrides the target (the
+                // Graph tab opens the record's row view); default is the #/graph record route.
+                var sep = node.id.indexOf(':');
+                if (sep < 0) return;
+                var nt = node.id.slice(0, sep), nid = node.id.slice(sep + 1);
+                if (typeof opts.onRecord === 'function') opts.onRecord(nt, nid);
+                else location.hash = '#/graph/' + encodeURIComponent(nt) + '/' + encodeURIComponent(nid);
+              },
+            });
+            revealGraphInWaves(nodes, edges, myGen);
+          });
+        });
+      }).catch(function (err) {
+        var m = document.getElementById('graph-mount');
+        if (m) m.innerHTML = '<div class="empty-state">Failed to load graph: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+      });
+    }
+
+    // The Model > Tables route: the tiered Tables explorer (Source/Model/Derived/
+    // Surface). Mounted directly in #content — no toggle wrapper.
+    function renderModelTablesView(content) {
+      if (!content) content = document.getElementById('content');
+      if (!content) return;
+      dmActiveTable = null;
+      content.innerHTML = '<div class="model-tables-view" id="model-tables-host"></div>';
+      renderModelTables(document.getElementById('model-tables-host'));
     }
 
     // Settings → Data Model: an entity list + the entity editor panel (the schema
@@ -55,9 +188,9 @@ export const systemTablesJs = `    // ──────────────
     function renderEntityEditorInto(host) {
       if (!host) return;
       host.innerHTML =
-        '<div class="dbconfig-panel" style="margin-top:18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
-          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-            '<h3 style="margin:0">Data Model</h3>' +
+        '<div class="dbconfig-panel panel" style="margin-top:18px">' +
+          '<div class="u-spread" style="margin-bottom:10px">' +
+            '<h3 class="u-m-0">Data Model</h3>' +
             '<button class="btn primary" id="new-entity-btn">+ New entity</button>' +
           '</div>' +
           '<div class="dm-layout">' +
@@ -89,38 +222,123 @@ export const systemTablesJs = `    // ──────────────
               '<span class="dm-entity-icon">' + d.icon + '</span>' +
               '<span class="dm-entity-label">' + escapeHtml(d.label) + '</span></button></li>';
           }).join('') + '</ul>'
-        : '<div class="muted" style="padding:12px">No entities yet — use “+ New entity”.</div>';
+        : '<div class="empty-state-sm">No entities yet — use “+ New entity”.</div>';
       host.querySelectorAll('.dm-entity-item').forEach(function (b) {
         b.addEventListener('click', function () { dmShowEntityEditor(b.getAttribute('data-table')); });
       });
     }
 
-    // Force-directed schema graph (vanilla — no external lib). Nodes are
-    // tables, sized by row count; edges are foreign keys (belongsTo) and
-    // many-to-many joins (junctions surface as a single m2m edge). Drag a node
-    // to reposition, scroll to zoom, drag the background to pan, click a node
-    // to edit the entity.
+    // Live force-directed schema graph. Nodes are tables (sized by row count),
+    // edges are foreign keys + many-to-many joins. The renderer is loaded out of
+    // band (an ESM module under /gui-assets) so the heavy SVG/interaction code
+    // stays out of the inline host script; it owns the continuous layout, drag,
+    // pan, and zoom. Click a node to open its object; click an edge to edit it.
+    function loadForceGraph() {
+      if (!_forceGraphModule) _forceGraphModule = import('/gui-assets/force-graph.mjs');
+      return _forceGraphModule;
+    }
+    // Map the internal schema model to the renderer's generic node/edge shape,
+    // preserving cloud share-status classes, icons, sizes, and tooltips.
+    function schemaGraphData(model) {
+      var nodes = model.nodes.map(function (n) {
+        var shareCls = n.cloudWorkspace ? (n.shared ? 'gnode-shared' : 'gnode-private') : '';
+        var shareTitle = n.cloudWorkspace ? ' · ' + (n.shared ? 'shared' : 'private') : '';
+        return {
+          id: n.name, label: n.label, icon: n.icon, radius: n.r, cls: shareCls,
+          title: n.label + ' · ' + n.rowCount + ' rows · ' + n.cols + ' columns' + shareTitle,
+        };
+      });
+      var edges = model.links.map(function (l) {
+        var title = l.kind === 'fk'
+          ? l.s + ' → ' + l.t + (l.via ? ' · via ' + l.via : '') + ' (foreign key)'
+          : l.s + ' ↔ ' + l.t + ' (many-to-many)';
+        return { source: l.s, target: l.t, marker: l.kind, cls: 'dm-edge-' + l.kind, title: title };
+      });
+      return { nodes: nodes, edges: edges };
+    }
     function renderSchemaGraph() {
       var mount = document.getElementById('graph-mount');
       if (!mount) return;
-      fetchJson('/api/graph').then(function (graph) {
+      var myGen = ++graphRevealGen; // cancels any prior render's in-flight reveal
+      // Load the renderer module IN PARALLEL with the data fetch so the canvas can
+      // paint the instant EITHER resolves — neither waits on the other.
+      var modP = loadForceGraph();
+      fetchJson('/api/graph?schema=1').then(function (graph) {
+        if (myGen !== graphRevealGen) return; // superseded
         var model = buildSchemaModel(graph);
         if (!model.nodes.length) {
-          mount.innerHTML = '<div class="muted" style="padding:24px">No objects with data yet. Add files or connect a source to populate the graph.</div>';
+          mount.innerHTML = '<div class="empty-state">No objects with data yet. Add files or connect a source to populate the graph.</div>';
           return;
         }
-        forceLayout(model.nodes, model.links);
-        mount.innerHTML = schemaGraphSvg(model);
-        wireSchemaGraph(mount, model);
-        graphModelCache = model; // seed the delta baseline for the ingest animation
-        if (dmActiveTable) {
-          dmShowEntityEditor(dmActiveTable);
-          highlightGraphNode(dmActiveTable);
-        }
+        graphModelCache = model; // baseline for the live ingest animation
+        modP.then(function (mod) {
+          if (myGen !== graphRevealGen) return; // navigated away / re-rendered
+          var liveMount = document.getElementById('graph-mount');
+          if (!liveMount) return;
+          if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
+          liveMount.innerHTML = '';
+          var data = schemaGraphData(model);
+          // Mount EMPTY so the canvas is up instantly, then reveal the nodes in
+          // waves so they fly in progressively (the same delta animation the live
+          // file-ingest uses) instead of all appearing at once.
+          schemaGraphHandle = mod.createForceGraph(liveMount, {
+            nodes: [],
+            edges: [],
+            reducedMotion: graphReducedMotion(),
+            onNode: function (node) {
+              // In Wire/Merge mode a node click picks a source then a target (drag
+              // stays off the graph, which owns node repositioning). Otherwise drill
+              // into that table's rows (the Graph tab sets schemaNodeDrill); with no
+              // drill hook, open the table's row view.
+              if (typeof wmModeClick === 'function' && wmModeClick(node.id)) return;
+              if (schemaGraphHandle) schemaGraphHandle.setSelected(node.id);
+              if (typeof schemaNodeDrill === 'function' && schemaNodeDrill) schemaNodeDrill(node.id);
+              else location.hash = '#/w/table/' + encodeURIComponent(node.id);
+            },
+            onEdge: function (edge) {
+              // m2m → drill the junction table; FK → drill the child (source) table.
+              var target = edge.source;
+              if (edge.marker === 'm2m') {
+                var j = junctionsFor(edge.source).find(function (x) { return x.remoteRel.table === edge.target; }) ||
+                        junctionsFor(edge.target).find(function (x) { return x.remoteRel.table === edge.source; });
+                target = j ? j.junction : edge.source;
+              }
+              if (typeof schemaNodeDrill === 'function' && schemaNodeDrill) schemaNodeDrill(target);
+              else location.hash = '#/w/table/' + encodeURIComponent(target);
+            },
+          });
+          revealGraphInWaves(data.nodes, data.edges, myGen);
+        }).catch(function (err) {
+          var m = document.getElementById('graph-mount');
+          if (m) m.innerHTML = '<div class="empty-state">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+        });
       }).catch(function (err) {
-        mount.innerHTML = '<div class="muted" style="padding:24px">Failed to load schema graph: ' +
+        mount.innerHTML = '<div class="empty-state">Failed to load schema graph: ' +
           escapeHtml(err.message) + '</div>';
       });
+    }
+
+    // Reveal a freshly-mounted schema graph in waves: hand the live handle a growing
+    // prefix of the nodes on a short timer so each batch's new nodes fly in (setData
+    // is a diff — it animates the delta and skips edges whose endpoints aren't in
+    // yet, so passing ALL edges every wave is safe). Big hubs first (by radius) reads
+    // as the graph "building out". Reduced motion or a tiny graph → one shot.
+    function revealGraphInWaves(allNodes, allEdges, myGen) {
+      if (!schemaGraphHandle) return;
+      if (graphReducedMotion() || allNodes.length <= 8) {
+        schemaGraphHandle.setData(allNodes, allEdges);
+        return;
+      }
+      var ordered = allNodes.slice().sort(function (a, b) { return (b.radius || 0) - (a.radius || 0); });
+      var step = Math.max(3, Math.ceil(ordered.length / 10)); // ~10 waves
+      var shown = 0;
+      function wave() {
+        if (myGen !== graphRevealGen || !schemaGraphHandle) return; // superseded
+        shown = Math.min(shown + step, ordered.length);
+        schemaGraphHandle.setData(ordered.slice(0, shown), allEdges);
+        if (shown < ordered.length) window.setTimeout(wave, 90);
+      }
+      wave();
     }
 
     // Build {nodes, links} from /api/graph: table nodes (junctions already
@@ -136,6 +354,10 @@ export const systemTablesJs = `    // ──────────────
         var meta = byName[name] || {};
         var rc = (meta.rowCount != null) ? meta.rowCount : 0;
         if (rc <= 0) return; // only show objects that have items in them (non-empty)
+        // SOURCE-tier tables (files, connector-synced, imported databases) are raw
+        // inputs — excluded from the graph (like the Objects grid); they live in
+        // the Inputs column + the Tables explorer's Source column only.
+        if (mtClassifyTier(meta) === 'source') return;
         index[name] = nodes.length;
         nodes.push({
           name: name,
@@ -143,7 +365,10 @@ export const systemTablesJs = `    // ──────────────
           icon: displayFor(name).icon,
           rowCount: rc,
           cols: (meta.columns || []).length,
-          r: Math.max(11, Math.min(26, 11 + Math.sqrt(rc))),
+          // Bubble size scales with row count on a LOG scale (row counts span orders
+          // of magnitude, so linear/sqrt would swamp small tables). Clamped between a
+          // min + max radius: rc≈0 → 10, rc≳5000 → 30.
+          r: Math.round(10 + 20 * Math.min(1, Math.log(rc + 1) / Math.log(5000))),
           // Share status (cloud workspaces only). ownedByMe is set by the
           // server solely on cloud workspaces, so its presence flags a cloud
           // DB; on local DBs share status is N/A (no coloring).
@@ -166,227 +391,6 @@ export const systemTablesJs = `    // ──────────────
         links.push({ s: s, t: t, si: index[s], ti: index[t], kind: kind, via: e.label || '' });
       });
       return { nodes: nodes, links: links, index: index };
-    }
-
-    // A small deterministic force simulation: ~500 settle ticks of pairwise
-    // repulsion + link springs + center gravity. O(n²) repulsion is fine for
-    // schema-scale graphs (tens of tables).
-    function forceLayout(nodes, links, iters) {
-      var n = nodes.length;
-      var W = 1000, H = 700, cx = W / 2, cy = H / 2;
-      var ringR = Math.min(W, H) * 0.32;
-      for (var i = 0; i < n; i++) {
-        var a = (i / Math.max(1, n)) * 2 * Math.PI;
-        nodes[i].x = cx + Math.cos(a) * ringR;
-        nodes[i].y = cy + Math.sin(a) * ringR;
-        nodes[i].vx = 0; nodes[i].vy = 0;
-      }
-      var REPULSION = 9000, SPRING_LEN = 140, SPRING_K = 0.02, GRAVITY = 0.012, DAMP = 0.85;
-      var ticks = iters || 500;
-      for (var it = 0; it < ticks; it++) {
-        for (var p = 0; p < n; p++) {
-          for (var q = p + 1; q < n; q++) {
-            var dx = nodes[p].x - nodes[q].x, dy = nodes[p].y - nodes[q].y;
-            var d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
-            var rep = REPULSION / d2;
-            var fx = (dx / d) * rep, fy = (dy / d) * rep;
-            nodes[p].vx += fx; nodes[p].vy += fy;
-            nodes[q].vx -= fx; nodes[q].vy -= fy;
-          }
-        }
-        links.forEach(function (l) {
-          var a2 = nodes[l.si], b2 = nodes[l.ti];
-          var dx2 = b2.x - a2.x, dy2 = b2.y - a2.y, d3 = Math.sqrt(dx2 * dx2 + dy2 * dy2) + 0.01;
-          var f = (d3 - SPRING_LEN) * SPRING_K, fx2 = (dx2 / d3) * f, fy2 = (dy2 / d3) * f;
-          a2.vx += fx2; a2.vy += fy2; b2.vx -= fx2; b2.vy -= fy2;
-        });
-        for (var m = 0; m < n; m++) {
-          nodes[m].vx += (cx - nodes[m].x) * GRAVITY;
-          nodes[m].vy += (cy - nodes[m].y) * GRAVITY;
-          nodes[m].vx *= DAMP; nodes[m].vy *= DAMP;
-          nodes[m].x += nodes[m].vx; nodes[m].y += nodes[m].vy;
-        }
-      }
-    }
-
-    function schemaGraphSvg(model) {
-      var nodes = model.nodes, links = model.links;
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      nodes.forEach(function (nd) {
-        minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
-        maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
-      });
-      var pad = 50;
-      var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
-      var defs =
-        '<defs>' +
-          '<marker id="dm-arrow-fk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-            '<path d="M0,0 L10,5 L0,10 z" fill="' + DM_FK_COLOR + '"/></marker>' +
-          '<marker id="dm-arrow-m2m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
-            '<path d="M0,0 L10,5 L0,10 z" fill="' + DM_M2M_COLOR + '"/></marker>' +
-        '</defs>';
-      var edgeSvg = links.map(function (l, i) {
-        var a = nodes[l.si], b = nodes[l.ti];
-        var color = DM_FK_COLOR; // green for every relationship
-        var dash = ''; // solid lines for all (m2m is the only relationship now)
-        var markEnd = ' marker-end="url(#dm-arrow-' + l.kind + ')"';
-        var markStart = l.kind === 'm2m' ? ' marker-start="url(#dm-arrow-m2m)"' : '';
-        var title = l.kind === 'fk'
-          ? l.s + ' → ' + l.t + (l.via ? ' · via ' + l.via : '') + ' (foreign key)'
-          : l.s + ' ↔ ' + l.t + ' (many-to-many)';
-        return '<line class="dm-edge" data-edge="' + i + '" data-s="' + escapeHtml(l.s) + '" data-t="' +
-          escapeHtml(l.t) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' +
-          b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke="' + color + '" stroke-width="1.6"' +
-          dash + markStart + markEnd + ' opacity="0.7"><title>' + escapeHtml(title) + '</title></line>';
-      }).join('');
-      var nodeSvg = nodes.map(function (nd) {
-        // Share-status coloring applies only on cloud workspaces (G). On a
-        // local DB share status is N/A, so no extra class → neutral stroke.
-        var shareCls = nd.cloudWorkspace ? (nd.shared ? ' gnode-shared' : ' gnode-private') : '';
-        var shareTitle = nd.cloudWorkspace ? ' · ' + (nd.shared ? 'shared' : 'private') : '';
-        return '<g class="gnode' + shareCls + '" data-table="' + escapeHtml(nd.name) + '" transform="translate(' +
-          nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
-          '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
-          '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
-          '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' +
-            (nd.r * 0.95).toFixed(1) + '">' + nd.icon + '</text>' +
-          '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' +
-            escapeHtml(nd.label) + '</text>' +
-          '<title>' + escapeHtml(nd.label + ' · ' + nd.rowCount + ' rows · ' + nd.cols + ' columns' + shareTitle) + '</title>' +
-          '</g>';
-      }).join('');
-      // No legend: every relationship is a green many-to-many link now (foreign
-      // keys are deprecated), so there's nothing to disambiguate.
-      return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
-        defs + '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>';
-    }
-
-    function highlightGraphNode(tableName) {
-      document.querySelectorAll('#graph-mount g.gnode').forEach(function (g) {
-        g.classList.toggle('active', g.getAttribute('data-table') === tableName);
-      });
-    }
-
-    // Wire interactions on the rendered schema graph: node click → editor,
-    // node drag → reposition (live edge updates), background drag → pan, wheel
-    // → zoom. Pan/zoom are done by mutating the SVG viewBox.
-    // Keep graph node labels at a constant ON-SCREEN size (matching the sidebar
-    // text), independent of viewBox zoom. font-size on SVG text is in user units,
-    // so divide the target px by the current zoom (viewBoxWidth / renderedWidth);
-    // re-run on every viewBox change + on resize. Shared by BOTH graphs.
-    function syncGraphLabelScale(svg) {
-      if (!svg) return;
-      var vbAttr = svg.getAttribute('viewBox'); if (!vbAttr) return;
-      var vw = parseFloat(vbAttr.split(' ')[2]); if (!(vw > 0)) return;
-      var rect = svg.getBoundingClientRect();
-      var screenW = rect.width || vw;
-      svg.style.setProperty('--gnode-label-size', (13 * vw / screenW).toFixed(2) + 'px');
-    }
-    function wireSchemaGraph(mount, model) {
-      var svg = mount.querySelector('svg.dm-graph');
-      if (!svg) return;
-      var nodeEls = {};
-      mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-table')] = g; });
-      var edgeEls = mount.querySelectorAll('line.dm-edge');
-
-      function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
-      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
-      // The initial viewBox fits all entities — that's the maximum zoom-out;
-      // don't let the user zoom out past it into empty space.
-      var fitVb = vb();
-      syncGraphLabelScale(svg);
-      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
-      function toData(ev) {
-        var rect = svg.getBoundingClientRect();
-        var b = vb();
-        return {
-          x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2],
-          y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3],
-        };
-      }
-      function nodeByName(name) {
-        for (var i = 0; i < model.nodes.length; i++) if (model.nodes[i].name === name) return model.nodes[i];
-        return null;
-      }
-      function updateNode(name) {
-        var nd = nodeByName(name); var g = nodeEls[name];
-        if (!nd || !g) return;
-        g.setAttribute('transform', 'translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')');
-        edgeEls.forEach(function (ln) {
-          if (ln.getAttribute('data-s') === name) { ln.setAttribute('x1', nd.x.toFixed(1)); ln.setAttribute('y1', nd.y.toFixed(1)); }
-          if (ln.getAttribute('data-t') === name) { ln.setAttribute('x2', nd.x.toFixed(1)); ln.setAttribute('y2', nd.y.toFixed(1)); }
-        });
-      }
-
-      // Wheel zoom toward the cursor. Zooming out is capped at the fit view
-      // (snap back to it) so the graph can't shrink into empty space.
-      svg.addEventListener('wheel', function (ev) {
-        ev.preventDefault();
-        var b = vb(); var pt = toData(ev);
-        // Smooth, proportional zoom — scale by the (clamped) scroll delta instead
-        // of a fixed 12% step, which felt jumpy. A trackpad sends many small deltas
-        // → continuous; a mouse notch is clamped so it can't lurch.
-        var d = Math.max(-50, Math.min(50, ev.deltaY));
-        var factor = Math.pow(1.0018, d);
-        var nw = b[2] * factor, nh = b[3] * factor;
-        // Cap zoom-OUT at the fit view (outermost objects + their padding) so the
-        // graph can never shrink into empty space.
-        if (nw >= fitVb[2] || nh >= fitVb[3]) { setVb(fitVb.slice()); return; }
-        setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
-      }, { passive: false });
-
-      // Click an edge to edit the relationship in the columns editor: an m2m
-      // edge opens its junction table (its two ref columns are editable there);
-      // a foreign-key edge opens the child entity that holds the FK column.
-      edgeEls.forEach(function (ln) {
-        ln.style.cursor = 'pointer';
-        ln.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          var s = ln.getAttribute('data-s'), t = ln.getAttribute('data-t');
-          var edge = model.links[Number(ln.getAttribute('data-edge'))];
-          if (edge && edge.kind === 'm2m') {
-            var j = junctionsFor(s).find(function (x) { return x.remoteRel.table === t; }) ||
-                    junctionsFor(t).find(function (x) { return x.remoteRel.table === s; });
-            dmShowEntityEditor(j ? j.junction : s);
-          } else {
-            dmShowEntityEditor(s); // FK lives on the source (child) table
-          }
-        });
-      });
-
-      // Drag: a node repositions it; the background pans.
-      var drag = null;
-      svg.addEventListener('pointerdown', function (ev) {
-        var g = ev.target.closest && ev.target.closest('g.gnode');
-        if (g) {
-          drag = { kind: 'node', name: g.getAttribute('data-table'), moved: false };
-        } else {
-          var b = vb();
-          drag = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, vb: b };
-        }
-        svg.setPointerCapture(ev.pointerId);
-      });
-      svg.addEventListener('pointermove', function (ev) {
-        if (!drag) return;
-        if (drag.kind === 'node') {
-          var pt = toData(ev); var nd = nodeByName(drag.name);
-          if (nd) { nd.x = pt.x; nd.y = pt.y; updateNode(drag.name); drag.moved = true; }
-        } else {
-          var rect = svg.getBoundingClientRect();
-          var b = drag.vb;
-          setVb([b[0] - (ev.clientX - drag.sx) * (b[2] / rect.width),
-                 b[1] - (ev.clientY - drag.sy) * (b[3] / rect.height), b[2], b[3]]);
-        }
-      });
-      svg.addEventListener('pointerup', function (ev) {
-        if (drag && drag.kind === 'node' && !drag.moved) {
-          // Open the clicked object's table in a tab — schema/column editing now
-          // lives in Settings → Data Model, not the graph.
-          location.hash = (advancedMode() ? '#/objects/' : '#/fs/') + encodeURIComponent(drag.name);
-        }
-        drag = null;
-        try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
-      });
     }
 
     /**
@@ -421,7 +425,7 @@ export const systemTablesJs = `    // ──────────────
               '<button class="btn primary" id="dm-create-btn">Create entity</button>' +
             '</div>' +
           '</div>' +
-          '<div class="muted" style="margin-top:14px;font-size:12px;">' +
+          '<div class="hint" style="margin-top:14px">' +
             'New entities get id (uuid PK), name, and deleted_at columns. ' +
             'Add more columns once the entity exists. On a cloud workspace the ' +
             'entity is private to you until you share it.' +
@@ -468,7 +472,7 @@ export const systemTablesJs = `    // ──────────────
         }).join('');
         panel.innerHTML =
           '<h3>' + d.icon + ' ' + escapeHtml(d.label) + '</h3>' +
-          '<div class="muted" style="font-size:12px;margin-bottom:12px">Shared by another member — read-only. Only the table owner can edit its columns and relationships.</div>' +
+          '<div class="hint u-mb-3">Shared by another member — read-only. Only the table owner can edit its columns and relationships.</div>' +
           '<div class="dm-cols">' + (roCols || '<span class="muted">No columns</span>') + '</div>';
         return;
       }
@@ -561,7 +565,7 @@ export const systemTablesJs = `    // ──────────────
         return displayFor(a.name).label.toLowerCase().localeCompare(displayFor(b.name).label.toLowerCase());
       });
       var addLinkHtml = linkTargets.length
-        ? '<div class="dm-row-inline" style="margin-top:8px">' +
+        ? '<div class="dm-row-inline u-mt-2">' +
             '<select id="dm-newlink-target" title="Link to entity (many-to-many)">' +
               linkTargets.map(function (rt) {
                 return '<option value="' + escapeHtml(rt.name) + '">↔ ' + escapeHtml(displayFor(rt.name).label) + '</option>';
@@ -569,7 +573,7 @@ export const systemTablesJs = `    // ──────────────
             '</select>' +
             '<button class="btn primary" id="dm-newlink-btn">Add link</button>' +
           '</div>'
-        : '<span class="muted" style="font-size:12px">No other entities to link to.</span>';
+        : '<span class="hint">No other entities to link to.</span>';
 
       // Cloud sharing row — only the owner of a table may toggle its
       // visibility (t.ownedByMe is set by the server only for cloud
@@ -585,15 +589,15 @@ export const systemTablesJs = `    // ──────────────
         ? ''
         : neverShare
           ? '<label>Cloud sharing</label>' +
-            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-              '<span style="font-size:12px;color:var(--text-muted)">🔒 Private to you — this table is never shared.</span>' +
+            '<div class="u-row-wrap">' +
+              '<span class="hint">🔒 Private to you — this table is never shared.</span>' +
             '</div>'
           : '<label>Cloud sharing</label>' +
-            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+            '<div class="u-row-wrap">' +
               '<button class="btn' + (isShared ? '' : ' primary') + '" id="dm-share-btn">' +
                 (isShared ? 'Make private' : 'Share with workspace') +
               '</button>' +
-              '<span style="font-size:12px;color:var(--text-muted)">' +
+              '<span class="hint">' +
                 (isShared ? 'Visible to everyone on this cloud workspace.' : 'Private to you. Share to make it visible to everyone on this cloud workspace.') +
               '</span>' +
             '</div>';
@@ -603,12 +607,12 @@ export const systemTablesJs = `    // ──────────────
       var defaultVis = (t && t.defaultRowVisibility) || 'private';
       var defaultVisRow = canShare && isShared
         ? '<label>New rows default to</label>' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<div class="u-row-wrap">' +
             '<select id="dm-rowvis-select"' + (neverShare ? ' disabled' : '') + '>' +
               '<option value="private"' + (defaultVis === 'private' ? ' selected' : '') + '>Private (owner only)</option>' +
               '<option value="everyone"' + (defaultVis === 'everyone' ? ' selected' : '') + '>Everyone on the workspace</option>' +
             '</select>' +
-            '<span style="font-size:12px;color:var(--text-muted)">Visibility new rows in this table are created with.</span>' +
+            '<span class="hint">Visibility new rows in this table are created with.</span>' +
           '</div>'
         : '';
       // Owner-only "Never share" control, shown for a shared table. When on, the
@@ -616,11 +620,11 @@ export const systemTablesJs = `    // ──────────────
       // visibility above — a hard floor the owner can set per shared table.
       var neverShareRow = canShare && isShared
         ? '<label>Never share</label>' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<div class="u-row-wrap">' +
             '<label class="dm-secret-toggle">' +
               '<input type="checkbox" id="dm-nevershare-check"' + (neverShare ? ' checked' : '') + ' /> Keep all rows private' +
             '</label>' +
-            '<span style="font-size:12px;color:var(--text-muted)">When on, rows in this table are always private to their owner, ignoring the default above.</span>' +
+            '<span class="hint">When on, rows in this table are always private to their owner, ignoring the default above.</span>' +
           '</div>'
         : '';
       panel.innerHTML =
@@ -643,7 +647,7 @@ export const systemTablesJs = `    // ──────────────
           '<div>' +
             '<div class="dm-cols">' + (columnsHtml || '<span class="muted">No columns</span>') + '</div>' +
             (scalarCols.length
-              ? '<button class="btn primary" id="dm-cols-save" style="margin-top:8px" disabled>Save changes</button>'
+              ? '<button class="btn primary u-mt-2" id="dm-cols-save" disabled>Save changes</button>'
               : '') +
           '</div>' +
           '<label>Add column</label>' +
@@ -662,13 +666,13 @@ export const systemTablesJs = `    // ──────────────
           '</div>' +
           '<label>Links</label>' +
           '<div>' +
-            '<div class="dm-links">' + (linkRows || '<span class="muted" style="font-size:12px">No links.</span>') + '</div>' +
+            '<div class="dm-links">' + (linkRows || '<span class="hint">No links.</span>') + '</div>' +
             addLinkHtml +
           '</div>' +
           '<label>Danger zone</label>' +
           '<div class="dm-danger">' +
             '<button class="btn danger" id="dm-delete-table">Delete table</button>' +
-            '<span style="font-size:12px;color:var(--text-muted)">Permanently drops this table and all its rows. ' +
+            '<span class="hint">Permanently drops this table and all its rows. ' +
               'You\\'ll be asked to type the name to confirm. Refused while other tables link to it.</span>' +
           '</div>' +
         '</div>';
@@ -990,9 +994,9 @@ export const systemTablesJs = `    // ──────────────
           return (v || '').trim().toLowerCase() === tableName.toLowerCase();
         };
         showModal('Delete table "' + tableName + '"',
-          '<p style="margin:0 0 8px">This permanently drops the table ' + nameTag +
+          '<p class="u-m-0 u-mb-2">This permanently drops the table ' + nameTag +
             ' and all its rows. This cannot be undone.</p>' +
-          '<p style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
+          '<p class="hint u-m-0 u-mb-3">' +
             'You can\\'t delete a table while another table links to it — delete those links first ' +
             '(they show in this table\\'s Links section).</p>' +
           '<div class="field"><label>Type ' + nameTag +

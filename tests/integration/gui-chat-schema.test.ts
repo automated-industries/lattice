@@ -32,7 +32,30 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
     createAnthropicClient: () => {
       let i = 0;
       return {
-        runTurn(params: { onText: (s: string) => void; messages?: unknown[] }) {
+        runTurn(params: { onText: (s: string) => void; messages?: unknown[]; system?: string }) {
+          // The chat route runs a reference-material TRIAGE pass (its own runTurn) BEFORE
+          // the chat turn. Answer it with "nothing to ingest" so it doesn't consume a
+          // scripted chat turn — these tests script the CHAT turns, not the triage.
+          if (
+            typeof params.system === 'string' &&
+            params.system.includes('router for a personal knowledge base')
+          ) {
+            return Promise.resolve({
+              stopReason: 'end_turn',
+              text: '```json\n{"reference":""}\n```',
+              toolUses: [],
+            });
+          }
+          // The async transport runs a fast INTENT pass before the chat turn. Answer it with
+          // needs_work=true so it routes to the scripted CHAT turns below (these tests script
+          // the chat loop, not the intent classification).
+          if (typeof params.system === 'string' && params.system.includes('fast intake step')) {
+            return Promise.resolve({
+              stopReason: 'end_turn',
+              text: '```json\n{"intent_summary":"scripted","ack_message":"Working on it…","needs_work":true,"needs_more_info":false}\n```',
+              toolUses: [],
+            });
+          }
           turnState.captured.push(params.messages ?? []);
           const turn = turnState.turns[Math.min(i, turnState.turns.length - 1)] ?? { text: '' };
           i++;
@@ -49,6 +72,8 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
+import { runChatTurnOverStream } from './stream-helper.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
@@ -57,12 +82,17 @@ const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-chatschema-cfg-'));
   dirs.push(cfgDir);
-  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY']) {
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY']) {
     savedEnv[k] = process.env[k];
   }
   process.env.LATTICE_CONFIG_DIR = cfgDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'chatschema-test-key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake'; // resolves auth; client is mocked
+  // Claude access is OAuth-only: seed a connected subscription so the server's
+  // AI-auth gate and the chat route's auth check pass. Seeded AFTER
+  // LATTICE_CONFIG_DIR/LATTICE_ENCRYPTION_KEY (the machine-local store is keyed
+  // off the config dir + master key). The Anthropic client is mocked above, so
+  // the token never reaches a real endpoint.
+  seedClaudeOAuth();
   turnState.turns = [];
   turnState.captured = [];
 });
@@ -153,16 +183,12 @@ describe('assistant schema creation via POST /api/chat', () => {
       { text: 'Done — created projects and linked it to tickets.' },
     ];
 
-    // Drive the chat to completion (reading the body drains the SSE stream).
-    const res = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Go through and create projects from tickets and link them',
-      }),
+    // Drive the chat to completion — the turn runs as a background job and streams over
+    // the WebSocket; this resolves on the terminal `done` frame, by which point every
+    // tool write has landed.
+    await runChatTurnOverStream(server.url, {
+      message: 'Go through and create projects from tickets and link them',
     });
-    expect(res.status).toBe(200);
-    await res.text();
 
     // The new table exists (created live, no reopen)…
     const ents = (await fetch(`${server.url}/api/entities`).then((r) => r.json())) as {
@@ -225,13 +251,9 @@ describe('assistant schema creation via POST /api/chat', () => {
       { text: 'Done — added the priority field and set it to high.' },
     ];
 
-    const res = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'add a priority field to tickets and set tk1 to high' }),
+    await runChatTurnOverStream(server.url, {
+      message: 'add a priority field to tickets and set tk1 to high',
     });
-    expect(res.status).toBe(200);
-    await res.text();
 
     // The column was added live (no reopen) and the value persisted to it.
     const rows = (await fetch(`${server.url}/api/tables/tickets/rows`).then((r) => r.json())) as {
@@ -257,13 +279,7 @@ describe('assistant schema creation via POST /api/chat', () => {
       },
       { text: 'There is a tickets table.' },
     ];
-    const res = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'what tables exist?' }),
-    });
-    const threadId = res.headers.get('x-thread-id');
-    await res.text();
+    const { threadId } = await runChatTurnOverStream(server.url, { message: 'what tables exist?' });
     expect(threadId).toBeTruthy();
 
     // The reloaded conversation carries the structure, not just flattened text:
@@ -302,24 +318,14 @@ describe('assistant schema creation via POST /api/chat', () => {
       },
       { text: 'Here is record tk1.' },
     ];
-    const r1 = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'list the tickets' }),
-    });
-    const threadId = r1.headers.get('x-thread-id');
-    await r1.text();
+    const { threadId } = await runChatTurnOverStream(server.url, { message: 'list the tickets' });
     expect(threadId).toBeTruthy();
 
     // Turn 2 (same thread): a single text turn. The server must rebuild the
     // prior tool_use/tool_result blocks from the thread so the model sees tk1.
     turnState.captured = []; // ignore turn-1's calls; capture only turn-2's
     turnState.turns = [{ text: 'The id is tk1.' }];
-    await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'what is the id?', threadId }),
-    }).then((r) => r.text());
+    await runChatTurnOverStream(server.url, { message: 'what is the id?', threadId });
 
     // The messages the model received on turn 2 carry turn 1's row id, as a real
     // tool_result block — rehydrated server-side, NOT from the text-only client
@@ -355,13 +361,7 @@ describe('assistant schema creation via POST /api/chat', () => {
       { text: 'Done — created people and added a person.' },
     ];
 
-    const res = await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'create a people object' }),
-    });
-    expect(res.status).toBe(200);
-    await res.text();
+    await runChatTurnOverStream(server.url, { message: 'create a people object' });
 
     // Auto-render is debounced; give it a beat to flush after the insert.
     await new Promise((r) => setTimeout(r, 500));
@@ -407,11 +407,7 @@ describe('assistant schema creation via POST /api/chat', () => {
       },
       { text: 'Done.' },
     ];
-    await fetch(`${server.url}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'link projects to tickets' }),
-    }).then((r) => r.text());
+    await runChatTurnOverStream(server.url, { message: 'link projects to tickets' });
     await new Promise((r) => setTimeout(r, 600));
 
     // `tickets` already existed (and had a canonical context) before the
@@ -421,5 +417,31 @@ describe('assistant schema creation via POST /api/chat', () => {
       r.json(),
     )) as { files: { name: string }[] };
     expect(ctx.files.some((f) => /PROJECTS/i.test(f.name))).toBe(true);
+  });
+
+  it('a first message gives the new thread an AI title, replacing the raw-message placeholder', async () => {
+    const server = await boot();
+    // ensureThread seeds the title to the truncated first message; after the reply the
+    // server generates a friendly title (generateThreadTitle) and updates the thread —
+    // AFTER the stream closes. The scripted client returns this on the title call too
+    // (a fresh client each createAnthropicClient call restarts at turn 0).
+    turnState.turns = [{ text: 'Company Overview' }];
+    await runChatTurnOverStream(server.url, { message: 'tell me about my company' });
+
+    // The title is written post-close, so poll the conversation list until it flips
+    // from the placeholder to the AI title (this is exactly the timing the feed-event
+    // signal covers on the client).
+    let title = 'tell me about my company';
+    for (let i = 0; i < 60 && title !== 'Company Overview'; i++) {
+      const list = (await fetch(`${server.url}/api/chat/threads`).then((r) => r.json())) as {
+        threads: { title: string }[];
+      };
+      title = list.threads[0]?.title ?? title;
+      if (title === 'Company Overview') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    // The friendly summary replaced the verbatim first message.
+    expect(title).toBe('Company Overview');
+    expect(title).not.toBe('tell me about my company');
   });
 });

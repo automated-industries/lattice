@@ -42,7 +42,7 @@ export const sidebarJs = `    // ───────────────�
       // No overview stat tiles — the per-entity cards already show counts, and
       // the "stale" indicator was removed (relative "updated" time is signal
       // enough, without flagging anything as stale or coloring it).
-      var cardPrefix = advancedMode() ? '#/objects/' : '#/fs/';
+      var cardPrefix = '#/fs/'; // single view — the legacy #/objects route redirects here
       var cards = ents.map(function (e) {
         var disp = displayFor(e.name);
         var count = (e.rowCount != null) ? e.rowCount : 0;
@@ -55,19 +55,9 @@ export const sidebarJs = `    // ───────────────�
           '<div class="card-label">' + escapeHtml(disp.label) + '</div>' +
           '<div class="card-count">' + count + '</div>' +
           fresh +
-          // Hidden until a background render touches this table; revealed by the
-          // .is-rendering class applied in applyCardProgress(). The fill is the
-          // bottom-edge bar (width = %); the pill is the ⟳ <pct>% corner badge.
-          '<div class="card-render" aria-hidden="true">' +
-            '<div class="card-render-fill"></div>' +
-            '<span class="card-render-pill"><span class="spinner" aria-hidden="true"></span><span class="card-render-pct">Rendering 0%...</span></span>' +
-          '</div>' +
           '</a>';
       }).join('');
       content.innerHTML = '<div class="dashboard">' + cards + '</div>';
-      // drawDashboard wiped the previous overlays; repaint any still-in-flight
-      // render state from the renderProgress map onto the freshly-built cards.
-      reapplyRenderOverlays();
     }
     function renderDashboard(content) {
       // Workspace overview: counts + freshness + recent activity from

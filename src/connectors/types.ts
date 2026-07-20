@@ -163,8 +163,23 @@ export interface Connector {
     model: string,
     ctx: ListChangesContext,
   ): AsyncIterable<ExternalRecord>;
-  /** Revoke a connected account (teardown). */
+  /**
+   * Optional batch lifecycle. The sync engine calls `beginSyncSession` before a
+   * connector's models are synced and `endSyncSession` after (even on error), so a
+   * connector can open ONE shared resource (e.g. a single MCP transport) and reuse
+   * it across every `listChanges` call instead of reconnecting per parent key.
+   * Connectors that omit these fall back to per-call open (behavior unchanged).
+   */
+  beginSyncSession?(connectionId: string): Promise<void>;
+  endSyncSession?(connectionId: string): Promise<void>;
+  /** Revoke a connected account (teardown). May retain non-secret reconnect state. */
   disconnect(connectionId: string): Promise<void>;
+  /**
+   * Remove ALL local state for a connection, including anything `disconnect`
+   * retained for reconnect (e.g. a stored server URL). Called on hard teardown,
+   * after the registry row is deleted. Optional; omit when disconnect is total.
+   */
+  purgeConnection?(connectionId: string): Promise<void>;
 }
 
 /**
@@ -199,4 +214,99 @@ export interface CredentialConnector extends Connector {
 export function isCredentialConnector(c: Connector): c is CredentialConnector {
   const cc = c as Partial<CredentialConnector>;
   return typeof cc.connect === 'function' && typeof cc.credentialFields === 'function';
+}
+
+// --- MCP-backed connectors ---------------------------------------------------
+
+/**
+ * How Lattice reaches one MCP server's tools. Everything runs on the local
+ * machine — Lattice IS the MCP client. A remote server is reached over Streamable
+ * HTTP (authorized with that server's own OAuth); a local server runs as a stdio
+ * child process (fully offline, no OAuth). No data is routed through any cloud
+ * middleman (no Lattice-cloud, no model inference).
+ */
+export interface McpServerSpec {
+  /** Stable server name (e.g. `'atlassian'`, `'monday'`). */
+  name: string;
+  /** Remote Streamable-HTTP endpoint. Omit for a stdio server. */
+  url?: string;
+  /** Local stdio command (the server runs as a child process, fully offline). */
+  command?: string;
+  /** Args for the stdio command. */
+  args?: string[];
+  /**
+   * Transport. Inferred when omitted: `command` → `'stdio'`, a `url` ending in
+   * `/sse` → `'sse'` (the legacy Server-Sent-Events transport many hosted MCP
+   * servers still use), otherwise `'http'` (Streamable HTTP).
+   */
+  transport?: 'http' | 'sse' | 'stdio';
+  /** Whether the server requires OAuth. Defaults to true for HTTP/SSE, false for stdio. */
+  oauth?: boolean;
+}
+
+/** Begin-connect result: either an OAuth redirect to complete, or an immediate connection. */
+export type McpBeginResult =
+  | { kind: 'redirect'; redirectUrl: string; pendingId: string }
+  | { kind: 'connected'; connectionId: string; displayName: string | null };
+
+/**
+ * A connector whose data comes from an MCP server it reads over a local transport
+ * (mechanism 2 — Lattice is the MCP client, per-server OAuth, tokens in the
+ * machine-local encrypted store). Connecting means authorizing that server, not a
+ * broker or a Claude subscription. The sync engine is unchanged — `listChanges`
+ * calls MCP read tools instead of a bespoke REST client.
+ */
+export interface McpConnector extends Connector {
+  /** The MCP server(s) this toolkit reads from. */
+  mcpServers(toolkit: string): McpServerSpec[];
+  /**
+   * Begin connecting. For an OAuth server, run discovery + stash PKCE state and
+   * return a redirect the GUI opens (system browser on desktop). For a local/open
+   * server, validate via `tools/list` and return the connection immediately.
+   * `redirectUri` is where the GUI receives the code; `serverUrl` overrides the
+   * toolkit default (used by the generic bring-your-own-URL connector).
+   * `clientInfo` is a pre-registered OAuth client (id + optional secret) for
+   * authorization servers that support neither a client-ID metadata document nor
+   * dynamic registration. `targetConnectorId` marks a reconnect of an existing
+   * registry row rather than a new connection.
+   */
+  beginConnect(
+    userId: string,
+    toolkit: string,
+    opts?: {
+      redirectUri?: string;
+      serverUrl?: string;
+      clientInfo?: { client_id: string; client_secret?: string };
+      targetConnectorId?: string;
+    },
+  ): Promise<McpBeginResult>;
+  /**
+   * Finish an OAuth connect: exchange the `code`, store the token under
+   * `mcp_creds:<connectionId>`, and return the connection. `serverName` is the
+   * server's self-reported name from the MCP handshake (display-name material);
+   * `targetConnectorId` echoes the reconnect target recorded at begin. Throws
+   * loudly on a mismatched state or a failed exchange — never a silent default.
+   */
+  completeConnect(
+    pendingId: string,
+    params: { code: string; state?: string },
+  ): Promise<{
+    connectionId: string;
+    displayName: string | null;
+    serverName?: string;
+    targetConnectorId?: string;
+  }>;
+  /**
+   * OPTIONAL: discover the server's record shapes and persist a typed schema descriptor for
+   * this connection, so {@link Connector.models} emits one typed table per record kind (namespaced
+   * by `prefix`, the server brand). Present on the introspective generic connector; absent on
+   * fixed-schema connectors. Best-effort — resolves null when the server exposes nothing modelable.
+   */
+  introspect?(connectionId: string, toolkit: string, prefix: string): Promise<unknown>;
+}
+
+/** True when `c` is an {@link McpConnector} (connects via an MCP server, not credentials). */
+export function isMcpConnector(c: Connector): c is McpConnector {
+  const m = c as Partial<McpConnector>;
+  return typeof m.beginConnect === 'function' && typeof m.mcpServers === 'function';
 }

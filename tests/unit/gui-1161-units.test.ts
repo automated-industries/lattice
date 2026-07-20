@@ -49,6 +49,8 @@ describe('1.16.1 — F: updateRow surfaces a write that did not persist', () => 
         update: () => Promise.resolve(),
         getRegisteredColumns: () => ({ id: 'TEXT', title: 'TEXT' }),
         getDialect: () => 'sqlite',
+        isComputedTable: () => false,
+        getConnectedSource: () => null,
       },
       feed: { publish: () => undefined },
       softDeletable: new Set<string>(),

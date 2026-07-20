@@ -9,43 +9,25 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('User Settings shows the Assistant panel; saving a Claude key flips it to "Set"', async ({
-  page,
-}) => {
-  await page.goto(gui.url + '#/settings/user-config');
-  const host = page.locator('#assistant-host');
-  // 3.3: the API-key field lives behind the "Advanced" disclosure (Connect with
-  // Claude is the primary path) — expand it before interacting with the key.
-  await host.getByText('Advanced — use an API key instead').click();
-  await expect(host.getByText('Claude API token (chat)')).toBeVisible();
-  // Initially not set.
-  await expect(host.locator('.feed-source').first()).toHaveText('Not set');
-  // Enter + save a key.
-  await page.locator('#asst-anthropic-key').fill('sk-ant-test-key-123');
-  await page.locator('#asst-anthropic-save').click();
-  // Panel re-renders with the key marked Set + a Clear button appears.
-  await expect(host.locator('#asst-anthropic-clear')).toBeVisible({ timeout: 5000 });
-  await expect(host.locator('.feed-source').first()).toHaveText('Set');
-});
-
-test('Connect-with-Claude is the primary auth; the API key is behind Advanced (3.3)', async ({
-  page,
-}) => {
-  await page.goto(gui.url + '#/settings/user-config');
-  const host = page.locator('#assistant-host');
-  // 3.3: the public subscription-OAuth client is built in, so the Connect button
-  // shows by default (no env required) as the primary action.
-  await expect(host.locator('a[href="/api/assistant/oauth/start"]')).toBeVisible();
-  await expect(host.getByText('Connect with Claude')).toBeVisible();
-  // The API-key paste is demoted behind an "Advanced" disclosure.
-  await expect(host.getByText('Advanced — use an API key instead')).toBeVisible();
-});
+// Claude access is OAuth-only now: the per-user API-key settings UI (the
+// "Advanced — use an API key instead" disclosure + the key field) is removed, and
+// connect/disconnect moves out of Settings to the header account menu + the
+// first-run wall. Those are covered by connect-wall.spec.ts and (Phase 5) the
+// account-menu spec — so the two former API-key settings tests are dropped here.
 
 test('settings expose NO voice provider option — dictation is always on-device', async ({
   page,
 }) => {
+  // In the single-layout GUI, #/settings/user-config opens the Configure drawer
+  // to the User tab, which renders the identity + Assistant + preferences panels
+  // (incl. #assistant-host) into the drawer body.
   await page.goto(gui.url + '#/settings/user-config');
+  await expect(page.locator('#settings-drawer.open')).toBeVisible();
   const host = page.locator('#assistant-host');
+  // Wait for the async assistant panel to finish rendering, so the negative
+  // assertions below assert against a populated panel rather than passing
+  // vacuously on an empty host.
+  await expect(host.getByRole('heading', { name: 'Assistant' })).toBeVisible();
   // The GUI offers no voice-provider choice whatsoever: on-device is the only
   // path, and the keyed/cloud route is reachable solely through the API. No
   // dropdown, no cloud key fields, no "Use for voice" label.

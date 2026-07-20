@@ -5,13 +5,27 @@ const IV_LEN = 12;
 const TAG_LEN = 16;
 const PREFIX = 'enc:';
 
+// scrypt is deliberately expensive (~tens of ms, and blocking on the event loop).
+// The master key is stable for a process's life, yet every credential read/write
+// re-derived — a single connector sync (thousands of credential touches) fired
+// thousands of scryptSync calls back-to-back, freezing all HTTP/WebSocket handling
+// for the duration. Memoize the derived key BY ITS MASTER-KEY VALUE: repeated calls
+// with the same key are ~free, while a changed key (e.g. a test swapping
+// LATTICE_ENCRYPTION_KEY) correctly re-derives rather than returning a stale key.
+let _dkMasterKey: string | null = null;
+let _dkDerived: Buffer | null = null;
+
 /**
- * Derive a 256-bit AES key from a master password using scrypt.
- * The salt is fixed per Lattice instance — callers should use a unique
- * master key per database.
+ * Derive a 256-bit AES key from a master password using scrypt (memoized by the
+ * master-key value). The salt is fixed per Lattice instance — callers should use a
+ * unique master key per database.
  */
 export function deriveKey(masterKey: string): Buffer {
-  return scryptSync(masterKey, 'lattice-enc-v1', 32);
+  if (_dkDerived !== null && _dkMasterKey === masterKey) return _dkDerived;
+  const derived = scryptSync(masterKey, 'lattice-enc-v1', 32);
+  _dkMasterKey = masterKey;
+  _dkDerived = derived;
+  return derived;
 }
 
 /**

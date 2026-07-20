@@ -3,7 +3,76 @@
 export const searchJs = `    // ────────────────────────────────────────────────────────────
     // Version history (undo / redo / log)
     // ────────────────────────────────────────────────────────────
+    // ── Page-navigation history — PER WORKSPACE ──────────────────
+    // Back/Forward operate on an app-managed hash-history stack keyed by the
+    // active workspace, NOT window.history: the browser history spans workspace
+    // switches (a switch is a soft reload, no page load), so its Back walked into
+    // hashes from the PREVIOUS workspace — records/tables the new workspace does
+    // not even have. Each workspace keeps its own stack for the session;
+    // switching swaps stacks and lands on the NEW workspace's last location
+    // (home for a first visit), never the old one's.
+    var navStacks = {};
+    var navKey = '_';
+    var navSuppress = false;
+    function navStack() {
+      if (!navStacks[navKey]) navStacks[navKey] = { entries: [location.hash || '#/'], index: 0 };
+      return navStacks[navKey];
+    }
+    function navUpdateButtons() {
+      var st = navStack();
+      var b = document.getElementById('nav-back-btn');
+      var f = document.getElementById('nav-fwd-btn');
+      if (b) b.disabled = st.index <= 0;
+      if (f) f.disabled = st.index >= st.entries.length - 1;
+    }
+    function navRecord() {
+      if (navSuppress) { navSuppress = false; navUpdateButtons(); return; }
+      var st = navStack();
+      var h = location.hash || '#/';
+      if (st.entries[st.index] === h) { navUpdateButtons(); return; }
+      st.entries = st.entries.slice(0, st.index + 1);
+      st.entries.push(h);
+      if (st.entries.length > 100) st.entries.shift(); // bounded
+      st.index = st.entries.length - 1;
+      navUpdateButtons();
+    }
+    function navGo(delta) {
+      var st = navStack();
+      var ni = st.index + delta;
+      if (ni < 0 || ni >= st.entries.length) return;
+      st.index = ni;
+      if ((location.hash || '#/') === st.entries[ni]) { navUpdateButtons(); return; }
+      navSuppress = true;
+      location.hash = st.entries[ni];
+      navUpdateButtons();
+    }
+    function navSetWorkspace(id, initOnly) {
+      navKey = String(id || '_');
+      if (!navStacks[navKey]) {
+        // A first visit seeds HOME on a switch (the old workspace's hash must not
+        // leak in), but seeds the current hash at boot (deep links keep working).
+        navStacks[navKey] = { entries: [initOnly ? (location.hash || '#/') : '#/analytics'], index: 0 };
+      }
+      if (!initOnly) {
+        var st = navStack();
+        var target = st.entries[st.index] || '#/';
+        if ((location.hash || '#/') !== target) {
+          navSuppress = true;
+          location.hash = target;
+        }
+      }
+      navUpdateButtons();
+    }
+    window.addEventListener('hashchange', navRecord);
+
     function wireHistoryControls() {
+      // Back / Forward move through the app-managed, per-workspace page history
+      // (see above). They sit next to Undo/Redo (which are for DATA edits).
+      var back = document.getElementById('nav-back-btn');
+      if (back) back.addEventListener('click', function () { navGo(-1); });
+      var fwd = document.getElementById('nav-fwd-btn');
+      if (fwd) fwd.addEventListener('click', function () { navGo(1); });
+      navUpdateButtons();
       document.getElementById('undo-btn').addEventListener('click', function () {
         gaTrack('history_action', { action: 'undo' });
         fetchJson('/api/history/undo', { method: 'POST' })
@@ -25,10 +94,19 @@ export const searchJs = `    // ────────────────
      * any mutation that goes through the audit log: row CRUD, link/unlink,
      * undo, redo, revert.
      */
-    function afterMutation() {
-      loadedTables = {};
+    function afterMutation(changedTables) {
+      // Scoped invalidation: drop only the tables that actually changed so a
+      // collaborator's edit to one table doesn't force re-fetching every OTHER
+      // cached table this view references (the dominant cloud egress cost). A
+      // null/empty list (local mutation, schema change, or unknown table) falls
+      // back to a full cache wipe — the safe default.
+      if (changedTables && changedTables.length) {
+        for (var i = 0; i < changedTables.length; i++) delete loadedTables[changedTables[i]];
+      } else {
+        loadedTables = {};
+      }
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         refreshHistoryState(),
       ]).then(function (r) {
         state.entities = r[0];
@@ -48,10 +126,28 @@ export const searchJs = `    // ────────────────
       }).catch(function () { /* swallow */ });
     }
 
+    // A full-app fade overlay shown while a workspace switch (or schema reload)
+    // rebuilds every column — so the Inputs/Model/Outputs panes appear to switch
+    // together instead of popping in at different speeds.
+    function wsOverlayEl() {
+      var el = document.getElementById('ws-switch-overlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'ws-switch-overlay';
+        el.className = 'ws-switch-overlay';
+        el.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function showSwitchOverlay() { wsOverlayEl().classList.add('show'); }
+    function hideSwitchOverlay() { var el = document.getElementById('ws-switch-overlay'); if (el) el.classList.remove('show'); }
+
     /** Refetch everything after a DB switch and rerender. */
     function reloadEverything() {
+      showSwitchOverlay();
       return Promise.all([
-        fetchJson('/api/entities'),
+        fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
@@ -80,16 +176,48 @@ export const searchJs = `    // ────────────────
         currentThreadId = null;
         clearChat();
         refreshThreadList(true);
-        if (location.hash !== '#/') location.hash = '#/';
-        // Already on the dashboard hash: re-render in place as a soft refresh so a
+        // A workspace switch PRESERVES the Configure/takeover surface the user is on
+        // — Settings, Version history, or the Data Model Graph/Tables drawer (all
+        // show WORKSPACE-specific data: name, DB connection, data model, history) —
+        // so renderRoute re-renders that drawer for the NEW workspace in place.
+        // Leaving the hash put would strand the drawer showing the PREVIOUS
+        // workspace's data. Every other hash (a Workspace dashboard/table/file tab,
+        // or a record drill-in that may not exist in the new workspace) resets to the
+        // Workspace home. NB: gate on configureRouteFor, NOT isAnalyticsHash — the
+        // latter is a constant-true shim in the single layout, and '#/folders' (the
+        // old Objects home) no longer exists.
+        var cur = location.hash || '';
+        var switchTarget =
+          (cur.indexOf('#/settings/') === 0 ||
+            (typeof configureRouteFor === 'function' && configureRouteFor(cur)))
+            ? cur
+            : '#/';
+        if (location.hash !== switchTarget) location.hash = switchTarget;
+        // Already on the target home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.
         else renderRoute({ soft: true });
         loadedTables = {};
+        // The Tables explorer's cached edges + any in-flight wire/merge selection
+        // are per-workspace module state — reset them so the new workspace doesn't
+        // inherit the previous one's relationship edges or picked source.
+        mtResetState();
+        // Open dashboard tabs + the cached Dashboards list are per-workspace too —
+        // stale tabs from the previous workspace would 404 in the new one.
+        anResetTabs();
+        anDashRows = null;
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event
         // stream so realtime/feed/render all rebind to this workspace.
         renderProgress = {};
         startEventStream();
+        // Pending ingestion questions are per-workspace: wipe the previous workspace's
+        // Data Questions tab + badge + dock cards and re-fetch for the new workspace,
+        // so a stale count from workspace A can't linger over workspace B.
+        if (typeof resetQuestionsState === 'function') resetQuestionsState();
+      }).finally(function () {
+        // Reveal the freshly-rebuilt columns together (a short tick lets the last
+        // synchronous renders settle before the overlay fades out).
+        setTimeout(hideSwitchOverlay, 60);
       });
     }
 

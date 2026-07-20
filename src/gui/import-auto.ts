@@ -2,10 +2,16 @@ import { readFileSync } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
-import { excelToRecords } from '../import/excel.js';
+import { excelFormulaSummary, excelImportWarnings, excelToRecords } from '../import/excel.js';
+import { csvToRecords } from '../import/csv.js';
+import {
+  buildComputedProposals,
+  type ComputedTableProposal,
+} from '../import/computed-proposals.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import { materializeImport } from '../import/materialize.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
+import { getClarifyThreshold } from './assistant-routes.js';
 import { detectImportAsOf } from './import-detect.js';
 import { detectAsOfColumns } from '../import/asof-columns.js';
 
@@ -45,6 +51,18 @@ export interface AutoImportResult {
   asOfCandidates?: Awaited<ReturnType<typeof detectImportAsOf>>;
   asOfColumns?: ReturnType<typeof detectAsOfColumns>;
   schemaMatch?: ReturnType<typeof matchSchemaToExisting>;
+  /**
+   * The clarify threshold link inference ran under. The card echoes it back on
+   * apply so both sides band marginal links identically even if the preference
+   * changes between upload and confirm.
+   */
+  linkConfidence?: number;
+  /** Opt-in computed-table proposals (new-dataset flows only; display-only —
+   *  the apply route re-derives them and intersects with the user's picks). */
+  computedProposals?: ComputedTableProposal[];
+  /** Reconciliation warnings from the read (a stacked-table sheet where only the largest
+   *  table was imported) — surfaced on the confirm card so a partial import is never silent. */
+  importWarnings?: string[];
 }
 
 function existingDataTables(db: Lattice): ExistingTable[] {
@@ -52,6 +70,11 @@ function existingDataTables(db: Lattice): ExistingTable[] {
   const out: ExistingTable[] = [];
   for (const t of db.getRegisteredTableNames()) {
     if (native.has(t)) continue;
+    // Never offer a connected external mirror or a computed view as an import DESTINATION: both
+    // are read-only (a connected table syncs from its source; a computed view is derived), so an
+    // import that matched + wrote into one would either be overwritten on the next sync or corrupt
+    // a projection. This keeps the importer's "matches an existing dataset → append" path off them.
+    if (db.getConnectedSource(t) || db.isComputedTable(t)) continue;
     const columns = Object.keys(db.getRegisteredColumns(t) ?? {});
     if (columns.length > 0) out.push({ name: t, columns });
   }
@@ -63,6 +86,7 @@ async function readStructured(abs: string, name: string): Promise<Record<string,
   // is staged to an extensionless temp path, so testing `abs` would misroute an
   // `.xlsx` into the JSON branch. The bytes are read from `abs` either way.
   if (/\.xlsx?$/i.test(name)) return excelToRecords(abs);
+  if (/\.(csv|tsv)$/i.test(name)) return csvToRecords(abs, name);
   return JSON.parse(readFileSync(abs, 'utf8')) as Record<string, unknown>;
 }
 
@@ -72,23 +96,30 @@ export async function autoImportStructured(
   abs: string,
   name: string,
 ): Promise<AutoImportResult | null> {
-  if (!/\.(xlsx?|json)$/i.test(name)) return null;
+  if (!/\.(xlsx?|csv|tsv|json)$/i.test(name)) return null;
   let data: Record<string, unknown>;
   try {
     data = await readStructured(abs, name);
   } catch {
     return null; // not structured data we can model — leave it as a reference file
   }
+  // The user's clarify threshold decides which inferred links are created vs
+  // asked about; carried on the proposal so apply uses the same bar.
+  const linkConfidence = getClarifyThreshold();
   const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
-    inferSchema(data),
+    inferSchema(data, { minLinkConfidence: linkConfidence }),
     data,
   );
   if (inferredPlan.entities.length === 0) return null;
 
-  const schemaMatch = matchSchemaToExisting(existingDataTables(db), inferredPlan);
+  const existing = existingDataTables(db);
+  const schemaMatch = matchSchemaToExisting(existing, inferredPlan);
   const asOfCandidates = await detectImportAsOf(db, data, { abs, fileName: name });
   const asOf = asOfCandidates[0]?.date ?? null;
   const asOfColumns = detectAsOfColumns(data, inferredPlan);
+  // Reconciliation warnings from the Excel read (a stacked-table sheet only partially
+  // imported) — surfaced on the confirm card so the user sees a partial import before applying.
+  const importWarnings = /\.xlsx?$/i.test(name) ? excelImportWarnings(abs) : [];
   // The proposal the inline confirm card renders (display-only; apply re-derives).
   const proposal = {
     plan: inferredPlan,
@@ -100,12 +131,23 @@ export async function autoImportStructured(
     totalEntities: schemaMatch.totalEntities,
     tables: [],
     rows: 0,
+    linkConfidence,
+    ...(importWarnings.length > 0 ? { importWarnings } : {}),
   };
 
   // Brand-new structured data: never silently create from a chat drop — surface
-  // a 'new-dataset' card; tables are created only on Apply.
+  // a 'new-dataset' card (with any opt-in computed-table proposals); tables are
+  // created only on Apply.
   if (!schemaMatch.isKnownDocument) {
-    return { imported: false, reason: 'new-dataset', asOf, ...proposal };
+    const computedProposals = buildComputedProposals({
+      data,
+      plan: inferredPlan,
+      rename: schemaMatch.rename,
+      // The formula summary was cached by the excelToRecords read above.
+      formulaSummary: /\.xlsx?$/i.test(name) ? excelFormulaSummary(abs) : null,
+      existingTables: existing.map((t) => t.name),
+    });
+    return { imported: false, reason: 'new-dataset', asOf, ...proposal, computedProposals };
   }
   // Recognized as a known dataset but no confident date — importing undated would
   // overwrite the prior snapshot, so surface a 'needs-confirm' card.
@@ -125,4 +167,39 @@ export async function autoImportStructured(
     tables: Object.keys(result.rowsByTable),
     rows,
   };
+}
+
+/** The faithful materialization of a parsed structured dataset (all rows). */
+export interface FaithfulImportResult {
+  /** Tables created/updated by the import. */
+  tables: string[];
+  /** Total rows materialized across those tables. */
+  rows: number;
+}
+
+/**
+ * Materialize an already-parsed structured dataset into real tables IMMEDIATELY and
+ * FAITHFULLY (every row), using the same deterministic pipeline as the confirm-card apply
+ * path — infer schema → dedupe/detect views → match to existing tables → materialize.
+ * Unlike {@link autoImportStructured} (whose new-dataset path only PROPOSES, never creating
+ * tables from a passive drop), this is the executor for an EXPLICIT user request to import
+ * a file they attached, so it commits. Returns null when the data has no inferable
+ * entities (nothing to import). Every write is auditable + reversible like any other.
+ */
+export async function importDataFaithfully(
+  db: Lattice,
+  configPath: string | null,
+  data: Record<string, unknown>,
+): Promise<FaithfulImportResult | null> {
+  const linkConfidence = getClarifyThreshold();
+  const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
+    inferSchema(data, { minLinkConfidence: linkConfidence }),
+    data,
+  );
+  if (inferredPlan.entities.length === 0) return null;
+  const schemaMatch = matchSchemaToExisting(existingDataTables(db), inferredPlan);
+  const { plan, views } = renameEntities(inferredPlan, inferredViews, schemaMatch.rename);
+  const result = await materializeImport({ db, configPath }, data, plan, views, {});
+  const rows = Object.values(result.rowsByTable).reduce((a, b) => a + b, 0);
+  return { tables: Object.keys(result.rowsByTable), rows };
 }

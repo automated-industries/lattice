@@ -37,6 +37,27 @@ export function deriveCanonicalContexts(
 
   const out: { table: string; definition: EntityContextDefinition }[] = [];
   for (const { name, definition } of tables) {
+    // HARD exclusions, fail-closed: never derive a context for the encrypted
+    // secrets store (rendering would dump ciphertext), the conversation tables,
+    // or internal bookkeeping — regardless of what a caller feeds in. Runtime
+    // derivation call sites depend on this being enforced HERE.
+    if (
+      name === 'secrets' ||
+      name === 'chat_threads' ||
+      name === 'chat_messages' ||
+      name.startsWith('_lattice') ||
+      name.startsWith('__lattice')
+    ) {
+      continue;
+    }
+    // LINK tables (junctions) never get their OWN canonical context — they are
+    // relationship plumbing, not documents. Their content still surfaces: each
+    // endpoint's context renders the junction as a manyToMany rollup of the
+    // REMOTE rows (via childrenOf below). Gating HERE — inside the derivation —
+    // keeps every caller (owner open, member open, openWorkspace) consistent by
+    // construction; previously the member path excluded junctions and the owner
+    // path did not, so Context/<Junction>/ trees rendered on one surface only.
+    if (isLinkTable(name, definition)) continue;
     const files: EntityContextDefinition['files'] = {};
 
     // The entity's own context.
@@ -65,7 +86,7 @@ export function deriveCanonicalContexts(
       const childDef = byName.get(child.table);
       const childBt = childDef ? belongsToRelations(childDef) : [];
       const [rel0, rel1] = childBt;
-      if (childDef && rel0 && rel1 && isRenderJunction(childDef, childBt)) {
+      if (childDef && rel0 && rel1 && isRenderJunction(child.table, childDef, childBt)) {
         // localKey = the FK pointing back at THIS entity; remoteKey = the other.
         const localRel = rel0.foreignKey === child.foreignKey ? rel0 : rel1;
         const remoteRel = localRel === rel0 ? rel1 : rel0;
@@ -125,7 +146,21 @@ export function deriveCanonicalContexts(
  * its own `id` PK + content columns and renders its own rows (`hasMany`), never
  * collapsed into the remote side.
  */
-function isRenderJunction(def: TableDefinition, bt: BelongsToRelation[]): boolean {
+function isRenderJunction(name: string, def: TableDefinition, bt: BelongsToRelation[]): boolean {
+  return isLinkTableWith(name, def, bt);
+}
+
+/**
+ * THE shared link-table classifier — the one predicate deciding whether a table
+ * is relationship plumbing (renders as manyToMany into its endpoints, never gets
+ * its own context) or a first-class entity. Exported so the GUI lifecycle and any
+ * other classification site can agree with the render derivation by construction.
+ */
+export function isLinkTable(name: string, def: TableDefinition): boolean {
+  return isLinkTableWith(name, def, belongsToRelations(def));
+}
+
+function isLinkTableWith(name: string, def: TableDefinition, bt: BelongsToRelation[]): boolean {
   if (bt.length !== 2) return false;
   const fks = new Set(bt.map((r) => r.foreignKey));
   if (fks.size !== 2) return false; // the two FKs must be distinct columns
@@ -138,7 +173,13 @@ function isRenderJunction(def: TableDefinition, bt: BelongsToRelation[]): boolea
   if (pk.length === 2 && pk.every((c) => fks.has(c))) return true;
   // (b) pure junction: every column is one of the two FKs or a system column.
   const SYSTEM = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
-  return Object.keys(def.columns).every((c) => fks.has(c) || SYSTEM.has(c));
+  if (Object.keys(def.columns).every((c) => fks.has(c) || SYSTEM.has(c))) return true;
+  // (c) a GUI-created junction keeps the `<a>_<b>` naming of its two endpoints.
+  // Payload columns added later (auto-added enrichment columns) must not silently
+  // promote it to a first-class entity — that flip is what turned clean m2m
+  // rollups into raw <JUNCTION>.md dumps and gave junctions their own folders.
+  const [a, b] = bt.map((r) => r.table);
+  return name === `${String(a)}_${String(b)}` || name === `${String(b)}_${String(a)}`;
 }
 
 function belongsToRelations(def: TableDefinition): BelongsToRelation[] {
@@ -193,17 +234,93 @@ function canonicalSlug(def: TableDefinition): (row: Row) => string {
 
 const HIDDEN_COLS = new Set(['deleted_at', '_reward_total', '_reward_count']);
 
-/** Render a single entity row as a titled, frontmatter-tagged detail block. */
-function renderSelf(table: string): (rows: Row[]) => string {
+/**
+ * Render one field as a Markdown bullet. Single-line values stay on the bullet
+ * line (`- **key:** value`). A multi-line value keeps its first line inline and
+ * writes each remaining line as a 2-space-indented CONTINUATION line, so the whole
+ * value round-trips through {@link parseEntityProfileContent} instead of being
+ * silently truncated to its first line on the next reverse-sync. Interior empty
+ * lines are written blank (no marker) and recovered by the parser's look-ahead.
+ */
+export function renderFieldBullet(k: string, v: unknown): string {
+  const text = toText(v);
+  if (!text.includes('\n')) return `- **${k}:** ${text}`;
+  const [first = '', ...rest] = text.split('\n');
+  const cont = rest.map((line) => (line === '' ? '' : `  ${line}`)).join('\n');
+  return `- **${k}:** ${first}\n${cont}`;
+}
+
+/**
+ * Give RUNTIME-registered tables (connector models, imported database tables —
+ * registered via defineLate, so never in the parsed config) the same canonical
+ * per-record contexts config tables get at open. Pure over {name, definition};
+ * idempotent (existing contexts are never overridden); the hard exclusions
+ * inside deriveCanonicalContexts (secrets/chat/internal) apply by construction.
+ */
+export function ensureRuntimeEntityContexts(
+  db: {
+    entityContexts(): Map<string, EntityContextDefinition>;
+    defineEntityContext(table: string, definition: EntityContextDefinition): unknown;
+  },
+  models: readonly { table: string; definition: TableDefinition }[],
+): void {
+  const existing = db.entityContexts();
+  const derived = deriveCanonicalContexts(
+    models.map((m) => ({ name: m.table, definition: m.definition })),
+  );
+  for (const { table, definition } of derived) {
+    if (!existing.has(table)) db.defineEntityContext(table, definition);
+  }
+}
+
+/**
+ * A minimal, single-table canonical context: the per-record self file only,
+ * with a column-exclusion set and a character budget. Used for tables whose
+ * rows carry columns too heavy to dump into markdown (a file's extracted
+ * text) but that still deserve a rendered per-record context.
+ */
+export function boundedSelfContext(
+  name: string,
+  definition: TableDefinition,
+  opts: { excludeColumns?: Set<string>; budget?: number } = {},
+): EntityContextDefinition {
+  return {
+    directoryRoot: titleCase(name),
+    slug: canonicalSlug(definition),
+    files: {
+      [`${singularUpper(name)}.md`]: {
+        source: { type: 'self' } satisfies EntityFileSource,
+        render: renderSelf(name, opts),
+      },
+    },
+  };
+}
+
+/**
+ * Render a single entity row as a titled, frontmatter-tagged detail block.
+ * `opts.excludeColumns` drops columns from the rendered output entirely (e.g. a
+ * file's multi-megabyte extracted_text — the markdown context is a summary, not
+ * a dump), and `opts.budget` caps the whole self block's character length.
+ */
+function renderSelf(
+  table: string,
+  opts?: { excludeColumns?: Set<string>; budget?: number },
+): (rows: Row[]) => string {
+  const exclude = opts?.excludeColumns;
+  const budget = opts?.budget;
   return (rows: Row[]): string => {
     const row = rows[0];
     if (!row) return '';
     const title = rowLabel(row) || singularUpper(table);
     const fields = Object.entries(row)
-      .filter(([k, v]) => !HIDDEN_COLS.has(k) && v != null && toText(v).length > 0)
-      .map(([k, v]) => `- **${k}:** ${toText(v)}`)
+      .filter(
+        ([k, v]) => !HIDDEN_COLS.has(k) && !exclude?.has(k) && v != null && toText(v).length > 0,
+      )
+      .map(([k, v]) => renderFieldBullet(k, v))
       .join('\n');
-    return `${frontmatter({ [`${table}_id`]: toText(row.id) })}# ${title}\n\n${fields}\n`;
+    let out = `${frontmatter({ [`${table}_id`]: toText(row.id) })}# ${title}\n\n${fields}\n`;
+    if (budget && out.length > budget) out = out.slice(0, budget) + '\n\u2026\n';
+    return out;
   };
 }
 

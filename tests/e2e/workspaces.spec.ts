@@ -9,6 +9,7 @@ import {
   addWorkspace,
   resolveWorkspacePaths,
 } from '../../src/index.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 // These tests share one server (and thus its active-workspace state), so they
 // must run in order rather than racing in parallel workers.
@@ -21,6 +22,14 @@ test.beforeAll(async () => {
   base = mkdtempSync(join(tmpdir(), 'lattice-e2e-ws-'));
   process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-e2e-ws-home-'));
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // A connected Claude subscription is mandatory (the first-run wall gates the
+  // whole app), so seed one before the server boots.
+  seedClaudeOAuth();
+  // Pin the registry root to THIS spec's temp dir BEFORE any root resolution:
+  // findLatticeRoot's env override wins everywhere (ensureLatticeRoot included),
+  // so a developer shell exporting LATTICE_ROOT=~/.lattice would otherwise send
+  // every registry read/WRITE in this spec into the real workspace registry.
+  process.env.LATTICE_ROOT = join(base, '.lattice');
   const root = ensureLatticeRoot(base);
   const alpha = addWorkspace(root, { displayName: 'Alpha' });
   const beta = addWorkspace(root, { displayName: 'Beta' });
@@ -30,8 +39,8 @@ test.beforeAll(async () => {
     db.close();
   }
   const pa = resolveWorkspacePaths(root, alpha);
-  // The server discovers the root by walking up from the workspace config —
-  // no LATTICE_ROOT env needed, so this spec can't leak into other specs.
+  // (Root pinned above; walk-up discovery alone is NOT safe under a shell that
+  // exports LATTICE_ROOT.)
   server = await startGuiServer({
     configPath: pa.configPath,
     outputDir: pa.contextDir,
@@ -70,7 +79,8 @@ test('the header workspace switcher lists workspaces and switches the active one
 test('switching paints a loading frame immediately and never freezes on the previous workspace', async ({
   page,
 }) => {
-  await page.goto(server.url);
+  // The old Objects home (#/folders) is gone; boot into the single-layout home.
+  await page.goto(server.url + '#/');
   const startName = (await page.locator('#ws-name').textContent()) ?? '';
 
   // Simulate a slow (cloud-like) open by delaying the switch POST.
@@ -88,4 +98,39 @@ test('switching paints a loading frame immediately and never freezes on the prev
   await expect(page.locator('#content .route-loading')).toBeVisible({ timeout: 400 });
   // …and the switch still completes (the active workspace changes).
   await expect(page.locator('#ws-name')).not.toHaveText(startName, { timeout: 5000 });
+});
+
+test('Back/Forward history is per-workspace: a switch never carries the old hash or history', async ({
+  page,
+}) => {
+  await page.goto(server.url + '#/');
+  await expect(page.locator('#ws-name')).toBeVisible();
+  const startName = (await page.locator('#ws-name').textContent()) ?? '';
+
+  // Build some navigation history in the current workspace: home → the
+  // Questions view. Back becomes enabled once this workspace's per-workspace
+  // history stack has a prior entry.
+  await page.evaluate(() => {
+    location.hash = '#/questions';
+  });
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/questions');
+  await expect(page.locator('#nav-back-btn')).toBeEnabled();
+
+  // Switch workspaces (whichever is not current).
+  await page.locator('#ws-button').click();
+  const other = page.locator('#ws-menu button.db-item:not(.active)').first();
+  await other.click();
+  // The switch lands the new workspace on ITS OWN home (#/), never the previous
+  // workspace's hash (#/questions).
+  await expect.poll(() => page.evaluate(() => location.hash), { timeout: 15000 }).toBe('#/');
+  await expect(page.locator('#ws-name')).not.toHaveText(startName, { timeout: 5000 });
+
+  // The new workspace starts with ITS OWN history: the old workspace's
+  // #/questions (or any of its records) is unreachable from here. There is
+  // nothing ahead to go Forward into, and stepping Back never crosses back
+  // into the previous workspace's location — it stays on this workspace's home.
+  await expect(page.locator('#nav-fwd-btn')).toBeDisabled();
+  const backBtn = page.locator('#nav-back-btn');
+  if (await backBtn.isEnabled()) await backBtn.click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
 });

@@ -3,6 +3,7 @@ import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import { pkSqlExpr } from '../db/pk.js';
+import { LINEAGE_TABLE, ensureLineageTable } from '../gui/lineage-store.js';
 // Re-exported so existing consumers (cloud/audience.ts) keep importing it from
 // here; the canonical definition now lives in the pure db/pk.ts leaf.
 export { pkSqlExpr } from '../db/pk.js';
@@ -219,6 +220,40 @@ CREATE TABLE IF NOT EXISTS "__lattice_row_grants" (
 CREATE INDEX IF NOT EXISTS "idx_lattice_row_grants_grantee"
   ON "__lattice_row_grants" ("grantee_role", "table_name", "pk");
 
+-- Standing TABLE-LEVEL share: one owner shares ALL the rows THEY own in a table
+-- with an audience — 'everyone', or the specific members listed in
+-- __lattice_table_share_grants ('custom'). Unlike a per-row grant this needs no
+-- per-row bookkeeping and it covers rows added LATER: lattice_row_visible reads
+-- this at query time, keyed on each row's owner, so the audience keeps seeing new
+-- rows as the table grows (what makes a shared dashboard's data stay live). Keyed
+-- on the row's OWNER, so sharing a table can never expose another member's own
+-- rows in the same table. One row per (table_name, owner_role); the audience only
+-- ever widens (custom → everyone) and grantees only accumulate — nothing is
+-- removed here, so unsharing the thing that triggered the share never revokes the
+-- data (sharing is one-way by construction). Owner-managed; members have no direct
+-- grant on these bookkeeping tables (the SECURITY DEFINER functions are the path).
+CREATE TABLE IF NOT EXISTS "__lattice_table_shares" (
+  "table_name" text NOT NULL,
+  "owner_role" text NOT NULL,
+  "audience"   text NOT NULL DEFAULT 'custom' CHECK ("audience" IN ('everyone','custom')),
+  "granted_by" text NOT NULL DEFAULT session_user,
+  "granted_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("table_name", "owner_role")
+);
+
+CREATE TABLE IF NOT EXISTS "__lattice_table_share_grants" (
+  "table_name"   text NOT NULL,
+  "owner_role"   text NOT NULL,
+  "grantee_role" text NOT NULL,
+  "granted_by"   text NOT NULL DEFAULT session_user,
+  "granted_at"   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("table_name", "owner_role", "grantee_role")
+);
+
+CREATE INDEX IF NOT EXISTS "idx_lattice_table_share_grants_grantee"
+  ON "__lattice_table_share_grants" ("grantee_role", "table_name", "owner_role");
+
 -- Per-table policy: the owner-controlled defaults that govern a whole table.
 -- default_row_visibility is the visibility NEW rows are stamped with (the insert
 -- trigger reads it); never_share is a hard exclusion — the share/grant functions
@@ -282,6 +317,11 @@ CREATE TABLE IF NOT EXISTS "__lattice_shared_schema" (
   "contexts_json" TEXT,
   "updated_at" TEXT
 );
+-- Owner-published computed-table definitions (the config's computed: block), so
+-- a joined member hydrates computed tables the same way it hydrates entities.
+-- Added via ALTER so clouds created before this column converge to it on the
+-- owner's next open (same pattern as __lattice_member_invites.email above).
+ALTER TABLE "__lattice_shared_schema" ADD COLUMN IF NOT EXISTS "computed_json" TEXT;
 
 -- #3.1 — one-time-use + revocation enforcement. After a member authenticates to
 -- the cloud with their minted credential, the join path calls this to CLAIM the
@@ -320,7 +360,21 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
           OR ( o."visibility" = 'custom' AND EXISTS (
                  SELECT 1 FROM "__lattice_row_grants" g
                   WHERE g."table_name" = o."table_name" AND g."pk" = o."pk"
-                    AND g."grantee_role" = session_user)))
+                    AND g."grantee_role" = session_user))
+          -- Standing table-share: the row's OWNER shared all their rows in this
+          -- table with the caller (directly, or via 'everyone'). Keyed on
+          -- o.owner_role so it only ever exposes that owner's own rows, and it
+          -- applies to rows added after the share with no per-row bookkeeping.
+          OR EXISTS (
+                 SELECT 1 FROM "__lattice_table_shares" ts
+                  WHERE ts."table_name" = o."table_name"
+                    AND ts."owner_role" = o."owner_role"
+                    AND ( ts."audience" = 'everyone'
+                       OR EXISTS (
+                            SELECT 1 FROM "__lattice_table_share_grants" tg
+                             WHERE tg."table_name" = ts."table_name"
+                               AND tg."owner_role" = ts."owner_role"
+                               AND tg."grantee_role" = session_user))))
   );
 $fn$;
 
@@ -329,18 +383,43 @@ $fn$;
 -- lattice_row_visible can't be used). Keyed on session_user, SECURITY DEFINER —
 -- the same per-recipient gate. MUST MIRROR lattice_row_visible's rule: the row is
 -- visible iff this member owned it, OR it was 'everyone', OR it was 'custom' and
--- this member was a grantee. A NULL owner snapshot (a legacy delete emitted before
--- the snapshot columns, or a row with no ownership record) yields false — fail
--- closed, never forward. (tests/integration assert this agrees with
--- lattice_row_visible for all three visibility states — the no-drift guard.)
+-- this member was a grantee, OR a standing table-share of the row's owner reaches
+-- this member. The table-share tables are NOT per-row, so they survive the delete
+-- and are checked live from the snapshot's owner + the table name (passed in,
+-- since the ownership row is gone). A NULL owner snapshot (a legacy delete emitted
+-- before the snapshot columns, or a row with no ownership record) yields false —
+-- fail closed, never forward. (tests/integration assert this agrees with
+-- lattice_row_visible for every visibility state — the no-drift guard.)
+--
+-- The table-share dimension is read LIVE (the __lattice_table_shares tables are
+-- NOT per-row, so they survive the delete), unlike the per-row dims which are
+-- frozen into the change snapshot. This is deliberate and fails safe: the only
+-- divergence is a table-share created in the narrow window between a delete and
+-- its fan-out, and it can only ever forward a deleted row's pk to a member who now
+-- holds a standing share of that table — i.e. someone with access to the table's
+-- live data anyway, never a disclosure beyond their access.
+--
+-- Drop the pre-cascade 3-arg overload so an upgraded cloud doesn't keep a stale
+-- signature alongside the 4-arg one (the app caller always binds the 4-arg form).
+DROP FUNCTION IF EXISTS lattice_delete_visible(text, text, text[]);
 CREATE OR REPLACE FUNCTION lattice_delete_visible(
-  p_owner_role text, p_visibility text, p_grantees text[]
+  p_table text, p_owner_role text, p_visibility text, p_grantees text[]
 )
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
   SELECT p_owner_role IS NOT NULL AND (
        p_owner_role = session_user
     OR p_visibility = 'everyone'
     OR (p_visibility = 'custom' AND session_user = ANY(COALESCE(p_grantees, ARRAY[]::text[])))
+    OR EXISTS (
+         SELECT 1 FROM "__lattice_table_shares" ts
+          WHERE ts."table_name" = p_table
+            AND ts."owner_role" = p_owner_role
+            AND ( ts."audience" = 'everyone'
+               OR EXISTS (
+                    SELECT 1 FROM "__lattice_table_share_grants" tg
+                     WHERE tg."table_name" = ts."table_name"
+                       AND tg."owner_role" = ts."owner_role"
+                       AND tg."grantee_role" = session_user)))
   );
 $fn$;
 
@@ -364,6 +443,17 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
     (SELECT "never_share" FROM "__lattice_table_policy" WHERE "table_name" = p_table),
     false
   )
+$fn$;
+
+-- Batch never-share check, MEMBER-CALLABLE: returns the subset of p_tables flagged
+-- never-share. SECURITY DEFINER so a scoped member — who has NO grant on the
+-- owner-only __lattice_table_policy — can let the dashboard-share cascade skip
+-- never-share dependencies WITHOUT a direct read of that table (a direct member
+-- read raises "permission denied", which broke every member-owned dashboard share).
+CREATE OR REPLACE FUNCTION lattice_never_share_tables(p_tables text[])
+RETURNS TABLE(table_name text) LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
+  SELECT p."table_name" FROM "__lattice_table_policy" p
+   WHERE p."never_share" = true AND p."table_name" = ANY(COALESCE(p_tables, ARRAY[]::text[]))
 $fn$;
 
 -- Owner-only: change a row's visibility. Raises if the caller is not the owner.
@@ -415,6 +505,42 @@ BEGIN
   -- now-stale derived values revert to ground truth on the next render).
   INSERT INTO "__lattice_changes" ("table_name","pk","op","owner_role")
     VALUES (p_table, p_pk, 'upsert', session_user);
+END $fn$;
+
+-- Standing TABLE-LEVEL share: the caller shares ALL rows THEY own in p_table with
+-- an audience — 'everyone', or the specific member roles in p_grantees ('custom').
+-- Read live by lattice_row_visible, so it also covers rows added LATER (a shared
+-- dashboard's data stays visible as the table grows) with no per-row bookkeeping.
+-- Additive + monotonic: the audience only widens (once 'everyone' it stays
+-- 'everyone', even if a later custom share arrives) and grantees only accumulate —
+-- nothing is removed here, so the caller unsharing whatever triggered this never
+-- revokes the data (the share is one-way by construction). Keyed on session_user,
+-- so a caller can only share their OWN rows; a never-share table is refused. NOT
+-- gated on cloud-ownership — any member may share the rows they own, the same
+-- trust boundary as lattice_grant_row.
+CREATE OR REPLACE FUNCTION lattice_share_table(p_table text, p_audience text, p_grantees text[])
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE g text;
+BEGIN
+  IF p_audience NOT IN ('everyone','custom') THEN
+    RAISE EXCEPTION 'lattice: invalid table-share audience %', p_audience;
+  END IF;
+  IF lattice_table_is_never_share(p_table) THEN
+    RAISE EXCEPTION 'lattice: "%" is a private-only table and cannot be shared', p_table;
+  END IF;
+  INSERT INTO "__lattice_table_shares" ("table_name","owner_role","audience","granted_by","updated_at")
+    VALUES (p_table, session_user, p_audience, session_user, now())
+    ON CONFLICT ("table_name","owner_role") DO UPDATE
+      SET "audience" = CASE WHEN "__lattice_table_shares"."audience" = 'everyone'
+                            THEN 'everyone' ELSE EXCLUDED."audience" END,
+          "updated_at" = now();
+  IF p_audience = 'custom' THEN
+    FOREACH g IN ARRAY COALESCE(p_grantees, ARRAY[]::text[]) LOOP
+      INSERT INTO "__lattice_table_share_grants" ("table_name","owner_role","grantee_role","granted_by")
+        VALUES (p_table, session_user, g, session_user)
+        ON CONFLICT ("table_name","owner_role","grantee_role") DO NOTHING;
+    END LOOP;
+  END IF;
 END $fn$;
 
 -- Can the connected member see a source? Reduces to the source row's own RLS, so
@@ -482,6 +608,10 @@ BEGIN
     UPDATE "__lattice_owners" SET "visibility" = 'private', "updated_at" = now()
       WHERE "table_name" = p_table AND "visibility" <> 'private';
     DELETE FROM "__lattice_row_grants" WHERE "table_name" = p_table;
+    -- A standing table-share would keep leaking rows of a now-private table, so
+    -- drop it too (mirrors the per-row grant cleanup above).
+    DELETE FROM "__lattice_table_shares"       WHERE "table_name" = p_table;
+    DELETE FROM "__lattice_table_share_grants" WHERE "table_name" = p_table;
   END IF;
 END $fn$;
 
@@ -707,6 +837,40 @@ BEGIN
   END IF;
 END $fn$;
 GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${group};
+
+-- Member-safe semantic-search source. A member has NO grant on the internal
+-- embeddings store (\`_lattice_embeddings\`) or the per-table vector index, so it
+-- reads ONLY the chunk vectors for rows it may see, through these SECURITY DEFINER
+-- functions — filtered by lattice_row_visible (keyed on session_user, the member).
+-- Scoring happens in the app; these gate row visibility only. \`p_table\` is matched
+-- as a VALUE against the table_name column — no dynamic SQL / identifier
+-- interpolation. plpgsql (not sql) so they install even before \`_lattice_embeddings\`
+-- exists: the body binds the table at call time, by which point a searchable cloud
+-- has it. lattice_row_visible runs as this definer (owner) but still keys on the
+-- caller's session_user, so a member can never read another member's vectors.
+CREATE OR REPLACE FUNCTION lattice_visible_embeddings(p_table text)
+RETURNS TABLE(row_pk text, chunk_index int, content text, embedding text, vec_dim int)
+LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+BEGIN
+  RETURN QUERY
+    SELECT e."row_pk", e."chunk_index", e."content", e."embedding", e."vec_dim"
+      FROM "_lattice_embeddings" e
+     WHERE e."table_name" = p_table
+       AND lattice_row_visible(p_table, e."row_pk");
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_visible_embeddings(text) TO ${group};
+
+CREATE OR REPLACE FUNCTION lattice_visible_embedding_count(p_table text)
+RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+DECLARE v_n bigint;
+BEGIN
+  SELECT count(*)::bigint INTO v_n
+    FROM "_lattice_embeddings" e
+   WHERE e."table_name" = p_table
+     AND lattice_row_visible(p_table, e."row_pk");
+  RETURN v_n;
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_visible_embedding_count(text) TO ${group};
 `;
 }
 
@@ -949,6 +1113,28 @@ CREATE POLICY "lattice_changelog_sel" ON "__lattice_changelog" FOR SELECT USING 
 );
 DROP POLICY IF EXISTS "lattice_changelog_ins" ON "__lattice_changelog";
 CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH CHECK (true);
+`,
+  );
+}
+
+/**
+ * Defense-in-depth lock on the lineage substrate (`__lattice_lineage`). It records
+ * source→object edges (source ids/detail a non-owner shouldn't be able to
+ * enumerate). Today it is merely UNGRANTED to members; this ENABLEs + FORCEs RLS
+ * with NO member policy/grant, so even a future accidental `GRANT` can't leak
+ * cross-member lineage — RLS-with-no-policy denies every non-BYPASSRLS role while
+ * the owner's BYPASSRLS connection (where the provenance builder runs) is
+ * unaffected. Ensures the table exists first so the lock applies even before the
+ * first import creates it. Idempotent; converges on every owner open. No-op off PG.
+ */
+export async function enableLineageRls(db: Lattice): Promise<void> {
+  if (!isPg(db)) return;
+  await ensureLineageTable(db.adapter);
+  await runCloudBootstrapSql(
+    db,
+    `
+ALTER TABLE "${LINEAGE_TABLE}" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "${LINEAGE_TABLE}" FORCE ROW LEVEL SECURITY;
 `,
   );
 }

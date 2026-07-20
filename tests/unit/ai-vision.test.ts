@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   describeImage,
   describePdf,
+  buildVisionAnthropicConfig,
   type VisionSenderInput,
   type PdfSenderInput,
 } from '../../src/ai/vision.js';
@@ -39,6 +40,50 @@ describe('describeImage', () => {
     expect(received).not.toBeNull();
     expect(received?.media_type).toBe('image/jpeg'); // sharp normalized PNG → JPEG
     expect((received?.data.length ?? 0) > 0).toBe(true); // base64 payload present
+  });
+
+  it('falls back to raw bytes with the original media type when normalization is unavailable/fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lattice-vis-'));
+    dirs.push(dir);
+    // Bytes sharp cannot decode → normalizeImage throws → the raw-bytes fallback fires (the same
+    // path that saves a hosted runtime where the native `sharp` addon isn't installed).
+    const img = join(dir, 'weird.png');
+    writeFileSync(img, Buffer.from('this is not a decodable image but is tagged image/png'));
+
+    let received: VisionSenderInput | null = null;
+    const text = await describeImage({ apiKey: 'x' }, img, {
+      mediaType: 'image/png',
+      sender: (input) => {
+        received = input;
+        return Promise.resolve('Fallback read.');
+      },
+    });
+    expect(text).toBe('Fallback read.');
+    expect(received?.media_type).toBe('image/png'); // raw fallback preserves the ORIGINAL type
+  });
+
+  it('surfaces a clear error (never silent) when neither normalization nor a raw fallback works', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lattice-vis-'));
+    dirs.push(dir);
+    const img = join(dir, 'weird.svg');
+    writeFileSync(img, Buffer.from('<svg/> not decodable'));
+    // image/svg+xml is NOT a directly-supported vision type → no raw fallback → a thrown error the
+    // caller logs (rather than a silent empty result that reads as "no source text").
+    await expect(
+      describeImage({ apiKey: 'x' }, img, {
+        mediaType: 'image/svg+xml',
+        sender: () => Promise.resolve('x'),
+      }),
+    ).rejects.toThrow(/could not prepare image for vision/i);
+  });
+});
+
+describe('buildVisionAnthropicConfig', () => {
+  it('honors a custom baseURL so vision reaches the same host as chat (proxy / BYO custom host)', () => {
+    expect(
+      buildVisionAnthropicConfig({ apiKey: 'k', baseURL: 'https://proxy.example/v1' }).baseURL,
+    ).toBe('https://proxy.example/v1');
+    expect(buildVisionAnthropicConfig({ apiKey: 'k' }).baseURL).toBeUndefined();
   });
 });
 

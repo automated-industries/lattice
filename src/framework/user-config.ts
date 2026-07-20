@@ -165,19 +165,33 @@ const EMPTY_IDENTITY: UserIdentity = { display_name: '', email: '' };
  * Read the machine-local user identity. Returns `{display_name: '',
  * email: ''}` if the file is missing or malformed — callers can treat
  * empty fields as "not set yet" without a separate existence check.
+ *
+ * In a managed/hosted deployment there is no local identity file, so a stored
+ * field falls back to the `LATTICE_USER_NAME` / `LATTICE_USER_EMAIL` env vars
+ * (which the host injects per session). Env is only a fallback — a value written
+ * to the identity file always wins, preserving the "empty = not set" contract.
  */
 export function readIdentity(): UserIdentity {
+  // A stored value wins; an empty (unset) field falls back to the env var. Uses an
+  // explicit empty check because '' is the "not set" sentinel here — `??` would
+  // keep the empty string instead of falling back.
+  const pick = (stored: string, fromEnv: string | undefined): string =>
+    stored !== '' ? stored : (fromEnv ?? '');
+  const withEnvFallback = (id: UserIdentity): UserIdentity => ({
+    display_name: pick(id.display_name, process.env.LATTICE_USER_NAME),
+    email: pick(id.email, process.env.LATTICE_USER_EMAIL),
+  });
   const dir = ensureConfigDir();
   const path = join(dir, IDENTITY_FILENAME);
-  if (!existsSync(path)) return { ...EMPTY_IDENTITY };
+  if (!existsSync(path)) return withEnvFallback({ ...EMPTY_IDENTITY });
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UserIdentity>;
-    return {
+    return withEnvFallback({
       display_name: typeof parsed.display_name === 'string' ? parsed.display_name : '',
       email: typeof parsed.email === 'string' ? parsed.email : '',
-    };
+    });
   } catch {
-    return { ...EMPTY_IDENTITY };
+    return withEnvFallback({ ...EMPTY_IDENTITY });
   }
 }
 
@@ -237,15 +251,27 @@ export interface UserPreferences {
    * A user preference, machine-local (see `voice_provider`).
    */
   aggressiveness: number;
+  /**
+   * Clarify threshold (0..1) — the single confidence bar that decides when an
+   * automated inference asks the user instead of guessing. At or above the
+   * threshold the system acts silently; between the floor (threshold / 2,
+   * derived where consumed) and the threshold it asks a short multiple-choice
+   * question; below the floor it drops the inference as noise. A user
+   * preference, machine-local (see `voice_provider`).
+   */
+  clarify_threshold: number;
 }
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   show_system_tables: false,
-  analytics: true,
+  // Telemetry is OPT-IN (default off): a local-first, "files never leave your
+  // computer" tool must not send analytics until the user explicitly turns it on.
+  analytics: false,
   // On-device is the keyless default — voice dictation works with no API key and
   // no config, and audio never leaves the machine.
   voice_provider: 'local',
   aggressiveness: 0.85,
+  clarify_threshold: 0.6,
 };
 
 /**
@@ -261,6 +287,7 @@ export function readPreferences(): UserPreferences {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<UserPreferences>;
     const agg = typeof parsed.aggressiveness === 'number' ? parsed.aggressiveness : NaN;
+    const clarify = typeof parsed.clarify_threshold === 'number' ? parsed.clarify_threshold : NaN;
     return {
       show_system_tables:
         typeof parsed.show_system_tables === 'boolean'
@@ -278,6 +305,9 @@ export function readPreferences(): UserPreferences {
       aggressiveness: Number.isFinite(agg)
         ? Math.min(1, Math.max(0, agg))
         : DEFAULT_PREFERENCES.aggressiveness,
+      clarify_threshold: Number.isFinite(clarify)
+        ? Math.min(1, Math.max(0, clarify))
+        : DEFAULT_PREFERENCES.clarify_threshold,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -298,6 +328,7 @@ export function writePreferences(prefs: UserPreferences): void {
       analytics: prefs.analytics,
       voice_provider: prefs.voice_provider,
       aggressiveness: prefs.aggressiveness,
+      clarify_threshold: prefs.clarify_threshold,
     },
     null,
     2,

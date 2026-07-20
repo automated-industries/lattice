@@ -31,6 +31,7 @@ import {
 } from '../db/adapter.js';
 import { EMBEDDINGS_TABLE } from './embeddings.js';
 import { assertSafeIdentifier } from '../schema/identifier.js';
+import type { VectorIndexOptions, Row } from '../types.js';
 
 const VEC_PREFIX = '_lattice_vec_';
 
@@ -107,6 +108,81 @@ export async function hasVectorIndex(adapter: StorageAdapter, table: string): Pr
   }
 }
 
+// Per-(adapter, table) cache of native-index existence, consulted ONLY by the
+// write-path maintenance helpers below to avoid an information_schema / PRAGMA
+// probe on every embedded-row write. It is a hot-path optimization, NOT a
+// correctness mechanism: search independently verifies freshness
+// (`vectorIndexFresh`) before trusting the index, so a stale cache entry can at
+// worst skip an incremental update — which the freshness check then catches by
+// falling back to the exact in-process scan.
+const indexExistenceCache = new WeakMap<StorageAdapter, Map<string, boolean>>();
+
+function setIndexExistence(adapter: StorageAdapter, table: string, exists: boolean): void {
+  let m = indexExistenceCache.get(adapter);
+  if (!m) {
+    m = new Map<string, boolean>();
+    indexExistenceCache.set(adapter, m);
+  }
+  m.set(table, exists);
+}
+
+async function indexExistsCached(adapter: StorageAdapter, table: string): Promise<boolean> {
+  const cached = indexExistenceCache.get(adapter)?.get(table);
+  if (cached !== undefined) return cached;
+  const exists = await hasVectorIndex(adapter, table);
+  setIndexExistence(adapter, table, exists);
+  return exists;
+}
+
+// Cache of each pg index's embedding column type, so the query/insert casts match
+// the column (`vector` vs `halfvec`) without an introspection per call. Like the
+// existence cache, it's an optimization — a miss introspects the catalog.
+type VecColType = 'vector' | 'halfvec';
+const indexVectorTypeCache = new WeakMap<StorageAdapter, Map<string, VecColType>>();
+
+function setIndexVectorType(adapter: StorageAdapter, table: string, t: VecColType): void {
+  let m = indexVectorTypeCache.get(adapter);
+  if (!m) {
+    m = new Map<string, VecColType>();
+    indexVectorTypeCache.set(adapter, m);
+  }
+  m.set(table, t);
+}
+
+/**
+ * Drop the cached embedding column type for a table so the next query re-introspects
+ * it. Called when a native-index query fails — e.g. another connection rebuilt the
+ * index with a different precision (`halfvec` vs `vector`) and this connection's
+ * cached cast no longer matches the actual column.
+ */
+export function invalidateVectorTypeCache(adapter: StorageAdapter, table: string): void {
+  indexVectorTypeCache.get(adapter)?.delete(table);
+}
+
+/**
+ * The pg index's embedding column type (`vector` full precision vs `halfvec`
+ * half precision). Cached; introspected on a miss; defaults to `vector` when
+ * unknown. Only meaningful on Postgres — the cast it drives is pg-only.
+ */
+async function vectorColumnType(adapter: StorageAdapter, table: string): Promise<VecColType> {
+  const cached = indexVectorTypeCache.get(adapter)?.get(table);
+  if (cached !== undefined) return cached;
+  let t: VecColType = 'vector';
+  try {
+    const row = await getAsyncOrSync(
+      adapter,
+      `SELECT udt_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = ? AND column_name = 'embedding'`,
+      [vectorIndexName(table)],
+    );
+    if (row?.udt_name === 'halfvec') t = 'halfvec';
+  } catch {
+    /* default to full-precision vector */
+  }
+  setIndexVectorType(adapter, table, t);
+  return t;
+}
+
 /**
  * Build (or rebuild) the native vector index for `table` from the JSON store,
  * for vectors of dimension `dim`. No-op when no native extension is available.
@@ -121,6 +197,7 @@ export async function buildVectorIndex(
   table: string,
   dim: number,
   requireExtension = false,
+  opts: VectorIndexOptions = {},
 ): Promise<number> {
   // Postgres: pgvector's type/operators don't exist until the extension is
   // enabled in this database. Attempt it idempotently (a server that doesn't ship
@@ -141,6 +218,7 @@ export async function buildVectorIndex(
           `(install pgvector / load sqlite-vec). Pass requireExtension=false to no-op instead.`,
       );
     }
+    setIndexExistence(adapter, table, false);
     return 0;
   }
   const idx = vectorIndexName(table);
@@ -152,6 +230,11 @@ export async function buildVectorIndex(
   }
 
   if (adapter.dialect === 'postgres') {
+    // Optional half-precision index storage (pgvector ≥ 0.7): halves index memory
+    // at a small recall cost. The embeddings store stays full precision, so the
+    // scan fallback remains exact. Default `vector` is byte-identical to before.
+    const vtype: VecColType = opts.quantization === 'halfvec' ? 'halfvec' : 'vector';
+    const opClass = vtype === 'halfvec' ? 'halfvec_cosine_ops' : 'vector_cosine_ops';
     await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${idx}"`);
     await runAsyncOrSync(
       adapter,
@@ -159,23 +242,34 @@ export async function buildVectorIndex(
          row_pk      TEXT NOT NULL,
          chunk_index INTEGER NOT NULL DEFAULT 0,
          content     TEXT,
-         embedding   vector(${String(d)}) NOT NULL,
+         embedding   ${vtype}(${String(d)}) NOT NULL,
+         embedded_at TEXT,
          PRIMARY KEY (row_pk, chunk_index)
        )`,
     );
-    // Populate from the JSON store (the text JSON array casts straight to vector).
+    // Populate from the JSON store (the text JSON array casts straight to the
+    // index's vector type). Carry `embedded_at` so the freshness check can detect
+    // content drift at an unchanged row count (the incremental mirror is async).
     await runAsyncOrSync(
       adapter,
-      `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding)
-         SELECT "row_pk", "chunk_index", "content", ("embedding")::vector
+      `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding, embedded_at)
+         SELECT "row_pk", "chunk_index", "content", ("embedding")::${vtype}, "embedded_at"
          FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
-    // HNSW index for approximate nearest neighbor on cosine distance.
+    // HNSW index for approximate nearest neighbor on cosine distance. Optional
+    // build tuning (m / ef_construction) when supplied; otherwise pgvector's own
+    // defaults — so an untuned build is byte-identical to before.
+    const withParams = [
+      hnswIntParam('m', opts.m),
+      hnswIntParam('ef_construction', opts.efConstruction),
+    ].filter((p): p is string => p !== null);
+    const withClause = withParams.length ? ` WITH (${withParams.join(', ')})` : '';
     await runAsyncOrSync(
       adapter,
-      `CREATE INDEX "${idx}_hnsw" ON "${idx}" USING hnsw (embedding vector_cosine_ops)`,
+      `CREATE INDEX "${idx}_hnsw" ON "${idx}" USING hnsw (embedding ${opClass})${withClause}`,
     );
+    setIndexVectorType(adapter, table, vtype);
   } else {
     // sqlite-vec vec0 virtual table.
     await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${idx}"`);
@@ -188,24 +282,320 @@ export async function buildVectorIndex(
       `SELECT "row_pk", "chunk_index", "embedding" FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
       [table],
     );
-    for (const r of stored) {
-      // Unit-normalize so the vec0 L2 distance is cosine-equivalent at query time.
-      const vec = normalizeVector(JSON.parse(String(r.embedding)) as number[]);
-      await runAsyncOrSync(
-        adapter,
-        `INSERT INTO "${idx}" (row_pk, chunk_index, embedding) VALUES (?, ?, ?)`,
-        [r.row_pk, r.chunk_index, JSON.stringify(vec)],
-      );
+    // Unit-normalize so the vec0 L2 distance is cosine-equivalent at query time.
+    const rows = stored.map(
+      (r) =>
+        [
+          r.row_pk,
+          r.chunk_index,
+          JSON.stringify(normalizeVector(JSON.parse(String(r.embedding)) as number[])),
+        ] as const,
+    );
+    const insert = `INSERT INTO "${idx}" (row_pk, chunk_index, embedding) VALUES (?, ?, ?)`;
+    // Populate inside one transaction so an interrupted build can't leave a
+    // half-filled index that looks complete (no native txn → sequential inserts).
+    if (adapter.withClient) {
+      await adapter.withClient(async (tx) => {
+        for (const [rp, ci, v] of rows) await tx.run(insert, [rp, ci, v]);
+      });
+    } else {
+      for (const [rp, ci, v] of rows) await runAsyncOrSync(adapter, insert, [rp, ci, v]);
     }
   }
 
   const count = await getAsyncOrSync(adapter, `SELECT count(*) AS n FROM "${idx}"`);
-  return Number(count?.n ?? 0);
+  const n = Number(count?.n ?? 0);
+  setIndexExistence(adapter, table, true);
+  await writeVectorMeta(adapter, table, {
+    vecDim: d,
+    metric: 'cosine',
+    // Record the half-precision choice so an auto-rebuild after a bulk refresh
+    // preserves it (otherwise the rebuild silently downgrades halfvec → vector).
+    quantization: opts.quantization === 'halfvec' ? 'halfvec' : 'none',
+    // m / ef_construction are pgvector HNSW build params; recorded only where they apply.
+    hnswM: adapter.dialect === 'postgres' ? opts.m : undefined,
+    hnswEfConstruction: adapter.dialect === 'postgres' ? opts.efConstruction : undefined,
+    sourceCount: n,
+    builtAt: new Date().toISOString(),
+  });
+  return n;
 }
 
-/** Drop a table's native vector index. */
+/** Drop a table's native vector index (and its registry row). */
 export async function dropVectorIndex(adapter: StorageAdapter, table: string): Promise<void> {
   await runAsyncOrSync(adapter, `DROP TABLE IF EXISTS "${vectorIndexName(table)}"`);
+  setIndexExistence(adapter, table, false);
+  indexVectorTypeCache.get(adapter)?.delete(table);
+  await deleteVectorMeta(adapter, table);
+}
+
+/** Validate + format an HNSW integer build param for DDL interpolation, or null when unset. */
+function hnswIntParam(name: string, v: number | undefined): string | null {
+  if (v === undefined) return null;
+  const i = Math.trunc(v);
+  if (!Number.isFinite(i) || i <= 0) {
+    throw new Error(`buildVectorIndex: invalid HNSW ${name} ${JSON.stringify(v)}`);
+  }
+  return `${name} = ${String(i)}`;
+}
+
+// ── Index metadata registry ────────────────────────────────────────────────
+// A small bookkeeping table recording what was built per table (dim, metric,
+// HNSW params, source chunk count, build time) for `lattice index status` and
+// `doctor`. Internal (`__lattice_`-prefixed) — never granted to cloud members.
+
+/** Internal registry table of built native vector indexes. */
+export const VEC_META_TABLE = '__lattice_vector_index';
+
+export interface VectorIndexMeta {
+  table: string;
+  vecDim: number;
+  metric: string;
+  quantization: string;
+  hnswM: number | null;
+  hnswEfConstruction: number | null;
+  sourceCount: number;
+  builtAt: string;
+}
+
+async function ensureVectorMetaTable(adapter: StorageAdapter): Promise<void> {
+  await runAsyncOrSync(
+    adapter,
+    `CREATE TABLE IF NOT EXISTS "${VEC_META_TABLE}" (
+       "table_name"           TEXT PRIMARY KEY,
+       "vec_dim"              INTEGER NOT NULL,
+       "metric"               TEXT NOT NULL DEFAULT 'cosine',
+       "quantization"         TEXT NOT NULL DEFAULT 'none',
+       "hnsw_m"               INTEGER,
+       "hnsw_ef_construction" INTEGER,
+       "source_count"         INTEGER NOT NULL DEFAULT 0,
+       "built_at"             TEXT NOT NULL
+     )`,
+  );
+  // Backfill the column onto a registry created by an earlier build that predates
+  // quantization (the try/catch swallows "column already exists" on both dialects).
+  try {
+    await runAsyncOrSync(
+      adapter,
+      `ALTER TABLE "${VEC_META_TABLE}" ADD COLUMN "quantization" TEXT NOT NULL DEFAULT 'none'`,
+    );
+  } catch {
+    /* column already present */
+  }
+}
+
+async function writeVectorMeta(
+  adapter: StorageAdapter,
+  table: string,
+  meta: {
+    vecDim: number;
+    metric: string;
+    quantization?: string | undefined;
+    hnswM?: number | undefined;
+    hnswEfConstruction?: number | undefined;
+    sourceCount: number;
+    builtAt: string;
+  },
+): Promise<void> {
+  await ensureVectorMetaTable(adapter);
+  await runAsyncOrSync(
+    adapter,
+    `INSERT INTO "${VEC_META_TABLE}"
+       ("table_name","vec_dim","metric","quantization","hnsw_m","hnsw_ef_construction","source_count","built_at")
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT ("table_name") DO UPDATE SET
+       "vec_dim" = excluded."vec_dim",
+       "metric" = excluded."metric",
+       "quantization" = excluded."quantization",
+       "hnsw_m" = excluded."hnsw_m",
+       "hnsw_ef_construction" = excluded."hnsw_ef_construction",
+       "source_count" = excluded."source_count",
+       "built_at" = excluded."built_at"`,
+    [
+      table,
+      meta.vecDim,
+      meta.metric,
+      meta.quantization ?? 'none',
+      meta.hnswM ?? null,
+      meta.hnswEfConstruction ?? null,
+      meta.sourceCount,
+      meta.builtAt,
+    ],
+  );
+}
+
+async function deleteVectorMeta(adapter: StorageAdapter, table: string): Promise<void> {
+  await ensureVectorMetaTable(adapter);
+  await runAsyncOrSync(adapter, `DELETE FROM "${VEC_META_TABLE}" WHERE "table_name" = ?`, [table]);
+}
+
+/** Read a table's vector-index metadata, or null when none has been recorded. */
+export async function getVectorIndexMeta(
+  adapter: StorageAdapter,
+  table: string,
+): Promise<VectorIndexMeta | null> {
+  // The registry table may not exist yet (no index ever built) — that's "no
+  // metadata", not a failure, so an absent-relation read returns null.
+  let row;
+  try {
+    row = await getAsyncOrSync(
+      adapter,
+      `SELECT "vec_dim","metric","quantization","hnsw_m","hnsw_ef_construction","source_count","built_at"
+         FROM "${VEC_META_TABLE}" WHERE "table_name" = ?`,
+      [table],
+    );
+  } catch {
+    return null;
+  }
+  if (!row) return null;
+  return {
+    table,
+    vecDim: Number(row.vec_dim ?? 0),
+    metric: typeof row.metric === 'string' ? row.metric : 'cosine',
+    quantization: typeof row.quantization === 'string' ? row.quantization : 'none',
+    hnswM: row.hnsw_m == null ? null : Number(row.hnsw_m),
+    hnswEfConstruction: row.hnsw_ef_construction == null ? null : Number(row.hnsw_ef_construction),
+    sourceCount: Number(row.source_count ?? 0),
+    builtAt: typeof row.built_at === 'string' ? row.built_at : '',
+  };
+}
+
+/**
+ * Whether the native index is in sync with the embeddings store for `table` —
+ * i.e. it holds exactly the chunk vectors currently stored. Search consults this
+ * before using the index so a drifted index is never silently served: on a
+ * mismatch the caller falls back to the in-process scan (which reads the store
+ * directly) until the index is rebuilt. Cheap — two COUNTs, negligible beside the
+ * per-query embed() call that search already makes.
+ *
+ * The Postgres write path keeps the index in lock-step incrementally (so this
+ * stays true after every write); backends without incremental maintenance rely
+ * on this check to degrade to a correct scan rather than serve stale hits.
+ */
+export async function vectorIndexFresh(adapter: StorageAdapter, table: string): Promise<boolean> {
+  const idxName = vectorIndexName(table);
+  const idxRow = await getAsyncOrSync(adapter, `SELECT count(*) AS n FROM "${idxName}"`);
+  const srcRow = await getAsyncOrSync(
+    adapter,
+    `SELECT count(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+    [table],
+  );
+  // Distinct sentinels so a failed/absent read never reports a false "fresh".
+  if (Number(idxRow?.n ?? -1) !== Number(srcRow?.n ?? -2)) return false;
+
+  // Equal COUNTS don't prove equal CONTENT. The Postgres incremental mirror is
+  // fire-and-forget, so a same-chunk-count update (or a partially-applied mirror)
+  // leaves the index holding stale vectors at an unchanged count. Compare the
+  // freshest `embedded_at`: if the store has a row newer than anything mirrored
+  // into the index, the index is stale → fall back to the exact scan. (The pg
+  // index is a plain table carrying `embedded_at`; sqlite-vec builds atomically
+  // with no async-mirror window, so count parity is sufficient there.)
+  if (adapter.dialect === 'postgres') {
+    try {
+      const idxTs = await getAsyncOrSync(
+        adapter,
+        `SELECT max("embedded_at") AS t FROM "${idxName}"`,
+      );
+      const srcTs = await getAsyncOrSync(
+        adapter,
+        `SELECT max("embedded_at") AS t FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+        [table],
+      );
+      const it = typeof idxTs?.t === 'string' ? idxTs.t : '';
+      const st = typeof srcTs?.t === 'string' ? srcTs.t : '';
+      if (st > it) return false; // store has content newer than the index → stale
+    } catch {
+      // An index built before `embedded_at` existed (an earlier 5.0 build): treat
+      // it as stale so the exact scan serves correct results until the next rebuild.
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Keep the native index in lock-step with the store for ONE row, after that
+ * row's chunks have been (re)written to the store: replace the row's existing
+ * index rows with its current chunks. No-op when no native index exists.
+ *
+ * Incremental maintenance is implemented for Postgres/pgvector, where the index
+ * is a plain table whose HNSW index self-maintains on DML. Other backends are
+ * left to the search-time freshness check, which falls back to the exact scan
+ * when the derived index has drifted — so they stay correct without per-write
+ * index mutation (whose semantics differ across vec0 versions).
+ */
+export async function mirrorVectorIndexRow(
+  adapter: StorageAdapter,
+  table: string,
+  pk: string,
+): Promise<void> {
+  if (adapter.dialect !== 'postgres') return;
+  if (!(await indexExistsCached(adapter, table))) return;
+  const idx = vectorIndexName(table);
+  const vtype = await vectorColumnType(adapter, table);
+  await runAsyncOrSync(adapter, `DELETE FROM "${idx}" WHERE "row_pk" = ?`, [pk]);
+  await runAsyncOrSync(
+    adapter,
+    `INSERT INTO "${idx}" (row_pk, chunk_index, content, embedding, embedded_at)
+       SELECT "row_pk", "chunk_index", "content", ("embedding")::${vtype}, "embedded_at"
+       FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "row_pk" = ?`,
+    [table, pk],
+  );
+}
+
+/** Remove ONE row's vectors from the native index (after the row's store chunks
+ * were removed). No-op when no native index exists. Postgres-incremental; other
+ * backends rely on the search-time freshness check (see {@link mirrorVectorIndexRow}). */
+export async function removeVectorIndexRow(
+  adapter: StorageAdapter,
+  table: string,
+  pk: string,
+): Promise<void> {
+  if (adapter.dialect !== 'postgres') return;
+  if (!(await indexExistsCached(adapter, table))) return;
+  await runAsyncOrSync(adapter, `DELETE FROM "${vectorIndexName(table)}" WHERE "row_pk" = ?`, [pk]);
+}
+
+/**
+ * Reconcile the native index after a bulk embedding change (refreshEmbeddings).
+ * No-op when no index exists; rebuilds it from the refreshed vectors, or drops it
+ * when the table has no stored vectors left. Keeps the index usable (and fresh)
+ * after a backfill without the caller having to remember to rebuild.
+ */
+export async function syncIndexAfterBulk(adapter: StorageAdapter, table: string): Promise<void> {
+  if (!(await indexExistsCached(adapter, table))) return;
+  const dimRow = await getAsyncOrSync(
+    adapter,
+    `SELECT "vec_dim" AS d FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
+    [table],
+  );
+  // Rebuild with the same tuning the index was originally built with (recorded in
+  // the registry), so an auto-rebuild after a bulk refresh preserves the operator's
+  // chosen HNSW params (and quantization) without the caller having to re-supply them.
+  const meta = await getVectorIndexMeta(adapter, table);
+  let dim = Number(dimRow?.d ?? 0);
+  if (dim <= 0) {
+    // No stored row reported a dimension. That's "drop the index" ONLY when the
+    // table truly has no vectors left; if vectors exist but their vec_dim is NULL
+    // (legacy-migrated chunks), fall back to the dimension recorded in the registry
+    // rather than DESTROYING a still-valid index.
+    const cntRow = await getAsyncOrSync(
+      adapter,
+      `SELECT count(*) AS n FROM "${EMBEDDINGS_TABLE}" WHERE "table_name" = ?`,
+      [table],
+    );
+    if (Number(cntRow?.n ?? 0) === 0) {
+      await dropVectorIndex(adapter, table);
+      return;
+    }
+    dim = meta?.vecDim ?? 0; // registry vecDim is already numeric
+    if (dim <= 0) return; // can't determine the dimension — leave the existing index intact
+  }
+  const rebuildOpts: VectorIndexOptions = {};
+  if (meta?.hnswM != null) rebuildOpts.m = meta.hnswM;
+  if (meta?.hnswEfConstruction != null) rebuildOpts.efConstruction = meta.hnswEfConstruction;
+  if (meta?.quantization === 'halfvec') rebuildOpts.quantization = 'halfvec';
+  await buildVectorIndex(adapter, table, dim, false, rebuildOpts);
 }
 
 /**
@@ -218,28 +608,50 @@ export async function searchVectorIndex(
   queryVector: number[],
   limit: number,
   minScore: number,
+  efSearch?: number,
 ): Promise<VectorHit[]> {
   const idx = vectorIndexName(table);
   const qjson = JSON.stringify(queryVector);
 
   if (adapter.dialect === 'postgres') {
-    // `<=>` is cosine distance in [0,2]; similarity = 1 − distance.
-    const rows = await allAsyncOrSync(
-      adapter,
-      `SELECT row_pk, chunk_index, content, 1 - (embedding <=> (?)::vector) AS score
+    // `<=>` is cosine distance in [0,2]; similarity = 1 − distance. Cast the query
+    // to the index's column type so a half-precision (halfvec) index is queried
+    // with a halfvec literal (the operand types must match).
+    const vtype = await vectorColumnType(adapter, table);
+    const sql = `SELECT row_pk, chunk_index, content, 1 - (embedding <=> (?)::${vtype}) AS score
          FROM "${idx}"
-        ORDER BY embedding <=> (?)::vector
-        LIMIT ${String(limit)}`,
-      [qjson, qjson],
-    );
-    return rows
-      .map((r) => ({
-        pk: r.row_pk as string,
-        chunkIndex: Number(r.chunk_index ?? 0),
-        content: (r.content as string | null) ?? null,
-        score: Number(r.score ?? 0),
-      }))
-      .filter((h) => h.score >= minScore);
+        ORDER BY embedding <=> (?)::${vtype}
+        LIMIT ${String(limit)}`;
+    const toHits = (rows: Row[]): VectorHit[] =>
+      rows
+        .map((r) => ({
+          pk: r.row_pk as string,
+          chunkIndex: Number(r.chunk_index ?? 0),
+          content: (r.content as string | null) ?? null,
+          score: Number(r.score ?? 0),
+        }))
+        .filter((h) => h.score >= minScore);
+    // Query-time HNSW breadth: `hnsw.ef_search` is a GUC, so it must be SET on the
+    // same connection that runs the query — pin both in one transaction. Omitted →
+    // pgvector's default, identical to before.
+    if (efSearch !== undefined) {
+      // Validate the tuning ALWAYS (loud on an invalid value), not only on the
+      // withClient path — otherwise a bad efSearch was silently swallowed.
+      const ef = Math.trunc(efSearch);
+      if (!Number.isFinite(ef) || ef <= 0) {
+        throw new Error(`searchVectorIndex: invalid efSearch ${JSON.stringify(efSearch)}`);
+      }
+      if (adapter.withClient) {
+        return adapter.withClient(async (tx) => {
+          await tx.run(`SET LOCAL hnsw.ef_search = ${String(ef)}`);
+          return toHits(await tx.all(sql, [qjson, qjson]));
+        });
+      }
+      // No pinned-connection capability: ef_search is a per-connection GUC, so the
+      // tuning can't be applied here (the value was still validated). Falls through
+      // to pgvector's default breadth — a no-op, not a wrong result.
+    }
+    return toHits(await allAsyncOrSync(adapter, sql, [qjson, qjson]));
   }
 
   // sqlite-vec: `distance` is L2 by default; vectors are L2-normalized for

@@ -7,7 +7,9 @@ export const guiAppHtml = `<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
   <title>Lattice Browser</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='.5' y='.5' width='23' height='23' rx='5' fill='%23eff6ff' stroke='%23dbeafe'/%3E%3Cpath stroke='%233b82f6' stroke-width='1.25' stroke-linecap='round' d='M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12'/%3E%3Cg fill='%233b82f6'%3E%3Ccircle cx='6' cy='6' r='1.7'/%3E%3Ccircle cx='12' cy='6' r='1.7'/%3E%3Ccircle cx='18' cy='6' r='1.7'/%3E%3Ccircle cx='6' cy='12' r='1.7'/%3E%3Ccircle cx='12' cy='12' r='2.4'/%3E%3Ccircle cx='18' cy='12' r='1.7'/%3E%3Ccircle cx='6' cy='18' r='1.7'/%3E%3Ccircle cx='12' cy='18' r='1.7'/%3E%3Ccircle cx='18' cy='18' r='1.7'/%3E%3C/g%3E%3C/svg%3E" />
   <style>${css}</style>
 </head>
 <body>
@@ -63,100 +65,122 @@ export const guiAppHtml = `<!doctype html>
       </button>
       <div class="db-menu" id="ws-menu" hidden></div>
     </div>
-    <div class="topsearch" id="topsearch">
-      <span class="topsearch-icon" aria-hidden="true">🔍</span>
-      <input type="search" id="search-input" placeholder="Ask the assistant…" autocomplete="off" spellcheck="false" aria-label="Ask the assistant" />
-      <div class="search-results" id="search-results" hidden></div>
-    </div>
     <div class="history-controls">
+      <button class="history-btn" id="nav-back-btn" title="Back" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg></button>
+      <button class="history-btn" id="nav-fwd-btn" title="Forward" aria-label="Forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
+      <span class="history-sep" aria-hidden="true"></span>
       <button class="history-btn" id="undo-btn" title="Undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg></button>
       <button class="history-btn" id="redo-btn" title="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
-      <a class="history-btn" id="history-link" href="#/settings/history" title="Version history">🕐</a>
+      <button class="history-btn" id="history-link" type="button" title="Version history" aria-label="Version history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></button>
     </div>
-    <span class="app-version" id="app-version" title="Lattice version"><!--LATTICE_VERSION--></span>
+    <div class="activity" id="activity">
+      <button class="history-btn activity-pill" id="activity-pill" title="Recent activity" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        <span class="activity-count" id="activity-count" hidden>0</span>
+      </button>
+      <div class="activity-popover" id="activity-popover" hidden>
+        <div class="activity-popover-head">Recent activity</div>
+        <div class="activity-feed" id="activity-feed">
+          <div class="activity-empty" id="activity-empty">No activity yet. Changes you make appear here.</div>
+        </div>
+      </div>
+    </div>
+    <span class="header-status-slot" id="header-status-slot"></span>
     <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
-    <button id="settings-gear" title="Settings" aria-label="Open settings">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
+    <!-- Account menu: one status line + one action, set by JS (account-menu.ts)
+         from the config. Normal install: "Connected with Claude" + Disconnect
+         (connect happens at the first-run wall, never here). Managed/hosted
+         deployment: the signed-in identity + "Account settings" (→ the operator's
+         account page, where balance / billing / sign-out live). -->
+    <div class="account" id="account" hidden>
+      <button class="history-btn" id="account-btn" title="Account" aria-label="Account" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
+      <div class="account-menu" id="account-menu" hidden>
+        <div class="account-menu-head" id="account-menu-head">Connected with Claude</div>
+        <button type="button" class="account-menu-item danger" id="account-action">Disconnect Claude</button>
+      </div>
+    </div>
+    <!-- Single-layout: one Configure button (wrench) toggles the Configure drawer
+         (Data Model / Inputs / Workspace / Lattice / User). There is no view flip —
+         the Workspace + Ask Lattice dock are always visible. -->
+    <button class="configure-trigger" id="configure-trigger" title="Configure this workspace" aria-label="Open Configure">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
     </button>
   </header>
-  <div class="layout">
-    <nav class="sidebar">
-      <div id="sources-nav">
-        <div class="src-group">
-          <div class="section-label">Files</div>
-          <div id="src-files-tree"></div>
-          <div class="src-add-row">
-            <button class="src-add" id="src-add-folder" type="button">＋ Folder</button>
-            <button class="src-add" id="src-add-file" type="button">＋ File</button>
-          </div>
-          <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
+  <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Tables /
+       Files nav sections, added by nav-sections.ts) │ center Workspace tabs │ the
+       persistent Ask Lattice dock. The former Inputs sidebar + Model tab strip moved
+       into the left sidebar + the Configure drawer; a table's/record's markdown is now
+       reached via its "View Markdown" action, not a separate sidebar tree. -->
+  <div class="layout" id="layout">
+    <nav class="dash-sidebar">
+      <section class="dash-section nav-section" data-section="dashboards">
+        <div class="nav-head-row">
+          <button class="section-label section-toggle nav-section-head" data-group="nav-dashboards" type="button" aria-expanded="true">
+            <span class="section-label-text">Dashboards</span>
+          </button>
+          <button type="button" class="dash-new-btn" id="dash-new-btn" title="New dashboard" aria-label="New dashboard">＋</button>
         </div>
-        <div class="src-group">
-          <div class="section-label">Built by Lattice</div>
-          <div id="src-artifacts-tree"></div>
-        </div>
-        <div class="src-group">
-          <div class="section-label">Connectors</div>
-          <div id="src-connectors-list"></div>
-          <button class="src-add" id="src-add-connector" type="button">＋ Add a Connector</button>
-        </div>
-      </div>
-      <div id="objects-section" hidden>
-        <div class="section-label">Objects</div>
-        <ul id="object-nav"></ul>
-      </div>
-      <div id="system-section" hidden>
-        <div class="section-label">System</div>
-        <ul id="system-nav"></ul>
-      </div>
+        <div class="section-body" data-group-body="nav-dashboards"><div id="dash-list"></div></div>
+      </section>
+      <section class="dash-section nav-section" data-section="tables">
+        <button class="section-label section-toggle nav-section-head" data-group="nav-tables" type="button" aria-expanded="true">
+          <span class="section-label-text">Tables</span>
+        </button>
+        <div class="section-body" data-group-body="nav-tables"><div id="nav-tables-list"></div></div>
+      </section>
     </nav>
     <main class="content-wrap">
-      <div class="tabstrip" id="tabstrip">
-        <div class="tabstrip-tabs" id="tabstrip-tabs"></div>
-        <div class="tabstrip-status" id="tabstrip-status"></div>
-      </div>
+      <div class="col-header col-model an-workspace-head"><span class="col-header-text">Workspace</span></div>
+      <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
       <div id="content"></div>
     </main>
-    <aside class="assistant-rail" id="assistant-rail">
-      <div class="rail-resize" id="rail-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-      <div class="rail-handle" id="rail-handle" title="Expand / collapse"></div>
-      <div class="rail-header">
-        <span class="rail-title">Assistant</span>
+    <aside class="ask-dock" id="ask-dock" aria-label="Ask Lattice">
+      <div class="ask-dock-resize" id="ask-dock-resize" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+      <div class="ask-dock-head col-header col-outputs">
+        <span class="ask-lattice-panel-title col-header-text"><span class="ask-lattice-mark" aria-hidden="true"></span> Ask Lattice</span>
         <select class="rail-threads" id="rail-threads" title="Conversations"></select>
-        <button class="rail-newchat" id="rail-newchat" title="New chat">＋</button>
+        <button class="dash-new-btn rail-newchat" id="rail-newchat" title="New chat" aria-label="New chat">＋</button>
       </div>
       <div class="rail-feed" id="rail-feed">
-        <div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>
+        <div class="rail-empty" id="rail-empty">Ask your company anything.</div>
       </div>
+      <div class="ask-status" id="ask-status" role="status" aria-live="polite" hidden></div>
+      <!-- Pending clarification questions (questions client segment): interactive
+           cards the user answers or dismisses — above the composer, visually
+           distinct from the conversation bubbles. -->
+      <div class="question-cards" id="question-cards"></div>
+      <!-- Staged files "to add" — sits directly above the composer, each chip
+           removable; the composer Send ingests them. -->
+      <div class="staging-tray-host" id="staging-tray-host"></div>
       <div class="rail-composer" id="rail-composer"></div>
     </aside>
   </div>
 
   <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
-  <aside class="settings-drawer" id="settings-drawer" hidden aria-label="Settings">
+  <aside class="settings-drawer" id="settings-drawer" hidden aria-label="Configure">
     <div class="drawer-head">
-      <span class="drawer-title">Settings</span>
+      <span class="drawer-title">Configure</span>
       <button class="drawer-close" id="drawer-close" title="Close" aria-label="Close settings">✕</button>
     </div>
+    <!-- Version history is NOT a tab here — it's its own takeover opened via the
+         header clock (🕐). These tabs are the Settings takeover only. -->
     <div class="drawer-tabs" id="drawer-tabs">
+      <button class="drawer-tab" data-tab="datamodel">Data Model</button>
+      <button class="drawer-tab" data-tab="graph">Graph</button>
+      <button class="drawer-tab" data-tab="files">Files</button>
+      <button class="drawer-tab" data-tab="connectors">MCP Connectors</button>
+      <button class="drawer-tab" data-tab="databases">Databases</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>
-      <button class="drawer-tab" data-tab="lattice">Lattice</button>
       <button class="drawer-tab" data-tab="user">User</button>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
+    <div class="drawer-version" title="Lattice version">Lattice <span class="app-version" id="app-version"><!--LATTICE_VERSION--></span></div>
   </aside>
 
-  <div class="connectors-backdrop" id="connectors-backdrop" hidden></div>
-  <aside class="connectors-dialog" id="connectors-dialog" hidden aria-label="Connectors">
-    <div class="drawer-head">
-      <span class="drawer-title">Add a Connector</span>
-      <button class="drawer-close" id="connectors-dialog-close" title="Close" aria-label="Close connectors">✕</button>
-    </div>
-    <div class="drawer-body" id="connectors-dialog-body"></div>
-  </aside>
+  <!-- MCP connectors and databases both live entirely in their Configure drawer
+       tabs (inline lists + add/edit forms); there are no side-sliding drawers. -->
 
   <script>${analyticsJs}</script>
   <script>${appJs}</script>

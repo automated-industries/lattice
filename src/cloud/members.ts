@@ -85,8 +85,23 @@ export async function provisionMemberRole(
        END IF;
      END $LATTICE$`,
   );
+  await grantMemberAccess(db, role);
+}
+
+/**
+ * Idempotently grant an EXISTING scoped login role membership in the cloud's
+ * member group. The group holds every table/schema/connect grant and RLS keys on
+ * `session_user`, so the role gets exactly an invited member's access while
+ * staying RLS-confined to its own rows. Use this to adopt a role created out of
+ * band (e.g. by an external provisioner) without rotating its password or
+ * re-running CREATE/ALTER ROLE. The member group must already exist (it is created
+ * when the owner first opens/secures the cloud).
+ */
+export async function grantMemberAccess(db: Lattice, role: string): Promise<void> {
+  assertPg(db);
+  if (!ROLE_RE.test(role)) throw new Error(`lattice: invalid member role name "${role}"`);
   const group = await memberGroupFor(db);
-  await runAsyncOrSync(db.adapter, `GRANT ${group} TO "${role}"`);
+  await runAsyncOrSync(db.adapter, `GRANT ${group} TO "${role}"`); // no-op if already a member
 }
 
 // Sharing levels a row owner may set, mirroring lattice_set_row_visibility's CHECK
@@ -259,6 +274,30 @@ export async function batchRowGrants(
   assertPg(db);
   for (const grantee of grant) await grantRow(db, table, pk, grantee);
   for (const grantee of revoke) await revokeRow(db, table, pk, grantee);
+}
+
+/**
+ * Standing TABLE-LEVEL share: the connected role shares ALL rows THEY own in
+ * `table` with an audience — 'everyone', or the specific member roles in
+ * `grantees` ('custom'). Backed by the owner-keyed `lattice_share_table` SECURITY
+ * DEFINER function, so a caller can only ever share their own rows and a
+ * never-share table is refused. Unlike {@link grantRow} this covers rows added
+ * later (the visibility predicate reads it live), which is what keeps a shared
+ * dashboard's dependency data visible as the table grows. Additive + one-way: the
+ * audience only widens and grantees only accumulate — nothing is revoked here.
+ */
+export async function shareTable(
+  db: Lattice,
+  table: string,
+  audience: 'everyone' | 'custom',
+  grantees: readonly string[] = [],
+): Promise<void> {
+  assertPg(db);
+  await runAsyncOrSync(db.adapter, `SELECT lattice_share_table(?, ?, ?::text[])`, [
+    table,
+    audience,
+    [...grantees],
+  ]);
 }
 
 /**

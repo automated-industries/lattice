@@ -13,16 +13,16 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .ingest-progress {
       position: sticky; top: 0; z-index: 3;
       display: flex; flex-direction: column; gap: 6px;
-      padding: 8px 10px; border-radius: 8px;
+      padding: 8px 10px; border-radius: var(--r-md);
       background: var(--surface); border: 1px solid rgba(59, 130, 246, 0.22);
       box-shadow: var(--shadow-1);
     }
     .ingest-progress-label { font-size: 12px; font-weight: 500; color: var(--text); }
     .ingest-progress-track {
-      height: 6px; border-radius: 999px; overflow: hidden; background: var(--border-strong);
+      height: 6px; border-radius: var(--r-pill); overflow: hidden; background: var(--border-strong);
     }
     .ingest-progress-fill {
-      height: 100%; width: 0%; border-radius: 999px;
+      height: 100%; width: 0%; border-radius: var(--r-pill);
       background: var(--accent);
       box-shadow: 0 0 8px rgba(59, 130, 246, 0.5);
       transition: width 0.3s ease;
@@ -30,7 +30,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     /* Staging tray — dropped/picked files awaiting review before ingest. */
     .staging-tray {
       display: flex; flex-direction: column; gap: 8px;
-      padding: 10px; margin: 4px 0; border-radius: 10px;
+      padding: 10px; margin: 4px 0; border-radius: var(--r-lg);
       background: var(--surface); border: 1px solid rgba(59, 130, 246, 0.28);
       box-shadow: var(--shadow-1);
     }
@@ -43,70 +43,104 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     }
     .staging-file-x {
       flex: none; background: none; border: 0; color: var(--text-muted);
-      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: var(--r-xs);
     }
-    .staging-file-x:hover { background: var(--surface-2); color: var(--danger, #c0392b); }
+    .staging-file-x:hover { background: var(--surface-2); color: var(--danger); }
     .staging-actions { display: flex; gap: 8px; margin-top: 2px; }
+    /* Host for the staged-files tray: pinned directly above the composer. */
+    .staging-tray-host { flex: none; }
+    .staging-tray-host:empty { display: none; }
+    .staging-tray-host .staging-tray { margin: 8px 10px 0; }
     .staging-send { flex: 1; }
-    .assistant-rail {
-      position: relative;
+    /* ── The assistant dock (Analytics view, right column) ─────────── */
+    /* The chat's permanent home: a full-height column docked to the right of
+       the Analytics layout. Same feed/composer internals as always — only the
+       housing changed (the old floating corner panel is gone). */
+    .ask-dock {
+      display: flex; flex-direction: column; min-width: 0; min-height: 0;
       background:
-        radial-gradient(120% 60% at 100% 0%, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 60%),
-        var(--sheen),
-        rgba(255, 255, 255, 0.66);
-      -webkit-backdrop-filter: var(--blur-lg); backdrop-filter: var(--blur-lg);
-      border-left: 1px solid rgba(59, 130, 246, 0.10);
-      box-shadow: inset 1px 0 0 rgba(15, 23, 42, 0.035), -16px 0 40px -24px rgba(15, 23, 42, 0.12);
-      display: flex; flex-direction: column;
-      min-width: 0; overflow: hidden;
+        radial-gradient(120% 30% at 100% 0%, var(--accent-wash), rgba(59, 130, 246, 0) 60%),
+        var(--surface);
+      border-left: 1px solid var(--border);
     }
-    .rail-resize {
-      position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
-      cursor: col-resize; background: transparent; z-index: 5;
-      transition: background-color 120ms;
+    /* File-drop overlay. In Configure it covers the whole window (drag a file
+       anywhere → ingest). In Analytics the chat dock is on screen, so it is
+       scoped (.scoped, positioned inline over #ask-dock) to just the chat window —
+       the drop TARGET is the Lattice chat, not the whole screen.
+       pointer-events:none so the drag/drop events still reach the document handler. */
+    .file-drop-overlay {
+      position: fixed; inset: 0; z-index: var(--z-dropzone); display: none;
+      align-items: center; justify-content: center; pointer-events: none;
+      background: rgba(15, 23, 42, 0.55);
+      -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
     }
-    .rail-resize:hover, .rail-resize.dragging { background: var(--accent-soft); }
-    .rail-header {
-      flex: 0 0 auto; padding: 12px 14px;
+    /* Scoped to the chat window (Analytics): the inline top/left/width/height set
+       the box, so clear the whole-window right/bottom and round it like a card. */
+    .file-drop-overlay.scoped {
+      right: auto; bottom: auto; border-radius: var(--r-xl);
+      background: rgba(15, 23, 42, 0.42);
+    }
+    body.dragging-file .file-drop-overlay { display: flex; }
+    .file-drop-inner {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      font-size: 20px; font-weight: 600; color: var(--btn-text);
+      border: 2px dashed rgba(255, 255, 255, 0.85); border-radius: var(--r-2xl); padding: 40px 56px;
+    }
+    .file-drop-emoji { font-size: 44px; line-height: 1; }
+    .ask-dock-head {
+      flex: 0 0 auto; padding: 10px 12px;
+      display: flex; align-items: center; gap: 8px;
       background: linear-gradient(180deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0) 100%);
       border-bottom: 1px solid rgba(59, 130, 246, 0.14);
-      display: flex; align-items: center; gap: 8px;
     }
-    .rail-title {
-      font-size: 11px; font-weight: 600; color: var(--accent);
-      text-transform: uppercase; letter-spacing: 0.06em; flex: 0 0 auto;
+    .ask-lattice-panel-title {
+      font-size: 12px; font-weight: 600; color: var(--accent);
+      display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
     }
-    /* Title glows while the assistant is working (pending feed / typing) */
-    @keyframes railPulse {
-      0%, 100% { text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
-      50% { text-shadow: 0 0 18px rgba(59, 130, 246, 0.7); }
+    /* The assistant's mark is the Lattice logo glyph (same grid as the brand logo /
+       favicon), drawn as an em-sized background so the existing font-size rules on
+       .ask-lattice-mark scale it in each context (dock head, trigger). */
+    .ask-lattice-mark {
+      display: inline-block; flex: none; width: 1.2em; height: 1.2em; vertical-align: -0.24em;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='.5' y='.5' width='23' height='23' rx='5' fill='%23eff6ff' stroke='%23dbeafe'/%3E%3Cpath stroke='%233b82f6' stroke-width='1.25' stroke-linecap='round' d='M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12'/%3E%3Cg fill='%233b82f6'%3E%3Ccircle cx='6' cy='6' r='1.7'/%3E%3Ccircle cx='12' cy='6' r='1.7'/%3E%3Ccircle cx='18' cy='6' r='1.7'/%3E%3Ccircle cx='6' cy='12' r='1.7'/%3E%3Ccircle cx='12' cy='12' r='2.4'/%3E%3Ccircle cx='18' cy='12' r='1.7'/%3E%3Ccircle cx='6' cy='18' r='1.7'/%3E%3Ccircle cx='12' cy='18' r='1.7'/%3E%3Ccircle cx='18' cy='18' r='1.7'/%3E%3C/g%3E%3C/svg%3E");
+      background-size: contain; background-repeat: no-repeat; background-position: center;
     }
-    .assistant-rail:has(.feed-pending) .rail-title,
-    .assistant-rail:has(.chat-typing) .rail-title { animation: railPulse 1.6s ease-in-out infinite; }
+    .ask-dock .ask-lattice-mark { color: var(--accent); }
+    /* Title glows while the assistant is working (pending feed / typing) */
+    @keyframes askPulse {
+      0%, 100% { text-shadow: 0 0 8px var(--accent-border-soft); }
+      50% { text-shadow: 0 0 16px rgba(59, 130, 246, 0.6); }
+    }
+    .ask-dock:has(.feed-pending) .ask-lattice-panel-title,
+    .ask-dock:has(.chat-typing) .ask-lattice-panel-title { animation: askPulse 1.6s ease-in-out infinite; }
     .rail-threads {
       flex: 1; min-width: 0; background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px;
+      border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 12px;
+      /* Room for the native select arrow on the right, and ellipsize long
+         thread titles so they can't run into it. */
+      padding: 4px 24px 4px 6px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .rail-newchat {
       flex: 0 0 auto; width: 26px; height: 26px; border: 1px solid var(--border);
-      border-radius: 6px; background: var(--surface-2); color: var(--text-muted);
+      border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-muted);
       cursor: pointer; font-size: 14px; line-height: 1;
     }
     .rail-feed {
       flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
       display: flex; flex-direction: column; gap: 8px;
     }
-    .rail-empty { color: var(--text-muted); font-size: 12.5px; text-align: center; padding: 18px 8px; }
+    .rail-empty { font-size: 13px; padding: 18px 8px; }
     .feed-item {
       display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px;
-      align-items: baseline; padding: 7px 9px; border-radius: 8px;
+      align-items: baseline; padding: 8px 10px; border-radius: var(--r-md);
       background: var(--sheen), var(--surface-2); border: 1px solid rgba(15, 23, 42, 0.035);
       box-shadow: var(--shadow-1);
-      animation: feedIn 0.18s ease-out;
+      animation: feedIn var(--dur-2) ease-out;
     }
-    .feed-item.feed-clickable { cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease; }
-    .feed-item.feed-clickable:hover { border-color: rgba(59, 130, 246, 0.4); background: var(--surface-2); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+    .feed-item.feed-clickable { cursor: pointer; transition: border-color var(--dur-2) ease, background var(--dur-2) ease, box-shadow var(--dur-2) ease, transform var(--dur-2) ease; }
+    .feed-item.feed-clickable:hover { border-color: var(--accent-border); background: var(--surface-2); box-shadow: var(--shadow-2); transform: translateY(-1px); }
     .feed-item.feed-clickable:focus-visible { outline: none; box-shadow: var(--glow-focus); }
     @keyframes feedIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .feed-icon { text-align: center; font-size: 13px; }
@@ -114,8 +148,8 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .feed-summary { font-size: 13px; color: var(--text); word-break: break-word; }
     .feed-meta { margin-top: 2px; display: flex; align-items: center; gap: 6px; }
     .feed-source {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-      padding: 1px 6px; border-radius: 999px;
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 2px 6px;
       background: var(--accent-soft); color: var(--accent);
       box-shadow: none;
     }

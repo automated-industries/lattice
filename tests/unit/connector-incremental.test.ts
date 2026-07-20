@@ -127,6 +127,8 @@ describe('incremental per-parent sync (SQLite)', () => {
     const liveComments = await db.query('demo_comments', {
       filters: [{ col: 'deleted_at', op: 'isNull' }],
     });
-    expect(liveComments.map((r) => r.cid).sort()).toEqual(['C1', 'C2']);
+    // cids are namespaced by connectorId; the incremental strip means the raw key
+    // ('T1'/'T2') is what the connector saw as parentKey (asserted above).
+    expect(liveComments.map((r) => r.cid).sort()).toEqual([`${id}:C1`, `${id}:C2`].sort());
   });
 });

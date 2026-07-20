@@ -68,8 +68,22 @@ export interface EntityContextManifestEntry {
  *    longer one), instead of leaving it orphaned. Existing workspaces must
  *    re-render once so the de-collided dirs appear and the collapsed dirs are
  *    swept; the bump forces that one-time full render.
+ *  - 3 → 4: (1) the canonical-context derivation gained the link-table gate —
+ *    junction tables no longer emit their own per-row contexts (they render as
+ *    many-to-many rollups inside their endpoints instead), so trees rendered at
+ *    version 3 carry junction folders that must be re-derived away; (2) the
+ *    manifest now records phase-1 table rollup files (`tableFiles`) and a
+ *    `retiredFiles` ledger, so rollups finally have a lifecycle record and a
+ *    retired path survives (and keeps being retried) until it is actually
+ *    pruned — a crash between manifest write and cleanup can no longer orphan a
+ *    file permanently.
+ *  - 4 → 5: files, connector-model, and imported-database tables gained REAL
+ *    per-record canonical contexts ("all data renders as markdown"; files
+ *    bounded — no extracted_text, capped self file), and spec-less rollups
+ *    skip their table read. Existing workspaces must do a one-time full
+ *    re-render so the new trees materialize.
  */
-export const TEMPLATE_VERSION = 3;
+export const TEMPLATE_VERSION = 5;
 
 /**
  * Monotonic cursor the rendered tree was produced FROM, recorded in the manifest
@@ -97,10 +111,41 @@ export interface RenderCursor {
   owners: string | null;
 }
 
+/** A rendered file Lattice wrote outside the entity-context trees (a phase-1
+ *  table rollup), tracked so it has a lifecycle: when its path changes or its
+ *  table disappears, the old path moves to `retiredFiles` and is pruned by the
+ *  next reconciliation — hash-guarded so a user-edited file is never deleted. */
+export interface TableFileManifestInfo {
+  /** Path relative to the output dir (the compiled def.outputFile). */
+  path: string;
+  /** SHA-256 hex digest of the last content Lattice rendered to it. */
+  hash: string;
+}
+
 export interface LatticeManifest {
   version: 1 | 2;
   generated_at: string;
   entityContexts: Record<string, EntityContextManifestEntry>;
+  /**
+   * Phase-1 table rollup files, keyed by table (see {@link TableFileManifestInfo}).
+   * Optional — a v3 manifest has no rollup history, and reconciliation treats the
+   * absence as "prune nothing" (never as delete-everything).
+   */
+  tableFiles?: Record<string, TableFileManifestInfo>;
+  /**
+   * Phase-2 multi-output files, keyed by multi name: every path the multi
+   * produced on its last render, with content hashes. A key that disappears (a
+   * deleted row) retires its path into `retiredFiles` on the next render.
+   */
+  multiFiles?: Record<string, Record<string, string>>;
+  /**
+   * Rendered files whose path is no longer produced by the current schema (an
+   * outputFile change, a dropped table). Each entry persists here until the
+   * reconciliation pass actually deletes it (only when the on-disk content still
+   * hashes to Lattice's own last write) or the file disappears — so a crash
+   * between the manifest write and the prune can never orphan a file forever.
+   */
+  retiredFiles?: TableFileManifestInfo[];
   /**
    * Render-output format version the tree was produced with (see
    * {@link TEMPLATE_VERSION}). Optional: a manifest written before this field
@@ -150,7 +195,16 @@ export function readManifest(outputDir: string): LatticeManifest | null {
   const path = manifestPath(outputDir);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as LatticeManifest;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<LatticeManifest>;
+    // Normalize at the boundary: a hand-made or truncated manifest (e.g. '{}')
+    // must still satisfy the declared shape, so no caller needs to re-guard the
+    // required fields the type promises.
+    return {
+      version: parsed.version ?? 2,
+      generated_at: parsed.generated_at ?? '',
+      ...parsed,
+      entityContexts: parsed.entityContexts ?? {},
+    };
   } catch {
     return null;
   }

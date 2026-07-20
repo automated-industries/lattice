@@ -49,6 +49,14 @@ export async function disconnectConnector(
   const softDeleted: Record<string, number> = {};
   const now = new Date().toISOString();
 
+  // 0. Ensure every connected table is registered in the LIVE schema so PK
+  //    resolution below uses the table's REAL primary key. A db-source table
+  //    with a composite/keyless natural key has `_pk`, not `id`; if the table
+  //    isn't registered at disconnect time, getPrimaryKey() returns nothing and
+  //    the query/update layer falls back to a default `id` column — which that
+  //    table doesn't have, failing with "no such column: id". Idempotent.
+  for (const m of models) await db.defineLate(m.table, m.definition);
+
   // 1. Soft-delete every ingested row, children before parents. Goes through
   //    db.update(deleted_at) (not db.delete, which is a HARD delete) so the rows
   //    remain recoverable and the soft-delete is recorded in the changelog.
@@ -71,9 +79,15 @@ export async function disconnectConnector(
     await connector.disconnect(record.connectionRef);
   }
 
-  // 4. Only after a successful revoke, finalize local registry state.
-  if (mode === 'hard') await deleteConnectorRecord(db, connectorId);
-  else await setConnectorStatus(db, connectorId, 'disconnected');
+  // 4. Only after a successful revoke, finalize local registry state. Hard mode
+  //    also purges any non-secret reconnect state the connector retained (e.g.
+  //    a stored server URL) — nothing should outlive the registry row.
+  if (mode === 'hard') {
+    await deleteConnectorRecord(db, connectorId);
+    if (record.connectionRef) await connector.purgeConnection?.(record.connectionRef);
+  } else {
+    await setConnectorStatus(db, connectorId, 'disconnected');
+  }
 
   return { connectorId, mode, softDeleted };
 }

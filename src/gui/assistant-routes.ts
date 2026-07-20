@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { transcribe, type SttProvider } from './ai/transcribe.js';
 import { voiceModeFromConfig, type VoiceMode } from './ai/voice-mode.js';
+import { getClaudeLimitState } from './ai/limit-state.js';
 import {
   readOAuthConfig,
   oauthConfigured,
@@ -24,6 +25,13 @@ import {
   writePreferences,
 } from '../framework/user-config.js';
 import { sendJson, readJson } from './http.js';
+import {
+  readOpenAiCompatConfig,
+  setOpenAiCompatConfig,
+  clearOpenAiCompatConfig,
+  setActiveProvider,
+  activeProviderKind,
+} from './ai/provider-config.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';
 
@@ -152,6 +160,21 @@ async function readMachineCredential(db: Lattice | null, kind: string): Promise<
 }
 
 /**
+ * Managed-deployment mode. When `LATTICE_MANAGED_MODEL_AUTH` is set, Lattice is
+ * running as a managed service where the operator supplies the model credential
+ * through the environment (typically alongside `ANTHROPIC_BASE_URL`, so calls go
+ * through the operator's own endpoint). In this mode per-user credential
+ * configuration is disabled: a pasted API key or a connected subscription is
+ * never read, so every model call uses the operator-provided credential and a
+ * user cannot substitute their own. Off by default — a normal single-user
+ * install is unaffected.
+ */
+export function isManagedModelAuth(): boolean {
+  const v = process.env.LATTICE_MANAGED_MODEL_AUTH;
+  return v === '1' || v === 'true';
+}
+
+/**
  * Resolve the anthropic API key, honoring the authoritative "cleared" sentinel.
  * When the user has cleared the key, BOTH the stored read and the env fallback
  * are skipped — so a clear stays cleared across reloads/restarts until a new key
@@ -159,6 +182,9 @@ async function readMachineCredential(db: Lattice | null, kind: string): Promise<
  * `secrets` (back-compat) → `ANTHROPIC_API_KEY` env var.
  */
 async function resolveAnthropicKey(db: Lattice | null): Promise<string | null> {
+  // Managed deployment: use ONLY the operator's env credential; never read a
+  // stored per-user key (it must not override the operator's).
+  if (isManagedModelAuth()) return process.env.ANTHROPIC_API_KEY ?? null;
   if (isAssistantCredentialCleared(CREDENTIALS.anthropic.kind)) return null;
   return (
     (await readMachineCredential(db, CREDENTIALS.anthropic.kind)) ??
@@ -190,21 +216,19 @@ export interface VoiceCredential {
 const STT_PROVIDER_KIND = 'stt_provider';
 const AGGRESSIVENESS_KIND = 'assistant_aggressiveness';
 
-/** Default inference aggressiveness (0 = conservative … 1 = aggressive). */
-export const DEFAULT_AGGRESSIVENESS = 0.85;
+/** Inference aggressiveness (0 = conservative … 1 = aggressive), fixed for all users. */
+export const DEFAULT_AGGRESSIVENESS = 0.9;
 
 /**
- * The user's "inference aggressiveness" — a single behaviour knob (0 = only
+ * The assistant's "inference aggressiveness" — a single behaviour knob (0 = only
  * high-confidence, conservative changes; 1 = eagerly add/enrich/link/extrapolate).
- * Drives the model sampling temperature AND how liberally ingest materializes
- * new junctions. A USER preference (machine-local `preferences.json`), not a
- * workspace secret — so it persists across workspaces and never shows up in a
- * workspace's `secrets` object. Falls back to {@link DEFAULT_AGGRESSIVENESS}.
+ * Drives the model sampling temperature AND how liberally ingest materializes new
+ * junctions. This is now FIXED at {@link DEFAULT_AGGRESSIVENESS} for every user — the
+ * per-user selector was removed; a high, eager setting is the intended experience — so a
+ * stale stored preference no longer applies.
  */
 export function getAggressiveness(): number {
-  const n = readPreferences().aggressiveness;
-  if (!Number.isFinite(n)) return DEFAULT_AGGRESSIVENESS;
-  return Math.min(1, Math.max(0, n));
+  return DEFAULT_AGGRESSIVENESS;
 }
 
 /**
@@ -232,6 +256,29 @@ export async function retireLegacyPreferenceSecrets(db: Lattice): Promise<void> 
 /** Map aggressiveness → an Anthropic sampling temperature in [0, 1]. */
 export function aggressivenessToTemperature(aggressiveness: number): number {
   return Math.min(1, Math.max(0, aggressiveness));
+}
+
+/** Default clarify threshold (see {@link getClarifyThreshold}). */
+export const DEFAULT_CLARIFY_THRESHOLD = 0.6;
+
+/**
+ * The user's "clarify threshold" — the single confidence bar that decides when
+ * an automated inference asks the user instead of guessing: confidence ≥ the
+ * threshold → act silently; between the floor (threshold / 2, derived by each
+ * consumer via {@link clarifyFloor}) and the threshold → ask a short
+ * multiple-choice question; below the floor → drop the inference as noise.
+ * A USER preference (machine-local `preferences.json`), same model as
+ * {@link getAggressiveness}. Falls back to {@link DEFAULT_CLARIFY_THRESHOLD}.
+ */
+export function getClarifyThreshold(): number {
+  const n = readPreferences().clarify_threshold;
+  if (!Number.isFinite(n)) return DEFAULT_CLARIFY_THRESHOLD;
+  return Math.min(1, Math.max(0, n));
+}
+
+/** The "drop as noise" floor derived from a clarify threshold. */
+export function clarifyFloor(threshold: number): number {
+  return threshold / 2;
 }
 
 export async function getVoiceCredential(db: Lattice | null): Promise<VoiceCredential | null> {
@@ -278,6 +325,13 @@ interface StoredOAuthTokens {
  * null when nothing is configured.
  */
 export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth | null> {
+  // Managed deployment: the operator provides the credential via env; a user's
+  // connected subscription or pasted key must never override it. Short-circuit
+  // before any stored-credential read so managed auth is always the env key.
+  if (isManagedModelAuth()) {
+    const managedKey = process.env.ANTHROPIC_API_KEY ?? null;
+    return managedKey ? { apiKey: managedKey } : null;
+  }
   // Treat an empty env var the same as unset, so `||` (not `??`) is correct here.
   // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
   const betaHeader = process.env.ANTHROPIC_OAUTH_BETA || undefined;
@@ -316,33 +370,43 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
       }
       if (tokens.access_token) return { authToken: tokens.access_token, betaHeader };
       console.warn(
-        '[lattice/assistant] Claude subscription is connected but has no usable access token — using the API key if one is configured.',
+        '[lattice/assistant] Claude subscription is connected but has no usable access token — re-connect Claude.',
       );
     } catch (e) {
-      // The stored OAuth blob is corrupt/unreadable — genuinely unusable, so the
-      // API-key fallback below is the right move.
+      // The stored OAuth blob is corrupt/unreadable — genuinely unusable.
       console.warn(
-        '[lattice/assistant] stored Claude subscription credential is unreadable; using the API key if configured:',
+        '[lattice/assistant] stored Claude subscription credential is unreadable; re-connect Claude:',
         (e as Error).message,
       );
     }
   }
-  // No usable OAuth → fall back to the (non-cleared) stored-or-env API key.
-  const apiKey = await resolveAnthropicKey(db);
-  return apiKey ? { apiKey } : null;
+  // No usable OAuth → not connected. Claude access is OAuth-only in a normal
+  // install (the per-user API-key path was removed); a managed deployment already
+  // returned its operator env credential at the top of this function.
+  return null;
 }
 
 /**
- * Which kind of Claude auth is active — the SINGLE source of truth for the
- * assistant's connection state. The GUI derives everything from this (one
- * client helper, `claudeAuth(cfg)`): a connected subscription ('oauth') shows
- * "Connected with Claude"; a pasted API key ('key') is the API-key path; null
- * is not-connected. A connected subscription wins (resolveClaudeAuth prefers
- * it). Do NOT add a second "has any auth" flag — it is exactly `kind !== null`.
+ * The single connected/disconnected truth the server gate and the client wall
+ * both read. True when a model call would succeed: a managed deployment has its
+ * operator env credential, otherwise a Claude subscription (OAuth token) is
+ * connected. Deliberately a presence check — no token refresh — so it stays cheap
+ * on the per-request gate.
  */
-export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | 'key' | null> {
+export async function isClaudeConnected(db: Lattice | null): Promise<boolean> {
+  if (isManagedModelAuth()) return Boolean(process.env.ANTHROPIC_API_KEY);
+  return Boolean(await readMachineCredential(db, CLAUDE_OAUTH_KIND));
+}
+
+/**
+ * Whether a Claude subscription (OAuth) is connected: 'oauth' when a subscription
+ * token is stored, else null. Claude access is OAuth-only in a normal install, so
+ * there is no 'key' kind. A managed deployment authenticates via the operator's
+ * env credential and is reflected by `connected` + `managedModelAuth` on the
+ * config instead — see {@link isClaudeConnected}.
+ */
+export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | null> {
   if (await readMachineCredential(db, CLAUDE_OAUTH_KIND)) return 'oauth';
-  if (await hasCredential(db, 'anthropic', 'ANTHROPIC_API_KEY')) return 'key';
   return null;
 }
 
@@ -399,11 +463,28 @@ export async function dispatchAssistantRoute(
       hasOpenaiKey,
       hasElevenlabsKey,
     });
+    // OpenAI-compatible LLM provider (a base-URL + key + model the user connected as
+    // an alternative backend). Presence + non-secret fields only — never the API key.
+    const openaiCompat = readOpenAiCompatConfig();
+    const claudeConnected = await isClaudeConnected(db);
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
       hasElevenlabsKey,
       claudeAuthKind: await claudeAuthKind(db),
+      // Which backend answers turns, and the OpenAI-compatible endpoint's non-secret
+      // config (so the GUI can show "Connected to gpt-4o at api.example.com").
+      activeProvider: activeProviderKind(),
+      openaiCompat: openaiCompat
+        ? { configured: true, model: openaiCompat.model, baseUrl: openaiCompat.baseUrl }
+        : { configured: false, model: null, baseUrl: null },
+      // The single connected/disconnected truth the client wall reads. True in a
+      // managed deployment (operator env credential), when a Claude subscription is
+      // connected, OR when an OpenAI-compatible endpoint is configured.
+      connected: claudeConnected || openaiCompat !== null,
+      // Claude usage-limit state (null unless the limit was hit). The chat shows
+      // it and the Configure side reads it to block ingest/AI while limited.
+      limitState: getClaudeLimitState(),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference,
@@ -412,8 +493,134 @@ export async function dispatchAssistantRoute(
       // step is fail-soft, so the GUI also feature-detects the Worker at runtime.
       localVoiceAvailable: true,
       aggressiveness: getAggressiveness(),
+      clarifyThreshold: getClarifyThreshold(),
       oauthEnabled: oauthConfigured(),
+      // Managed deployment: the host supplies the model credential and per-user
+      // credential controls are disabled. The GUI hides the connect/key UI.
+      managedModelAuth: isManagedModelAuth(),
+      // Operator-supplied account page for a managed/hosted deployment (null for a
+      // normal install). The header account menu's "Account settings" action opens
+      // it — that page owns balance / billing / sign-out, so none of that lives here.
+      accountUrl: process.env.LATTICE_ACCOUNT_URL ?? null,
     });
+    return true;
+  }
+
+  // POST /api/assistant/provider/openai-compat { baseUrl, apiKey, model, headers? } —
+  // connect an OpenAI-compatible endpoint (OpenAI / Azure / OpenRouter / a local server /
+  // a gateway, or Copilot if the user points it there) as the assistant backend. Stored
+  // machine-local + encrypted (like every other assistant credential); saving makes it
+  // the active provider. NO provider-specific auth/headers are shipped — the user
+  // supplies the base URL, key, model, and any extra headers their endpoint needs.
+  if (method === 'POST' && pathname === '/api/assistant/provider/openai-compat') {
+    // Managed deployment: the operator owns the model credential; a user must not
+    // point the assistant at their own backend (see resolveLlmProvider's managed gate).
+    if (isManagedModelAuth()) {
+      sendJson(res, { error: 'The model backend is managed by the operator.' }, 403);
+      return true;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+    const model = typeof body.model === 'string' ? body.model.trim() : '';
+    const rawKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+    if (!/^https?:\/\/\S+$/i.test(baseUrl)) {
+      sendJson(res, { ok: false, error: 'baseUrl must be an http(s) URL' }, 400);
+      return true;
+    }
+    if (!model) {
+      sendJson(res, { ok: false, error: 'model is required' }, 400);
+      return true;
+    }
+    const headers =
+      body.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)
+        ? (Object.fromEntries(
+            Object.entries(body.headers as Record<string, unknown>)
+              .filter(([, v]) => typeof v === 'string')
+              .map(([k, v]) => [k, v as string]),
+          ) as Record<string, string>)
+        : undefined;
+    const prior = readOpenAiCompatConfig();
+    // On a settings EDIT a blank key means "keep the current key" (the key is never
+    // shown back, so an empty field is not a request to clear it); on first connect there
+    // is no prior, so a blank key = a keyless local server.
+    const apiKey = rawKey === '' && prior ? prior.apiKey : rawKey;
+    setOpenAiCompatConfig({ baseUrl, apiKey, model, ...(headers ? { headers } : {}) });
+    // `test: true` (the settings model-edit save) verifies the endpoint actually responds
+    // and REVERTS to the prior config if it does not — a bad edit never replaces a working
+    // one. The onboarding flow saves WITHOUT `test` and runs POST /api/assistant/test as
+    // its own step (so it can send the user back to the setup screen on failure).
+    if (body.test === true) {
+      const { resolveLlmProvider, smokeTestProvider } = await import('./ai/provider.js');
+      const provider = await resolveLlmProvider(db);
+      const result = provider
+        ? await smokeTestProvider(provider)
+        : { ok: false as const, error: 'Could not resolve the model provider.' };
+      if (!result.ok) {
+        if (prior) setOpenAiCompatConfig(prior);
+        else clearOpenAiCompatConfig();
+        sendJson(res, { ok: false, error: result.error });
+        return true;
+      }
+    }
+    sendJson(res, { ok: true, activeProvider: 'openai_compat', model, baseUrl });
+    return true;
+  }
+
+  // POST /api/assistant/test — smoke-test the ACTIVE provider so the onboarding "Testing
+  // your AI" step (and any runtime re-check) can verify the model actually responds.
+  // Always 200; the client branches on `ok`.
+  if (method === 'POST' && pathname === '/api/assistant/test') {
+    const { resolveLlmProvider, smokeTestProvider } = await import('./ai/provider.js');
+    const provider = await resolveLlmProvider(db);
+    if (!provider) {
+      sendJson(res, { ok: false, error: 'No model provider is configured.' });
+      return true;
+    }
+    sendJson(res, await smokeTestProvider(provider));
+    return true;
+  }
+
+  // DELETE /api/assistant/provider/openai-compat — forget the endpoint; the active
+  // provider falls back to Anthropic (a connected Claude subscription still works).
+  if (method === 'DELETE' && pathname === '/api/assistant/provider/openai-compat') {
+    clearOpenAiCompatConfig();
+    sendJson(res, { ok: true, activeProvider: 'anthropic' });
+    return true;
+  }
+
+  // PUT /api/assistant/provider { provider } — switch which configured backend is
+  // active ('anthropic' | 'openai_compat'), without disconnecting the other.
+  if (method === 'PUT' && pathname === '/api/assistant/provider') {
+    if (isManagedModelAuth()) {
+      sendJson(res, { error: 'The model backend is managed by the operator.' }, 403);
+      return true;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const provider = body.provider;
+    if (provider !== 'anthropic' && provider !== 'openai_compat') {
+      sendJson(res, { error: "provider must be 'anthropic' or 'openai_compat'" }, 400);
+      return true;
+    }
+    // Don't let the user select a provider that isn't configured — that would strand
+    // the assistant on a backend that resolves to nothing.
+    if (provider === 'openai_compat' && !readOpenAiCompatConfig()) {
+      sendJson(res, { error: 'no OpenAI-compatible endpoint is configured' }, 400);
+      return true;
+    }
+    setActiveProvider(provider);
+    sendJson(res, { ok: true, activeProvider: provider });
     return true;
   }
 
@@ -433,6 +640,27 @@ export async function dispatchAssistantRoute(
     }
     // User preference, machine-local — not a workspace secret.
     writePreferences({ ...readPreferences(), aggressiveness: value });
+    sendJson(res, { ok: true, value });
+    return true;
+  }
+
+  // PUT /api/assistant/clarify-threshold { value } — clarify threshold 0..1
+  // (see getClarifyThreshold). Mirrors the aggressiveness route above.
+  if (method === 'PUT' && pathname === '/api/assistant/clarify-threshold') {
+    let body: Record<string, unknown>;
+    try {
+      body = await readJson(req);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    const value = Number(body.value);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      sendJson(res, { error: 'value must be a number in [0, 1]' }, 400);
+      return true;
+    }
+    // User preference, machine-local — not a workspace secret.
+    writePreferences({ ...readPreferences(), clarify_threshold: value });
     sendJson(res, { ok: true, value });
     return true;
   }
@@ -464,6 +692,14 @@ export async function dispatchAssistantRoute(
 
   // PUT /api/assistant/key { kind?, key } — set / replace a credential.
   if (method === 'PUT' && pathname === '/api/assistant/key') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; per-user credentials are disabled.' },
+        403,
+      );
+      return true;
+    }
     let body: Record<string, unknown>;
     try {
       body = await readJson(req);
@@ -474,6 +710,15 @@ export async function dispatchAssistantRoute(
     const name = (typeof body.kind === 'string' ? body.kind : 'anthropic') as CredentialName;
     if (!(name in CREDENTIALS)) {
       sendJson(res, { error: `unknown credential kind: ${String(body.kind)}` }, 400);
+      return true;
+    }
+    if (name === 'anthropic') {
+      // Claude access is OAuth-only — a per-user API key is no longer accepted.
+      sendJson(
+        res,
+        { error: 'Claude access is OAuth-only — connect a subscription instead of an API key.' },
+        400,
+      );
       return true;
     }
     const key = typeof body.key === 'string' ? body.key.trim() : '';
@@ -504,10 +749,27 @@ export async function dispatchAssistantRoute(
 
   // DELETE /api/assistant/key?kind= — clear a credential.
   if (method === 'DELETE' && pathname === '/api/assistant/key') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; per-user credentials are disabled.' },
+        403,
+      );
+      return true;
+    }
     const url = new URL(req.url ?? '', 'http://localhost');
     const name = (url.searchParams.get('kind') ?? 'anthropic') as CredentialName;
     if (!(name in CREDENTIALS)) {
       sendJson(res, { error: `unknown credential kind: ${name}` }, 400);
+      return true;
+    }
+    if (name === 'anthropic') {
+      // Claude access is OAuth-only — there is no per-user API key to clear.
+      sendJson(
+        res,
+        { error: 'Claude access is OAuth-only — connect a subscription instead of an API key.' },
+        400,
+      );
       return true;
     }
     // Clear the machine-level store AND any leftover copy in the active
@@ -567,6 +829,14 @@ export async function dispatchAssistantRoute(
   // page that the user pastes back via /oauth/exchange. A loopback callback is
   // only used when an env-pinned client allowlists one.
   if (method === 'GET' && pathname === '/api/assistant/oauth/start') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; connecting a subscription is disabled.' },
+        403,
+      );
+      return true;
+    }
     const cfg = readOAuthConfig();
     // Only fill a loopback redirect if none is configured (the default is the
     // provider's registered console redirect, i.e. the manual code-paste flow).
@@ -641,6 +911,14 @@ export async function dispatchAssistantRoute(
   // `<code>#<state>`); they paste it here. We verify the state against the cookie
   // set at /start, exchange it for tokens, and store them. Body: { code }.
   if (method === 'POST' && pathname === '/api/assistant/oauth/exchange') {
+    if (isManagedModelAuth()) {
+      sendJson(
+        res,
+        { error: 'Model access is managed by the host; connecting a subscription is disabled.' },
+        403,
+      );
+      return true;
+    }
     const cfg = readOAuthConfig();
     const cookies = parseCookies(req);
     const verifier = cookies.lat_oauth_verifier;

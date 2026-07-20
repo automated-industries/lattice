@@ -1,25 +1,61 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// Claude access is OAuth-only and the AI-mutating ingest routes are gated
+// server-side, so these tests authenticate by seeding a connected subscription
+// (see beforeEach) instead of setting an API key. With auth present, ingest's
+// follow-on LLM enrichment WOULD fire a real model call — stub the GUI LLM client
+// (so enrichment fails fast and leaves the deterministic heuristic in place) and
+// the vision layer (so a dropped image needs no network / sharp). This keeps
+// ingest deterministic and offline, exactly as the old "no ANTHROPIC_API_KEY"
+// guard did, without weakening what each test validates (extraction, blob/ref
+// wiring, NOT NULL backfill, path handling, validation).
+vi.mock('../../src/gui/ai/chat.js', async (orig) => {
+  const actual = await orig();
+  return { ...actual, createAnthropicClient: () => ({}) };
+});
+vi.mock('../../src/ai/vision.js', async (orig) => {
+  const actual = await orig();
+  return {
+    ...actual,
+    describeImage: () => Promise.resolve(''),
+    describePdf: () => Promise.resolve(''),
+  };
+});
+
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { Lattice } from '../../src/lattice.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
-let savedKey: string | undefined;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  // Keep ingest deterministic: no LLM enrichment unless a test opts in.
-  savedKey = process.env.ANTHROPIC_API_KEY;
+  // Authenticate the AI-gated ingest routes: seed a connected Claude subscription
+  // in an isolated machine-local config dir (the credential store is keyed off
+  // LATTICE_CONFIG_DIR). Setting ANTHROPIC_API_KEY no longer authenticates, so it
+  // is cleared here; enrichment is kept offline by the module stubs above.
+  const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-ingest-cfg-'));
+  dirs.push(cfgDir);
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY']) {
+    savedEnv[k] = process.env[k];
+  }
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'ingest-test-key';
   delete process.env.ANTHROPIC_API_KEY;
+  seedClaudeOAuth();
 });
 
 afterEach(async () => {
-  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedKey;
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
 });
 
 function boot(): { root: string; server: Promise<GuiServerHandle> } {

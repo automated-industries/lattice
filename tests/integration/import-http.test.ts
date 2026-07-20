@@ -11,15 +11,35 @@ import {
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { inferSchema } from '../../src/import/infer.js';
 import { materializeImport } from '../../src/import/materialize.js';
+import { allAsyncOrSync } from '../../src/db/adapter.js';
+import { LINEAGE_TABLE } from '../../src/gui/lineage-store.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const dbs: Lattice[] = [];
 const servers: GuiServerHandle[] = [];
+// Claude access is OAuth-only, and the AI-mutating ingest/import/answer routes are
+// gated server-side. HTTP tests authenticate by seeding a connected subscription
+// into an isolated machine-local config dir (the credential store is keyed off
+// LATTICE_CONFIG_DIR) — NOT via ANTHROPIC_API_KEY, which no longer authenticates.
+// Snapshot the env we override so each test restores it afterward.
+const AUTH_ENV_KEYS = [
+  'LATTICE_CONFIG_DIR',
+  'LATTICE_ENCRYPTION_KEY',
+  'ANTHROPIC_API_KEY',
+] as const;
+const savedAuthEnv: Record<string, string | undefined> = {};
+for (const k of AUTH_ENV_KEYS) savedAuthEnv[k] = process.env[k];
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
   for (const db of dbs.splice(0)) db.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   delete process.env.LATTICE_ROOT;
+  for (const k of AUTH_ENV_KEYS) {
+    const v = savedAuthEnv[k];
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
 });
 
 /** Fund-shaped fixture: keyed entity, keyless entity with an array ref + dimensions,
@@ -98,6 +118,64 @@ describe('import: infer → materialize → query (canonical)', () => {
     const invFunds = result.links.find((l) => l.junction === 'investments_funds')!;
     expect(invFunds.created).toBe(12);
     expect(invFunds.unresolved).toBe(0);
+  });
+
+  it("records table-level 'derived' lineage for entities, dimensions, junctions, and views", async () => {
+    const base = mkdtempSync(join(tmpdir(), 'lattice-import-lineage-'));
+    dirs.push(base);
+    process.env.LATTICE_ROOT = join(base, '.lattice');
+    const root = ensureLatticeRoot(base);
+    const ws = addWorkspace(root, { displayName: 'Lineage' });
+    const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
+    dbs.push(db);
+    const configPath = resolveWorkspacePaths(root, ws).configPath;
+
+    const data = fixture();
+    const plan = inferSchema(data);
+    const views = [
+      {
+        name: 'company_zero',
+        master: 'investments',
+        filterColumn: 'company',
+        filterValue: 'Company 0',
+        matchedRows: 2,
+      },
+    ];
+    await materializeImport({ db, configPath }, data, plan, views);
+
+    const edges = await allAsyncOrSync(
+      db.adapter,
+      `SELECT "object_table", "object_id", "tier", "relation" FROM "${LINEAGE_TABLE}" WHERE "source_kind" = 'import'`,
+    );
+    const byTable = new Map(edges.map((e) => [String(e.object_table), e]));
+    // EVERY materialized table gets a table-level ('*') edge under tier 'derived'
+    // ('computed' is reserved for computed tables): the entities, the dimension
+    // tables (taxonomy), the junctions (links), and the reconstructed views.
+    for (const name of [
+      'funds', // entity
+      'investments', // entity
+      'gross_deploy', // entity
+      'industry', // dimension
+      'region', // dimension
+      'investments_funds', // junction
+      'company_zero', // view
+    ]) {
+      const e = byTable.get(name);
+      expect(e, `missing lineage edge for ${name}`).toBeDefined();
+      expect(e?.object_id).toBe('*');
+      expect(e?.tier).toBe('derived');
+      expect(e?.relation).toBe('materialized_from');
+    }
+    // No edge escaped the relabel — nothing import-sourced remains 'computed'.
+    expect(edges.every((e) => e.tier === 'derived')).toBe(true);
+
+    // Re-applying the import must not duplicate any edge (dedup by tuple).
+    await materializeImport({ db, configPath }, data, plan, views);
+    const recount = await allAsyncOrSync(
+      db.adapter,
+      `SELECT COUNT(*) AS n FROM "${LINEAGE_TABLE}" WHERE "source_kind" = 'import'`,
+    );
+    expect(Number(recount[0]?.n)).toBe(edges.length);
   });
 
   it('is idempotent on re-apply (no duplicate rows or edges)', async () => {
@@ -216,6 +294,14 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     const base = mkdtempSync(join(tmpdir(), prefix));
     dirs.push(base);
     process.env.LATTICE_ROOT = join(base, '.lattice');
+    // Seed a connected Claude subscription in this test's isolated config dir so
+    // the server-side AI-auth gate lets the /api/ingest + /api/import routes
+    // through. LATTICE_CONFIG_DIR must be set before seeding (the credential store
+    // is keyed off it) and before any config read below.
+    process.env.LATTICE_CONFIG_DIR = join(base, '.config-store');
+    process.env.LATTICE_ENCRYPTION_KEY = 'import-http-test-key';
+    delete process.env.ANTHROPIC_API_KEY;
+    seedClaudeOAuth();
     const root = ensureLatticeRoot(base);
     const ws = addWorkspace(root, { displayName: 'Http' });
     (await Lattice.openWorkspace({ root, workspaceId: ws.id })).close();
@@ -238,6 +324,12 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
       fileId?: string;
       plan?: { entities: { name: string }[] };
       views?: { name: string; master: string }[];
+      linkConfidence?: number;
+      computedProposals?: {
+        entity: string;
+        table: string;
+        fields: { name: string; kind: string; expr?: string; confidence?: number }[];
+      }[];
     };
   }
 
@@ -263,12 +355,16 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     result?: { rowsByTable: Record<string, number>; views: { name: string; rows: number }[] };
   }
 
-  async function applyImport(server: GuiServerHandle, fileId: string): Promise<ApplyEvent[]> {
+  async function applyImport(
+    server: GuiServerHandle,
+    fileId: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<ApplyEvent[]> {
     const text = await (
       await fetch(`${server.url}/api/import/apply`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId, mode: 'both' }),
+        body: JSON.stringify({ fileId, mode: 'both', ...extra }),
       })
     ).text();
     return text
@@ -415,5 +511,217 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     expect((await fetch(`${server.url}/api/history?limit=abc`)).status).toBe(400);
     expect((await fetch(`${server.url}/api/history?limit=50`)).status).toBe(200);
     expect((await fetch(`${server.url}/api/history`)).status).toBe(200);
+  });
+
+  /** An order-lines workbook whose Total column is computed per row (B*C). */
+  async function ordersWorkbook(base: string): Promise<Buffer> {
+    const ExcelJS = await import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Orders');
+    ws.getRow(1).values = [null, 'Sku', 'Price', 'Qty', 'Total'];
+    for (let i = 0; i < 6; i++) {
+      const r = i + 2;
+      const price = 10 + i;
+      const qty = (i % 3) + 1;
+      ws.getRow(r).values = [null, 'SKU-' + String(i), price, qty];
+      ws.getCell(r, 5).value = { formula: `C${String(r)}*D${String(r)}`, result: price * qty };
+    }
+    const path = join(base, 'orders.xlsx');
+    await wb.xlsx.writeFile(path);
+    return readFileSync(path);
+  }
+
+  it('creates an opted-in computed table from a detected formula column', async () => {
+    const { server, base } = await freshServer('lattice-import-computed-');
+    const up = await uploadFile(
+      server,
+      'orders.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      await ordersWorkbook(base),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+    // The upload proposal carries the opt-in computed field with its evidence.
+    const proposals = up.autoImport?.computedProposals ?? [];
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ entity: 'orders', table: 'orders_computed' });
+    expect(proposals[0]?.fields?.[0]).toMatchObject({
+      name: 'total_calc',
+      kind: 'calc',
+      expr: '(price * qty)',
+      confidence: 1,
+    });
+    expect(typeof up.autoImport?.linkConfidence).toBe('number');
+
+    // Apply, opting IN — plus an unknown selection, which warns and is skipped.
+    const events = await applyImport(server, up.autoImport!.fileId!, {
+      linkConfidence: up.autoImport!.linkConfidence,
+      computed: [
+        { table: 'orders_computed', fields: ['total_calc', 'bogus_field'] },
+        { table: 'nope_computed', fields: ['x'] },
+      ],
+    });
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(
+      events.some(
+        (e) => e.phase === 'computed' && (e.message ?? '').includes('orders_computed: 1 field'),
+      ),
+    ).toBe(true);
+    expect(
+      events.some((e) =>
+        (e.message ?? '').includes('unknown computed field "orders_computed.bogus_field"'),
+      ),
+    ).toBe(true);
+    expect(
+      events.some((e) => (e.message ?? '').includes('unknown computed table "nope_computed"')),
+    ).toBe(true);
+
+    // The computed table is live and queryable, with values matching the formula.
+    const rows = (await (
+      await fetch(`${server.url}/api/tables/orders_computed/rows?limit=50`)
+    ).json()) as { rows: { total_calc: number }[] };
+    expect(rows.rows).toHaveLength(6);
+    const source = (await (
+      await fetch(`${server.url}/api/tables/orders/rows?limit=50`)
+    ).json()) as {
+      rows: { sku: string; price: number; qty: number; total: number }[];
+    };
+    const expected = source.rows.map((r) => r.price * r.qty).sort((a, b) => a - b);
+    const actual = rows.rows.map((r) => r.total_calc).sort((a, b) => a - b);
+    expect(actual).toEqual(expected);
+  });
+
+  it('creates nothing computed when the user opts out', async () => {
+    const { server, base } = await freshServer('lattice-import-computed-out-');
+    const up = await uploadFile(
+      server,
+      'orders.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      await ordersWorkbook(base),
+    );
+    expect(up.autoImport?.computedProposals?.length).toBe(1);
+    const events = await applyImport(server, up.autoImport!.fileId!); // no computed key
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(events.some((e) => e.phase === 'computed')).toBe(false);
+    expect((await fetch(`${server.url}/api/tables/orders_computed/rows`)).status).not.toBe(200);
+    // The raw source column imported as plain values regardless.
+    const source = (await (await fetch(`${server.url}/api/tables/orders/rows?limit=5`)).json()) as {
+      rows: { total: number }[];
+    };
+    expect(typeof source.rows[0]?.total).toBe('number');
+  });
+
+  /** Orders whose vendor reference resolves for only 5 of 10 distinct values —
+   *  a marginal link (confidence 0.5) under the default 0.6 threshold. */
+  function marginalVendorFixture() {
+    return {
+      vendors: Array.from({ length: 10 }, (_, i) => ({
+        code: 'V' + String(i),
+        name: 'Vendor ' + String(i),
+      })),
+      orders: Array.from({ length: 20 }, (_, i) => ({
+        sku: 'SKU-' + String(i),
+        vendor: (i % 10 < 5 ? 'V' : 'X') + String(i % 10),
+        amount: 5 + i,
+      })),
+    };
+  }
+
+  interface PendingQuestions {
+    questions: { id: string; question: string; options: string[]; source: string }[];
+  }
+
+  it('asks about marginal links; answering "Yes, connect them" creates the junction', async () => {
+    const { server } = await freshServer('lattice-import-marginal-');
+    const up = await uploadFile(
+      server,
+      'orders.json',
+      'application/json',
+      Buffer.from(JSON.stringify(marginalVendorFixture()), 'utf8'),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+
+    const events = await applyImport(server, up.autoImport!.fileId!);
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(
+      events.some((e) => e.phase === 'questions' && (e.message ?? '').includes('1 question')),
+    ).toBe(true);
+    // The marginal link was NOT materialized…
+    expect((await fetch(`${server.url}/api/tables/orders_vendors/rows`)).status).not.toBe(200);
+    // …a clarification question was enqueued instead.
+    const pending = (await (
+      await fetch(`${server.url}/api/questions/pending`)
+    ).json()) as PendingQuestions;
+    expect(pending.questions).toHaveLength(1);
+    expect(pending.questions[0]).toMatchObject({
+      source: 'import',
+      question: 'Is "vendor" in orders meant to refer to your vendors records?',
+      options: ['Yes, connect them', "No, it's just text"],
+    });
+
+    // Answering "Yes, connect them" creates + fills the junction: the 10 order
+    // rows whose vendor value resolves (V0–V4 twice each) get linked.
+    const answered = await fetch(`${server.url}/api/questions/${pending.questions[0]!.id}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'Yes, connect them' }),
+    });
+    expect(answered.status).toBe(200);
+    expect((await answered.json()) as { action?: string }).toMatchObject({
+      status: 'answered',
+      action: 'import_link',
+    });
+    const links = (await (
+      await fetch(`${server.url}/api/tables/orders_vendors/rows?limit=50`)
+    ).json()) as { rows: { orders_id: string; vendors_id: string }[] };
+    expect(links.rows).toHaveLength(10);
+    expect(links.rows.every((r) => r.orders_id && r.vendors_id)).toBe(true);
+  });
+
+  it('answering "No" leaves everything untouched, and questions are capped at 5', async () => {
+    const { server } = await freshServer('lattice-import-marginal-cap-');
+    // Seven marginal references from one entity to seven target entities —
+    // only the 5 highest-confidence candidates become questions.
+    const data: Record<string, unknown> = {
+      orders: Array.from({ length: 20 }, (_, i) => {
+        const row: Record<string, unknown> = { sku: 'SKU-' + String(i) };
+        for (let t = 1; t <= 7; t++) {
+          row['ref' + String(t)] = (i % 10 < 5 ? `T${String(t)}-` : 'X-') + String(i % 10);
+        }
+        return row;
+      }),
+    };
+    for (let t = 1; t <= 7; t++) {
+      data['targets' + String(t)] = Array.from({ length: 10 }, (_, i) => ({
+        code: `T${String(t)}-${String(i)}`,
+        label: 'Target ' + String(i),
+      }));
+    }
+    const up = await uploadFile(
+      server,
+      'refs.json',
+      'application/json',
+      Buffer.from(JSON.stringify(data), 'utf8'),
+    );
+    const events = await applyImport(server, up.autoImport!.fileId!);
+    expect(
+      events.some((e) => e.phase === 'questions' && (e.message ?? '').includes('5 questions')),
+    ).toBe(true);
+    const pending = (await (
+      await fetch(`${server.url}/api/questions/pending`)
+    ).json()) as PendingQuestions;
+    expect(pending.questions).toHaveLength(5);
+
+    // "No, it's just text" resolves the question without creating anything.
+    const first = pending.questions[0]!;
+    const junction = /"(\w+)" in orders .* your (\w+) records/.exec(first.question);
+    const answered = await fetch(`${server.url}/api/questions/${first.id}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: "No, it's just text" }),
+    });
+    expect(answered.status).toBe(200);
+    expect(
+      (await fetch(`${server.url}/api/tables/orders_${junction?.[2] ?? ''}/rows`)).status,
+    ).not.toBe(200);
   });
 });

@@ -123,10 +123,15 @@ export async function ensureFtsIndex(
       `CREATE TRIGGER "${fts}_trg" AFTER INSERT OR UPDATE OR DELETE ON "${table}"
        FOR EACH ROW EXECUTE FUNCTION "${fts}_sync"()`,
     );
-    // Backfill existing rows (idempotent via ON CONFLICT).
+    // Backfill existing rows ONCE — only when the FTS table is still empty. The
+    // AFTER INSERT/UPDATE/DELETE trigger above keeps it current thereafter, so a
+    // re-run on every owner open would otherwise full-scan the whole base table
+    // (incl. large connector tables like gmail_messages) for nothing. The
+    // NOT EXISTS guard turns that O(total-text-bytes) scan into an O(1) check.
     await runAsyncOrSync(
       adapter,
       `INSERT INTO "${fts}"(row_id, body) SELECT "id", ${concatExpr(cols, '')} FROM "${table}"
+       WHERE NOT EXISTS (SELECT 1 FROM "${fts}" LIMIT 1)
        ON CONFLICT (row_id) DO NOTHING`,
     );
     return;
@@ -274,14 +279,85 @@ async function likeSearchTable(
   q: string,
   limit: number,
   hasDeletedAt: boolean,
+  recencyCol: string | null,
 ): Promise<FtsGroup | null> {
-  // CAST(... AS TEXT) keeps the LIKE valid across column types on both engines.
-  const where = searchCols.map((c) => `CAST("${c}" AS TEXT) LIKE ? ESCAPE '\\'`).join(' OR ');
-  const like = `%${escapeLike(q)}%`;
-  const params: unknown[] = searchCols.map(() => like);
-  let sql = `SELECT * FROM "${table}" WHERE (${where})`;
+  // The non-indexed fallback used to ORDER BY recency ONLY, which made a name lookup
+  // unreliable: it returned "the most recently added row that mentions the string
+  // anywhere" (a free-text mention of a person could outrank that person's own
+  // record), it matched only within a SINGLE column (so a name split across first/last
+  // never matched the full name), and it had no tokenization. Now it RELEVANCE-RANKS:
+  // exact name-column match > name prefix > full phrase across the row's text > all
+  // query words present > any-column contains; recency only breaks ties. It also
+  // matches the concatenated text (`blob`) so a name spread across columns, or given
+  // out of order / with an extra middle name, still matches.
+  const lq = q.toLowerCase();
+  const tokens = lq.split(/\s+/).filter(Boolean);
+  // Identity/label-ish columns rank above free-text ones for a name lookup.
+  const nameCols = searchCols.filter(
+    (c) => /(name|title|label|email|handle|username|summary)/i.test(c) || c === 'key',
+  );
+  const blob = `lower(${concatExpr(searchCols, '')})`;
+
+  // Params MUST be pushed in the order they appear in the SQL text. The score CASE is
+  // in the SELECT (before WHERE), so collect its params first.
+  const scoreParams: unknown[] = [];
+  const cases: string[] = [];
+  if (nameCols.length > 0) {
+    const eq = nameCols
+      .map((c) => {
+        scoreParams.push(lq);
+        return `lower(CAST("${c}" AS TEXT)) = ?`;
+      })
+      .join(' OR ');
+    cases.push(`WHEN (${eq}) THEN 100`);
+    const prefix = nameCols
+      .map((c) => {
+        scoreParams.push(`${escapeLike(lq)}%`);
+        return `lower(CAST("${c}" AS TEXT)) LIKE ? ESCAPE '\\'`;
+      })
+      .join(' OR ');
+    cases.push(`WHEN (${prefix}) THEN 80`);
+  }
+  scoreParams.push(`%${escapeLike(lq)}%`);
+  cases.push(`WHEN ${blob} LIKE ? ESCAPE '\\' THEN 60`);
+  if (tokens.length > 1) {
+    const allTokens = tokens
+      .map((t) => {
+        scoreParams.push(`%${escapeLike(t)}%`);
+        return `${blob} LIKE ? ESCAPE '\\'`;
+      })
+      .join(' AND ');
+    cases.push(`WHEN (${allTokens}) THEN 40`);
+  }
+  const scoreExpr = `CASE ${cases.join(' ')} ELSE 10 END`;
+
+  // WHERE (recall): the phrase in ANY single column (original behavior) OR all query
+  // words present in the concatenated text (finds a split / reordered name).
+  const whereParams: unknown[] = [];
+  const phraseOr = searchCols
+    .map((c) => {
+      whereParams.push(`%${escapeLike(q)}%`);
+      return `CAST("${c}" AS TEXT) LIKE ? ESCAPE '\\'`;
+    })
+    .join(' OR ');
+  const whereClauses = [`(${phraseOr})`];
+  if (tokens.length > 0) {
+    const tokenAnd = tokens
+      .map((t) => {
+        whereParams.push(`%${escapeLike(t)}%`);
+        return `${blob} LIKE ? ESCAPE '\\'`;
+      })
+      .join(' AND ');
+    whereClauses.push(`(${tokenAnd})`);
+  }
+  const where = whereClauses.join(' OR ');
+
+  let sql = `SELECT *, (${scoreExpr}) AS __score FROM "${table}" WHERE (${where})`;
   if (hasDeletedAt) sql += ` AND deleted_at IS NULL`;
+  sql += ` ORDER BY __score DESC`;
+  if (recencyCol) sql += `, "${recencyCol}" DESC`;
   sql += ` LIMIT ${String(limit + 1)}`;
+  const params: unknown[] = [...scoreParams, ...whereParams];
   let rows: Record<string, unknown>[];
   try {
     rows = (await allAsyncOrSync(adapter, sql, params)) as Record<string, unknown>[];
@@ -332,6 +408,12 @@ export async function fullTextSearch(
       continue;
     }
     const hasDeletedAt = cols.includes('deleted_at');
+    // Prefer a real event-time column over created_at for recency ordering, so the
+    // LIKE fallback surfaces the most recent MATCHES (not the most recently synced).
+    const recencyCol =
+      ['start_at', 'occurred_at', 'happened_at', 'event_date', 'sent_at', 'created_at'].find((c) =>
+        cols.includes(c),
+      ) ?? null;
     let group: FtsGroup | null = null;
     try {
       if (await hasFtsIndex(adapter, table)) {
@@ -339,7 +421,15 @@ export async function fullTextSearch(
       } else {
         const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
         if (searchCols.length > 0) {
-          group = await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt);
+          group = await likeSearchTable(
+            adapter,
+            table,
+            searchCols,
+            q,
+            limit,
+            hasDeletedAt,
+            recencyCol,
+          );
         }
       }
     } catch {
@@ -353,7 +443,7 @@ export async function fullTextSearch(
         const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
         group =
           searchCols.length > 0
-            ? await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt)
+            ? await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt, recencyCol)
             : null;
       } catch {
         group = null;

@@ -587,6 +587,15 @@ export interface TableDefinition {
    */
   materializedRollups?: Record<string, import('./schema/computed.js').MaterializedRollupSpec>;
   /**
+   * Serializable computed COLUMNS (5.0+) — a real, materialized column derived by a
+   * computed field kind (alias / calc / ai_classify / ai_transform / aggregate; the
+   * same vocabulary the retired computed-TABLE views used). Because it is a real
+   * column it is queryable / filterable / sortable and appears in `SELECT *`.
+   * Deterministic kinds recompute on write (bounded, dep-gated); AI kinds fill
+   * asynchronously. Compiled + wired by {@link file://./schema/computed-field.ts}.
+   */
+  computedFields?: Record<string, import('./config/types.js').ComputedFieldDef>;
+  /**
    * Mark this table as a *connected data type* (4.3+) — its rows are ingested
    * from an external system through a connector rather than authored locally.
    * Adds connector-lineage columns (`_source_connector_id`, `_source_model`,
@@ -619,6 +628,26 @@ export interface MultiTableDefinition {
 export interface FtsConfig {
   /** Columns to index. Omit to auto-detect the table's text columns. */
   fields?: string[];
+}
+
+/**
+ * Native ANN index build tuning (pgvector HNSW). Defaults match pgvector's own,
+ * so omitting this builds exactly as before. Has no effect on the in-process scan
+ * or on sqlite-vec.
+ */
+export interface VectorIndexOptions {
+  /** HNSW graph degree `m` (pgvector default 16). Higher → better recall, more memory + slower build. */
+  m?: number;
+  /** HNSW build candidate-list size `ef_construction` (pgvector default 64). Higher → better recall, slower build. */
+  efConstruction?: number;
+  /**
+   * Index storage precision. `'halfvec'` (pgvector ≥ 0.7) stores the derived index
+   * at 16-bit half precision — roughly halving its memory at a small recall cost —
+   * while the embeddings store stays full precision, so the scan fallback remains
+   * exact. Default `'none'` (full-precision `vector`). pgvector only; ignored on
+   * sqlite-vec.
+   */
+  quantization?: 'none' | 'halfvec';
 }
 
 /**
@@ -663,6 +692,12 @@ export interface EmbeddingsConfig {
    * so it fails loudly and tells you to add a pgvector index or raise the cap.
    */
   maxScanChunks?: number;
+  /**
+   * Optional native-index build tuning (pgvector HNSW `m` / `ef_construction`),
+   * applied by `buildVectorIndex`. Omit for pgvector's defaults. No effect on the
+   * in-process scan or sqlite-vec. Backward compatible — omitting it builds as before.
+   */
+  index?: VectorIndexOptions;
 }
 
 /**
@@ -690,6 +725,12 @@ export interface SearchOptions {
    * to `topK`. Defaults to `max(topK * 4, 20)`. Ignored when no reranker is set.
    */
   rerankPoolSize?: number;
+  /**
+   * Query-time HNSW search breadth (pgvector `hnsw.ef_search`) for the indexed
+   * vector arm. Higher trades latency for recall. Omit for pgvector's default. No
+   * effect without a native index (the in-process scan is already exact).
+   */
+  efSearch?: number;
 }
 
 /**
@@ -902,6 +943,15 @@ export interface CountOptions {
   filters?: FilterExpr[];
 }
 
+export interface BoundedCountOptions extends CountOptions {
+  /**
+   * Stop counting after this many matching rows (default 1000). The query scans at
+   * most `cap + 1` rows, so it never becomes an O(table) COUNT on a huge table;
+   * callers render a result greater than `cap` as an approximate "cap+".
+   */
+  cap?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Aggregation (v4.1)
 // ---------------------------------------------------------------------------
@@ -1069,6 +1119,9 @@ export interface SeedResult {
   upserted: number;
   linked: number;
   softDeleted: number;
+  /** Records skipped because they had no natural-key value to identity-match on (so they
+   *  couldn't be upserted). 0 when every record had a key. Surfaced, never silently dropped. */
+  skipped: number;
   /**
    * Links whose target row did not resolve. Empty when every link
    * resolved. Always present, so callers can check

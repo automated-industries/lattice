@@ -17,7 +17,8 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { runAsyncOrSync } from '../db/adapter.js';
-import { addEdges } from '../search/graph.js';
+import { addEdges, ensureEdgesTable } from '../search/graph.js';
+import { ensureRuntimeEntityContexts } from '../framework/canonical-context.js';
 import type { GraphEdge } from '../search/graph.js';
 import type { Connector, ConnectedModelDef, ListChangesContext } from './types.js';
 import { getConnector, listConnectors, recordSync } from './registry.js';
@@ -68,6 +69,10 @@ export async function syncConnector(
   const models = connector.models(toolkit);
   // Ensure all connected tables exist (idempotent; parents before children).
   for (const m of models) await db.defineLate(m.table, m.definition);
+  // Runtime tables render as markdown too: give each model the same canonical
+  // per-record context a config table gets at open (idempotent; junctions and
+  // the hard-excluded internals are skipped inside the derivation).
+  ensureRuntimeEntityContexts(db, models);
 
   const result: SyncConnectorResult = {
     connectorId,
@@ -81,6 +86,10 @@ export async function syncConnector(
   // fetches (e.g. only comments of issues changed since then).
   const prevSyncAt = record.lastSyncAt;
 
+  // Open ONE shared connection resource (e.g. a single MCP transport) for the whole
+  // sync, so listChanges reuses it across every model + parent key instead of
+  // reconnecting per parent (the old N+1). No-op for connectors without the hook.
+  await connector.beginSyncSession?.(ctxBase.connectionId);
   try {
     for (const m of models) {
       const { seen, edges, partial } = await syncModel(
@@ -112,6 +121,9 @@ export async function syncConnector(
     const message = err instanceof Error ? err.message : String(err);
     await recordSync(db, connectorId, { ok: false, error: message });
     throw err; // fail loudly — do not swallow an external-sync failure
+  } finally {
+    // Always close the shared transport — including after a failed sync.
+    await connector.endSyncSession?.(ctxBase.connectionId);
   }
   return result;
 }
@@ -144,17 +156,41 @@ async function syncModel(
     _source_synced_at: now,
   });
 
+  // Namespace every connector key by the per-member connectorId, so two members
+  // connecting the SAME external instance don't collide on the shared physical
+  // PRIMARY KEY (which, under cloud FORCE-RLS, made the second syncer's upsert hit
+  // the other member's RLS-hidden row and fail — a cross-member sync DoS). The PK
+  // and every FK reference BETWEEN this connector's tables are prefixed uniformly.
+  // connectorId is a UUID (no ':'), so the `<id>:` prefix is unambiguous.
+  const nsKey = (k: string): string => `${connectorId}:${k}`;
+  const stripNs = (k: string): string =>
+    k.startsWith(`${connectorId}:`) ? k.slice(connectorId.length + 1) : k;
+  // FK columns pointing at another of this connector's rows: the parent childColumn
+  // + every graph-edge FK. Deduped so a column that is both (e.g. gmail_messages
+  // thread_id) isn't prefixed twice.
+  const fkCols = new Set<string>();
+  if (m.parent) fkCols.add(m.parent.childColumn);
+  for (const e of m.graphEdges ?? []) fkCols.add(e.fkColumn);
+
   const ingest = async (rec: { id: string; row: Row }, extra?: Row): Promise<void> => {
-    const row = extra ? { ...rec.row, ...extra } : rec.row;
+    const nsId = nsKey(rec.id);
+    const row: Row = extra ? { ...rec.row, ...extra } : { ...rec.row };
+    row[m.naturalKey] = nsId; // PK namespaced (also sets it when a map omitted it)
+    // Every FK here is RAW (the map emits raw provider ids; the parent childColumn
+    // is passed raw below), so namespace each once to point at the namespaced PK.
+    for (const col of fkCols) {
+      const v = row[col];
+      if (v != null) row[col] = nsKey(String(v as string | number));
+    }
     await db.upsert(m.table, stamp(row));
-    seen.add(rec.id);
-    // Derive graph edges from this row's FK columns (bounded to synced rows).
+    seen.add(nsId);
+    // Derive graph edges from this row's (now-namespaced) FK columns.
     for (const e of m.graphEdges ?? []) {
       const dst = row[e.fkColumn];
       if (dst != null) {
         edges.push({
           srcTable: m.table,
-          srcId: rec.id,
+          srcId: nsId,
           dstTable: e.dstTable,
           dstId: String(dst as string | number),
           type: e.type,
@@ -173,8 +209,15 @@ async function syncModel(
       ? await collectChangedParentKeys(db, parent, connectorId, prevSyncAt)
       : await collectConnectorKeys(db, parent.table, parent.keyColumn, connectorId);
     for (const parentKey of parentKeys) {
-      for await (const rec of connector.listChanges(toolkit, m.model, { ...ctxBase, parentKey })) {
-        await ingest(rec, { [parent.childColumn]: parentKey });
+      // collectConnectorKeys returns NAMESPACED parent PKs; the connector needs the
+      // RAW provider key to query the source, so strip the prefix. ingest then
+      // re-namespaces it into the child's childColumn FK.
+      const rawParentKey = stripNs(parentKey);
+      for await (const rec of connector.listChanges(toolkit, m.model, {
+        ...ctxBase,
+        parentKey: rawParentKey,
+      })) {
+        await ingest(rec, { [parent.childColumn]: rawParentKey });
       }
     }
   } else {
@@ -230,6 +273,9 @@ async function collectChangedParentKeys(
 
 const EDGES_TABLE = '__lattice_edges';
 
+/** Chunk size for the batched edge-delete IN(...) during prune (bounded params). */
+const EDGE_DELETE_CHUNK = 500;
+
 /**
  * Soft-delete this connector's LIVE rows whose natural key wasn't seen this sync,
  * and drop their graph edges. Soft-delete goes through `db.update(deleted_at)` so
@@ -249,20 +295,37 @@ async function pruneVanished_(
 ): Promise<number> {
   if (seen.size === 0) return 0; // never prune-to-zero on an empty/failed fetch
   const existing = await collectConnectorKeys(db, m.table, m.naturalKey, connectorId);
-  let count = 0;
-  for (const key of existing) {
-    if (!seen.has(key)) {
-      await db.update(m.table, key, { deleted_at: now });
-      // Drop edges originating from the now-hidden row (bounded to pruned keys).
-      await runAsyncOrSync(
-        db.adapter,
-        `DELETE FROM "${EDGES_TABLE}" WHERE src_table = ? AND src_id = ?`,
-        [m.table, key],
-      );
-      count++;
-    }
+  const vanished = existing.filter((key) => !seen.has(key));
+  if (vanished.length === 0) return 0;
+  // Drop the pruned rows' derived graph edges FIRST, in chunked IN(...) batches.
+  // Edges are derived + idempotent (no changelog), so a batched raw DELETE is safe
+  // and turns per-row round-trips into ~one per 500 keys. Two invariants here:
+  //  • ensureEdgesTable first — a workspace whose connectors emit no graphEdges
+  //    (e.g. an external-DB source) has never created the table, so the raw DELETE
+  //    would throw "no such table: __lattice_edges" and fail the whole sync.
+  //  • Edge cleanup BEFORE the soft-delete transaction — the edge delete is safe
+  //    to redo, the committed soft-delete is not; failing the redoable step first
+  //    never strands rows already hidden by a commit when the sync errors out.
+  await ensureEdgesTable(db.adapter);
+  for (let i = 0; i < vanished.length; i += EDGE_DELETE_CHUNK) {
+    const chunk = vanished.slice(i, i + EDGE_DELETE_CHUNK);
+    const placeholders = chunk.map(() => '?').join(', ');
+    await runAsyncOrSync(
+      db.adapter,
+      `DELETE FROM "${EDGES_TABLE}" WHERE src_table = ? AND src_id IN (${placeholders})`,
+      [m.table, ...chunk],
+    );
   }
-  return count;
+  // Soft-delete via db.update (preserves the changelog entry + render hooks a raw
+  // DELETE would skip), but batch every delete into ONE transaction so the whole
+  // prune commits once instead of per row. On Postgres this collapses N commits to
+  // one; on SQLite (no withClient) db.transaction runs inline — no regression.
+  await db.transaction(async () => {
+    for (const key of vanished) {
+      await db.update(m.table, key, { deleted_at: now });
+    }
+  });
+  return vanished.length;
 }
 
 /**

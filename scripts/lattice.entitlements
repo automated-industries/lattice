@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the code-signed Lattice desktop app (deno desktop).
+
+  Deno embeds V8, which JIT-compiles. Apple's hardened runtime blocks JIT by
+  default, so a hardened-runtime-signed build would crash on launch without the
+  first two keys. `disable-library-validation` lets the webview host load the
+  bundled V8 dylib (a different Team ID than the host may sign it). There is
+  deliberately NO app-sandbox: the external-link bridge shells out to open URLs
+  in the system browser. Apple entitlement keys only — no identifiers.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

@@ -10,7 +10,13 @@ import {
 } from '../../src/search/embeddings.js';
 import type { EmbeddingsConfig } from '../../src/types.js';
 import { semanticChunker } from '../../src/search/chunking.js';
-import { vectorIndexAvailable, hasVectorIndex } from '../../src/search/vector-index.js';
+import {
+  vectorIndexAvailable,
+  hasVectorIndex,
+  vectorIndexFresh,
+  vectorIndexName,
+  getVectorIndexMeta,
+} from '../../src/search/vector-index.js';
 
 /**
  * p6 — chunk-aware embedding store, dimension-safe + soft-delete-aware semantic
@@ -358,5 +364,53 @@ describe('native vector index — detection + fallback (plain SQLite)', () => {
     db = makeDb();
     await db.init();
     await expect(db.buildVectorIndex('docs')).rejects.toThrow(/no embeddings stored/);
+  });
+
+  it('getVectorIndexMeta returns null when no index has been built', async () => {
+    db = makeDb();
+    await db.init();
+    await runAsyncOrSync(db.adapter, `INSERT INTO docs (id, body) VALUES ('d1','alpha')`);
+    await db.refreshEmbeddings('docs');
+    // No native extension here, so buildVectorIndex no-ops and nothing is recorded —
+    // the registry read returns null gracefully rather than throwing on the absent table.
+    expect(await getVectorIndexMeta(db.adapter, 'docs')).toBeNull();
+  });
+});
+
+describe('vectorIndexFresh — index/store count parity (the search freshness guard)', () => {
+  it('reports fresh only when the index holds exactly the stored chunk vectors', async () => {
+    const d = new Lattice(':memory:');
+    await d.init();
+    try {
+      await ensureEmbeddingsTable(d.adapter);
+      // A derived index table for "docs" (a plain table — the count parity the
+      // guard checks is dialect-agnostic and needs no native extension to exercise).
+      await runAsyncOrSync(
+        d.adapter,
+        `CREATE TABLE "${vectorIndexName('docs')}" (row_pk TEXT, chunk_index INTEGER, embedding TEXT)`,
+      );
+      await runAsyncOrSync(
+        d.adapter,
+        `INSERT INTO "_lattice_embeddings" (table_name,row_pk,chunk_index,embedding,vec_dim) VALUES ('docs','a',0,'[1,0]',2)`,
+      );
+      // store has 1 chunk, index has 0 → stale → search falls back to the exact scan
+      expect(await vectorIndexFresh(d.adapter, 'docs')).toBe(false);
+
+      await runAsyncOrSync(
+        d.adapter,
+        `INSERT INTO "${vectorIndexName('docs')}" (row_pk,chunk_index,embedding) VALUES ('a',0,'[1,0]')`,
+      );
+      // counts match → fresh → search trusts the index
+      expect(await vectorIndexFresh(d.adapter, 'docs')).toBe(true);
+
+      // a newly stored chunk with no matching index row → stale again
+      await runAsyncOrSync(
+        d.adapter,
+        `INSERT INTO "_lattice_embeddings" (table_name,row_pk,chunk_index,embedding,vec_dim) VALUES ('docs','b',0,'[0,1]',2)`,
+      );
+      expect(await vectorIndexFresh(d.adapter, 'docs')).toBe(false);
+    } finally {
+      d.close();
+    }
   });
 });

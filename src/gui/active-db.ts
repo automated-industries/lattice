@@ -3,9 +3,11 @@ import type { Row } from '../types.js';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
 import type { LatticeManifest } from '../lifecycle/manifest.js';
 import type { RealtimeBroker, RealtimePayload } from './realtime.js';
+import type { FillLlm } from '../schema/computed-fill.js';
 import type { FeedBus } from './feed.js';
 import type { FileLoopbackWatcher } from './file-watcher.js';
 import type { RenderProgressBus } from './render-progress.js';
+import type { ChatProgressBus } from './chat-progress.js';
 import { getAsyncOrSync } from '../db/adapter.js';
 import { rowAccessSummaries } from '../cloud/members.js';
 import { isInternalNativeEntity } from '../framework/native-entities.js';
@@ -45,6 +47,22 @@ export interface ActiveDb {
   db: Lattice;
   validTables: Set<string>;
   junctionTables: Set<string>;
+  /**
+   * Names of the registered computed tables (live, read-only SQL projections
+   * from the config's `computed:` section plus any created at runtime).
+   * Populated at open from the Lattice instance's registration and kept
+   * current by the computed-table ops. Row writes against these are refused
+   * with a friendly error before the core refusal fires.
+   */
+  computedTables: Set<string>;
+  /**
+   * DISPLAY-only link tables to hide from object lists / sidebars / the Markdown
+   * panel: the strict {@link ActiveDb.junctionTables} PLUS physical link tables
+   * created without declared relations (e.g. an AI-built `files_<entity>`),
+   * classified by column shape via `isHiddenLinkTable`. Never used for any
+   * destructive path — purely cosmetic filtering.
+   */
+  hiddenLinkTables: Set<string>;
   /**
    * Entity contexts registered on the live Lattice — covers both YAML and
    * programmatic `defineEntityContext()` registrations. Tables missing here
@@ -122,6 +140,19 @@ export interface ActiveDb {
    */
   renderProgress: RenderProgressBus;
   /**
+   * In-process bus for streaming a chat turn's progress to the GUI over the
+   * multiplexed `/api/stream` WebSocket — chat text lives HERE, not on a held-open
+   * POST response. Carried ACROSS a `reopenSameConfig` (like {@link feed}) so an
+   * in-flight chat job + already-connected sockets keep the same bus instance.
+   */
+  chatProgress: ChatProgressBus;
+  /**
+   * Per-workspace FIFO for the heavy chat loop: each queued turn's background job
+   * chains onto this so a second message runs only after the first finishes
+   * (serialized per workspace). Init `Promise.resolve()`; carried across reopen.
+   */
+  chatJobs: Promise<void>;
+  /**
    * Aborts the in-flight background render for this workspace. {@link disposeActive}
    * fires it before closing the DB so the render loop bails before its next query
    * hits a closing adapter. One controller per workspace (single-use).
@@ -145,7 +176,19 @@ export interface ActiveDb {
    * called by createUserEntity. No-op without Claude auth.
    */
   onColumnsAdded?: (table: string, columns: string[]) => void;
+  /** Auto-repairs dashboards after breaking model changes; disposed with the workspace. */
+  dashboardRepair?: { dispose: () => void };
+  /** Background driver that fills AI computed columns on open + after writes. */
+  computedFieldFill?: { dispose: () => void };
   generateTableDescription?: (table: string, columns: string[]) => void;
+  /**
+   * Builds the model adapter the computed-table AI fill runs with (attached by
+   * openConfig; the real adapter resolves Claude auth per call and reports
+   * "not configured" through the fill engine's per-field error state, so no
+   * auth is required to attach it). Tests substitute a fake to drive fills
+   * deterministically.
+   */
+  computedFillLlm?: () => FillLlm;
 }
 
 /**
@@ -175,8 +218,13 @@ export async function changeVisibleToActiveRole(
       if (payload.del_owner_role == null) return false;
       const row = (await getAsyncOrSync(
         db.adapter,
-        `SELECT lattice_delete_visible(?, ?, ?::text[]) AS v`,
-        [payload.del_owner_role, payload.del_visibility ?? null, payload.del_grantees ?? []],
+        `SELECT lattice_delete_visible(?, ?, ?, ?::text[]) AS v`,
+        [
+          payload.table_name,
+          payload.del_owner_role,
+          payload.del_visibility ?? null,
+          payload.del_grantees ?? [],
+        ],
       )) as { v?: unknown } | undefined;
       return row?.v === true || row?.v === 't' || row?.v === 1;
     }
@@ -204,6 +252,23 @@ export function isDeleteOp(op: string): boolean {
  */
 export function isFeedHiddenTable(t: string): boolean {
   return t.startsWith('_lattice') || t.startsWith('__lattice') || isInternalNativeEntity(t);
+}
+
+/**
+ * Is `table` a real, queryable (non-internal) table RIGHT NOW? Prefer the open-time
+ * `validTables` snapshot, then fall back to the LIVE registry: a connector or an
+ * external database registers its tables via `db.defineLate` AFTER the workspace
+ * opened, so those tables are live-registered but absent from the snapshot. Without
+ * this fallback the sidebar lists such a table (it is built from the live registry)
+ * while clicking it 404s "Unknown table" — the exact list-vs-validation divergence
+ * behind that bug. This mirrors the `validTables.has(x) || getRegisteredTableNames()
+ * .includes(x)` idiom already used on the schema-op paths; internal (`__lattice_*`)
+ * tables stay excluded so the security boundary is unchanged.
+ */
+export function isRegisteredTable(active: ActiveDb, table: string): boolean {
+  if (active.validTables.has(table)) return true;
+  if (table.startsWith('__lattice') || table.startsWith('_lattice')) return false;
+  return active.db.getRegisteredTableNames().includes(table);
 }
 
 /**

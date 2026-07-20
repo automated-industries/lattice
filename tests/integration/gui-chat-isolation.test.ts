@@ -11,18 +11,43 @@
  * the local (no team context) back-compat guarantee: NULL-owner chats stay
  * fully visible to the single local operator.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 describe('chat (local single-user DB) — back-compat', () => {
   const localDirs: string[] = [];
   const localServers: GuiServerHandle[] = [];
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeAll(() => {
+    // Claude access is OAuth-only: the GET /api/chat/* thread routes sit behind
+    // the server's AI-auth gate, which refuses them with 403 `claude_not_connected`
+    // when no subscription is connected. Point the machine-local credential store
+    // at an isolated config dir and seed a connected subscription so the gate lets
+    // the read through. This test only reads persisted threads — no model call is
+    // made — so seeding auth is all the gate needs. Seed AFTER
+    // LATTICE_CONFIG_DIR/LATTICE_ENCRYPTION_KEY (the store is keyed off both).
+    const cfgDir = mkdtempSync(join(tmpdir(), 'chat-local-cfg-'));
+    localDirs.push(cfgDir);
+    for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY']) {
+      savedEnv[k] = process.env[k];
+    }
+    process.env.LATTICE_CONFIG_DIR = cfgDir;
+    process.env.LATTICE_ENCRYPTION_KEY = 'chat-isolation-test-key';
+    seedClaudeOAuth();
+  });
+
   afterAll(async () => {
     for (const s of localServers.splice(0)) await s.close();
     for (const d of localDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) Reflect.deleteProperty(process.env, k);
+      else process.env[k] = v;
+    }
   });
 
   it('NULL-owner threads stay visible when there is no team context', async () => {

@@ -14,16 +14,37 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-// Dispatch a synthetic file drop on the rail (browsers block real paths).
+// Dispatch a synthetic file drop on the floating Ask Lattice panel (browsers block
+// real paths). Open the panel first so its drop handler is wired + its feed visible.
+async function openAssistant(page: import('@playwright/test').Page) {
+  await expect(page.locator('#ask-dock')).toBeVisible();
+  // The composer must have rendered (its Send button ingests the staged batch)…
+  await expect(page.locator('#chat-send')).toBeVisible();
+  // …and the document-level file drop zone must be WIRED before we dispatch a
+  // synthetic drop. initFileDropZone() appends the overlay + sets __fileDropWired
+  // once its drop/dragover listeners are live; dropping before that races the
+  // handler and the files never stage.
+  await page.locator('.file-drop-overlay').waitFor({ state: 'attached' });
+}
 async function dropFiles(page: import('@playwright/test').Page, names: string[]) {
   await page.evaluate((fileNames) => {
-    const rail = document.getElementById('assistant-rail')!;
+    const panel = document.getElementById('ask-dock')!;
     const dt = new DataTransfer();
     for (const name of fileNames) {
       dt.items.add(new File(['hello ' + name], name, { type: 'text/markdown' }));
     }
-    rail.dispatchEvent(
-      new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }),
+    // The drop is scoped to the chat dock, so the event must land INSIDE its rect
+    // (the handler hit-tests clientX/clientY against the target) — dispatch at its
+    // center, not the default (0,0) which falls outside a docked panel.
+    const r = panel.getBoundingClientRect();
+    panel.dispatchEvent(
+      new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+        clientX: r.left + r.width / 2,
+        clientY: r.top + r.height / 2,
+      }),
     );
   }, names);
 }
@@ -39,8 +60,8 @@ test('dropping a file stages it for review, then Send ingests it', async ({ page
     });
   });
 
-  await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await openAssistant(page);
 
   await dropFiles(page, ['memo.md']);
 
@@ -68,8 +89,8 @@ test('staged files can be removed with ✕, and nothing ingests until Send', asy
     await route.fulfill({ status: 201, contentType: 'application/json', body: '{"id":"x"}' });
   });
 
-  await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await openAssistant(page);
 
   await dropFiles(page, ['a.md', 'b.md']);
   await expect(page.locator('.staging-file')).toHaveCount(2);
@@ -108,8 +129,8 @@ test('a multi-file drop stages all, and Send caps concurrent uploads with batch 
     });
   });
 
-  await page.goto(gui.url);
-  await expect(page.locator('#assistant-rail')).toBeVisible();
+  await page.goto(gui.url + '#/');
+  await openAssistant(page);
 
   const FILE_COUNT = 7;
   await dropFiles(

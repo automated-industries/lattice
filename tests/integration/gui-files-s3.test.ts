@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedFileRowDirect } from './helpers/seed-file.js';
 
 const { bucketState } = vi.hoisted(() => ({ bucketState: new Map<string, Buffer>() }));
 
@@ -80,7 +81,7 @@ afterEach(async () => {
   }
 });
 
-async function boot(): Promise<GuiServerHandle> {
+async function boot(): Promise<GuiServerHandle & { root: string }> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-s3-'));
   dirs.push(root);
   mkdirSync(join(root, 'data'), { recursive: true });
@@ -106,37 +107,30 @@ async function boot(): Promise<GuiServerHandle> {
     openBrowser: false,
   });
   servers.push(server);
-  return server;
+  return Object.assign(server, { root });
 }
 
 /** Seed a cloud_ref (s3) files row pointing at an object already in the bucket. */
-async function seedS3FileRow(url: string, content: string): Promise<string> {
+// Seed a cloud_ref (s3) files row directly — the generic HTTP write refuses the S3-ref
+// columns (ref_provider/source_json) so an attacker can't forge an arbitrary-bucket read (S1).
+function seedS3FileRow(root: string, content: string): string {
   const sha = createHash('sha256').update(content).digest('hex');
   const key = `blobs/${sha}`;
   bucketState.set(key, Buffer.from(content));
-  const row = {
-    id: randomUUID(),
+  return seedFileRowDirect(root, {
     original_name: 'remote.txt',
     mime: 'text/plain',
-    sha256: sha,
     ref_kind: 'cloud_ref',
     ref_provider: 's3',
     ref_uri: `s3://test-bucket/${key}`,
     source_json: JSON.stringify({ bucket: 'test-bucket', key, region: 'us-east-1' }),
-  };
-  const res = await fetch(`${url}/api/tables/files/rows`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(row),
   });
-  if (res.status !== 201) throw new Error(`seed failed: ${res.status}`);
-  return ((await res.json()) as { id: string }).id;
 }
 
 describe('S3-backed file serving', () => {
   it('streams a cloud_ref file from S3 when there is no local copy', async () => {
     const s = await boot();
-    const id = await seedS3FileRow(s.url, 'bytes that live only in S3');
+    const id = seedS3FileRow(s.root, 'bytes that live only in S3');
     const r = await fetch(`${s.url}/api/files/${id}/blob`);
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toBe('text/plain');
@@ -156,22 +150,16 @@ describe('S3-backed file serving', () => {
     const sha = createHash('sha256').update(payload).digest('hex');
     const key = `blobs/${sha}`;
     bucketState.set(key, Buffer.from(payload));
-    const row = {
-      id: randomUUID(),
+    // Seeded directly: the generic HTTP write refuses the S3-ref columns (S1). The point of the
+    // test — that the SERVE path neutralizes the member-staged HTML — is unchanged.
+    const id = seedFileRowDirect(s.root, {
       original_name: 'evil.html',
       mime: 'text/html',
-      sha256: sha,
       ref_kind: 'cloud_ref',
       ref_provider: 's3',
       ref_uri: `s3://test-bucket/${key}`,
       source_json: JSON.stringify({ bucket: 'test-bucket', key, region: 'us-east-1' }),
-    };
-    const seeded = await fetch(`${s.url}/api/tables/files/rows`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(row),
     });
-    const { id } = (await seeded.json()) as { id: string };
     const r = await fetch(`${s.url}/api/files/${id}/blob`);
     expect(r.status).toBe(200);
     expect(r.headers.get('x-content-type-options')).toBe('nosniff');
@@ -188,7 +176,7 @@ describe('S3-backed file serving', () => {
 
   it('502s when the S3 object is missing (bytes genuinely gone)', async () => {
     const s = await boot();
-    const id = await seedS3FileRow(s.url, 'will be removed');
+    const id = seedS3FileRow(s.root, 'will be removed');
     // Drop the object from the bucket → the GET fails.
     bucketState.clear();
     const r = await fetch(`${s.url}/api/files/${id}/blob`);

@@ -23,7 +23,20 @@ export type FeedOp =
   | 'unlink'
   | 'undo'
   | 'redo'
-  | 'schema';
+  | 'schema'
+  // A clarification question changed state (enqueued / answered / dismissed).
+  // Not a data mutation: the client reacts by reconciling its pending-question
+  // cards (and the trigger dot) instead of painting an activity card.
+  | 'question'
+  // A chat thread's AI-generated title landed (it is written AFTER the stream
+  // closes, so the client's stream-close thread-list refresh misses it). Not a
+  // data mutation: the client reacts by refreshing the conversation list so the
+  // friendly title replaces the first-message placeholder.
+  | 'thread_title'
+  // A folder ingest is progressing. Not a data mutation: the client reacts by
+  // updating a progress bar reflecting how many files have been ingested. The
+  // progress payload is present only on this op.
+  | 'ingest_progress';
 
 /**
  * Who originated the mutation. Drives the source pill shown next to a feed
@@ -48,6 +61,13 @@ export interface FeedEvent {
   ts: string;
   /** Optional human-readable one-liner (e.g. "Created row in People"). */
   summary?: string;
+  /**
+   * Ingest progress snapshot (present only on op: 'ingest_progress').
+   * `terminal` marks the batch's final event explicitly — the client cannot
+   * infer completion from `done >= total`, because a capped folder ingest
+   * legitimately finishes with fewer files ingested than were found.
+   */
+  progress?: { done: number; total: number; terminal?: boolean };
 }
 
 /** A feed event before the bus has assigned its sequence number + timestamp. */
@@ -91,6 +111,7 @@ export class FeedBus {
       source: input.source,
       ts: input.ts ?? new Date().toISOString(),
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.progress !== undefined ? { progress: input.progress } : {}),
     };
     this.buffer.push(event);
     if (this.buffer.length > this.bufferSize) {

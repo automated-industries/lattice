@@ -39,6 +39,30 @@ export const IMMUTABLE_CONNECTED_FIELDS: readonly string[] = [
   '_source_model',
 ];
 
+/**
+ * Lattice-added columns on a connected external table that must NOT be shown to the user: a
+ * connected table is a faithful, read-only mirror, so its user-facing schema (SQL runner, table
+ * view, data-model, column pickers) should present ONLY the source's real columns. These stay
+ * PHYSICAL (the sync engine and lineage depend on `deleted_at` + `_source_*`, and `data`/`_pk`
+ * back the MCP typed tables) — they are display-hidden, never dropped. Use with a
+ * `db.getConnectedSource(table)` guard so authored tables keep their own lifecycle columns.
+ */
+export const CONNECTED_INTERNAL_COLUMNS: ReadonlySet<string> = new Set([
+  'deleted_at',
+  'created_at',
+  'updated_at',
+  '_source_connector_id',
+  '_source_model',
+  '_source_synced_at',
+  'data',
+  '_pk',
+]);
+
+/** True when `column` is a Lattice-added internal column on a connected mirror (see above). */
+export function isConnectedInternalColumn(column: string): boolean {
+  return CONNECTED_INTERNAL_COLUMNS.has(column);
+}
+
 /** Row visibility a connected table's rows default to when ingested into a cloud. */
 export type ConnectedVisibility = 'private' | 'everyone';
 

@@ -30,14 +30,13 @@ vi.mock('../../src/gui/ai/summarize.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  savedEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
   // Isolate the machine config dir (master key + assistant credentials) to a
   // temp dir so booting the GUI server here never touches the real ~/.lattice
   // or reads a developer's real stored key.
@@ -47,12 +46,16 @@ beforeEach(() => {
   dirs.push(cfgDir);
   process.env.LATTICE_CONFIG_DIR = cfgDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'aggr-test-key';
+  // Claude access is OAuth-only: the ingest routes are gated behind a connected
+  // subscription. Seed one into the isolated config dir (which must already be
+  // set — the credential store is keyed off LATTICE_CONFIG_DIR) so the gated
+  // /api/ingest/* calls below authenticate. The token never reaches a real
+  // endpoint: the model calls are mocked out above.
+  seedClaudeOAuth();
   mockState.matches = [{ table: 'projects', id: 'proj-1' }];
   mockState.objects = [];
 });
 afterEach(async () => {
-  if (savedEnv.ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedEnv.ANTHROPIC_API_KEY;
   if (savedEnv.LATTICE_CONFIG_DIR === undefined) delete process.env.LATTICE_CONFIG_DIR;
   else process.env.LATTICE_CONFIG_DIR = savedEnv.LATTICE_CONFIG_DIR;
   if (savedEnv.LATTICE_ENCRYPTION_KEY === undefined) delete process.env.LATTICE_ENCRYPTION_KEY;
@@ -107,52 +110,15 @@ async function ingest(url: string): Promise<void> {
 }
 
 describe('inference aggressiveness', () => {
-  it('defaults to 0.85 and round-trips through PUT /api/assistant/aggressiveness', async () => {
+  it('inference aggressiveness is fixed at 0.9 for all users (selector removed)', async () => {
     const server = await boot();
-    const initial = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
+    const cfg = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
       aggressiveness: number;
     };
-    expect(initial.aggressiveness).toBe(0.85);
-
-    const put = await fetch(`${server.url}/api/assistant/aggressiveness`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ value: 0.8 }),
-    });
-    expect(put.ok).toBe(true);
-
-    const after = (await fetch(`${server.url}/api/assistant/config`).then((r) => r.json())) as {
-      aggressiveness: number;
-    };
-    expect(after.aggressiveness).toBe(0.8);
-
-    // Out-of-range is rejected.
-    const bad = await fetch(`${server.url}/api/assistant/aggressiveness`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ value: 5 }),
-    });
-    expect(bad.status).toBe(400);
+    expect(cfg.aggressiveness).toBe(0.9);
   });
 
-  it('low aggressiveness does NOT auto-create a missing junction (suggests instead)', async () => {
-    const server = await boot();
-    await seedProject(server.url);
-    // Conservative — below the 0.25 auto-junction threshold.
-    await fetch(`${server.url}/api/assistant/aggressiveness`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ value: 0.1 }),
-    });
-
-    await ingest(server.url);
-
-    // No junction table was created.
-    const res = await fetch(`${server.url}/api/tables/files_projects/rows`);
-    expect(res.ok).toBe(false);
-  });
-
-  it('high aggressiveness auto-creates the missing junction and links', async () => {
+  it('auto-creates the missing junction and links (default high aggressiveness)', async () => {
     const server = await boot();
     await seedProject(server.url);
     await fetch(`${server.url}/api/assistant/aggressiveness`, {
@@ -269,24 +235,5 @@ describe('inference aggressiveness', () => {
         (e) => e.operation === 'schema.create_entity' && e.table_name === 'invoices',
       ),
     ).toBe(true);
-  });
-
-  it('low aggressiveness does NOT auto-create a note (just stores the source)', async () => {
-    const server = await boot();
-    mockState.matches = [];
-    await fetch(`${server.url}/api/assistant/aggressiveness`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ value: 0.1 }),
-    });
-    await fetch(`${server.url}/api/ingest/text`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Another standalone idea', title: 'spark2' }),
-    });
-    const notes = (await fetch(`${server.url}/api/tables/notes/rows`).then((r) => r.json())) as {
-      rows: Record<string, unknown>[];
-    };
-    expect(notes.rows).toHaveLength(0);
   });
 });

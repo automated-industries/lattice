@@ -5,15 +5,38 @@ import { join } from 'node:path';
 import { bootGui, type BootedGui } from './helpers.js';
 
 /**
- * 4.3 — Sources sidebar. Three peer sections (Files / Artifacts / Connectors);
- * a registered on-disk folder renders as a lazy tree that fetches one level per
- * expand; the "Add a Connector" entry opens the Connectors drawer. The native OS
- * picker can't run headless, so roots are registered via the real API (the same
- * endpoint the picker feeds).
+ * Inputs — the Configure drawer's three input tabs (Files / Connectors /
+ * Databases), split out of the old single "Inputs" tab. A registered on-disk
+ * folder renders (on the Files tab) as a lazy tree that fetches one level per
+ * expand; the MCP Connectors tab hosts the whole connectors panel inline (no
+ * dialog). The native OS picker can't run headless, so roots are registered via
+ * the real API (the same endpoint the picker feeds).
  */
 
 let gui: BootedGui;
 let srcDir: string;
+
+/**
+ * Open the Configure drawer to one of the three input tabs (Files / Connectors /
+ * Databases — the former single "Inputs" tab was split into three peer tabs). The
+ * single-layout router maps #/settings/<tab> → open the drawer over the Workspace
+ * home; wait until that tab's body sentinel has rendered.
+ */
+async function openConfigureTab(
+  page: import('@playwright/test').Page,
+  tab: 'files' | 'connectors' | 'databases',
+  sentinel: string,
+): Promise<void> {
+  const hash = '#/settings/' + tab;
+  await page.goto(gui.url + hash);
+  await page.waitForSelector('nav.dash-sidebar', { state: 'visible' });
+  // A same-page hash that's already set won't re-fire the route; force it either way.
+  await page.evaluate((h) => {
+    if (location.hash !== h) location.hash = h;
+  }, hash);
+  await page.waitForSelector('#settings-drawer.open', { state: 'visible', timeout: 8000 });
+  await page.waitForSelector('#drawer-body ' + sentinel, { state: 'visible', timeout: 8000 });
+}
 test.beforeEach(async () => {
   gui = await bootGui();
   srcDir = mkdtempSync(join(tmpdir(), 'lattice-src-e2e-'));
@@ -26,14 +49,21 @@ test.afterEach(async () => {
   rmSync(srcDir, { recursive: true, force: true });
 });
 
-test('the sidebar shows the three Sources sections', async ({ page }) => {
-  await page.goto(gui.url + '#/');
-  const src = page.locator('#sources-nav');
-  await expect(src.getByText('Files', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(src.getByText('Built by Lattice', { exact: true })).toBeVisible();
-  await expect(src.getByText('Connectors', { exact: true })).toBeVisible();
-  // Artifacts is empty on a fresh workspace.
-  await expect(page.locator('#src-artifacts-tree')).toContainText('Nothing created yet');
+test('the Configure drawer has Files / Connectors / Databases tabs', async ({ page }) => {
+  // Files / Connectors / Databases are now three peer Configure tabs (the former
+  // single "Inputs" tab, with the FILES/CONNECTORS/DATABASES subheadings dropped —
+  // the tab name IS the heading).
+  await openConfigureTab(page, 'files', '#inputs-files-tree');
+  await expect(page.locator('.drawer-tab[data-tab="files"]')).toBeVisible();
+  await expect(page.locator('.drawer-tab[data-tab="connectors"]')).toBeVisible();
+  await expect(page.locator('.drawer-tab[data-tab="databases"]')).toBeVisible();
+  // The old subheadings are gone.
+  await expect(page.locator('#drawer-body .inputs-group-head')).toHaveCount(0);
+  // Each tab renders its own body.
+  await page.locator('.drawer-tab[data-tab="connectors"]').click();
+  await expect(page.locator('#drawer-body #mcp-connectors-list')).toBeVisible({ timeout: 5000 });
+  await page.locator('.drawer-tab[data-tab="databases"]').click();
+  await expect(page.locator('#drawer-body #src-databases-list')).toBeVisible({ timeout: 5000 });
 });
 
 test('a registered folder renders as a tree and lazily expands one level', async ({ page }) => {
@@ -43,8 +73,8 @@ test('a registered folder renders as a tree and lazily expands one level', async
   });
   expect(res.ok()).toBeTruthy();
 
-  await page.goto(gui.url + '#/');
-  const tree = page.locator('#src-files-tree');
+  await openConfigureTab(page, 'files', '#inputs-files-tree');
+  const tree = page.locator('#inputs-files-tree');
   const rootFolder = tree.locator('.src-folder').first();
   await expect(rootFolder).toBeVisible({ timeout: 5000 });
 
@@ -57,30 +87,45 @@ test('a registered folder renders as a tree and lazily expands one level', async
   await expect(tree.getByText('deep.txt', { exact: true })).toHaveCount(0);
 });
 
-test('"Add a Connector" opens the connectors dialog', async ({ page }) => {
-  await page.goto(gui.url + '#/');
-  await page.locator('#src-add-connector').click();
-  await expect(page.locator('#connectors-dialog')).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('#connectors-dialog-body')).toContainText('Jira');
+test('the MCP Connectors tab hosts the table + add form inline (no dialog)', async ({ page }) => {
+  await openConfigureTab(page, 'connectors', '#mcp-connectors-list');
+  await expect(page.locator('#mcp-connectors-form')).toContainText('Add an MCP connector');
+  await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 });
 
-test('the Files object page is a folder graph and folders drill in', async ({ page }) => {
-  const res = await page.request.post(gui.url + '/api/sources/roots', {
-    data: { path: srcDir, kind: 'folder' },
-  });
-  expect(res.ok()).toBeTruthy();
+test('the Files table opens as a SQL runner (like every table)', async ({ page }) => {
+  // Files is now a table in the LATTICE schema — clicking it opens the uniform SQL
+  // runner, not a bespoke folder tree. The default query shows LIVE rows only (files is
+  // soft-deletable), so a soft-deleted/merged file doesn't linger in the view.
+  // (On-disk folder roots are still managed in the Configure drawer's Files tab.)
+  await page.goto(gui.url + '#/w/table/files');
+  await expect(page.locator('.sql-runner')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#sql-editor')).toHaveValue(
+    /select \* from "files" where deleted_at is null limit 100/i,
+  );
+  await expect(page.locator('#sql-run')).toBeVisible();
+});
 
-  // The Files object page (#/fs/files) shows the registered folder root as a node.
-  await page.goto(gui.url + '#/fs/files');
-  await expect(page.locator('.object-graph')).toBeVisible({ timeout: 5000 });
-  const folderNode = page.locator('g.ognode-folder').first();
-  await expect(folderNode).toBeVisible({ timeout: 5000 });
+// The Databases tab renders its whole panel inline (the left-sliding
+// Connect-a-database drawer is gone): the connected-databases area and the
+// add form both live in the tab body, full-width.
+test('the Databases tab hosts the connect form inline (no dialog)', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
 
-  // Drilling into the folder → #/folder/… shows its sub-folder + file as nodes,
-  // and the breadcrumb runs through Files.
-  await folderNode.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toContain('#/folder/');
-  await expect(page.locator('g.ognode-folder').first()).toBeVisible({ timeout: 5000 }); // the 'sub' folder
-  await expect(page.locator('g.ognode-file').first()).toBeVisible(); // note.txt
-  await expect(page.locator('.fs-crumbs')).toContainText('Files');
+  await openConfigureTab(page, 'databases', '#src-databases-list');
+
+  // The inline add form renders in its own mount (a sibling of the table) so a
+  // background table refresh can't wipe it. It carries the Postgres fields.
+  const form = page.locator('#db-form-host');
+  await expect(form.getByText('Add a database')).toBeVisible({ timeout: 5000 });
+  await expect(form.locator('#db-host')).toBeVisible();
+  await expect(form.locator('#db-name')).toBeVisible();
+  await expect(form.locator('#db-ok')).toBeVisible();
+
+  // The old side-drawer is gone, and the tab runs full-width (dm-wide on the body).
+  await expect(page.locator('#db-connect-dialog')).toHaveCount(0);
+  await expect(page.locator('#settings-drawer .drawer-body.dm-wide')).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
 });

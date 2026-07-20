@@ -1,4 +1,6 @@
 import type { Lattice } from '../lattice.js';
+import { boundedSelfContext } from './canonical-context.js';
+import { NOOP_RENDER } from '../render/engine.js';
 import type { TableDefinition } from '../types.js';
 
 /**
@@ -35,7 +37,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       deleted_at: 'TEXT',
     },
     encrypted: { columns: ['value'] },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/secrets.md',
   },
   files: {
@@ -77,7 +79,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/files.md',
   },
   notes: {
@@ -94,8 +96,40 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/notes.md',
+  },
+  dashboards: {
+    // A live visual dashboard the assistant builds for the user — the unit of
+    // the Analytics view. The body is a complete standalone HTML page rendered
+    // in a sandboxed iframe (same pipeline as HTML file artifacts before 5.0);
+    // rows are ordinary, shareable records governed by the same per-row
+    // visibility rules as any other table.
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      // NOT NULL + DEFAULT so ALTER TABLE ADD COLUMN succeeds on the adopt /
+      // shared-schema sync paths (see the note on secrets.name above).
+      title: "TEXT NOT NULL DEFAULT ''",
+      // The executable document body. RESERVED: only the trusted dashboard
+      // authoring tools may write it (guardReservedColumns refuses every other
+      // write path), so an untrusted instruction can never plant executable
+      // HTML. Redacted from assistant reads — the assistant works from `spec`.
+      html: 'TEXT',
+      // The last authoring spec/instruction — a cheap, non-executable
+      // description of what the dashboard shows.
+      spec: 'TEXT',
+      // One-line human-facing subtitle for the Dashboards sidebar.
+      description: 'TEXT',
+      // JSON array of table NAMES the dashboard reads (parsed from the
+      // authored page's data queries). Names only — tier-agnostic, so future
+      // table kinds are consumable with no schema change here.
+      source_tables: 'TEXT',
+      created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
+      deleted_at: 'TEXT',
+    },
+    render: NOOP_RENDER,
+    outputFile: '.lattice-native/dashboards.md',
   },
   chat_threads: {
     // An assistant conversation. Native so chat history survives across
@@ -114,7 +148,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       updated_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/chat-threads.md',
   },
   chat_messages: {
@@ -138,7 +172,7 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
       created_at: "TEXT NOT NULL DEFAULT (datetime('now'))",
       deleted_at: 'TEXT',
     },
-    render: () => '',
+    render: NOOP_RENDER,
     outputFile: '.lattice-native/chat-messages.md',
   },
 };
@@ -178,6 +212,24 @@ export function isInternalNativeEntity(name: string): boolean {
 }
 
 /**
+ * Native entities that belong to the ANALYTICS surface — managed in the
+ * Analytics view, not the Configure workspace. They are deliberately NOT in
+ * {@link NATIVE_INTERNAL_NAMES}: internal natives are forced never-share and
+ * hidden from the activity feed, whereas analytics natives must stay shareable
+ * (per-row cloud visibility, like files) and feed-visible (dashboard creation
+ * shows as an activity card). They are also deliberately visible to the
+ * assistant (schema context + tools). The ONLY thing this set gates is the
+ * Configure-side display surfaces: Objects cards, the brain graph, the
+ * Markdown context tree, and workspace search.
+ */
+export const NATIVE_ANALYTICS_NAMES: ReadonlySet<string> = new Set(['dashboards']);
+
+/** True when `name` is an analytics-surface native entity (see {@link NATIVE_ANALYTICS_NAMES}). */
+export function isAnalyticsNativeEntity(name: string): boolean {
+  return NATIVE_ANALYTICS_NAMES.has(name);
+}
+
+/**
  * Register every native entity on the given Lattice. Must be called
  * BEFORE `db.init()` — uses `define()` so the tables are created as part
  * of schema application alongside any user-declared tables. Subsequent
@@ -193,6 +245,23 @@ export function registerNativeEntities(db: Lattice): void {
   for (const [name, def] of Object.entries(NATIVE_ENTITY_DEFS)) {
     if (existing.has(name)) continue;
     db.define(name, def);
+  }
+  // The files table gets a REAL rendered per-record context ("all data renders
+  // as markdown") — bounded: the multi-megabyte extracted_text and raw
+  // source_json never enter the markdown, and the self file is capped. secrets
+  // and the chat tables stay unrendered by design (hard-excluded in the
+  // canonical derivation). Registered here so owner opens, member opens, and
+  // openWorkspace all get it path-independently; never overrides an explicit
+  // context.
+  const filesDef = NATIVE_ENTITY_DEFS.files;
+  if (filesDef && !db.entityContexts().has('files')) {
+    db.defineEntityContext(
+      'files',
+      boundedSelfContext('files', filesDef, {
+        excludeColumns: new Set(['extracted_text', 'source_json']),
+        budget: 8000,
+      }),
+    );
   }
 }
 
@@ -210,7 +279,7 @@ const NATIVE_REGISTRY_DEF: TableDefinition = {
     origin: 'TEXT NOT NULL',
   },
   primaryKey: 'entity',
-  render: () => '',
+  render: NOOP_RENDER,
   outputFile: '.lattice-native/native-entities.md',
 };
 

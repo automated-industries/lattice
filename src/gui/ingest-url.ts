@@ -41,6 +41,19 @@ export interface UrlIngestEnrich {
   createJunction?: (otherTable: string) => Promise<FileJunction | null>;
   aggressiveness?: number;
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
+  /** Create/return a junction between two USER entities, to cross-link the objects
+   *  extracted from the page to each other and to existing records. Omit → the page's
+   *  objects still link to the source file, just not to one another. */
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>;
 }
 
 export interface UrlIngestCtx {
@@ -139,8 +152,13 @@ export async function ingestUrlAsFile(
       fetched_at: new Date().toISOString(),
     }),
   };
+  // ingestUrlAsFile is a trusted ingestion primitive: it records the fetched web page as a
+  // `cloud_ref` (ref_provider 'web', ref_uri = the crawled URL, no blob_path / S3 key), which is
+  // a benign reference with no local-path / arbitrary-S3 read vector. Scope the file-location
+  // write privilege to exactly this createRow so its byte-location columns are allowed — every
+  // other caller path (a raw create_row tool) stays refused by guardReservedColumns.
   const { id } = await createRow(
-    ctx.mctx,
+    { ...ctx.mctx, allowFileLocationCols: true },
     'files',
     { ...(await requiredFileDefaults(ctx.db, title, fileId, row)), ...row },
     ctx.privateMode ? 'private' : undefined,
@@ -163,6 +181,7 @@ export async function ingestUrlAsFile(
       ctx.enrich.createEntity,
       true,
       ctx.privateMode === true,
+      ctx.enrich.createObjectJunction,
     );
   }
 

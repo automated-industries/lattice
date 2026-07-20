@@ -14,6 +14,9 @@ dist-desktop/
 *.app
 *.dmg
 *.msi
+# `deno desktop <script>` (no --output) compiles the bundle into ./Lattice/
+/Lattice/
+Lattice.dll.tmp-*
 test-results/
 playwright-report/
 playwright/.cache/

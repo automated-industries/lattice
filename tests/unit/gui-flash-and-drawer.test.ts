@@ -20,11 +20,12 @@ describe('3.3.5 GUI — no-flash refresh + settings-drawer URL sync', () => {
     expect(guiAppHtml).toContain('renderRoute({ soft: true })');
   });
 
-  it('a finished table clears its overlay in place (the per-table-done reconcile is gone)', () => {
-    // The marker comment proves the table-done branch was changed to NOT refetch +
-    // re-render the whole pane on every table (the flashing cause).
-    expect(guiAppHtml).toContain('the flashing-div symptom');
-    expect(guiAppHtml).toContain('clearCardProgress(e.table)');
+  it('a finished render does ONE reconcile on the terminal done (no per-table refetch storm)', () => {
+    // Per-table events only fold the renderProgress map (no refetch); the terminal
+    // 'done' does the single reconciling refetch (afterMutation). That is the
+    // anti-flashing invariant — one refresh per render, never one per table.
+    expect(guiAppHtml).toContain('ONE reconciling refetch');
+    expect(guiAppHtml).toContain('afterMutation().catch(function () {');
   });
 
   it('closing the settings drawer resets a #/settings hash so it cannot self-reopen', () => {

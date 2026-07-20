@@ -127,6 +127,54 @@ describe('chat tool loop', () => {
     expect(feedEvents.some((e) => e.op === 'insert' && e.source === 'ai')).toBe(true);
   });
 
+  it('marks a tool round hadTools:true and the final answer hadTools:false', async () => {
+    // Live streaming emits a round's text before tool use is known, so
+    // assistant_message_end carries `hadTools` to tell the client/route which round
+    // called a tool (its narration is kept as its own bubble) vs the final answer.
+    const client = scriptedClient([
+      {
+        text: 'Let me add that',
+        toolUses: [
+          {
+            id: 'tu1',
+            name: 'create_row',
+            input: { table: 'people', values: { id: 'p1', name: 'Ada' } },
+          },
+        ],
+      },
+      { text: 'Done — added Ada.' },
+    ]);
+    const events = await collect(runChat({ client, dispatch, userMessage: 'add Ada' }));
+    const ends = events.filter((e) => e.type === 'assistant_message_end') as {
+      type: 'assistant_message_end';
+      hadTools?: boolean;
+    }[];
+    expect(ends.length).toBe(2);
+    expect(ends[0]?.hadTools).toBe(true); // preamble round (called a tool)
+    expect(ends[1]?.hadTools).toBe(false); // final answer round (no tools)
+  });
+
+  it('streams deltas that arrive across an await (live channel, not buffered per turn)', async () => {
+    // The turn produces text, yields to the event loop, then produces more text
+    // before resolving. The generator must yield BOTH deltas (the drain loop keeps
+    // pulling from the channel across the await), not only what was buffered
+    // synchronously before the first await.
+    const client: LlmClient = {
+      async runTurn(params) {
+        params.onText('alpha ');
+        await Promise.resolve(); // split the deltas across a microtask boundary
+        params.onText('beta');
+        return { stopReason: 'end_turn', text: 'alpha beta', toolUses: [] };
+      },
+    };
+    const events = await collect(runChat({ client, dispatch, userMessage: 'hi' }));
+    const deltas = events
+      .filter((e) => e.type === 'text_delta')
+      .map((e) => (e as { type: 'text_delta'; delta: string }).delta);
+    expect(deltas.join('')).toBe('alpha beta');
+    expect(events[events.length - 1]?.type).toBe('done');
+  });
+
   it('stops after consecutive tool failures (circuit-breaker) and surfaces the real error', async () => {
     // The model keeps calling a tool that always fails (get_row on a missing id).
     // The scripted client repeats this turn; the breaker must stop it well before
@@ -225,6 +273,77 @@ describe('chat tool loop', () => {
     expect(capturedSystem).toContain('bulk_update');
     expect(capturedSystem).toContain('Never refuse');
     expect(capturedSystem).toMatch(/never offer to "write a script"/i);
+  });
+
+  it('tells the assistant to MERGE entities via delete_entity move_to without asking (reversible)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'merge these two lists into one' }));
+
+    // Consolidating one object into another must use the reversible move_to merge
+    // path (delete_entity), be done WITHOUT asking, and the model must stop ending
+    // the turn by telling the user they can now delete the old object themselves.
+    expect(capturedSystem).toMatch(/CONSOLIDATE or MERGE/i);
+    expect(capturedSystem).toContain('delete_entity');
+    expect(capturedSystem).toContain('move_to');
+    expect(capturedSystem).toMatch(/do NOT ask the user to confirm first/i);
+    expect(capturedSystem).toMatch(/restored from history/i);
+    expect(capturedSystem).toMatch(/do NOT end by telling them they can now delete/i);
+    // If the merge tool refuses (e.g. too large), relay it — never retry the same call.
+    expect(capturedSystem).toMatch(/too large to merge automatically/i);
+    expect(capturedSystem).toMatch(/do NOT retry the same call/i);
+  });
+
+  it('teaches the derived-vs-new decision for "make me a table of X" (computed views)', async () => {
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch, userMessage: 'make me a table of urgent tickets' }));
+
+    // A "table of X" over data that already exists must go preview-first through
+    // the computed-table tools — not create_entity — and be described to the
+    // user as "a computed view" in plain language.
+    expect(capturedSystem).toContain('preview_computed_table');
+    expect(capturedSystem).toContain('create_computed_table');
+    expect(capturedSystem).toContain('a computed view');
+    expect(capturedSystem).toMatch(/check every field's status/i);
+    expect(capturedSystem).toMatch(/ask ONE short question/);
+    // The no-jargon rule extends to the computed vocabulary.
+    expect(capturedSystem).toMatch(/never say SQL or JOIN/);
+  });
+
+  it('tags computed views in the schema context so the model treats them as read-only', async () => {
+    await db.defineLate('people_summary', {
+      columns: { id: 'TEXT PRIMARY KEY', who: 'TEXT' },
+      render: () => '',
+      outputFile: 'people_summary.md',
+    });
+    const d: DispatchCtx = {
+      ...dispatch,
+      validTables: new Set(['people', 'people_summary']),
+      computedTables: new Set(['people_summary']),
+    };
+    let capturedSystem = '';
+    const client: LlmClient = {
+      runTurn(params) {
+        capturedSystem = params.system;
+        return Promise.resolve({ stopReason: 'end_turn', text: 'ok', toolUses: [] });
+      },
+    };
+    await collect(runChat({ client, dispatch: d, userMessage: 'what do I have?' }));
+
+    expect(capturedSystem).toContain('people_summary [computed view — read-only]');
+    // Ordinary tables carry no computed tag.
+    expect(capturedSystem).not.toContain('people [computed view');
   });
 
   it("injects the cloud owner's workspace system prompt when provided", async () => {

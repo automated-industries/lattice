@@ -8,12 +8,16 @@ import { guiAppHtml } from '../../src/gui/app.js';
  */
 describe('3.2 GUI regression guards', () => {
   it('#2 render indicator reads "Rendering NN%…" (initial + dynamic)', () => {
-    expect(guiAppHtml).toContain('Rendering 0%...'); // initial pill text
-    expect(guiAppHtml).toContain("'Rendering ' + clamped + '%...'"); // dynamic update
+    // The aggregate header pill shows the dynamic "Rendering N%…" text. (The old
+    // per-node Markdown-tree overlay was retired with the Markdown sidebar section.)
+    expect(guiAppHtml).toContain("'Rendering ' + Math.round(sum / active.length) + '%"); // header pill
   });
 
   it('#3 the top bar gets an explicit stacking context (dropdowns above cards)', () => {
-    expect(guiAppHtml).toContain('position: relative; z-index: 100;');
+    // The tier value lives in the token layer now (--z-topbar: 100) — the guard is that
+    // the topbar still declares an explicit stacking context at the topbar tier.
+    expect(guiAppHtml).toContain('position: relative; z-index: var(--z-topbar);');
+    expect(guiAppHtml).toContain('--z-topbar: 100;');
   });
 
   it('#7 the chat Private-mode toggle is checked+disabled on local workspaces', () => {
@@ -21,8 +25,11 @@ describe('3.2 GUI regression guards', () => {
     expect(guiAppHtml).toContain('Local workspaces are always private');
   });
 
-  it('#8 the sidebar objects list is sorted alphabetically by display label', () => {
-    expect(guiAppHtml).toContain('firstClass.sort(');
+  it('#8 the sidebar surfaces model tables grouped by tier (the flat Objects list is retired)', () => {
+    // The old flat, alphabetically-sorted Objects list is gone with the single-layout
+    // reframe; the sidebar now shows tables grouped by tier (Inputs / Derived / Computed).
+    expect(guiAppHtml).toContain('function renderNavTables(');
+    expect(guiAppHtml).toContain('nav-tier-head');
   });
 
   it('#11 the "Chat" settings tab is gone; System Prompt lives under Workspace', () => {

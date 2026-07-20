@@ -65,19 +65,46 @@ export const offlineEditQueueJs = `    // ────────────�
         location.reload();
       }, 600);
     }
-    // Manual upgrade fallback: show an "Update available — Upgrade" link next to
-    // the version chip only when the server reports a newer, installable version.
-    // The auto-updater installs in the background on its own cadence; this lets
-    // the user force it now. Best-effort; the link stays hidden on any failure.
+    // One-time badge on the version chip for a build that can't silently keep
+    // itself current — a dev/linked checkout, or a session pinned with
+    // auto-update off. Without it a stale dev server looks identical to a live
+    // auto-updating install, which is exactly how an old version goes unnoticed.
+    var updateBadgeApplied = false;
+    function applyUpdateBadge(s) {
+      if (updateBadgeApplied || !s) return;
+      var ver = document.getElementById('app-version');
+      if (!ver) return;
+      if (s.kind === 'linked-dev') {
+        ver.textContent = ver.textContent + ' (dev)';
+        ver.title = 'development build — auto-update disabled';
+        updateBadgeApplied = true;
+      } else if (s.autoUpdate === false) {
+        ver.title = 'auto-update disabled';
+        updateBadgeApplied = true;
+      }
+    }
+    // Show an "Update available" link next to the version chip when the server
+    // reports a newer version AND this surface can act on it. The action depends
+    // on how this copy updates: an npm install can upgrade in place ("Upgrade"),
+    // the desktop app applies on relaunch ("Restart to update"). A dev/linked
+    // build reports the newer version but offers no action (action:'none') — the
+    // (dev) badge already explains why. Best-effort; hidden on any failure.
     function checkUpdateAvailable() {
-      var el = document.getElementById('app-update-link');
-      if (!el) return;
       fetch('/api/update/status')
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (s) {
-          if (s && s.latest && s.current && s.latest !== s.current && s.installable) {
+          if (!s) return;
+          applyUpdateBadge(s);
+          var el = document.getElementById('app-update-link');
+          if (!el) return;
+          var hasUpdate = s.latest && s.current && s.latest !== s.current;
+          if (hasUpdate && s.action === 'upgrade-in-place') {
             el.textContent = 'Update available — Upgrade';
             el.title = 'Install v' + s.latest + ' and restart';
+            el.hidden = false;
+          } else if (hasUpdate && s.action === 'restart-to-update') {
+            el.textContent = 'Update available — Restart to update';
+            el.title = 'Download v' + s.latest + ' and relaunch';
             el.hidden = false;
           } else {
             el.hidden = true;
@@ -138,8 +165,42 @@ export const offlineEditQueueJs = `    // ────────────�
         setStatusPill((data && data.mode) || 'local', (data && data.state) || 'local');
       } else if (type === 'realtime-change') {
         if (data) onRealtimeChange(data);
-        scheduleRealtimeRefresh();
+        // Pass the changed table so only its cache entry is invalidated; a missing
+        // table falls back to a full wipe (unchanged behavior).
+        scheduleRealtimeRefresh(data && data.table);
+        // A dashboards change from any source (another session, a direct write)
+        // refreshes the Analytics sidebar/home live — same reason as the feed hook.
+        if (data && data.table === 'dashboards' && typeof refreshDashboardsLive === 'function') {
+          refreshDashboardsLive();
+        }
       } else if (type === 'feed') {
+        // A clarification-question lifecycle event (enqueued / answered /
+        // dismissed) is a signal, not a data change: reconcile the pending
+        // cards + trigger dot (auto-opening the panel on a new question) and
+        // skip the activity-card/refresh handling below.
+        if (data && data.op === 'question') {
+          try { onQuestionFeedEvent(); } catch (_) { /* best-effort */ }
+          return;
+        }
+        // A chat thread's AI title landed after its stream closed — refresh the
+        // conversation list so the friendly title replaces the first-message
+        // placeholder. Also a signal, not a data change: no activity card.
+        if (data && data.op === 'thread_title') {
+          try { if (typeof refreshThreadList === 'function') refreshThreadList(); } catch (_) { /* best-effort */ }
+          return;
+        }
+        // A folder ingest progress event — update the shared progress bar state.
+        // Completion comes from the event's explicit terminal flag: a capped
+        // ingest finishes with done < total, so counts alone can't signal it.
+        // done >= total is kept as a fallback for a missing flag.
+        if (data && data.op === 'ingest_progress' && data.progress) {
+          try {
+            var bar = ingestProgress(data.progress.total, 'server');
+            bar.update(data.progress.done, data.progress.total, 'server');
+            if (data.progress.terminal || data.progress.done >= data.progress.total) bar.done();
+          } catch (_) { /* best-effort */ }
+          return;
+        }
         // renderFeedItem now flashes each change as a transient top-right status
         // (the realtime update) — no rail pills.
         try { renderFeedItem(data); } catch (_) { /* best-effort */ }
@@ -151,13 +212,33 @@ export const offlineEditQueueJs = `    // ────────────�
         if (data && ['insert', 'link', 'schema'].indexOf(data.op) !== -1) {
           scheduleGraphIngestAnim();
         }
-        if (data && (data.table || data.op === 'schema')) scheduleRealtimeRefresh();
+        // A schema change can alter any table's shape → full wipe (no table arg);
+        // a row/link change scopes invalidation to its own table.
+        if (data && (data.table || data.op === 'schema')) {
+          // A schema change (e.g. an assistant-created computed table adds a computes
+          // edge) can change the relationship graph too — drop the cached schema-graph
+          // edges so the Data Model explorer, brain graph, and table-view lineage refetch
+          // fresh instead of showing a stale model until the next reload.
+          if (data.op === 'schema') mtEdgesCache = null;
+          scheduleRealtimeRefresh(data.op === 'schema' ? null : data.table);
+        }
+        // Dashboards live in the Analytics sidebar/home, which the generic
+        // realtime refresh above does not touch — refresh them explicitly so a
+        // Lattice-built dashboard appears without a manual reload.
+        if (data && data.table === 'dashboards' && typeof refreshDashboardsLive === 'function') {
+          refreshDashboardsLive();
+        }
       } else if (type === 'render-snapshot') {
         if (data) applyRenderSnapshot(data);
         updateRenderStatus();
       } else if (type === 'render-progress') {
         if (data) onRenderEvent(data);
         updateRenderStatus();
+      } else if (type === 'chat-progress') {
+        // A chat turn's streamed event { threadId, messageId, event } — the async
+        // replacement for the held-open POST response. Routed to the turn's bubble by
+        // messageId; gated per user server-side so one member never sees another's chat.
+        if (data && typeof onChatProgress === 'function') onChatProgress(data);
       } else if (type === 'update-applied') {
         // Files on disk are the new version; the server is about to relaunch.
         // Don't reload yet (the server is exiting) — the reconnect version check
@@ -195,7 +276,13 @@ export const offlineEditQueueJs = `    // ────────────�
       try { ws = new WebSocket(proto + '//' + location.host + '/api/stream'); }
       catch (_) { scheduleEventStreamReconnect(); return; }
       eventStream = ws;
-      ws.onopen = function () { eventStreamBackoff = 1000; checkServerVersion(); };
+      ws.onopen = function () {
+        eventStreamBackoff = 1000;
+        checkServerVersion();
+        // The bus has no replay: reconcile any chat turn bound before this (re)connect, so
+        // a terminal 'done' published while the socket was down can't strand the composer.
+        if (typeof resyncChatTurns === 'function') resyncChatTurns();
+      };
       ws.onmessage = function (ev) {
         var msg = null;
         try { msg = JSON.parse(ev.data); } catch (_) { return; /* ignore malformed */ }
