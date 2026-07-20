@@ -505,8 +505,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // card in place (card's Open navigates) instead of jumping straight to the record. Recaptured.
 // Chat references revised to inline word-links: the referenced word itself is the link
 // (no boxed pill, no emoji), and click navigates straight to the record. Recaptured.
-const ORIGINAL_LENGTH = 739578;
-const ORIGINAL_SHA256 = 'ceced96569e496c56eb770b8e3c204f6b29712a00860ea5f498d50637f53f8e3';
+// text_final handling: the answer round re-arrives with deterministic trace links and
+// replaces the bubble's accumulated deltas. Recaptured.
+const ORIGINAL_LENGTH = 739889;
+const ORIGINAL_SHA256 = '1fc804b252b2a3e9617bb3eb1ecafdaea1b21d608b28f6dec470c669ed7fbd09';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

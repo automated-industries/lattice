@@ -1106,6 +1106,16 @@ export async function dispatchChatRoute(
           assistantText += ev.delta;
           const cur = turns[turns.length - 1];
           if (cur) cur.text += ev.delta;
+        } else if (ev.type === 'text_final') {
+          // The answer round's text re-emitted with deterministic trace links —
+          // replace the round's accumulated deltas in both records so the
+          // persisted message replays with the links.
+          const cur = turns[turns.length - 1];
+          if (cur) {
+            assistantText =
+              assistantText.slice(0, assistantText.length - cur.text.length) + ev.text;
+            cur.text = ev.text;
+          }
         } else if (ev.type === 'assistant_message_end') {
           // A tool round's streamed narration ("I see — let me try a different approach…")
           // is real content the user should keep — so it stays in BOTH the persisted message
