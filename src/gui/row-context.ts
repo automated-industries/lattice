@@ -197,7 +197,12 @@ export async function computeContextFileSourceCounts(
 
   for (const [filename, fileSpec] of Object.entries(schemaDef.files)) {
     const source = fileSources[filename];
-    if (!source || source.type === 'self' || source.type === 'custom' || source.type === 'enriched') {
+    if (
+      !source ||
+      source.type === 'self' ||
+      source.type === 'custom' ||
+      source.type === 'enriched'
+    ) {
       continue; // counts not applicable
     }
 
