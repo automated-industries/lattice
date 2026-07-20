@@ -19,9 +19,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   custom user-supplied render functions can emit them anywhere. The context API response now
   includes `source` metadata for each file (type, table, and row count for related sources),
   enabling future UI features like table-scoped filtering and rollup statistics. Assistant chat
-  answers get the same treatment: `lattice://` object references in a reply open the provenance
-  card in place (the card's Open action navigates), so a value in an answer traces to its source
-  row without leaving the conversation.
+  answers are traceable too: every record a reply mentions is linked inline — the referenced
+  word itself is the link, flowing with the sentence — and clicking it opens that record in the
+  workspace.
 
 ### Changed
 

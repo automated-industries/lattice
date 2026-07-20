@@ -195,15 +195,15 @@ export const onboardingJs = `    // ──────────────�
       var html = mdToHtml(pre);
       return html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
         var p = pills[Number(n)];
-        return '<a class="chip chip-link lattice-ref" data-table="' + escapeHtml(p.table) +
-          '" data-id="' + escapeHtml(p.id) + '" title="Open this ' + escapeHtml(p.table) + '">🔗 ' +
+        // Inline word-link, not a boxed pill: the referenced word itself is the
+        // link, flowing with the sentence.
+        return '<a class="lattice-ref" data-table="' + escapeHtml(p.table) +
+          '" data-id="' + escapeHtml(p.id) + '" title="Open this ' + escapeHtml(p.table) + '">' +
           escapeHtml(p.label) + '</a>';
       });
     }
-    // One delegated click handler on the rail feed: a lattice-ref pill opens the
-    // provenance card (trace-first — the card's Open action navigates), so a
-    // value in an assistant answer traces to its source row in place. Falls back
-    // to direct navigation if the card helper is unavailable.
+    // One delegated click handler on the rail feed: a lattice-ref word-link
+    // navigates straight to its record in the workspace.
     var _latticeRefWired = false;
     function ensureLatticeRefHandler() {
       if (_latticeRefWired) return;
@@ -213,8 +213,7 @@ export const onboardingJs = `    // ──────────────�
         var a = e.target && e.target.closest ? e.target.closest('.lattice-ref') : null;
         if (!a) return;
         e.preventDefault();
-        if (typeof openProvenanceCard === 'function') openProvenanceCard(a);
-        else openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
+        openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
       });
       _latticeRefWired = true;
     }

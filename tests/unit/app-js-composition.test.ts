@@ -503,8 +503,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // chips summarize each context file's origin table/count. Recaptured.
 // Chat pills trace-first: a lattice-ref pill in an assistant answer opens the provenance
 // card in place (card's Open navigates) instead of jumping straight to the record. Recaptured.
-const ORIGINAL_LENGTH = 739723;
-const ORIGINAL_SHA256 = '4f245af35d01597539c67b9718246e80938232f65e92ecc1aa8f385eb8f2a72c';
+// Chat references revised to inline word-links: the referenced word itself is the link
+// (no boxed pill, no emoji), and click navigates straight to the record. Recaptured.
+const ORIGINAL_LENGTH = 739578;
+const ORIGINAL_SHA256 = 'ceced96569e496c56eb770b8e3c204f6b29712a00860ea5f498d50637f53f8e3';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
