@@ -361,17 +361,42 @@ export const analyticsViewJs = `
 
     // ── Assistant working status ───────────────────────────────────────────
     // The chat stream's tool_use events map to ONE transient plain-language
-    // line under the feed (never tool names or technical detail — the user
-    // sees "Building your dashboard…", not an internal call). Cleared when the
+    // line under the feed — a SPECIFIC label per tool so the user always knows
+    // what's happening ("Looking up a URL…", "Searching your data…"), never a
+    // tool name or technical detail. Keyed on the fixed registry tool name (not
+    // model text), so it's deterministic; anything unmapped (e.g. a connector
+    // tool registered later) falls back to the generic line. Cleared when the
     // turn's text starts streaming or the stream ends.
+    var TOOL_LABELS = {
+      list_entities: 'Reading your data…', list_rows: 'Reading your data…',
+      get_row: 'Reading your data…', get_row_context: 'Reading your data…',
+      list_system_tables: 'Reading your data…', get_system_table_rows: 'Reading your data…',
+      get_entity_graph: 'Mapping your relationships…', search: 'Searching your data…',
+      get_history: 'Checking recent changes…', lattice_help: 'Checking the Lattice guide…',
+      investigate: 'Checking your dashboard…', create_row: 'Adding a record…',
+      update_row: 'Updating your records…', bulk_update: 'Updating your records…',
+      delete_row: 'Removing a record…', create_secret: 'Saving a credential…',
+      create_artifact: 'Writing a document…', create_dashboard: 'Building your dashboard…',
+      edit_dashboard: 'Building your dashboard…', import_spreadsheet: 'Importing your spreadsheet…',
+      ingest_url: 'Looking up a URL…', ingest_text: 'Saving your content…',
+      set_definition: 'Updating settings…', set_visibility: 'Updating settings…',
+      set_column_secret: 'Updating settings…', set_entity_icon: 'Updating settings…',
+      dedup: 'Merging duplicates…', merge_rows: 'Merging duplicates…',
+      link: 'Linking your records…', unlink: 'Linking your records…',
+      create_relationship: 'Linking your records…', create_entity: 'Updating your data model…',
+      rename_entity: 'Updating your data model…', delete_entity: 'Updating your data model…',
+      add_column: 'Adding a field…', rename_column: 'Adding a field…',
+      preview_computed_table: 'Computing your view…', create_computed_table: 'Computing your view…',
+      update_computed_table: 'Computing your view…', refresh_computed_table: 'Computing your view…',
+      undo: 'Reverting a change…', redo: 'Reverting a change…', revert: 'Reverting a change…',
+      list_databases: 'Switching data sources…', switch_database: 'Switching data sources…',
+      create_database: 'Switching data sources…'
+    };
     function anToolStatus(toolName) {
       var el = document.getElementById('ask-status');
       if (!el) return;
       if (!toolName) { el.textContent = ''; el.hidden = true; return; }
-      el.textContent =
-        toolName === 'create_dashboard' || toolName === 'edit_dashboard'
-          ? 'Building your dashboard…'
-          : 'Working on your data…';
+      el.textContent = TOOL_LABELS[toolName] || 'Working on your data…';
       el.hidden = false;
     }
 
