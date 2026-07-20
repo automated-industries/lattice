@@ -248,56 +248,75 @@ describe('GET /api/tables/:table/rows/:id/context (source metadata)', () => {
         '      agent: { type: belongsTo, table: agents, foreignKey: agent_id }',
         '    outputFile: tasks.md',
         '',
+        // Source metadata requires entity-context definitions: plain `--config`
+        // serving without them is manifest-only, where `source` is (by design)
+        // omitted — see the unit coverage of buildRowContextLocator for that path.
+        'entityContexts:',
+        '  agents:',
+        '    slug: "{{id}}"',
+        '    directoryRoot: Agents',
+        '    files:',
+        '      AGENT.md:',
+        '        source: self',
+        '        template: default-detail',
+        '      TASKS.md:',
+        '        source: { type: hasMany, table: tasks, foreignKey: agent_id }',
+        '        template: default-list',
+        '  tasks:',
+        '    slug: "{{id}}"',
+        '    directoryRoot: Tasks',
+        '    files:',
+        '      TASK.md:',
+        '        source: self',
+        '        template: default-detail',
+        '      AGENTS.md:',
+        '        source: { type: belongsTo, table: agents, foreignKey: agent_id }',
+        '        template: default-list',
+        '',
       ].join('\n'),
     );
     const outputDir = join(root, 'context');
-    // Seed rendered context: both agent and task with files
-    mkdirSync(join(outputDir, 'Agents', 'alpha'), { recursive: true });
-    mkdirSync(join(outputDir, 'Tasks', 'task-1'), { recursive: true });
-    writeFileSync(
-      join(outputDir, 'Agents', 'alpha', 'AGENT.md'),
-      '---\nagents_id: agent-1\n---\n\n# Alpha\n',
-    );
-    writeFileSync(
-      join(outputDir, 'Agents', 'alpha', 'TASKS.md'),
-      '# Tasks\n\n- [Task 1](lattice://tasks/task-1)\n',
-    );
-    writeFileSync(
-      join(outputDir, 'Tasks', 'task-1', 'TASK.md'),
-      '---\ntasks_id: task-1\n---\n\n# Task 1\n',
-    );
-    writeFileSync(
-      join(outputDir, 'Tasks', 'task-1', 'AGENTS.md'),
-      '# Agent\n\n- Alpha\n',
-    );
+    // No pre-rendered files: source metadata rides the locator, so unrendered
+    // files still carry it (content arrives on the next render).
+    mkdirSync(outputDir, { recursive: true });
 
     const s = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
     servers.push(s);
 
-    // Create a task row
-    const taskRes = await fetch(`${s.url}/api/tables/tasks/rows`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Task 1', agent_id: 'agent-1' }),
-    });
-    const taskId = ((await taskRes.json()) as { id: string }).id;
+    // One agent with two tasks pointing at it.
+    const post = async (path: string, body: unknown): Promise<{ id: string }> => {
+      const r = await fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return (await r.json()) as { id: string };
+    };
+    const agent = await post('/api/tables/agents/rows', { name: 'Alpha' });
+    const task = await post('/api/tables/tasks/rows', { title: 'Task 1', agent_id: agent.id });
+    await post('/api/tables/tasks/rows', { title: 'Task 2', agent_id: agent.id });
 
-    // GET context: check files include source metadata
-    const ctx = await fetch(`${s.url}/api/tables/tasks/rows/${taskId}/context`);
-    const { files } = (await ctx.json()) as {
-      files: { name: string; source?: { type: string; table?: string; count?: number } }[];
+    type CtxFiles = { name: string; source?: { type: string; table?: string; count?: number } }[];
+    const filesOf = async (table: string, id: string): Promise<CtxFiles> => {
+      const ctx = await fetch(`${s.url}/api/tables/${table}/rows/${id}/context`);
+      return ((await ctx.json()) as { files: CtxFiles }).files;
     };
 
-    const taskFile = files.find((f) => f.name === 'TASK.md');
-    const agentFile = files.find((f) => f.name === 'AGENTS.md');
+    // Task row: self file carries {type:'self'}; belongsTo file names its table
+    // and counts the populated FK (1).
+    const taskFiles = await filesOf('tasks', task.id);
+    expect(taskFiles.find((f) => f.name === 'TASK.md')?.source).toEqual({ type: 'self' });
+    const agentsFile = taskFiles.find((f) => f.name === 'AGENTS.md');
+    expect(agentsFile?.source?.type).toBe('belongsTo');
+    expect(agentsFile?.source?.table).toBe('agents');
+    expect(agentsFile?.source?.count).toBe(1);
 
-    // Self file: source type is 'self', no table
-    expect(taskFile?.source).toEqual({ type: 'self' });
-
-    // Related file: source type is 'belongsTo', table is set
-    expect(agentFile?.source?.type).toBe('belongsTo');
-    expect(agentFile?.source?.table).toBe('agents');
-    expect(typeof agentFile?.source?.count).toBe('number'); // count should be computed
+    // Agent row: hasMany file counts the two tasks via a bounded SQL COUNT.
+    const agentFiles = await filesOf('agents', agent.id);
+    const tasksFile = agentFiles.find((f) => f.name === 'TASKS.md');
+    expect(tasksFile?.source?.type).toBe('hasMany');
+    expect(tasksFile?.source?.table).toBe('tasks');
+    expect(tasksFile?.source?.count).toBe(2);
   });
 });
 
