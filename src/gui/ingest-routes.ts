@@ -275,10 +275,12 @@ async function extractImage(
   const auth = await resolveVisionAuth(db);
   if (!auth) return null;
   try {
-    const text = await describeImage(auth, path);
+    const text = await describeImage(auth, path, { mediaType: mime });
     return text.trim() ? { text, skip: false } : null;
   } catch (e) {
-    console.warn('[ingest] image vision failed:', (e as Error).message);
+    // Surface the REAL reason (auth/proxy/normalization) in the logs — a silent empty result made
+    // an image ingest look like "no source text" with no clue why (a cloud-vision failure mode).
+    console.warn(`[ingest] image vision failed for ${mime}:`, (e as Error).message);
     return null;
   }
 }
