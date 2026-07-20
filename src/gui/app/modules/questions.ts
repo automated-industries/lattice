@@ -16,7 +16,59 @@ export const questionsJs = `
     // ────────────────────────────────────────────────────────────
     var qCards = {};        // pending-store question id → card element
     var qPendingCount = 0;  // live pending count (drives the trigger dot)
+    // Pending cards are collapsed behind a one-line banner by default: they are
+    // workspace-scoped (a folder ingest can enqueue dozens), while the rail is
+    // thread-scoped — expanding them all under whatever conversation is open
+    // reads as one broken conversation. The banner keeps the count visible
+    // without hijacking the thread; clicking it expands the stack in place.
+    var qStackExpanded = false;
     function qContainer() { return document.getElementById('question-cards'); }
+    // Lazily create the banner + collapsible stack inside the container. Cards
+    // append into the stack (never the container root) so collapse is one hide.
+    function qStack() {
+      var host = qContainer();
+      if (!host) return null;
+      var stack = document.getElementById('q-stack');
+      if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'q-stack';
+        host.appendChild(stack);
+      }
+      return stack;
+    }
+    function qRenderBanner() {
+      var host = qContainer();
+      if (!host) return;
+      // Look the stack up (don't create it) — at zero pending there may be
+      // nothing to show, and an empty container keeps its :empty collapse.
+      var stack = document.getElementById('q-stack');
+      var banner = document.getElementById('q-banner');
+      if (qPendingCount === 0) {
+        // Nothing pending: no banner. Leave the stack visible so a just-answered
+        // card's "✓" confirmation (it lingers briefly) isn't hidden mid-thanks.
+        if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+        if (stack) stack.hidden = false;
+        qStackExpanded = false;
+        return;
+      }
+      if (!banner) {
+        banner = document.createElement('button');
+        banner.id = 'q-banner';
+        banner.className = 'q-banner';
+        banner.type = 'button';
+        banner.setAttribute('aria-controls', 'q-stack');
+        banner.addEventListener('click', function () {
+          qStackExpanded = !qStackExpanded;
+          qRenderBanner();
+        });
+        host.insertBefore(banner, host.firstChild);
+      }
+      banner.textContent = (qStackExpanded ? '▾ ' : '▸ ') + qPendingCount +
+        (qPendingCount === 1 ? ' data question waiting' : ' data questions waiting') +
+        (qStackExpanded ? '' : ' — review');
+      banner.setAttribute('aria-expanded', qStackExpanded ? 'true' : 'false');
+      if (stack) stack.hidden = !qStackExpanded;
+    }
     // The dock is visible exactly when the Analytics view is — hash-derived so
     // the dot is correct no matter when it's evaluated relative to a re-render.
     function qDockShowing() { return isAnalyticsHash(location.hash); }
@@ -159,6 +211,7 @@ export const questionsJs = `
     function qMarkResolved(id, card, line) {
       delete qCards[id];
       qPendingCount = Math.max(0, qPendingCount - 1);
+      qRenderBanner();
       if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
       updateQuestionDot();
       qCardResolve(card, line);
@@ -166,7 +219,7 @@ export const questionsJs = `
       setTimeout(function () { if (card.parentNode) card.parentNode.removeChild(card); }, 8000);
     }
     function renderPendingQuestion(q) {
-      var host = qContainer();
+      var host = qStack();
       if (!host || qCards[q.id]) return;
       // Parse the context_json to extract the subject (what the question is about).
       var context = null;
@@ -233,6 +286,7 @@ export const questionsJs = `
           if (!qCards[q.id]) { hadNew = true; renderPendingQuestion(q); }
         });
         qPendingCount = qs.length;
+        qRenderBanner();
         // Keep the Configure-view 'Data Questions' tab + its unread badge in sync.
         // The tab appears while questions are outstanding and vanishes at zero.
         if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
@@ -265,6 +319,7 @@ export const questionsJs = `
         if (el && el.parentNode) el.parentNode.removeChild(el);
       });
       qPendingCount = 0;
+      qRenderBanner();
       if (typeof setQuestionsTab === 'function') setQuestionsTab(0);
       updateQuestionDot();
       // Load the NEW workspace's pending questions (re-adds the tab if it has any).
@@ -391,6 +446,11 @@ export const questionsJs = `
         if (twin.parentNode) twin.parentNode.removeChild(twin);
       }
       qPendingCount = Math.max(0, qPendingCount - 1);
+      // Repaint the banner synchronously — the sibling resolve paths (qMarkResolved,
+      // refreshQuestions, resetQuestionsState) all do; without it a resolve from the
+      // Configure Data Questions tab leaves a stale "▸ N data questions waiting" banner
+      // until a later feed event happens to reconcile.
+      qRenderBanner();
       if (typeof setQuestionsTab === 'function') setQuestionsTab(qPendingCount);
       updateQuestionDot();
       setTimeout(function () { if (card && card.parentNode) card.parentNode.removeChild(card); }, 6000);
