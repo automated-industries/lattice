@@ -41,11 +41,11 @@ describe('anToolStatus — per-tool status labels', () => {
     expect(statusText()).toBe('Importing your spreadsheet…');
   });
 
-  it('keeps the existing dashboard label (no regression)', () => {
+  it('distinguishes building a new dashboard from editing an existing one', () => {
     w.anToolStatus('create_dashboard');
     expect(statusText()).toBe('Building your dashboard…');
     w.anToolStatus('edit_dashboard');
-    expect(statusText()).toBe('Building your dashboard…');
+    expect(statusText()).toBe('Editing your dashboard…');
   });
 
   it('falls back to a generic label for an unmapped/connector tool — never the raw name', () => {

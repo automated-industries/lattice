@@ -377,7 +377,7 @@ export const analyticsViewJs = `
       update_row: 'Updating your records…', bulk_update: 'Updating your records…',
       delete_row: 'Removing a record…', create_secret: 'Saving a credential…',
       create_artifact: 'Writing a document…', create_dashboard: 'Building your dashboard…',
-      edit_dashboard: 'Building your dashboard…', import_spreadsheet: 'Importing your spreadsheet…',
+      edit_dashboard: 'Editing your dashboard…', import_spreadsheet: 'Importing your spreadsheet…',
       ingest_url: 'Looking up a URL…', ingest_text: 'Saving your content…',
       set_definition: 'Updating settings…', set_visibility: 'Updating settings…',
       set_column_secret: 'Updating settings…', set_entity_icon: 'Updating settings…',
