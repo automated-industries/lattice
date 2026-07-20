@@ -2,6 +2,37 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import type { RefProvider } from './types.js';
 
+/** A hostname the user could have typed without a scheme: dot-separated alnum/hyphen labels with
+ *  a ≥2-alpha TLD, plus an optional path/query/fragment. Requires the TLD so `e.g` never matches. */
+const BARE_HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:[/?#].*)?$/i;
+const HAS_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * Normalize a web address the user WROTE into a full URL string, or null if it isn't one. A token
+ * that already carries a scheme is returned canonicalized (if it parses); a bare domain the user
+ * typed WITHOUT a scheme (e.g. `automatedindustries.ai`) has `https://` inferred. Deterministic —
+ * so the URL detectors never re-prompt for a domain they already recognized. This does NOT
+ * authorize a fetch: {@link assertSafeUrl} still enforces http(s)-only + the SSRF host checks, and
+ * the policy/budget/concurrency guards still run downstream on the result.
+ */
+export function normalizeUserUrl(raw: string): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  if (HAS_SCHEME_RE.test(t)) {
+    try {
+      return new URL(t).toString();
+    } catch {
+      return null;
+    }
+  }
+  if (!BARE_HOST_RE.test(t)) return null; // scheme-less, not host-shaped → not a URL
+  try {
+    return new URL('https://' + t).toString();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * SSRF guard for user-supplied URLs. Rejects non-http(s) schemes and, unless
  * explicitly allowed, any host that resolves to a private / loopback /
@@ -11,7 +42,10 @@ import type { RefProvider } from './types.js';
 export async function assertSafeUrl(rawUrl: string, allowPrivate = false): Promise<URL> {
   let u: URL;
   try {
-    u = new URL(rawUrl);
+    // Infer a scheme for a bare domain the user typed (e.g. "example.com" → "https://example.com")
+    // so a valid host isn't wrongly rejected as "invalid URL". A non-http(s) scheme is still
+    // rejected below, and the private-address checks still run on the inferred host.
+    u = new URL(normalizeUserUrl(rawUrl) ?? rawUrl);
   } catch {
     throw new Error(`Lattice: invalid URL: ${rawUrl}`);
   }
