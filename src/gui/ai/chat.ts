@@ -498,6 +498,10 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // history's replayed tool calls too, so a follow-up the model answers from
   // conversation memory (no new reads) still links the records it names.
   const linkables = new Map<string, TraceRef | null>();
+  const messages: LlmMessage[] = [
+    ...(opts.history ?? []),
+    { role: 'user', content: opts.userMessage },
+  ];
   {
     const toolInputs = new Map<string, unknown>();
     for (const m of messages) {
@@ -514,10 +518,6 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       }
     }
   }
-  const messages: LlmMessage[] = [
-    ...(opts.history ?? []),
-    { role: 'user', content: opts.userMessage },
-  ];
   // Build the schema-aware system prompt once per turn — gives the model the
   // real table list so it stops guessing (and re-establishes context each turn,
   // since the persisted history is text-only).
