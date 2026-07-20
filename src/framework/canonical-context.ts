@@ -332,9 +332,12 @@ function renderRelated(table: string): (rows: Row[]) => string {
     const items = rows
       .map((r) => {
         const label = rowLabel(r) || '(row)';
-        const id = String(r.id ?? '').trim();
-        // Emit a link only if the row has an id. Rows with no id or empty-string
-        // id stay as plain text (e.g., junctions where id is null / not set).
+        // Emit a link only for a string/number id. Rows with no id, an empty-
+        // string id, or a non-scalar id stay as plain text (e.g., junctions
+        // where id is null / not set).
+        const rawId = r.id;
+        const id =
+          typeof rawId === 'string' ? rawId.trim() : typeof rawId === 'number' ? String(rawId) : '';
         if (!id) return `- ${label}`;
         // URL-encode the id to support PKs with special characters.
         const encodedId = encodeURIComponent(id);

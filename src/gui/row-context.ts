@@ -210,7 +210,7 @@ export async function computeContextFileSourceCounts(
         const refCol = fileSpec.source.references ?? pkCol ?? 'id';
         const pkVal = row[refCol];
         if (pkVal != null) {
-          count = await db.count(source.table!, {
+          count = await db.count(fileSpec.source.table, {
             filters: [{ col: fk, op: 'eq', val: pkVal }],
           });
         }
