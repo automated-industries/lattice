@@ -97,6 +97,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A vanished workspace directory can no longer crash the GUI (and no longer fails CI on
+  Windows).** The file-loopback watcher (the piece that imports your manual edits to rendered
+  `.md` files back into the database) had no handler for the watcher's `error` event, so the
+  watched directory being deleted, renamed, or unmounted out from under it — including a test's
+  temp directory being removed during teardown, which Windows can report even after the watch is
+  closed — became a fatal unhandled exception that took the whole server (or a whole CI run)
+  down. The watcher now degrades cleanly: if the directory is gone, it stops quietly; if the
+  watch fails while the directory still exists (a permissions change, an antivirus lock), it
+  stops **loudly** — a console warning plus an activity-feed notice that file-edit sync stopped —
+  and a fresh `start()` can rewire it. A late error from an already-replaced watcher can never
+  close its healthy replacement. The same missing-`error`-listener hardening was applied to the
+  browser-opener spawn (a headless machine without `xdg-open` no longer crashes the server at
+  boot), the GUI-asset read stream, the supervisor's child spawn, and the post-listen HTTP
+  server.
+
 - **A connected table always shows its data lineage.** The lineage map below a connected
   (read-only mirror) table's rows appeared for some connected tables but not others — it was hidden
   whenever no other synced table happened to link to it (so an isolated mirror like a standalone

@@ -256,6 +256,14 @@ export function openUrl(url: string): void {
     process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   const child = spawn(command, args, { stdio: 'ignore', detached: true });
+  // A missing opener (e.g. headless Linux without xdg-open) emits an async 'error'
+  // EVENT on the child — with no listener Node turns it into a fatal unhandled
+  // exception that takes the GUI server down right as it boots. Opening a browser
+  // is a convenience: degrade to a console note, never a crash. (Same guarded
+  // pattern as the reveal-in-file-manager spawn in files-routes.ts.)
+  child.on('error', (err: Error) => {
+    console.warn(`[lattice] could not open ${url} in a browser:`, err.message);
+  });
   child.unref();
 }
 
@@ -1512,6 +1520,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   });
 
   const port = await listenWithPortFallback(server, startPort, host);
+  // listen() removes its bind-failure 'error' listener once 'listening' fires, so from
+  // here on the long-lived http.Server would have NO 'error' listener — a rare post-listen
+  // socket-level error (e.g. an accept failure on an abruptly invalidated handle) would be
+  // a fatal unhandled exception. Defensive: surface it and keep serving.
+  server.on('error', (err: Error) => {
+    console.warn('[lattice] GUI server error:', err.message);
+  });
   // Now the real port is known — arm the CSRF/rebinding guard with the exact Host
   // authorities the server actually answers on.
   boundAuthorities = computeBoundAuthorities(host, port, hostIsLoopback);

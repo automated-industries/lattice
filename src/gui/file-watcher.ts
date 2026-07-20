@@ -13,11 +13,23 @@
  * custom-rendered file that changed but parses to nothing surfaces a feed notice
  * rather than a guessed (corrupting) write.
  */
-import { watch, type FSWatcher } from 'node:fs';
+import { watch, existsSync, type FSWatcher } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import type { FeedBus } from './feed.js';
 import { updateRow, type MutationCtx } from './mutations.js';
 import type { ReverseSyncUpdate } from '../schema/entity-context.js';
+
+/**
+ * The `fs.watch` constructor, narrowed to how this module calls it. Injectable so a test can
+ * supply a controllable fake FSWatcher (an EventEmitter) and drive its `'error'` event
+ * deterministically on every platform — the real EPERM-on-teardown error only reproduces on
+ * Windows, so a fake is the only cross-platform way to regression-test the error path.
+ */
+export type WatchFactory = (
+  path: string,
+  options: { recursive: boolean; persistent: boolean },
+  listener: (event: string, filename: string | null) => void,
+) => FSWatcher;
 
 export interface FileLoopbackWatcherDeps {
   db: Lattice;
@@ -26,6 +38,8 @@ export interface FileLoopbackWatcherDeps {
   outputDir: string;
   /** Debounce window; must exceed auto-render's so a user's burst settles first. */
   debounceMs?: number;
+  /** Injectable `fs.watch` (test seam). Defaults to `node:fs` `watch`. */
+  watchFactory?: WatchFactory;
 }
 
 export interface FileLoopbackWatcher {
@@ -156,8 +170,14 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
     },
     start(): void {
       if (watcher) return;
+      const mkWatch: WatchFactory = deps.watchFactory ?? (watch as unknown as WatchFactory);
       try {
-        watcher = watch(
+        // Capture the instance (`w`) rather than closing over the module-scope `watcher`:
+        // on Windows the native thread can deliver a SECOND late error after a degrade +
+        // restart, and a stale handler operating on `watcher` would close the healthy
+        // REPLACEMENT watcher. The handler only ever closes its own instance, and only
+        // clears the shared slot when it still points at that instance.
+        const w = mkWatch(
           deps.outputDir,
           { recursive: true, persistent: false },
           (_event, filename) => {
@@ -170,6 +190,54 @@ export function createFileLoopbackWatcher(deps: FileLoopbackWatcherDeps): FileLo
             schedule();
           },
         );
+        watcher = w;
+        // An FSWatcher emits an `'error'` EVENT (not a thrown exception) when the watched
+        // directory is removed or unmounted out from under it. On Windows a recursive watch
+        // runs on a native thread that can still fire this AFTER stop()/close() — e.g. the
+        // workspace's temp dir being deleted during teardown → EPERM. Node treats an emitter
+        // `'error'` with NO listener as fatal (an unhandled exception that can take the
+        // process down / fail the whole test run), so this listener is load-bearing: it stops
+        // the (already-dead) watch and degrades to no loopback — the same graceful fallback as
+        // an unsupported recursive watch above — instead of crashing.
+        w.on('error', (err: Error) => {
+          const code = (err as NodeJS.ErrnoException).code;
+          // Benign = the watched tree is GONE (deleted / renamed / unmounted — including a
+          // test's temp dir removed during teardown; teardown rm is synchronous, so by the
+          // time this handler runs on the event loop the dir is provably absent). ENOENT is
+          // kept as a fallback for the rare race where the path was recreated between the
+          // error and the existsSync probe. Everything else — notably EPERM while the dir
+          // still exists (an ACL change, antivirus/backup lock) — is a GENUINE failure and
+          // must be surfaced: silently stopping the loopback would read as data loss when a
+          // manual file edit later fails to import.
+          const benign = !existsSync(deps.outputDir) || code === 'ENOENT';
+          if (!benign) {
+            console.warn('[latticesql] file-loopback watcher error (stopping watch):', err.message);
+            // The desktop app never shows the server console — surface the degraded state
+            // in the activity feed too, so the user learns file-edit sync stopped BEFORE
+            // an edit silently fails to import.
+            deps.feed.publish({
+              table: 'files',
+              op: 'update',
+              rowId: null,
+              source: 'system',
+              summary:
+                `File-edit sync stopped: the file watcher failed (${err.message}). ` +
+                `Edits to rendered files on disk will not be imported until the workspace is reopened.`,
+            });
+          }
+          // Mirror stop(): drop any queued debounce pass so it doesn't run against a
+          // gone/broken tree after the watch died.
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          try {
+            w.close();
+          } catch {
+            // best-effort — the watch is already dead
+          }
+          if (watcher === w) watcher = null;
+        });
       } catch (err) {
         // Recursive watch is unsupported on some platforms — degrade to no
         // loopback rather than crash (manual `reconcile` still works).
