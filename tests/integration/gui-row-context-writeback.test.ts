@@ -135,10 +135,11 @@ describe('record markdown write-back — PUT /api/tables/:t/rows/:id/context', (
 
     // When a link appears in free-form prose (edge case), it round-trips as literal text.
     // This verifies that the link syntax doesn't confuse the parser.
-    const contentWithLink = '---\ntitle: Updated\n---\n\n# Keep\n\nbody: new body with [link](lattice://other/id-123)\n';
+    const contentWithLink =
+      '---\ntitle: Updated\n---\n\n# Keep\n\nbody: new body with [link](lattice://other/id-123)\n';
     const res = await putContext(s, id, contentWithLink);
     expect(res.status).toBe(200);
-    const result = await res.json() as { updated: number; fields: string[] };
+    const result = (await res.json()) as { updated: number; fields: string[] };
     expect(result.updated).toBe(2); // title + body both updated
     expect(result.fields.sort()).toEqual(['body', 'title']);
 

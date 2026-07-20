@@ -48,7 +48,11 @@ import {
 import { countManyPostgres, exactCountMany } from './count-many.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { getAllTablePolicies } from '../cloud/table-policy.js';
-import { buildRowContextLocator, readRowContext, computeContextFileSourceCounts } from './row-context.js';
+import {
+  buildRowContextLocator,
+  readRowContext,
+  computeContextFileSourceCounts,
+} from './row-context.js';
 import { readManifest } from '../lifecycle/manifest.js';
 import { classifyTier } from './tier-classify.js';
 import { CONTEXT_PATH, ROW_HISTORY_PATH, LAST_EDITED_PATH } from './route-paths.js';
