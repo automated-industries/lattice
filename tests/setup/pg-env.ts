@@ -72,6 +72,22 @@ if (!process.env.LATTICE_CONFIG_DIR) {
 }
 
 /**
+ * Isolate the workspace-registry ROOT the same way. A lattice install exports
+ * LATTICE_ROOT pointing at the real ~/.lattice, and findLatticeRoot() treats it
+ * as an override that ALWAYS wins — ignoring the path it's asked about. So a test
+ * that builds an isolated temp workspace tree and then hits a server path which
+ * re-derives the root (migrate-to-cloud → updateActiveWorkspaceToCloud →
+ * findLatticeRoot(configPath)) would resolve to the real ~/.lattice and register
+ * its throwaway cloud workspaces (lattice_mig_*, duplicated names) into the
+ * developer's live registry.json — which then shows up as junk in the GUI
+ * switcher. Deleting (not repointing) the inherited value makes root resolution
+ * walk UP from the actual temp configPath to that tree's own .lattice, which is
+ * correct even when a test uses several temp roots at once (owner + member).
+ * Tests that need a specific root still set LATTICE_ROOT in their own hooks.
+ */
+delete process.env.LATTICE_ROOT;
+
+/**
  * Per-worker setup: make the disposable Postgres URL that the global setup
  * provisioned visible to the gated `*-postgres.test.ts` modules, which read
  * `process.env.LATTICE_TEST_PG_URL` at import time.

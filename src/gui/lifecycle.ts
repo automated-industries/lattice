@@ -5,8 +5,11 @@ import type { TableDefinition } from '../types.js';
 import { parseConfigFile } from '../config/parser.js';
 import { upgradeConfigShape } from '../config/config-upgrade.js';
 import { upgradeLegacyData } from '../framework/data-upgrade.js';
+import { seedWelcomeDashboard } from './welcome-dashboard.js';
 import { readIdentity, getOrCreateMasterKey, healRawDbUrl } from '../framework/user-config.js';
 import { registerNativeEntities, adoptNativeEntities } from '../framework/native-entities.js';
+import { reregisterDbSourceTables } from '../connectors/db-source/reregister.js';
+import { reregisterMcpConnectorTables } from '../connectors/mcp/reregister.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
@@ -24,14 +27,20 @@ import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { RealtimeBroker } from './realtime.js';
 import { FeedBus } from './feed.js';
+import { ensureLineageTable } from './lineage-store.js';
 import { createFileLoopbackWatcher } from './file-watcher.js';
 import { RenderProgressBus } from './render-progress.js';
+import { ChatProgressBus } from './chat-progress.js';
 import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
-import { isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
+import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
+import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
+import { buildComputedFillLlm } from './computed-llm.js';
+import { installComputedFieldFill } from './computed-field-fill.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
+import { installDashboardRepair } from './dashboard-repair.js';
 import type { AuditEntry } from './mutations.js';
 import { retireLegacyPreferenceSecrets } from './assistant-routes.js';
 import type { ActiveDb } from './active-db.js';
@@ -184,6 +193,12 @@ export async function openConfig(
       // session. Nullable + additive (back-compat with pre-1.16 rows); added
       // idempotently to existing DBs by the schema reconcile.
       session_id: 'TEXT',
+      // Who/what triggered the mutation (gui|command|ai|ingest|cli|system|
+      // file-edit). Nullable + additive — added idempotently by the schema
+      // reconcile. Persisted from MutationCtx.source (previously recorded only
+      // on the live feed event); powers the provenance "observation" tier
+      // (rows last touched by the `ai` actor).
+      source: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
@@ -313,6 +328,53 @@ export async function openConfig(
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
+  // Replay the schema registration for connected external-database ("db-source")
+  // connections AND MCP connectors. defineLate at connect time is in-memory only,
+  // so on a fresh open the imported/synced tables + rows persist on disk but are
+  // absent from the live schema — without this they vanish from /api/entities, the
+  // graph, the Tables sidebar, and the assistant's table catalog after every
+  // restart (the boot sync-if-stale pass does NOT cover MCP: it no-ops when the
+  // connector synced recently). Must run BEFORE validTables is built (below) so
+  // the re-registered tables flow into it. Fault-isolated: a failure logs and the
+  // open continues; skipped for introspect-only member opens.
+  if (!memberOpen) {
+    for (const [label, fn] of [
+      ['db-source', reregisterDbSourceTables],
+      ['mcp-connector', reregisterMcpConnectorTables],
+    ] as const) {
+      try {
+        await fn(db);
+      } catch (e) {
+        console.warn(
+          `[openConfig] ${label} schema re-registration failed (open continues): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+  }
+
+  // Provenance lineage substrate — an unregistered __lattice_ bookkeeping table
+  // (raw DDL, like __lattice_connectors) so the renderer never scans it.
+  // Owner-only: a scoped cloud member has no DDL grant. Idempotent.
+  if (!memberOpen) await ensureLineageTable(db.adapter);
+
+  // Bounded-read indexes on the audit log. `_lattice_gui_audit` grows for the life
+  // of the DB, and both the session-scoped undo/redo COUNT(*)s (/api/history, fired
+  // on every edit/nav) and the per-row history peek scan it. Without these each
+  // call is a sequential scan on a large cloud audit log. Owner-only (a scoped
+  // member has no DDL grant); idempotent. The table exists by now (db.init above).
+  if (!memberOpen) {
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_session_idx" ON "_lattice_gui_audit" ("session_id", "undone")`,
+    );
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_row_idx" ON "_lattice_gui_audit" ("table_name", "row_id")`,
+    );
+  }
+
   // Per-viewer render: on a cloud MEMBER open, route every render-time table read
   // through the member's masking view (`<table>_v`) when one exists, so the
   // rendered context tree on disk is the member's own RLS-scoped, cell-masked
@@ -339,6 +401,22 @@ export async function openConfig(
   // sentinel-gated, so steady-state cost is ~one round-trip.
   if (!memberOpen) {
     await upgradeLegacyData(db);
+    // Seed the standard "Welcome to Lattice!" onboarding dashboard into a new
+    // workspace (once, sentinel-gated; skipped if the user later deletes it). Owner
+    // side only — a scoped member has no write grant. Best-effort: never fatal to the
+    // open (the workspace is fully usable without it, and it retries next owner open).
+    // `LATTICE_SEED_WELCOME=0` opts out (used by e2e specs that assert the empty state).
+    if (process.env.LATTICE_SEED_WELCOME !== '0') {
+      try {
+        await seedWelcomeDashboard(db);
+      } catch (e) {
+        console.warn(
+          `[lattice] welcome-dashboard seed skipped (will retry next open): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
   }
 
   // Tables the owner-side converge couldn't manage (e.g. owned by a different
@@ -388,6 +466,16 @@ export async function openConfig(
     // Member-discovered junctions (classified from the physical shape above);
     // empty for an owner/local open.
     ...discoveredJunctions,
+  ]);
+  // DISPLAY-only superset: the strict junctions PLUS physical link tables created
+  // without declared relations (e.g. an AI-built `files_<entity>` shaped
+  // (id, name, x_id, y_id)), classified by column shape. Used only to hide link
+  // tables from the lists/sidebars/Markdown panel — never any destructive path.
+  const hiddenLinkTables = new Set([
+    ...junctionTables,
+    ...parsed.tables
+      .filter((t) => isHiddenLinkTable(tableToSummary(t.name, t.definition)))
+      .map((t) => t.name),
   ]);
   // Pull entity contexts from the live Lattice — covers both YAML-declared
   // contexts (already loaded in the constructor from `parsed.entityContexts`)
@@ -480,6 +568,15 @@ export async function openConfig(
   const fileWatcher = autoRender
     ? createFileLoopbackWatcher({ db, feed, softDeletable, outputDir })
     : null;
+  // The watcher's immediate pass replaces the core pre-render drain, so manual
+  // edits ingested right before a render carry the full GUI trail (changelog +
+  // activity feed + undo) — not just the changelog-only core apply.
+  if (fileWatcher) db.setAutoRenderDrain(() => fileWatcher.flush());
+  // Render notices (e.g. "edited rollup restored") land in the activity feed —
+  // visible in the GUI, not just a server console line.
+  db.setRenderNoticeHandler((message) => {
+    feed.publish({ table: 'files', op: 'update', rowId: null, source: 'system', summary: message });
+  });
 
   const active: ActiveDb = {
     configPath,
@@ -487,6 +584,9 @@ export async function openConfig(
     db,
     validTables,
     junctionTables,
+    // Registered computed tables (config-declared; runtime ops keep it current).
+    computedTables: new Set(db.getComputedTableNames()),
+    hiddenLinkTables,
     entityContextByTable,
     manifest,
     softDeletable,
@@ -498,12 +598,30 @@ export async function openConfig(
     dbPath: parsed.dbPath,
     autoRender,
     renderProgress: new RenderProgressBus(),
+    chatProgress: new ChatProgressBus(),
+    chatJobs: Promise.resolve(),
     renderAbort: new AbortController(),
     renderState: { phase: 'idle', tables: {} },
     maskedReadViews,
     onColumnsAdded: columnDescriptionHook(db),
     generateTableDescription: tableDescriptionHook(db),
+    // Real model adapter for computed-table AI fills (auth resolved per call;
+    // "not configured" surfaces through the fill engine's per-field state).
+    computedFillLlm: () => buildComputedFillLlm(db),
   };
+
+  // Dashboards read the live model — when it changes underneath them
+  // (rename/delete/merge, from the assistant OR the schema UI), re-author the
+  // consuming pages automatically. Registered per-workspace; disposed on switch.
+  active.dashboardRepair = installDashboardRepair({
+    db,
+    feed,
+    validTables: () => active.validTables,
+  });
+
+  // AI computed columns (#10): backfill NULL cells on open + refill after writes.
+  // Coalesced per table; model calls resolved per fill (out of the core DB layer).
+  active.computedFieldFill = installComputedFieldFill(active);
 
   // Owner-side convergence (native-entity adopt + the cloud RLS/grant/settings/
   // publish bootstrap) runs in the BACKGROUND, off the switch's critical path:
@@ -841,9 +959,19 @@ export async function disposeActive(
   teardownTimeoutMs: number = DISPOSE_TEARDOWN_TIMEOUT_MS,
 ): Promise<void> {
   // Stop the file loopback watcher FIRST so no on-disk edit can fire a write
-  // against a DB that's about to close.
+  // against a DB that's about to close — and detach it from the pre-render
+  // drain so a late render can't call a stopped watcher.
   try {
     active.fileWatcher?.stop();
+    active.db.setAutoRenderDrain(null);
+  } catch {
+    // best-effort
+  }
+  // Unregister the dashboard auto-repair listener + drop any pending pass so a
+  // debounced rewrite can't fire against a closing DB.
+  try {
+    active.dashboardRepair?.dispose();
+    active.computedFieldFill?.dispose();
   } catch {
     // best-effort
   }
@@ -866,6 +994,21 @@ export async function disposeActive(
           'abandoning it so the workspace switch stays responsive.',
       );
     }
+  }
+  // Let any in-flight background chat turn drain before the DB closes, so its final
+  // checkpoint write doesn't hit a closing adapter (the teardown-race that surfaces as an
+  // unhandled rejection). Time-bounded like the broker stop above: a genuinely long turn
+  // during a workspace switch is abandoned — its writes are self-guarded — rather than
+  // wedging the switch.
+  const chatOutcome = await settleWithin(
+    active.chatJobs.catch(() => undefined),
+    teardownTimeoutMs,
+  );
+  if (chatOutcome === 'timeout') {
+    console.warn(
+      `[gui] background chat job exceeded ${String(teardownTimeoutMs)}ms during teardown; ` +
+        'closing the DB anyway (the job self-guards its writes).',
+    );
   }
   try {
     active.db.close();
@@ -941,9 +1084,17 @@ export async function openWithinTimeout(
  */
 export async function reopenSameConfig(active: ActiveDb, autoRender: boolean): Promise<ActiveDb> {
   const feed = active.feed;
+  // Carry the chat bus + job FIFO across the reopen too (same rationale as the feed):
+  // an in-flight chat job keeps publishing to the SAME bus the already-connected sockets
+  // subscribed to, and a queued follow-up message still runs after the current one.
+  // disposeActive leaves all three untouched.
+  const chatProgress = active.chatProgress;
+  const chatJobs = active.chatJobs;
   await disposeActive(active);
   const next = await openConfig(active.configPath, active.outputDir, autoRender);
   next.feed = feed;
+  next.chatProgress = chatProgress;
+  next.chatJobs = chatJobs;
   // Re-render in the background; the caller awaits this reopen (fast) but the
   // render runs detached, so the handler responds without blocking on it.
   startBackgroundRender(next);
@@ -1022,6 +1173,15 @@ export async function applySchemaConfig(
   direction: 'inverse' | 'forward',
   autoRender: boolean,
 ): Promise<ActiveDb> {
+  // Computed-table ops replay through their own live appliers (create⁻¹ =
+  // delete, delete⁻¹ = create(before), update⁻¹ = update(before)) — the same
+  // no-reopen primitives the ops layer mutates with, so the SAME ActiveDb is
+  // returned. A refresh entry is informational and throws (nothing to revert),
+  // which the route maps to a 400 like any other non-revertible entry.
+  if (isComputedSchemaOp(entry.operation)) {
+    await applyComputedSchemaOp(active, entry, direction);
+    return active;
+  }
   const before = entry.before_json
     ? (JSON.parse(entry.before_json) as Record<string, unknown>)
     : null;

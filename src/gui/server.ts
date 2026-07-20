@@ -3,12 +3,15 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dirname, resolve } from 'node:path';
-import { sendJson, readJson } from './http.js';
+import { sendJson, readJson, sendHtmlCompressed, sendCompressed } from './http.js';
+import { chartLibJs } from './app/modules/chart-lib.js';
+import { computeBoundAuthorities, isSameOriginRequest, isLoopbackHost } from './origin-guard.js';
 import {
   type ActiveDb,
   changeVisibleToActiveRole,
   isDeleteOp,
   isFeedHiddenTable,
+  isRegisteredTable,
 } from './active-db.js';
 import { openConfig, startBackgroundRender, disposeActive } from './lifecycle.js';
 import { findLatticeRoot } from '../framework/lattice-root.js';
@@ -25,6 +28,7 @@ import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
 import { feedOpForChange } from './realtime.js';
 import { createUpdateService, type UpdateService } from './update-service.js';
+import type { InstallContext } from '../update-context.js';
 import { createGuiRequestContext, type GuiRequestContext } from './request-context.js';
 import { upsertTableMeta } from './column-descriptions.js';
 import {
@@ -40,14 +44,36 @@ import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity.js';
+import type { ChatProgressEnvelope } from './chat-progress.js';
+import { resolvedProviderKind } from './ai/provider.js';
+import { getClaudeLimitState } from './ai/limit-state.js';
+import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
-import { dispatchImportRoute } from './import-routes.js';
+import { dispatchImportRoute, readImportSourceFromFile } from './import-routes.js';
+import { importDataFaithfully } from './import-auto.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
-import { builtinConnectors, resolveConnectorIdentity } from '../connectors/index.js';
+import { dispatchDbSourcesRoute } from './db-sources-routes.js';
+import {
+  builtinConnectors,
+  resolveConnectorIdentity,
+  describeConnectedSources,
+} from '../connectors/index.js';
+// Internal helper (not part of the public API surface) — the on-access-refresh connector set.
+import { freshnessConnectors } from '../connectors/catalog.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
+import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
+import {
+  createComputedTable,
+  updateComputedTable,
+  deleteComputedTable,
+  previewComputedTable,
+  refreshComputedTable,
+  listComputedTables,
+} from './computed-ops.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
 import {
   handleWorkspacesRoutes,
@@ -120,12 +146,23 @@ export interface StartGuiServerOptions {
    */
   realtimeWatchdogMs?: number;
   /**
-   * Run the in-process auto-update poll: while the GUI is open, check npm for a
+   * Master switch for ALL auto-update behavior (default true). When false: the
+   * in-process poll never runs (no registry/manifest fetch, no install, no
+   * relaunch), `/api/update/status` reports `autoUpdate:false` / `action:'none'`,
+   * and the desktop/CLI callers skip their own updaters too. Provided so the GUI
+   * can be run pinned to its current version (testing, air-gapped, reproducible
+   * demos). `GET /api/version` + `GET /api/update/status` still answer.
+   */
+  autoUpdate?: boolean;
+  /**
+   * Run the in-process auto-update poll: while the GUI is open, check for a
    * newer version and, when one lands on an installable copy, install it and
    * exit with the supervisor's restart code so it relaunches on the new version.
    * Set ONLY for a supervised child (`LATTICE_GUI_SUPERVISED=1`) — exiting to
-   * apply an update is safe only when a supervisor is there to respawn it.
-   * `GET /api/version` + `GET /api/update/status` are served regardless.
+   * apply an update is safe only when a supervisor is there to respawn it. This
+   * is the npm install-and-relaunch SUB-behavior; it is forced off when
+   * `autoUpdate` is false. `GET /api/version` + `GET /api/update/status` are
+   * served regardless.
    */
   selfUpdate?: boolean;
   /**
@@ -135,6 +172,29 @@ export interface StartGuiServerOptions {
    * it overrides `selfUpdate`'s default factory.
    */
   updateServiceFactory?: (emit: (type: string, data: unknown) => void) => UpdateService;
+  /**
+   * Override the "is a newer version available?" probe. The desktop shell passes
+   * a function that reads its release manifest (latest.json) — the same source
+   * its bundled updater applies from — so the GUI surfaces a "restart to update"
+   * hint without coupling the desktop to the npm registry. Omitted ⇒ the default
+   * npm-registry check (web/CLI).
+   */
+  updateCheck?: (force: boolean) => Promise<string | null>;
+  /**
+   * Override the detected install context for the update service. The desktop
+   * shell passes `{ kind:'desktop', installable:false, … }` so the status route
+   * reports the desktop surface (→ `action:'restart-to-update'`) rather than
+   * "unknown / not installable".
+   */
+  updateContext?: InstallContext;
+  /**
+   * Desktop shell only: apply a pending update via the bundled binary updater
+   * (download + relaunch). Wired to `POST /api/update/apply` when the surface is
+   * the desktop app, so the "Restart to update" pill triggers the real updater
+   * instead of the npm install path (which the desktop can't use). Omitted ⇒ the
+   * apply route uses the npm path / reports "not available".
+   */
+  desktopApplyUpdate?: () => void;
   /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
@@ -159,6 +219,12 @@ export interface GuiServerHandle {
    * resolves immediately for a non-cloud / virgin workspace.
    */
   whenConverged: () => Promise<void>;
+  /**
+   * TEST-ONLY: publish a chat-progress envelope directly into the active workspace's bus so
+   * the per-user `/api/stream` delivery gate can be exercised without a live model turn.
+   * Never invoked in production.
+   */
+  publishChatProgressForTest: (env: ChatProgressEnvelope) => void;
 }
 
 /**
@@ -190,6 +256,14 @@ export function openUrl(url: string): void {
     process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   const child = spawn(command, args, { stdio: 'ignore', detached: true });
+  // A missing opener (e.g. headless Linux without xdg-open) emits an async 'error'
+  // EVENT on the child — with no listener Node turns it into a fatal unhandled
+  // exception that takes the GUI server down right as it boots. Opening a browser
+  // is a convenience: degrade to a console note, never a crash. (Same guarded
+  // pattern as the reveal-in-file-manager spawn in files-routes.ts.)
+  child.on('error', (err: Error) => {
+    console.warn(`[lattice] could not open ${url} in a browser:`, err.message);
+  });
   child.unref();
 }
 
@@ -265,8 +339,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // to a non-loopback address (e.g. 0.0.0.0) exposes read/write/import to the
   // network with no auth layer, so say so loudly at startup. We do not block it —
   // an operator may do it deliberately behind their own network controls.
-  const isLoopbackHost = host === 'localhost' || host === '::1' || host.startsWith('127.');
-  if (!isLoopbackHost) {
+  const hostIsLoopback = isLoopbackHost(host);
+  if (!hostIsLoopback) {
     console.warn(
       `[lattice] GUI is binding to a non-loopback address (${host}); its data ` +
         `routes are UNAUTHENTICATED and will be reachable from the network.`,
@@ -274,6 +348,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   }
   const autoRender = options.autoRender ?? false;
   const guiVersion = options.version ?? '';
+  const autoUpdate = options.autoUpdate ?? true;
   // Where the vendored GUI assets (on-device voice worker + ORT WASM) live. The
   // CLI passes this resolved against the package (it knows the package root via
   // import.meta.url). When omitted (dev/source/test runs), fall back to a sibling
@@ -292,38 +367,75 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // on close. The request handler reads it for `/api/update/status`.
   let updateService: UpdateService | null = null;
 
-  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
-  // (zero-workspace) state until the first workspace is created or joined. The
-  // request handler gates every data route behind a non-null check.
-  let activeRef: ActiveDb | null =
-    bootConfigPath && bootOutputDir
-      ? await openConfig(bootConfigPath, bootOutputDir, autoRender, options.realtimeWatchdogMs)
-      : null;
-  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so
-  // the header workspace switcher can list + switch workspaces. `null` ⇒ the
-  // GUI was opened on a plain config; the switcher stays hidden. In the virgin
-  // state the root comes from the options (there's no config to discover from).
+  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so the
+  // header switcher can list + switch workspaces — and so a bad active workspace
+  // can fall through to a working one at boot. `null` ⇒ opened on a plain config
+  // (switcher hidden); in the virgin state the root comes from the options.
   const latticeRoot =
     (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null) ??
     (options.latticeRoot ? resolve(options.latticeRoot) : null);
+
+  // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
+  // (zero-workspace) state until the first workspace is created or joined. The
+  // request handler gates every data route behind a non-null check.
+  let activeRef: ActiveDb | null = null;
   // Which workspace is ACTUALLY being served (the open `active` DB). The header
-  // switcher must reflect THIS, not the registry's stored activeWorkspaceId —
-  // the two can drift apart (e.g. a relaunch whose --config points at a
-  // different workspace than the last-switched one), which showed the wrong
-  // workspace label sitting over a different workspace's data. Match the
-  // launched config to its workspace and reconcile the registry to it at boot.
+  // switcher must reflect THIS, not the registry's stored activeWorkspaceId — the
+  // two can drift (a relaunch whose --config points elsewhere, or a fall-through
+  // when the stored-active workspace can't open).
   let currentWorkspaceId: string | null = null;
-  if (latticeRoot && bootConfigPath) {
-    const launched = listWorkspaces(latticeRoot).find(
-      (w) => resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
-    );
-    if (launched) {
-      currentWorkspaceId = launched.id;
-      if (getActiveWorkspace(latticeRoot)?.id !== launched.id) {
-        setActiveWorkspace(latticeRoot, launched.id);
+
+  if (bootConfigPath && bootOutputDir) {
+    try {
+      activeRef = await openConfig(
+        bootConfigPath,
+        bootOutputDir,
+        autoRender,
+        options.realtimeWatchdogMs,
+      );
+      if (latticeRoot) {
+        const launched = listWorkspaces(latticeRoot).find(
+          (w) =>
+            resolve(resolveWorkspacePaths(latticeRoot, w).configPath) === resolve(bootConfigPath),
+        );
+        currentWorkspaceId = launched?.id ?? getActiveWorkspace(latticeRoot)?.id ?? null;
+        if (launched && getActiveWorkspace(latticeRoot)?.id !== launched.id) {
+          setActiveWorkspace(latticeRoot, launched.id);
+        }
       }
-    } else {
-      currentWorkspaceId = getActiveWorkspace(latticeRoot)?.id ?? null;
+    } catch (err) {
+      // The stored-active workspace can't open (e.g. its DB credential is missing).
+      // Never brick the whole app: fall through to the first OTHER workspace that
+      // opens, so the user lands in real data with the switcher listing the rest —
+      // not a dead-end error dialog or a misleading zero-state welcome screen.
+      console.error(
+        `[gui] active workspace failed to open (${bootConfigPath}): ${(err as Error).message}`,
+      );
+      const launchedPath = resolve(bootConfigPath);
+      const root = latticeRoot; // narrow once so the loop body needs no cast/assertion
+      if (root) {
+        for (const w of listWorkspaces(root)) {
+          const paths = resolveWorkspacePaths(root, w);
+          if (resolve(paths.configPath) === launchedPath) continue; // the one that just failed
+          try {
+            activeRef = await openConfig(
+              paths.configPath,
+              paths.contextDir,
+              autoRender,
+              options.realtimeWatchdogMs,
+            );
+            currentWorkspaceId = w.id;
+            setActiveWorkspace(root, w.id);
+            console.error(`[gui] opened the next working workspace instead: "${w.displayName}".`);
+            break;
+          } catch {
+            // try the next workspace
+          }
+        }
+      }
+      if (!activeRef) {
+        console.error('[gui] no workspace could be opened — showing the welcome screen.');
+      }
     }
   }
 
@@ -419,11 +531,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     method: string,
   ): Promise<boolean> => {
     if (method === 'GET' && pathname === '/') {
-      sendText(
+      sendHtmlCompressed(
+        req,
         res,
         guiAppHtml.replace('<!--LATTICE_VERSION-->', guiVersion ? `v${guiVersion}` : ''),
-        200,
-        'text/html; charset=utf-8',
       );
       return true;
     }
@@ -527,9 +638,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // Process-constant dependencies for the extracted read-route dispatcher
   // (host/guiVersion/guiAppHtml/sendText never change for the server's life),
   // built once here rather than per request.
-  const readDeps: ReadRoutesDeps = { host, guiVersion, guiAppHtml, sendText, guiAssetsDir };
+  const readDeps: ReadRoutesDeps = {
+    host,
+    guiVersion,
+    guiAppHtml,
+    sendText,
+    guiAssetsDir,
+    // Freshness set (includes db_source), not just builtinConnectors — the on-access refresh in
+    // read-routes must resolve an impl for external-DB tables too, or it silently never fires.
+    connectors: freshnessConnectors(),
+  };
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
+  const computedDeps: ComputedRoutesDeps = { host };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
   const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
@@ -551,12 +672,69 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     ) => boolean | Promise<boolean>;
   };
 
+  // CSRF / DNS-rebinding guard for the unauthenticated local server. A browser on
+  // the same loopback is exactly the cross-site attacker's vehicle: any site the
+  // user visits can POST to 127.0.0.1 as the local user. So every state-changing
+  // request (and the WS upgrade) must be same-origin AND carry the Host we actually
+  // bound. Set once the real port is known (below); before that no external request
+  // can arrive. This adds NO auth layer — legitimate same-origin GUI requests pass.
+  let boundAuthorities: Set<string> | null = null;
+  // A wildcard bind (0.0.0.0 / ::) can't enumerate every Host a network client legitimately uses,
+  // and --allow-remote already accepted network exposure — so the Host-authority (anti-rebinding)
+  // check is skipped for it (the Sec-Fetch-Site cross-site checks still apply). A concrete-IP bind
+  // keeps the full check.
+  const bindIsWildcard = host === '0.0.0.0' || host === '::';
+  function requestIsSameOrigin(req: IncomingMessage): boolean {
+    const allowed = boundAuthorities;
+    if (!allowed) return true; // not yet listening → unreachable
+    return isSameOriginRequest(req.headers, allowed, bindIsWildcard);
+  }
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', `http://${host}`);
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
+
+        // Reject cross-site / rebound-Host state changes before any routing.
+        const mutating =
+          method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+        if (mutating && !requestIsSameOrigin(req)) {
+          sendJson(res, { error: 'cross-site request blocked' }, 403);
+          return;
+        }
+        // DNS-rebinding defense for GET DATA routes. The browser same-origin policy alone does
+        // NOT protect these: a drive-by site can rebind its own hostname to 127.0.0.1 and issue
+        // a "same-origin" fetch to the loopback GUI, reading the JSON body — which for
+        // `/api/tables/*`, `/api/dbconfig`, `/api/entities`, … is the user's data. The
+        // Host-authority check inside requestIsSameOrigin defeats that (the rebound fetch still
+        // carries the attacker's Host, not a bound authority). We exempt only genuine top-level
+        // navigations (Sec-Fetch-Mode: navigate / Dest: document) — an OAuth callback redirect or
+        // a user opening an /api URL directly — because a navigation replaces the tab and cannot
+        // be read into another origin, so it is not an exfiltration vector. Non-browser clients
+        // (curl, the test harness) send no Sec-Fetch / Origin and match the bound Host, so
+        // requestIsSameOrigin already allows them.
+        if (method === 'GET' && pathname.startsWith('/api/') && !requestIsSameOrigin(req)) {
+          const h = req.headers as Record<string, string | string[] | undefined>;
+          const secDest = h['sec-fetch-dest'];
+          const dest = Array.isArray(secDest) ? secDest[0] : secDest;
+          const hostHeader = Array.isArray(h.host) ? h.host[0] : h.host;
+          const hostBound =
+            bindIsWildcard || (boundAuthorities?.has((hostHeader ?? '').toLowerCase()) ?? false);
+          // Exempt ONLY a true top-level DOCUMENT navigation TO A BOUND HOST (an OAuth callback
+          // redirect, or a user opening an /api URL directly). Two conditions, both required:
+          //  • dest === 'document' — not `Sec-Fetch-Mode: navigate`, which iframe/object/embed
+          //    sub-frame navigations ALSO carry, and which a same-origin parent could read.
+          //  • the Host is one we bound — a DNS-rebinding `window.open('http://evil:PORT/api/…')`
+          //    is a document navigation too, but its Host is the ATTACKER's rebound name (not a
+          //    bound authority); the opener stays same-origin post-rebind and would read the JSON,
+          //    so it must NOT be exempt. The frame-ancestors/XFO + COOP headers are the backstop.
+          if (dest !== 'document' || !hostBound) {
+            sendJson(res, { error: 'cross-site request blocked' }, 403);
+            return;
+          }
+        }
 
         // Version + update status — answered in BOTH virgin and active states, and
         // independent of any workspace. The browser polls `/api/version` on each
@@ -566,12 +744,33 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           sendJson(res, { version: guiVersion });
           return;
         }
+        // The vendored Chart.js (~275 KB) used only by the HTML-file artifact
+        // preview. Served on demand (fetched by dashboard.ts ensureChartLib) instead
+        // of inlined into the client bundle, so it no longer weighs on every
+        // startup's parse. Cacheable — a modest max-age avoids a stale-asset footgun
+        // while keeping the rare re-fetch cheap.
+        if (method === 'GET' && pathname === '/gui-assets/chart-lib.js') {
+          sendCompressed(
+            req,
+            res,
+            chartLibJs,
+            'text/javascript; charset=utf-8',
+            'public, max-age=86400',
+          );
+          return;
+        }
         // Desktop shell only: open an external URL in the OS default browser.
         // The embedded webview has no tabs, so its injected link-interceptor
         // routes `target="_blank"` clicks here. 404s unless the desktop host
         // supplied an opener, so a web-served GUI can't trigger an OS open. Only
         // http(s) URLs are honored.
         if (method === 'GET' && pathname === '/api/desktop/open') {
+          // Side-effecting GET (opens the OS browser) → same-origin only, so a
+          // cross-site <img>/navigation can't drive an OS open to an arbitrary URL.
+          if (!requestIsSameOrigin(req)) {
+            sendJson(res, { error: 'cross-site request blocked' }, 403);
+            return;
+          }
           if (!desktopOpenExternal) {
             sendJson(res, { error: 'not found' }, 404);
             return;
@@ -593,6 +792,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               latest: null,
               kind: 'unknown',
               installable: false,
+              autoUpdate,
+              action: 'none',
               checking: false,
               installing: false,
               lastError: null,
@@ -601,23 +802,33 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           return;
         }
         if (method === 'POST' && pathname === '/api/update/apply') {
-          // Manual fallback to the automatic updater: force a check that, when a
-          // newer installable version exists, installs the latest and restarts
-          // the GUI onto it. The install is slow (an npm install), so kick it off
-          // without blocking the response — `checkNow(true)` logs/emits its own
-          // progress + errors (update-applied / update-error), which the client
-          // surfaces. When there is no update service (unsupervised or not
-          // installable) there is nothing to do: answer with a plain "can't",
-          // not a crash, so the client can tell the user how to upgrade by hand.
-          if (updateService) {
+          // Manual trigger behind the "update available" pill. The right action
+          // depends on the surface (reported as `status.action`):
+          //  - desktop (`restart-to-update`): run the bundled binary updater,
+          //    which downloads + relaunches — the npm install path can't touch a
+          //    compiled app.
+          //  - npm (`upgrade-in-place`): force a check that installs the latest
+          //    and restarts the GUI onto it. The install is slow (an npm
+          //    install), so kick it off without blocking — `checkNow(true)`
+          //    emits its own progress/errors (update-applied / update-error).
+          //  - anything else (no update, auto-update disabled, or a surface that
+          //    can't self-update): answer with a plain "can't", not a crash, so
+          //    the client can tell the user how to upgrade by hand.
+          const st = updateService?.status();
+          if (st?.action === 'restart-to-update' && options.desktopApplyUpdate) {
+            options.desktopApplyUpdate();
+            sendJson(res, { ok: true, status: st });
+          } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
             sendJson(res, { ok: true, status: updateService.status() });
           } else {
             sendJson(res, {
               ok: false,
               error:
-                'Automatic update is not available for this install. ' +
-                'Reinstall from https://latticesql.com to get the latest version.',
+                st && !st.autoUpdate
+                  ? 'Automatic update is disabled for this session.'
+                  : 'Automatic update is not available for this install. ' +
+                    'Reinstall from https://latticesql.com to get the latest version.',
             });
           }
           return;
@@ -685,6 +896,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           { handle: (req, res, ctx) => handleReadRoutes(req, res, ctx, readDeps) },
           // ── Schema create/alter/delete (extracted leaf — schema-routes.ts) ──
           { handle: (req, res, ctx) => handleSchemaRoutes(req, res, ctx, schemaDeps) },
+          // ── Computed tables: CRUD + preview + refresh (computed-routes.ts) ──
+          { handle: (req, res, ctx) => handleComputedRoutes(req, res, ctx, computedDeps) },
           // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
           { handle: (req, res, ctx) => handleHistoryRoutes(req, res, ctx, historyDeps) },
           // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
@@ -696,7 +909,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             handle: async (req, res) => {
               if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
               const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
-              if (!active.validTables.has(entityName)) {
+              if (!isRegisteredTable(active, entityName)) {
                 sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
                 return true;
               }
@@ -754,15 +967,108 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               });
             },
           },
+          // ── AI-auth gate ──────────────────────────────────────────────────
+          // Claude access is mandatory: every AI-mutating route is refused when no
+          // Claude subscription (or managed operator credential) is connected. This
+          // is the server-side backstop behind the client connect wall — a hidden
+          // button can't enforce it, and the AI routes are directly HTTP-reachable.
+          // /api/assistant/* (matched above) + GET /api/assistant/config stay open
+          // so Connect itself can always run.
+          {
+            handle: async (req, res) => {
+              const gated =
+                pathname.startsWith('/api/chat') ||
+                pathname.startsWith('/api/ingest/') ||
+                pathname.startsWith('/api/import/') ||
+                (method === 'POST' && /^\/api\/questions\/[^/]+\/answer$/.test(pathname));
+              if (!gated) return false;
+              // ANY configured provider satisfies the gate — a connected Claude
+              // subscription, the managed cloud key, OR a user-configured API provider
+              // (an OpenAI-compatible endpoint or a Claude API key). Mirrors GET
+              // /api/assistant/config's `connected` so the server gate and the client
+              // wall agree — previously this checked Claude only, so a working
+              // OpenAI-compatible backend was refused here with `claude_not_connected`
+              // even though the client considered itself connected. The error code is
+              // kept: the client treats it as "no AI connected → show the connect wall".
+              const providerKind = await resolvedProviderKind(active.db);
+              if (!providerKind) {
+                sendJson(res, { error: 'claude_not_connected' }, 403);
+                return true;
+              }
+              // Pre-flight usage-limit block applies ONLY to the Anthropic wire (a
+              // subscription, the managed cloud key, or a Claude API key): once Claude
+              // has reported a usage limit, refuse the AI-mutating routes up front with
+              // the same message instead of firing a request we know will 429 (auto-
+              // clears at resetAt). A BYO OpenAI-compatible endpoint has no
+              // Claude-subscription limit, so it is never blocked on Claude's state.
+              if (providerKind === 'anthropic') {
+                const limit = getClaudeLimitState();
+                if (limit) {
+                  sendJson(
+                    res,
+                    {
+                      error: 'claude_limit',
+                      message: limit.message,
+                      resetAt: new Date(limit.resetAt).toISOString(),
+                    },
+                    429,
+                  );
+                  return true;
+                }
+              }
+              return false;
+            },
+          },
           // ── Chat route ──
           // POST /api/chat — assistant tool loop, streamed as SSE. Executes
           // tool calls against the active DB via the shared mutation chokepoint.
           {
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/chat')) return false;
+              // Tell the assistant which external sources are connected (scoped to
+              // this member so a cloud never leaks another member's connections),
+              // so "are you connected to X?" is answered from state, not guessed.
+              const chatIdent = readIdentity();
+              const chatConnectedBy = await resolveConnectorIdentity(
+                active.db,
+                chatIdent.email || chatIdent.display_name || 'local',
+              );
+              let connectedSources = '';
+              let connectionsUnknown = false;
+              try {
+                connectedSources = await describeConnectedSources(active.db, chatConnectedBy);
+              } catch (e) {
+                // Surface, never swallow to '' (no silent failure). Critically, a FAILED
+                // enumeration must not read as "nothing connected" — that would answer "are you
+                // connected to X?" with a confident false "no". Flag it so the intent pass defers
+                // the question to the tool loop instead of asserting a negative from missing data.
+                console.error(
+                  '[chat] could not enumerate connected data sources; connection questions will defer to the tool loop:',
+                  e,
+                );
+                connectionsUnknown = true;
+              }
               return await dispatchChatRoute(req, res, {
                 db: active.db,
                 feed: active.feed,
+                ...(connectedSources ? { connectedSources } : {}),
+                ...(connectionsUnknown ? { connectionsUnknown: true } : {}),
+                // Async transport: the route acks 202 and runs the turn as a background
+                // job, streaming each event to this per-workspace bus (the /api/stream
+                // forwarder gates delivery per user). The FIFO serializes turns so a
+                // second message waits for the first.
+                chatProgress: active.chatProgress,
+                enqueueChatJob: (job) => {
+                  active.chatJobs = active.chatJobs.then(job).catch((err: unknown) => {
+                    // The job already published an 'error'+'done' frame before throwing;
+                    // this backstop keeps a stray rejection from going unhandled (which
+                    // would fail the process) and keeps the FIFO alive for the next turn.
+                    console.error(
+                      '[chat] background turn job failed:',
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  });
+                },
                 validTables: active.validTables,
                 junctionTables: active.junctionTables,
                 softDeletable: active.softDeletable,
@@ -771,15 +1077,64 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
                 addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
                 createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
+                // The files-side linker the shared enrichment engine uses — lets the
+                // ingest_text tool run pasted content through the same enrichWithLlm
+                // path a dropped file uses (auto-links it to related records).
+                createFileJunction: (otherTable) =>
+                  createFileJunction(active, otherTable, sessionId),
                 // Guarded, reversible table delete — empty tables go immediately;
                 // non-empty ones come back as `needsResolution` so the assistant asks.
                 deleteEntity: (name: string, resolution?: DeleteResolution) =>
                   aiDeleteEntity(active, name, resolution, sessionId),
+                // Faithfully import an attached spreadsheet by files id — read its retained
+                // bytes + materialize every row via the deterministic importer (the
+                // import_spreadsheet tool). Same read + materialize path as the apply route,
+                // so a workbook lands ALL its rows, never the lossy LLM summary.
+                importAttachment: (fileId: string) =>
+                  readImportSourceFromFile(active.db, fileId, dirname(active.configPath)).then(
+                    ({ data }) => importDataFaithfully(active.db, active.configPath, data),
+                  ),
+                // Computed tables: tagged read-only in the schema context, and
+                // driven by the assistant's computed-table tools through the
+                // same audited, revertible primitives as the builder routes.
+                computedTables: active.computedTables,
+                computedOps: {
+                  list: () => listComputedTables(active),
+                  preview: (def, limit) => previewComputedTable(active, def, limit),
+                  create: (name, def) => createComputedTable(active, name, def, sessionId),
+                  update: (name, def) => updateComputedTable(active, name, def, sessionId),
+                  refresh: (name) => refreshComputedTable(active, name, { sessionId }),
+                  delete: (name) => deleteComputedTable(active, name, sessionId),
+                },
                 configPath: active.configPath,
                 outputDir: active.outputDir,
                 // Stamp this GUI session so the assistant's writes share the user's
                 // undo/redo stack (the user can undo what they asked it to do).
                 sessionId,
+                pathname,
+                method,
+              });
+            },
+          },
+          // ── Clarification questions ──
+          // Pending marginal-inference questions surfaced as cards in the chat
+          // panel: list / answer / dismiss. Answering executes the deferred
+          // action + enrichment writes through the shared mutation chokepoint.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/questions')) return false;
+              return await dispatchQuestionRoute(req, res, {
+                db: active.db,
+                feed: active.feed,
+                softDeletable: active.softDeletable,
+                // Stamp this GUI session so answer-driven writes share the
+                // user's undo/redo stack (same as the chat route).
+                sessionId,
+                // Schema-creating answers (a confirmed import link's junction)
+                // persist their table definition like the importer does, and
+                // register it as servable without a reopen.
+                configPath: active.configPath,
+                validTables: active.validTables,
                 pathname,
                 method,
               });
@@ -798,6 +1153,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 fileJunctions: fileJunctions(active.configPath, active.outputDir),
                 entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
                 createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
+                createObjectJunction: (a, b) => createUserJunction(active, a, b, sessionId),
                 createEntity: (entity, columns) =>
                   createUserEntity(active, entity, columns, sessionId),
                 aggressiveness: getAggressiveness(),
@@ -826,6 +1182,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 entityDescriptions: entityDescriptions(active.configPath, active.outputDir),
                 createJunction: (otherTable: string) =>
                   createFileJunction(active, otherTable, sessionId),
+                createObjectJunction: (a: string, b: string) =>
+                  createUserJunction(active, a, b, sessionId),
                 createEntity: (entity: string, columns: string[]) =>
                   createUserEntity(active, entity, columns, sessionId),
                 aggressiveness: getAggressiveness(),
@@ -843,6 +1201,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 configPath: active.configPath,
                 pathname,
                 method,
+                feed: active.feed,
               });
             },
           },
@@ -859,6 +1218,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 latticeRoot: dirname(active.configPath),
                 validTables: active.validTables,
                 softDeletable: active.softDeletable,
+                feed: active.feed,
+                // Opt-in computed-table proposals create through the same
+                // audited op as the builder UI (view DDL + YAML + undo/redo).
+                createComputed: (name, def) => createComputedTable(active, name, def, sessionId),
               });
             },
           },
@@ -878,6 +1241,23 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 connectors: builtinConnectors(),
                 outputDir: active.outputDir,
                 connectedBy,
+              });
+            },
+          },
+          // ── Databases as an Input: connect/list/refresh/disconnect external DBs ──
+          // An external Postgres database imported as a data source. Distinct from
+          // /api/databases (sibling Lattice config switching) — see db-sources-routes.
+          {
+            handle: async (req, res) => {
+              if (!pathname.startsWith('/api/db-sources')) return false;
+              const ident = readIdentity();
+              const fallback = ident.email || ident.display_name || 'local';
+              const connectedBy = await resolveConnectorIdentity(active.db, fallback);
+              return await dispatchDbSourcesRoute(req, res, {
+                db: active.db,
+                outputDir: active.outputDir,
+                connectedBy,
+                feed: active.feed,
               });
             },
           },
@@ -984,8 +1364,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   if (options.updateServiceFactory) {
     updateService = options.updateServiceFactory(broadcast);
-  } else if (options.selfUpdate && guiVersion) {
-    updateService = createUpdateService({ currentVersion: guiVersion, emit: broadcast });
+  } else if (guiVersion) {
+    // Build the service on EVERY surface that knows its version (not only the
+    // supervised npm child) so `/api/update/status` reports a real `latest` +
+    // `action` — that is what lets the "update available" pill appear on the
+    // desktop app and a dev build, where it was previously always invisible. The
+    // service only *installs/relaunches* on the supervised npm surface
+    // (`selfUpdate`), and does nothing at all when `autoUpdate` is off.
+    updateService = createUpdateService({
+      currentVersion: guiVersion,
+      emit: broadcast,
+      autoUpdate,
+      selfUpdate: options.selfUpdate ?? false,
+      ...(options.updateCheck ? { check: options.updateCheck } : {}),
+      ...(options.updateContext ? { context: options.updateContext } : {}),
+    });
   }
 
   // Wire one connection's subscriptions. Bound to the workspace open at connect
@@ -1082,6 +1475,42 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           send('render-progress', e);
         }),
       );
+      // Chat turn events — the async replacement for the held-open POST response.
+      // The bus is per-PROCESS (shared by every socket), so delivery is gated per user:
+      // on a cloud workspace one member must NEVER receive another's chat text, and RLS
+      // does not help (the app connects BYPASSRLS). `connOwner` resolves asynchronously;
+      // until it does (or if it can't) a cloud socket has an unresolved identity and
+      // mayReceiveChat fails closed. On a local single-user DB there is no boundary.
+      const connIsCloud = isCloudChat(bound.db);
+      let connOwner: string | null = null;
+      if (connIsCloud) {
+        void resolveChatOwnerId(bound.db)
+          .then((owner) => {
+            connOwner = owner;
+          })
+          .catch(() => {
+            // unresolved → connOwner stays null → mayReceiveChat fails closed
+          });
+      }
+      // Stale-guard on the BUS identity, not the ActiveDb object: a same-config schema
+      // reopen (add column / create entity / …) swaps in a fresh ActiveDb but CARRIES the
+      // chatProgress bus across (so an in-flight turn keeps streaming), so `activeRef` no
+      // longer equals `bound` even though this is still the same workspace + socket. A real
+      // workspace SWITCH builds a NEW bus, which this correctly drops.
+      const boundBus = bound.chatProgress;
+      offs.push(
+        bound.chatProgress.subscribe((env) => {
+          if (activeRef?.chatProgress !== boundBus) return; // stale after a workspace switch
+          if (!mayReceiveChat(connOwner, connIsCloud, env)) return;
+          // Forward threadId + messageId so the client can route the event to the right
+          // turn's bubble; ownerUserId (the internal cloud login role) is NEVER sent.
+          send('chat-progress', {
+            threadId: env.threadId,
+            messageId: env.messageId,
+            event: env.event,
+          });
+        }),
+      );
     }
 
     // WebSocket has no SSE-style auto-reconnect, so a periodic ping keeps the
@@ -1112,7 +1541,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
 
   server.on('upgrade', (req, socket, head) => {
     const { pathname } = new URL(req.url ?? '/', `http://${host}`);
-    if (pathname !== '/api/stream') {
+    // Same guard as mutating HTTP: a cross-site page must not open the realtime
+    // change feed (it's readable cross-origin, unlike a fetch response), and a
+    // rebound Host must not reach it.
+    if (pathname !== '/api/stream' || !requestIsSameOrigin(req)) {
       socket.destroy();
       return;
     }
@@ -1122,6 +1554,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   });
 
   const port = await listenWithPortFallback(server, startPort, host);
+  // listen() removes its bind-failure 'error' listener once 'listening' fires, so from
+  // here on the long-lived http.Server would have NO 'error' listener — a rare post-listen
+  // socket-level error (e.g. an accept failure on an abruptly invalidated handle) would be
+  // a fatal unhandled exception. Defensive: surface it and keep serving.
+  server.on('error', (err: Error) => {
+    console.warn('[lattice] GUI server error:', err.message);
+  });
+  // Now the real port is known — arm the CSRF/rebinding guard with the exact Host
+  // authorities the server actually answers on.
+  boundAuthorities = computeBoundAuthorities(host, port, hostIsLoopback);
   // Now that the server is accepting connections, render the initial workspace's
   // context tree in the background — `/` and `/api/entities` answer instantly
   // while it churns, and a render that finishes before any tab connects is
@@ -1143,6 +1585,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     port,
     url,
     whenConverged: () => activeRef?.converged ?? Promise.resolve(),
+    publishChatProgressForTest: (env: ChatProgressEnvelope) => {
+      activeRef?.chatProgress.publish(env);
+    },
     close: () =>
       new Promise<void>((resolveClose, reject) => {
         // Stop the update poll first so its interval can't fire mid-teardown.

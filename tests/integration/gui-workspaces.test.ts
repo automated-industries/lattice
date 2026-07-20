@@ -139,6 +139,10 @@ describe('GUI /api/workspaces', () => {
   it('returns empty when the GUI is opened on a plain config (no root)', async () => {
     const base = mkdtempSync(join(tmpdir(), 'lattice-gws-plain-'));
     dirs.push(base);
+    // Anchor the root lookup inside the sandbox (the dir is never created, so the
+    // registry reads as empty): without this the upward walk from the config's
+    // temp dir can find a real user-level root on machines that have one.
+    process.env.LATTICE_ROOT = join(base, '.lattice');
     const cfg = join(base, 'lattice.config.yml');
     writeFileSync(cfg, 'db: ./data.db\nentities: {}\n');
     const server = await startGuiServer({

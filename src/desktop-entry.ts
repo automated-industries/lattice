@@ -10,6 +10,10 @@ export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
 // `lattice gui`. Without this the desktop hardcoded a virgin boot.
 export { ensureRootForGui } from './framework/gui-bootstrap.js';
 export type { GuiBootstrap } from './framework/gui-bootstrap.js';
+// Release-manifest probe — the desktop shell feeds this into the GUI's update
+// service so a long-open window can surface "update available" (read-only; the
+// actual download/relaunch stays the bundled binary updater).
+export { checkManifestForUpdate } from './update-check.js';
 
 declare const __LATTICE_VERSION__: string | undefined;
 

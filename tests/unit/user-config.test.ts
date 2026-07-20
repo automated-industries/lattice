@@ -104,18 +104,56 @@ describe('framework user-config', () => {
       const back = readIdentity();
       expect(back).toEqual({ display_name: 'A', email: 'a@b' });
     });
+
+    describe('managed-deployment env fallback', () => {
+      afterEach(() => {
+        delete process.env.LATTICE_USER_NAME;
+        delete process.env.LATTICE_USER_EMAIL;
+      });
+
+      it('falls back to LATTICE_USER_NAME / LATTICE_USER_EMAIL when no file exists', () => {
+        process.env.LATTICE_USER_NAME = 'Cloud User';
+        process.env.LATTICE_USER_EMAIL = 'user@example.com';
+        expect(readIdentity()).toEqual({
+          display_name: 'Cloud User',
+          email: 'user@example.com',
+        });
+      });
+
+      it('a stored value wins over the env fallback', () => {
+        process.env.LATTICE_USER_NAME = 'Env Name';
+        process.env.LATTICE_USER_EMAIL = 'env@example.com';
+        writeIdentity({ display_name: 'File Name', email: 'file@example.com' });
+        expect(readIdentity()).toEqual({
+          display_name: 'File Name',
+          email: 'file@example.com',
+        });
+      });
+
+      it('mixes per-field: an empty stored field uses env, a set one is kept', () => {
+        process.env.LATTICE_USER_EMAIL = 'env@example.com';
+        writeIdentity({ display_name: 'Only Name', email: '' });
+        expect(readIdentity()).toEqual({
+          display_name: 'Only Name',
+          email: 'env@example.com',
+        });
+      });
+    });
   });
 
   describe('preferences.json round-trip', () => {
     const DEFAULTS = {
       show_system_tables: false,
-      analytics: true,
+      // Telemetry is opt-in: a local-first tool defaults analytics OFF.
+      analytics: false,
       // On-device dictation is the keyless default (no API key, audio stays local).
       voice_provider: 'local',
       aggressiveness: 0.85,
+      // Ask-when-marginal bar: act at ≥ 0.6 confidence, ask in [0.3, 0.6).
+      clarify_threshold: 0.6,
     };
 
-    it('returns defaults when the file is missing (analytics on by default)', () => {
+    it('returns defaults when the file is missing (analytics OFF by default — opt-in)', () => {
       const prefs = readPreferences();
       expect(prefs).toEqual(DEFAULTS);
     });
@@ -126,34 +164,39 @@ describe('framework user-config', () => {
         analytics: true,
         voice_provider: 'local',
         aggressiveness: 0.85,
+        clarify_threshold: 0.6,
       });
       expect(readPreferences().voice_provider).toBe('local');
     });
 
-    it('round-trips write → read (incl. analytics consent + voice/aggressiveness prefs)', () => {
+    it('round-trips write → read (incl. analytics consent + voice/aggressiveness/clarify prefs)', () => {
       writePreferences({
         show_system_tables: true,
         analytics: true,
         voice_provider: 'elevenlabs',
         aggressiveness: 0.8,
+        clarify_threshold: 0.7,
       });
       expect(readPreferences()).toEqual({
         show_system_tables: true,
         analytics: true,
         voice_provider: 'elevenlabs',
         aggressiveness: 0.8,
+        clarify_threshold: 0.7,
       });
       writePreferences({
         show_system_tables: false,
         analytics: false,
         voice_provider: 'openai',
         aggressiveness: 0,
+        clarify_threshold: 0,
       });
       expect(readPreferences()).toEqual({
         show_system_tables: false,
         analytics: false,
         voice_provider: 'openai',
         aggressiveness: 0,
+        clarify_threshold: 0,
       });
     });
 
@@ -168,6 +211,28 @@ describe('framework user-config', () => {
       expect(prefs.show_system_tables).toBe(true);
       expect(prefs.voice_provider).toBe('local'); // unknown value → default
       expect(prefs.aggressiveness).toBe(1); // clamped into [0, 1]
+      expect(prefs.clarify_threshold).toBe(0.6); // absent → default
+    });
+
+    it('clarify_threshold: defaults to 0.6, clamps into [0, 1], per-key falls back on junk', () => {
+      // Missing file → default.
+      expect(readPreferences().clarify_threshold).toBe(0.6);
+      const path = join(tmpDir, 'preferences.json');
+      // Out-of-range values clamp rather than reset.
+      writeFileSync(path, JSON.stringify({ clarify_threshold: 7 }), 'utf8');
+      expect(readPreferences().clarify_threshold).toBe(1);
+      writeFileSync(path, JSON.stringify({ clarify_threshold: -0.4 }), 'utf8');
+      expect(readPreferences().clarify_threshold).toBe(0);
+      // A non-numeric value falls back to the default without touching the
+      // other keys (per-key fallback, not all-or-nothing).
+      writeFileSync(
+        path,
+        JSON.stringify({ clarify_threshold: 'high', aggressiveness: 0.4 }),
+        'utf8',
+      );
+      const prefs = readPreferences();
+      expect(prefs.clarify_threshold).toBe(0.6);
+      expect(prefs.aggressiveness).toBe(0.4);
     });
 
     it('drops unknown extra fields on write (forward-compat)', () => {
@@ -176,6 +241,7 @@ describe('framework user-config', () => {
         analytics: true,
         voice_provider: 'auto',
         aggressiveness: 0.5,
+        clarify_threshold: 0.6,
         sidebar_dense: false,
       } as unknown as Parameters<typeof writePreferences>[0]);
       const raw = readFileSync(join(tmpDir, 'preferences.json'), 'utf8');
@@ -183,6 +249,7 @@ describe('framework user-config', () => {
       expect(raw).toContain('analytics');
       expect(raw).toContain('voice_provider');
       expect(raw).toContain('aggressiveness');
+      expect(raw).toContain('clarify_threshold');
       expect(raw).not.toContain('sidebar_dense');
     });
 
@@ -193,6 +260,7 @@ describe('framework user-config', () => {
         analytics: false,
         voice_provider: 'openai',
         aggressiveness: 0.2,
+        clarify_threshold: 0.4,
       });
       // Corrupt the file in place.
       writeFileSync(path, '{not json', 'utf8');
@@ -210,10 +278,10 @@ describe('framework user-config', () => {
       else process.env.SCARF_ANALYTICS = savedScarf;
     });
 
-    it('defaults to enabled (opt-out model)', () => {
+    it('defaults to DISABLED (opt-in model — telemetry is off until the user enables it)', () => {
       delete process.env.DO_NOT_TRACK;
       delete process.env.SCARF_ANALYTICS;
-      expect(analyticsEnabled()).toBe(true);
+      expect(analyticsEnabled()).toBe(false);
     });
 
     it('honors the analytics preference', () => {

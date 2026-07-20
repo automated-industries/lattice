@@ -1,38 +1,73 @@
 import { describe, it, expect } from 'vitest';
 import { guiAppHtml } from '../../src/gui/app.js';
 
-describe('assistant rail markup + wiring', () => {
-  it('includes the rail DOM hooks', () => {
-    expect(guiAppHtml).toContain('id="assistant-rail"');
+describe('assistant dock + Outputs markup + wiring', () => {
+  it('houses the assistant in the persistent Ask Gladys dock (single layout)', () => {
+    // The chat lives in the always-visible right-hand dock; the chat element IDs are
+    // reused inside it so the chat client is unchanged. No view flip, no floating panel.
+    expect(guiAppHtml).toContain('id="ask-dock"');
+    expect(guiAppHtml).toContain('class="layout"');
+    expect(guiAppHtml).toContain('id="dash-list"');
+    expect(guiAppHtml).toContain('id="antabstrip-tabs"');
+    expect(guiAppHtml).toContain('id="configure-trigger"');
     expect(guiAppHtml).toContain('id="rail-feed"');
-    expect(guiAppHtml).toContain('id="rail-resize"');
-    expect(guiAppHtml).toContain('class="assistant-rail"');
+    // The docked rail, the floating panel, the old Ask-Gladys view toggle, and the
+    // separate two-layout structure are gone.
+    expect(guiAppHtml).not.toContain('id="assistant-rail"');
+    expect(guiAppHtml).not.toContain('class="assistant-rail"');
+    expect(guiAppHtml).not.toContain('id="ask-lattice-panel"');
+    expect(guiAppHtml).not.toContain('id="ask-lattice-trigger"');
+    expect(guiAppHtml).not.toContain('id="analytics-layout"');
   });
 
-  it('drives the layout grid off the --sidebar-width variable', () => {
-    expect(guiAppHtml).toContain('--sidebar-width');
-    expect(guiAppHtml).toContain('var(--sidebar-width)');
+  it('drives the layout grid off the --outputs-width variable', () => {
+    expect(guiAppHtml).toContain('--outputs-width');
+    expect(guiAppHtml).toContain('var(--outputs-width)');
+    expect(guiAppHtml).not.toContain('--sidebar-width');
   });
 
-  it('wires the multiplexed event stream + resize on boot', () => {
+  it('wires the multiplexed event stream + Outputs resize on boot', () => {
     // Feed/realtime/render events ride ONE WebSocket (`/api/stream`) instead of
     // three SSE streams, so a tab holds a single persistent connection.
     expect(guiAppHtml).toContain("'/api/stream'");
     expect(guiAppHtml).toContain('function startEventStream');
     expect(guiAppHtml).toContain('new WebSocket(');
-    expect(guiAppHtml).toContain('function initRailResize');
+    expect(guiAppHtml).toContain('function initOutputsResize');
     expect(guiAppHtml).toContain('startEventStream();');
-    expect(guiAppHtml).toContain('initRailResize();');
+    expect(guiAppHtml).toContain('initOutputsResize();');
     // The three separate SSE stream openers are gone.
     expect(guiAppHtml).not.toContain("new EventSource('/api/feed/stream')");
   });
 
-  it('wires file ingest (drag-drop + paperclip) into the rail', () => {
+  it('wires file ingest (whole-window drop zone + paperclip)', () => {
     expect(guiAppHtml).toContain('function uploadFile');
-    expect(guiAppHtml).toContain('function initRailDragDrop');
+    // The drop target is now the whole window (a full-screen overlay), not a
+    // panel-scoped listener — a drop anywhere opens Gladys and stages the file.
+    expect(guiAppHtml).toContain('function initFileDropZone');
+    expect(guiAppHtml).toContain('file-drop-overlay');
     expect(guiAppHtml).toContain("'/api/ingest/upload'");
-    expect(guiAppHtml).toContain('initRailDragDrop();');
+    expect(guiAppHtml).toContain('initAskLattice();');
     expect(guiAppHtml).toContain('id="chat-clip"');
+  });
+
+  it('moves the live activity feed to a header popover (next to version history)', () => {
+    expect(guiAppHtml).toContain('id="activity-pill"');
+    expect(guiAppHtml).toContain('id="activity-feed"');
+    expect(guiAppHtml).toContain('function initActivityHeader');
+    expect(guiAppHtml).toContain('initActivityHeader();');
+  });
+
+  it('the separate MARKDOWN sidebar section + tree are gone (markdown is per-object now)', () => {
+    // The rendered-markdown tree was retired: a table's/record's markdown is reached
+    // via its "View Markdown" action, not a standalone sidebar section.
+    expect(guiAppHtml).not.toContain('id="nav-md-tree"');
+    expect(guiAppHtml).not.toContain('data-section="markdown"');
+    expect(guiAppHtml).not.toContain('mdt-artifact');
+    // The older left-sidebar artifacts tree + Outputs sections were already gone.
+    expect(guiAppHtml).not.toContain('id="src-artifacts-tree"');
+    expect(guiAppHtml).not.toContain('id="out-artifacts-tree"');
+    expect(guiAppHtml).not.toContain('renderOutputsArtifacts');
+    expect(guiAppHtml).not.toContain('id="out-tables-mount"');
   });
 
   it('wires chat threading (new chat + conversation switcher)', () => {
@@ -117,11 +152,16 @@ describe('assistant rail markup + wiring', () => {
     expect(guiAppHtml).toContain('Workspace name must be 200 characters or fewer');
   });
 
-  it('provides a mobile bottom-drawer handle + toggle', () => {
-    expect(guiAppHtml).toContain('id="rail-handle"');
-    expect(guiAppHtml).toContain('function initRailDrawer');
-    expect(guiAppHtml).toContain('initRailDrawer();');
-    expect(guiAppHtml).toContain('@media (max-width: 720px)');
+  it('switches views from the header triggers (no floating panel logic)', () => {
+    expect(guiAppHtml).toContain('function initAnalyticsView');
+    expect(guiAppHtml).toContain('function applyAppView');
+    expect(guiAppHtml).toContain('function renderAnalyticsRoute');
+    // The floating panel machinery is gone.
+    expect(guiAppHtml).not.toContain('function openAskLattice');
+    expect(guiAppHtml).not.toContain('function toggleAskLattice');
+    // The retired mobile bottom-drawer is gone too.
+    expect(guiAppHtml).not.toContain('id="rail-handle"');
+    expect(guiAppHtml).not.toContain('function initRailDrawer');
   });
 
   it('inline SPA script parses without syntax errors', () => {

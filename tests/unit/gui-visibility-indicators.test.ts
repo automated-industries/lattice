@@ -8,19 +8,64 @@ import { css } from '../../src/gui/app/css.js';
  * Connect-with-Claude step in the onboarding wizard.
  */
 describe('gui visibility indicators', () => {
-  it('defines a shared visIndicator helper and reuses it on detail + cards', () => {
+  it('defines a shared visIndicator helper and reuses it on the detail header', () => {
     expect(appJs).toContain('function visIndicator(access, extraClass)');
     // Entity-detail header reuses it (keeps the detail-vis-icon tint class).
     expect(appJs).toContain("visIndicator(a, 'detail-vis-icon')");
-    // The fs card tiles reuse the SAME component, positioned in the corner.
-    expect(appJs).toContain("visIndicator(r._access, 'fs-tile-vis')");
   });
 
-  it('styles the shared indicator + the card-corner placement', () => {
+  it('styles the shared indicator', () => {
     expect(css).toContain('.vis-indicator');
-    expect(css).toContain('.fs-tile-vis');
-    // The tile must be a positioning context for the absolute corner indicator.
-    expect(css).toMatch(/\.fs-tile\s*\{[^}]*position:\s*relative/);
+  });
+});
+
+/**
+ * External-DB tables are stored under a machine-namespaced physical name
+ * (db_<database>_<connid>_<table>) that title-cases into noise. displayFor honors
+ * a server-supplied clean label (entityLabel) for those, via a memoized map.
+ */
+describe('gui displayFor — clean labels for machine-namespaced connected tables', () => {
+  it('builds a memoized entity-label map keyed on the entities payload identity', () => {
+    expect(appJs).toContain('function entityLabelMap()');
+    // Rebuilds only when the tables array reference changes (not every render).
+    expect(appJs).toContain('_entityLabelCache.src !== tables');
+    expect(appJs).toContain('t.entityLabel');
+  });
+
+  it('displayFor prefers a built-in label, then the server label, then the raw name', () => {
+    // The server label is title-cased; the raw de-underscored name is the last resort.
+    expect(appJs).toContain('var serverLabel = entityLabelMap()[name];');
+    expect(appJs).toContain('serverLabel ? titleCase(serverLabel) : titleCase(name)');
+  });
+});
+
+/**
+ * A connected external database can be edited in place: the full-width Databases
+ * table's per-row Edit action loads the non-secret connection parts into the
+ * same inline form (no drawer), which saves via /reconnect and keeps the
+ * password unless retyped.
+ */
+describe('gui db-source edit connection', () => {
+  it('renders a per-row Edit action and loads the connection for pre-fill', () => {
+    expect(appJs).toContain('data-db-act="edit"');
+    expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(id) + '/connection'");
+    // The edit reuses the inline form, not a side-drawer.
+    expect(appJs).not.toContain('openDbConnectDrawer');
+    expect(appJs).not.toContain('db-connect-dialog');
+  });
+
+  it('saves edits to /reconnect with a keep-current-password hint', () => {
+    expect(appJs).toContain("'/api/db-sources/' + encodeURIComponent(dbEditId) + '/reconnect'");
+    expect(appJs).toContain('leave blank to keep current');
+  });
+
+  it('renders the connected databases as a multi-column table', () => {
+    expect(css).toContain('.db-table');
+    expect(appJs).toContain('class="db-table"');
+    // Verbose columns: host, database, and table count are all shown.
+    expect(appJs).toContain('<th>Host</th>');
+    expect(appJs).toContain('<th>Database</th>');
+    expect(appJs).toContain('<th>Tables</th>');
   });
 });
 
@@ -103,26 +148,23 @@ describe('visIndicator (shared lock/eye component)', () => {
 });
 
 /**
- * Onboarding wizard gains an optional, skippable Connect-with-Claude step right
- * after the name/email (identity) step, reusing the same OAuth exchange flow as
- * the Settings panel.
+ * The onboarding wizard has NO connect step. A connected Claude subscription is
+ * enforced globally by the boot connect wall (before any workspace loads), so by
+ * the time the create/join wizard runs the assistant is already connected — the
+ * per-wizard connect step was removed to avoid a redundant second prompt.
  */
-describe('gui onboarding — Connect with Claude step', () => {
-  it('adds a connect step between identity and create/join', () => {
-    expect(appJs).toContain("st.step === 'connect'");
-    // Identity advances INTO the connect step…
-    expect(appJs).toContain("st.step = 'connect';");
-    // …and the connect step advances on to create (kind) or join.
+describe('gui onboarding — no in-wizard connect step (handled by the boot wall)', () => {
+  it('advances identity straight to create (kind) or join — no connect step', () => {
+    // Identity → kind/join directly; there is no intermediate 'connect' step.
     expect(appJs).toContain("st.step = mode === 'join' ? 'join' : 'kind';");
+    expect(appJs).not.toContain("st.step === 'connect'");
+    expect(appJs).not.toContain("st.step = 'connect';");
   });
 
-  it('offers the Connect-with-Claude button and makes it skippable', () => {
-    expect(appJs).toContain('id="ob-connect-btn"');
-    expect(appJs).toContain('Connect with Claude');
-    expect(appJs).toContain('Skip for now');
-    // Reuses the existing subscription-OAuth exchange endpoint.
-    expect(appJs).toContain("fetch('/api/assistant/oauth/exchange'");
-    // Reflects an already-connected state instead of re-prompting.
-    expect(appJs).toContain('Connected with Claude');
+  it('does not render an in-wizard Connect-with-Claude affordance', () => {
+    // The skippable in-wizard button + its inline OAuth-code exchange are gone.
+    expect(appJs).not.toContain('id="ob-connect-btn"');
+    expect(appJs).not.toContain('id="ob-connect-finish"');
+    expect(appJs).not.toContain('Skip for now');
   });
 });

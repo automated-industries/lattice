@@ -229,3 +229,63 @@ describe('sources routes', () => {
     expect(b.roots).toHaveLength(0);
   });
 });
+
+// Folder ingest fans out (INGEST_CONCURRENCY files at once). These pin the two
+// properties that fan-out must preserve vs the old sequential loop: (1) one file
+// that throws does not abort the whole batch, and (2) the cap counts SUCCESSFUL
+// ingests, not files examined, so a run of skipped files doesn't shrink the result.
+describe('folder ingest — fan-out resilience + cap semantics', () => {
+  // Drive the folder-ingest route with a per-test ingestFile (the shared `call`
+  // helper hardcodes the always-succeed fake).
+  async function ingestFolderWith(
+    dir: string,
+    ingestFile: (p: string) => Promise<LocalFileIngestResult>,
+  ): Promise<{ ingested: number; skipped: number }> {
+    const req = fakeReq('POST', '/api/sources/roots', { path: dir, kind: 'folder' });
+    const { res, done } = fakeRes();
+    await dispatchSourcesRoute(req, res, {
+      db,
+      ingestFile,
+      configPath: join(cfgDir, 'workspace.yml'),
+      pathname: '/api/sources/roots',
+      method: 'POST',
+    });
+    const body = (await done).body as { result: { ingested: number; skipped: number } };
+    return body.result;
+  }
+
+  it('a file that throws mid-batch is counted as skipped and never aborts the run', async () => {
+    for (const n of ['a', 'b', 'boom', 'c', 'd', 'e']) {
+      writeFileSync(join(workDir, n + '.txt'), n);
+    }
+    const seen: string[] = [];
+    const result = await ingestFolderWith(workDir, (p) => {
+      seen.push(p);
+      if (p.endsWith('boom.txt')) return Promise.reject(new Error('simulated DB failure'));
+      return Promise.resolve({ id: 'row-' + seen.length, extraction_status: 'extracted' });
+    });
+    // Every file was still attempted — the throw did not abort the batch.
+    expect(seen).toHaveLength(6);
+    // The thrower counts as skipped; the other five ingested.
+    expect(result.ingested).toBe(5);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('the cap counts SUCCESSFUL ingests, not files examined (skips do not consume it)', async () => {
+    // 510 files; the first 10 ingestFile calls "skip" (no id), the rest succeed. With a
+    // MAX_INGEST_FILES=500 cap-on-successes, all 500 success files must ingest (the 10
+    // skips don't count). The buggy cap-on-collected variant would stop after examining
+    // 500 files (10 skips + 490 successes) and report 490.
+    for (let i = 0; i < 510; i++) {
+      writeFileSync(join(workDir, 'f' + String(i).padStart(4, '0') + '.txt'), 'x');
+    }
+    let calls = 0;
+    const result = await ingestFolderWith(workDir, () => {
+      calls++;
+      if (calls <= 10) return Promise.resolve({ extraction_status: 'skipped' }); // no id → skip
+      return Promise.resolve({ id: 'row-' + calls, extraction_status: 'extracted' });
+    });
+    expect(result.ingested).toBe(500);
+    expect(result.skipped).toBe(10);
+  });
+});

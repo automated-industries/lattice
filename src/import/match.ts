@@ -129,6 +129,12 @@ export function renameEntities(
         toEntity: r(l.toEntity),
         ...(l.junction ? { junction: l.junction } : {}),
       })),
+      marginalLinks: plan.marginalLinks.map((l) => ({
+        ...l,
+        fromEntity: r(l.fromEntity),
+        toEntity: r(l.toEntity),
+        ...(l.junction ? { junction: l.junction } : {}),
+      })),
     },
     views: views.map((v) => ({ ...v, name: r(v.name), master: r(v.master) })),
   };

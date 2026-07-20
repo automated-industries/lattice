@@ -25,9 +25,12 @@
  *
  * Postgres-gated: skipped without LATTICE_TEST_PG_URL.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
@@ -36,6 +39,10 @@ import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/mem
 import { registerNativeEntities } from '../../src/framework/native-entities.js';
 import { FeedBus } from '../../src/gui/feed.js';
 import type { FileJunction } from '../../src/gui/data.js';
+// Claude access is OAuth-only now: a connected subscription (not an API key) is
+// what authenticates the enrichment model call. Seed a fake subscription token
+// into the machine-local credential store (keyed off LATTICE_CONFIG_DIR).
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 // Enrichment runs against a fake Anthropic client; the summarize leaf is stubbed
 // so the run is deterministic: no real network, one reused entity, one link.
@@ -141,6 +148,33 @@ afterEach(async () => {
   await admin.end();
 });
 
+// The Claude subscription (OAuth) is stored in the machine-local credential store,
+// which is keyed off LATTICE_CONFIG_DIR. Point it at an isolated per-test dir so
+// seedClaudeOAuth() authenticates enrichment without touching the real store, and
+// scrub any stray ANTHROPIC_API_KEY (no longer an auth path) so nothing else can
+// silently authenticate.
+const authConfigDirs: string[] = [];
+const savedAuthEnv: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+  const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-ingest-cfg-'));
+  authConfigDirs.push(cfgDir);
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY']) {
+    savedAuthEnv[k] = process.env[k];
+  }
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'ingest-privacy-auth-key';
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
+afterEach(() => {
+  for (const d of authConfigDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedAuthEnv)) {
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
+});
+
 describe.skipIf(!PG_URL)('private ingest does not leak the file or its enrichment', () => {
   async function ownerCloud(schema: string): Promise<Lattice> {
     const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
@@ -185,7 +219,11 @@ describe.skipIf(!PG_URL)('private ingest does not leak the file or its enrichmen
   }
 
   it('forces the file + derived entity row + junction link private; control stays shared', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
+    // Authenticate the enrichment model call: a connected Claude subscription
+    // (OAuth), seeded into the isolated machine store set up in beforeEach. The
+    // model client + summarize/extract leaves are stubbed above, so this only has
+    // to make resolveClaudeAuth() return a token — no real network call happens.
+    seedClaudeOAuth();
     const tag = randomBytes(4).toString('hex');
     const schema = `ing_${tag}`;
     const member = `lm_ing_${tag}`;

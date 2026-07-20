@@ -1,7 +1,7 @@
 import type { Lattice } from '../../lattice.js';
 import type { AsOfCandidate } from '../../import/asof.js';
-import { resolveClaudeAuth } from '../assistant-routes.js';
-import { createAnthropicClient, DEFAULT_MODEL } from './chat.js';
+import { DEFAULT_MODEL } from './chat.js';
+import { resolveLlmClient } from './provider.js';
 
 /**
  * LLM fallback for as-of detection. When the deterministic scanners
@@ -37,9 +37,8 @@ export async function asOfFromLlm(db: Lattice | null, text: string): Promise<AsO
   const trimmed = text.trim();
   if (!trimmed) return null;
   try {
-    const auth = await resolveClaudeAuth(db);
-    if (!auth) return null; // no Claude configured → deterministic-only, not an error
-    const client = createAnthropicClient(auth);
+    const client = await resolveLlmClient(db);
+    if (!client) return null; // no provider configured → deterministic-only, not an error
     const result = await client.runTurn({
       model: DEFAULT_MODEL,
       system: SYSTEM,

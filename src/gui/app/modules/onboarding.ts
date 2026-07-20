@@ -34,8 +34,9 @@ export const onboardingJs = `    // ──────────────�
       // The rail is conversation-scoped: clearing or switching a conversation
       // drops both its chat bubbles AND its activity cards (each conversation
       // replays its own data-change cards from the persisted per-turn events).
+      // Also clear any in-progress ingest bar (orphaned by the conversation switch).
       // Reset the grouping anchors so a freshly loaded thread starts clean.
-      var nodes = feedEl.querySelectorAll('.chat-msg, .feed-item');
+      var nodes = feedEl.querySelectorAll('.chat-msg, .feed-item, .ingest-progress');
       for (var i = 0; i < nodes.length; i++) nodes[i].remove();
       feedGroups = {};
       // Restore the empty hint only when the rail is now completely empty.
@@ -44,19 +45,28 @@ export const onboardingJs = `    // ──────────────�
       }
     }
     // Drop the activity cards (e.g. when switching to another workspace, whose
-    // events are a different set). Resets the grouping anchor too.
+    // events are a different set). Resets the grouping anchor too. Clear any
+    // in-progress ingest bar: it belongs to the workspace we're leaving and must
+    // not bleed into the new one (its feed events go to the old workspace's feed).
     function clearActivityFeed() {
       var feedEl = railFeedEl();
       if (!feedEl) return;
       var items = feedEl.querySelectorAll('.feed-item');
       for (var i = 0; i < items.length; i++) items[i].remove();
       feedGroups = {};
+      clearIngestProgress();
     }
     function newChat() {
       gaTrack('assistant_thread_new', {});
       currentThreadId = null;
       rememberThread(null);
       clearChat();
+      // Drop any bound/buffered turns and re-enable the composer — the explicit escape
+      // hatch if a turn was left streaming (e.g. the server died mid-run so its 'done'
+      // never arrived). An off-screen turn from another thread still completes server-side.
+      chatTurns = {};
+      chatEventBuffer = {};
+      releaseComposer();
       var sel = document.getElementById('rail-threads');
       if (sel) sel.value = '';
     }
@@ -100,15 +110,38 @@ export const onboardingJs = `    // ──────────────�
         currentThreadId = id;
         rememberThread(id);
         var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
-        msgs.forEach(function (m) {
+        msgs.forEach(function (m, mi) {
           if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
           else if (m.role === 'assistant') {
-            // Rich replay: the saved per-turn structure (text + the data-change
-            // activity cards it produced), matching the live stream. Falls back to
-            // a plain text bubble for messages saved before turns were persisted.
-            if (Array.isArray(m.turns) && m.turns.length > 0) {
+            // A turn still running when the page reloaded (the newest message, status
+            // 'streaming'/'pending'). Distinguish FRESH from STALE: a fresh row is almost
+            // certainly still running on the same server process, so rebind it to the live
+            // chat-progress bus (its remaining events keep painting) and lock the composer.
+            // A STALE row (older than the freshness window) was orphaned — the process that
+            // owned it died (crash / relaunch / redeploy / teardown timeout) and can never
+            // finish it — so DON'T bind it (a bound-but-dead turn would wedge the composer
+            // with a permanent typing bubble); render its checkpointed text as a final,
+            // interrupted reply and leave the composer free.
+            var streaming = (m.status === 'streaming' || m.status === 'pending') && !!m.id && mi === msgs.length - 1;
+            if (streaming && chatTurnFresh(m.startedAt)) {
+              var rctx = newAssistantBubble();
+              if (m.text) setBubbleText(rctx, m.text);
+              bindChatTurn({ messageId: m.id, threadId: id, actx: rctx, assembled: m.text || '', pendingOpen: null, done: false });
+              chatBusy = true; feedTurnActive = true;
+              var sbtn = document.getElementById('chat-send'); if (sbtn) sbtn.disabled = true;
+            } else if (streaming) {
+              // Orphaned in-flight turn: show what was saved (or a soft interrupted note)
+              // as final — no bind, no composer lock, no lingering turn.
+              var ictx = newAssistantBubble();
+              setBubbleText(ictx, m.text || '\\u26a0 This reply was interrupted and did not finish.');
+            } else if (Array.isArray(m.turns) && m.turns.length > 0) {
+              // Rich replay: the saved per-turn structure (text + the data-change activity
+              // cards it produced), matching the live stream.
               m.turns.forEach(function (t) { appendAssistantTurn(t, m.created_at, m.startedAt); });
-            } else { var c = newAssistantBubble(); setBubbleText(c, m.text); }
+            } else {
+              // Plain text bubble — messages saved before turns were persisted.
+              var c = newAssistantBubble(); setBubbleText(c, m.text);
+            }
             chatHistory.push({ role: 'assistant', text: m.text });
           }
         });
@@ -215,19 +248,182 @@ export const onboardingJs = `    // ──────────────�
       var startedMs = new Date(startedAt || createdAt || 0).getTime();
       renderTurnEventCards(railFeedEl(), events, startedMs);
     }
-    function parseSse(buffer, onEvent) {
-      var sep;
-      while ((sep = buffer.indexOf('\\n\\n')) >= 0) {
-        var frame = buffer.slice(0, sep); buffer = buffer.slice(sep + 2);
-        var line = frame.split('\\n').find(function (l) { return l.indexOf('data:') === 0; });
-        if (!line) continue;
-        var json = line.slice(5).trim(); if (!json) continue;
-        try { onEvent(JSON.parse(json)); } catch (_) { /* drop malformed */ }
+    // ── Async chat transport ──────────────────────────────────────
+    // POST /api/chat ACKs 202 {threadId, messageId} and the turn runs as a background
+    // job on the server; its events arrive over the /api/stream WebSocket as
+    // 'chat-progress' frames { threadId, messageId, event }. chatTurns maps a streaming
+    // messageId -> that turn's bubble/render state so each event lands on the right turn
+    // (including one recovered after a page reload). A frame can arrive before the 202
+    // resolves (or before recovery binds), so unclaimed frames are buffered per messageId
+    // and replayed when the turn registers.
+    var chatTurns = {};
+    var chatEventBuffer = {};
+    // A recovered in-flight row is only treated as LIVE (rebound + composer locked) when
+    // it started within this window; older than it, the owning process is presumed dead
+    // (crash / relaunch / redeploy / teardown timeout) and the row is rendered as an
+    // interrupted final reply instead of a permanent typing bubble. Comfortably longer
+    // than any real turn so a slow-but-live turn is never misclassified.
+    var CHAT_TURN_STALE_MS = 300000; // 5 min
+    function chatTurnFresh(startedAt) {
+      if (!startedAt) return false; // no start stamp → can't prove it's live → treat as stale
+      var t = new Date(startedAt).getTime();
+      if (!(t > 0)) return false;
+      return (Date.now() - t) < CHAT_TURN_STALE_MS;
+    }
+    // Re-enable the composer once no turn is streaming (a turn recovered on reload keeps
+    // it disabled until that turn finishes). Reflects busy state off the live turn count.
+    function releaseComposer() {
+      var streaming = Object.keys(chatTurns).length > 0;
+      chatBusy = streaming;
+      feedTurnActive = streaming;
+      var sb = document.getElementById('chat-send'); if (sb) sb.disabled = streaming;
+      if (!streaming) { var inp = document.getElementById('chat-input'); if (inp) inp.focus(); }
+    }
+    // Reconcile bound (streaming) turns after the /api/stream WebSocket reconnects. The bus
+    // has NO replay buffer, so any event — including the terminal 'done' — published while
+    // the socket was down is lost, which would otherwise leave the turn bound forever and
+    // the composer stuck disabled. On reconnect we re-fetch each bound turn's persisted row:
+    // a settled row (done/error) is finalized locally; a still-streaming FRESH row has its
+    // partial text refreshed (live frames resume over the new socket); a still-streaming
+    // STALE row is treated as interrupted and released.
+    function resyncChatTurns() {
+      var ids = Object.keys(chatTurns);
+      if (!ids.length) return;
+      // Group the bound turns by their thread so each thread is fetched once.
+      var byThread = {};
+      ids.forEach(function (mid) {
+        var turn = chatTurns[mid];
+        if (turn && turn.threadId) (byThread[turn.threadId] = byThread[turn.threadId] || []).push(mid);
+      });
+      Object.keys(byThread).forEach(function (tid) {
+        fetchJson('/api/chat/threads/' + encodeURIComponent(tid) + '/messages').then(function (d) {
+          var msgs = (d && d.messages) || [];
+          byThread[tid].forEach(function (mid) {
+            var turn = chatTurns[mid];
+            if (!turn) return;
+            var row = null;
+            for (var i = 0; i < msgs.length; i++) { if (msgs[i].id === mid) { row = msgs[i]; break; } }
+            if (!row) return; // row not found (deleted?) — leave the turn; a full reload recovers
+            var settled = row.status !== 'streaming' && row.status !== 'pending';
+            var visible = turn.threadId === currentThreadId;
+            if (settled) {
+              // The turn finished (its 'done' may have been lost during the disconnect):
+              // render the final text and release.
+              if (visible && row.text) { if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, row.text); }
+              turn.assembled = row.text || turn.assembled;
+              finalizeChatTurn(turn);
+            } else if (chatTurnFresh(row.startedAt)) {
+              // Still legitimately running — refresh the partial (recovering deltas lost in
+              // the gap); live frames continue over the reconnected socket.
+              if (visible && row.text) { if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, row.text); turn.assembled = row.text; }
+            } else {
+              // Still 'streaming' but stale — the owning process is gone; treat as interrupted.
+              if (visible && row.text && turn.actx) setBubbleText(turn.actx, row.text);
+              finalizeChatTurn(turn);
+            }
+          });
+        }).catch(function () { /* best-effort; a full reload still recovers */ });
+      });
+    }
+    // Apply one streamed event to its turn. Painting is gated on the turn's thread being
+    // the one on screen — an off-screen turn (the user switched threads mid-run) still
+    // completes + persists server-side and replays when they switch back.
+    function applyChatEvent(turn, ev) {
+      if (!turn || !ev) return;
+      var visible = turn.threadId === currentThreadId;
+      if (ev.type === 'ack') {
+        // Fast contextual acknowledgement shown before the real answer. Render it as its
+        // own transient bubble and finalize any waiting typing bubble — the answer streams
+        // into a fresh bubble via the next assistant_message_start. Not persisted, so it is
+        // never replayed on reload. (For an inline answer the server streams the answer
+        // itself via text_delta, so the ack path isn't used there.)
+        if (visible) { finalizeBubble(turn.actx); turn.actx = null; anToolStatus(null); var ackb = newAssistantBubble(); setBubbleText(ackb, ev.message); }
+      } else if (ev.type === 'assistant_message_start') {
+        if (visible) { finalizeBubble(turn.actx); turn.actx = newAssistantBubble(); }
+        turn.assembled = '';
+      } else if (ev.type === 'text_delta') {
+        turn.assembled += ev.delta;
+        if (visible) { anToolStatus(null); if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, turn.assembled); var fe = railFeedEl(); if (fe) fe.scrollTop = fe.scrollHeight; }
+      // A tool round's streamed text (e.g. "I see — I need a different approach…") is real
+      // narration the user should keep, so FINALIZE this round's bubble instead of reaping
+      // it — the next round opens a fresh bubble via assistant_message_start / the next
+      // text_delta. finalizeBubble drops an empty (no-text) round's typing bubble on its own,
+      // so a bare tool call with no narration leaves nothing behind.
+      } else if (ev.type === 'assistant_message_end' && ev.hadTools) {
+        if (visible) finalizeBubble(turn.actx);
+        turn.actx = null; turn.assembled = '';
+      // tool_use / tool_result are not painted as inline pills — the assistant's data
+      // changes stream in as activity cards over the feed. The only in-chat acknowledgement
+      // is ONE transient status line ("Building your dashboard…"), cleared when text starts.
+      } else if (ev.type === 'tool_use') {
+        if (visible) anToolStatus(ev.name);
+      // The model asked a clarification question (ask_user): render the interactive card
+      // inline; the turn ends right after, and the user's pick goes out as the next message.
+      } else if (ev.type === 'question') {
+        if (visible) { finalizeBubble(turn.actx); anToolStatus(null); if (typeof renderChatQuestion === 'function') renderChatQuestion(ev); }
+        turn.actx = null;
+      } else if (ev.type === 'warn') {
+        if (visible) { finalizeBubble(turn.actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); }
+        turn.actx = null;
+      } else if (ev.type === 'limit') {
+        if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); }
+        turn.actx = null;
+      } else if (ev.type === 'error') {
+        if (visible) { if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, (turn.assembled ? turn.assembled + '\\n' : '') + '⚠ ' + ev.message); }
+        turn.reonboard = true;
+      // A tool (e.g. create_artifact) asked the GUI to open the row it created; navigate
+      // once the turn finishes so the main viewer isn't yanked mid-reply.
+      } else if (ev.type === 'open' && ev.table && ev.id) {
+        turn.pendingOpen = { table: String(ev.table), id: String(ev.id) };
+      } else if (ev.type === 'done') {
+        finalizeChatTurn(turn);
       }
-      return buffer;
+    }
+    function finalizeChatTurn(turn) {
+      if (!turn || turn.done) return;
+      turn.done = true;
+      var visible = turn.threadId === currentThreadId;
+      if (visible) { finalizeBubble(turn.actx); anToolStatus(null); if (turn.assembled) chatHistory.push({ role: 'assistant', text: turn.assembled }); }
+      delete chatTurns[turn.messageId];
+      delete chatEventBuffer[turn.messageId];
+      releaseComposer();
+      refreshThreadList();
+      if (visible && turn.pendingOpen) { invalidate(turn.pendingOpen.table); openSearchHit(turn.pendingOpen.table, turn.pendingOpen.id); }
+      // If the model backend is no longer connected (creds gone/invalid), route back to
+      // onboarding — keyed off config.connected so a transient hiccup or usage-limit does
+      // NOT eject the user mid-conversation.
+      if (turn.reonboard && typeof reonboardOnAiFailure === 'function') {
+        fetchJson('/api/assistant/config').then(function (cfg) {
+          if (cfg && cfg.connected === false) reonboardOnAiFailure();
+        }).catch(function () { /* ignore */ });
+      }
+    }
+    // Register a turn's render state under its messageId and replay any buffered events.
+    function bindChatTurn(turn) {
+      chatTurns[turn.messageId] = turn;
+      var buf = chatEventBuffer[turn.messageId];
+      if (buf) { delete chatEventBuffer[turn.messageId]; for (var i = 0; i < buf.length; i++) applyChatEvent(turn, buf[i]); }
+    }
+    // Dispatched from the /api/stream WebSocket (dispatchStreamMessage 'chat-progress').
+    function onChatProgress(msg) {
+      if (!msg || !msg.messageId || !msg.event) return;
+      var turn = chatTurns[msg.messageId];
+      if (turn) { applyChatEvent(turn, msg.event); return; }
+      // Not yet bound (our 202 hasn't resolved, or recovery hasn't run). Buffer from the
+      // start so the binding replays the whole turn; bounded so a never-claimed stream
+      // can't grow without limit, and GC'd shortly after 'done' if nothing ever binds it.
+      var b = (chatEventBuffer[msg.messageId] = chatEventBuffer[msg.messageId] || []);
+      if (b.length < 4000) b.push(msg.event);
+      if (msg.event.type === 'done') {
+        setTimeout(function () { if (!chatTurns[msg.messageId]) delete chatEventBuffer[msg.messageId]; }, 5000);
+      }
     }
     function sendChat(text, attachedFiles) {
-      if (chatBusy || !text) return;
+      var hasFiles = !!(attachedFiles && attachedFiles.length);
+      if (chatBusy || (!text && !hasFiles)) return;
+      // A files-only send (no message): give Lattice a directive so it still responds to
+      // the attachment (the server's attached-files note tells it what was added).
+      var effectiveText = text || (attachedFiles && attachedFiles.length > 1 ? 'Take a look at these files.' : 'Take a look at this file.');
       chatBusy = true;
       gaTrack('assistant_message', {}); // no message text — just the event
 
@@ -236,16 +432,15 @@ export const onboardingJs = `    // ──────────────�
       feedTurnId += 1;
       feedTurnStartMs = Date.now();
       feedTurnActive = true;
-      appendUserBubble(text);
+      appendUserBubble(effectiveText);
       var historyToSend = chatHistory.slice();
-      chatHistory.push({ role: 'user', text: text });
+      chatHistory.push({ role: 'user', text: effectiveText });
       var input = document.getElementById('chat-input');
       var sendBtn = document.getElementById('chat-send');
       // Clear + collapse the textarea back to one line (reuse its auto-grow so
       // the reset matches the grow logic instead of leaving a bare 'auto').
       if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
       if (sendBtn) sendBtn.disabled = true;
-      var actx = null; var assembled = ''; var pendingOpen = null;
       // Private mode: when the composer checkbox is checked, items the assistant
       // adds on this turn stay private to the current user.
       var privEl = document.getElementById('chat-private');
@@ -253,53 +448,47 @@ export const onboardingJs = `    // ──────────────�
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        body: JSON.stringify({ message: text, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
+        body: JSON.stringify({ message: effectiveText, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
       }).then(function (r) {
-        if (!r.ok || !r.body) {
-          return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
-        }
-        var tid = r.headers.get('x-thread-id'); if (tid) { currentThreadId = tid; rememberThread(tid); }
-        var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
-        function pump() {
-          return reader.read().then(function (res) {
-            if (res.done) return;
-            buf += dec.decode(res.value, { stream: true });
-            buf = parseSse(buf, function (ev) {
-              if (ev.type === 'assistant_message_start') { finalizeBubble(actx); actx = newAssistantBubble(); assembled = ''; }
-              else if (ev.type === 'text_delta' && actx) { assembled += ev.delta; setBubbleText(actx, assembled); railFeedEl().scrollTop = railFeedEl().scrollHeight; }
-              // tool_use / tool_result are no longer painted as inline pills — the
-              // assistant's data changes stream in as activity cards over the feed
-              // SSE (renderFeedItem), which sit above the typing bubble. Reads emit
-              // no card by design (only data changes show).
-              else if (ev.type === 'warn') { finalizeBubble(actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); actx = null; }
-              else if (ev.type === 'error') { if (!actx) actx = newAssistantBubble(); setBubbleText(actx, (assembled ? assembled + '\\n' : '') + '⚠ ' + ev.message); }
-              // A tool (e.g. create_artifact) asked the GUI to open the row it
-              // created. Remember it and navigate once the turn finishes so the
-              // main viewer isn't yanked mid-reply.
-              else if (ev.type === 'open' && ev.table && ev.id) { pendingOpen = { table: String(ev.table), id: String(ev.id) }; }
-            });
-            return pump();
+        var tid = r.headers.get('x-thread-id');
+        if (r.status === 202) {
+          // Accepted: the turn now runs server-side and streams over the WebSocket.
+          return r.json().then(function (j) {
+            var threadId = tid || (j && j.threadId);
+            if (threadId) { currentThreadId = threadId; rememberThread(threadId); }
+            var mid = j && j.messageId;
+            if (!mid) throw new Error('malformed chat ack');
+            // Bind this turn's render state so 'chat-progress' frames (some may already be
+            // buffered from before this resolved) paint the reply. The composer stays busy
+            // until the turn's 'done' event fires (finalizeChatTurn).
+            bindChatTurn({ messageId: mid, threadId: threadId || currentThreadId, actx: null, assembled: '', pendingOpen: null, done: false });
+            return undefined;
           });
         }
-        return pump();
-      }).then(function () {
-        finalizeBubble(actx); // drop a trailing empty "typing…" bubble
-        if (assembled) chatHistory.push({ role: 'assistant', text: assembled });
-        refreshThreadList();
-        // Open a just-created artifact in the main viewer (markdown renders via
-        // renderFilePreview). Drop the cached rows first so the detail fetch is
-        // fresh, then navigate (mode-aware).
-        if (pendingOpen) { invalidate(pendingOpen.table); openSearchHit(pendingOpen.table, pendingOpen.id); }
+        // Non-202: the server refused before starting a turn (no background job will run,
+        // so release the composer here). A pre-flight usage-limit shows the friendly copy
+        // with the ⏳ marker; anything else surfaces the error inline.
+        return r.json().then(function (j) {
+          if (j && j.error === 'claude_limit') {
+            var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + (j.message || 'Claude usage limit reached.'));
+            if (typeof refreshLimitBlock === 'function') refreshLimitBlock();
+          } else {
+            var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + ((j && j.error) || ('HTTP ' + r.status)));
+          }
+          releaseComposer();
+          return undefined;
+        });
       }).catch(function (e) {
-        finalizeBubble(actx);
         var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + e.message);
-      }).finally(function () {
-        chatBusy = false;
-        // Close the turn scope: later activity starts fresh cards (the next turn,
-        // or manual edits via the rolling window).
-        feedTurnActive = false;
-        var sb = document.getElementById('chat-send'); if (sb) sb.disabled = false;
-        var inp = document.getElementById('chat-input'); if (inp) inp.focus();
+        releaseComposer();
+        // If the model backend is no longer connected (credentials gone/invalid), send the
+        // user back to onboarding. Keyed off config.connected so a transient hiccup or a
+        // usage-limit does NOT eject them mid-conversation.
+        if (typeof reonboardOnAiFailure === 'function') {
+          fetchJson('/api/assistant/config').then(function (cfg) {
+            if (cfg && cfg.connected === false) reonboardOnAiFailure();
+          }).catch(function () { /* ignore */ });
+        }
       });
     }
     var recState = 'idle';

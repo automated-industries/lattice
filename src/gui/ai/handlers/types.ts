@@ -1,8 +1,12 @@
 import type { Lattice } from '../../../lattice.js';
 import type { FeedBus } from '../../feed.js';
 import type { MutationCtx } from '../../mutations.js';
+import type { FileJunction } from '../../data.js';
 import type { FetchBudget } from '../../../ai/fetch-policy.js';
 import type { DeleteResolution, DeleteEntityOutcome } from '../../schema-ops.js';
+import type { ComputedTableDef } from '../../../config/types.js';
+import type { ComputedPreview } from '../../computed-ops.js';
+import type { FieldFillResult } from '../../../schema/computed-fill.js';
 
 /**
  * Native tables the assistant must NEVER read, write, or be told about. The
@@ -33,6 +37,26 @@ export interface AssistantJunction {
   bFk: string;
 }
 
+/**
+ * The computed-table operations the assistant's computed tools run through —
+ * the same audited, revertible, no-reopen primitives behind the GUI's
+ * computed-table builder routes. Injected by the server as closures over the
+ * active workspace (mirroring `createEntity` and friends below); absent → the
+ * computed-table tools report they're unavailable.
+ */
+export interface ComputedOps {
+  /** Current computed-table definitions, in declaration order. */
+  list(): Promise<{ name: string; def: ComputedTableDef }[]>;
+  /** Dry-run a definition: compile + run with a row cap. No DDL, no persist. */
+  preview(def: ComputedTableDef, limit?: number): Promise<ComputedPreview>;
+  create(name: string, def: ComputedTableDef): Promise<void>;
+  update(name: string, def: ComputedTableDef): Promise<void>;
+  /** Run the AI fill for the table's AI fields (aliases/calcs are always live). */
+  refresh(name: string): Promise<FieldFillResult[]>;
+  /** Drop the definition (refused while other computed tables are built on it). */
+  delete(name: string): Promise<void>;
+}
+
 export interface DispatchCtx {
   db: Lattice;
   feed: FeedBus;
@@ -48,6 +72,16 @@ export interface DispatchCtx {
   validTables: Set<string>;
   /** Junction tables eligible for link/unlink. */
   junctionTables: Set<string>;
+  /** Pre-formatted, member-scoped "Connected data sources" section appended to
+   *  the schema context so the assistant knows which servers/DBs are connected. */
+  connectedSources?: string;
+  /**
+   * Names of the registered computed tables (live, read-only projections).
+   * Used to tag them in the schema context and `list_entities` (so the model
+   * never targets one with a row write) and to route `delete_entity` on a
+   * computed name to the definition delete. Absent → treated as empty.
+   */
+  computedTables?: Set<string>;
   /** Tables carrying a `deleted_at` column. */
   softDeletable: Set<string>;
   /**
@@ -89,6 +123,14 @@ export interface DispatchCtx {
    */
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
   /**
+   * Create (or return) the `files`↔<otherTable> junction — the files-side linker the
+   * shared enrichment engine uses. Supplied by the server so the `ingest_text` tool can
+   * route pasted content through the SAME enrichWithLlm engine as a dropped file (which
+   * auto-links the content to related records). Absent → ingest_text runs without
+   * autonomous junction creation.
+   */
+  createFileJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  /**
    * Soft-delete a user table — guarded + reversible (no physical drop). Supplied
    * by the server; absent → `delete_entity` reports it's unavailable. An EMPTY
    * table is deleted immediately; a NON-empty table returns `needsResolution` so
@@ -96,20 +138,46 @@ export interface DispatchCtx {
    */
   deleteEntity?: (name: string, resolution?: DeleteResolution) => Promise<DeleteEntityOutcome>;
   /**
+   * Computed-table primitives (list / preview / create / update / refresh /
+   * delete) — audited + revertible, no reopen. Supplied by the server; absent →
+   * the computed-table tools report they're unavailable.
+   */
+  computedOps?: ComputedOps;
+  /**
    * Author or edit a complete standalone HTML file via a focused model sub-call
    * (a stronger model than the chat default). Supplied by the chat route, closed
    * over the resolved Claude auth + this turn's schema. Absent → the
-   * `create_html_file` / `edit_html_file` tools report they're unavailable (fail
-   * loud, never silent). `currentHtml` is passed when editing an existing file.
+   * `create_dashboard` / `edit_dashboard` tools report they're unavailable (fail
+   * loud, never silent). `currentHtml` is passed when editing an existing page.
    */
   htmlAuthor?: (spec: string, currentHtml?: string) => Promise<string>;
   /**
-   * The id of the HTML-artifact file the user is currently viewing (resolved from
-   * `activeContext` when that row is an html artifact), so `edit_html_file` edits
-   * the file on screen when the user doesn't name one. Absent → the edit tool
+   * Faithfully import an attached spreadsheet (by files id) into real tables — every row,
+   * via the deterministic structured importer (never the lossy LLM extractor). Supplied by
+   * the chat route, closed over the workspace's file store + config. Resolves to the
+   * created tables + row count, or null when the file has no importable tabular data.
+   * Absent → the `import_spreadsheet` tool reports it's unavailable (fail loud).
+   */
+  importAttachment?: (fileId: string) => Promise<{ tables: string[]; rows: number } | null>;
+  /**
+   * Run automatic QA on an authored dashboard BEFORE it is stored/shown: execute the
+   * page's data queries, check them against the request (intent match, SQL errors, empty
+   * results, over-confident/ambiguous resolutions), repair via `htmlAuthor`, and return
+   * the (possibly repaired) HTML plus any residual issues to surface to the user. Built
+   * by the chat route with the active provider's client. Absent → the dashboard is
+   * stored as authored (no QA).
+   */
+  qaDashboard?: (
+    html: string,
+    intent: string,
+  ) => Promise<{ html: string; issues: { kind: string; detail: string }[] }>;
+  /**
+   * The id of the dashboard the user is currently viewing (resolved from
+   * `activeContext` when that row is a dashboards row), so `edit_dashboard` edits
+   * the one on screen when the user doesn't name one. Absent → the edit tool
    * requires an explicit id.
    */
-  activeHtmlFileId?: string;
+  activeDashboardId?: string;
   /**
    * The current turn's user message text. `ingest_url` only fetches a URL that
    * literally appears here — so the model can't be talked into fetching a URL it

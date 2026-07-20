@@ -23,8 +23,10 @@ describe('gui artifact UI', () => {
   });
 
   it('navigates to a just-created artifact on the chat stream "open" event', () => {
+    // The 'open' event is captured onto the streaming turn's state and navigated once the
+    // turn finishes (finalizeChatTurn), so the viewer isn't yanked mid-reply.
     expect(appJs).toContain("ev.type === 'open'");
-    expect(appJs).toContain('openSearchHit(pendingOpen.table, pendingOpen.id)');
+    expect(appJs).toContain('openSearchHit(turn.pendingOpen.table, turn.pendingOpen.id)');
   });
 });
 

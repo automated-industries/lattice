@@ -1,166 +1,162 @@
-# Connectors
+# MCP Connectors
 
 Connectors sync data from external systems into Lattice as **connected data
 types** — tables whose rows are ingested from a source rather than authored
-locally. They make external data first-class Lattice data: queryable, full-text
-searchable, rendered to context, linked on the graph, and ACL-scoped on a cloud.
+locally. Every connector is an **MCP connection**: Lattice runs as a local
+[Model Context Protocol](https://modelcontextprotocol.io) client and talks to
+the server directly from your machine. There is no provider-specific connector
+code and no broker — a provider is just another MCP server URL.
 
-A _connector_ talks to one external product (a _toolkit_) and exposes its object
-types as connected data types. The built-in connector is **Jira**, which talks to
-Jira Cloud's REST + Agile APIs directly via [`jira.js`](https://github.com/MrRefactoring/jira.js)
-using your own Atlassian credentials — there is no broker service and no extra
-API key. Adding another source (Gmail, Slack, …) is a new `Connector`
-implementation, not changes to the core.
+## Connecting a server (GUI)
 
-> `jira.js` is an **optional dependency**. The package compiles and runs without
-> it; it is loaded lazily and a clear error is thrown only when the Jira connector
-> is actually used. Install it to use the connector: `npm install jira.js`.
+Open **Configure → MCP Connectors**. Every connection you have lives in this
+tab: name (the server's self-reported name from the MCP handshake), URL, status,
+last sync, and per-server **Refresh** / **Disconnect** / **Reconnect** actions.
 
-## Concepts
+To add one, paste the server's URL into **Add an MCP connector** and click
+**Connect**:
 
-| Concept                 | Meaning                                                                                                                |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Connector**           | An implementation of the fetch/auth SPI (e.g. the Jira connector).                                                     |
-| **Toolkit**             | An external product a connector serves (e.g. `jira`).                                                                  |
-| **Connected data type** | A Lattice table with a `source` descriptor — its rows are synced from a toolkit model.                                 |
-| **Connector instance**  | A registered connection (`__lattice_connectors` row): which toolkit, the per-member connection handle, and sync state. |
+- **Open servers** (no auth) connect and sync immediately.
+- **OAuth servers** open the provider's own sign-in in your browser. Approve it
+  and return to Lattice — the connection completes on a loopback callback and
+  the first sync runs.
+- **Servers that require a pre-registered OAuth client** (no dynamic
+  registration and no client-ID-metadata-document support) get a clear prompt:
+  the form reveals **client ID / client secret** fields for the credentials the
+  provider issued you, then the same OAuth sign-in runs with them.
 
-A connected table's **natural key is its primary key** (a stable external id), so
-re-syncs upsert idempotently. Every row carries connector lineage:
-`_source_connector_id` and `_source_model` (immutable) plus `_source_synced_at`.
+Each added server is its own connection — connect as many as you like,
+side by side. **Disconnect** soft-deletes the synced rows (recoverable), prunes
+their rendered context, revokes the stored tokens, and keeps the server URL so
+**Reconnect** can re-run the sign-in without re-entering anything.
 
-## Credentials
+## How OAuth client identity works
 
-The Jira connector authenticates as **you**, with an Atlassian **API token**
-(HTTP Basic auth: your account email + the token). Create one at
-<https://id.atlassian.com/manage-profile/security/api-tokens>. Lattice validates
-the credentials against Jira on connect (`GET /myself`) and stores them in the
-**machine-local encrypted credential store** — they never leave the machine
-except to call the Jira API directly, and they are never written to the registry,
-logs, or any rendered context.
+Lattice identifies itself to a provider's authorization server using the first
+mechanism the server supports, in this order:
 
-## Using the GUI
+1. **A stored client** — either from a previous dynamic registration or the
+   client ID you entered by hand.
+2. **Client-ID metadata document (CIMD)** — the modern MCP mechanism: the
+   client_id IS a stable HTTPS URL pointing at a static JSON document that
+   describes the app (name, redirect URIs, grant types). Lattice's document is
+   hosted at `https://latticedesktop.com/oauth/client-metadata.json`.
+3. **Dynamic client registration** (RFC 7591), for servers that offer a
+   registration endpoint.
 
-Open **Settings → Connectors**, fill in your Jira **site URL**
-(`https://your-domain.atlassian.net`), **account email**, and **API token**, then
-**Connect**. The credentials are validated and the initial sync runs. Each
-connected toolkit shows its status + last-synced time with **Refresh** and
-**Disconnect** buttons, and connected data types get a "Connected" badge in the
-Objects list.
+Every flow is a PKCE (S256) authorization-code flow for a public client; tokens
+are refreshed automatically.
 
-## Quick start (programmatic)
+### The privacy model
+
+The hosted metadata document is **static app identity, not a data plane**:
+
+- It is the same fixed file for every Lattice install, contains **zero user
+  data**, and is never written.
+- Only the **provider's authorization server** fetches it (to answer "who is
+  this client asking for access?"). Your machine and your browser never touch
+  the hosting domain during the flow.
+- MCP traffic flows **directly** between your local Lattice and the MCP server —
+  nothing is proxied through any Lattice-hosted service.
+- OAuth tokens live only in the machine-local encrypted credential store
+  (AES-256-GCM under a machine-local master key). They never enter the
+  workspace database, API responses, or logs.
+
+Self-hosters can point `LATTICE_MCP_CLIENT_METADATA_URL` at their own document;
+setting it to an empty string disables the mechanism entirely (dynamic
+registration and manual client entry still work).
+
+## What gets synced
+
+The connector introspects the server and pulls its readable content into one
+connected table, **`mcp_items`**:
+
+| column    | meaning                                                               |
+| --------- | --------------------------------------------------------------------- |
+| `item_id` | natural key (`<tool>:<id>` for items, `resource:<uri>` for resources) |
+| `kind`    | `item` (from a read tool) or `resource` (from `resources/list`)       |
+| `tool`    | the MCP tool that produced an item                                    |
+| `server`  | the server's hostname — items from different servers stay apart       |
+| `title`   | best-effort title                                                     |
+| `summary` | best-effort description/snippet                                       |
+| `data`    | the raw JSON payload (for resources: `{ uri, mimeType }`)             |
+
+Discovery calls the server's `tools/list`, invokes each **no-argument read
+tool** (bounded per tool; obviously write-shaped tools are never called), and
+then lists the server's advertised **resources** — its "available files" — via
+the standard `resources/list`. Rows are full Lattice rows: queryable, full-text
+searchable, rendered to context, per-member `private` by default, and stamped
+with immutable lineage (`_source_connector_id`, `_source_model`). A re-sync
+upserts on the natural key and soft-deletes rows that vanished from the source.
+
+Freshness is pull-based — there is no background scheduler. Syncs run on
+connect, on **Refresh**, and on GUI load when the last sync is older than an
+hour.
+
+## Library API
+
+The same engine is a library surface:
 
 ```typescript
 import {
-  JiraConnector,
+  genericConnector,
   createConnector,
   syncConnector,
   syncIfStale,
   disconnectConnector,
 } from 'latticesql';
 
-const connector = new JiraConnector();
+const connector = genericConnector();
 
-// Validate + store the member's Atlassian credentials, returning a connection handle:
-const { connectionId, displayName } = await connector.connect({
-  site: 'https://your-domain.atlassian.net',
-  email: 'you@example.com',
-  apiToken: process.env.JIRA_API_TOKEN!,
-});
-
+// GUI-less flows drive beginConnect/completeConnect (OAuth) or connect a local
+// stdio server; the registry + sync engine are shared with the GUI routes:
 const connectorId = await createConnector(db, {
-  connector: 'jira',
-  toolkit: 'jira',
-  displayName: displayName ?? 'jira',
+  connector: 'mcp',
+  toolkit: 'mcp',
+  displayName: 'My MCP server',
   connectionRef: connectionId,
   connectedBy: 'user-123',
 });
-
-await syncConnector(db, connector, connectorId); // defines the tables + ingests
+await syncConnector(db, connector, connectorId);
+await syncIfStale(db, connector, connectorId); // re-sync when stale (1h)
+await disconnectConnector(db, connector, connectorId); // soft teardown
 ```
 
-## Sync model
+Library consumers embedding a specific provider can use
+`introspectiveConnector(spec)` (the same engine pre-pointed at a fixed endpoint
+with its own table name) or `SimpleMcpConnector` (hand-typed models + per-model
+tool bindings) — see `src/connectors/types.ts` for the SPI.
 
-- **`syncConnector(db, connector, connectorId)`** — full sync: paginated +
-  bounded fetch per model, idempotent upsert with lineage stamping, soft-delete
-  of rows that vanished from the source, and graph-edge derivation from FK
-  columns. Records the outcome on the connector; an external-sync failure is
-  re-thrown (never swallowed).
-- **`syncIfStale(db, connector, connectorId, maxAgeMs?)`** — no-op if the last
-  sync is within `maxAgeMs` (default 1 hour). Call it on app load.
-- **`syncStaleConnectors(db, connector, maxAgeMs?)`** — sync every stale
-  connector this implementation serves. The GUI calls this on load, so connected
-  data refreshes hourly **without a scheduler**. Manual refresh forces a sync.
+On a cloud workspace, the owner's `enableConnectorRls(db, connector, 'mcp')`
+scopes connected rows per member (private by default).
 
-Reads done by the sync engine are bounded and column-projected — it never scans a
-full table to diff. Per-parent models iterate the parent's already-synced keys
-(comments are fetched per issue; sprints per board).
+> `@modelcontextprotocol/sdk` is an **optional dependency**. The package
+> compiles and runs without it; it is loaded lazily and a clear error is thrown
+> only when an MCP connector is actually used. Install it to use connectors:
+> `npm install @modelcontextprotocol/sdk`.
 
-## Disconnecting
+## Security
 
-```typescript
-await disconnectConnector(db, connector, connectorId, { outputDir });
-```
+- **SSRF guard**: every HTTP hop — the server URL, redirects, and each
+  OAuth-discovered endpoint — is DNS-resolved and re-validated against a
+  private/loopback/link-local/metadata-address blocklist before it is fetched.
+- **Token storage**: machine-local encrypted file, never the shared DB.
+- **Error hygiene**: sync errors surfaced in the GUI are sanitized so a raw DB
+  constraint error can never echo another member's data.
 
-Soft-deletes every ingested row (children before parents), prunes rendered
-context files, marks the connector `disconnected` (use `{ mode: 'hard' }` to also
-remove the registry row), and drops the stored credentials. Soft-deleted rows
-drop out of the rendered context, full-text search, and the GUI listings (all of
-which filter `deleted_at IS NULL`), and their graph edges are removed — so the
-data is no longer available to the agent while remaining physically present and
-restorable.
+## Troubleshooting
 
-## Cloud ACL
-
-On a cloud (Postgres) workspace, the **owner** scopes connected data per member:
-
-```typescript
-await enableConnectorRls(db, connector, 'jira');
-```
-
-This enables Row-Level Security on the registry and the toolkit's connected
-tables and applies each type's default visibility — `private` (visible only to
-the connecting member) or `everyone` (shared with the team). It is a no-op on
-SQLite, a non-cloud Postgres, or for a non-owner role.
-
-Because each member connects with their own Atlassian credentials, the data a
-member syncs is already scoped to what they can see in the source — per-user
-auth, not a shared admin credential. Derived enrichment over connected rows
-inherits the source's visibility automatically: write it through
-`db.observe(table, pk, { changeKind: 'derived', sourceRef: [connectedRowId] })`,
-and the source-gated fold hides it from a viewer who can't see the source.
-
-## The Jira toolkit
-
-Connecting Jira creates six connected data types:
-
-| Table           | Natural key | Notes                                                         |
-| --------------- | ----------- | ------------------------------------------------------------- |
-| `jira_projects` | project key | FTS on name/description                                       |
-| `jira_issues`   | issue key   | FTS on summary/description; edges → project, assignee, sprint |
-| `jira_comments` | comment id  | fetched per issue; edges → issue, author                      |
-| `jira_users`    | account id  |                                                               |
-| `jira_boards`   | board id    | edge → project                                                |
-| `jira_sprints`  | sprint id   | fetched per board; edge → board                               |
-
-## Adding a connector
-
-Implement the `Connector` SPI and point the GUI/registry at it. The SPI is small:
-
-- `connector` / `toolkits()` / `models(toolkit)` — identity + the connected
-  `ConnectedModelDef`s (table schema, natural key, FK relations → graph edges).
-- `listChanges(toolkit, model, ctx)` — an async iterable of normalized
-  `ExternalRecord`s for one model, **paged and bounded** (per-parent models read
-  `ctx.parentKey`).
-- `disconnect(connectionRef)` — revoke / drop the stored connection.
-- `authorize` / `completeAuth` — for an OAuth-redirect source. A
-  credential-based connector (like Jira) instead exposes a `connect(creds)`
-  method that validates + stores the credentials and returns a connection handle;
-  the GUI route calls it when the connector supports it.
-
-The sync engine, graph wiring, teardown, and ACL all work from the model
-descriptors — no further code is required.
-
-```
-
-```
+- **"Incompatible auth server: does not support dynamic client registration"** —
+  the server supports neither CIMD nor dynamic registration. The GUI's add form
+  reveals client ID/secret fields; create an OAuth client in the provider's
+  admin console and paste its credentials.
+- **The browser shows a provider error at sign-in** — the provider's
+  authorization server could not validate the client. If you overrode
+  `LATTICE_MCP_CLIENT_METADATA_URL`, make sure that URL is publicly reachable
+  and serves JSON.
+- **"Sign-in didn't complete"** — the loopback callback never arrived (browser
+  closed mid-flow, or the sign-in was abandoned). Click Connect again.
+- **A server connects but syncs nothing** — it may expose only tools that
+  require arguments (skipped in introspective mode) and no resources. The
+  connection is still valid; data arrives when the server offers no-argument
+  read tools or resources.

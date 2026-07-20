@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 const dirs: string[] = [];
@@ -69,6 +70,57 @@ describe('#4.9 row-list page-param bounds', () => {
   it('defaults when params are absent', async () => {
     const s = await boot();
     expect((await rows(s, '')).status).toBe(200);
+  });
+});
+
+// Pagination: the endpoint returns an approximate total (for the "N–M of T" header)
+// alongside the offset-sliced window. The total is exact below MAX_ROWS_PAGE and
+// `totalIsCapped` flags when it was bounded (the capping itself is unit-tested at
+// the query layer via boundedCount). The count respects the same filters as the rows.
+describe('row-list pagination total + offset window', () => {
+  async function postTask(s: GuiServerHandle, title: string): Promise<string> {
+    const id = randomUUID();
+    const r = await fetch(`${s.url}/api/tables/tasks/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, title }),
+    });
+    if (r.status >= 400) throw new Error(`POST row failed: ${String(r.status)}`);
+    return id;
+  }
+
+  it('returns approxTotal + totalIsCapped and an offset-sliced window (with ?withTotal=1)', async () => {
+    const s = await boot();
+    for (let i = 0; i < 5; i++) await postTask(s, `T${String(i)}`);
+
+    const page1 = (await (await rows(s, '?withTotal=1&limit=2&offset=0')).json()) as {
+      rows: { id: string }[];
+      approxTotal: number;
+      totalIsCapped: boolean;
+    };
+    expect(page1.rows).toHaveLength(2);
+    expect(page1.approxTotal).toBe(5); // small fixture → exact
+    expect(page1.totalIsCapped).toBe(false);
+
+    const page3 = (await (await rows(s, '?withTotal=1&limit=2&offset=4')).json()) as {
+      rows: { id: string }[];
+      approxTotal: number;
+    };
+    expect(page3.rows).toHaveLength(1); // 5 rows, offset 4 → last page has one
+    expect(page3.approxTotal).toBe(5);
+
+    // The offset genuinely shifts the window (page 1 and the last page are disjoint).
+    const ids1 = new Set(page1.rows.map((r) => r.id));
+    expect(page3.rows.every((r) => !ids1.has(r.id))).toBe(true);
+  });
+
+  it('omits the count unless ?withTotal=1 — the whole-list callers do not pay for it', async () => {
+    const s = await boot();
+    for (let i = 0; i < 3; i++) await postTask(s, `T${String(i)}`);
+    const body = (await (await rows(s, '?limit=2')).json()) as Record<string, unknown>;
+    expect(Array.isArray(body.rows)).toBe(true);
+    expect('approxTotal' in body).toBe(false); // no extra bounded count was run
+    expect('totalIsCapped' in body).toBe(false);
   });
 });
 

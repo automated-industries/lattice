@@ -146,6 +146,15 @@ export class EncryptionLayer {
     return this._columns.has(table);
   }
 
+  /**
+   * The framework-encrypted column names for `table` (empty set if none). Encrypted columns are
+   * DECRYPTED on read, so any caller that ships rows outside the process (an HTTP API) must mask
+   * these before responding.
+   */
+  encryptedColumns(table: string): ReadonlySet<string> {
+    return this._columns.get(table) ?? new Set<string>();
+  }
+
   clear(): void {
     this._columns.clear();
     delete this._key;

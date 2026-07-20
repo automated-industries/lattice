@@ -142,6 +142,10 @@ describe('inferSchema', () => {
     ).toBe(true);
   });
 
+  it('returns an empty marginal-link list when every reference is confident', () => {
+    expect(schema.marginalLinks).toEqual([]);
+  });
+
   it('does not turn a numeric ratio column with text sentinels into a dimension', () => {
     // Real financial export shape: a "TEV/EBITDA" of mostly-distinct numbers with
     // "NM" sentinels (here 55% "NM", so numericFraction < 0.5) — must NOT become a
@@ -155,5 +159,94 @@ describe('inferSchema', () => {
     const dimNames = inferSchema({ companies: rows }).dimensions.map((d) => d.name);
     expect(dimNames).toContain('region');
     expect(dimNames).not.toContain('tev_ebitda');
+  });
+});
+
+describe('inferSchema — link-confidence banding (act / ask / drop)', () => {
+  /** A vendor reference where only `matched` of 10 distinct values resolve to
+   *  the vendors table's natural key. */
+  function partialRefFixture(matched: number) {
+    return {
+      vendors: Array.from({ length: 10 }, (_, i) => ({
+        code: 'V' + i,
+        name: 'Vendor ' + i,
+      })),
+      orders: Array.from({ length: 20 }, (_, i) => ({
+        sku: 'SKU-' + i,
+        vendor:
+          i < 10
+            ? i < matched
+              ? 'V' + i
+              : 'X' + i
+            : i < 10 + matched
+              ? 'V' + (i - 10)
+              : 'X' + (i - 10),
+        amount: 5 + i,
+      })),
+    };
+  }
+
+  it('reports the [floor, threshold) band as marginalLinks, uncreated', () => {
+    // 5 of 10 distinct vendor values resolve → confidence 0.5, inside the
+    // default band [0.3, 0.6).
+    const schema = inferSchema(partialRefFixture(5));
+    expect(schema.linkages.filter((l) => l.kind !== 'dimension')).toEqual([]);
+    expect(schema.marginalLinks).toHaveLength(1);
+    expect(schema.marginalLinks[0]).toMatchObject({
+      kind: 'many-to-one',
+      fromEntity: 'orders',
+      fromField: 'vendor',
+      toEntity: 'vendors',
+      toKey: 'code',
+      confidence: 0.5,
+    });
+    // The referencing column survives as a plain scalar column…
+    const orders = schema.entities.find((e) => e.name === 'orders')!;
+    expect(orders.columns.map((c) => c.name)).toContain('vendor');
+    // …and is held out of dimension extraction (folding it into a dimension
+    // would strip the column a later "yes, connect them" needs).
+    expect(schema.dimensions.map((d) => d.name)).not.toContain('vendor');
+  });
+
+  it('creates the link at or above the threshold, exactly as before', () => {
+    // 8 of 10 resolve → confidence 0.8 ≥ 0.6 → a real link, nothing marginal.
+    const schema = inferSchema(partialRefFixture(8));
+    const link = schema.linkages.find((l) => l.toEntity === 'vendors');
+    expect(link).toMatchObject({ kind: 'many-to-one', fromEntity: 'orders', confidence: 0.8 });
+    expect(schema.marginalLinks).toEqual([]);
+    const orders = schema.entities.find((e) => e.name === 'orders')!;
+    expect(orders.columns.map((c) => c.name)).not.toContain('vendor'); // consumed by the link
+  });
+
+  it('drops candidates below the floor as noise', () => {
+    // 2 of 10 resolve → confidence 0.2 < 0.3 → neither created nor marginal.
+    const schema = inferSchema(partialRefFixture(2));
+    expect(schema.linkages.filter((l) => l.kind !== 'dimension')).toEqual([]);
+    expect(schema.marginalLinks).toEqual([]);
+  });
+
+  it('honors a minLinkConfidence override in both directions', () => {
+    // confidence 0.5: a 0.4 threshold creates it; a 0.9 threshold (floor 0.45)
+    // keeps it marginal.
+    const created = inferSchema(partialRefFixture(5), { minLinkConfidence: 0.4 });
+    expect(created.linkages.some((l) => l.toEntity === 'vendors')).toBe(true);
+    expect(created.marginalLinks).toEqual([]);
+    const asked = inferSchema(partialRefFixture(5), { minLinkConfidence: 0.9 });
+    expect(asked.linkages.filter((l) => l.kind !== 'dimension')).toEqual([]);
+    expect(asked.marginalLinks).toHaveLength(1);
+  });
+
+  it('leaves dimension links (confidence 1) unaffected by the banding', () => {
+    const data = {
+      vendors: Array.from({ length: 10 }, (_, i) => ({ code: 'V' + i, name: 'Vendor ' + i })),
+      orders: Array.from({ length: 20 }, (_, i) => ({
+        sku: 'SKU-' + i,
+        region: ['NA', 'EU', 'Asia'][i % 3],
+      })),
+    };
+    const schema = inferSchema(data, { minLinkConfidence: 1 });
+    const dim = schema.linkages.find((l) => l.kind === 'dimension' && l.toEntity === 'region');
+    expect(dim).toMatchObject({ confidence: 1 });
+    expect(schema.marginalLinks).toEqual([]);
   });
 });

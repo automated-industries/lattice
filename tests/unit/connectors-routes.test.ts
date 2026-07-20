@@ -3,8 +3,72 @@ import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Lattice } from '../../src/lattice.js';
 import { dispatchConnectorsRoute } from '../../src/gui/connectors-routes.js';
-import { getConnectorByToolkit } from '../../src/connectors/registry.js';
+import { getConnectorByToolkit, createConnector } from '../../src/connectors/registry.js';
+import { genericConnector } from '../../src/connectors/generic/connector.js';
+import { setMcpServerUrl, clearMcpConnection } from '../../src/connectors/mcp/oauth.js';
+import {
+  mcpToolkitFor,
+  setMcpSchemaDescriptor,
+  clearMcpSchemaDescriptor,
+} from '../../src/connectors/mcp/schema-cache.js';
+import type {
+  McpTransport,
+  McpToolCall,
+  McpToolInfo,
+  McpResourceInfo,
+} from '../../src/connectors/mcp/transport.js';
 import type { Connector, ConnectedModelDef, ExternalRecord } from '../../src/connectors/types.js';
+
+/** Minimal canned MCP transport for the typed-connector routes tests (no network / SDK). */
+class RtFakeTransport implements McpTransport {
+  constructor(
+    private readonly tools: McpToolInfo[],
+    private readonly results: Record<string, unknown>,
+  ) {}
+  listTools(): Promise<McpToolInfo[]> {
+    return Promise.resolve(this.tools);
+  }
+  callTool(call: McpToolCall): Promise<unknown> {
+    return Promise.resolve(this.results[call.tool] ?? {});
+  }
+  listResources(): Promise<McpResourceInfo[]> {
+    return Promise.resolve([]);
+  }
+  serverInfo(): { name?: string } | undefined {
+    return { name: 'partner-api-mcp' };
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/** Like RtFakeTransport but throws once `failAfter` successful callTool()s have happened — so
+ *  introspection can succeed (call #1) and the subsequent migration sync fails (call #2). */
+class CountingFailTransport implements McpTransport {
+  private calls = 0;
+  constructor(
+    private readonly tools: McpToolInfo[],
+    private readonly results: Record<string, unknown>,
+    private readonly failAfter: number,
+  ) {}
+  listTools(): Promise<McpToolInfo[]> {
+    return Promise.resolve(this.tools);
+  }
+  callTool(call: McpToolCall): Promise<unknown> {
+    this.calls++;
+    if (this.calls > this.failAfter) return Promise.reject(new Error('sync boom'));
+    return Promise.resolve(this.results[call.tool] ?? {});
+  }
+  listResources(): Promise<McpResourceInfo[]> {
+    return Promise.resolve([]);
+  }
+  serverInfo(): { name?: string } | undefined {
+    return { name: 'partner-api-mcp' };
+  }
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 
 /**
  * 4.3 — connectors GUI routes (SQLite, fake connector). Exercises the connect →
@@ -240,7 +304,11 @@ describe('connectors routes (SQLite)', () => {
     const body = r.body as { connectorId: string; result: { upserted: Record<string, number> } };
     expect(body.connectorId).toBeTruthy();
     expect(body.result.upserted).toEqual({ demo_things: 1 });
-    expect(await db!.get('demo_things', 'T1')).toMatchObject({ tid: 'T1', name: 'one' });
+    // Keys are namespaced by connectorId so members can't collide on a shared PK.
+    expect(await db!.get('demo_things', `${body.connectorId}:T1`)).toMatchObject({
+      tid: `${body.connectorId}:T1`,
+      name: 'one',
+    });
     expect(await getConnectorByToolkit(db!, 'demo', 'u1')).not.toBeNull();
   });
 
@@ -399,5 +467,473 @@ describe('connectors routes (SQLite)', () => {
     expect(second.connectorId).toBe(first.connectorId);
     const list = (await call('GET', '/api/connectors')).body as { connectors: unknown[] };
     expect(list.connectors).toHaveLength(1);
+  });
+});
+
+// ── MCP path: multi-instance, reconnect, and the no-registration contract ─────
+
+import { beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createConnector, getConnector } from '../../src/connectors/registry.js';
+import {
+  setMcpServerUrl,
+  getMcpServerUrl,
+  putPendingConnect,
+  peekPendingConnect,
+} from '../../src/connectors/mcp/oauth.js';
+import type { McpConnector, McpBeginResult, McpServerSpec } from '../../src/connectors/types.js';
+
+/**
+ * A fake MCP connector mirroring McpConnectorBase's contract closely enough for
+ * the routes: every OAuth connect returns a redirect + pending id; completing a
+ * pending returns the connection with the server's name and (for reconnects)
+ * the target row. `requiresPreregisteredClient` simulates an authorization
+ * server that supports neither a client-ID metadata document nor dynamic
+ * registration — the SDK's terminal error shape.
+ */
+class FakeMcpConnector implements McpConnector {
+  readonly connector = 'mcp';
+  revoked: string[] = [];
+  purged: string[] = [];
+  requiresPreregisteredClient = false;
+  private seq = 0;
+  private pendings = new Map<
+    string,
+    { connectionId: string; serverUrl: string; targetConnectorId?: string }
+  >();
+  toolkits() {
+    return ['mcp'];
+  }
+  models() {
+    return MODELS;
+  }
+  presentation() {
+    return { label: 'MCP server', icon: ICON };
+  }
+  mcpServers(): McpServerSpec[] {
+    return [{ name: 'generic', oauth: true }];
+  }
+  authorize() {
+    return Promise.resolve({ redirectUrl: 'https://auth.example/go' });
+  }
+  completeAuth() {
+    return Promise.resolve({ connectionId: 'unused' });
+  }
+  beginConnect(
+    _userId: string,
+    _toolkit: string,
+    opts?: {
+      redirectUri?: string;
+      serverUrl?: string;
+      clientInfo?: { client_id: string; client_secret?: string };
+      targetConnectorId?: string;
+    },
+  ): Promise<McpBeginResult> {
+    if (!opts?.serverUrl) return Promise.reject(new Error('needs an MCP server URL'));
+    if (this.requiresPreregisteredClient && !opts.clientInfo) {
+      return Promise.reject(
+        new Error('Incompatible auth server: does not support dynamic client registration'),
+      );
+    }
+    const connectionId = `m-${++this.seq}`;
+    setMcpServerUrl(connectionId, opts.serverUrl);
+    const pendingId = `pend-${connectionId}`;
+    this.pendings.set(pendingId, {
+      connectionId,
+      serverUrl: opts.serverUrl,
+      ...(opts.targetConnectorId ? { targetConnectorId: opts.targetConnectorId } : {}),
+    });
+    // Mirror McpConnectorBase: the callback route resolves the pending record
+    // from the shared store to find the connector before completing.
+    putPendingConnect(pendingId, {
+      connectionId,
+      connector: this.connector,
+      toolkit: 'mcp',
+      serverUrl: opts.serverUrl,
+      redirectUri: opts.redirectUri ?? 'http://127.0.0.1/api/connectors/oauth/callback',
+      transportKind: 'http',
+      ...(opts.targetConnectorId ? { targetConnectorId: opts.targetConnectorId } : {}),
+    });
+    return Promise.resolve({
+      kind: 'redirect',
+      redirectUrl: `https://auth.example/authorize?p=${pendingId}`,
+      pendingId,
+    });
+  }
+  completeConnect(pendingId: string) {
+    const p = this.pendings.get(pendingId);
+    if (!p) return Promise.reject(new Error('no pending'));
+    this.pendings.delete(pendingId);
+    return Promise.resolve({
+      connectionId: p.connectionId,
+      displayName: 'Fake Server',
+      serverName: 'Fake Server',
+      ...(p.targetConnectorId ? { targetConnectorId: p.targetConnectorId } : {}),
+    });
+  }
+  disconnect(id: string) {
+    this.revoked.push(id);
+    return Promise.resolve();
+  }
+  purgeConnection(id: string) {
+    this.purged.push(id);
+    return Promise.resolve();
+  }
+  async *listChanges(): AsyncIterable<ExternalRecord> {
+    yield { id: 'M1', row: { tid: 'M1', name: 'm' } };
+  }
+}
+
+describe('connectors routes (MCP multi-instance)', () => {
+  let db: Lattice | undefined;
+  let tmpCfg: string;
+  let prevCfg: string | undefined;
+
+  beforeAll(() => {
+    tmpCfg = mkdtempSync(join(tmpdir(), 'lattice-mcp-routes-'));
+    prevCfg = process.env.LATTICE_CONFIG_DIR;
+    process.env.LATTICE_CONFIG_DIR = tmpCfg;
+    process.env.LATTICE_ENCRYPTION_KEY ||= Buffer.alloc(32, 7).toString('base64');
+  });
+  afterAll(() => {
+    if (prevCfg === undefined) delete process.env.LATTICE_CONFIG_DIR;
+    else process.env.LATTICE_CONFIG_DIR = prevCfg;
+    rmSync(tmpCfg, { recursive: true, force: true });
+  });
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+  });
+
+  // The OAuth callback answers with an HTML page, not JSON — parse tolerantly.
+  function htmlSafeRes(): {
+    res: ServerResponse;
+    done: Promise<{ status: number; body: unknown }>;
+  } {
+    let resolveDone!: (v: { status: number; body: unknown }) => void;
+    const done = new Promise<{ status: number; body: unknown }>((r) => (resolveDone = r));
+    let status = 200;
+    const res = {
+      writeHead(s: number) {
+        status = s;
+        return res;
+      },
+      end(payload?: string) {
+        let body: unknown = null;
+        if (payload) {
+          try {
+            body = JSON.parse(payload);
+          } catch {
+            body = payload;
+          }
+        }
+        resolveDone({ status, body });
+      },
+    } as unknown as ServerResponse;
+    return { res, done };
+  }
+
+  async function call(
+    mcp: FakeMcpConnector,
+    method: string,
+    url: string,
+    body?: unknown,
+    connectedBy = 'u1',
+  ): Promise<{ status: number; body: unknown }> {
+    const req = fakeReq(method, url, body);
+    const { res, done } = htmlSafeRes();
+    await dispatchConnectorsRoute(req, res, {
+      db: db!,
+      connectors: [mcp],
+      outputDir: '/tmp/does-not-matter',
+      connectedBy,
+    });
+    return done;
+  }
+
+  /** Drive connect → OAuth callback for one server URL; returns the new row id. */
+  async function connectServer(mcp: FakeMcpConnector, serverUrl: string): Promise<string> {
+    const begun = (await call(mcp, 'POST', '/api/connectors/mcp/connect', { serverUrl })).body as {
+      pendingId: string;
+    };
+    expect(begun.pendingId).toBeTruthy();
+    const before = new Set(
+      (
+        (await call(mcp, 'GET', '/api/connectors')).body as { connectors: { id: string }[] }
+      ).connectors.map((c) => c.id),
+    );
+    const cb = await call(
+      mcp,
+      'GET',
+      `/api/connectors/oauth/callback?code=ok&state=${begun.pendingId}`,
+    );
+    expect(cb.status).toBe(200);
+    const after = (
+      (await call(mcp, 'GET', '/api/connectors')).body as { connectors: { id: string }[] }
+    ).connectors;
+    const created = after.find((c) => !before.has(c.id));
+    expect(created).toBeTruthy();
+    return created!.id;
+  }
+
+  it('every added server is its own connection: two URLs → two rows, each with its URL', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    const a = await connectServer(mcp, 'https://one.example/mcp');
+    const b = await connectServer(mcp, 'https://two.example/mcp');
+    expect(a).not.toBe(b);
+    const list = (await call(mcp, 'GET', '/api/connectors')).body as {
+      connectors: { id: string; displayName: string; serverUrl: string | null }[];
+    };
+    expect(list.connectors).toHaveLength(2);
+    const urls = list.connectors.map((c) => c.serverUrl).sort();
+    expect(urls).toEqual(['https://one.example/mcp', 'https://two.example/mcp']);
+    expect(list.connectors[0]?.displayName).toBe('Fake Server');
+  });
+
+  it('reports itemCount for a TYPED connection from its per-kind tables, not mcp_items (regression)', async () => {
+    // A typed connection writes to `mcp_<prefix>_<kind>`; aggregating only `mcp_items` reported 0.
+    db = new Lattice(':memory:');
+    await db.init();
+    const conn = genericConnector();
+    const connId = 'rt-typed';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    const toolkit = mcpToolkitFor(connId);
+    setMcpSchemaDescriptor(connId, {
+      prefix: 'justworks',
+      kinds: [
+        {
+          kind: 'company',
+          tool: 'get_company',
+          naturalKey: 'id',
+          columns: [{ name: 'name', sqlSpec: 'TEXT' }],
+        },
+      ],
+    });
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit,
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    for (const m of conn.models(toolkit)) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_justworks_company', {
+      id: 'co_1',
+      name: 'Acme',
+      _source_connector_id: cid,
+    });
+    const list = (await call(conn as unknown as FakeMcpConnector, 'GET', '/api/connectors'))
+      .body as { connectors: { id: string; itemCount: number }[] };
+    expect(list.connectors.find((c) => c.id === cid)?.itemCount).toBe(1);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
+  });
+
+  it('migrating a legacy flat connection to typed tables soft-deletes the old mcp_items rows (regression: data was doubled)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const connId = 'rt-mig';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    // A legacy flat connection (toolkit `mcp`) with a row already in `mcp_items`.
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    const flat = genericConnector();
+    for (const m of flat.models('mcp')) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_items', {
+      item_id: 'list_deduction_types:MED',
+      kind: 'item',
+      tool: 'list_deduction_types',
+      title: 'Medical',
+      _source_connector_id: cid,
+    });
+    // A typed connector that introspects one kind from the server; sync-if-stale runs the migration.
+    const transport = new RtFakeTransport([{ name: 'list_deduction_types' }], {
+      list_deduction_types: { items: [{ id: 'MED', name: 'Medical (pretax)' }] },
+    });
+    const typed = genericConnector({ transportFactory: () => Promise.resolve(transport) });
+    await call(typed as unknown as FakeMcpConnector, 'POST', '/api/connectors/sync-if-stale', {});
+    // The pre-migration flat rows are soft-deleted (recoverable, but hidden)…
+    const flatRows = await db.query('mcp_items', {
+      filters: [{ col: '_source_connector_id', op: 'eq', val: cid }],
+    });
+    expect(flatRows.length).toBeGreaterThan(0);
+    expect(flatRows.every((r) => r.deleted_at)).toBe(true);
+    // …and the data now lives in the typed table.
+    const typedRows = await db.query('mcp_justworks_deduction_types', {});
+    expect(typedRows.length).toBeGreaterThan(0);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
+  });
+
+  it('a post-re-key failure during migration rolls back to the flat toolkit (retriable) and never prematurely deletes mcp_items (regression)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const connId = 'rt-rollback';
+    setMcpServerUrl(connId, 'https://mcp.justworks.com/');
+    const cid = await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp',
+      displayName: 'partner-api-mcp',
+      connectionRef: connId,
+      connectedBy: 'u1',
+    });
+    const flat = genericConnector();
+    for (const m of flat.models('mcp')) await db.defineLate(m.table, m.definition);
+    await db.upsert('mcp_items', {
+      item_id: 'list_deduction_types:MED',
+      kind: 'item',
+      tool: 'list_deduction_types',
+      title: 'Medical',
+      _source_connector_id: cid,
+    });
+    // Introspection (call #1) succeeds; the post-re-key sync (call #2) throws.
+    const transport = new CountingFailTransport(
+      [{ name: 'list_deduction_types' }],
+      { list_deduction_types: { items: [{ id: 'MED', name: 'Medical (pretax)' }] } },
+      1,
+    );
+    const typed = genericConnector({ transportFactory: () => Promise.resolve(transport) });
+    await call(typed as unknown as FakeMcpConnector, 'POST', '/api/connectors/sync-if-stale', {});
+    // Rolled back to the flat toolkit so the whole migration retries next load…
+    expect((await getConnector(db, cid))?.toolkit).toBe('mcp');
+    // …and the flat rows were NOT deleted (their data was never safely typed).
+    const flatRows = await db.query('mcp_items', {
+      filters: [{ col: '_source_connector_id', op: 'eq', val: cid }],
+    });
+    expect(flatRows.some((r) => !r.deleted_at)).toBe(true);
+    clearMcpSchemaDescriptor(connId);
+    clearMcpConnection(connId);
+  });
+
+  it('reconnect by connectorId repoints the SAME row via the stored URL and retires the old secrets', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    const id = await connectServer(mcp, 'https://one.example/mcp');
+    const oldRef = (await getConnector(db, id))?.connectionRef;
+    expect(oldRef).toBeTruthy();
+    // Reconnect WITHOUT resending the URL — the stored one is used.
+    const begun = (await call(mcp, 'POST', '/api/connectors/mcp/connect', { connectorId: id }))
+      .body as { pendingId: string };
+    expect(begun.pendingId).toBeTruthy();
+    const cb = await call(
+      mcp,
+      'GET',
+      `/api/connectors/oauth/callback?code=ok&state=${begun.pendingId}`,
+    );
+    expect(cb.status).toBe(200);
+    const rec = await getConnector(db, id);
+    expect(rec?.connectionRef).not.toBe(oldRef);
+    expect(rec?.status).toBe('connected');
+    // The superseded connection is PURGED (its stored URL is orphaned otherwise —
+    // the new connectionId carries its own URL), not merely secret-revoked.
+    expect(mcp.purged).toContain(oldRef);
+    const list = (await call(mcp, 'GET', '/api/connectors')).body as { connectors: unknown[] };
+    expect(list.connectors).toHaveLength(1); // repointed, not duplicated
+  });
+
+  it("reconnect against another member's row 404s", async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    const id = await connectServer(mcp, 'https://one.example/mcp');
+    const r = await call(
+      mcp,
+      'POST',
+      '/api/connectors/mcp/connect',
+      { connectorId: id },
+      'mallory',
+    );
+    expect(r.status).toBe(404);
+  });
+
+  it('returns 422 client_registration_unsupported, then connects with a supplied client id', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    mcp.requiresPreregisteredClient = true;
+    const first = await call(mcp, 'POST', '/api/connectors/mcp/connect', {
+      serverUrl: 'https://strict.example/mcp',
+    });
+    expect(first.status).toBe(422);
+    expect((first.body as { code?: string }).code).toBe('client_registration_unsupported');
+    const second = await call(mcp, 'POST', '/api/connectors/mcp/connect', {
+      serverUrl: 'https://strict.example/mcp',
+      clientId: 'preregistered-id',
+      clientSecret: 's3cret',
+    });
+    expect(second.status).toBe(200);
+    expect((second.body as { redirectUrl?: string }).redirectUrl).toContain('auth.example');
+  });
+
+  it('GET hides registry rows from retired connector kinds (no live implementation)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    await connectServer(mcp, 'https://one.example/mcp');
+    await createConnector(db, {
+      connector: 'gmail',
+      toolkit: 'gmail',
+      displayName: 'Gmail',
+      connectionRef: 'legacy-1',
+      connectedBy: 'u1',
+    });
+    const list = (await call(mcp, 'GET', '/api/connectors')).body as {
+      connectors: { toolkit: string }[];
+    };
+    // The retired-kind `gmail` row (no live impl) is hidden; the MCP connection shows — now
+    // under its per-connection toolkit `mcp:<connId>` (resolved back to the generic MCP connector).
+    expect(list.connectors).toHaveLength(1);
+    expect(list.connectors[0]?.toolkit).toMatch(/^mcp:/);
+  });
+
+  it('the stored server URL survives DELETE (soft disconnect keeps reconnect possible)', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    const id = await connectServer(mcp, 'https://one.example/mcp');
+    const ref = (await getConnector(db, id))?.connectionRef;
+    const del = await call(mcp, 'DELETE', '/api/connectors/mcp', { connectorId: id });
+    expect(del.status).toBe(200);
+    expect((await getConnector(db, id))?.status).toBe('disconnected');
+    // disconnect() was called (secrets revoked), but the URL key is untouched by
+    // the routes — the connector's own disconnect decides what to keep.
+    expect(mcp.revoked).toContain(ref);
+    expect(getMcpServerUrl(ref!)).toBe('https://one.example/mcp');
+  });
+
+  it('an abandoned/denied OAuth (?error) purges the pending connection state', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    // Begin a connect → a pending record + a stored server URL exist for the new id.
+    const begun = (
+      await call(mcp, 'POST', '/api/connectors/mcp/connect', {
+        serverUrl: 'https://denied.example/mcp',
+      })
+    ).body as { pendingId: string };
+    const pendingId = begun.pendingId;
+    const newConnId = peekPendingConnect(pendingId)!.connectionId;
+    expect(getMcpServerUrl(newConnId)).toBe('https://denied.example/mcp');
+    // The provider redirects back with an error (user clicked "Deny").
+    const cb = await call(
+      mcp,
+      'GET',
+      `/api/connectors/oauth/callback?error=access_denied&state=${pendingId}`,
+    );
+    expect(cb.status).toBe(400);
+    // The pending record and the abandoned connection's stored URL are gone —
+    // no orphaned per-connection state accumulates from a denied sign-in.
+    expect(peekPendingConnect(pendingId)).toBeNull();
+    expect(getMcpServerUrl(newConnId)).toBeNull();
   });
 });

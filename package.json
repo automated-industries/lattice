@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "4.3.8",
+  "version": "5.0.0",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -46,10 +46,10 @@
     "docs": "typedoc --out docs-generated src/index.ts",
     "desktop:version:check": "node scripts/sync-desktop-version.mjs --check",
     "test:deno": "deno test --no-check -A tests/deno/",
-    "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-all desktop/main.ts",
-    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.dmg desktop/main.ts",
-    "desktop:build:mac:pkg": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.app desktop/main.ts && sh scripts/build-mac-pkg.sh",
-    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --output dist-desktop/Lattice.msi desktop/main.ts",
+    "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-all desktop/main.ts",
+    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.dmg desktop/main.ts",
+    "desktop:build:mac:pkg": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.app desktop/main.ts && sh scripts/build-mac-pkg.sh",
+    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.msi desktop/main.ts",
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
@@ -74,8 +74,8 @@
   },
   "optionalDependencies": {
     "@aws-sdk/client-s3": "^3.1067.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "exceljs": "^4.4.0",
-    "jira.js": "^5.3.1",
     "pg": "^8.11.0",
     "pgvector": "^0.2.0",
     "playwright": "^1.48.0",

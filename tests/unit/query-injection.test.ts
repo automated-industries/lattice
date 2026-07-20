@@ -91,6 +91,11 @@ describe('query identifier safety (injection matrix)', () => {
           await expect(d.count(table, { where: { [p]: 'x' } })).rejects.toThrow();
         });
 
+        it(`rejects a hostile boundedCount where column`, async () => {
+          const d = await setup();
+          await expect(d.boundedCount(table, { where: { [p]: 'x' } })).rejects.toThrow();
+        });
+
         it(`rejects a hostile queryPage orderBy`, async () => {
           const d = await setup();
           await expect(d.queryPage(table, { orderBy: p })).rejects.toThrow();
@@ -105,6 +110,7 @@ describe('query identifier safety (injection matrix)', () => {
     for (const p of PAYLOADS) {
       await expect(d.query(p, {})).rejects.toThrow();
       await expect(d.count(p, {})).rejects.toThrow();
+      await expect(d.boundedCount(p, {})).rejects.toThrow();
     }
   });
 

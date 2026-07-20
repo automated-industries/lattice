@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path';
+import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { ensureLatticeRoot, findLatticeRoot } from './lattice-root.js';
 import { importLegacyUserConfig } from './migrate-to-root.js';
@@ -8,7 +9,9 @@ import {
   findWorkspaceByConfigPath,
   getActiveWorkspace,
   listWorkspaces,
+  readRegistry,
   resolveWorkspacePaths,
+  writeRegistry,
   type WorkspaceRecord,
 } from './workspace.js';
 
@@ -133,6 +136,56 @@ export function reconcileWorkspaceRegistry(root: string, scanDirs: readonly stri
 }
 
 /**
+ * Prune registry entries whose adopted config lives in the OS temp directory and
+ * no longer exists on disk. This cleans up stale bootstrap/test workspaces that
+ * were created in tmpdir and never removed. Workspaces without a configPath
+ * (scaffolded) are always kept. Workspaces with configPath outside tmpDir are
+ * kept even if the file is missing (could be an unmounted drive).
+ *
+ * Returns the number of records pruned. If pruning removes the active workspace,
+ * clears `activeWorkspaceId` and reassigns it to the first remaining workspace
+ * (mirroring the semantics of `removeWorkspace` in workspace.ts).
+ */
+export function pruneEphemeralWorkspaces(root: string, tmpDir: string = tmpdir()): number {
+  const reg = readRegistry(root);
+  const tmpAbs = resolve(tmpDir);
+  let pruned = 0;
+  const toRemove: string[] = [];
+
+  for (const ws of reg.workspaces) {
+    // Only consider adopted-in-place workspaces (those with configPath).
+    if (!ws.configPath) continue;
+    const cfgAbs = resolve(ws.configPath);
+    // Check if the config's directory is under tmpDir.
+    const rel = relative(tmpAbs, dirname(cfgAbs));
+    const isUnderTmpDir = !rel.startsWith('..') && !isAbsolute(rel);
+    // If it's under tmpDir AND the file doesn't exist, mark for removal.
+    if (isUnderTmpDir && !existsSync(cfgAbs)) {
+      toRemove.push(ws.id);
+      pruned++;
+    }
+  }
+
+  if (pruned === 0) return 0;
+
+  // Remove marked workspaces.
+  for (const id of toRemove) {
+    const idx = reg.workspaces.findIndex((w) => w.id === id);
+    if (idx >= 0) {
+      reg.workspaces.splice(idx, 1);
+    }
+  }
+
+  // Clear activeWorkspaceId if it was pointing to a removed workspace.
+  if (reg.activeWorkspaceId && toRemove.includes(reg.activeWorkspaceId)) {
+    reg.activeWorkspaceId = reg.workspaces[0]?.id ?? null;
+  }
+
+  writeRegistry(root, reg);
+  return pruned;
+}
+
+/**
  * Ensure a `.lattice` root for the GUI and resolve the active workspace to open.
  * Creates a root if none exists (in the config's directory when a config file is
  * present, else `startDir`), adopts the launch config as a workspace, reconciles
@@ -157,6 +210,9 @@ export function ensureRootForGui(opts: {
   }
   // No-op when the root's `.config` is already initialized.
   importLegacyUserConfig(root);
+
+  // Prune stale temp-dir workspaces from bootstrap/test runs.
+  pruneEphemeralWorkspaces(root);
 
   // Adopt + activate the launch config when the user explicitly asked for it,
   // when we just created the root, or when there's no active workspace yet.

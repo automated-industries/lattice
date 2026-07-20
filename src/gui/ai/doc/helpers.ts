@@ -37,10 +37,14 @@ import { readFile } from 'node:fs/promises';
  *     huge part never materializes a multi-GB working string before truncation;
  *   - the PDF read is wrapped in a timeout.
  *
- * The parsers are resolved through a string-variable specifier so the bundler
- * leaves them as runtime imports (resolved from the consumer's node_modules);
- * they ship as regular dependencies, so a load failure means a corrupted install
- * and is surfaced loudly rather than degraded into a silent empty extraction.
+ * The parsers are lazy-loaded through a LITERAL `import('<name>')` thunk (see
+ * {@link loadParser}), never a runtime variable specifier. A variable specifier
+ * is invisible to the packaged desktop app's static bundler (`deno desktop`),
+ * which silently drops every parser from the app and makes dragged Office
+ * documents extract nothing; a literal specifier is discovered and bundled while
+ * staying lazy (the thunk only runs when that format is actually parsed). They
+ * ship as regular dependencies, so a load failure means a corrupted install and
+ * is surfaced loudly rather than degraded into a silent empty extraction.
  */
 
 export const MAX_TEXT = 200_000;
@@ -65,12 +69,12 @@ export function decodeUtf8(bytes: Uint8Array): string {
  * `null` so the extractor degrades gracefully (never throws), but the cause is now
  * on the record.
  */
-export async function loadParser<T>(specifier: string): Promise<T | null> {
+export async function loadParser<T>(load: () => Promise<unknown>, name: string): Promise<T | null> {
   try {
-    return (await import(specifier)) as unknown as T;
+    return (await load()) as T;
   } catch (err) {
     console.error(
-      `[latticesql] document parser "${specifier}" failed to load — document ` +
+      `[latticesql] document parser "${name}" failed to load — document ` +
         `extraction is degraded (likely a broken/partial install or incompatible ` +
         `build). Reinstall dependencies (\`npm install\`). Cause:`,
       err,
@@ -288,7 +292,7 @@ interface FflateLib {
  * bounded in practice.)
  */
 export async function unzip(path: string): Promise<Record<string, Uint8Array> | null> {
-  const fflate = await loadParser<FflateLib>('fflate');
+  const fflate = await loadParser<FflateLib>(() => import('fflate'), 'fflate');
   if (!fflate || typeof fflate.unzipSync !== 'function') return null;
   try {
     const buf = await readFile(path);

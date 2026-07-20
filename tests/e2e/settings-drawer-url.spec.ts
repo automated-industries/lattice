@@ -49,18 +49,21 @@ test('a live refresh updates the middle pane in place without flashing a loading
   page,
 }) => {
   for (let i = 0; i < 8; i++) await createRow(gui.url, 'items', { name: 'Item ' + String(i) });
-  await page.goto(gui.url);
-  await expect(page.locator('nav.sidebar')).toBeVisible();
-  // Land on the items object page (a stable view to refresh).
-  await page.evaluate(() => {
-    window.location.hash = '#/fs/items';
-  });
-  await expect(page.locator('.ognode-entity').first()).toBeVisible({
+  // Land on the items table collection tab (a stable view to refresh). The old
+  // Objects `#/folders` → `#/fs/items` flow is gone; the single-layout Workspace
+  // table tab `#/w/table/items` is its equivalent (and still paints `.view-header`).
+  await page.goto(gui.url + '#/w/table/items');
+  await expect(page.locator('nav.dash-sidebar')).toBeVisible();
+  await expect(page.locator('.view-header')).toBeVisible({
     timeout: 5000,
   });
 
   // Slow the refresh's data fetches so a soft refresh is observable while in flight.
   await page.route('**/api/entities', async (route) => {
+    await new Promise((r) => setTimeout(r, 700));
+    await route.continue();
+  });
+  await page.route('**/api/provenance**', async (route) => {
     await new Promise((r) => setTimeout(r, 700));
     await route.continue();
   });
@@ -77,7 +80,7 @@ test('a live refresh updates the middle pane in place without flashing a loading
   // spinner — the existing tiles stay on screen and are swapped only when ready.
   for (let i = 0; i < 6; i++) {
     expect(await page.locator('#content .route-loading').count()).toBe(0);
-    expect(await page.locator('.ognode-entity').count()).toBeGreaterThan(0);
+    expect(await page.locator('.view-header').count()).toBeGreaterThan(0);
     await page.waitForTimeout(120);
   }
 });

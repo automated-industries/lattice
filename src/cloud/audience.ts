@@ -59,6 +59,49 @@ export function tableNeedsAudienceView(columnAudience: Record<string, string>): 
   return Object.values(columnAudience).some((a) => !isRowAudience(a));
 }
 
+/** The more restrictive of two masked audiences: identical → itself; divergent → owner-only. */
+function stricterAudience(a: string, b: string): string {
+  return a === b ? a : 'owner';
+}
+
+/**
+ * Extend a table's column→audience map so a COMPUTED column inherits the masking of the
+ * columns it derives from. A #10 computed field materializes into an ordinary physical
+ * column on the base table; without this, an owner-masked source column's value would pass
+ * through the derived column RAW in the `<t>_v` view — a column-level cross-tenant leak
+ * (a member reads NULL for `salary` but the exact value through `salary_copy`). For every
+ * same-table computed field (alias/calc/ai_*), if any of its source columns carries a
+ * non-row (masked) audience, the derived column takes the strictest such audience — unless it
+ * already declares an explicit audience of its own.
+ *
+ * Scope: this covers the same-table kinds, whose sources are this table's own columns. An
+ * `aggregate` / belongsTo-`path` field derives from ANOTHER table (its source audience lives
+ * in that table's policy) and is NOT yet folded here — a narrower follow-up; those kinds are
+ * far less common and don't expose a source cell verbatim the way alias/calc do.
+ */
+export function propagateComputedFieldAudiences(
+  db: Lattice,
+  table: string,
+  columnAudience: Record<string, string>,
+): Record<string, string> {
+  const plans = db.getComputedFieldPlans(table);
+  if (plans.length === 0) return columnAudience;
+  const out = { ...columnAudience };
+  for (const p of plans) {
+    const own = out[p.column];
+    if (own !== undefined && !isRowAudience(own)) continue; // already explicitly masked
+    let strictest: string | undefined;
+    for (const src of p.deps) {
+      const a = out[src];
+      if (a !== undefined && !isRowAudience(a)) {
+        strictest = strictest === undefined ? a : stricterAudience(strictest, a);
+      }
+    }
+    if (strictest !== undefined) out[p.column] = strictest;
+  }
+  return out;
+}
+
 function quoteIdent(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }
@@ -147,12 +190,15 @@ export async function enableAudienceView(
   columnAudience: Record<string, string>,
 ): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
-  if (!tableNeedsAudienceView(columnAudience)) return;
+  // Fold computed-column derivations into the effective audience so a field derived from a
+  // masked source is masked too (never leaks the source's value through the derived column).
+  const effective = propagateComputedFieldAudiences(db, table, columnAudience);
+  if (!tableNeedsAudienceView(effective)) return;
   if (pkCols.length === 0) return; // unkeyable table — no row filter possible
   const group = await memberGroupFor(db);
   const migration: Migration = {
-    version: `internal:audience:table:${table}:v1:${audienceVersionHash(columns, pkCols, columnAudience)}`,
-    sql: audienceViewSql(table, columns, pkCols, columnAudience, group),
+    version: `internal:audience:table:${table}:v1:${audienceVersionHash(columns, pkCols, effective)}`,
+    sql: audienceViewSql(table, columns, pkCols, effective, group),
   };
   await db.migrate([migration]);
 }
@@ -256,7 +302,7 @@ export async function regenerateAudienceViewFromDb(
   if (db.getDialect() !== 'postgres') return;
   if (pkCols.length === 0) return;
   const group = await memberGroupFor(db);
-  const spec = await loadColumnPolicy(db, table);
+  const spec = propagateComputedFieldAudiences(db, table, await loadColumnPolicy(db, table));
   const view = quoteIdent(`${table}_v`);
   const base = quoteIdent(table);
   if (!tableNeedsAudienceView(spec)) {

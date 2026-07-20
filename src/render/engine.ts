@@ -1,5 +1,5 @@
 import { join, basename, isAbsolute, resolve, sep } from 'node:path';
-import { mkdirSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdirSync, existsSync, copyFileSync, readFileSync } from 'node:fs';
 import type { SchemaManager } from '../schema/manager.js';
 import type { StorageAdapter } from '../db/adapter.js';
 import { runAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
@@ -22,6 +22,7 @@ import type {
   EntityContextManifestEntry,
   LatticeManifest,
   EntityFileManifestInfo,
+  TableFileManifestInfo,
 } from '../lifecycle/manifest.js';
 import { writeManifest, readManifest, TEMPLATE_VERSION } from '../lifecycle/manifest.js';
 import { computeRenderCursor } from '../lifecycle/render-cursor.js';
@@ -167,6 +168,19 @@ export class RenderEngine {
    */
   private readonly _batchBelongsTo: boolean;
 
+  /** Non-error render notices (e.g. an edited generated file being restored). */
+  private _onNotice: ((message: string) => void) | null = null;
+
+  /** Route render notices somewhere visible (the GUI wires its activity feed). */
+  setNoticeHandler(handler: ((message: string) => void) | null): void {
+    this._onNotice = handler;
+  }
+
+  private _notice(message: string): void {
+    if (this._onNotice) this._onNotice(message);
+    else console.warn(`[latticesql] ${message}`);
+  }
+
   constructor(
     schema: SchemaManager,
     adapter: StorageAdapter,
@@ -241,6 +255,15 @@ export class RenderEngine {
     const start = Date.now();
     const filesWritten: string[] = [];
     const counters = { skipped: 0 };
+    // Phase-1 rollup lifecycle: every table file rendered THIS pass, keyed by
+    // table, with the hash of the content Lattice produced (written or not —
+    // an atomicWrite no-op means the bytes already matched).
+    const tableFilesFresh: Record<string, TableFileManifestInfo> = {};
+    // Prior rollup hashes, for the edited-rollup notice in the loop below (the
+    // full prior manifest is re-read after phase 1 for the entity-context pass).
+    const priorTableFiles0 = readManifest(outputDir)?.tableFiles;
+    // Phase-2 multi-output lifecycle: paths each multi produced THIS pass.
+    const multiFilesFresh: Record<string, Record<string, string>> = {};
     const signal = opts.signal;
     const throttle = new ProgressThrottle(opts.onProgress);
 
@@ -255,16 +278,24 @@ export class RenderEngine {
     for (const [name, def] of this._schema.getTables()) {
       // Bail before each table if the render was aborted (e.g. a workspace
       // switch). Returns the partial manifest, which the caller discards.
-      if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
+      if (signal?.aborted)
+        return this._abortedResult(filesWritten, counters, start, outputDir, tableFilesFresh);
       // Opt-in: a spec-less table renders to an empty `.schema-only` file, so
       // when skipEmpty is on we skip both the full-table read and the write —
       // avoiding pulling a whole (possibly large) table off the wire for an
       // empty file. Default-off path below is unchanged.
       if (this._skipEmpty && def.render === NOOP_RENDER) continue;
+      // A spec-less (no-op render) table produces an EMPTY rollup regardless of
+      // its rows — never pull the whole table off the wire just to discard it.
+      // The write still happens (and is manifest-tracked) so the rollup path
+      // stays consistent; only the pointless read is skipped.
+      const isNoopRender = def.render === NOOP_RENDER;
       // Incremental: a single-table file renders from its OWN rows only, so it is
       // affected iff that table changed.
       if (opts.changedTables && !opts.changedTables.has(name)) continue;
-      let rows = await this._schema.queryTable(this._adapter, name, this._schema.readRel);
+      let rows = isNoopRender
+        ? []
+        : await this._schema.queryTable(this._adapter, name, this._schema.readRel);
       if (def.relevanceFilter) {
         const ctx = this._getTaskContext();
         rows = rows.filter((row) => def.relevanceFilter?.(row, ctx));
@@ -303,7 +334,29 @@ export class RenderEngine {
         ? applyTokenBudget(rows, def.render, def.tokenBudget, def.prioritizeBy)
         : def.render(rows);
       const filePath = join(outputDir, def.outputFile);
+      // READ-ONLY artifact contract: table rollups are GENERATED files — edits to
+      // them are not reverse-synced (only per-record entity files round-trip). If
+      // the on-disk bytes differ from BOTH our last write and the fresh content,
+      // someone edited the file; say so loudly before overwriting instead of
+      // silently clobbering the edit.
+      const freshHash = contentHash(content);
+      const priorRollup = priorTableFiles0?.[name];
+      if (priorRollup?.path === def.outputFile && existsSync(filePath)) {
+        try {
+          const onDisk = contentHash(readFileSync(filePath, 'utf8'));
+          if (onDisk !== priorRollup.hash && onDisk !== freshHash) {
+            this._notice(
+              `${def.outputFile} was edited on disk, but table rollups are ` +
+                `generated files — the edit is NOT imported and the render overwrites it. ` +
+                `Edit the record's own context file (or the data) instead.`,
+            );
+          }
+        } catch {
+          /* unreadable — the write below will surface real IO problems */
+        }
+      }
       const wrote = atomicWrite(filePath, content);
+      tableFilesFresh[name] = { path: def.outputFile, hash: freshHash };
       if (wrote) {
         filesWritten.push(filePath);
       } else {
@@ -329,7 +382,8 @@ export class RenderEngine {
 
     // Multi-table renders (phase 2 — fast; lightweight table-done only).
     for (const [name, def] of this._schema.getMultis()) {
-      if (signal?.aborted) return this._abortedResult(filesWritten, counters, start);
+      if (signal?.aborted)
+        return this._abortedResult(filesWritten, counters, start, outputDir, tableFilesFresh);
       // Incremental: a multi rolls up its declared source tables, so re-render it
       // only when one of those changed. (A multi with no declared `tables` derives
       // its keys from an opaque function — render it on any change, never stale.)
@@ -346,9 +400,12 @@ export class RenderEngine {
       }
 
       let wroteAny = false;
+      const producedByThisMulti: Record<string, string> = {};
       for (const key of keys) {
         const content = def.render(key, tables);
-        const filePath = join(outputDir, def.outputFile(key));
+        const rel = def.outputFile(key);
+        const filePath = join(outputDir, rel);
+        producedByThisMulti[rel] = contentHash(content);
         if (atomicWrite(filePath, content)) {
           filesWritten.push(filePath);
           wroteAny = true;
@@ -356,6 +413,7 @@ export class RenderEngine {
           counters.skipped++;
         }
       }
+      multiFilesFresh[name] = producedByThisMulti;
       // Content-hash backstop: emit only when at least one file actually changed,
       // so a forced-but-no-op render of an unchanged multi paints no card.
       if (wroteAny) {
@@ -390,14 +448,78 @@ export class RenderEngine {
     // An abort during entity rendering surfaces as a null manifest; bail with
     // the partial result so the caller can discard it.
     if (entityContextManifest === null) {
-      return this._abortedResult(filesWritten, counters, start);
+      return this._abortedResult(filesWritten, counters, start, outputDir, tableFilesFresh);
     }
 
     // Write manifest if there are any entity contexts. On an INCREMENTAL render
     // only the affected tables were rendered, so MERGE their fresh entries over
     // the previous manifest — leaving every untouched table's entry intact so the
     // orphan-cleanup pass doesn't see them as removed and prune their files.
-    if (this._schema.getEntityContexts().size > 0) {
+    // Phase-1 rollups get a LIFECYCLE record. Build the new tableFiles map from
+    // the tables the schema currently registers: fresh entries win; a table this
+    // (possibly incremental) pass skipped carries its prior entry forward — but
+    // ONLY while its recorded path still matches what the table renders to. Any
+    // prior entry whose path is no longer produced (an outputFile change, a
+    // dropped table) moves to the RETIRED ledger, where it persists across
+    // renders until the reconciliation pass actually deletes the file
+    // (hash-guarded) or the file disappears — so a crash between this manifest
+    // write and the cleanup can never orphan a file permanently.
+    const priorTableFiles = priorManifest?.tableFiles ?? {};
+    const currentOutputFiles = new Map<string, string>();
+    for (const [name, def] of this._schema.getTables())
+      currentOutputFiles.set(name, def.outputFile);
+    const tableFiles: Record<string, TableFileManifestInfo> = {};
+    for (const [name] of this._schema.getTables()) {
+      const fresh = tableFilesFresh[name];
+      if (fresh) {
+        tableFiles[name] = fresh;
+        continue;
+      }
+      const prior = priorTableFiles[name];
+      if (prior && prior.path === currentOutputFiles.get(name)) tableFiles[name] = prior;
+    }
+    // Multi-output files: fresh entries win; a multi this incremental pass
+    // skipped carries its prior map forward. A prior path a re-rendered multi no
+    // longer produced (its key vanished) — or a dropped multi's whole map —
+    // retires into the same ledger as rollups.
+    const priorMultiFiles = priorManifest?.multiFiles ?? {};
+    const multiFiles: Record<string, Record<string, string>> = {};
+    for (const [name] of this._schema.getMultis()) {
+      const fresh = multiFilesFresh[name];
+      const prior = priorMultiFiles[name];
+      multiFiles[name] = fresh ?? prior ?? {};
+    }
+    const producedPaths = new Set(Object.values(tableFiles).map((t) => t.path));
+    for (const m of Object.values(multiFiles)) {
+      for (const rel of Object.keys(m)) producedPaths.add(rel);
+    }
+    const retiredFiles: TableFileManifestInfo[] = [];
+    const retiredSeen = new Set<string>();
+    const retire = (e: TableFileManifestInfo): void => {
+      if (retiredSeen.has(e.path) || producedPaths.has(e.path)) return;
+      if (!existsSync(join(outputDir, e.path))) return; // already gone — drop the entry
+      retiredSeen.add(e.path);
+      retiredFiles.push(e);
+    };
+    for (const e of priorManifest?.retiredFiles ?? []) retire(e);
+    for (const [table, e] of Object.entries(priorTableFiles)) {
+      if (tableFiles[table]?.path === e.path) continue;
+      retire(e);
+    }
+    for (const [name, priorMap] of Object.entries(priorMultiFiles)) {
+      const currentMap = multiFiles[name] ?? {};
+      for (const [rel, hash] of Object.entries(priorMap)) {
+        if (rel in currentMap) continue;
+        retire({ path: rel, hash });
+      }
+    }
+
+    if (
+      this._schema.getEntityContexts().size > 0 ||
+      Object.keys(tableFiles).length > 0 ||
+      Object.keys(multiFiles).length > 0 ||
+      retiredFiles.length > 0
+    ) {
       // LOAD-BEARING INVARIANT — keep this commit block fully SYNCHRONOUS (no await /
       // setImmediate between the readManifest and the writeManifest). It is what makes
       // two concurrent same-`outputDir` renders safe WITHOUT a per-dir lock: the
@@ -425,6 +547,9 @@ export class RenderEngine {
         version: 2,
         generated_at: new Date().toISOString(),
         entityContexts,
+        tableFiles,
+        multiFiles,
+        retiredFiles,
         templateVersion: TEMPLATE_VERSION,
         cursor,
       });
@@ -480,12 +605,45 @@ export class RenderEngine {
     filesWritten: string[],
     counters: { skipped: number },
     start: number,
+    outputDir: string,
+    tableFilesFresh: Record<string, TableFileManifestInfo>,
   ): RenderResult {
+    // Record the rollup files this aborted pass actually wrote so a superseding render
+    // sees the true on-disk bytes as its baseline — not a stale manifest — and never
+    // mis-reports an atomic rollup write as a hand edit ("… was edited on disk"). Only
+    // tableFiles is touched; an abort leaves the entity tree untouched, so this never
+    // commits a partial tree.
+    this._flushRollupsOnAbort(outputDir, tableFilesFresh);
     return {
       filesWritten,
       filesSkipped: counters.skipped,
       durationMs: Date.now() - start,
     };
+  }
+
+  /**
+   * On an aborted render, merge the rollup hashes this pass wrote over the prior
+   * manifest so the manifest never lags the atomic per-table rollup writes. The rollup
+   * files (phase 1) are complete atomic writes; only the manifest that records their
+   * hashes is written last, so an abort would otherwise leave the files ahead of the
+   * manifest and the next render would false-flag them as hand-edited. Best-effort: a
+   * later complete render self-heals the manifest regardless.
+   */
+  private _flushRollupsOnAbort(
+    outputDir: string,
+    tableFilesFresh: Record<string, TableFileManifestInfo>,
+  ): void {
+    if (Object.keys(tableFilesFresh).length === 0) return;
+    const prior = readManifest(outputDir);
+    if (!prior) return; // no baseline to preserve; a later complete render writes one
+    try {
+      writeManifest(outputDir, {
+        ...prior,
+        tableFiles: { ...(prior.tableFiles ?? {}), ...tableFilesFresh },
+      });
+    } catch {
+      /* best-effort — the next complete render self-heals the manifest */
+    }
   }
 
   /**

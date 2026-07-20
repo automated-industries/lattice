@@ -58,6 +58,13 @@ function docxFixture(): string {
 const PDF_B64 =
   'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA1OCA+PgpzdHJlYW0KQlQgL0YxIDI0IFRmIDcyIDcwMCBUZCAoSGVsbG8gbmF0aXZlIFBERiBleHRyYWN0aW9uKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDM0OSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQxOQolJUVPRg==';
 
+// A minimal two-line PDF (each line a separate Td-positioned Tj). unpdf's
+// mergePages:true path collapses ALL whitespace (newlines included) into single
+// spaces; the extractor uses mergePages:false + per-line hasEOL reconstruction,
+// so the line break between the two lines must survive.
+const PDF_TWOLINE_B64 =
+  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAxMDAgPj4Kc3RyZWFtCkJUCi9GMSAyNCBUZgo3MiA3MjAgVGQKKEZpcnN0IGxpbmUgb2YgdGhlIGRvY3VtZW50KSBUagowIC0zNiBUZAooU2Vjb25kIGxpbmUgb2YgdGhlIGRvY3VtZW50KSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDM5MSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQ2MQolJUVPRgo=';
+
 describe('native document extraction', () => {
   it('extracts a .docx (mammoth)', async () => {
     const r = await parseFile(docxFixture(), undefined, 'a.docx');
@@ -74,6 +81,21 @@ describe('native document extraction', () => {
     );
     expect(r.skip).toBeUndefined();
     expect(r.text).toContain('Hello native PDF extraction');
+  });
+
+  it('preserves line breaks in a multi-line .pdf (not one collapsed wall)', async () => {
+    const r = await parseFile(
+      writeFixture('twoline.pdf', Buffer.from(PDF_TWOLINE_B64, 'base64')),
+      'application/pdf',
+      'twoline.pdf',
+    );
+    expect(r.skip).toBeUndefined();
+    expect(r.text).toContain('First line of the document');
+    expect(r.text).toContain('Second line of the document');
+    // The regression guard: the two lines must be separated by a newline, not
+    // merged into "…document Second line…" on one line (unpdf mergePages:true).
+    expect(r.text).toMatch(/First line of the document\s*\n/);
+    expect(r.text).not.toContain('document Second line');
   });
 
   it('extracts a .pptx across slides', async () => {

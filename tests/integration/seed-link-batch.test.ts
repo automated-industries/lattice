@@ -139,6 +139,20 @@ describe('seed() link resolution — result-identity snapshot', () => {
     );
   });
 
+  it('counts records with no natural-key value as skipped, not silently dropped', async () => {
+    const result = await db.seed({
+      table: 'meeting',
+      naturalKey: 'slug',
+      data: [
+        { slug: 'kept', title: 'Kept' },
+        { slug: '', title: 'Empty key' }, // empty natural key → can't upsert → skipped
+        { title: 'Missing key' }, // absent natural key → skipped
+      ],
+    });
+    expect(result.upserted).toBe(1);
+    expect(result.skipped).toBe(2);
+  });
+
   it('soft-deleted target does not resolve a link (NOT_DELETED preserved)', async () => {
     // Soft-delete carol; her links must now surface as unresolved, not resolve
     // to the tombstoned row. Proves the batched IN(...) keeps the soft-delete

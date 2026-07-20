@@ -1,7 +1,8 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// Sources sidebar: three peer sections — Files (a lazy, infinitely-nestable tree
-// of on-disk roots, local-only), Artifacts (Lattice-created files), and
-// Connectors. renderSources() is called wherever renderSidebar() is. Must stay
+// Sources sidebar: Files (a lazy, infinitely-nestable tree of on-disk roots,
+// local-only) + Artifacts (Lattice-created files). MCP connectors live entirely
+// in the Configure drawer's MCP Connectors tab, not the sidebar.
+// renderSources() is called wherever renderSidebar() is. Must stay
 // INSIDE the client IIFE (uses fetchJson/escapeHtml/loadAllRows/openSettingsDrawer),
 // inserted before createDatabaseWizardJs.
 export const sourcesJs = `
@@ -10,7 +11,7 @@ export const sourcesJs = `
     var sourcesFilesByPath = {};
 
     function renderSources() {
-      renderSourcesConnectors();
+      renderInputsDatabases();
       // One files load drives both the Files ref_uri map and the Artifacts list.
       // Project OUT the heavy extracted_text/description columns (up to ~200 KB a
       // row) the sidebar never reads — this runs on every sidebar re-render, so a
@@ -24,13 +25,13 @@ export const sourcesJs = `
           rows.forEach(function (r) {
             if (r.ref_kind === 'local_ref' && r.ref_uri) sourcesFilesByPath[r.ref_uri] = r.id;
           });
-          renderSourcesArtifacts(rows.filter(function (r) { return r.artifact_type; }));
+          // Artifacts (Lattice-created files) now live in the Outputs column.
           // Source files = everything the user ingested/uploaded (NOT Lattice-created
           // artifacts). Shown in the Files section alongside any registered on-disk
           // roots — so existing files appear even before a folder is added.
           renderSourcesFiles(rows.filter(function (r) { return !r.artifact_type; }));
         })
-        .catch(function () { renderSourcesArtifacts([]); renderSourcesFiles([]); });
+        .catch(function () { renderSourcesFiles([]); });
       wireSourcesButtons();
     }
 
@@ -50,7 +51,12 @@ export const sourcesJs = `
     }
 
     function renderSourcesFiles(sourceFiles) {
-      var host = document.getElementById('src-files-tree');
+      renderSourcesFilesInto(document.getElementById('src-files-tree'), sourceFiles);
+    }
+    // Render the source-files tree (roots + loose files + lazy folders) INTO a given
+    // host element — used by the Configure drawer's Files tab (#inputs-files-tree). Leaf
+    // clicks navigate to #/fs/files/<id>, which the router normalizes to #/w/file/<id>.
+    function renderSourcesFilesInto(host, sourceFiles) {
       if (!host) return;
       sourceFiles = sourceFiles || [];
       // The Files section shows the user's source files (ingested/uploaded) PLUS any
@@ -113,7 +119,7 @@ export const sourcesJs = `
             if (ul0 && !ul0.hidden) openFolders[li.getAttribute('data-path')] = ul0.innerHTML;
           });
           if (!rootsHtml && !looseHtml) {
-            host.innerHTML = '<div class="src-empty">No files yet.</div>';
+            host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below. (Folder imports ingest up to 500 files per add.)</div>';
             return;
           }
           host.innerHTML = rootsHtml + looseHtml;
@@ -195,72 +201,126 @@ export const sourcesJs = `
         .catch(function () {});
     }
 
-    function renderSourcesArtifacts(artifacts) {
-      var host = document.getElementById('src-artifacts-tree');
-      if (!host) return;
-      if (!artifacts.length) { host.innerHTML = '<div class="src-empty">Nothing created yet.</div>'; return; }
-      host.innerHTML = '<ul class="src-tree">' + artifacts.map(function (r) {
-        var name = r.name || r.original_name || 'Untitled';
-        var ic = r.artifact_type === 'html' ? '🌐' : '📝';
-        return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
-          '"><div class="src-row" style="padding-left:14px"><span class="src-ic">' + ic +
-          '</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
-      }).join('') + '</ul>';
-      host.querySelectorAll('.src-file > .src-row').forEach(function (row) {
-        row.addEventListener('click', function () {
-          location.hash = '#/fs/files/' + encodeURIComponent(row.parentNode.getAttribute('data-id'));
-        });
-      });
-    }
-
-    function renderSourcesConnectors() {
-      var host = document.getElementById('src-connectors-list');
-      if (!host) return;
-      fetchJson('/api/connectors')
-        .then(function (data) {
-          var connectors = (data && data.connectors) || [];
-          var presById = {};
-          ((data && data.toolkits) || []).forEach(function (t) { presById[t.toolkit] = t; });
-          host.innerHTML = connectors.length
-            ? '<ul class="src-tree">' + connectors.map(function (c) {
-                var pres = presById[c.toolkit] || {};
-                var color = c.status === 'connected' ? 'var(--accent)'
-                  : (c.status === 'error' ? 'var(--danger, #c0392b)' : 'var(--text-muted)');
-                // Each connected source shows its logo, with the status as a small
-                // colored ring/dot overlay.
-                var mark = pres.icon
-                  ? '<span class="src-conn-ic"><img class="connector-icon" src="' + escapeHtml(pres.icon) + '" alt="">' +
-                      '<span class="src-conn-dot" style="background:' + color + '"></span></span>'
-                  : '<span class="src-dot" style="background:' + color + '"></span>';
-                var label = pres.label || (c.toolkit.charAt(0).toUpperCase() + c.toolkit.slice(1));
-                return '<li class="src-node src-conn"><div class="src-row" style="padding-left:14px">' +
-                  mark + '<span class="src-name">' + escapeHtml(label) + '</span></div></li>';
-              }).join('') + '</ul>'
-            : '<div class="src-empty">None connected.</div>';
-          host.querySelectorAll('.src-conn > .src-row').forEach(function (row) {
-            row.addEventListener('click', function () { openConnectorsDialog(); });
-          });
-        })
-        .catch(function () { host.innerHTML = ''; });
-    }
 
     // The add buttons live in the static shell, so wire them ONCE (renderSources
     // runs on every sidebar refresh).
+    // ── Collapsible top-level sidebar groups ──────────────────────────────
+    // Each top-level group header (Files, Built by Lattice, Connectors, plus
+    // Objects/System in advanced mode) collapses its body. State persists per
+    // group in localStorage (default expanded). The Objects/System collapse
+    // toggles the inner .section-body ONLY — the #objects-section/#system-section
+    // wrapper's hidden attribute stays owned by advanced-mode (renderSidebar), so
+    // the two never fight. Reuses the chevron/hidden idiom of toggleSourceFolder.
+    function sidebarGroupKey(group) { return 'lattice.sidebar.group.' + group; }
+    function sidebarGroupCollapsed(group) {
+      try { return window.localStorage.getItem(sidebarGroupKey(group)) === '0'; }
+      catch (e) { return false; } // default expanded when storage is unavailable
+    }
+    function setSidebarGroupCollapsed(group, collapsed) {
+      try { window.localStorage.setItem(sidebarGroupKey(group), collapsed ? '0' : '1'); }
+      catch (e) { /* private mode / quota — state just won't persist */ }
+    }
+    function applySidebarGroupState(group) {
+      var btn = document.querySelector('.section-toggle[data-group="' + group + '"]');
+      var body = document.querySelector('.section-body[data-group-body="' + group + '"]');
+      if (!btn || !body) return;
+      var collapsed = sidebarGroupCollapsed(group);
+      body.hidden = collapsed;
+      var caret = btn.querySelector('.section-caret');
+      if (caret) caret.textContent = collapsed ? '▸' : '▾';
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    function applySidebarGroupStates() {
+      [
+        'files', 'connectors', 'databases',
+        'objects', 'system',
+        // Left-sidebar single-layout nav sections (Files is now a table, not a section).
+        'nav-dashboards', 'nav-tables',
+      ].forEach(applySidebarGroupState);
+    }
+    // The left-sidebar nav sections behave as a single-open ACCORDION — opening one
+    // collapses the other. The Configure-drawer groups (files/connectors/databases/
+    // objects/system) are NOT in this set, so they stay independent.
+    // The left sidebar has two single-open sections — Dashboards and Tables. TABLES is
+    // the default OPEN one (index 0 → enforceNavAccordion's fallback when none is open):
+    // it's the primary data nav, so a fresh load lands with your tables visible.
+    // (nav-schema-* groups WITHIN Tables are independent — not listed here.)
+    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-dashboards'];
+    function toggleSidebarGroup(group) {
+      var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
+      if (NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {
+        // Single-open accordion (the left-sidebar nav sections): a header click always
+        // OPENS its section and collapses the siblings. Clicking the already-open section
+        // is a no-op — never collapse the only-open one, so exactly one section stays
+        // visible at all times.
+        if (!willExpand) return;
+        NAV_ACCORDION_GROUPS.forEach(function (g) {
+          if (g !== group) { setSidebarGroupCollapsed(g, true); applySidebarGroupState(g); }
+        });
+        setSidebarGroupCollapsed(group, false);
+        applySidebarGroupState(group);
+        return;
+      }
+      // Independent groups (the Configure-drawer sections) keep a plain open/close toggle.
+      setSidebarGroupCollapsed(group, !sidebarGroupCollapsed(group));
+      applySidebarGroupState(group);
+    }
+    // Enforce single-open among the nav accordion on (re)render: keep the FIRST
+    // currently-open nav section open (default the first when none) and collapse the
+    // rest. Nav groups default expanded, so a fresh load would show all three — this
+    // reduces it to one. Idempotent; safe to call on every renderNavSections.
+    function enforceNavAccordion() {
+      var openGroup = null;
+      NAV_ACCORDION_GROUPS.forEach(function (g) {
+        if (!openGroup && !sidebarGroupCollapsed(g)) openGroup = g;
+      });
+      if (!openGroup) openGroup = NAV_ACCORDION_GROUPS[0];
+      NAV_ACCORDION_GROUPS.forEach(function (g) {
+        setSidebarGroupCollapsed(g, g !== openGroup);
+        applySidebarGroupState(g);
+      });
+    }
+    function wireSidebarGroupToggles() {
+      var btns = document.querySelectorAll('.section-toggle[data-group]');
+      for (var i = 0; i < btns.length; i++) {
+        var btn = btns[i];
+        if (btn.__wired) continue;
+        btn.__wired = true;
+        (function (b) {
+          b.addEventListener('click', function () { toggleSidebarGroup(b.getAttribute('data-group')); });
+        })(btn);
+      }
+    }
+
     function wireSourcesButtons() {
-      var addFolder = document.getElementById('src-add-folder');
-      if (addFolder && !addFolder.__wired) {
-        addFolder.__wired = true;
-        addFolder.addEventListener('click', function () { addSource('folder'); });
-      }
-      var addFile = document.getElementById('src-add-file');
-      if (addFile && !addFile.__wired) {
-        addFile.__wired = true;
-        addFile.addEventListener('click', function () { addSource('file'); });
-      }
-      var addConn = document.getElementById('src-add-connector');
-      if (addConn && !addConn.__wired) {
-        addConn.__wired = true;
-        addConn.addEventListener('click', function () { openConnectorsDialog(); });
+      wireSidebarGroupToggles();
+      applySidebarGroupStates();
+      // One "＋ Add files or folder" button covers both: click opens a small menu to add
+      // file(s) OR a folder (the OS picker for each differs, so they stay two
+      // menu items behind one button rather than two sidebar buttons).
+      var addFiles = document.getElementById('src-add-files');
+      var addFilesMenu = document.getElementById('src-add-files-menu');
+      if (addFiles && addFilesMenu && !addFiles.__wired) {
+        addFiles.__wired = true;
+        function closeAddMenu() {
+          addFilesMenu.hidden = true;
+          addFiles.setAttribute('aria-expanded', 'false');
+        }
+        addFiles.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var show = addFilesMenu.hidden;
+          addFilesMenu.hidden = !show;
+          addFiles.setAttribute('aria-expanded', show ? 'true' : 'false');
+        });
+        addFilesMenu.querySelectorAll('.src-add-menu-item').forEach(function (mi) {
+          mi.addEventListener('click', function () {
+            closeAddMenu();
+            addSource(mi.getAttribute('data-pick'));
+          });
+        });
+        // Dismiss on an outside click / Escape.
+        document.addEventListener('click', closeAddMenu);
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAddMenu(); });
       }
     }
 
@@ -291,6 +351,43 @@ export const sourcesJs = `
             .then(function (r) { return r.json(); })
             .then(function (res) {
               if (res.error) { showToast('Add failed: ' + res.error, {}); return; }
+              // Show result feedback: ingested/skipped counts + truncation awareness.
+              var result = res.result;
+              var msg = '';
+              if (kind === 'folder' && result) {
+                var ingested = result.ingested || 0;
+                var skipped = result.skipped || 0;
+                var scanned = result.scanned || 0;
+                var scanTruncated = result.scanTruncated || false;
+                var capped = result.capped || false;
+                if (ingested === 0 && skipped === 0) {
+                  msg = 'Folder added, but it contains no files — nothing ingested.';
+                } else if (ingested === 0 && skipped > 0) {
+                  msg = 'No files ingested — ' + skipped + ' skipped (unsupported, too large, or unreadable).';
+                } else if (capped) {
+                  // Hit the per-import file limit while files remained.
+                  var foundCount = scanTruncated ? (scanned + '+') : String(scanned);
+                  msg = 'Ingested ' + ingested + ' of ' + foundCount + ' files — the per-import limit (500 files) was reached. ';
+                  msg += 'Add the remaining files by clicking them in the file tree.';
+                } else {
+                  msg = 'Ingested ' + ingested + ' file' + (ingested === 1 ? '' : 's');
+                  if (skipped > 0) {
+                    msg += ', ' + skipped + ' skipped';
+                  }
+                  if (scanTruncated) {
+                    msg += ' (500+ files found — scan limit reached; remaining files can be added individually).';
+                  } else {
+                    msg += '.';
+                  }
+                }
+              } else if (kind === 'file') {
+                if (res.id) {
+                  msg = 'Ingested 1 file.';
+                } else {
+                  msg = 'File was not ingested (unsupported, too large, or unreadable).';
+                }
+              }
+              if (msg) showToast(msg, {});
               renderSources();
             });
         })

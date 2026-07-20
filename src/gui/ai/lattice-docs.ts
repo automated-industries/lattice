@@ -20,6 +20,14 @@ let _docsDir: string | null | undefined; // undefined = not looked up; null = no
 
 function findDocsDir(): string | null {
   if (_docsDir !== undefined) return _docsDir;
+  // Explicit override wins: the packaged desktop app extracts docs/ to a spot the
+  // up-walk below can't reach, so desktop/main.ts resolves it and passes the path
+  // here. (This file already relies on process.* under Deno, e.g. process.cwd().)
+  const envDir = process.env.LATTICE_DOCS_DIR;
+  if (envDir && existsSync(join(envDir, 'cloud.md'))) {
+    _docsDir = envDir;
+    return _docsDir;
+  }
   let dir: string;
   try {
     dir = dirname(fileURLToPath(import.meta.url));

@@ -2,13 +2,17 @@
  * Uploading with S3 enabled: the bytes are pushed to S3 (so other members can
  * pull them) AND the uploader keeps a local blob (hybrid). The row records a
  * cloud_ref/s3 reference; the object lands under `<prefix>/<sha256>`. Mocked
- * `@aws-sdk/client-s3` backs an in-memory bucket; no AI (ANTHROPIC unset).
+ * `@aws-sdk/client-s3` backs an in-memory bucket. The `/api/ingest/` route is
+ * gated on a connected Claude subscription (OAuth-only now), so a subscription is
+ * seeded — but the forced vision call is aimed at a dead endpoint, so ingest stays
+ * deterministic (no AI-derived text) and the test exercises only the S3 path.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const { bucketState, ctl } = vi.hoisted(() => ({
   bucketState: new Map<string, Buffer>(),
@@ -56,6 +60,7 @@ const ENV = [
   'LATTICE_CONFIG_DIR',
   'LATTICE_ENCRYPTION_KEY',
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
   'LATTICE_S3_BUCKET',
   'LATTICE_S3_REGION',
   'LATTICE_S3_PREFIX',
@@ -69,7 +74,15 @@ beforeEach(() => {
   for (const k of ENV) savedEnv[k] = process.env[k];
   process.env.LATTICE_CONFIG_DIR = cfgDir;
   process.env.LATTICE_ENCRYPTION_KEY = 's3i-test-key';
-  delete process.env.ANTHROPIC_API_KEY; // no AI — deterministic ingest
+  // The /api/ingest/ route is gated on a connected Claude subscription (OAuth-only
+  // now). Seed one AFTER LATTICE_CONFIG_DIR/LATTICE_ENCRYPTION_KEY point at this
+  // test's isolated machine-local store, so the gate lets the upload through.
+  seedClaudeOAuth();
+  // Auth no longer comes from an API key; drop any stray one. With a subscription
+  // connected, the upload's image-vision step now fires — aim it at a dead endpoint
+  // so it fails fast locally and yields no AI text, keeping ingest deterministic.
+  delete process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
   process.env.LATTICE_S3_BUCKET = 'test-bucket';
   process.env.LATTICE_S3_REGION = 'us-east-1';
   process.env.LATTICE_S3_PREFIX = 'blobs';

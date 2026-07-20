@@ -28,6 +28,19 @@ export interface UpdateStatus {
   latest: string | null;
   kind: InstallContext['kind'];
   installable: boolean;
+  /** Master switch — false when auto-update is disabled for this server. */
+  autoUpdate: boolean;
+  /**
+   * What the user can DO about an available update on THIS surface:
+   *  - `upgrade-in-place`: an npm install can upgrade this copy now (the GUI's
+   *    manual "Upgrade" fallback to the background poll).
+   *  - `restart-to-update`: a newer version exists and the bundled desktop
+   *    updater can apply it on relaunch ("Restart to update").
+   *  - `none`: nothing to offer — already current, auto-update disabled, or a
+   *    surface that can't self-update (a dev/linked checkout, where `latest` is
+   *    still reported for information but there is no apply action).
+   */
+  action: 'upgrade-in-place' | 'restart-to-update' | 'none';
   checking: boolean;
   installing: boolean;
   lastError: string | null;
@@ -39,6 +52,19 @@ export interface UpdateServiceOptions {
   emit: (type: string, data: unknown) => void;
   context?: InstallContext;
   pollIntervalMs?: number;
+  /**
+   * Master switch (default true). When false the service never polls, never
+   * installs, and reports `action:'none'` / `autoUpdate:false` — so a caller can
+   * disable ALL update activity for testing while the status route still answers.
+   */
+  autoUpdate?: boolean;
+  /**
+   * Whether THIS process performs the npm install-and-relaunch when a newer
+   * installable version lands (default false). Set only for the supervised CLI
+   * child, which has a supervisor to respawn it after the restart-exit. Desktop
+   * and dev builds leave this off — they report `latest` but never npm-install.
+   */
+  selfUpdate?: boolean;
   /** Test seam: override the registry check. */
   check?: (force: boolean) => Promise<string | null>;
   /** Test seam: override the install. Returns true on success, throws on failure. */
@@ -61,6 +87,8 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   const ctx = opts.context ?? detectInstallContext();
   const pollMs = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
   const restartGraceMs = opts.restartGraceMs ?? 1500;
+  const autoUpdate = opts.autoUpdate ?? true;
+  const selfUpdate = opts.selfUpdate ?? false;
   const check =
     opts.check ??
     ((force: boolean) => checkForUpdate('latticesql', opts.currentVersion, { force }));
@@ -77,11 +105,24 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   let latest: string | null = null;
   let lastError: string | null = null;
 
+  // What the user can DO about an available update on this surface. `latest` is
+  // surfaced for information on every surface (even dev), but the apply action
+  // depends on how this copy can actually be upgraded.
+  const computeAction = (): UpdateStatus['action'] => {
+    if (!autoUpdate) return 'none';
+    if (!latest || latest === opts.currentVersion) return 'none';
+    if (ctx.installable && selfUpdate) return 'upgrade-in-place'; // npm install + relaunch
+    if (ctx.kind === 'desktop') return 'restart-to-update'; // bundled updater applies on relaunch
+    return 'none'; // linked-dev / npx / unknown — informational only
+  };
+
   const status = (): UpdateStatus => ({
     current: opts.currentVersion,
     latest,
     kind: ctx.kind,
     installable: ctx.installable,
+    autoUpdate,
+    action: computeAction(),
     checking,
     installing,
     lastError,
@@ -107,12 +148,16 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   };
 
   const runCheck = async (force: boolean): Promise<void> => {
+    if (!autoUpdate) return; // master switch off — no network activity at all
     if (checking || installing) return;
     checking = true;
     try {
       const found = await check(force);
       latest = found;
-      if (found && ctx.installable) applyUpdate(found);
+      // Auto-install only on the supervised npm surface; other surfaces still
+      // record `latest` so the GUI can surface it (desktop → restart-to-update;
+      // dev → informational), but never npm-install here.
+      if (found && ctx.installable && selfUpdate) applyUpdate(found);
     } catch {
       // Best-effort: a failed registry check is silent and simply retried next
       // tick (the check, unlike the install, is not a user-facing operation).
@@ -123,6 +168,7 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
 
   return {
     start(): void {
+      if (!autoUpdate) return; // disabled — never poll the network
       if (timer) return;
       void runCheck(true); // immediate check on GUI load
       timer = setInterval(() => void runCheck(true), pollMs);
@@ -136,7 +182,7 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     },
     status,
     async checkNow(force = true): Promise<UpdateStatus> {
-      await runCheck(force);
+      await runCheck(force); // no-ops when autoUpdate is off
       return status();
     },
   };

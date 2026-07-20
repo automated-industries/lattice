@@ -16,6 +16,7 @@ import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
+let lastOutputDir = '';
 
 afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
@@ -42,9 +43,10 @@ async function boot(autoRender: boolean): Promise<GuiServerHandle> {
       '',
     ].join('\n'),
   );
+  lastOutputDir = join(root, 'context');
   const server = await startGuiServer({
     configPath,
-    outputDir: join(root, 'context'),
+    outputDir: lastOutputDir,
     port: 0,
     openBrowser: false,
     autoRender,
@@ -79,6 +81,21 @@ describe('GUI workspace auto-render', () => {
     const files = await rowContext(s.url, id);
     expect(files.length).toBeGreaterThan(0);
     expect(files.some((f) => /TASK\.md|CONTEXT\.md/i.test(f.name))).toBe(true);
+  });
+
+  it('renders a record ON DEMAND when its rendered context is missing (the assistant-created record the debounced auto-render missed)', async () => {
+    const s = await boot(true);
+    const id = await createTask(s.url);
+    await new Promise((r) => setTimeout(r, 400));
+    // Simulate the debounced auto-render having missed this record (the reported bug: a record
+    // created during a rapid assistant create_entity → create_row sequence never got rendered):
+    // wipe the rendered context tree so the detail view would show "No rendered markdown".
+    rmSync(lastOutputDir, { recursive: true, force: true });
+    const ctx = (await (await fetch(`${s.url}/api/tables/tasks/rows/${id}/context`)).json()) as {
+      files: { name: string; content?: string }[];
+    };
+    // The endpoint re-rendered the record on demand → the view has content, not the empty state.
+    expect(ctx.files.some((f) => typeof f.content === 'string' && f.content.length > 0)).toBe(true);
   });
 
   it('a plain (non-workspace) GUI still returns no context for an unconfigured table', async () => {

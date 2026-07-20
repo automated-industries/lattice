@@ -256,10 +256,10 @@ describe('AI function dispatch', () => {
   });
 
   describe('deterministic list_rows ordering', () => {
-    it('returns a stable, sorted-by-id order across repeated reads (no created_at)', async () => {
+    it('returns a stable order across repeated reads; newest-first by id (no date column)', async () => {
       // Insert out of id order; without an ORDER BY the engine could return these
       // in any order, and a different order each read is what made the assistant
-      // report conflicting values for the same record.
+      // report conflicting values for the same record. Default direction is desc.
       for (const [id, name] of [
         ['s3', 'Charlie'],
         ['s1', 'Alpha'],
@@ -276,11 +276,11 @@ describe('AI function dispatch', () => {
         id: string;
       }[];
       const ids1 = first.map((r) => r.id);
-      expect(ids1).toEqual(['s1', 's2', 's3', 's4', 's5']); // sorted by id (no created_at column)
+      expect(ids1).toEqual(['s5', 's4', 's3', 's2', 's1']); // by id, DESC (no date column)
       expect(second.map((r) => r.id)).toEqual(ids1); // reproducible across reads
     });
 
-    it('orders by created_at when that column exists', async () => {
+    it('orders by created_at NEWEST-first when that column exists', async () => {
       await db.defineLate('events', {
         columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', created_at: 'TEXT', deleted_at: 'TEXT' },
         render: () => '',
@@ -306,8 +306,67 @@ describe('AI function dispatch', () => {
       const r2 = (await executeFunction(c, 'list_rows', { table: 'events' })).result as {
         id: string;
       }[];
-      expect(r1.map((x) => x.id)).toEqual(['z', 'a']); // created_at asc, NOT id asc
+      expect(r1.map((x) => x.id)).toEqual(['a', 'z']); // created_at DESC (late first), NOT id
       expect(r2.map((x) => x.id)).toEqual(r1.map((x) => x.id));
+    });
+
+    it('prefers a domain event-time column (start_at) over created_at, newest-first', async () => {
+      // The bug: a meeting for July 2 that SYNCED in April carries an April
+      // created_at, so a created_at sort buried it. start_at is the real event time.
+      await db.defineLate('meetings', {
+        columns: {
+          id: 'TEXT PRIMARY KEY',
+          title: 'TEXT',
+          start_at: 'TEXT',
+          created_at: 'TEXT',
+          deleted_at: 'TEXT',
+        },
+        render: () => '',
+        outputFile: 'meetings.md',
+      });
+      const c: DispatchCtx = {
+        ...ctx,
+        validTables: new Set([...ctx.validTables, 'meetings']),
+        softDeletable: new Set([...ctx.softDeletable, 'meetings']),
+      };
+      // created_at is INVERTED vs start_at: the July-2 meeting was created EARLIEST.
+      await executeFunction(c, 'create_row', {
+        table: 'meetings',
+        values: {
+          id: 'm_today',
+          title: 'today',
+          start_at: '2026-07-02T15:00:00Z',
+          created_at: '2026-04-01T00:00:00Z',
+        },
+      });
+      await executeFunction(c, 'create_row', {
+        table: 'meetings',
+        values: {
+          id: 'm_april',
+          title: 'april',
+          start_at: '2026-04-09T14:55:00Z',
+          created_at: '2026-06-01T00:00:00Z',
+        },
+      });
+      const rows = (await executeFunction(c, 'list_rows', { table: 'meetings' })).result as {
+        id: string;
+      }[];
+      // Today's meeting comes FIRST — sorted by start_at desc, not created_at.
+      expect(rows.map((x) => x.id)).toEqual(['m_today', 'm_april']);
+
+      // The model can still ask for oldest-first with orderDir:'asc'.
+      const asc = (await executeFunction(c, 'list_rows', { table: 'meetings', orderDir: 'asc' }))
+        .result as { id: string }[];
+      expect(asc.map((x) => x.id)).toEqual(['m_april', 'm_today']);
+
+      // ...and filter by a date range (today only).
+      const todayOnly = (
+        await executeFunction(c, 'list_rows', {
+          table: 'meetings',
+          filter: [{ col: 'start_at', op: 'gte', val: '2026-07-01T00:00:00Z' }],
+        })
+      ).result as { id: string }[];
+      expect(todayOnly.map((x) => x.id)).toEqual(['m_today']);
     });
 
     it('handles empty and single-row tables without error', async () => {

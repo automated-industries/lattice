@@ -3,8 +3,9 @@ import { guiAppHtml } from '../../src/gui/app.js';
 
 describe('guiAppHtml', () => {
   it('contains the structural DOM hooks the SPA boots against', () => {
-    // Sidebar / content mount points
-    expect(guiAppHtml).toContain('id="object-nav"');
+    // Sidebar / content mount points (single layout: left-sidebar nav sections +
+    // the Workspace tab host #content).
+    expect(guiAppHtml).toContain('id="nav-tables-list"');
     expect(guiAppHtml).toContain('id="content"');
     // The Advanced-mode toggle moved out of the sidebar into Settings → Lattice
     // (the old collapse control + static settings nav were already removed).
@@ -12,35 +13,47 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('id="sidebar-collapse"');
     expect(guiAppHtml).not.toContain('id="settings-nav"');
 
-    // Settings now live in a slide-over drawer opened by the header gear,
-    // with one tab per existing settings page + the Advanced-mode toggle.
-    expect(guiAppHtml).toContain('id="settings-gear"');
+    // Configure lives in a slide-over drawer opened by the single #configure-trigger
+    // button (the gear + the Ask/Configure view-toggle pair were retired), with one
+    // tab per page: Data Model / Files / Connectors / Databases / Workspace / User.
+    // (The former single "Inputs" tab is split into Files+Connectors+Databases; the
+    // former "Lattice" tab's Workspaces module is folded into User.)
+    expect(guiAppHtml).toContain('id="configure-trigger"');
+    expect(guiAppHtml).not.toContain('id="settings-gear"');
     expect(guiAppHtml).toContain('id="settings-drawer"');
     expect(guiAppHtml).toContain('id="drawer-body"');
+    expect(guiAppHtml).toContain('data-tab="datamodel"');
+    expect(guiAppHtml).toContain('data-tab="files"');
+    expect(guiAppHtml).toContain('data-tab="connectors"');
+    expect(guiAppHtml).toContain('data-tab="databases"');
     expect(guiAppHtml).toContain('data-tab="database"');
-    expect(guiAppHtml).toContain('data-tab="lattice"');
     expect(guiAppHtml).toContain('data-tab="user"');
-    expect(guiAppHtml).toContain('id="advanced-toggle"');
+    expect(guiAppHtml).not.toContain('data-tab="inputs"');
+    expect(guiAppHtml).not.toContain('data-tab="lattice"');
+    expect(guiAppHtml).not.toContain('id="advanced-toggle"');
 
-    // Data Model still lives inside Database Settings (renderEntityEditorInto —
-    // an entity list + editor), rendered into the drawer body. The schema graph
-    // itself moved to the center brain view (renderBrainGraph).
+    // Data Model now lives in the Configure drawer's Data Model tab (the tiered
+    // explorer + the schema graph), no longer inside Workspace settings.
     expect(guiAppHtml).not.toContain('href="#/settings/data-model"');
-    expect(guiAppHtml).toContain('id="data-model-host"');
-    expect(guiAppHtml).toContain('renderEntityEditorInto');
+    expect(guiAppHtml).toContain('renderDataModelTab');
+    expect(guiAppHtml).toContain('renderModelTables');
     expect(guiAppHtml).toContain('renderBrainGraph');
 
-    // The file-system workspace + classic table editor both ship.
+    // The file-system workspace is the single view (the classic table editor
+    // was absorbed into the unified record page and retired).
     expect(guiAppHtml).toContain('renderFsCollection');
     expect(guiAppHtml).toContain('renderFsItem');
-    expect(guiAppHtml).toContain('renderTable');
+    expect(guiAppHtml).toContain('loadFieldsEditor'); // the absorbed structured editor
 
     // Branding
     expect(guiAppHtml).toContain('Lattice');
   });
 
-  it('boots from /api/entities on load', () => {
-    expect(guiAppHtml).toContain("'/api/entities'");
+  it('boots from /api/entities-summary on load (the no-disk-scan Objects list)', () => {
+    // Boot / workspace switch / post-mutation reloads use the summary endpoint
+    // (tables + counts, no O(files) rendered-file scan) — the GUI never read the
+    // scanned `entities` field.
+    expect(guiAppHtml).toContain("'/api/entities-summary'");
   });
 
   it('disables autocapitalize/autocorrect/spellcheck on Postgres wizard text inputs', () => {
@@ -152,13 +165,16 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).not.toContain('db-leave-btn');
   });
 
-  it('3.3: stamps the package version left of the settings gear', () => {
+  it('3.3: stamps the package version in the Settings drawer footer', () => {
     // The shell carries a placeholder that startGuiServer() replaces with the
     // real `v<version>` at serve time (so the static bundle stays version-free).
     expect(guiAppHtml).toContain('id="app-version"');
     expect(guiAppHtml).toContain('<!--LATTICE_VERSION-->');
-    // The version chip sits before the gear in source order.
-    expect(guiAppHtml.indexOf('id="app-version"')).toBeLessThan(
+    // The version moved OUT of the header (its old spot is now the status-pill
+    // slot) and into the Settings drawer footer — so it sits AFTER the gear now.
+    expect(guiAppHtml).toContain('class="drawer-version"');
+    expect(guiAppHtml).toContain('id="header-status-slot"');
+    expect(guiAppHtml.indexOf('id="app-version"')).toBeGreaterThan(
       guiAppHtml.indexOf('id="settings-gear"'),
     );
   });
@@ -231,13 +247,54 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain("'/api/dbconfig/migrate-to-cloud'");
   });
 
-  it('3.3: Connect-with-Claude is the primary assistant auth, API key behind Advanced', () => {
-    expect(guiAppHtml).toContain('Connect with Claude');
+  it('Claude auth is OAuth-only: connect at the wall, disconnect in the account menu, no API-key UI', () => {
+    // Connect happens at the first-run wall (the surface-agnostic OAuth anchor).
     expect(guiAppHtml).toContain('/api/assistant/oauth/start');
-    // API-key paste is demoted into an Advanced disclosure.
-    expect(guiAppHtml).toContain('Advanced — use an API key instead');
-    // Connected state + disconnect.
+    expect(guiAppHtml).toContain('Connect with Claude');
+    // Disconnect lives in the header account menu — one status line + one action
+    // (id account-action), which account-menu.ts relabels to "Account settings" in a
+    // managed/hosted deployment (where the operator owns the credential).
+    expect(guiAppHtml).toContain('account-action');
+    expect(guiAppHtml).toContain('Disconnect Claude');
     expect(guiAppHtml).toContain('Connected with Claude');
-    expect(guiAppHtml).toContain('asst-oauth-disconnect');
+    // The per-user API-key settings UI is gone (OAuth-only).
+    expect(guiAppHtml).not.toContain('Advanced — use an API key instead');
+    expect(guiAppHtml).not.toContain('asst-oauth-disconnect');
+  });
+
+  it('computed-table builder: available via the Data Model tab + wired to the HTTP surface', () => {
+    // The builder still ships; the #/computed/* route now opens the Configure
+    // drawer's Data Model tab (configureRouteFor), where computed tables are managed.
+    expect(guiAppHtml).toContain('function renderComputedBuilder(');
+    expect(guiAppHtml).toContain('renderDataModelTab');
+    // The builder drives the computed-tables HTTP surface: field picker,
+    // dry-run preview, create/save, and the NDJSON refresh stream.
+    expect(guiAppHtml).toContain('/api/computed-tables/fields?base=');
+    expect(guiAppHtml).toContain("'/api/computed-tables/preview'");
+    expect(guiAppHtml).toContain("'/api/computed-tables'");
+    expect(guiAppHtml).toContain("+ '/refresh'");
+    // The five kinds carry user-facing labels in the kind <select>.
+    expect(guiAppHtml).toContain('Copy a field');
+    expect(guiAppHtml).toContain('AI category');
+    expect(guiAppHtml).toContain('Total across links');
+    // The Tables explorer offers the builder entry point + computed detail
+    // actions, and lineage understands the computes edge.
+    expect(guiAppHtml).toContain('id="mt-computed-new"');
+    expect(guiAppHtml).toContain('function mtWireComputedDetail(');
+    expect(guiAppHtml).toContain("ed.type === 'computes'");
+  });
+
+  it('computed tables render read-only on record + collection pages', () => {
+    // A computedTable entity gets a badge + a where-values-come-from note, and
+    // the record page swaps the editable context for a read-only field list.
+    expect(guiAppHtml).toContain('fs-computed-badge');
+    expect(guiAppHtml).toContain('its values come from the records');
+    expect(guiAppHtml).toContain('function loadComputedContext(');
+    // The styles for the badge/note/read-only list ship in the stylesheet.
+    expect(guiAppHtml).toContain('.fs-computed-note');
+    expect(guiAppHtml).toContain('.fs-computed-fields');
+    // The projection connector draws dashed, distinct from the m2m links.
+    expect(guiAppHtml).toContain('.mt-edge-computes');
+    expect(guiAppHtml).toContain('mt-edge mt-edge-computes');
   });
 });

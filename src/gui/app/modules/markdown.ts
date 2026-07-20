@@ -16,13 +16,12 @@ export const markdownJs = `    // ───────────────�
           return '<option value="' + escapeHtml(n) + '"' + sel + '>' + escapeHtml(displayFor(n).label) + '</option>';
         }).join('');
 
+      // No page title here — the takeover's own header already reads "Version
+      // history". Just a compact subheader holding the entity filter.
       content.innerHTML =
-        '<div class="view-header">' +
-          '<span class="entity-icon">📜</span>' +
-          '<h1>Version history</h1>' +
-          '<div class="actions">' +
-            '<select id="history-filter">' + options + '</select>' +
-          '</div>' +
+        '<div class="history-subhead">' +
+          '<label class="history-filter-label" for="history-filter">Entity</label>' +
+          '<select id="history-filter">' + options + '</select>' +
         '</div>' +
         '<div class="history-list" id="history-list"><div class="muted" style="padding:20px;">Loading…</div></div>';
 
@@ -82,6 +81,10 @@ export const markdownJs = `    // ───────────────�
         case 'schema.add_link': return 'Added a link to ' + t;
         case 'schema.create_junction': return 'Added a link from ' + t;
         case 'schema.delete_link': return 'Deleted a link on ' + t + ' <span class="muted">(restorable)</span>';
+        case 'schema.create_computed': return 'Created computed table ' + t;
+        case 'schema.update_computed': return 'Updated computed table ' + t;
+        case 'schema.delete_computed': return 'Deleted computed table ' + t + ' <span class="muted">(restorable)</span>';
+        case 'schema.refresh_computed': return 'Refreshed computed table ' + t;
         case 'schema.purge': return 'Permanently purged ' + t;
         default: return 'Schema change on ' + t;
       }
@@ -89,17 +92,18 @@ export const markdownJs = `    // ───────────────�
 
     function historyEntryHtml(e) {
       // Schema/data-model entries get a one-line description (no row diff). A
-      // purge is permanent, so it carries no Revert button.
+      // purge is permanent, and a computed-table refresh only fills AI cells
+      // (nothing to restore) — neither carries a Revert button.
       if (isSchemaHistoryOp(e.operation)) {
         var sActions = e.undone
-          ? '<span class="muted" style="font-size:11px;">undone</span>'
-          : (e.operation === 'schema.purge'
-              ? '<span class="muted" style="font-size:11px;">permanent</span>'
+          ? '<span class="hint-xs">undone</span>'
+          : (e.operation === 'schema.purge' || e.operation === 'schema.refresh_computed'
+              ? '<span class="hint-xs">' + (e.operation === 'schema.purge' ? 'permanent' : 'not revertible') + '</span>'
               : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>');
         return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
           '<div class="history-meta">' +
             '<div><span class="history-op op-schema">SCHEMA</span></div>' +
-            '<div style="margin-top:6px;">' + escapeHtml(formatTs(e.ts)) + '</div>' +
+            '<div class="u-mt-2">' + escapeHtml(formatTs(e.ts)) + '</div>' +
           '</div>' +
           '<div class="history-summary">' + schemaEntryLabel(e) + '</div>' +
           '<div class="history-actions">' + sActions + '</div>' +
@@ -119,12 +123,12 @@ export const markdownJs = `    // ───────────────�
       }
       var diff = renderDiff(before, after);
       var actions = e.undone
-        ? '<span class="muted" style="font-size:11px;">undone</span>'
+        ? '<span class="hint-xs">undone</span>'
         : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>';
       return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
         '<div class="history-meta">' +
           '<div><span class="history-op op-' + escapeHtml(e.operation) + '">' + escapeHtml(e.operation) + '</span></div>' +
-          '<div style="margin-top:6px;">' + escapeHtml(formatTs(e.ts)) + '</div>' +
+          '<div class="u-mt-2">' + escapeHtml(formatTs(e.ts)) + '</div>' +
         '</div>' +
         '<div class="history-summary">' +
           summary +

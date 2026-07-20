@@ -1,24 +1,27 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
-import { getAsyncOrSync } from '../db/adapter.js';
+import { isCloudChat, resolveChatOwnerId } from './chat-identity.js';
+import type { ChatProgressBus } from './chat-progress.js';
+import type { ChatStreamEvent } from './ai/sse.js';
 import { FeedBus } from './feed.js';
+import { getAggressiveness, aggressivenessToTemperature } from './assistant-routes.js';
 import {
-  resolveClaudeAuth,
-  getAggressiveness,
-  aggressivenessToTemperature,
-} from './assistant-routes.js';
-import {
-  createAnthropicClient,
   runChat,
   buildSchemaContext,
+  type LlmClient,
   type LlmMessage,
   type ContentBlock,
 } from './ai/chat.js';
-import { generateHtmlFile, htmlAuthorModelForAuth } from './ai/html-author.js';
+import { resolveLlmProvider } from './ai/provider.js';
+import { runIntent, type IntentResult } from './ai/intent.js';
+import { type MutationCtx } from './mutations.js';
+import type { FileJunction } from './data.js';
+import { generateHtmlFile } from './ai/html-author.js';
+import { qaDashboard } from './ai/dashboard-qa.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
-import { generateThreadTitle } from './ai/summarize.js';
-import { formatSseFrame } from './ai/sse.js';
+import { generateThreadTitle, triageReferenceMaterial } from './ai/summarize.js';
+import { getClaudeLimitState, clearClaudeLimit, CLAUDE_LIMIT_MESSAGE } from './ai/limit-state.js';
 import { columnDescriptionHook } from './meta-gen.js';
 import { sendJson, readJson } from './http.js';
 import {
@@ -27,6 +30,14 @@ import {
   type DispatchCtx,
 } from './ai/dispatch.js';
 import { FetchBudget } from '../ai/fetch-policy.js';
+
+/** Lifecycle of the assistant row, persisted in content_json so a reload mid-turn can
+ *  recover: `pending` (accepted, not started) → `streaming` → `done` | `error`. */
+type ChatMessageStatus = 'pending' | 'streaming' | 'done' | 'error';
+
+/** If the intent pass hasn't produced an acknowledgement within this window, publish a
+ *  templated one so the user is never left waiting on a blank typing bubble. */
+const INTENT_ACK_WATCHDOG_MS = 8000;
 
 /**
  * POST /api/chat — the assistant chat stream. Resolves the Claude token,
@@ -50,12 +61,33 @@ interface ChatContext {
     column: string,
   ) => Promise<{ ok: true; column: string } | { ok: false; error: string }>;
   createJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  createFileJunction?: DispatchCtx['createFileJunction'];
   deleteEntity?: DispatchCtx['deleteEntity'];
+  /** Faithfully import an attached spreadsheet by files id (deterministic importer). */
+  importAttachment?: DispatchCtx['importAttachment'];
+  /** Registered computed tables — tagged read-only in the assistant's schema context. */
+  computedTables?: Set<string>;
+  /** Computed-table primitives for the assistant's computed-table tools. */
+  computedOps?: DispatchCtx['computedOps'];
+  /** Member-scoped "Connected data sources" section for the assistant's context,
+   *  so it knows which MCP servers / databases are connected. Omitted when none. */
+  connectedSources?: string;
+  /** True when the connected-sources list could NOT be determined this turn (enumeration
+   *  threw). Distinct from "none connected": the intent pass must then NOT answer a
+   *  connection question with a false negative — it defers to the tool loop instead. */
+  connectionsUnknown?: boolean;
   /** Active config path + rendered-context dir, for the `dedup` tool's link re-pointing. */
   configPath?: string;
   outputDir?: string;
   /** GUI session id — stamped on the assistant's mutations so they're undoable. */
   sessionId?: string;
+  /** Per-workspace bus the chat turn publishes its streamed events to (delivered to the
+   *  GUI over /api/stream, gated per user). Chat text lives here, not on a held-open
+   *  POST response. */
+  chatProgress: ChatProgressBus;
+  /** Enqueue the heavy chat loop onto the workspace's serialized FIFO (active.chatJobs),
+   *  so a second message runs only after the first finishes. Fire-and-forget. */
+  enqueueChatJob: (job: () => Promise<void>) => void;
   pathname: string;
   method: string;
 }
@@ -111,21 +143,123 @@ export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown
   );
 }
 
-/** A chat is private to whoever created it. We never rely on Postgres RLS alone:
- *  the app connects as a BYPASSRLS role, so RLS does NOT filter the owner's
- *  connection — every chat read MUST also filter by this key in the app layer,
- *  and every chat write MUST stamp it. On a cloud the key is the connection's
- *  Postgres login role (`session_user`, the same identity the cloud RLS keys on);
- *  on a local single-user SQLite DB there is no cross-user boundary so it is null
- *  and no scoping is applied. */
-function isCloudChat(db: Lattice): boolean {
-  return db.getDialect() === 'postgres';
+/** Env off-switch for auto-ingesting reference material from chat messages
+ *  (default ON). Mirrors LATTICE_CHAT_REHYDRATE. */
+function autoIngestEnabled(): boolean {
+  return process.env.LATTICE_CHAT_AUTOINGEST !== 'false';
 }
-async function resolveChatOwnerId(db: Lattice): Promise<string | null> {
-  if (!isCloudChat(db)) return null; // local single-user — no per-user scoping
-  const row = await getAsyncOrSync(db.adapter, 'SELECT session_user AS u');
-  const u = row?.u;
-  return typeof u === 'string' && u.length > 0 ? u : null;
+
+/** Wiring for {@link ingestReferenceMaterial} — the same creators the chat dispatch
+ *  holds, so auto-ingested content enriches with the workspace's real schema. */
+export interface ReferenceIngestDeps {
+  db: Lattice;
+  feed: FeedBus;
+  softDeletable: Set<string>;
+  aggressiveness?: number;
+  createEntity?: (name: string, columns: string[]) => Promise<string | null>;
+  createFileJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  createObjectJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
+  privateMode?: boolean;
+}
+
+/** Prepended to the model's turn when reference material was auto-ingested, so it works
+ *  with the saved item instead of re-creating it. Order-agnostic wording (the note may
+ *  sit before or after the attached-files note). */
+const REFERENCE_INGEST_NOTE =
+  "[Note: reference material in the user's message has already been saved to their " +
+  'Files and automatically enriched by the ingestion engine — linked to the records it ' +
+  'refers to, with any structured objects it describes extracted and linked. Do NOT ' +
+  're-create, re-save, or re-link that content; just address the request and refer to ' +
+  'what was saved if useful.]\n\n';
+
+/**
+ * Route any REFERENCE MATERIAL in the user's message through the SAME engine a dropped
+ * file uses — decided by content TYPE (facts / notes / a pasted document / a link), not
+ * size. A message may be mixed (reference material + a directive); only the reference
+ * portion is ingested here, and the assistant still handles the directive. Deterministic
+ * where it counts: the classifier ALWAYS runs (ingestion isn't left to the chat model
+ * choosing a tool), and the finding-and-linking is the engine's, not prompt rules'.
+ *
+ * Runs BEFORE the chat turn and is fully awaited: row writes aren't serialized against
+ * the chat's own tool writes (better-sqlite3 is one connection), so overlapping them
+ * would race BEGIN — sequencing avoids that AND lets the model reference what was saved.
+ *
+ * Returns a note to prepend to the model's turn, or '' when there was nothing to save,
+ * auto-ingest is disabled, or it failed. Best-effort: a triage/ingest failure is logged
+ * and never blocks the chat. Exported for regression testing.
+ */
+export async function ingestReferenceMaterial(
+  client: LlmClient,
+  message: string,
+  deps: ReferenceIngestDeps,
+  temperature: number,
+): Promise<string> {
+  if (!autoIngestEnabled()) return '';
+  let reference = '';
+  try {
+    reference = (await triageReferenceMaterial(client, message, temperature)).reference;
+  } catch (e) {
+    console.warn('[chat] reference-material triage failed:', (e as Error).message);
+    return '';
+  }
+  const ref = reference.trim();
+  if (!ref) return '';
+
+  // source:'ingest' (not 'ai') so the saved-and-linked activity surfaces on the
+  // persistent feed exactly like a dropped file, not as a chat-turn activity card.
+  const mctx: MutationCtx = {
+    db: deps.db,
+    feed: deps.feed,
+    softDeletable: deps.softDeletable,
+    source: 'ingest',
+    onColumnsAdded: columnDescriptionHook(deps.db),
+  };
+  try {
+    const { ingestTextAsFile, looksLikeUrl } = await import('./ingest-routes.js');
+    // A bare URL is CRAWLED for its readable text (SSRF + policy guarded), mirroring the
+    // /api/ingest/text route; anything else is saved as text. Both go through enrichment.
+    if (looksLikeUrl(ref)) {
+      const { ingestUrlAsFile } = await import('./ingest-url.js');
+      await ingestUrlAsFile(
+        {
+          db: deps.db,
+          mctx,
+          ...(deps.privateMode ? { privateMode: true } : {}),
+          enrich: {
+            fileJunctions: [],
+            entityDescriptions: {},
+            ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
+            ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
+            ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
+            ...(deps.createObjectJunction
+              ? { createObjectJunction: deps.createObjectJunction }
+              : {}),
+          },
+        },
+        ref,
+      );
+      return REFERENCE_INGEST_NOTE;
+    }
+    await ingestTextAsFile(
+      {
+        db: deps.db,
+        mctx,
+        fileJunctions: [],
+        entityDescriptions: {},
+        ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
+        ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
+        ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
+        ...(deps.createObjectJunction ? { createObjectJunction: deps.createObjectJunction } : {}),
+        ...(deps.privateMode ? { privateMode: true } : {}),
+      },
+      ref,
+      'Pasted note',
+    );
+    return REFERENCE_INGEST_NOTE;
+  } catch (e) {
+    console.warn('[chat] reference-material ingest failed:', (e as Error).message);
+    return '';
+  }
 }
 
 /**
@@ -146,6 +280,40 @@ export function parseActiveContext(
   const trimmedId = id.trim();
   if (trimmedId.length === 0 || trimmedId.length > 256) return undefined;
   return { table, id: trimmedId };
+}
+
+/**
+ * A short context note telling the model what the user is currently LOOKING AT, so
+ * "this" / "it" / "why is this broken" resolve without asking. Prepended to the
+ * turn's message (the dispatch + tools still see the real message). Empty when no
+ * view context was sent. For a dashboard it names the page and points at the
+ * `investigate` tool, so the model diagnoses a complaint itself instead of
+ * interrogating the user for details it can find.
+ */
+async function describeActiveView(
+  db: Lattice,
+  active: { table: string; id: string } | undefined,
+): Promise<{ note: string; label: string }> {
+  if (!active) return { note: '', label: '' };
+  if (active.table === 'dashboards') {
+    const d = (await db.get('dashboards', active.id).catch(() => null)) as {
+      title?: string;
+    } | null;
+    const name = d?.title ? `"${d.title}"` : 'the one on screen';
+    return {
+      label: `the dashboard ${name}`,
+      note:
+        `[The user is currently viewing the dashboard ${name}. If they say "this" / "it" / ` +
+        `"this dashboard", or ask why something is broken, empty, blank, or wrong, they mean THIS ` +
+        `dashboard — call \`investigate\` to find the concrete fault yourself instead of asking ` +
+        `them what is wrong.]\n\n`,
+    };
+  }
+  const label = `the ${active.table} record "${active.id}"`;
+  return {
+    label,
+    note: `[The user is currently viewing ${label} — "this" / "it" refers to it.]\n\n`,
+  };
 }
 
 /** Map client-supplied prior turns into the loop's message format. */
@@ -177,6 +345,29 @@ function collapseSameRole(msgs: LlmMessage[]): LlmMessage[] {
     }
   }
   return out;
+}
+
+/**
+ * Render the tail of the conversation as a compact "Role: text" transcript, so the fast
+ * intent pass can resolve a context-dependent reply ("yes", "the first one") against what
+ * the assistant just said instead of judging it in a vacuum. Text blocks only — tool
+ * calls/results carry no user-facing meaning for the classifier and would just add noise.
+ */
+function renderRecentContext(history: LlmMessage[], maxMessages: number): string {
+  const textOf = (c: string | ContentBlock[]): string =>
+    typeof c === 'string'
+      ? c
+      : c
+          .map((b) => (b.type === 'text' ? b.text : ''))
+          .join(' ')
+          .trim();
+  const lines: string[] = [];
+  for (const m of history.slice(-maxMessages)) {
+    const t = textOf(m.content).trim();
+    if (!t) continue;
+    lines.push(`${m.role === 'assistant' ? 'Assistant' : 'User'}: ${t.slice(0, 800)}`);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -389,14 +580,22 @@ async function persistMessage(
   turns?: PersistedTurn[],
   startedAt?: string,
   id?: string,
+  status?: ChatMessageStatus,
 ): Promise<void> {
   // `text` stays for backward-compat (old clients + the model-history replay);
   // `turns` carries the rich structure so a reloaded conversation shows the same
   // bubbles + activity cards as the live stream. `startedAt` lets the replay show
   // each card's task DURATION (start → last event) instead of a relative "ago".
-  const payload: { text: string; turns?: PersistedTurn[]; startedAt?: string } =
-    turns && turns.length > 0 ? { text, turns } : { text };
+  // `status` drives recovery: a reload mid-turn sees 'pending'/'streaming' and rebinds
+  // to the live chat-progress stream; 'done'/'error' render as final.
+  const payload: {
+    text: string;
+    turns?: PersistedTurn[];
+    startedAt?: string;
+    status?: ChatMessageStatus;
+  } = turns && turns.length > 0 ? { text, turns } : { text };
   if (startedAt) payload.startedAt = startedAt;
+  if (status) payload.status = status;
   // Upsert-by-id powers incremental assistant checkpointing: the same row is
   // inserted early in the turn and UPDATEd as it streams, so a mid-turn refresh
   // recovers the work so far. Without an id (e.g. the user message) a fresh row
@@ -495,14 +694,17 @@ export async function dispatchChatRoute(
         let text = '';
         let turns: PersistedTurn[] | undefined;
         let startedAt: string | undefined;
+        let status: ChatMessageStatus | undefined;
         try {
           const parsed = JSON.parse(asStr(r.content_json, '{}')) as {
             text?: string;
             turns?: PersistedTurn[];
             startedAt?: string;
+            status?: ChatMessageStatus;
           };
           text = parsed.text ?? '';
           if (typeof parsed.startedAt === 'string') startedAt = parsed.startedAt;
+          if (typeof parsed.status === 'string') status = parsed.status;
           if (Array.isArray(parsed.turns)) {
             // Strip toolCalls — the GUI only needs text + the data-change events
             // (replayed as activity cards); raw tool result content stays
@@ -517,10 +719,15 @@ export async function dispatchChatRoute(
           /* ignore malformed */
         }
         return {
+          // `id` + `status` let the GUI rebind a turn that was still streaming when the
+          // page reloaded: a 'pending'/'streaming' last assistant row is re-bound to the
+          // live chat-progress bus by messageId instead of replayed as a finished bubble.
+          id: asStr(r.id),
           role: asStr(r.role),
           text,
           ...(turns ? { turns } : {}),
           ...(startedAt ? { startedAt } : {}),
+          ...(status ? { status } : {}),
           created_at: asStr(r.created_at),
         };
       })
@@ -531,13 +738,13 @@ export async function dispatchChatRoute(
 
   if (!(ctx.method === 'POST' && ctx.pathname === '/api/chat')) return false;
 
-  const auth = await resolveClaudeAuth(ctx.db);
-  if (!auth) {
+  const provider = await resolveLlmProvider(ctx.db);
+  if (!provider) {
     sendJson(
       res,
       {
         error:
-          'No Claude auth configured. Connect a subscription or add an API token in User Settings → Assistant.',
+          'No model provider configured. Connect a Claude subscription or an OpenAI-compatible model in User Settings → Assistant.',
       },
       400,
     );
@@ -551,11 +758,16 @@ export async function dispatchChatRoute(
     sendJson(res, { error: (e as Error).message }, 400);
     return true;
   }
-  const message = typeof body.message === 'string' ? body.message.trim() : '';
-  if (!message) {
+  const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
+  const hasAttachments = Array.isArray(body.attachedFiles) && body.attachedFiles.length > 0;
+  // A turn needs SOMETHING to act on — a message OR an attachment. A files-only send
+  // (drop a file into the assistant with no text) still gets a response: synthesize a
+  // directive so the model reads the attached files (the attached-files note names them).
+  if (!rawMessage && !hasAttachments) {
     sendJson(res, { error: 'message is required' }, 400);
     return true;
   }
+  const message = rawMessage || 'Take a look at the attached file(s).';
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
 
   // Fail CLOSED: on a cloud we must know who this is before creating or reading
@@ -596,240 +808,465 @@ export async function dispatchChatRoute(
   // Connect the request to the files the user just attached (ingested via the
   // composer Send) so the assistant works on them with its existing file tools.
   const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
+  // What the user is currently looking at, so "this"/"it"/"why is this broken"
+  // resolve to the open dashboard/record (and a complaint routes to `investigate`).
+  const activeView = await describeActiveView(ctx.db, activeContext);
 
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-store, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no',
+  // Persist a PENDING assistant row and respond IMMEDIATELY (202) — the turn then runs
+  // in a background job and streams over the /api/stream WebSocket, so the request path
+  // ends here instead of being held open for the whole agentic loop. The client shows a
+  // typing bubble on the 202 and renders live chat-progress frames keyed by (threadId,
+  // messageId); a reload mid-turn recovers from this row's `status` (see persistMessage).
+  const turnStartedAt = new Date().toISOString();
+  const assistantMsgId = crypto.randomUUID();
+  try {
+    await persistMessage(
+      ctx.db,
+      threadId,
+      'assistant',
+      '',
+      ownerUserId,
+      [],
+      turnStartedAt,
+      assistantMsgId,
+      'pending',
+    );
+  } catch (e) {
+    console.warn('[chat] persist pending assistant row failed:', (e as Error).message);
+  }
+  res.writeHead(202, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
     'x-thread-id': threadId,
   });
+  res.end(JSON.stringify({ threadId, messageId: assistantMsgId }));
 
-  // Strip credential-bearing native tables (secrets) so the assistant can
-  // neither query them nor be told they exist — it reads rows already decrypted.
-  const dispatch: DispatchCtx = {
-    db: ctx.db,
-    feed: ctx.feed,
-    // "Private mode" chat toggle: force rows the assistant creates this turn private
-    // regardless of the table default (a transient per-request choice).
-    privateMode: body.privateMode === true,
-    validTables: new Set([...ctx.validTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
-    junctionTables: new Set([...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t))),
-    softDeletable: ctx.softDeletable,
-    onColumnsAdded: columnDescriptionHook(ctx.db),
-    aggressiveness: getAggressiveness(),
-    // The user's message this turn — ingest_url only fetches a URL found here.
-    userMessage: message,
-    // One shared fetch budget for the whole turn (caps assistant-driven fetches).
-    urlFetchBudget: new FetchBudget(),
-    ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
-    ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
-    ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
-    ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
-    ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
-    ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
-    ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
+  // Everything below runs in the BACKGROUND job, publishing each event to the
+  // chat-progress bus instead of a held-open response. Serialized per workspace via the
+  // FIFO (enqueueChatJob) so a queued second message runs after the first; the job never
+  // touches `res` and runs to completion even if the client disconnects/reloads (recovery
+  // reads the checkpointed row). enqueueChatJob catches + logs a job failure loudly rather
+  // than letting the rejection escape unhandled.
+  let streamStatus: ChatMessageStatus = 'streaming';
+  const publish = (event: ChatStreamEvent): void => {
+    ctx.chatProgress.publish({ threadId, messageId: assistantMsgId, ownerUserId, event });
   };
-
-  // Delegated HTML-file authoring: create_html_file / edit_html_file call this to
-  // author a full standalone HTML page. The closure builds its own client from the
-  // SAME resolved auth (api-key or OAuth) and the live schema, so SDK-missing /
-  // provider errors surface as a tool error (recoverable), never a crash. The model
-  // is the strongest the auth can actually run — sonnet for an API key (entitled to
-  // all models), the chat model for an OAuth subscription (whose entitlements vary;
-  // a non-entitled model 429s every call). If the user is viewing an html artifact,
-  // expose its id so edit_html_file targets the file on screen by default.
-  const authorModel = htmlAuthorModelForAuth(auth);
-  dispatch.htmlAuthor = async (spec: string, currentHtml?: string): Promise<string> => {
-    const schema = await buildSchemaContext(dispatch);
-    return generateHtmlFile({
-      client: createAnthropicClient(auth),
-      schema,
-      spec,
-      model: authorModel,
-      ...(currentHtml !== undefined ? { currentHtml } : {}),
-    });
-  };
-  if (activeContext?.table === 'files') {
-    try {
-      const open = (await ctx.db.get('files', activeContext.id)) as {
-        artifact_type?: string;
-      } | null;
-      if (open?.artifact_type === 'html') dispatch.activeHtmlFileId = activeContext.id;
-    } catch {
-      // Best-effort: a stale/invisible id just means no default edit target.
-    }
-  }
-
-  // When the assistant started working on this request — persisted so a reloaded
-  // turn can show the task DURATION (start → last event) rather than "ago".
-  const turnStartedAt = new Date().toISOString();
-  let assistantText = '';
-  // Rebuild the rich structure as it streams: one entry per assistant turn, each
-  // with its text + the data-change events it produced. Persisted so a reloaded
-  // conversation renders the same collapsed activity cards the live stream did.
-  const turns: {
-    text: string;
-    tools: { id: string; name: string; isError: boolean }[];
-    events: PersistedTurnEvent[];
-    toolCalls: PersistedToolCall[];
-  }[] = [];
-  // Capture the assistant's data-change events from the feed bus, bucketed into
-  // the turn that produced them. feed.publish is synchronous inside the tool's
-  // executeFunction, so each event lands in the current (last-pushed) turn. Only
-  // source='ai' — this assistant's own writes — is captured, never other clients.
-  const unsubscribeFeed = ctx.feed.subscribe((fe) => {
-    if (fe.source !== 'ai') return;
-    const cur = turns[turns.length - 1];
-    if (cur)
-      cur.events.push({
-        op: fe.op,
-        table: fe.table,
-        rowId: fe.rowId,
-        summary: fe.summary ?? '',
-        ts: fe.ts,
-      });
-  });
-  // The cloud owner's workspace system prompt, bundled into every member's chat.
-  // Best-effort + read through the member's own RLS-scoped connection: a member
-  // never sees this text in the UI/API (owner-only there), it's only injected into
-  // the turn here. null on local / unset / un-upgraded cloud → no injection.
-  const cloudSystemPrompt =
-    (await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT)) ?? undefined;
-
-  // Incremental checkpointing: the assistant message is persisted under a stable
-  // id and UPDATEd as the turn streams, so a refresh mid-turn (notably a long
-  // batch run) recovers the work so far instead of losing the whole turn.
-  const assistantMsgId = crypto.randomUUID();
-  let lastCheckpoint = 0;
-  let checkpointWarned = false;
-  const buildCleanTurns = (): PersistedTurn[] =>
-    turns
-      .map((t) => ({
-        text: t.text,
-        tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
-        ...(t.events.length > 0 ? { events: t.events } : {}),
-        ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
-      }))
-      .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
-  const checkpoint = async (force: boolean): Promise<void> => {
-    if (!threadId) return;
-    const now = Date.now();
-    if (!force && now - lastCheckpoint < 1500) return; // throttle mid-stream writes
-    const cleanTurns = buildCleanTurns();
-    if (cleanTurns.length === 0 && assistantText.length === 0) return;
-    lastCheckpoint = now;
+  // Stream a complete answer (the intent-inline paths: a trivial reply or a clarifying
+  // question) into the SAME bubble the client is showing, then settle + end the turn — no
+  // tool loop. Mirrors the loop's frame sequence so the client renders it identically and
+  // a reload replays it from the persisted row.
+  const finishWithAnswer = async (text: string, status: ChatMessageStatus): Promise<void> => {
+    streamStatus = status;
+    publish({ type: 'assistant_message_start', id: assistantMsgId });
+    if (text) publish({ type: 'text_delta', delta: text });
+    publish({ type: 'assistant_message_end' });
     try {
       await persistMessage(
         ctx.db,
         threadId,
         'assistant',
-        assistantText,
+        text,
         ownerUserId,
-        cleanTurns,
+        [],
         turnStartedAt,
         assistantMsgId,
+        status,
       );
     } catch (e) {
-      // Surface a persist failure to the client (the stream is still open here)
-      // rather than silently losing the conversation — but only once per turn.
-      console.warn('[chat] checkpoint persist failed:', (e as Error).message);
-      if (!checkpointWarned) {
-        checkpointWarned = true;
+      console.warn('[chat] persist intent answer failed:', (e as Error).message);
+    }
+    publish({ type: 'done' });
+  };
+
+  // The heavy agentic tool loop — runs on the per-workspace FIFO (serialized) only when the
+  // intent pass says the request needs data work. Defined here (not enqueued yet) so the
+  // intent orchestrator below can decide whether to run it.
+  const runHeavyLoop = async (): Promise<void> => {
+    // Strip credential-bearing native tables (secrets) so the assistant can
+    // neither query them nor be told they exist — it reads rows already decrypted.
+    const dispatch: DispatchCtx = {
+      db: ctx.db,
+      feed: ctx.feed,
+      // "Private mode" chat toggle: force rows the assistant creates this turn private
+      // regardless of the table default (a transient per-request choice).
+      privateMode: body.privateMode === true,
+      // Live-aware table set: the open-time snapshot PLUS anything registered
+      // since (a connector connected this session), minus internal + hidden. A
+      // defineLate connector table (mcp_items) is otherwise absent from the
+      // snapshot, so the assistant would reject it as "Unknown table".
+      validTables: new Set(
+        [...ctx.validTables, ...ctx.db.getRegisteredTableNames()].filter(
+          (t) =>
+            !ASSISTANT_HIDDEN_TABLES.has(t) &&
+            !t.startsWith('__lattice') &&
+            !t.startsWith('_lattice'),
+        ),
+      ),
+      junctionTables: new Set(
+        [...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t)),
+      ),
+      ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
+      softDeletable: ctx.softDeletable,
+      onColumnsAdded: columnDescriptionHook(ctx.db),
+      aggressiveness: getAggressiveness(),
+      // The user's message this turn — ingest_url only fetches a URL found here.
+      userMessage: message,
+      // One shared fetch budget for the whole turn (caps assistant-driven fetches).
+      urlFetchBudget: new FetchBudget(),
+      ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
+      ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
+      ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
+      ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+      ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
+      ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
+      ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
+      ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
+      ...(ctx.importAttachment ? { importAttachment: ctx.importAttachment } : {}),
+      // Copied like validTables so in-turn additions (create_computed_table)
+      // stay visible to later tool calls without mutating the server's set —
+      // the audited op updates the workspace-level set itself.
+      ...(ctx.computedTables ? { computedTables: new Set(ctx.computedTables) } : {}),
+      ...(ctx.computedOps ? { computedOps: ctx.computedOps } : {}),
+    };
+
+    // Delegated HTML-file authoring: create_html_file / edit_html_file call this to
+    // author a full standalone HTML page. The closure builds its own client from the
+    // SAME resolved auth (api-key or OAuth) and the live schema, so SDK-missing /
+    // provider errors surface as a tool error (recoverable), never a crash. The model
+    // is the strongest the auth can actually run — sonnet for an API key (entitled to
+    // all models), the chat model for an OAuth subscription (whose entitlements vary;
+    // a non-entitled model 429s every call). If the user is viewing an html artifact,
+    // expose its id so edit_html_file targets the file on screen by default.
+    const authorModel = provider.authorModel;
+    const authorHtml = async (spec: string, currentHtml?: string): Promise<string> => {
+      const schema = await buildSchemaContext(dispatch);
+      return generateHtmlFile({
+        client: provider.client,
+        schema,
+        spec,
+        model: authorModel,
+        ...(currentHtml !== undefined ? { currentHtml } : {}),
+      });
+    };
+    dispatch.htmlAuthor = authorHtml;
+    // Automatic QA for an authored dashboard: run its data queries + check them against the
+    // request, repair via the same author, and report residual issues (see dashboard-qa).
+    // On by default; LATTICE_DASHBOARD_QA=false disables it (skips the extra queries + judge
+    // call + any repair round per dashboard create/edit).
+    if (process.env.LATTICE_DASHBOARD_QA !== 'false') {
+      dispatch.qaDashboard = (html: string, intent: string) =>
+        qaDashboard(
+          { db: ctx.db, client: provider.client, model: authorModel, reAuthor: authorHtml },
+          html,
+          intent,
+        );
+    }
+    if (activeContext?.table === 'dashboards') {
+      // The user is looking at a dashboard — make it edit_dashboard's default
+      // target. No existence probe needed: the handler verifies the row itself.
+      dispatch.activeDashboardId = activeContext.id;
+    }
+
+    // turnStartedAt + assistantMsgId are declared above (before the 202) — they identify
+    // the pending row this job now fills in.
+    let assistantText = '';
+    // Rebuild the rich structure as it streams: one entry per assistant turn, each
+    // with its text + the data-change events it produced. Persisted so a reloaded
+    // conversation renders the same collapsed activity cards the live stream did.
+    const turns: {
+      text: string;
+      tools: { id: string; name: string; isError: boolean }[];
+      events: PersistedTurnEvent[];
+      toolCalls: PersistedToolCall[];
+    }[] = [];
+    // Capture the assistant's data-change events from the feed bus, bucketed into
+    // the turn that produced them. feed.publish is synchronous inside the tool's
+    // executeFunction, so each event lands in the current (last-pushed) turn. Only
+    // source='ai' — this assistant's own writes — is captured, never other clients.
+    const unsubscribeFeed = ctx.feed.subscribe((fe) => {
+      if (fe.source !== 'ai') return;
+      const cur = turns[turns.length - 1];
+      if (cur)
+        cur.events.push({
+          op: fe.op,
+          table: fe.table,
+          rowId: fe.rowId,
+          summary: fe.summary ?? '',
+          ts: fe.ts,
+        });
+    });
+    // The cloud owner's workspace system prompt, bundled into every member's chat.
+    // Best-effort + read through the member's own RLS-scoped connection: a member
+    // never sees this text in the UI/API (owner-only there), it's only injected into
+    // the turn here. null on local / unset / un-upgraded cloud → no injection.
+    const cloudSystemPrompt =
+      (await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT)) ?? undefined;
+
+    // Incremental checkpointing: the assistant message is persisted under the stable
+    // assistantMsgId declared above and UPDATEd as the turn streams, so a refresh mid-turn
+    // (notably a long batch run) recovers the work so far instead of losing the whole turn.
+    let lastCheckpoint = 0;
+    let checkpointWarned = false;
+    const buildCleanTurns = (): PersistedTurn[] =>
+      turns
+        .map((t) => ({
+          text: t.text,
+          tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
+          ...(t.events.length > 0 ? { events: t.events } : {}),
+          ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
+        }))
+        .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
+    const checkpoint = async (force: boolean): Promise<void> => {
+      if (!threadId) return;
+      const now = Date.now();
+      if (!force && now - lastCheckpoint < 1500) return; // throttle mid-stream writes
+      const cleanTurns = buildCleanTurns();
+      // A mid-stream checkpoint with nothing yet is a no-op — but a FORCED (terminal) write
+      // must always land so the pending row's status settles to 'done'/'error'. Otherwise a
+      // turn that errors before producing any text stays 'pending' forever (a stuck typing
+      // bubble on reload, and no way for a waiter to know the turn finished).
+      if (!force && cleanTurns.length === 0 && assistantText.length === 0) return;
+      lastCheckpoint = now;
+      try {
+        await persistMessage(
+          ctx.db,
+          threadId,
+          'assistant',
+          assistantText,
+          ownerUserId,
+          cleanTurns,
+          turnStartedAt,
+          assistantMsgId,
+          streamStatus,
+        );
+      } catch (e) {
+        // Surface a persist failure to the client (the turn is still streaming over the
+        // bus here) rather than silently losing the conversation — but only once per turn.
+        console.warn('[chat] checkpoint persist failed:', (e as Error).message);
+        if (!checkpointWarned) {
+          checkpointWarned = true;
+          publish({
+            type: 'warn',
+            message:
+              'Saving this conversation is failing — recent messages may not survive a refresh.',
+          });
+        }
+      }
+    };
+
+    try {
+      const client = provider.client;
+      const temperature = aggressivenessToTemperature(getAggressiveness());
+      // Deterministic, type-based ingestion: pull any reference material out of the
+      // user's message and route it through the SAME engine a dropped file uses, BEFORE
+      // the chat turn (sequential — the chat's own writes must not overlap these). The
+      // returned note tells the model what was saved so it neither re-creates nor guesses.
+      const ingestNote = await ingestReferenceMaterial(
+        client,
+        message,
+        {
+          db: ctx.db,
+          feed: ctx.feed,
+          softDeletable: ctx.softDeletable,
+          aggressiveness: getAggressiveness(),
+          ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+          ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
+          ...(ctx.createJunction ? { createObjectJunction: ctx.createJunction } : {}),
+          ...(body.privateMode === true ? { privateMode: true } : {}),
+        },
+        temperature,
+      );
+      for await (const ev of runChat({
+        client,
+        dispatch,
+        history,
+        // Prefix the active-view + attached-files + auto-ingest notes (if any) so the model
+        // knows what's on screen and connects the request to what was just added; the
+        // dispatch + tools still see the real message.
+        userMessage: activeView.note + attachedNote + ingestNote + message,
+        temperature,
+        // Give the assistant the operator's name so it addresses them and
+        // resolves "me"/"my" without asking for a name it already has.
+        operatorName: readIdentity().display_name,
+        // Ground the assistant in the real wall-clock (server-owned) + the viewer's
+        // timezone, so "today"/"recent"/"most recent" resolve to NOW, not its stale
+        // training cutoff. turnStartedAt is the instant this turn began.
+        nowIso: turnStartedAt,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
+        ...(activeContext ? { activeContext } : {}),
+        // Capture each executed tool call (capped) for cross-turn replay memory.
+        onToolRecord: (rec) => {
+          turns[turns.length - 1]?.toolCalls.push(rec);
+        },
+      })) {
+        if (ev.type === 'assistant_message_start') {
+          turns.push({ text: '', tools: [], events: [], toolCalls: [] });
+        } else if (ev.type === 'text_delta') {
+          assistantText += ev.delta;
+          const cur = turns[turns.length - 1];
+          if (cur) cur.text += ev.delta;
+        } else if (ev.type === 'assistant_message_end') {
+          // A tool round's streamed narration ("I see — let me try a different approach…")
+          // is real content the user should keep — so it stays in BOTH the persisted message
+          // and the per-round record. Separate one round's text from the next with a blank
+          // line so the persisted message reads as clean paragraphs on reload (matching the
+          // live view, where each round is its own bubble). A round with no text adds no
+          // separator. assistant_message_end fires after this round's text_delta and before
+          // its tool_use, so appending here lands the break between rounds.
+          if (ev.hadTools) {
+            const cur = turns[turns.length - 1];
+            if (cur?.text) assistantText += '\n\n';
+          }
+        } else if (ev.type === 'tool_use') {
+          turns[turns.length - 1]?.tools.push({ id: ev.id, name: ev.name, isError: false });
+        } else if (ev.type === 'tool_result') {
+          const tool = turns[turns.length - 1]?.tools.find((t) => t.id === ev.toolUseId);
+          if (tool) tool.isError = ev.isError;
+        }
+        // Publish to the per-workspace bus instead of a held-open response. The
+        // /api/stream forwarder gates delivery per user and writes the SSE frame to
+        // each eligible socket; a disconnected client just has no subscriber, so the
+        // turn keeps running and the checkpointed row carries recovery.
+        publish(ev);
+        await checkpoint(false); // throttled mid-stream persist for refresh recovery
+      }
+      // A completed turn means Claude is answering — clear any stale usage limit.
+      clearClaudeLimit();
+      streamStatus = 'done';
+    } catch (e) {
+      // A genuine usage-limit 429 flips the shared limit state and shows the
+      // standard notice (so the Configure side blocks too, via /api/assistant/config).
+      // A transient or entitlement 429, or any other failure, stays a plain error.
+      streamStatus = 'error';
+      const kind = provider.noteError(e);
+      if (kind === 'usage') {
+        const limit = getClaudeLimitState();
+        publish({
+          type: 'limit',
+          message: limit ? limit.message : CLAUDE_LIMIT_MESSAGE,
+          ...(limit ? { resetAt: new Date(limit.resetAt).toISOString() } : {}),
+        });
+      } else {
+        publish({ type: 'error', message: (e as Error).message });
+      }
+      publish({ type: 'done' });
+    } finally {
+      unsubscribeFeed();
+    }
+    // Final checkpoint: persist the complete assistant message (upsert over any
+    // mid-stream checkpoints under the same id). The stream is closed now, so a
+    // failure here is logged, not surfaced (the mid-stream checkpoints already warn).
+    await checkpoint(true);
+    if (threadId) {
+      // Give a newly-created thread an AI-generated short title in place of the
+      // truncated-first-message placeholder set by ensureThread. Best-effort and
+      // idempotent: only when THIS request created the thread, we have a reply,
+      // and the title is still the exact placeholder — so a user rename is never
+      // clobbered. The stream has already ended; the new title surfaces on the
+      // next thread-list refresh.
+      const createdNew = threadId !== requestedThread;
+      if (createdNew && assistantText.trim()) {
         try {
-          res.write(
-            formatSseFrame({
-              type: 'warn',
-              message:
-                'Saving this conversation is failing — recent messages may not survive a refresh.',
-            }),
-          );
-        } catch {
-          // socket gone — nothing more we can do
+          const placeholder = message.slice(0, 60) || 'Chat';
+          const cur = (await ctx.db.get('chat_threads', threadId)) as { title?: string } | null;
+          if (cur && (cur.title ?? '') === placeholder) {
+            const title = await generateThreadTitle(provider.client, message, assistantText);
+            if (title) {
+              await ctx.db.update('chat_threads', threadId, { title });
+              // The title is written AFTER the stream closed (kept off the response
+              // path for responsiveness), so the client's stream-close thread-list
+              // refresh already ran with the placeholder. Signal it on the persistent
+              // feed so the conversation list re-fetches and shows the friendly title.
+              ctx.feed.publish({
+                table: null,
+                op: 'thread_title',
+                rowId: threadId,
+                source: 'gui',
+                summary: title,
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('[chat] thread title generation failed:', (e as Error).message);
         }
       }
     }
   };
 
-  try {
-    const client = createAnthropicClient(auth);
-    const temperature = aggressivenessToTemperature(getAggressiveness());
-    for await (const ev of runChat({
-      client,
-      dispatch,
-      history,
-      // Prefix the attached-files note (if any) so the model connects the request
-      // to the files just added; the dispatch + tools still see the real message.
-      userMessage: attachedNote + message,
-      temperature,
-      // Give the assistant the operator's name so it addresses them and
-      // resolves "me"/"my" without asking for a name it already has.
-      operatorName: readIdentity().display_name,
-      ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
-      ...(activeContext ? { activeContext } : {}),
-      // Capture each executed tool call (capped) for cross-turn replay memory.
-      onToolRecord: (rec) => {
-        turns[turns.length - 1]?.toolCalls.push(rec);
-      },
-    })) {
-      if (ev.type === 'assistant_message_start') {
-        turns.push({ text: '', tools: [], events: [], toolCalls: [] });
-      } else if (ev.type === 'text_delta') {
-        assistantText += ev.delta;
-        const cur = turns[turns.length - 1];
-        if (cur) cur.text += ev.delta;
-      } else if (ev.type === 'tool_use') {
-        turns[turns.length - 1]?.tools.push({ id: ev.id, name: ev.name, isError: false });
-      } else if (ev.type === 'tool_result') {
-        const tool = turns[turns.length - 1]?.tools.find((t) => t.id === ev.toolUseId);
-        if (tool) tool.isError = ev.isError;
-      }
-      try {
-        res.write(formatSseFrame(ev));
-      } catch {
-        break; // client disconnected
-      }
-      await checkpoint(false); // throttled mid-stream persist for refresh recovery
-    }
-  } catch (e) {
+  // ── Intent orchestrator (ack-first) — runs OFF the FIFO so the ack is instant ──
+  // A fast structured intent pass runs concurrently (NOT serialized behind a prior turn's
+  // heavy loop), so even a queued second message is acknowledged within seconds. It then
+  // routes: a clarifying question or a trivial/general answer finishes inline (no tool
+  // loop); anything that needs the workspace data joins the FIFO to run the real loop.
+  void (async () => {
+    let acked = false;
+    const ackOnce = (text: string): void => {
+      if (acked || !text) return;
+      acked = true;
+      publish({ type: 'ack', message: text });
+    };
+    // Belt-and-suspenders: if the intent model is slow, publish a templated ack so the user
+    // is never left on a blank typing bubble past the guarantee window.
+    const watchdog = setTimeout(() => {
+      ackOnce('Working on it…');
+    }, INTENT_ACK_WATCHDOG_MS);
+    let intent: IntentResult | null = null;
     try {
-      res.write(formatSseFrame({ type: 'error', message: (e as Error).message }));
-      res.write(formatSseFrame({ type: 'done' }));
-    } catch {
-      // socket gone
+      // A wider window (was 4) so the fast intent pass can SEE a change the user stated a few
+      // turns ago ("update the tagline to the second one") when they later say "can you edit it"
+      // — otherwise it can't tell what to change and wrongly asks again. Each message is capped
+      // at 800 chars and the whole block sliced to 4000, so this stays cheap.
+      const recentContext = renderRecentContext(history, 10);
+      intent = await runIntent(provider.client, message, {
+        operatorName: readIdentity().display_name,
+        tableNames: [...ctx.validTables],
+        ...(activeView.label ? { activeView: activeView.label } : {}),
+        ...(recentContext ? { recentContext } : {}),
+        // The intent pass answers "are you connected to X?" inline (no heavy loop), so it
+        // needs the connected-sources list or it wrongly says not connected.
+        ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
+        ...(ctx.connectionsUnknown ? { connectionsUnknown: true } : {}),
+      });
+    } catch (e) {
+      // Best-effort — never drop the user's message; fall through to the real loop.
+      console.warn('[chat] intent pass failed:', (e as Error).message);
+    } finally {
+      clearTimeout(watchdog);
     }
-  } finally {
-    unsubscribeFeed();
-  }
-  res.end();
-  // Final checkpoint: persist the complete assistant message (upsert over any
-  // mid-stream checkpoints under the same id). The stream is closed now, so a
-  // failure here is logged, not surfaced (the mid-stream checkpoints already warn).
-  await checkpoint(true);
-  if (threadId) {
-    // Give a newly-created thread an AI-generated short title in place of the
-    // truncated-first-message placeholder set by ensureThread. Best-effort and
-    // idempotent: only when THIS request created the thread, we have a reply,
-    // and the title is still the exact placeholder — so a user rename is never
-    // clobbered. The stream has already ended; the new title surfaces on the
-    // next thread-list refresh.
-    const createdNew = threadId !== requestedThread;
-    if (createdNew && assistantText.trim()) {
-      try {
-        const placeholder = message.slice(0, 60) || 'Chat';
-        const cur = (await ctx.db.get('chat_threads', threadId)) as { title?: string } | null;
-        if (cur && (cur.title ?? '') === placeholder) {
-          const title = await generateThreadTitle(
-            createAnthropicClient(auth),
-            message,
-            assistantText,
-          );
-          if (title) await ctx.db.update('chat_threads', threadId, { title });
-        }
-      } catch (e) {
-        console.warn('[chat] thread title generation failed:', (e as Error).message);
-      }
+
+    // A dragged-in file must ALWAYS be processed by the tool loop: the intent pass sees only
+    // the message text, so a file attached to a short/vague message ("here", "thanks") would
+    // otherwise be silently dropped by an inline short-circuit. When files are attached, skip
+    // the inline branches and run the real loop (which works on the attachment).
+    const hasAttachments = attachedNote.length > 0;
+    // An edit/go-ahead request on the object the user is VIEWING must not be short-circuited into
+    // an inline clarify. The heavy loop has the full rehydrated thread history + the open-object
+    // grounding, so it resolves "what to change" better than the 4-message intent pass — and can
+    // still ask a grounded question if genuinely unsure. So route it to the loop instead of
+    // re-asking "what would you like to change?". Kept narrow (viewing an object + short
+    // edit/go-ahead phrasing) so general ambiguous questions still get the fast inline clarify.
+    const looksLikeEditOfOpen =
+      !!activeContext &&
+      /\b(edit|change|update|modify|revise|adjust|fix|tweak|rename|redo|make (it|that|this)|do (it|that|this)|go ahead|yes,? (do|go|please))\b/i.test(
+        message,
+      );
+    if (!hasAttachments && intent?.needs_more_info && !looksLikeEditOfOpen) {
+      // Ambiguous — the ack_message is a clarifying question; end the turn awaiting a reply.
+      await finishWithAnswer(intent.ack_message, 'done');
+      return;
     }
-  }
+    if (!hasAttachments && intent && !intent.needs_work) {
+      // Trivial / general — the ack_message IS the complete answer; skip the tool loop.
+      await finishWithAnswer(intent.ack_message, 'done');
+      return;
+    }
+    // needs_work (or the intent pass failed) → publish the contextual ack (or the generic
+    // one if the watchdog already fired) and run the real loop on the FIFO.
+    ackOnce(intent?.ack_message ?? 'Working on it…');
+    ctx.enqueueChatJob(runHeavyLoop);
+  })().catch((e: unknown) => {
+    console.error('[chat] intent orchestration failed:', (e as Error).message);
+  });
   return true;
 }

@@ -110,6 +110,20 @@ export interface ExtractedObject {
   values: Record<string, string>;
   /** Short human label for the object. */
   label: string;
+  /**
+   * The model's 0-1 confidence in its target-entity decision (that {@link entity}
+   * is where these records belong / that a new entity is warranted). Optional:
+   * a model that omits it is treated by consumers as fully confident (1.0), so
+   * pre-confidence outputs behave exactly as before.
+   */
+  confidence?: number;
+  /**
+   * Labels of the OTHER extracted objects in the same document this object is
+   * related to — e.g. a meeting lists its attendees' labels. Consumers materialize
+   * these as record-to-record links (so a meeting links to its people, not just to
+   * the source). Optional: absent/empty → no cross-object links.
+   */
+  links?: string[];
 }
 
 const ID_RE = /^[a-z][a-z0-9_]*$/;
@@ -178,7 +192,29 @@ export function parseObjects(raw: string): ExtractedObject[] {
       : [];
     // A new entity's columns must at least cover the value keys.
     const columns = Array.from(new Set([...cols, ...Object.keys(values)])).slice(0, 8);
-    out.push({ entity, isNew: o.isNew === true, columns, values, label });
+    // Optional target-entity confidence: kept only when it's a real number,
+    // clamped into [0, 1]. Absent/invalid → omitted (consumers treat as 1.0).
+    const conf =
+      typeof o.confidence === 'number' && Number.isFinite(o.confidence)
+        ? Math.min(1, Math.max(0, o.confidence))
+        : undefined;
+    // Related-object labels (this object relates to those others in the same doc).
+    // Keep only non-empty strings; cap so a runaway model can't balloon the payload.
+    const links = Array.isArray(o.links)
+      ? o.links
+          .filter((l): l is string => typeof l === 'string' && l.trim().length > 0)
+          .map((l) => l.trim())
+          .slice(0, 12)
+      : [];
+    out.push({
+      entity,
+      isNew: o.isNew === true,
+      columns,
+      values,
+      label,
+      ...(conf !== undefined ? { confidence: conf } : {}),
+      ...(links.length > 0 ? { links } : {}),
+    });
     if (out.length >= 3) break;
   }
   return out;

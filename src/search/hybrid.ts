@@ -15,9 +15,8 @@
  */
 
 import type { StorageAdapter } from '../db/adapter.js';
-import { allAsyncOrSync, introspectColumnsAsyncOrSync } from '../db/adapter.js';
 import type { Row, EmbeddingsConfig } from '../types.js';
-import { searchByEmbedding } from './embeddings.js';
+import { searchByEmbedding, fetchLiveRows } from './embeddings.js';
 import { fullTextSearch } from './fts.js';
 import { rankingBoost, type RankingOptions } from './ranking.js';
 import { applyReranker, type RerankerFn } from './rerank.js';
@@ -40,6 +39,14 @@ export interface HybridSearchOptions {
   ranking?: RankingOptions;
   /** Optional reranker over the fused top candidates (graceful fallback). */
   reranker?: RerankerFn;
+  /**
+   * Caller is a scoped cloud member (no grant on the internal embeddings store /
+   * vector index). Routes the vector arm and row materialization through the
+   * member-safe, row-visibility-filtered paths. Default false (owner / local).
+   */
+  isCloudMember?: boolean;
+  /** Query-time HNSW search breadth (pgvector `hnsw.ef_search`) for the vector arm. */
+  efSearch?: number;
 }
 
 /** Per-result score breakdown (the `--explain` payload). */
@@ -75,32 +82,6 @@ interface ArmEntry {
   score: number;
 }
 
-/** Fetch the given ids that are not soft-deleted, keyed by id. */
-async function fetchLiveRows(
-  adapter: StorageAdapter,
-  table: string,
-  ids: string[],
-  pkColumn: string,
-): Promise<Map<string, Row>> {
-  const out = new Map<string, Row>();
-  if (ids.length === 0) return out;
-  let cols: string[] = [];
-  try {
-    cols = await introspectColumnsAsyncOrSync(adapter, table);
-  } catch {
-    cols = [];
-  }
-  const hasDeletedAt = cols.includes('deleted_at');
-  const placeholders = ids.map(() => '?').join(', ');
-  const where = `"${pkColumn}" IN (${placeholders})${hasDeletedAt ? ' AND "deleted_at" IS NULL' : ''}`;
-  const rows = await allAsyncOrSync(adapter, `SELECT * FROM "${table}" WHERE ${where}`, ids);
-  for (const row of rows) {
-    const key = row[pkColumn];
-    if (typeof key === 'string' || typeof key === 'number') out.set(String(key), row);
-  }
-  return out;
-}
-
 /**
  * Run a hybrid (vector + full-text) search over one table and return fused,
  * optionally ranked + reranked results with a per-result score breakdown.
@@ -118,6 +99,7 @@ export async function hybridSearch(
   const rrfK = opts.rrfK ?? 60;
   const pool = opts.poolSize ?? Math.max(topK * 4, 20);
   const pkColumn = opts.pkColumn ?? 'id';
+  const isMember = opts.isCloudMember ?? false;
 
   // --- Vector arm ---------------------------------------------------------
   const vectorArm = new Map<string, ArmEntry>();
@@ -132,6 +114,8 @@ export async function hybridSearch(
       pool,
       opts.minVectorScore ?? 0,
       pkColumn,
+      isMember,
+      opts.efSearch,
     );
     vres.forEach((r, i) => {
       const id = String(r.row[pkColumn]);
@@ -157,7 +141,7 @@ export async function hybridSearch(
 
   // Fetch rows for ids the vector arm didn't already supply (FTS-only ids).
   const missing = [...allIds].filter((id) => !rowById.has(id));
-  const fetched = await fetchLiveRows(adapter, table, missing, pkColumn);
+  const fetched = await fetchLiveRows(adapter, table, missing, pkColumn, isMember);
   for (const [id, row] of fetched) rowById.set(id, row);
 
   const now = opts.ranking?.now;

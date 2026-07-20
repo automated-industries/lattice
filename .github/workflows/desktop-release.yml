@@ -21,13 +21,83 @@ jobs:
         with:
           deno-version: canary # `deno desktop` is canary-only for now
       - run: npm ci
-      - run: npm run desktop:build:mac
-      # Also produce an UNSIGNED .pkg (self-contained app installer) for the website
-      # download: a .pkg gets the soft "unidentified developer" prompt + installs the
-      # app into /Applications, vs the hard "damaged" block a downloaded .app/.dmg
-      # hits pre-notarization. The .dmg above stays the auto-update artifact
-      # (latest.json), untouched.
-      - run: npm run desktop:build:mac:pkg
+      # Prepare signing: import the Developer ID certs into an ephemeral keychain
+      # and materialize the notary API key, when the signing secrets are
+      # configured. Skipped (no-op) on forks / when unset — the build then falls
+      # back to the ad-hoc unsigned path in build-mac-pkg.sh.
+      - name: Prepare signing (no-op without secrets)
+        env:
+          MACOS_CERT_APP_P12: ${{ secrets.MACOS_CERT_APP_P12 }}
+          APP_P12_PW: ${{ secrets.MACOS_CERT_APP_P12_PASSWORD }}
+          INSTALLER_P12: ${{ secrets.MACOS_CERT_INSTALLER_P12 }}
+          INSTALLER_P12_PW: ${{ secrets.MACOS_CERT_INSTALLER_P12_PASSWORD }}
+          KC_PW: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          NOTARY_KEY_B64: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          if [ -z "$MACOS_CERT_APP_P12" ]; then
+            echo "no signing secrets configured — build will fall back to unsigned"; exit 0
+          fi
+          KC="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          echo "$MACOS_CERT_APP_P12" | base64 --decode > "$RUNNER_TEMP/app.p12"
+          echo "$INSTALLER_P12"      | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/app.p12"       -k "$KC" -P "$APP_P12_PW"       -T /usr/bin/codesign
+          security import "$RUNNER_TEMP/installer.p12" -k "$KC" -P "$INSTALLER_P12_PW" -T /usr/bin/pkgbuild -T /usr/bin/productbuild
+          # Developer ID G2 intermediate (avoids a trust error on fresh runners).
+          # Best-effort: the runner image usually already trusts it, so a failed
+          # fetch/import must not fail the build.
+          if curl -fsSL -o "$RUNNER_TEMP/g2.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer; then
+            security import "$RUNNER_TEMP/g2.cer" -k "$KC" || true
+          else
+            echo "warn: could not fetch the Developer ID intermediate (continuing)"
+          fi
+          security list-keychains -d user -s "$KC" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KC"
+          # Materialize the App Store Connect API key for notarytool; the path is
+          # exported so the build steps below inherit it.
+          if [ -n "$NOTARY_KEY_B64" ]; then
+            echo "$NOTARY_KEY_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+            echo "NOTARY_KEY_FILE=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+      # Build the .dmg (auto-update artifact) + the .pkg (website download). When the
+      # signing env is set, build-mac-pkg.sh signs + notarizes the .app + .pkg, and
+      # the .dmg is signed + notarized below. Otherwise both fall back to unsigned
+      # (the .pkg still gives the soft prompt + installs to /Applications cleanly).
+      - name: Build (+ sign + notarize when configured)
+        env:
+          SIGN_APP_IDENTITY: ${{ secrets.MACOS_APP_IDENTITY }}
+          SIGN_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          # NOTARY_KEY_FILE arrives via $GITHUB_ENV from the prepare step.
+          ENTS: ${{ github.workspace }}/scripts/lattice.entitlements
+        run: |
+          npm run desktop:build:mac:pkg    # → dist-desktop/Lattice.app + .pkg (signs + notarizes both)
+          if [ -n "$SIGN_APP_IDENTITY" ]; then
+            # Build the .dmg FROM the signed+notarized+stapled .app. The desktop
+            # runtime's own dmg embeds its AD-HOC-signed app, and signing a dmg
+            # file does NOT sign its contents — the notary rejects the inner app.
+            hdiutil create -volname Lattice -srcfolder dist-desktop/Lattice.app \
+              -ov -format UDZO dist-desktop/Lattice.dmg
+            codesign --force --sign "$SIGN_APP_IDENTITY" --options runtime --timestamp dist-desktop/Lattice.dmg
+            if [ -n "$NOTARY_KEY_FILE" ]; then
+              # Gate on the literal Accepted status — the submit exit code is not
+              # a reliable Accepted/Invalid signal across notarytool versions.
+              xcrun notarytool submit dist-desktop/Lattice.dmg --key "$NOTARY_KEY_FILE" \
+                --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait 2>&1 \
+                | tee "$RUNNER_TEMP/notary-dmg.log"
+              if ! grep -q 'status: Accepted' "$RUNNER_TEMP/notary-dmg.log"; then
+                echo "error: dmg notarization was not Accepted — inspect with 'xcrun notarytool log <id>'"
+                exit 1
+              fi
+              xcrun stapler staple dist-desktop/Lattice.dmg
+            fi
+          else
+            # Unsigned fallback: the runtime's own dmg build.
+            npm run desktop:build:mac      # → dist-desktop/Lattice.dmg
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: lattice-macos
@@ -35,6 +105,13 @@ jobs:
             dist-desktop/Lattice.dmg
             dist-desktop/Lattice.pkg
           if-no-files-found: error
+      # Always tear down the ephemeral keychain + key material — even on failure.
+      # A no-op when the prepare step was skipped (nothing was created).
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/app.p12" "$RUNNER_TEMP/installer.p12" "$RUNNER_TEMP/g2.cer" "$RUNNER_TEMP/AuthKey.p8"
 
   build-windows:
     runs-on: windows-latest
@@ -57,6 +134,11 @@ jobs:
 
   release:
     needs: [build-macos, build-windows]
+    # Publish ONLY on a version tag. A workflow_dispatch (manual rebuild against a
+    # branch) must stop after the signed build artifacts — publishing a Release
+    # named after a branch ref would also ship a latest.json that live auto-update
+    # clients could pick up.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create/update the GitHub Release + upload assets

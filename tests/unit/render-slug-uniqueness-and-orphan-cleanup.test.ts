@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/index.js';
 import { cleanupEntityContexts } from '../../src/lifecycle/cleanup.js';
+import { contentHash } from '../../src/render/writer.js';
 import type { LatticeManifest } from '../../src/lifecycle/manifest.js';
 import type { EntityContextDefinition } from '../../src/schema/entity-context.js';
 
@@ -217,7 +218,7 @@ describe('collapsed entity-context cleanup (BUG A)', () => {
           directoryRoot: 'Junction',
           declaredFiles: ['J.md'],
           protectedFiles: [],
-          entities: { 'row-a': { 'J.md': { hash: 'x' } } },
+          entities: { 'row-a': { 'J.md': { hash: contentHash('managed') } } },
         },
       },
     };
@@ -258,7 +259,7 @@ describe('collapsed entity-context cleanup (BUG A)', () => {
           directoryRoot: 'Junction',
           declaredFiles: ['J.md'],
           protectedFiles: [],
-          entities: { 'row-a': { 'J.md': { hash: 'x' } } },
+          entities: { 'row-a': { 'J.md': { hash: contentHash('managed') } } },
         },
       },
     };

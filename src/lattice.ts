@@ -7,6 +7,7 @@ import type {
   WritebackDefinition,
   QueryOptions,
   CountOptions,
+  BoundedCountOptions,
   AggregateOptions,
   AggregateResult,
   QueryPageOptions,
@@ -36,6 +37,7 @@ import type {
   ChangelogOptions,
   ChangeEntry,
   ChangeProvenance,
+  BelongsToRelation,
 } from './types.js';
 import { foldEntity, observationsFromChange, type Observation } from './cloud/fold.js';
 import {
@@ -48,6 +50,7 @@ import { isEncrypted } from './security/encryption.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
 import { computeRenderCursor, cursorIsFresh } from './lifecycle/render-cursor.js';
 import { existsSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type Database from 'better-sqlite3';
 import type { StorageAdapter } from './db/adapter.js';
 import {
@@ -100,7 +103,11 @@ import {
   concatRowText,
 } from './search/embeddings.js';
 import type { RefreshEmbeddingsOptions, EmbeddingRefreshResult } from './search/embeddings.js';
-import { buildVectorIndex } from './search/vector-index.js';
+import {
+  buildVectorIndex,
+  mirrorVectorIndexRow,
+  removeVectorIndexRow,
+} from './search/vector-index.js';
 import { ensureFtsIndex, autoFtsColumns } from './search/fts.js';
 import { hybridSearch } from './search/hybrid.js';
 import type { HybridSearchOptions, HybridSearchResult } from './search/hybrid.js';
@@ -143,6 +150,20 @@ import {
   allComputedDeps,
 } from './schema/computed.js';
 import type { ComputedColumnSpec, MaterializedRollupSpec } from './schema/computed.js';
+import { compileComputedFields } from './schema/computed-field.js';
+import type { CompiledComputedField, AiFieldPlan } from './schema/computed-field.js';
+import { fillAiComputedFields } from './schema/computed-field-fill.js';
+import type { FieldFillReport } from './schema/computed-field-fill.js';
+import type { FillLlm } from './schema/computed-fill.js';
+import { registerComputedTables } from './schema/computed-table.js';
+import type {
+  CloudCompileOptions,
+  ComputedRegistrationResult,
+  ComputedSchemaTable,
+  ComputedTableHost,
+} from './schema/computed-table.js';
+import { loadAllColumnPolicy, tableNeedsAudienceView } from './cloud/audience.js';
+import type { ComputedTableDef } from './config/types.js';
 import {
   installFilePresigner,
   setCloudS3Secret,
@@ -244,6 +265,21 @@ const RENDER_FOLD_MAX_CHANGES = 100_000;
 
 export class Lattice {
   private readonly _adapter: StorageAdapter;
+  /**
+   * Ambient transaction executor for {@link transaction}. When a store is set,
+   * every write helper routes through it (via {@link _exec}) instead of the base
+   * adapter, so the whole call chain lands on one transaction connection. Scoped
+   * to the async context of the `transaction(fn)` callback, so concurrent callers
+   * never share a transaction.
+   */
+  private readonly _txStore = new AsyncLocalStorage<StorageAdapter>();
+  /**
+   * Serializer for schema mutations (CREATE TABLE / ALTER … ADD COLUMN). See
+   * {@link withSchemaLock}. The flag marks "already inside the lock" for reentrancy;
+   * the chain is the FIFO queue that runs one locked section at a time.
+   */
+  private readonly _schemaLockFlag = new AsyncLocalStorage<true>();
+  private _schemaLockChain: Promise<unknown> = Promise.resolve();
   private _changelogService?: ChangelogService;
   private _changelogWriterInstance?: ChangelogWriter;
   private _reportBuilder?: ReportBuilder;
@@ -323,6 +359,29 @@ export class Lattice {
   >();
   /** table → materialized rollup specs (P-VIEW). */
   private readonly _rollups = new Map<string, Record<string, MaterializedRollupSpec>>();
+  /** table → compiled DETERMINISTIC computed columns (same-row alias/calc, #10) for the
+   *  bounded write-path recompute UPDATE. Deferred kinds (aggregate/AI/belongsTo-path)
+   *  are produced by their own mechanisms and are NOT in this map. */
+  private readonly _computedFieldSql = new Map<
+    string,
+    { column: string; sql: string; deps: Set<string> }[]
+  >();
+  /** All compiled computed fields per table (incl. deferred) — for introspection + fill. */
+  private readonly _computedFieldPlans = new Map<string, CompiledComputedField[]>();
+  /** table → its AI computed fields (column + input deps + plan) — the async-fill hot path. */
+  private readonly _aiComputedFields = new Map<
+    string,
+    { column: string; deps: Set<string>; ai: AiFieldPlan }[]
+  >();
+  /** Computed-table (read-only view) definitions from the YAML config. */
+  private readonly _configComputedTables: { name: string; definition: ComputedTableDef }[] = [];
+  /**
+   * Names of the computed tables registered by this instance — the single
+   * source of truth the write-refusal guard and {@link isComputedTable} share.
+   */
+  private readonly _computedTables = new Set<string>();
+  /** Outcome of the init-time computed-table registration (see accessor). */
+  private _computedRegistration: ComputedRegistrationResult | null = null;
   /** source table → parents whose rollup it feeds (for incremental recompute). */
   private readonly _rollupSources = new Map<
     string,
@@ -367,6 +426,10 @@ export class Lattice {
       dbPath = parsed.dbPath;
       configTables = [...parsed.tables];
       configEntityContexts = [...parsed.entityContexts];
+      // Computed tables register late (after schema application in init) —
+      // their views are derived FROM the entity tables, so only the parsed
+      // definitions are kept here.
+      this._configComputedTables = [...parsed.computedTables];
       // Config-level options merge under any explicit options passed in
       if (pathOrConfig.options) {
         options = { ...pathOrConfig.options, ...options };
@@ -449,7 +512,13 @@ export class Lattice {
     await db.init();
     if (opts.autoRender !== false) {
       db.enableAutoRender(paths.contextDir);
+      const prevManifest = readManifest(paths.contextDir);
       await db.render(paths.contextDir);
+      // Open-time reconciliation: sweep files whose rows/layout changed while
+      // the workspace was closed (same prev→render→cleanup the auto-render
+      // does), instead of leaving them stale until the first mutation.
+      const newManifest = readManifest(paths.contextDir);
+      await db.reconcileRenderedTree(paths.contextDir, prevManifest, newManifest);
       // Guarantee a manifest exists even for an empty workspace, so there is
       // never a "no rendered context available" state.
       if (!existsSync(manifestPath(paths.contextDir))) {
@@ -562,6 +631,34 @@ export class Lattice {
         this._rollupSources.set(spec.sourceTable, arr);
       }
     }
+    if (def.computedFields) {
+      // #10 computed columns: the physical column already exists (a computed field is a
+      // declared field with a `type:`); only its DERIVATION is registered here. Compile
+      // the DETERMINISTIC same-row kinds (alias/calc) into recompute SQL; a field may
+      // reference only the entity's PLAIN columns (not other computed fields), so pass
+      // those as the resolution set. Deferred kinds (aggregate/AI/belongsTo-path) are
+      // handled by later mechanisms and simply aren't registered for the same-row path.
+      const computedNames = new Set(Object.keys(def.computedFields));
+      const plainCols = new Set(Object.keys(columns).filter((c) => !computedNames.has(c)));
+      const compiled = compileComputedFields(
+        table,
+        def.computedFields,
+        plainCols,
+        this.getDialect(),
+      );
+      this._computedFieldPlans.set(table, compiled);
+      const deterministic = compiled
+        .filter((c) => !c.deferred)
+        .map((c) => ({ column: c.column, sql: c.sql, deps: new Set(c.deps) }));
+      if (deterministic.length > 0) this._computedFieldSql.set(table, deterministic);
+      // AI fields (ai_classify/ai_transform): a real column filled asynchronously. Registered
+      // here so the write path can NULL a stale cell when an input changes; the fill itself is
+      // triggered by an injected FillLlm (out of the core DB layer) via fillComputedFields().
+      const ai = compiled.flatMap((c) =>
+        c.deferred === 'ai' && c.ai ? [{ column: c.column, deps: new Set(c.deps), ai: c.ai }] : [],
+      );
+      if (ai.length > 0) this._aiComputedFields.set(table, ai);
+    }
 
     // Resolve the built-in template name (if any) for reverse-seed parsing
     const renderTemplateName = _resolveTemplateName(def.render);
@@ -569,14 +666,17 @@ export class Lattice {
     const compiledDef: CompiledTableDef = {
       ...def,
       columns,
-      render: def.render
-        ? compileRender(
-            def as TableDefinition & { render: RenderSpec },
-            table,
-            this._schema,
-            this._adapter,
-          )
-        : NOOP_RENDER,
+      // Identity-preserve NOOP_RENDER so the engine can detect spec-less
+      // tables (def.render === NOOP_RENDER) and skip their full-table read.
+      render:
+        def.render && def.render !== NOOP_RENDER
+          ? compileRender(
+              def as TableDefinition & { render: RenderSpec },
+              table,
+              this._schema,
+              this._adapter,
+            )
+          : NOOP_RENDER,
       outputFile: def.outputFile ?? `.schema-only/${table}.md`,
       ...(renderTemplateName ? { _renderTemplateName: renderTemplateName } : {}),
     };
@@ -665,9 +765,9 @@ export class Lattice {
     if (this.getDialect() === 'postgres') {
       try {
         const [marker, role] = await Promise.all([
-          getAsyncOrSync(this._adapter, `SELECT to_regclass('__lattice_owners') AS reg`),
+          getAsyncOrSync(this._exec(), `SELECT to_regclass('__lattice_owners') AS reg`),
           getAsyncOrSync(
-            this._adapter,
+            this._exec(),
             `SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`,
           ),
         ]);
@@ -705,6 +805,9 @@ export class Lattice {
       }
       await this._encryption.finalizeSetup();
       this._initialized = true;
+      // Computed tables: the owner already created the views; this role can't
+      // DDL, so register purely by introspection (invisible views are skipped).
+      await this._registerConfigComputedTables(true);
       return;
     }
     // One whole-schema introspection up front (one query on Postgres vs. a
@@ -758,6 +861,230 @@ export class Lattice {
     }
 
     this._initialized = true;
+
+    // Computed tables register LAST — their views are projections of the
+    // entity tables the schema application above just converged.
+    await this._registerConfigComputedTables(false);
+  }
+
+  /**
+   * Register the config-declared computed tables (read-only SQL views) in
+   * topological order: compile, execute the view DDL (SQLite drops +
+   * recreates unconditionally; Postgres guards the DDL behind a content-hash
+   * migration version so a converged open issues none), introspect, and
+   * register each view as a queryable table. A definition that fails to
+   * compile never bricks the open — it is recorded under field `'*'` in
+   * `__lattice_computed_state`, surfaced via {@link getComputedRegistration},
+   * and the remaining tables continue.
+   */
+  private async _registerConfigComputedTables(introspectOnly: boolean): Promise<void> {
+    if (this._configComputedTables.length === 0) return;
+    const defs: Record<string, ComputedTableDef> = {};
+    for (const { name, definition } of this._configComputedTables) defs[name] = definition;
+
+    const cloud = await this.computedCloudOption({ introspectOnly });
+    const result = await registerComputedTables(this._computedTableHost(), defs, {
+      schema: this.computedSchemaLookup(),
+      dialect: this.getDialect(),
+      ...(introspectOnly ? { introspectOnly } : {}),
+      ...(cloud ? { cloud } : {}),
+    });
+
+    for (const table of result.registered) this._computedTables.add(table);
+    this._computedRegistration = result;
+  }
+
+  /**
+   * The registration host over THIS instance — shared by the init-time
+   * registration and {@link registerComputedTablesLive} so both register
+   * through the identical seam.
+   */
+  private _computedTableHost(): ComputedTableHost {
+    return {
+      adapter: this._adapter,
+      // Direct migration application — Lattice.migrate() would re-introspect
+      // every registered table per computed table, which the post-registration
+      // column-cache write below already covers for the only table that changed.
+      migrate: (migrations) => this._schema.applyMigrationsAsync(this._adapter, migrations),
+      introspectColumns: (table) => introspectColumnsAsyncOrSync(this._adapter, table),
+      // Batch the post-create column introspection of all computed views into one
+      // information_schema round-trip (a per-table serial cost on a pooled cloud).
+      introspectAllColumns: (tables) => introspectAllColumnsAsyncOrSync(this._adapter, tables),
+      register: (table, def, columns) => {
+        if (!this._schema.getTables().has(table)) this._registerTable(table, def);
+        this._columnCache.set(table, new Set(columns));
+      },
+    };
+  }
+
+  /**
+   * On a secured team cloud, computed views must compile with per-relation
+   * `lattice_row_visible(...)` predicates: a Postgres view executes with its
+   * OWNER's rights, so without the predicates a member granted SELECT on the
+   * view would read every base row, bypassing RLS. The predicate helper only
+   * exists once the cloud RLS bootstrap has run — detected by its
+   * `__lattice_owners` bookkeeping table (same tell `probeCloud` uses). A probe
+   * failure propagates: silently compiling without the predicates on a cloud
+   * would be a row-visibility hole, and a connection broken enough to fail this
+   * one SELECT fails the open anyway.
+   */
+  async computedCloudOption(
+    opts: { introspectOnly?: boolean } = {},
+  ): Promise<CloudCompileOptions | undefined> {
+    if (this.getDialect() !== 'postgres') return undefined;
+    const row = (await getAsyncOrSync(
+      this._adapter,
+      `SELECT to_regclass('__lattice_owners') AS reg`,
+    )) as { reg?: string | null } | undefined;
+    if (row?.reg == null) return undefined;
+    // An introspect-only (scoped member) open compiles NO view DDL — it registers
+    // the owner-created views by introspection — so it needs no masked-tables set;
+    // and a member has no grant on the owner-only `__lattice_column_policy`, so
+    // reading it here would fail. Return just the row-visibility flag.
+    if (opts.introspectOnly) return { rowVisible: true };
+    // Tables with a cell-masking `<t>_v` view (some column carries a non-default
+    // audience in the canonical `__lattice_column_policy` store). A computed view
+    // reads such a table's columns THROUGH its masking view, so a member never
+    // sees the raw value of a column the owner masked from their role. Read the
+    // policy from the DB (canonical), NOT the config-derived in-memory audience —
+    // the latter never reflects a column masked at runtime (GUI "mark secret").
+    // One bounded query over a small, owner-managed table.
+    const policy = await loadAllColumnPolicy(this);
+    const maskedTables = new Set<string>();
+    for (const [table, cols] of policy) {
+      if (tableNeedsAudienceView(cols)) maskedTables.add(table);
+    }
+    return maskedTables.size > 0 ? { rowVisible: true, maskedTables } : { rowVisible: true };
+  }
+
+  /**
+   * Table lookup for the computed-table compiler: every registered table's
+   * declared + introspected columns, belongsTo relations, and normalized
+   * primary key. Shared by the init-time registration and the runtime ops
+   * layer (create/preview/field pickers), so the two can never disagree about
+   * what a definition may reference.
+   */
+  computedSchemaLookup(): Map<string, ComputedSchemaTable> {
+    const schema = new Map<string, ComputedSchemaTable>();
+    for (const [table, def] of this._schema.getTables()) {
+      const columns = new Set<string>(Object.keys(def.columns));
+      for (const c of this._columnCache.get(table) ?? []) columns.add(c);
+      const relations: Record<string, BelongsToRelation> = {};
+      for (const [relName, rel] of Object.entries(def.relations ?? {})) {
+        if (rel.type === 'belongsTo') relations[relName] = rel;
+      }
+      schema.set(table, {
+        columns,
+        relations,
+        primaryKey: this._schema.getPrimaryKey(table),
+        hasDeletedAt: columns.has('deleted_at'),
+        ...(def.fieldTypes ? { fieldTypes: def.fieldTypes } : {}),
+      });
+    }
+    return schema;
+  }
+
+  /**
+   * Register computed-table definitions at RUNTIME — the live counterpart of
+   * the init-time registration, used by the GUI ops layer (create/update). It
+   * runs the SAME registration path as the open (compile in topological order,
+   * bookkeeping-table ensure, view DDL, introspect, live-register) with one
+   * deliberate difference: the view DDL executes directly (drop + recreate)
+   * rather than through the open path's content-hash migration, because a
+   * runtime edit can be reverted to a PRIOR definition whose hash was already
+   * applied once — a version-guarded migration would skip that DDL. Successful
+   * registrations join {@link isComputedTable} / {@link getComputedTableNames}
+   * (so the write-refusal guard covers them immediately) and their compiled
+   * artifacts merge into {@link getComputedRegistration}. Per-definition
+   * failures are RETURNED in `errors`, never thrown — the caller decides
+   * whether a failure aborts its operation.
+   */
+  async registerComputedTablesLive(
+    defs: Record<string, ComputedTableDef>,
+  ): Promise<ComputedRegistrationResult> {
+    if (!this._initialized) {
+      throw new Error('Lattice: not initialized — call init() first');
+    }
+    const cloud = await this.computedCloudOption();
+    const result = await registerComputedTables(this._computedTableHost(), defs, {
+      schema: this.computedSchemaLookup(),
+      dialect: this.getDialect(),
+      directDdl: true,
+      ...(cloud ? { cloud } : {}),
+    });
+    this._computedRegistration ??= {
+      registered: [],
+      skipped: [],
+      errors: [],
+      compiled: new Map(),
+    };
+    for (const table of result.registered) {
+      this._computedTables.add(table);
+      if (!this._computedRegistration.registered.includes(table)) {
+        this._computedRegistration.registered.push(table);
+      }
+    }
+    for (const [table, compiled] of result.compiled) {
+      this._computedRegistration.compiled.set(table, compiled);
+    }
+    return result;
+  }
+
+  /**
+   * Remove a computed table from the live registry — the inverse of
+   * {@link registerComputedTablesLive} for one table. Unregisters the view
+   * from the schema registry (it stops being listed/queryable) and from the
+   * computed-table set (the write-refusal guard no longer names it). Issues NO
+   * DDL — the caller owns dropping the view. Throws for a name that is not a
+   * registered computed table, so a plain entity can never be unregistered
+   * through this path.
+   */
+  unregisterComputedTable(name: string): void {
+    if (!this._computedTables.has(name)) {
+      throw new Error(`Lattice: "${name}" is not a registered computed table`);
+    }
+    this.unregisterTable(name);
+    this._computedTables.delete(name);
+    if (this._computedRegistration) {
+      this._computedRegistration.compiled.delete(name);
+      this._computedRegistration.registered = this._computedRegistration.registered.filter(
+        (t) => t !== name,
+      );
+    }
+  }
+
+  /**
+   * True when `name` is a computed table registered by this instance —
+   * a read-only projection that refuses direct writes.
+   */
+  isComputedTable(name: string): boolean {
+    return this._computedTables.has(name);
+  }
+
+  /** Names of the computed tables registered by this instance. */
+  getComputedTableNames(): string[] {
+    return [...this._computedTables];
+  }
+
+  /**
+   * Outcome of the init-time computed-table registration: what registered,
+   * what was skipped (introspect-only member opens), per-table errors, and
+   * the compiled artifacts (view SQL + AI fill queries) for downstream
+   * consumers such as the fill engine. Null when the config declares no
+   * computed tables or init has not run.
+   */
+  getComputedRegistration(): ComputedRegistrationResult | null {
+    return this._computedRegistration;
+  }
+
+  /** Refuse writes against a computed table — it is a read-only projection. */
+  private _assertNotComputedTable(table: string, op: string): void {
+    if (this._computedTables.has(table)) {
+      throw new Error(
+        `Lattice: ${op}() on "${table}" — a computed table is a read-only projection; ` +
+          `edit its source tables or its definition`,
+      );
+    }
   }
 
   /**
@@ -808,6 +1135,101 @@ export class Lattice {
    */
   getDialect(): 'sqlite' | 'postgres' {
     return this._adapter.dialect;
+  }
+
+  /**
+   * The adapter that write/read SQL should execute against: the ambient
+   * transaction connection when inside {@link transaction}, otherwise the base
+   * adapter. Only the row `run`/`get` execution helpers consult this — schema,
+   * introspection, search, and graph helpers keep the base adapter, since those
+   * are structural and should not be scoped to a data transaction.
+   */
+  private _exec(): StorageAdapter {
+    return this._txStore.getStore() ?? this._adapter;
+  }
+
+  /**
+   * Run `fn` inside a single database transaction. Every write `fn` performs
+   * through this Lattice (insert / update / delete and their audit + changelog
+   * writes) executes on one connection and commits together, or rolls back
+   * together if `fn` throws. Reads inside `fn` see its own uncommitted writes.
+   *
+   * The transaction is scoped to the async context of `fn` (via
+   * `AsyncLocalStorage`), so two concurrent callers on the same Lattice never
+   * accidentally share a transaction. A nested `transaction` call reuses the
+   * outer transaction rather than opening a second one. When the adapter cannot
+   * open a transaction (`withClient` unavailable), `fn` runs WITHOUT one — the
+   * caller's own validation still applies; this mirrors the hard-delete fallback.
+   *
+   * @since 5.0.0
+   */
+  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    const withClient = this._adapter.withClient?.bind(this._adapter);
+    if (!withClient || this._txStore.getStore()) {
+      // No transaction support, or already inside one → run inline.
+      return fn();
+    }
+    const real = this._adapter;
+    return withClient((tx) => {
+      const unavailable = (op: string) => (): never => {
+        throw new Error(
+          `Lattice.transaction: synchronous ${op}() is unavailable inside a transaction`,
+        );
+      };
+      const txAdapter: StorageAdapter = {
+        dialect: real.dialect,
+        run: unavailable('run'),
+        get: unavailable('get'),
+        all: unavailable('all'),
+        prepare: (sql) => real.prepare(sql),
+        open: () => {
+          real.open();
+        },
+        close: () => {
+          real.close();
+        },
+        introspectColumns: (table) => real.introspectColumns(table),
+        addColumn: (table, column, typeSpec) => {
+          real.addColumn(table, column, typeSpec);
+        },
+        runAsync: async (sql, params) => {
+          await tx.run(sql, params);
+        },
+        getAsync: (sql, params) => tx.get(sql, params),
+        allAsync: (sql, params) => tx.all(sql, params),
+      };
+      return this._txStore.run(txAdapter, fn);
+    });
+  }
+
+  /**
+   * Run `fn` with exclusive access to schema mutation. Serializes CREATE TABLE /
+   * ALTER … ADD COLUMN so concurrent callers can't interleave a check-then-DDL
+   * across an `await` and collide. This matters because the SQLite adapter is one
+   * synchronous connection: when a parallel folder ingest has two files that both
+   * extract a new "Invoices" entity, or both add an "amount" column, the un-serialized
+   * loser hits `CREATE TABLE`/`ADD COLUMN` after the winner already ran it and throws
+   * "table already exists" / "duplicate column name". Row INSERTs are deliberately NOT
+   * serialized — they're atomic auto-commit statements with uuid keys and no
+   * read-modify-write, so they stay fully concurrent.
+   *
+   * Reentrant via `AsyncLocalStorage`: a locked section that itself triggers more
+   * DDL (e.g. `createUserEntity` → `addColumn` when securing a cloud table) runs the
+   * nested call inline instead of deadlocking on the queue it already holds — the same
+   * ambient-context pattern as {@link transaction}. A rejected `fn` never poisons the
+   * queue: the chain advances on settle either way, and the caller still sees the
+   * rejection through the returned promise.
+   *
+   * @since 5.0.0
+   */
+  async withSchemaLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._schemaLockFlag.getStore()) return fn(); // already holding it → inline
+    const run = this._schemaLockChain.then(() => this._schemaLockFlag.run(true, fn));
+    this._schemaLockChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
@@ -913,30 +1335,38 @@ export class Lattice {
     // out of the identifier quoting (see src/schema/identifier.ts).
     assertSafeIdentifier(table, 'table');
     assertSafeIdentifier(column, 'column');
-    const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
-    if (!existing.includes(column)) {
-      if (this._cloudMemberOpen) {
-        // Scoped cloud member: no CREATE/ALTER on the schema, so a raw ALTER would
-        // fail with "permission denied for schema public". Route the column add
-        // (and the masking-view regen) through the owner-side SECURITY DEFINER
-        // helper, which runs as the owner. A real error (bad type, missing table,
-        // helper absent on an older cloud) propagates — never silently swallowed.
-        await runAsyncOrSync(this._adapter, `SELECT lattice_member_add_column(?, ?, ?)`, [
-          table,
-          column,
-          typeSpec,
-        ]);
-      } else {
-        await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+    // The introspect (does the column exist?) and the ALTER straddle an await, so
+    // two concurrent adds of the same column would both read it absent and both
+    // ALTER — the second throwing "duplicate column name". Serialize the whole
+    // check-then-act behind the schema lock so it's atomic. Reentrant, so a caller
+    // already inside the lock (e.g. createUserEntity securing a cloud table) doesn't
+    // deadlock. See withSchemaLock.
+    await this.withSchemaLock(async () => {
+      const existing = await introspectColumnsAsyncOrSync(this._adapter, table);
+      if (!existing.includes(column)) {
+        if (this._cloudMemberOpen) {
+          // Scoped cloud member: no CREATE/ALTER on the schema, so a raw ALTER would
+          // fail with "permission denied for schema public". Route the column add
+          // (and the masking-view regen) through the owner-side SECURITY DEFINER
+          // helper, which runs as the owner. A real error (bad type, missing table,
+          // helper absent on an older cloud) propagates — never silently swallowed.
+          await runAsyncOrSync(this._exec(), `SELECT lattice_member_add_column(?, ?, ?)`, [
+            table,
+            column,
+            typeSpec,
+          ]);
+        } else {
+          await addColumnAsyncOrSync(this._adapter, table, column, typeSpec);
+        }
       }
-    }
-    const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
-    this._columnCache.set(table, new Set(cols));
-    // Mirror the new column into the registered def so getRegisteredColumns()
-    // (which the Teams `share` serialization reads) reflects the post-ALTER
-    // state. No-op for an unregistered table (def stays null).
-    const def = this._schema.getTables().get(table);
-    if (def && !(column in def.columns)) def.columns[column] = typeSpec;
+      const cols = await introspectColumnsAsyncOrSync(this._adapter, table);
+      this._columnCache.set(table, new Set(cols));
+      // Mirror the new column into the registered def so getRegisteredColumns()
+      // (which the Teams `share` serialization reads) reflects the post-ALTER
+      // state. No-op for an unregistered table (def stays null).
+      const def = this._schema.getTables().get(table);
+      if (def && !(column in def.columns)) def.columns[column] = typeSpec;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -998,7 +1428,7 @@ export class Lattice {
     if (notInit) return notInit;
     this._assertRowSize(table, row);
     const { sql, values, pkValue, rowWithPk } = this._prepareInsert(table, row);
-    await runAsyncOrSync(this._adapter, sql, values);
+    await runAsyncOrSync(this._exec(), sql, values);
     await this._afterInsert(table, pkValue, rowWithPk, provenance);
     return pkValue;
   }
@@ -1061,6 +1491,7 @@ export class Lattice {
     row: Row,
   ): { sql: string; values: unknown[]; pkValue: string; rowWithPk: Row } {
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'insert');
     const sanitized = this._applyComputedColumns(
       table,
       this._applyConnectedDefaults(
@@ -1146,6 +1577,16 @@ export class Lattice {
     return [...this._connectedSources.keys()];
   }
 
+  /**
+   * Column names encrypted-at-rest for `table` (decrypted on read). Any caller that ships rows
+   * OUTSIDE the process — an HTTP API response, a render, a log — must mask these; an unmasked
+   * read returns cleartext credentials. Empty set when the table has no encrypted columns or the
+   * encryption layer isn't built yet.
+   */
+  getEncryptedColumns(table: string): ReadonlySet<string> {
+    return this._encryptionLayer?.encryptedColumns(table) ?? new Set<string>();
+  }
+
   /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
    *  identical for the plain and force-visibility insert paths. */
   private async _afterInsert(
@@ -1167,6 +1608,10 @@ export class Lattice {
     this._sanitizer.emitAudit(table, 'insert', pkValue);
     await this._fireWriteHooks(table, 'insert', rowWithPk, pkValue);
     this._syncEmbedding(table, 'insert', rowWithPk, pkValue);
+    // Derive this row's deterministic computed columns (#10) from its just-written values.
+    if (this._computedFieldSql.has(table)) {
+      await this._recomputeComputedFieldColumns(table, pkValue, null);
+    }
     // If this table feeds a parent rollup, recompute the affected parent.
     if (this._rollupSources.has(table)) await this._propagateRollupsFromRow(table, rowWithPk);
   }
@@ -1187,6 +1632,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'upsert');
     this._assertRowSize(table, row);
 
     // Apply governance + connector-lineage defaults so a direct upsert into a
@@ -1241,7 +1687,7 @@ export class Lattice {
       ? `ON CONFLICT(${conflictCols}) DO UPDATE SET ${updateCols}`
       : `ON CONFLICT(${conflictCols}) DO NOTHING`;
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) ${onConflict}`,
       values,
     );
@@ -1249,6 +1695,11 @@ export class Lattice {
     // Canonical pk (full composite key); single-column keys are the bare value.
     const pkValue = this._serializeRowPk(table, rowWithPk);
     this._sanitizer.emitAudit(table, 'update', pkValue);
+    // Derive computed columns BEFORE firing hooks (the hook-driven AI fill must see nulled
+    // stale cells, not race the NULL). The connector sync + seed bulk-write paths reach the DB
+    // through upsert (not insert()/update()), so without this a computed field on a
+    // synced/enriched table would never populate. upsert is a full-row write → recompute all.
+    await this._deriveComputedAfterWrite(table, pkValue, null);
     // Fire write hooks so sync / outbox / cache-invalidation subscribers see the
     // upsert (it previously only scheduled an auto-render and silently skipped
     // them). _fireWriteHooks self-schedules the auto-render, so this replaces the
@@ -1261,9 +1712,10 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table, col);
+    this._assertNotComputedTable(table, 'upsertBy');
 
     const existing = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT * FROM "${table}" WHERE "${col}" = ?`,
       [val],
     );
@@ -1289,6 +1741,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'update');
     this._assertRowSize(table, row as Row);
 
     const baseSanitized = this._filterToSchemaColumns(
@@ -1328,7 +1781,7 @@ export class Lattice {
     let previousValues: Record<string, unknown> | null = null;
     if (this._changelogTables.has(table)) {
       const current = await getAsyncOrSync(
-        this._adapter,
+        this._exec(),
         `SELECT * FROM "${table}" WHERE ${clause}`,
         pkParams,
       );
@@ -1342,7 +1795,7 @@ export class Lattice {
 
     const values = [...Object.values(encrypted), ...pkParams];
 
-    await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
+    await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE ${clause}`, values);
 
     // Canonical pk so a row addressed by composite lookup keys its
     // change-log entry the same way insert() keyed it.
@@ -1358,12 +1811,18 @@ export class Lattice {
       provenance,
     );
     this._sanitizer.emitAudit(table, 'update', auditId);
+    // Re-derive deterministic computed columns + invalidate stale AI cells BEFORE firing the
+    // write hooks. A write hook is the "write completed, react now" seam — the AI-fill driver
+    // subscribes to it and scans `WHERE col IS NULL`. If the stale cell isn't NULLed until
+    // AFTER the hook, the fill races the NULL and can skip the row, leaving it stale until the
+    // next event. Making invalidation part of the write (pre-hook) closes that race.
+    await this._deriveComputedAfterWrite(table, id, new Set(Object.keys(baseSanitized)));
     await this._fireWriteHooks(table, 'update', sanitized, auditId, Object.keys(sanitized));
     // Re-fetch full row for embedding recomputation
     const def = this._schema.getTables().get(table);
     if (def?.embeddings) {
       const fullRow = await getAsyncOrSync(
-        this._adapter,
+        this._exec(),
         `SELECT * FROM "${table}" WHERE ${clause}`,
         pkParams,
       );
@@ -1400,7 +1859,7 @@ export class Lattice {
     if (!touchesDep) return sanitized;
     const { clause, params } = this._pkWhere(table, id);
     const current = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT * FROM "${table}" WHERE ${clause}`,
       params,
     );
@@ -1409,6 +1868,126 @@ export class Lattice {
       ...sanitized,
     };
     return { ...sanitized, ...computeColumns(c.specs, c.order, merged) };
+  }
+
+  /**
+   * Recompute the DETERMINISTIC same-row computed columns (#10 alias/calc) for ONE row via
+   * a single bounded `UPDATE … WHERE pk` (one row, no scan). Runs AFTER the row
+   * is written, so the compiler-emitted SQL expressions read the row's own just-written
+   * columns. `changedCols` = the update payload keys (dep-gated recompute); pass `null` for
+   * an insert (recompute every computed column on the new row). The SET right-hand sides
+   * are compiler-generated SQL over validated, quoted column names — never user input.
+   */
+  private async _recomputeComputedFieldColumns(
+    table: string,
+    id: PkLookup,
+    changedCols: Set<string> | null,
+  ): Promise<void> {
+    const fields = this._computedFieldSql.get(table);
+    if (!fields || fields.length === 0) return;
+    const affected =
+      changedCols === null
+        ? fields
+        : fields.filter((f) => [...f.deps].some((d) => changedCols.has(d)));
+    if (affected.length === 0) return;
+    const setClause = affected.map((f) => `"${f.column}" = ${f.sql}`).join(', ');
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._exec(),
+      `UPDATE "${table}" SET ${setClause} WHERE ${clause}`,
+      params,
+    );
+  }
+
+  /**
+   * Derive computed columns after a row is written: recompute the deterministic same-row
+   * columns and NULL any AI cells whose inputs changed. Called by every write path (insert,
+   * update, upsert, the natural-key upsert/enrich the sync + seed engines use) so a computed
+   * field is never left unpopulated or stale regardless of HOW the row was written.
+   * `changedCols === null` = a full-row write (recompute all + null every AI cell).
+   */
+  private async _deriveComputedAfterWrite(
+    table: string,
+    id: PkLookup,
+    changedCols: Set<string> | null,
+  ): Promise<void> {
+    if (this._computedFieldSql.has(table)) {
+      await this._recomputeComputedFieldColumns(table, id, changedCols);
+    }
+    if (this._aiComputedFields.has(table)) {
+      await this._nullStaleAiColumns(table, id, changedCols);
+    }
+  }
+
+  /**
+   * NULL the AI computed cells on ONE row whose input columns just changed (one bounded
+   * row update, no scan). The "never serve stale" contract: a changed input clears the derived value
+   * immediately; {@link fillComputedFields} repopulates it out-of-band. `changedCols === null`
+   * NULLs every AI cell on the row (a full-row write, where any input may have changed).
+   */
+  private async _nullStaleAiColumns(
+    table: string,
+    id: PkLookup,
+    changedCols: Set<string> | null,
+  ): Promise<void> {
+    const fields = this._aiComputedFields.get(table);
+    if (!fields || fields.length === 0) return;
+    const stale =
+      changedCols === null
+        ? fields
+        : fields.filter((f) => [...f.deps].some((d) => changedCols.has(d)));
+    if (stale.length === 0) return;
+    const setClause = stale.map((f) => `"${f.column}" = NULL`).join(', ');
+    const { clause, params } = this._pkWhere(table, id);
+    await runAsyncOrSync(
+      this._exec(),
+      `UPDATE "${table}" SET ${setClause} WHERE ${clause}`,
+      params,
+    );
+  }
+
+  /**
+   * The compiled computed-field plans for a table (all kinds, incl. deferred AI/aggregate) —
+   * for the GUI field editor + the fill/refresh machinery. Empty when the table has none.
+   */
+  getComputedFieldPlans(table: string): CompiledComputedField[] {
+    return this._computedFieldPlans.get(table) ?? [];
+  }
+
+  /** Whether a table has any AI computed fields awaiting fill. */
+  hasAiComputedFields(table: string): boolean {
+    return this._aiComputedFields.has(table);
+  }
+
+  /**
+   * Populate the un-filled (NULL) cells of a table's AI computed fields using the injected
+   * {@link FillLlm}. Kept OUT of the write path (no model calls in the core DB layer) — the GUI
+   * calls this fire-and-forget after a write and on open (backfill), a test injects a fake LLM.
+   * Bounded (scans `WHERE col IS NULL LIMIT n`, skips tombstones). Returns a report;
+   * never throws for a per-cell model failure (those are counted + surfaced in the report).
+   */
+  async fillComputedFields(
+    table: string,
+    llm: FillLlm,
+    opts?: { batchSize?: number; maxRows?: number },
+  ): Promise<FieldFillReport> {
+    const fields = this._aiComputedFields.get(table);
+    if (!fields || fields.length === 0) return { filled: 0, failed: 0, errors: [] };
+    const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
+    const hasDeletedAt = (this._columnCache.get(table) ?? new Set()).has('deleted_at');
+    return fillAiComputedFields(
+      this._exec(),
+      llm,
+      table,
+      pkCol,
+      fields.map((f) => ({ column: f.column, ai: f.ai })),
+      { ...opts, ...(hasDeletedAt ? { liveFilter: '"deleted_at" IS NULL' } : {}) },
+    );
+  }
+
+  /** Every table that has AI computed fields (for open-time backfill). */
+  aiComputedFieldTables(): string[] {
+    return [...this._aiComputedFields.keys()];
   }
 
   /** Recompute parent rollup(s) for the FK values carried on a source row. */
@@ -1427,7 +2006,7 @@ export class Lattice {
     if (!this._rollupSources.has(sourceTable)) return;
     const { clause, params } = this._pkWhere(sourceTable, sourceId);
     const src = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT * FROM "${sourceTable}" WHERE ${clause}`,
       params,
     );
@@ -1452,7 +2031,7 @@ export class Lattice {
         : `${spec.fn.toUpperCase()}("${spec.column ?? spec.foreignKey}")`;
     const fallback = spec.fn === 'count' ? '0' : 'NULL';
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${parentTable}" SET "${name}" = COALESCE(
          (SELECT ${inner} FROM "${spec.sourceTable}" WHERE "${spec.foreignKey}" = ?${srcDeleted}), ${fallback})
        WHERE "${parentPk}" = ?`,
@@ -1479,7 +2058,7 @@ export class Lattice {
         .map((col) => `"${col}" = ?`)
         .join(', ');
       if (setCols === '') continue;
-      await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE "${pk}" = ?`, [
+      await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE "${pk}" = ?`, [
         ...Object.values(values),
         row[pk],
       ]);
@@ -1542,6 +2121,7 @@ export class Lattice {
     const notInit = this._notInitError<never>();
     if (notInit) return notInit;
     this._assertIdent(table);
+    this._assertNotComputedTable(table, 'delete');
 
     const { clause, params } = this._pkWhere(table, id);
 
@@ -1551,11 +2131,11 @@ export class Lattice {
     let previousRow: Row | null = null;
     if (this._changelogTables.has(table) || this._rollupSources.has(table)) {
       previousRow =
-        (await getAsyncOrSync(this._adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
+        (await getAsyncOrSync(this._exec(), `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
         null;
     }
 
-    await runAsyncOrSync(this._adapter, `DELETE FROM "${table}" WHERE ${clause}`, params);
+    await runAsyncOrSync(this._exec(), `DELETE FROM "${table}" WHERE ${clause}`, params);
     if (previousRow && this._rollupSources.has(table)) {
       await this._propagateRollupsFromRow(table, previousRow);
     }
@@ -1739,6 +2319,7 @@ export class Lattice {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
     this._assertIdent(table, naturalKeyCol);
+    this._assertNotComputedTable(table, 'upsertByNaturalKey');
 
     const cols = this._ensureColumnCache(table);
     const sanitized = this._filterToSchemaColumns(table, this._sanitizer.sanitizeRow(data));
@@ -1751,7 +2332,7 @@ export class Lattice {
 
     // Check if record exists
     const existing = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
@@ -1762,10 +2343,15 @@ export class Lattice {
       const entries = Object.entries(encUpdated).filter(([k]) => k !== 'id');
       if (entries.length === 0) return existing.id as string;
       const setCols = entries.map(([k]) => `"${k}" = ?`).join(', ');
-      await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
+      await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
         ...entries.map(([, v]) => v),
         existing.id,
       ]);
+      await this._deriveComputedAfterWrite(
+        table,
+        existing.id as string,
+        new Set(Object.keys(sanitized)),
+      );
       await this._fireWriteHooks(
         table,
         'update',
@@ -1793,10 +2379,16 @@ export class Lattice {
       .map(() => '?')
       .join(', ');
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `INSERT INTO "${table}" (${colNames}) VALUES (${placeholders})`,
       Object.values(encInserted),
     );
+    // Derive BEFORE the write hooks: a hook (the GUI AI-fill driver) kicks an async
+    // fill that skips any non-null cell, so the stale cell must already be NULL when the
+    // hook fires. On a fresh insert the AI cells are NULL already, but keeping the order
+    // uniform with update/upsert removes the fragile dependency on the fill being slower
+    // than this method's synchronous tail.
+    await this._deriveComputedAfterWrite(table, id, null); // full-row insert → recompute all
     await this._fireWriteHooks(table, 'insert', filtered, id);
     return id;
   }
@@ -1814,9 +2406,10 @@ export class Lattice {
     const notInit = this._notInitError<boolean>();
     if (notInit) return notInit;
     this._assertIdent(table, naturalKeyCol);
+    this._assertNotComputedTable(table, 'enrichByNaturalKey');
 
     const existing = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT id FROM "${table}" WHERE "${naturalKeyCol}" = ? AND deleted_at IS NULL`,
       [naturalKeyVal],
     );
@@ -1833,10 +2426,15 @@ export class Lattice {
     if (cols.has('updated_at')) withTs.push(['updated_at', new Date().toISOString()]);
 
     const setCols = withTs.map(([k]) => `"${k}" = ?`).join(', ');
-    await runAsyncOrSync(this._adapter, `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
+    await runAsyncOrSync(this._exec(), `UPDATE "${table}" SET ${setCols} WHERE id = ?`, [
       ...withTs.map(([, v]) => v),
       existing.id,
     ]);
+    await this._deriveComputedAfterWrite(
+      table,
+      existing.id as string,
+      new Set(entries.map(([k]) => k)),
+    );
     await this._fireWriteHooks(
       table,
       'update',
@@ -1860,13 +2458,14 @@ export class Lattice {
     const notInit = this._notInitError<number>();
     if (notInit) return notInit;
     this._assertIdent(table, naturalKeyCol);
+    this._assertNotComputedTable(table, 'softDeleteMissing');
 
     if (currentKeys.length === 0) return 0;
 
     // Count rows that will be soft-deleted
     const placeholders = currentKeys.map(() => '?').join(', ');
     const countRow = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT COUNT(*) as cnt FROM "${table}"
        WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
        AND deleted_at IS NULL`,
@@ -1878,7 +2477,7 @@ export class Lattice {
 
     if (count > 0) {
       await runAsyncOrSync(
-        this._adapter,
+        this._exec(),
         `UPDATE "${table}" SET deleted_at = datetime('now'), updated_at = datetime('now')
          WHERE source_file = ? AND "${naturalKeyCol}" NOT IN (${placeholders})
          AND deleted_at IS NULL`,
@@ -1931,6 +2530,7 @@ export class Lattice {
   ): Promise<void> {
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
+    this._assertNotComputedTable(junctionTable, 'link');
 
     const filtered = this._filterToSchemaColumns(junctionTable, data);
     const colNames = Object.keys(filtered)
@@ -1941,7 +2541,7 @@ export class Lattice {
       .join(', ');
     const verb = opts?.upsert ? 'INSERT OR REPLACE' : 'INSERT OR IGNORE';
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `${verb} INTO "${junctionTable}" (${colNames}) VALUES (${placeholders})`,
       Object.values(filtered),
     );
@@ -1956,12 +2556,13 @@ export class Lattice {
   async unlink(junctionTable: string, conditions: Row): Promise<void> {
     const notInit = this._notInitError<undefined>();
     if (notInit) return notInit;
+    this._assertNotComputedTable(junctionTable, 'unlink');
 
     const entries = Object.entries(conditions);
     if (entries.length === 0) return;
     const where = entries.map(([k]) => `"${k}" = ?`).join(' AND ');
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `DELETE FROM "${junctionTable}" WHERE ${where}`,
       entries.map(([, v]) => v),
     );
@@ -2030,7 +2631,18 @@ export class Lattice {
    *  asymmetry is preserved: only query/get invoke them. */
   private get _queryCore(): QueryCore {
     this._queryCoreInstance ??= new QueryCore({
-      adapter: this._adapter,
+      // Resolve the adapter per-access so reads honor the ambient transaction:
+      // inside `transaction(fn)`, `_exec()` is the tx connection (read-your-writes
+      // — e.g. createRow re-reads the row it just inserted for its audit snapshot);
+      // outside one it is the base adapter, so this forwards transparently. Methods
+      // are bound to the resolved adapter so their internal `this` stays correct.
+      adapter: new Proxy({} as StorageAdapter, {
+        get: (_t, prop): unknown => {
+          const real = this._exec();
+          const val: unknown = Reflect.get(real, prop, real);
+          return typeof val === 'function' ? (val as (...a: unknown[]) => unknown).bind(real) : val;
+        },
+      }),
       assertIdent: (table, ...cols) => {
         this._assertIdent(table, ...cols);
       },
@@ -2043,6 +2655,28 @@ export class Lattice {
       defaultMaxRows: this._defaultMaxRows,
     });
     return this._queryCoreInstance;
+  }
+
+  /** Optional host-supplied replacement for the pre-render reverse-sync drain. */
+  private _autoRenderDrainOverride: ((outputDir: string) => Promise<void>) | null = null;
+
+  /**
+   * Route non-error render notices (e.g. an edited generated rollup being
+   * restored) somewhere visible. Default: console.warn. The GUI wires its
+   * activity feed here.
+   */
+  setRenderNoticeHandler(handler: ((message: string) => void) | null): void {
+    this._render.setNoticeHandler(handler);
+  }
+
+  /**
+   * Replace the pre-render manual-edit drain (see the auto-render scheduler's
+   * drain dep). The GUI wires its file-loopback watcher here so drained edits go
+   * through the full mutation path (changelog + activity feed + undo) instead of
+   * the core changelog-only apply.
+   */
+  setAutoRenderDrain(drain: ((outputDir: string) => Promise<void>) | null): void {
+    this._autoRenderDrainOverride = drain;
   }
 
   /** Lazily-constructed auto-render scheduler (see src/render/auto-render.ts). */
@@ -2058,6 +2692,22 @@ export class Lattice {
         for (const h of this._errorHandlers) h(e);
       },
       isInitialized: () => this._initialized,
+      // Drain manual file edits into the DB (changelog-versioned, marked
+      // file-edit) before every auto/background render — see the dep's doc. A
+      // host can override with a richer pass (the GUI wires its file-loopback
+      // watcher here so drained edits also carry the feed + undo trail).
+      drain: async (dir) => {
+        if (this._autoRenderDrainOverride) {
+          await this._autoRenderDrainOverride(dir);
+          return;
+        }
+        await this.reverseSyncFromFiles(dir, {
+          useDefault: true,
+          apply: async (u) => {
+            await this.update(u.table, u.pk, u.set, { reason: 'file-edit' });
+          },
+        });
+      },
     });
     return this._autoRenderScheduler;
   }
@@ -2092,7 +2742,7 @@ export class Lattice {
     const { clause, params: pkParams } = this._pkWhere(table, id);
     // Incremental running average: new_total = (old_total * old_count + avg) / (old_count + 1)
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${table}" SET "_reward_total" = ("_reward_total" * "_reward_count" + ?) / ("_reward_count" + 1), "_reward_count" = "_reward_count" + 1 WHERE ${clause}`,
       [avg, ...pkParams],
     );
@@ -2133,6 +2783,8 @@ export class Lattice {
       pool,
       opts.minScore ?? 0,
       pkCol,
+      this.isCloudMemberOpen(),
+      opts.efSearch,
     );
     if (!opts.reranker) return results;
 
@@ -2164,6 +2816,7 @@ export class Lattice {
     const pkCol = this._schema.getPrimaryKey(table)[0] ?? 'id';
     const merged: HybridSearchOptions = { ...opts, pkColumn: pkCol };
     if (def?.embeddings) merged.embeddingsConfig = def.embeddings;
+    merged.isCloudMember = this.isCloudMemberOpen();
     return hybridSearch(this._adapter, table, query, merged);
   }
 
@@ -2203,7 +2856,7 @@ export class Lattice {
     }
     // Determine the dimension from a stored vector.
     const sample = await getAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `SELECT "vec_dim" AS d FROM "_lattice_embeddings" WHERE "table_name" = ? AND "vec_dim" IS NOT NULL LIMIT 1`,
       [table],
     );
@@ -2215,7 +2868,7 @@ export class Lattice {
         ),
       );
     }
-    return buildVectorIndex(this._adapter, table, dim, requireExtension);
+    return buildVectorIndex(this._adapter, table, dim, requireExtension, def.embeddings.index);
   }
 
   // -------------------------------------------------------------------------
@@ -2353,6 +3006,17 @@ export class Lattice {
   }
 
   /**
+   * Bounded variant of {@link count}: stops after `opts.cap + 1` matching rows
+   * (default cap 1000) so it stays cheap on large tables. Returns the exact count
+   * when `<= cap`, else `cap + 1` to signal "more than cap" (render as "cap+").
+   */
+  async boundedCount(table: string, opts: BoundedCountOptions = {}): Promise<number> {
+    const notInit = this._notInitError<number>();
+    if (notInit) return notInit;
+    return this._queryCore.boundedCount(table, opts);
+  }
+
+  /**
    * SQL-side aggregation — `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` with optional
    * `GROUP BY` and `HAVING`, computed in the database so only the grouped result
    * rows transfer (never the underlying rows). Returns one object per group with
@@ -2394,7 +3058,7 @@ export class Lattice {
     this._assertTrust(table);
     const { clause, params } = this._pkWhere(table, id);
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${table}" SET "_trust_state" = 'verified', "_verified_by" = ?, "_verified_at" = ?, "_review_reason" = NULL WHERE ${clause}`,
       [verifiedBy ?? null, new Date().toISOString(), ...params],
     );
@@ -2410,7 +3074,7 @@ export class Lattice {
     this._assertTrust(table);
     const { clause, params } = this._pkWhere(table, id);
     await runAsyncOrSync(
-      this._adapter,
+      this._exec(),
       `UPDATE "${table}" SET "_trust_state" = 'needs_review', "_review_reason" = ? WHERE ${clause}`,
       [reason ?? null, ...params],
     );
@@ -2565,7 +3229,7 @@ export class Lattice {
   async presignFile(fileId: string, method: 'GET' | 'PUT', ttlSeconds = 60): Promise<string> {
     const notInit = this._notInitError<string>();
     if (notInit) return notInit;
-    const row = await getAsyncOrSync(this._adapter, `SELECT lattice_presign_file(?, ?, ?) AS url`, [
+    const row = await getAsyncOrSync(this._exec(), `SELECT lattice_presign_file(?, ?, ?) AS url`, [
       fileId,
       method,
       ttlSeconds,
@@ -2886,6 +3550,23 @@ export class Lattice {
    * `reverseSync`. Compares file hashes against the current manifest, so a
    * render-written file is recognized as an echo and skipped.
    */
+  /**
+   * The post-render reconciliation pass: prune files the prior manifest managed
+   * that the new render no longer produces (deleted rows, renamed roots, retired
+   * rollups) — hash-guarded so a manually edited file is never deleted. Runs
+   * automatically after auto/background renders and at workspace open; exposed
+   * for callers that drive `render()` themselves.
+   */
+  async reconcileRenderedTree(
+    outputDir: string,
+    prevManifest: import('./lifecycle/manifest.js').LatticeManifest | null,
+    newManifest: import('./lifecycle/manifest.js').LatticeManifest | null,
+  ): Promise<import('./lifecycle/cleanup.js').CleanupResult> {
+    const notInit = this._notInitError<import('./lifecycle/cleanup.js').CleanupResult>();
+    if (notInit) return notInit;
+    return this._render.cleanup(outputDir, prevManifest, {}, newManifest);
+  }
+
   async reverseSyncFromFiles(
     outputDir: string,
     opts: import('./reverse-sync/engine.js').ReverseSyncProcessOptions = {},
@@ -3110,7 +3791,32 @@ export class Lattice {
     // Every mutation schedules an auto-render when one is enabled (workspaces
     // enable it by default). Scoped to the written table so only that entity
     // (+ its cross-table dependents) re-renders. No-op when disabled.
-    this._autoRender.schedule(table);
+    // Internal bookkeeping tables (`_lattice_*` / `__lattice_*`: the GUI audit
+    // log, changelog, edges, lineage, …) are NOT rendered context, so their
+    // writes must never trigger a render — during ingest the audit table alone
+    // took a write per object and re-scheduled a full-table re-scan each time.
+    if (!table.startsWith('_lattice_') && !table.startsWith('__lattice_')) {
+      this._autoRender.schedule(table);
+    }
+  }
+
+  /**
+   * Suspend auto-render (re-entrant) for the duration of a bulk operation — e.g.
+   * ingesting a folder of hundreds of files. Writes still record their render
+   * scope, but no render fires until {@link resumeAutoRender} balances every
+   * pause, at which point ONE coalesced render covers everything. This removes
+   * the O(N²) "render-per-file" blowup where each of N writes re-scanned the
+   * whole (growing) file set. Always pair with resumeAutoRender in a `finally`.
+   */
+  pauseAutoRender(): this {
+    this._autoRender.pause();
+    return this;
+  }
+
+  /** Balance a {@link pauseAutoRender}; the last resume arms one coalesced render. */
+  resumeAutoRender(): this {
+    this._autoRender.resume();
+    return this;
   }
 
   /**
@@ -3154,12 +3860,19 @@ export class Lattice {
       }
     };
 
+    // After the store write resolves, mirror the change into the native vector
+    // index (no-op when none exists) on the SAME fire-and-forget chain — so an
+    // existing index stays in lock-step with writes instead of silently drifting.
     if (op === 'delete') {
-      removeEmbedding(this._adapter, table, pk).catch(handle);
+      removeEmbedding(this._adapter, table, pk)
+        .then(() => removeVectorIndexRow(this._adapter, table, pk))
+        .catch(handle);
       return;
     }
 
-    storeEmbedding(this._adapter, table, pk, row, def.embeddings).catch(handle);
+    storeEmbedding(this._adapter, table, pk, row, def.embeddings)
+      .then(() => mirrorVectorIndexRow(this._adapter, table, pk))
+      .catch(handle);
   }
 
   // -------------------------------------------------------------------------

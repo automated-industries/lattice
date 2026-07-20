@@ -103,7 +103,12 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
       if (res.status === 401 || res.status === 403 || res.status === 429) {
         if (!opts.noJs) {
           const target = res.url || u.toString();
-          const rendered = await renderViaPlaywright(target, timeoutMs, true);
+          const rendered = await renderViaPlaywright(
+            target,
+            timeoutMs,
+            true,
+            opts.allowPrivate ?? false,
+          );
           if (rendered) {
             const rdom = new JSDOM(rendered, { url: target });
             const rdoc = rdom.window.document as unknown as Document;
@@ -193,7 +198,12 @@ export async function crawlUrl(rawUrl: string, opts: CrawlOptions = {}): Promise
   // with one loud warning when `forceJs` explicitly asked for it.
   const wantJs = opts.forceJs === true && !opts.noJs;
   if (!opts.noJs && (wantJs || text.length < 200)) {
-    const rendered = await renderViaPlaywright(finalUrl, timeoutMs, wantJs);
+    const rendered = await renderViaPlaywright(
+      finalUrl,
+      timeoutMs,
+      wantJs,
+      opts.allowPrivate ?? false,
+    );
     if (rendered) {
       const rdom = new JSDOM(rendered, { url: finalUrl });
       const rdoc = rdom.window.document as unknown as Document;
@@ -390,9 +400,29 @@ async function sniffMime(body: Buffer): Promise<string> {
   }
 }
 
+interface PwRequest {
+  url(): string;
+  redirectedFrom(): PwRequest | null;
+}
+interface PwResponse {
+  url(): string;
+  request(): PwRequest;
+}
+interface PwFetchResponse {
+  status(): number;
+  headers(): Record<string, string>;
+}
+interface PwRoute {
+  request(): { url(): string };
+  continue(): Promise<void>;
+  abort(errorCode?: string): Promise<void>;
+  fetch(opts?: { url?: string; maxRedirects?: number }): Promise<PwFetchResponse>;
+  fulfill(opts: { response: PwFetchResponse }): Promise<void>;
+}
 interface PwPage {
-  goto(url: string, o: { waitUntil: string; timeout: number }): Promise<unknown>;
+  goto(url: string, o: { waitUntil: string; timeout: number }): Promise<PwResponse | null>;
   content(): Promise<string>;
+  route(pattern: string, handler: (route: PwRoute) => void | Promise<void>): Promise<void>;
 }
 interface PwBrowser {
   newPage(): Promise<PwPage>;
@@ -400,6 +430,21 @@ interface PwBrowser {
 }
 
 let warnedPlaywrightMissing = false;
+
+/**
+ * Per-hop SSRF decision for the headless-browser crawl: may Chromium fetch this request URL? A
+ * request is allowed only when it passes the SAME {@link assertSafeUrl} guard the initial fetch
+ * uses (public host, not a private/loopback/link-local/metadata address, incl. the IPv4-mapped
+ * IPv6 forms). Exported so the decision is unit-tested directly rather than through a real browser.
+ */
+export async function crawlHopAllowed(requestUrl: string, allowPrivate: boolean): Promise<boolean> {
+  try {
+    await assertSafeUrl(requestUrl, allowPrivate);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Render a page with headless Chromium (Playwright) and return its HTML, or
@@ -412,6 +457,7 @@ async function renderViaPlaywright(
   url: string,
   timeoutMs: number,
   warnIfMissing = false,
+  allowPrivate = false,
 ): Promise<string | null> {
   let chromium: { launch: (o?: { headless?: boolean }) => Promise<PwBrowser> };
   try {
@@ -437,10 +483,48 @@ async function renderViaPlaywright(
   try {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs });
+    // Per-hop SSRF re-validation for EVERY request Chromium makes (the main navigation, every
+    // sub-frame, every subresource) — none of which the one-time upstream `assertSafeUrl` saw.
+    // Chromium auto-follows 3xx redirects INTERNALLY, and `page.route`'s handler is not re-invoked
+    // for those hops ("only called for the first url if the response is a redirect"), so a
+    // continue() would let an attacker's public page 302 a request to 169.254.169.254 unobserved
+    // (blind SSRF). Instead we FOLLOW the redirect chain OURSELVES under the guard: fetch with
+    // maxRedirects:0, validate each Location, and only fulfill a final non-redirect response —
+    // aborting the moment any hop resolves to a private/metadata host.
+    const guardHop = async (hopUrl: string): Promise<boolean> =>
+      crawlHopAllowed(hopUrl, allowPrivate);
+    await page.route('**/*', async (route) => {
+      let target = route.request().url();
+      for (let hop = 0; hop < 10; hop++) {
+        if (!(await guardHop(target))) {
+          await route.abort('blockedbyclient');
+          return;
+        }
+        let resp: PwFetchResponse;
+        try {
+          resp = await route.fetch({ url: target, maxRedirects: 0 });
+        } catch {
+          await route.abort('failed');
+          return;
+        }
+        const status = resp.status();
+        const loc = resp.headers().location;
+        if (status >= 300 && status < 400 && typeof loc === 'string' && loc) {
+          target = new URL(loc, target).toString(); // validated on the next loop iteration
+          continue;
+        }
+        await route.fulfill({ response: resp });
+        return;
+      }
+      await route.abort('blockedbyclient'); // redirect loop / too many hops
+    });
+    const response = await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs });
+    // Backstop: also validate the main navigation's final URL (defense in depth — the route
+    // handler already validated every hop above).
+    if (response?.url() && !(await guardHop(response.url()))) return null;
     return await page.content();
   } catch {
-    return null; // Browser missing / navigation failed.
+    return null; // Browser missing / navigation failed / blocked by the SSRF guard.
   } finally {
     if (browser) await browser.close().catch(() => undefined);
   }

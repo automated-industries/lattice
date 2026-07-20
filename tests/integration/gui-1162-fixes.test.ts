@@ -84,13 +84,13 @@ describe('1.16.2 — B: audit entries carry a valid ISO timestamp', () => {
 });
 
 describe('1.16.2 — C/D/E: served bundle ships the new UI', () => {
-  it('includes the simple-view create form, cloud member/invite/danger UI, and clickable db rows', async () => {
+  it('ships the cloud member/invite/danger UI and clickable db rows', async () => {
     const s = await boot();
     const html = await (await fetch(`${s.url}/`)).text();
-    // C — create tile + (1.16.3) inline create view (modal retired).
-    expect(html).toContain('fs-tile-create');
-    expect(html).toContain('renderFsCreate');
-    expect(html).toContain('fs-create-form');
+    // (5.0 — the inline record-create view was removed entirely: no create form,
+    // tile, or modal ships anymore.)
+    expect(html).not.toContain('renderFsCreate');
+    expect(html).not.toContain('fs-create-form');
     expect(html).not.toContain('openFsCreateModal');
     // D2 — v3 invite flow: owner provisions a scoped member role and gets a
     // copyable credentials blob (the invite IS the credentials).

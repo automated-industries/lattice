@@ -10,10 +10,12 @@ export const statusIndicatorJs = `
     var appStatuses = {};
     var appStatusSeq = 0;
 
-    // Resolve (creating once) the #app-status node, re-homing it into the tab
-    // strip's status slot if a tab re-render replaced its container.
+    // Resolve (creating once) the #app-status node, re-homing it into the header
+    // status slot (where the version used to sit) if a re-render replaced its
+    // container. Falls back to the tab strip's slot, then the topbar.
     function appStatusHost() {
-      var slot = document.getElementById('tabstrip-status') || document.querySelector('header.topbar');
+      var slot = document.getElementById('header-status-slot') ||
+        document.getElementById('tabstrip-status') || document.querySelector('header.topbar');
       if (!slot) return null;
       var el = document.getElementById('app-status');
       if (!el) {

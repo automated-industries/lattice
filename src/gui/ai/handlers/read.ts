@@ -11,11 +11,20 @@ import {
   type GroupResult,
 } from './types.js';
 import { requireString, requireTable } from './helpers.js';
+import { parseBulkFilters } from './row-mutations.js';
 
 export const SECRET_MASK = '••••••••';
 
-/** Column names marked secret for a table (via the data-model `set_column_secret`). */
+/**
+ * Column names whose value must be MASKED before a row reaches the assistant / any reader — the
+ * union of two sources: (1) columns a user flagged secret in the data model
+ * (`set_column_secret`, stored in `_lattice_gui_column_meta`), and (2) framework-ENCRYPTED
+ * columns (`encrypted:` in config), which `db.get`/`db.query` DECRYPT on read. Both must be
+ * masked, or a config-encrypted-only column (never gui-flagged) would stream cleartext into the
+ * model context — the same leak the HTTP row route masks via getEncryptedColumns.
+ */
 export async function secretColumnsFor(db: Lattice, table: string): Promise<Set<string>> {
+  const out = new Set<string>(db.getEncryptedColumns(table)); // framework-encrypted (decrypted on read)
   try {
     const rows = (await db.query('_lattice_gui_column_meta', {
       filters: [
@@ -23,11 +32,11 @@ export async function secretColumnsFor(db: Lattice, table: string): Promise<Set<
         { col: 'secret', op: 'eq', val: 1 },
       ],
     })) as { column_name: string }[];
-    return new Set(rows.map((r) => r.column_name));
+    for (const r of rows) out.add(r.column_name);
   } catch {
-    // Meta table absent (fresh DB) — nothing is marked secret.
-    return new Set();
+    // Meta table absent (fresh DB) — only the framework-encrypted set applies.
   }
+  return out;
 }
 
 /**
@@ -80,6 +89,24 @@ export function frameUntrustedFileContent(table: string, row: Row): Row {
   };
 }
 
+/**
+ * Replace a dashboards row's `html` body with a short pointer before it reaches
+ * the model. Two reasons: the page is a complete standalone HTML document
+ * (often 50–100KB of boilerplate that would drown the context for zero signal —
+ * `spec`/`description`/`source_tables` carry everything the model needs), and
+ * it renders data the model shouldn't re-ingest as if it were instructions.
+ * Changes go through edit_dashboard, which re-authors from the stored page
+ * server-side, so the model never needs the raw body.
+ */
+export function redactDashboardHtml(table: string, row: Row): Row {
+  if (table !== 'dashboards') return row;
+  if (typeof row.html !== 'string' || row.html.length === 0) return row;
+  return {
+    ...row,
+    html: '[dashboard page — the user views it in Analytics; change it with edit_dashboard]',
+  };
+}
+
 export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
   const { ctx, name, args } = deps;
   switch (name) {
@@ -92,42 +119,76 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
             !n.startsWith('__lattice_') &&
             !ASSISTANT_HIDDEN_TABLES.has(n),
         );
-      const out: { name: string; rowCount: number }[] = [];
-      for (const t of tables) out.push({ name: t, rowCount: await ctx.db.count(t) });
+      const out: { name: string; rowCount: number; computed?: true; readOnly?: true }[] = [];
+      for (const t of tables) {
+        out.push({
+          name: t,
+          rowCount: await ctx.db.count(t),
+          // Tag computed views so the model never targets one with a row write
+          // (their rows are projections — edit the source records instead).
+          ...(ctx.computedTables?.has(t)
+            ? { computed: true as const, readOnly: true as const }
+            : {}),
+        });
+      }
       return { ok: true, result: out };
     }
     case 'list_rows': {
       const table = requireTable(args.table, ctx.validTables);
       const includeDeleted = args.includeDeleted === true;
-      // Deterministic, reproducible order — the 200-row window is only stable
-      // if the sort is. Without an ORDER BY, two identical reads can return rows
-      // in different orders, so the assistant reads a different row each time and
-      // reports conflicting values. `created_at` gives a natural chronological
-      // order where it exists; the primary key (single-column `id` here) is the
-      // universal stable fallback. Explicit ORDER BY behaves identically on
-      // SQLite + Postgres, and composes after the soft-delete WHERE.
       const cols = ctx.db.getRegisteredColumns(table);
+      const pk = ctx.db.getPrimaryKey(table)[0] ?? 'id';
+      const hasCol = (name: string): boolean => !!cols && name in cols;
+      // Order by a real DOMAIN-time column (WHEN the event happened) in preference to
+      // the row's created_at (its INSERT/sync time): a meeting for July 2 that synced
+      // in April carries an April created_at, so created_at ordering is chronologically
+      // wrong for event data. The model can override with orderBy; otherwise fall back
+      // created_at → primary key. An explicit ORDER BY also keeps the paged window
+      // stable + reproducible (identical on SQLite + Postgres, after the soft-delete
+      // WHERE).
+      const DOMAIN_TIME = [
+        'start_at',
+        'starts_at',
+        'occurred_at',
+        'happened_at',
+        'event_date',
+        'meeting_date',
+        'sent_at',
+        'due_at',
+        'ends_at',
+        'date',
+      ];
       const orderBy =
-        cols && 'created_at' in cols ? 'created_at' : (ctx.db.getPrimaryKey(table)[0] ?? 'id');
-      // Paginate so the model can page a large table deliberately (limit +
-      // offset) instead of pulling a 200-row blob every read. Default + max stay
-      // 200 (unchanged behavior when the model omits them); offset is new.
+        typeof args.orderBy === 'string' && hasCol(args.orderBy)
+          ? args.orderBy
+          : (DOMAIN_TIME.find(hasCol) ?? (hasCol('created_at') ? 'created_at' : pk));
+      // Newest-first by DEFAULT. The old hardcoded 'asc' meant a read of a busy table
+      // returned the OLDEST 200 rows and never reached today — "the most recent
+      // meeting" surfaced April. The model can pass orderDir:'asc' when it wants the
+      // oldest.
+      const orderDir: 'asc' | 'desc' = args.orderDir === 'asc' ? 'asc' : 'desc';
       const limit = Math.min(
         200,
         Math.max(1, typeof args.limit === 'number' ? Math.floor(args.limit) : 200),
       );
       const offset = Math.max(0, typeof args.offset === 'number' ? Math.floor(args.offset) : 0);
       // On a cloud, Postgres RLS filters reads to the rows this member may see.
-      const opts: Parameters<typeof ctx.db.query>[1] = { limit, orderBy, orderDir: 'asc' };
+      const opts: Parameters<typeof ctx.db.query>[1] = { limit, orderBy, orderDir };
       if (offset > 0) opts.offset = offset;
+      // Optional model-supplied filters (e.g. a date range: start_at >= <today>),
+      // validated against the table's columns; the soft-delete filter is appended.
+      const filters = parseBulkFilters(args.filter, table, ctx.db);
       if (ctx.softDeletable.has(table) && !includeDeleted) {
-        opts.filters = [{ col: 'deleted_at', op: 'isNull' }];
+        filters.push({ col: 'deleted_at', op: 'isNull' });
       }
+      if (filters.length) opts.filters = filters as NonNullable<typeof opts.filters>;
       const rows: Row[] = await ctx.db.query(table, opts);
       const secretCols = await secretColumnsFor(ctx.db, table);
       return {
         ok: true,
-        result: rows.map((r) => frameUntrustedFileContent(table, redactRow(r, secretCols))),
+        result: rows.map((r) =>
+          redactDashboardHtml(table, frameUntrustedFileContent(table, redactRow(r, secretCols))),
+        ),
       };
     }
     case 'get_row': {
@@ -139,9 +200,9 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
       if (row === null) return { ok: false, error: 'Row not found' };
       return {
         ok: true,
-        result: frameUntrustedFileContent(
+        result: redactDashboardHtml(
           table,
-          redactRow(row, await secretColumnsFor(ctx.db, table)),
+          frameUntrustedFileContent(table, redactRow(row, await secretColumnsFor(ctx.db, table))),
         ),
       };
     }

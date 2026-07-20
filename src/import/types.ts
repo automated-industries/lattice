@@ -75,6 +75,14 @@ export interface ProposedSchema {
   entities: InferredEntity[];
   dimensions: InferredDimension[];
   linkages: InferredLinkage[];
+  /**
+   * Link candidates in the marginal confidence band — at or above the "drop as
+   * noise" floor but below the creation threshold (see `InferOptions.
+   * minLinkConfidence`). NOT materialized: the referencing column survives as a
+   * plain scalar column, and the importer asks the user whether to connect it
+   * instead of guessing. Same shape as {@link linkages}, confidence included.
+   */
+  marginalLinks: InferredLinkage[];
   /** Top-level keys not imported (derived rollups, meta, scalars, column dictionaries). */
   skipped: { key: string; reason: string }[];
 }

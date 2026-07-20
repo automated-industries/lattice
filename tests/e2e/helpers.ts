@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 export interface BootedGui {
   url: string;
@@ -30,11 +31,30 @@ const DEFAULT_YAML = [
  * Each call gets its own ~/.lattice dir + encryption key so specs never share
  * credentials or saved databases. Call `close()` (return value) in afterEach.
  */
-export async function bootGui(opts: { yaml?: string; version?: string } = {}): Promise<BootedGui> {
+export async function bootGui(
+  opts: { yaml?: string; version?: string; connected?: boolean; welcome?: boolean } = {},
+): Promise<BootedGui> {
   const dir = mkdtempSync(join(tmpdir(), 'lattice-e2e-'));
   const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-e2e-home-'));
   process.env.LATTICE_CONFIG_DIR = cfgDir;
+  // Isolate the workspace-registry ROOT too. A lattice install exports
+  // LATTICE_ROOT pointing at the real ~/.lattice, and root resolution treats it
+  // as an always-wins override — so on a dev machine the booted GUI would READ
+  // the developer's real workspace list and the workspace-lifecycle specs would
+  // WRITE their throwaway workspaces (Alpha/Beta/…) into the real registry.json.
+  // A fresh per-boot root keeps every spec hermetic (CI is unaffected either way).
+  const rootDir = join(cfgDir, '.lattice');
+  mkdirSync(join(rootDir, '.config'), { recursive: true });
+  process.env.LATTICE_ROOT = rootDir;
   process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+  // Every new workspace seeds the "Welcome to Lattice!" dashboard and boots into it.
+  // Specs that assert the empty Analytics state (no dashboards) pass `welcome: false`.
+  // Set explicitly each boot so the flag never leaks between specs in the same process.
+  process.env.LATTICE_SEED_WELCOME = opts.welcome === false ? '0' : '1';
+  // A connected Claude subscription is mandatory (the first-run wall gates the
+  // whole app), so specs boot connected by default. A spec exercising the wall
+  // itself passes `connected: false` to boot disconnected.
+  if (opts.connected !== false) seedClaudeOAuth();
   mkdirSync(join(dir, 'data'), { recursive: true });
   const outputDir = join(dir, 'context');
   mkdirSync(outputDir, { recursive: true });
@@ -79,4 +99,21 @@ export async function createRow(
   });
   if (!res.ok) throw new Error(`createRow ${table} failed: ${res.status} ${await res.text()}`);
   return (await res.json()) as Record<string, unknown>;
+}
+
+/** Navigate to a CONFIGURE route and wait for the Configure layout to show.
+ * The app boots into the Analytics view, so specs that exercise Configure
+ * surfaces (sources, tabs, folders, outputs) enter through a concrete
+ * Configure hash instead of the boot landing. */
+export async function gotoConfigure(
+  page: import('@playwright/test').Page,
+  url: string,
+  hash = '#/folders',
+): Promise<void> {
+  await page.goto(url + hash);
+  // A same-page hash change doesn't reload; force the route either way.
+  await page.evaluate((h) => {
+    if (location.hash !== h) location.hash = h;
+  }, hash);
+  await page.waitForSelector('.layout', { state: 'visible' });
 }

@@ -14,7 +14,9 @@ import {
   materializeJunction,
   createUserEntity,
   softDeleteUserEntity,
+  aiDeleteEntity,
 } from './schema-ops.js';
+import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import type { LatticeFieldDef } from '../config/types.js';
 import { isNativeEntity } from '../framework/native-entities.js';
@@ -93,6 +95,30 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
  * it handled the request. The interleaved PUT /api/gui-meta/columns/:t/:c route
  * keeps its relative position within the block.
  */
+/**
+ * Owner-gate for a config/DDL-mutating schema route on a secured cloud. Returns
+ * true (and writes a 403) when the caller is a scoped member — postgres + RLS
+ * installed + cannot manage roles. Returns false (no response written) for
+ * local/sqlite, an unsecured cloud, or the owner, so the caller proceeds.
+ *
+ * These routes mutate the OWNER's on-disk config (saveConfigDoc is a raw
+ * writeFileSync, which several run BEFORE any DB DDL) and/or run schema DDL —
+ * neither of which Postgres RLS protects. So every config/DDL-mutating schema
+ * route must gate here, not rely on RLS alone; a scoped member could otherwise
+ * corrupt the owner's config over HTTP even though RLS blocks the DB write.
+ */
+export async function denyIfNotCloudOwner(
+  db: Parameters<typeof canManageRoles>[0],
+  res: ServerResponse,
+  verb: string,
+): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return false;
+  if (!(await cloudRlsInstalled(db))) return false;
+  if (await canManageRoles(db)) return false;
+  sendJson(res, { error: `Only a cloud owner can ${verb}` }, 403);
+  return true;
+}
+
 export async function handleSchemaRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -111,6 +137,7 @@ export async function handleSchemaRoutes(
 
   // ── Create entity (additive — not in audit log, irreversible from GUI) ──
   if (method === 'POST' && pathname === '/api/schema/entities') {
+    if (await denyIfNotCloudOwner(active.db, res, 'create a table')) return true;
     const body = (await readJson<unknown>(req)) as { name?: unknown; icon?: unknown };
     const entityName = typeof body.name === 'string' ? body.name.trim() : '';
     if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(entityName)) {
@@ -159,6 +186,7 @@ export async function handleSchemaRoutes(
   // Creates a junction table with two ref columns linking `left` and
   // `right`, so it surfaces as an m2m edge in the Data Model graph.
   if (method === 'POST' && pathname === '/api/schema/junctions') {
+    if (await denyIfNotCloudOwner(active.db, res, 'create a link table')) return true;
     const body = (await readJson<unknown>(req)) as {
       left?: unknown;
       right?: unknown;
@@ -189,6 +217,29 @@ export async function handleSchemaRoutes(
       sendJson(
         res,
         { error: `"${left}" and "${right}" are already linked (${existingJunction.name})` },
+        400,
+      );
+      return true;
+    }
+    // EXCLUSIVITY: a belongsTo nesting between the pair (either direction)
+    // conflicts with a many-to-many — refuse with a distinct wording so the
+    // client surfaces it (the duplicate-junction swallow must not eat this).
+    const allTables = getGuiEntities(active.configPath, active.outputDir).tables;
+    const nestsIn = (child: string, parent: string): boolean => {
+      const t = allTables.find((x) => x.name === child);
+      return (
+        t !== undefined &&
+        Object.values(t.relations).some((r) => r.type === 'belongsTo' && r.table === parent)
+      );
+    };
+    if (left !== right && (nestsIn(left, right) || nestsIn(right, left))) {
+      const child = nestsIn(left, right) ? left : right;
+      const parent = child === left ? right : left;
+      sendJson(
+        res,
+        {
+          error: `"${child}" is nested inside "${parent}" — un-nest it before creating a relationship between them`,
+        },
         400,
       );
       return true;
@@ -251,6 +302,27 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `"${name}" is a built-in entity and cannot be deleted` }, 400);
       return true;
     }
+    if (active.computedTables.has(name)) {
+      sendJson(
+        res,
+        {
+          error: `"${name}" is a computed table — delete it via DELETE /api/computed-tables/${name}`,
+        },
+        400,
+      );
+      return true;
+    }
+    // Computed-source guard: refuse (naming the dependents, no cascade) while
+    // any computed table still reads from this one.
+    try {
+      assertNotComputedSource(active, name);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
+      return true;
+    }
+    // Owner-gate: dropping a table mutates the owner's config; RLS alone doesn't
+    // gate this DDL/config path.
+    if (await denyIfNotCloudOwner(active.db, res, 'delete tables')) return true;
     // Inbound-FK guard: refuse if another table links to this one.
     const inbound: string[] = [];
     for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
@@ -403,6 +475,7 @@ export async function handleSchemaRoutes(
   // Lattice instance so the in-memory schema matches the new config.
   // We don't audit-log schema changes (they're structural, not data).
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/rename$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, 'rename a table')) return true;
     const oldName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(oldName)) {
       sendJson(res, { error: `Unknown entity: ${oldName}` }, 400);
@@ -410,6 +483,31 @@ export async function handleSchemaRoutes(
     }
     if (isNativeEntity(oldName)) {
       sendJson(res, { error: `"${oldName}" is a built-in entity and cannot be modified` }, 400);
+      return true;
+    }
+    if (active.computedTables.has(oldName)) {
+      sendJson(res, { error: `"${oldName}" is a computed table and cannot be renamed` }, 400);
+      return true;
+    }
+    // A connected external table is a live, read-only mirror: its rows sync under THIS name, so a
+    // renamed copy would just re-sync under the original name and orphan the renamed one. Refuse
+    // the shape change (mirrors the row-write + add/rename-column guards) — the mirror is read-only.
+    if (active.db.getConnectedSource(oldName)) {
+      sendJson(
+        res,
+        {
+          error: `"${oldName}" is a live, read-only view of a connected external source and can't be renamed. To change what it's called, rename it in the source (or disconnect the connector).`,
+        },
+        400,
+      );
+      return true;
+    }
+    // A computed table's compiled SQL references its sources by name — a rename
+    // would break those projections, so refuse while any depend on this table.
+    try {
+      assertNotComputedSource(active, oldName);
+    } catch (e) {
+      sendJson(res, { error: (e as Error).message }, 400);
       return true;
     }
     const body = (await readJson<unknown>(req)) as { to?: unknown };
@@ -449,6 +547,7 @@ export async function handleSchemaRoutes(
     return true;
   }
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, "change a table's columns")) return true;
     const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(entityName)) {
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
@@ -615,6 +714,7 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
       return true;
     }
+    if (await denyIfNotCloudOwner(active.db, res, 'add a link')) return true;
     const body = (await readJson<unknown>(req)) as { target?: unknown };
     const target = typeof body.target === 'string' ? body.target.trim() : '';
     if (!active.validTables.has(target)) {
@@ -637,6 +737,43 @@ export async function handleSchemaRoutes(
       Object.values(summary.relations).some((r) => r.type === 'belongsTo' && r.table === target);
     if (alreadyLinked) {
       sendJson(res, { error: `"${entityName}" already links to "${target}"` }, 400);
+      return true;
+    }
+    // EXCLUSIVITY (mutual nesting): the target must not already nest inside this
+    // entity — two tables can never contain each other.
+    const allForLink = getGuiEntities(active.configPath, active.outputDir).tables;
+    const targetSummary = allForLink.find((t) => t.name === target);
+    const reverseNested =
+      targetSummary !== undefined &&
+      Object.values(targetSummary.relations).some(
+        (r) => r.type === 'belongsTo' && r.table === entityName,
+      );
+    if (reverseNested) {
+      sendJson(
+        res,
+        {
+          error: `"${target}" is nested inside "${entityName}" — tables cannot be nested into each other`,
+        },
+        400,
+      );
+      return true;
+    }
+    // EXCLUSIVITY (m2m vs nesting): a many-to-many junction between the pair
+    // conflicts with a belongsTo nesting.
+    const junctionBetween = allForLink.find((j) => {
+      if (!active.junctionTables.has(j.name)) return false;
+      const bt = Object.values(j.relations).filter((r) => r.type === 'belongsTo');
+      const tables = new Set(bt.map((r) => r.table));
+      return bt.length === 2 && tables.has(entityName) && tables.has(target);
+    });
+    if (junctionBetween) {
+      sendJson(
+        res,
+        {
+          error: `"${entityName}" and "${target}" are connected by a relationship (${junctionBetween.name}) — remove it before nesting one inside the other`,
+        },
+        400,
+      );
       return true;
     }
     // Name the FK <target>_id, de-duplicating against existing columns.
@@ -677,6 +814,54 @@ export async function handleSchemaRoutes(
     return true;
   }
 
+  // ── Merge one entity into another (move rows, then remove the source) ──
+  // Drag-to-merge in the Model → Tables explorer. Migrates every row of
+  // <source> into <target> with the SAME reversible primitive the assistant uses
+  // (aiDeleteEntity move_to): best-effort column mapping, soft-delete the
+  // originals, then soft-delete the emptied source — all through the audited
+  // mutation primitives, so the whole merge is reversible from history. The
+  // delete leg unregisters the source in place (no reopen), exactly as the chat
+  // delete_entity path does, so the bound `active` stays consistent. Owner-gated.
+  if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/merge$/.test(pathname)) {
+    const source = decodeURIComponent(pathname.split('/')[4] ?? '');
+    if (!active.validTables.has(source)) {
+      sendJson(res, { error: `Unknown entity: ${source}` }, 400);
+      return true;
+    }
+    if (await denyIfNotCloudOwner(active.db, res, 'merge tables')) return true;
+    const body = (await readJson<unknown>(req)) as { target?: unknown };
+    const target = typeof body.target === 'string' ? body.target.trim() : '';
+    if (!active.validTables.has(target)) {
+      sendJson(res, { error: 'Target entity must exist' }, 400);
+      return true;
+    }
+    if (source === target) {
+      sendJson(res, { error: 'Cannot merge an entity into itself' }, 400);
+      return true;
+    }
+    const outcome = await aiDeleteEntity(active, source, { move_to: target }, sessionId);
+    // move_to is always supplied, so `needsResolution` is unreachable here — but
+    // surface it rather than silently returning 200 if that ever changes.
+    if ('needsResolution' in outcome) {
+      sendJson(res, { error: outcome.message, rowCount: outcome.rowCount }, 400);
+      return true;
+    }
+    // An ok:false here is a precondition failure (row cap exceeded, inbound FK,
+    // native/junction target) — client-actionable, so 400, not a 500 server fault.
+    if (!outcome.ok) {
+      sendJson(res, { error: outcome.error }, 400);
+      return true;
+    }
+    sendJson(res, {
+      ok: true,
+      merged: source,
+      into: target,
+      movedRows: outcome.movedRows ?? 0,
+      rewiredLinks: outcome.rewiredLinks ?? 0,
+    });
+    return true;
+  }
+
   // ── Destroy a link (drop the FK column) ──────────────────────────
   // Links are destroy-only and owner-gated. Each link is managed
   // individually — including the legs of a (pure) junction table — and
@@ -684,6 +869,7 @@ export async function handleSchemaRoutes(
   // COLUMN), never a table. To remove a whole table, use
   // DELETE /api/schema/entities/:name.
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)) {
+    if (await denyIfNotCloudOwner(active.db, res, 'remove a link')) return true;
     const parts = pathname.split('/');
     const entityName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[6] ?? '');
@@ -756,6 +942,7 @@ export async function handleSchemaRoutes(
   // (soft-deleted) object and reclaim space. Irreversible — after a purge,
   // the prior soft-delete can no longer be reverted (its data is gone).
   if (method === 'POST' && pathname === '/api/schema/purge') {
+    if (await denyIfNotCloudOwner(active.db, res, 'purge tables')) return true;
     const body = (await readJson<unknown>(req)) as {
       type?: unknown;
       name?: unknown;

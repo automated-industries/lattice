@@ -16,6 +16,7 @@ import { allAsyncOrSync, addColumnAsyncOrSync } from '../db/adapter.js';
 
 const DELETED_AT_SENTINEL = 'internal:upgrade:deleted-at-empty-to-null:v1';
 const FILES_PATH_SENTINEL = 'internal:upgrade:files-path-to-local-ref:v1';
+const HTML_ARTIFACTS_SENTINEL = 'internal:upgrade:html-artifacts-to-dashboards:v1';
 
 /**
  * Run every silent open-time data upgrade. Idempotent + no-op on a 4.0-native DB.
@@ -29,8 +30,10 @@ const FILES_PATH_SENTINEL = 'internal:upgrade:files-path-to-local-ref:v1';
  * step re-runs next open (and the once-it-holds case self-heals).
  */
 export async function upgradeLegacyData(db: Lattice): Promise<void> {
+  await runUpgradeStep('ensure deleted_at column', () => ensureDeletedAtColumn(db));
   await runUpgradeStep('deleted_at normalization', () => normalizeEmptyDeletedAt(db));
   await runUpgradeStep('files path backfill', () => backfillFilesPath(db));
+  await runUpgradeStep('html artifacts to dashboards', () => migrateHtmlArtifactsToDashboards(db));
 }
 
 /** Best-effort runner for one open-time data-upgrade step (see {@link upgradeLegacyData}). */
@@ -42,6 +45,58 @@ async function runUpgradeStep(name: string, fn: () => Promise<void>): Promise<vo
     console.warn(
       `[lattice] open-time data upgrade step "${name}" skipped (will retry on next open): ${msg}`,
     );
+  }
+}
+
+/**
+ * Every user table (excludes the `__lattice_*` bookkeeping tables and SQLite's
+ * internal `sqlite_*` tables). Dialect-aware introspection.
+ */
+async function allUserTables(db: Lattice): Promise<string[]> {
+  const rows =
+    db.getDialect() === 'postgres'
+      ? ((await allAsyncOrSync(
+          db.adapter,
+          `SELECT table_name AS name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'`,
+        )) as { name: string }[])
+      : ((await allAsyncOrSync(
+          db.adapter,
+          `SELECT name FROM sqlite_master WHERE type = 'table'`,
+        )) as { name: string }[]);
+  return rows
+    .map((r) => r.name)
+    .filter((n) => !n.startsWith('__lattice') && !n.startsWith('sqlite_'));
+}
+
+/**
+ * Every queryable user table MUST carry a `deleted_at` column — it's what gives a
+ * table reversible (soft) delete, merge, and undo. A table created by an older or
+ * non-standard path (an import, a hand-written migration) without the soft-delete
+ * envelope made merge/delete refuse ("no deleted_at column to reversibly remove").
+ * Backfill the standard nullable `TEXT deleted_at` on any user table missing it so
+ * the envelope is universal: NULL = live, a timestamp = deleted, so every existing
+ * (live) row keeps reading correctly with zero data change.
+ *
+ * Self-idempotent WITHOUT a sentinel: we introspect the CURRENT schema each open
+ * and only ALTER tables that presently lack the column, so a re-open finds nothing
+ * to do (SQLite's ADD COLUMN is not idempotent, so the pre-check is load-bearing).
+ * Per-table fault isolation: one table that can't be altered (a lock, an exotic
+ * constraint) is warned and skipped, never fatal to the open — the next open
+ * retries it. This mirrors the files-path backfill's add-missing-columns pattern.
+ */
+async function ensureDeletedAtColumn(db: Lattice): Promise<void> {
+  const have = new Set(await tablesWithDeletedAt(db));
+  const missing = (await allUserTables(db)).filter((t) => !have.has(t));
+  for (const table of missing) {
+    try {
+      await addColumnAsyncOrSync(db.adapter, table, 'deleted_at', 'TEXT');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[lattice] could not add deleted_at to "${table}" (will retry next open): ${msg}`,
+      );
+    }
   }
 }
 
@@ -156,6 +211,125 @@ async function filesColumns(db: Lattice): Promise<Set<string>> {
  * Only runs when the `files` table still HAS a `path` column — on a 4.0-native DB
  * there is no such column and there is nothing to do.
  */
+/** True when a physical table exists in the current schema (dialect-aware). */
+async function tableExists(db: Lattice, table: string): Promise<boolean> {
+  const sql =
+    db.getDialect() === 'postgres'
+      ? `SELECT table_name AS name FROM information_schema.tables
+          WHERE table_schema = current_schema() AND table_name = '${table}'`
+      : `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${table}'`;
+  const rows = (await allAsyncOrSync(db.adapter, sql)) as { name: string }[];
+  return rows.length > 0;
+}
+
+/**
+ * 5.0 promoted assistant-authored HTML pages from `files` artifacts
+ * (artifact_type='html') to first-class `dashboards` rows. Move every legacy
+ * HTML artifact across — same id (so custom grants stay valid), title from the
+ * display name minus its extension, page body from `extracted_text` — then
+ * HARD-delete the source files rows in the same transaction: the content lives
+ * on under the same id, and a soft-deleted leftover would linger in the trash
+ * view and the artifact counts forever. Markdown artifacts are untouched.
+ *
+ * SKIPPED (no sentinel, retries next open) until both physical preconditions
+ * hold: the `dashboards` table exists (created by schema apply on a normal
+ * open) and `files` actually has an `artifact_type` column (a pre-artifact-era
+ * table has nothing to migrate and the WHERE would error).
+ *
+ * On Postgres the ownership bookkeeping is re-keyed BEFORE the delete, inside
+ * the same server-side block: the migrating connection is the workspace
+ * owner's, so without moving each row's `__lattice_owners` / grants entries
+ * from ('files', pk) to ('dashboards', pk) the insert trigger would re-own
+ * every migrated row to the workspace owner — flipping a member's private
+ * page to owner-visible. The bookkeeping tables only exist once a cloud is
+ * secured, so each move is guarded by to_regclass.
+ */
+async function migrateHtmlArtifactsToDashboards(db: Lattice): Promise<void> {
+  if (!(await tableExists(db, 'dashboards'))) return; // schema apply hasn't landed — retry next open
+  const cols = await filesColumns(db);
+  if (!cols.has('artifact_type')) return; // pre-artifact files table — nothing to migrate yet
+
+  if (db.getDialect() === 'postgres') {
+    await db.migrate([
+      {
+        version: HTML_ARTIFACTS_SENTINEL,
+        sql: `DO $LATTICE_DASH$
+BEGIN
+  INSERT INTO dashboards (id, title, html, description, created_at, updated_at, deleted_at)
+  SELECT id,
+         COALESCE(NULLIF(regexp_replace(original_name, '\\.html?$', '', 'i'), ''), 'Dashboard'),
+         extracted_text,
+         description,
+         created_at, updated_at, deleted_at
+    FROM files
+   WHERE artifact_type = 'html';
+  -- Re-key ownership: the INSERT above fires the dashboards ownership trigger,
+  -- which stamps every migrated row as owned by THIS (owner) connection at the
+  -- table default. Overwrite those stamps with the source rows' real owner +
+  -- visibility, insert entries the trigger didn't create, then drop the stale
+  -- files-side entries. Without the overwrite a member's private page would
+  -- flip to owner-owned.
+  IF to_regclass('__lattice_owners') IS NOT NULL THEN
+    UPDATE __lattice_owners d
+       SET owner_role = o.owner_role, visibility = o.visibility
+      FROM __lattice_owners o
+      JOIN files f ON f.id = o.pk AND f.artifact_type = 'html'
+     WHERE o.table_name = 'files' AND d.table_name = 'dashboards' AND d.pk = o.pk;
+    INSERT INTO __lattice_owners (table_name, pk, owner_role, visibility)
+    SELECT 'dashboards', o.pk, o.owner_role, o.visibility
+      FROM __lattice_owners o
+      JOIN files f ON f.id = o.pk AND f.artifact_type = 'html'
+     WHERE o.table_name = 'files'
+    ON CONFLICT (table_name, pk) DO NOTHING;
+    DELETE FROM __lattice_owners o
+     USING files f
+     WHERE o.table_name = 'files' AND o.pk = f.id AND f.artifact_type = 'html';
+  END IF;
+  IF to_regclass('__lattice_row_grants') IS NOT NULL THEN
+    INSERT INTO __lattice_row_grants (table_name, pk, grantee_role, granted_by)
+    SELECT 'dashboards', g.pk, g.grantee_role, g.granted_by
+      FROM __lattice_row_grants g
+      JOIN files f ON f.id = g.pk AND f.artifact_type = 'html'
+     WHERE g.table_name = 'files'
+    ON CONFLICT (table_name, pk, grantee_role) DO NOTHING;
+    DELETE FROM __lattice_row_grants g
+     USING files f
+     WHERE g.table_name = 'files' AND g.pk = f.id AND f.artifact_type = 'html';
+  END IF;
+  DELETE FROM files WHERE artifact_type = 'html';
+END $LATTICE_DASH$;`,
+      },
+    ]);
+    return;
+  }
+
+  // SQLite: the adapter rejects multi-statement SQL, so this is TWO
+  // single-statement migrations applied in ONE db.migrate pass (one
+  // transaction). The runner re-sorts a batch by version string — the numeric
+  // step prefixes are LOAD-BEARING so the copy always sorts before the delete.
+  await db.migrate([
+    {
+      version: `${HTML_ARTIFACTS_SENTINEL}:1-copy`,
+      sql: `INSERT INTO dashboards (id, title, html, description, created_at, updated_at, deleted_at)
+            SELECT id,
+                   CASE
+                     WHEN lower(original_name) LIKE '%.html' THEN substr(original_name, 1, length(original_name) - 5)
+                     WHEN lower(original_name) LIKE '%.htm' THEN substr(original_name, 1, length(original_name) - 4)
+                     ELSE COALESCE(NULLIF(original_name, ''), 'Dashboard')
+                   END,
+                   extracted_text,
+                   description,
+                   created_at, updated_at, deleted_at
+              FROM files
+             WHERE artifact_type = 'html';`,
+    },
+    {
+      version: `${HTML_ARTIFACTS_SENTINEL}:2-delete`,
+      sql: `DELETE FROM files WHERE artifact_type = 'html';`,
+    },
+  ]);
+}
+
 async function backfillFilesPath(db: Lattice): Promise<void> {
   const cols = await filesColumns(db);
   if (!cols.has('path')) return; // 4.0-native files table — no legacy `path`, nothing to do

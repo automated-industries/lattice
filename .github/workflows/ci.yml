@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # Release trains are integration branches — PRs into them need the same
+    # gate as PRs into main.
+    branches: [main, 'release/**']
 
 jobs:
   # Full quality gate on Linux, with a real Postgres so the integration tests

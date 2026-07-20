@@ -106,6 +106,7 @@ describe('migrateLatticeData()', () => {
     expect(result.tablesCopied.sort()).toEqual([
       'chat_messages',
       'chat_threads',
+      'dashboards',
       'files',
       'items',
       'notes',

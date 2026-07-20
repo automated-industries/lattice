@@ -106,14 +106,18 @@ describe('GUI server — SQLite read routes', () => {
     // User-facing native entities (files/notes/secrets) appear in the Objects
     // list, but the assistant's internal conversation storage must NOT — it's
     // an implementation detail of the chat rail, not a data object.
-    const entityNames = (
-      (entities.body.tables ?? entities.body.entities ?? []) as {
-        name: string;
-      }[]
-    ).map((t) => t.name);
+    const entityTables = (entities.body.tables ?? entities.body.entities ?? []) as {
+      name: string;
+      origin?: string;
+    }[];
+    const entityNames = entityTables.map((t) => t.name);
     expect(entityNames).toContain('files'); // a user-facing native entity is present…
     expect(entityNames).not.toContain('chat_threads'); // …but conversation storage is hidden
     expect(entityNames).not.toContain('chat_messages');
+    // Provenance origin is stamped: ingested data (files) is a 'source'; a
+    // config-declared table with no ingestion or lineage signal is unstamped.
+    expect(entityTables.find((t) => t.name === 'files')?.origin).toBe('source');
+    expect(entityTables.find((t) => t.name === 'items')?.origin).toBeUndefined();
 
     for (const route of [
       '/api/graph',
@@ -124,6 +128,81 @@ describe('GUI server — SQLite read routes', () => {
     ]) {
       const r = await api(h.url, route);
       expect(r.status, `${route} should be 200`).toBe(200);
+    }
+  });
+
+  it('/api/entities-summary mirrors /api/entities tables + counts without the file scan', async () => {
+    const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
+    const h = await boot(cfg);
+    // Seed a row so a count is non-zero (the summary must still report counts).
+    const created = await api(h.url, '/api/tables/items/rows', {
+      method: 'POST',
+      body: { name: 'x' },
+    });
+    expect(created.status).toBe(201);
+
+    const full = await api(h.url, '/api/entities');
+    const summary = await api(h.url, '/api/entities-summary');
+    expect(summary.status).toBe(200);
+
+    const names = (b: Record<string, unknown>): string[] =>
+      ((b.tables ?? []) as { name: string }[]).map((t) => t.name).sort();
+    const counts = (b: Record<string, unknown>): Record<string, number | null> =>
+      Object.fromEntries(
+        ((b.tables ?? []) as { name: string; rowCount: number | null }[]).map((t) => [
+          t.name,
+          t.rowCount,
+        ]),
+      );
+    // Same Objects list (tables + row counts) as the full endpoint...
+    expect(names(summary.body)).toEqual(names(full.body));
+    expect(counts(summary.body)).toEqual(counts(full.body));
+    expect(counts(summary.body).items).toBe(1);
+    // ...but the O(files) rendered-file scan is skipped (the GUI never reads it).
+    expect(summary.body.entities).toEqual([]);
+  });
+});
+
+describe('GUI server — provenance routes', () => {
+  it('validates input, returns the tiered payload, and scopes to a row', async () => {
+    const cfg = writeConfig(dirs[0]!, 'lattice.config.yml', 'main');
+    const h = await boot(cfg);
+
+    // Missing / unknown table → 400.
+    expect((await api(h.url, '/api/provenance')).status).toBe(400);
+    const unknown = await api(h.url, '/api/provenance?table=does_not_exist');
+    expect(unknown.status).toBe(400);
+    expect(String(unknown.body.error)).toMatch(/Unknown table/);
+
+    // Valid table → 200 with the {nodes, edges} shape + the central object node.
+    const tbl = await api(h.url, '/api/provenance?table=items');
+    expect(tbl.status).toBe(200);
+    expect(Array.isArray(tbl.body.nodes)).toBe(true);
+    expect(Array.isArray(tbl.body.edges)).toBe(true);
+    const tblNodes = tbl.body.nodes as { id: string; type: string }[];
+    expect(tblNodes.some((n) => n.id === 'table:items' && n.type === 'object')).toBe(true);
+
+    // A native entity is allowlisted too.
+    expect((await api(h.url, '/api/provenance?table=files')).status).toBe(200);
+
+    // Row scope: 400 without id, 404 for a missing row, 200 (centered on the row)
+    // once it exists.
+    expect((await api(h.url, '/api/provenance/row?table=items')).status).toBe(400);
+    expect((await api(h.url, '/api/provenance/row?table=items&id=nope')).status).toBe(404);
+    const created = await api(h.url, '/api/tables/items/rows', {
+      method: 'POST',
+      body: { name: 'x' },
+    });
+    const id = created.body.id as string;
+    const rowProv = await api(h.url, `/api/provenance/row?table=items&id=${id}`);
+    expect(rowProv.status).toBe(200);
+    const rowNodes = rowProv.body.nodes as { id: string; type: string }[];
+    expect(rowNodes.some((n) => n.id === `obj:items:${id}` && n.type === 'object')).toBe(true);
+
+    // Every edge endpoint resolves to a node (prune invariant).
+    const ids = new Set(rowNodes.map((n) => n.id));
+    for (const e of rowProv.body.edges as { source: string; target: string }[]) {
+      expect(ids.has(e.source) && ids.has(e.target)).toBe(true);
     }
   });
 });

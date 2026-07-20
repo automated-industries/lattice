@@ -1,10 +1,33 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJson, readJson, parsePageParam } from './http.js';
+import { sendJson, readJson, parsePageParam, MAX_ROWS_PAGE } from './http.js';
 import type { Row } from '../types.js';
 import type { GuiRequestContext } from './request-context.js';
-import { readRelationFor, attachRowAccess } from './active-db.js';
-import { createRow, updateRow, deleteRow, linkRows, unlinkRows } from './mutations.js';
+import { readRelationFor, attachRowAccess, isRegisteredTable } from './active-db.js';
+import {
+  createRow,
+  updateRow,
+  deleteRow,
+  linkRows,
+  unlinkRows,
+  FILES_BYTE_LOCATION_COLS,
+} from './mutations.js';
 import { ROWS_PATH, LINK_PATH } from './route-paths.js';
+
+/** Placeholder shown in place of a framework-encrypted column's decrypted value in an API
+ *  response (never ship cleartext credentials over HTTP). */
+const ENCRYPTED_COL_MASK = '••••••••';
+
+/** For a `files` write via the generic route, refuse (403) any body that sets a byte-location
+ *  column. Returns true iff it handled (refused) the request. */
+function rejectForgedFilesLocation(table: string, body: unknown, res: ServerResponse): boolean {
+  if (table !== 'files' || body === null || typeof body !== 'object') return false;
+  const bad = Object.keys(body as Record<string, unknown>).filter((k) =>
+    FILES_BYTE_LOCATION_COLS.has(k),
+  );
+  if (bad.length === 0) return false;
+  sendJson(res, { error: `Cannot set file location columns via this API: ${bad.join(', ')}` }, 403);
+  return true;
+}
 
 /**
  * Row CRUD + junction link/unlink routes, extracted from server.ts as the second
@@ -83,10 +106,32 @@ export async function handleTablesRoutes(
     const [, rawTable, rawId] = rowsMatch;
     const table = decodeURIComponent(rawTable ?? '');
     const id = rawId ? decodeURIComponent(rawId) : null;
-    if (!active.validTables.has(table)) {
+    if (!isRegisteredTable(active, table)) {
       sendJson(res, { error: `Unknown table: ${table}` }, 400);
       return true;
     }
+    // The `secrets` credential store is refused on the generic CRUD route entirely (read AND
+    // write). `secrets.value` is encrypted-at-rest and DECRYPTED on read, so a bare
+    // `GET /api/tables/secrets/rows` here would have shipped cleartext API keys / OAuth tokens
+    // as JSON. There is no dedicated secrets HTTP route and the GUI never reads secrets this way,
+    // so a blanket refusal is safe. (Chat + `_lattice*` are handled by owner-scoping / the
+    // registered-table gate, not refused here — the chat rail legitimately uses this route.)
+    if (table === 'secrets') {
+      sendJson(res, { error: `Table not available via this API: ${table}` }, 403);
+      return true;
+    }
+    // Defense in depth for a user-DEFINED encrypted column (`encrypted:` in their config): those
+    // are also decrypted on read, so mask every framework-encrypted column in any row this route
+    // returns. `secrets` is already refused above; this covers everything else.
+    const encryptedCols = active.db.getEncryptedColumns(table);
+    const maskEncrypted = (row: Row): Row => {
+      if (encryptedCols.size === 0) return row;
+      const out: Row = { ...row };
+      for (const c of encryptedCols) {
+        if (c in out && out[c] != null && out[c] !== '') out[c] = ENCRYPTED_COL_MASK;
+      }
+      return out;
+    };
     // #4.6 — the originating client's true edit time is honored for the
     // audit timestamp so an offline edit shows when it was made.
     const mctx = ctx.buildMutationCtx({
@@ -107,11 +152,16 @@ export async function handleTablesRoutes(
         const deletedMode = url.searchParams.get('deleted');
         // Row visibility is enforced by Postgres RLS at the database.
         const queryOpts: Parameters<typeof active.db.query>[1] = { limit, offset };
+        const filters: NonNullable<typeof queryOpts.filters> = [];
         if (active.softDeletable.has(table) && deletedMode !== 'any') {
-          queryOpts.filters = [
-            { col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' },
-          ];
+          filters.push({ col: 'deleted_at', op: deletedMode === 'only' ? 'isNotNull' : 'isNull' });
         }
+        // The Artifacts object page pages the files that carry an artifact_type,
+        // server-side (so it isn't capped at one client-side fetch window).
+        if (url.searchParams.get('artifactType') === 'present') {
+          filters.push({ col: 'artifact_type', op: 'isNotNull' });
+        }
+        if (filters.length) queryOpts.filters = filters;
         // Optional column projection (?exclude=col,col) so a caller can skip heavy
         // columns it doesn't need — e.g. the Sources sidebar excluding
         // files.extracted_text (up to 200 KB/row) on its frequent re-renders
@@ -128,13 +178,33 @@ export async function handleTablesRoutes(
         // #2.1 — a member reads an audience-masked table through its
         // `<table>_v` view (base SELECT was revoked); the base name is used
         // everywhere else (validTables, ownership lookups, writes).
-        const rows = await active.db.query(readRelationFor(active, table), queryOpts);
+        const rows = (await active.db.query(readRelationFor(active, table), queryOpts)).map(
+          maskEncrypted,
+        );
         await attachRowAccess(active.db, table, rows);
-        sendJson(res, { rows });
+        // Only the paginating caller asks for the total (?withTotal=1). The many
+        // whole-list callers (loadAllRows, the Sources sidebar, relation-chip
+        // fetches) discard it, so we skip the extra (bounded) count for them.
+        if (url.searchParams.get('withTotal') === '1') {
+          // Approximate total for pagination ("N–M of T", rendered "T+" when capped).
+          // Counted through the SAME RLS-scoped relation + filters as the rows above,
+          // so a member's total matches what they can actually see; bounded (stops
+          // after MAX_ROWS_PAGE+1) so it never becomes a full-table COUNT.
+          const approxTotal = await active.db.boundedCount(
+            readRelationFor(active, table),
+            queryOpts.filters
+              ? { filters: queryOpts.filters, cap: MAX_ROWS_PAGE }
+              : { cap: MAX_ROWS_PAGE },
+          );
+          sendJson(res, { rows, approxTotal, totalIsCapped: approxTotal > MAX_ROWS_PAGE });
+        } else {
+          sendJson(res, { rows });
+        }
         return true;
       }
       if (method === 'POST') {
         const body = (await readJson<unknown>(req)) as Row;
+        if (rejectForgedFilesLocation(table, body, res)) return true;
         // #3.6 — pass the client edit-id through so a replayed offline POST
         // resolves to the same row (idempotent no-op) instead of a duplicate.
         const editId = headerValue(req, 'x-lattice-edit-id');
@@ -166,12 +236,14 @@ export async function handleTablesRoutes(
         }
         // A row the operator can't read already returns null (RLS-filtered /
         // not in the view), so reaching here means the row is visible.
+        row = maskEncrypted(row);
         await attachRowAccess(active.db, table, [row]);
         sendJson(res, row);
         return true;
       }
       if (method === 'PATCH') {
         const body = (await readJson<unknown>(req)) as Partial<Row>;
+        if (rejectForgedFilesLocation(table, body, res)) return true;
         await updateRow(mctx, table, id, body);
         sendJson(res, { ok: true });
         return true;

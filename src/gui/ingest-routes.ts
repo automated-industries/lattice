@@ -4,16 +4,19 @@ import { writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
+import { normalizeUserUrl } from '../sources/url-safety.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, type MutationCtx } from './mutations.js';
+import { localFileOpenEnabled } from './files-routes.js';
 import { parseFile, describe, type ExtractResult } from './ai/extract.js';
+import { gateExtractionByPath } from './ai/extract-gate.js';
 import { describeImage, describePdf } from '../ai/vision.js';
 import type { FileJunction } from './data.js';
 import { attachBlob } from '../framework/blob-store.js';
 import { createS3Store, s3Key } from '../framework/s3-store.js';
 import { resolveActiveS3Config } from '../framework/s3-config.js';
 import { createHash } from 'node:crypto';
-import { resolveClaudeAuth } from './assistant-routes.js';
+import { resolveVisionAuth } from './ai/provider.js';
 import { type ClassifyMatch } from './ai/summarize.js';
 import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 // LLM enrichment (description + auto-link + object extraction) is a shared leaf
@@ -30,6 +33,7 @@ import { findExactFileDupesOf, mergeDuplicates, type DedupServiceCtx } from './d
 // Smart structured import: a recognized re-upload of a known document is brought
 // in as a new dated snapshot automatically (the assistant "door" for import).
 import { autoImportStructured, type AutoImportResult } from './import-auto.js';
+import { excelImportWarnings } from '../import/excel.js';
 
 /**
  * Ingest endpoints. "Ingest" means reference a local file (or a pasted text
@@ -65,6 +69,21 @@ interface IngestContext {
    * when it can't be created. Injected by the server.
    */
   createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
+  /**
+   * Create (or fetch) a junction between two USER entities — used to cross-link the
+   * objects extracted from ONE document to each other (a meeting ↔ its attendees), not
+   * only to the source file. Injected by the server; omit → no cross-object linking.
+   */
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>;
   /** Inference aggressiveness 0..1 (drives temperature + auto-junction gating). */
   aggressiveness?: number;
   /**
@@ -184,6 +203,7 @@ function enrichContext(ctx: IngestContext): UrlIngestEnrich {
     ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
     ...(ctx.aggressiveness !== undefined ? { aggressiveness: ctx.aggressiveness } : {}),
     ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+    ...(ctx.createObjectJunction ? { createObjectJunction: ctx.createObjectJunction } : {}),
   };
 }
 
@@ -221,6 +241,7 @@ async function enrichOrFail(
       ctx.createEntity,
       false,
       privateMode,
+      ctx.createObjectJunction,
     );
   } catch (e) {
     const err = e as Error;
@@ -252,13 +273,15 @@ async function extractImage(
   mime: string,
 ): Promise<{ text: string; skip: boolean } | null> {
   if (!mime.startsWith('image/')) return null;
-  const auth = await resolveClaudeAuth(db);
+  const auth = await resolveVisionAuth(db);
   if (!auth) return null;
   try {
-    const text = await describeImage(auth, path);
+    const text = await describeImage(auth, path, { mediaType: mime });
     return text.trim() ? { text, skip: false } : null;
   } catch (e) {
-    console.warn('[ingest] image vision failed:', (e as Error).message);
+    // Surface the REAL reason (auth/proxy/normalization) in the logs — a silent empty result made
+    // an image ingest look like "no source text" with no clue why (a cloud-vision failure mode).
+    console.warn(`[ingest] image vision failed for ${mime}:`, (e as Error).message);
     return null;
   }
 }
@@ -270,35 +293,44 @@ async function extractImage(
  * PDF with no text layer, which has no text to extract — Claude's native PDF
  * document read as a fallback. Best-effort + AI-gated: with no Claude auth it
  * degrades to parseFile's result (a `skipped` row).
+ *
+ * Large inputs run through the heavy-extraction lane: the transients here
+ * (archive inflation, PDF parse graphs, the scanned-PDF base64 request body)
+ * scale with input size, and the ingest pool runs several files at once —
+ * serializing just the big ones keeps peak memory flat without slowing the
+ * long tail of ordinary documents.
  */
-async function extractSource(
+function extractSource(
   db: Lattice,
   path: string,
   mime: string,
   name: string,
 ): Promise<ExtractResult> {
-  const vision = await extractImage(db, path, mime);
-  if (vision) return vision;
-  const parsed = await parseFile(path, mime, name);
-  if (!parsed.skip) return parsed;
-  if (mime === 'application/pdf') {
-    const auth = await resolveClaudeAuth(db);
-    if (auth) {
-      try {
-        const text = await describePdf(auth, path);
-        if (text.trim()) return { ...parsed, text, skip: false };
-      } catch (e) {
-        console.warn('[ingest] Claude PDF read failed:', (e as Error).message);
+  return gateExtractionByPath(path, async () => {
+    const vision = await extractImage(db, path, mime);
+    if (vision) return vision;
+    const parsed = await parseFile(path, mime, name);
+    if (!parsed.skip) return parsed;
+    if (mime === 'application/pdf') {
+      const auth = await resolveVisionAuth(db);
+      if (auth) {
+        try {
+          const text = await describePdf(auth, path);
+          if (text.trim()) return { ...parsed, text, skip: false };
+        } catch (e) {
+          console.warn('[ingest] Claude PDF read failed:', (e as Error).message);
+        }
       }
     }
-  }
-  return parsed;
+    return parsed;
+  });
 }
 
-/** A pasted body that is exactly one http(s) URL — a candidate to crawl. */
-function looksLikeUrl(s: string): boolean {
+/** A pasted body that is exactly one web address — a candidate to crawl. Accepts a scheme-prefixed
+ *  URL OR a bare domain the user typed (no scheme); still single-token (no internal whitespace). */
+export function looksLikeUrl(s: string): boolean {
   const t = s.trim();
-  return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
+  return !/\s/.test(t) && normalizeUserUrl(t) !== null;
 }
 
 function readBuffer(req: IncomingMessage, maxBytes = MAX_INGEST_BYTES): Promise<Buffer> {
@@ -359,38 +391,54 @@ export async function ingestLocalFile(
   const name = basename(abs);
   const mime = mimeFor(name);
   const localFileId = crypto.randomUUID();
-  const localRow: Record<string, unknown> = {
+  // The invariant, always-present columns for the in-place file reference. No
+  // bytes are copied; the resolver serves the file straight from disk via ref_uri.
+  const baseRow: Record<string, unknown> = {
     id: localFileId,
     ...fileIdentity(name, localFileId),
-    // Reference the file in place: a `local_ref` whose `ref_uri` is the absolute
-    // OS path. No bytes are copied; the resolver serves it straight from disk.
     ref_kind: 'local_ref',
     ref_uri: abs,
     ref_provider: 'fs',
     original_name: name,
     mime,
     size_bytes: size,
-    extraction_status: 'pending',
   };
-  const { id } = await createRow(
-    mctx,
-    'files',
-    {
-      ...(await requiredFileDefaults(ctx.db, name, localFileId, localRow)),
-      ...localRow,
-    },
-    forcePrivate ? 'private' : undefined,
-  );
+  const persist = async (row: Record<string, unknown>): Promise<string> => {
+    const full = { ...(await requiredFileDefaults(ctx.db, name, localFileId, row)), ...row };
+    const { id } = await createRow(mctx, 'files', full, forcePrivate ? 'private' : undefined);
+    return id;
+  };
 
-  // Extract inline (the GUI is local; files are typically small). Failures are
-  // recorded on the row, not swallowed.
+  // Extract BEFORE creating the row so the file row is written ONCE with its
+  // final extraction result — this was createRow(status:'pending') + a follow-up
+  // updateRow(extracted), i.e. two writes + two audit rows for every file. An
+  // extraction failure still records the file (as 'failed'), as before.
+  let result: Awaited<ReturnType<typeof extractSource>>;
   try {
-    const result = await extractSource(ctx.db, abs, mime, name);
-    await updateRow(mctx, 'files', id, {
-      extracted_text: result.text,
-      description: describe(result.text, mime, name),
-      extraction_status: result.skip ? 'skipped' : 'extracted',
+    result = await extractSource(ctx.db, abs, mime, name);
+  } catch (e) {
+    const err = e as Error;
+    console.error(
+      `[ingest] extraction failed for file ${localFileId}: ${err.message}\n${err.stack ?? ''}`,
+    );
+    const id = await persist({
+      ...baseRow,
+      extraction_status: 'failed',
+      description: `Extraction failed: ${err.message}`,
     });
+    return { id, extraction_status: 'failed', error: err.message };
+  }
+
+  const id = await persist({
+    ...baseRow,
+    extracted_text: result.text,
+    description: describe(result.text, mime, name),
+    extraction_status: result.skip ? 'skipped' : 'extracted',
+  });
+
+  // Enrich (auto-link + object extraction) — only when text was actually
+  // extracted. An enrichment failure marks the row failed, as before.
+  try {
     const suggestedLinks = result.skip
       ? []
       : await enrichWithLlm(
@@ -406,6 +454,7 @@ export async function ingestLocalFile(
           ctx.createEntity,
           false,
           forcePrivate,
+          ctx.createObjectJunction,
         );
     return { id, extraction_status: result.skip ? 'skipped' : 'extracted', suggestedLinks };
   } catch (e) {
@@ -421,6 +470,85 @@ export async function ingestLocalFile(
   }
 }
 
+/** Enrichment wiring for {@link ingestTextAsFile} (mirrors the ingest routes' ctx). */
+export interface TextIngestDeps {
+  db: Lattice;
+  mctx: MutationCtx;
+  /** Existing files↔entity junctions, so enrich reuses them instead of re-creating. */
+  fileJunctions: FileJunction[];
+  /** Per-entity descriptions to sharpen link classification. */
+  entityDescriptions: Record<string, string>;
+  /** Inference aggressiveness (link/extract gating). Omit → the ingest default. */
+  aggressiveness?: number;
+  /** Create a new user entity (extract → new object). Omit → no entity creation. */
+  createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
+  /** Create/return the files↔<otherTable> junction for auto-linking. */
+  createJunction?: (otherTable: string) => Promise<FileJunction | null>;
+  /** Create/return a junction between two USER entities, to cross-link co-extracted objects. */
+  createObjectJunction?: (
+    tableA: string,
+    tableB: string,
+  ) => Promise<{
+    junction: string;
+    tableA: string;
+    aFk: string;
+    tableB: string;
+    bFk: string;
+  } | null>;
+  /** Force every derived write private (matches a private source). */
+  privateMode?: boolean;
+}
+
+/**
+ * Ingest a block of TEXT exactly the way a dropped file is ingested: save it as a
+ * `files` row, then run the SHARED enrichment engine ({@link enrichWithLlm}) over it —
+ * which links it to the existing records it refers to and extracts + links the objects
+ * it is about. This is the single entry point that BOTH the `/api/ingest/text` route
+ * and the chat assistant's `ingest_text` tool go through, so pasted chat content is
+ * enriched/linked identically to a file — no separate, prompt-driven linking logic.
+ */
+export async function ingestTextAsFile(
+  deps: TextIngestDeps,
+  text: string,
+  title: string,
+): Promise<{ id: string; suggestedLinks: ClassifyMatch[] }> {
+  const { db, mctx } = deps;
+  const mime = 'text/plain';
+  const fileId = crypto.randomUUID();
+  const row: Record<string, unknown> = {
+    id: fileId,
+    ...fileIdentity(title, fileId),
+    original_name: title,
+    mime,
+    size_bytes: Buffer.byteLength(text, 'utf8'),
+    extracted_text: text.slice(0, 200_000),
+    description: describe(text, mime, title),
+    extraction_status: 'extracted',
+  };
+  const { id } = await createRow(
+    mctx,
+    'files',
+    { ...(await requiredFileDefaults(db, title, fileId, row)), ...row },
+    deps.privateMode ? 'private' : undefined,
+  );
+  const suggestedLinks = await enrichWithLlm(
+    mctx,
+    db,
+    id,
+    text,
+    title,
+    deps.fileJunctions,
+    deps.entityDescriptions,
+    deps.createJunction,
+    deps.aggressiveness,
+    deps.createEntity,
+    false,
+    deps.privateMode,
+    deps.createObjectJunction,
+  );
+  return { id, suggestedLinks };
+}
+
 const INGEST_PATHS = new Set(['/api/ingest/text', '/api/ingest/file', '/api/ingest/upload']);
 
 /** The shared source='ingest' mutation context (audited + fed). Reused by the
@@ -432,6 +560,10 @@ export function ingestMutationCtx(ctx: IngestContext): MutationCtx {
     softDeletable: ctx.softDeletable,
     source: 'ingest',
     onColumnsAdded: columnDescriptionHook(ctx.db),
+    // Ingest/upload is the ONE trusted writer of a files row's byte-location columns
+    // (ref_kind/ref_uri/blob_path/…): it sets them from a real ingested/uploaded source. Every
+    // other write path is refused those columns by guardReservedColumns.
+    allowFileLocationCols: true,
   };
 }
 
@@ -475,8 +607,15 @@ export async function dispatchIngestRoute(
     // `x-filepath`). When present, the file already lives at a stable disk
     // location, so the upload references it in place as a `local_ref` (mirroring
     // the /api/ingest/file route) instead of retaining a redundant blob copy.
+    // `x-filepath` names a real OS path to reference in place. Honor it ONLY when local file
+    // open is enabled (desktop/CLI) — off on team cloud, where a tenant-supplied path must never
+    // be read from the host; there the upload falls through to raw-bytes retention below (the
+    // path is simply ignored, so the file still ingests from its bytes).
     const rawFilePath =
-      (typeof req.headers['x-filepath'] === 'string' && req.headers['x-filepath']) || '';
+      (localFileOpenEnabled() &&
+        typeof req.headers['x-filepath'] === 'string' &&
+        req.headers['x-filepath']) ||
+      '';
     let realPath = '';
     if (rawFilePath) {
       try {
@@ -485,7 +624,7 @@ export async function dispatchIngestRoute(
         realPath = rawFilePath;
       }
     }
-    let buf: Buffer;
+    let buf: Buffer | null;
     try {
       buf = await readBuffer(req);
     } catch (e) {
@@ -496,14 +635,25 @@ export async function dispatchIngestRoute(
       sendJson(res, { error: 'empty upload' }, 400);
       return true;
     }
+    // Size, hash, and S3 config are taken up front so the request bytes can be
+    // dropped before extraction — otherwise a large upload's in-memory copy sits
+    // alongside the extraction transients for the whole handler.
+    const sizeBytes = buf.length;
+    const uploadSha = createHash('sha256').update(buf).digest('hex');
+    const s3cfg = resolveActiveS3Config(ctx.configPath);
     const tmp = join(tmpdir(), `lattice-ingest-${crypto.randomUUID()}${extname(name)}`);
     let result;
     let blob: { blob_path: string; sha256: string } | null = null;
     // When the drop is a recognized re-upload of a known data document, it's also
     // imported as a new dated snapshot (in addition to being kept as a file).
     let autoImport: AutoImportResult | null = null;
+    let importWarnings: string[] = [];
+    // Bytes retained only for the S3 put below; everything else reads from tmp.
+    let s3Bytes: Buffer | null = null;
     try {
       await writeFile(tmp, buf);
+      if (s3cfg) s3Bytes = buf;
+      buf = null;
       result = await extractSource(ctx.db, tmp, mime, name);
       // Smart import while the bytes are still on disk (tmp is removed below).
       // Best-effort: a structured-import failure never fails the file upload.
@@ -512,6 +662,11 @@ export async function dispatchIngestRoute(
       } catch (e) {
         console.warn('[ingest] auto-import skipped:', (e as Error).message);
       }
+      // A stacked-table sheet imports only its largest table; capture the reconciliation
+      // warning (from the excelToRecords read the import just did) so it can ride the feed
+      // pill — a partial import is never silent. Read from the in-memory cache, so it holds
+      // even after `tmp` is removed below.
+      if (/\.xlsx?$/i.test(name)) importWarnings = excelImportWarnings(tmp);
       // Retain a content-addressed blob for documents and media (images, PDFs,
       // office docs, text/data, audio, video). Browser drag-drops arrive as bytes
       // with no local path, so this is the only way the underlying file can be
@@ -545,20 +700,19 @@ export async function dispatchIngestRoute(
     // the bytes from S3, so a silently-dropped PUT would 404 for everyone but the
     // uploader, who still has the local blob.
     let s3Status: { status: 'stored' | 'failed'; key?: string; error?: string } | null = null;
-    const s3cfg = resolveActiveS3Config(ctx.configPath);
-    if (s3cfg) {
-      const sha256 = blob?.sha256 ?? createHash('sha256').update(buf).digest('hex');
+    if (s3cfg && s3Bytes) {
+      const sha256 = blob?.sha256 ?? uploadSha;
       const key = s3Key(s3cfg.prefix, sha256);
       try {
         const store = await createS3Store(s3cfg);
-        await store.put(key, buf, { contentType: mime });
+        await store.put(key, s3Bytes, { contentType: mime });
         s3Ref = {
           ref_uri: `s3://${s3cfg.bucket}/${key}`,
           source_json: JSON.stringify({
             bucket: s3cfg.bucket,
             key,
             region: s3cfg.region,
-            size_bytes: buf.length,
+            size_bytes: sizeBytes,
           }),
           sha256,
         };
@@ -576,14 +730,14 @@ export async function dispatchIngestRoute(
     // Content hash set UNCONDITIONALLY (not just when a blob/S3 ref exists) so
     // the post-insert auto-dedup can recognize a byte-identical re-upload even on
     // the text-only native schema. createRow drops it if the schema lacks the col.
-    const fileSha = blob?.sha256 ?? s3Ref?.sha256 ?? createHash('sha256').update(buf).digest('hex');
+    const fileSha = blob?.sha256 ?? s3Ref?.sha256 ?? uploadSha;
     const uploadRow: Record<string, unknown> = {
       id: fileId,
       ...fileIdentity(name, fileId),
       original_name: name,
       mime,
       sha256: fileSha,
-      size_bytes: buf.length,
+      size_bytes: sizeBytes,
       extracted_text: result.text,
       description: describe(result.text, mime, name),
       extraction_status: result.skip ? 'skipped' : 'extracted',
@@ -661,12 +815,24 @@ export async function dispatchIngestRoute(
     // Auto-import outcome → a feed line so the snapshot is visible without any
     // chat round-trip (the assistant "door" working automatically).
     if (autoImport?.imported) {
+      const note = importWarnings.length > 0 ? ` (note: ${importWarnings.join(' ')})` : '';
       ctx.feed.publish({
         table: autoImport.tables[0] ?? 'files',
         op: 'insert',
         rowId: null,
         source: 'system',
-        summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables`,
+        summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables${note}`,
+      });
+    } else if (importWarnings.length > 0) {
+      // Not silently imported (a confirm card, or kept as a plain file), but a sheet was
+      // only partially read — surface that so a stacked-table workbook isn't half-imported
+      // without the user knowing.
+      ctx.feed.publish({
+        table: 'files',
+        op: 'update',
+        rowId: id,
+        source: 'system',
+        summary: `Heads up on "${name}": ${importWarnings.join(' ')}`,
       });
     }
     // A non-silent proposal (`reason` set) surfaces via the inline confirm card in
@@ -774,7 +940,15 @@ export async function dispatchIngestRoute(
     return true;
   }
 
-  // /api/ingest/file — reference a local path (delegates to the shared core).
+  // /api/ingest/file — reference a local path (delegates to the shared core). This reads an
+  // ARBITRARY path off the server's disk, so it is gated behind the same local-file-open floor
+  // as open-in-finder / the sources routes. That floor is OFF on team cloud, where a tenant must
+  // never coerce the host into reading its filesystem (/proc/self/environ, other tenants' data);
+  // a browser upload (raw bytes, no path) is the cloud ingest path instead.
+  if (!localFileOpenEnabled()) {
+    sendJson(res, { error: 'local file ingest is disabled on this server' }, 403);
+    return true;
+  }
   const rawPath = typeof body.path === 'string' ? body.path.trim() : '';
   if (!rawPath) {
     sendJson(res, { error: 'path is required' }, 400);

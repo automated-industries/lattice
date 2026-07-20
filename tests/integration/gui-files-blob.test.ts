@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedFileRowDirect } from './helpers/seed-file.js';
 
 /**
  * GET /api/files/:id/blob + POST /api/files/:id/open-in-finder error/gate paths
@@ -34,7 +35,7 @@ afterEach(async () => {
   }
 });
 
-async function boot(): Promise<GuiServerHandle> {
+async function boot(): Promise<GuiServerHandle & { root: string }> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-blob-'));
   dirs.push(root);
   mkdirSync(join(root, 'data'), { recursive: true });
@@ -62,7 +63,7 @@ async function boot(): Promise<GuiServerHandle> {
     openBrowser: false,
   });
   servers.push(server);
-  return server;
+  return Object.assign(server, { root });
 }
 
 /**
@@ -126,7 +127,8 @@ describe('files blob + open-in-finder', () => {
     dirs.push(srcDir);
     const filePath = join(srcDir, 'hello.txt');
     writeFileSync(filePath, 'hello from a local ref');
-    const id = await seedFileRow(s.url, { path: filePath });
+    // Seed the local_ref directly — the generic HTTP write refuses byte-location columns (S1).
+    const id = seedFileRowDirect(s.root, { ref_kind: 'local_ref', ref_uri: filePath });
     // The blob route must stream it via the ref_uri fallback.
     const r = await fetch(`${s.url}/api/files/${id}/blob`);
     expect(r.status).toBe(200);

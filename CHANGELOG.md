@@ -6,6 +6,1586 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **The assistant is "Ask Lattice."** The docked assistant is now labeled **Ask Lattice**
+  throughout (the header, the empty-state prompt, the drop-to-attach hint), and its avatar is the
+  **Lattice mark** — the same grid glyph as the brand logo and favicon — in place of the previous
+  emoji. One consistent identity across the terminal GUI and the desktop app.
+
+- **Sharing a row no longer interrupts you with a confirmation.** Switching a row into (or out of)
+  "specific people" sharing used to pop a "this switches it off everyone/private — continue?"
+  prompt. That change is non-destructive and reversible (the prior visibility is restorable and the
+  custom grantee list is kept and reapplies), so the prompt was pure friction — it's gone. Sharing
+  applies immediately on Save / toggle.
+
+- **Connector tables refresh when you actually read them.** On top of the existing on-load
+  refresh, running a table-view query or loading a dashboard that reads a connector-backed table
+  (MCP-synced, external-DB) now kicks a **throttled background refresh** of that connection, so the
+  data you're looking at is recent without you asking. Bounded so it never hammers the source (at
+  most one sync per connection per minute, and only when the copy is older than a few minutes) and
+  fire-and-forget so it never blocks or fails the read. Local workspaces (cloud keeps its
+  member-scoped on-load refresh).
+
+- **MCP connectors model each server into typed, per-server tables.** A connected MCP server used
+  to dump everything into one flat `mcp_items` JSON-blob table under a generic "Connectors" group.
+  Now each server is introspected at connect and its data is modeled into **one typed table per
+  record kind** (scalar fields → real columns, nested → a `data` JSON overflow), namespaced per
+  connection and grouped under a **per-server header named by the server's brand** (e.g. an MCP
+  server at `mcp.justworks.com` → a **JUSTWORKS** group with `company`, `deduction_types`, … tables)
+  — mirroring how an external database groups under its own name. Existing flat connections migrate
+  automatically on the next GUI-load sync (introspect once, re-key, populate); a server that exposes
+  nothing modelable keeps the flat `mcp_items` fallback. Two servers never collide, and each reads as
+  its own brand. Built on the unchanged connector sync/prune/edge/ACL substrate (the same
+  descriptor → `models()` pattern as the external-database connector).
+
+- **The Databases tab is a full-width, multi-column table with an inline connect form.**
+  Connected external databases now render edge-to-edge as a professional table — name, host,
+  database, table count, status, and last-synced — with per-row **Edit** and **Disconnect**,
+  and a failing connection shows its error inline under its row. Adding or editing a database
+  happens in an inline form right in the tab (a responsive two-column field grid); the
+  left-sliding "Connect a database" drawer is gone. `GET /api/db-sources` now returns each
+  connection's non-secret host + database so the table can show them without a per-row fetch
+  (the password is never included). Same connect / edit-in-place / disconnect behavior as
+  before, just inline and full-width — matching the MCP Connectors tab.
+
+- **Connectors are now pure MCP — one "MCP Connectors" tab, any server by URL.** The
+  Configure tab is renamed **MCP Connectors** and now hosts everything inline: every
+  connected server (name from the MCP handshake, URL, status, last sync) with per-server
+  **Refresh / Disconnect / Reconnect**, plus an add-by-URL form — the separate left-sliding
+  "Add a Connector" dialog is gone. Every added server is its own connection, so any number
+  of MCP servers connect side by side. The branded Gmail / Calendar / Drive / Jira / Trello /
+  monday connectors are removed (their exports leave the library surface): a provider is
+  just another MCP server URL, with no provider-specific code. Disconnect now retains the
+  server URL (it is not a secret), which is what makes one-click Reconnect possible; a hard
+  teardown still purges it. Synced rows land in `mcp_items`, which gains `kind`
+  (`item`/`resource`) and `server` (hostname) columns. A brand-new workspace creates the
+  table with those columns; an `mcp_items` table left over from an earlier pre-release build
+  is not altered in place, so drop it (or the workspace) once to pick up the new shape.
+
+- **Connectors also list the server's files.** Alongside read-tool items, a sync now pulls
+  the server's advertised resources — the standard MCP `resources/list`, its "available
+  files" — into `mcp_items` as `kind='resource'` rows (title, description, URI, MIME type).
+  Servers without the resources capability are unaffected.
+
+- **OAuth works with servers that don't support dynamic client registration.** Connecting a
+  server whose authorization server has no registration endpoint used to dead-end with
+  "Incompatible auth server: does not support dynamic client registration". Lattice now
+  identifies itself with a **client-ID metadata document** (the modern MCP mechanism — the
+  client_id is a stable HTTPS URL to a static JSON identity document, hosted at
+  latticedesktop.com and overridable via `LATTICE_MCP_CLIENT_METADATA_URL`) when the server
+  supports it, falls back to dynamic registration when offered, and — for servers that
+  support neither — the add form now asks for a **pre-registered client ID (+ optional
+  secret)** instead of failing. The identity document is static app metadata fetched only by
+  the provider's authorization server: no user data, and MCP traffic still flows directly
+  between your machine and the server.
+
+- **Graph is now its own Configure tab, full width.** The schema graph moved out of the Data
+  Model tab into its own top-level Configure tab (Data Model · **Graph** · Files · Connectors ·
+  Databases · Workspace · User). Both Data Model and Graph now span the full width of the
+  Configure drawer — the fixed side panel is gone. On the graph, **Link** and **Merge** are
+  available (click the button, then two nodes), and clicking a table node drills into that
+  table's rows shown as a graph. Selecting a table in Data Model shows its detail; opening the
+  column/relationship editor stays optional.
+
+- **The Welcome dashboard fills its tab.** The onboarding dashboard template now renders full
+  width (no centered narrow column) and drops its in-page "Welcome to Lattice!" heading, since
+  the tab already carries that title. Existing workspaces refresh to the new layout on open
+  (a user-edited Welcome dashboard is left untouched).
+
+### Fixed
+
+- **A vanished workspace directory can no longer crash the GUI (and no longer fails CI on
+  Windows).** The file-loopback watcher (the piece that imports your manual edits to rendered
+  `.md` files back into the database) had no handler for the watcher's `error` event, so the
+  watched directory being deleted, renamed, or unmounted out from under it — including a test's
+  temp directory being removed during teardown, which Windows can report even after the watch is
+  closed — became a fatal unhandled exception that took the whole server (or a whole CI run)
+  down. The watcher now degrades cleanly: if the directory is gone, it stops quietly; if the
+  watch fails while the directory still exists (a permissions change, an antivirus lock), it
+  stops **loudly** — a console warning plus an activity-feed notice that file-edit sync stopped —
+  and a fresh `start()` can rewire it. A late error from an already-replaced watcher can never
+  close its healthy replacement. The same missing-`error`-listener hardening was applied to the
+  browser-opener spawn (a headless machine without `xdg-open` no longer crashes the server at
+  boot), the GUI-asset read stream, the supervisor's child spawn, and the post-listen HTTP
+  server.
+
+- **A connected table always shows its data lineage.** The lineage map below a connected
+  (read-only mirror) table's rows appeared for some connected tables but not others — it was hidden
+  whenever no other synced table happened to link to it (so an isolated mirror like a standalone
+  "Accounts" table showed nothing). A connected table's true upstream is its **connector**, which
+  isn't a Lattice table, so the table-to-table graph couldn't represent it. Its lineage now always
+  renders with an **external "connected source" node** upstream (labeled by the connector / external
+  database), wired to the table — real provenance for every connected table, not just the ones with
+  cross-table relationships.
+
+- **Typed MCP connections: coherence fixes across the flat→typed split.** The new per-server
+  typed-table modeling left several places still assuming the old flat `mcp_items` table:
+  - The assistant's "Connected data sources" context now names each typed connection's **real**
+    tables (`mcp_<server>_<kind>`) instead of always pointing at `mcp_items` — so it no longer
+    reads an empty table and wrongly reports a modeled server as unusable.
+  - The connectors panel's per-connection **item count** is summed across a connection's actual
+    typed tables (it previously counted only `mcp_items`, so every typed connection showed 0).
+  - Migrating a legacy flat connection to typed tables now **soft-deletes the old `mcp_items`
+    rows** for that connection, so its data is no longer duplicated live (and a later disconnect
+    hides it).
+  - A connection's introspected schema descriptor is now removed on purge / reconnect / hard
+    teardown (it was left orphaned in the local store).
+- **Typed modeling: robustness against real-world server payloads.**
+  - Column names are **case-folded**, so items whose keys differ only in case (`Name`/`name`,
+    `id`/`ID`) no longer produce duplicate identifiers that fail `CREATE TABLE`.
+  - A value whose runtime type doesn't match its inferred column type (e.g. a float arriving in a
+    column typed `INTEGER` from the sample) is routed to the `data` JSON overflow instead of being
+    written raw — keeping SQLite and cloud Postgres consistent and never losing the value.
+  - An **empty wrapped result** (`{ "items": [] }`, e.g. an empty account) no longer invents a
+    phantom table + a garbage row every sync.
+  - Two long, distinct record kinds that truncate to the same physical table name are now
+    **de-collided**, so neither kind's schema is silently dropped — including the **cloud
+    (Postgres) case**, where identifiers are silently truncated to 63 bytes: the physical table
+    name is now bounded to 63 bytes at the single point every path names it, so two long names can
+    no longer collapse to one table on Postgres (SQLite has no such limit).
+  - A source field literally named `data` no longer collides with the reserved JSON-overflow column.
+  - The legacy→typed **migration is now atomic from the retry's perspective**: the toolkit re-key
+    is rolled back if any later step (populate the typed tables, retire the flat rows) fails, so a
+    transient error can never leave a typed-but-empty connection with its data stranded — the whole
+    migration simply retries on the next load.
+- **On-access refresh now covers external-DB (`db_source`) tables too.** Reading an imported
+  database table kicks the same throttled background refresh as an MCP table (it previously
+  resolved no connector and silently never refreshed). Connector-table matching against a query is
+  now by whole SQL identifier, not a raw substring, so an unrelated table name in a string literal
+  or a longer identifier no longer triggers a spurious sync.
+- **Connection questions never answered from missing data.** If the connected-sources list can't be
+  enumerated for a chat turn, the assistant now defers "are you connected to X?" to its data loop
+  (which checks directly) instead of confidently answering "not connected" from the failure.
+- **Brand detection ignores non-brand hosts.** A server addressed by a raw IPv4 address or a
+  punycode/IDN host no longer surfaces a meaningless "brand" in the assistant's context; it falls
+  back to the server's self-advertised name.
+
+- **The assistant now knows about your connected sources on a local workspace.** The
+  "Connected data sources" it reads was filtered by the identity that stamped each connection;
+  on a single-user local workspace that stamp can drift (e.g. after you change your saved
+  email), so a genuinely-connected server went invisible and the assistant answered "not
+  connected" even though its data was synced and visible in the sidebar. Local workspaces now
+  list every connection (they are one user's own machine); cloud workspaces still scope
+  per-member.
+
+- **Selecting a table in the Data Model shows its detail directly.** Clicking an object card now
+  opens its fields + lineage in place — the extra "Open object →" link and "Edit columns &
+  relationships" button are gone. Selecting the object is enough. (Computed tables keep their
+  "Edit definition →" link, since a computed table has no other detail to edit.)
+
+- **The assistant recognizes a connected source by its brand, on every answer path.** Asking
+  "are you connected to <service>?" failed two ways: (1) the fast intake pass that answers such
+  general questions inline wasn't given the connected-sources list at all, and (2) even the list it
+  reads named a server only by its self-advertised name ("partner-api-mcp") and host — the brand a
+  user actually types ("justworks") never appeared literally, so the model couldn't match it. Now
+  the intake pass receives the authoritative list, AND each connected source leads with the brand
+  read from its host (`mcp.justworks.com` → **Justworks**), keeping the server's own name as a
+  secondary alias.
+
+- **The connectors sidebar group reads "CONNECTORS", not "MCP".** The generic MCP connector's
+  table group now headers as CONNECTORS instead of the jargon toolkit slug.
+
+- **Asking the assistant to add a column to a connected external table now builds a computed
+  table for you.** A table synced from a connected data source is a live, read-only mirror whose
+  shape comes from the source. The assistant used to quietly ALTER the local copy (adding a column
+  the next sync drops) and then confuse itself into claiming the table "isn't in the workspace."
+  Now an add-column request against such a table is redirected **deterministically**: the tool
+  creates — or reuses — a computed table derived from the mirror (carrying its columns over), and
+  the assistant then defines your new field on that derived table with the right formula (a lookup
+  from a linked table, a calc, or an AI field). It never alters the mirror and never asks you to
+  change the source system. Deleting a connected table still steers you to disconnect its connector
+  (which re-syncs back otherwise). Reads, links, and computed tables built ON a connected table are
+  unaffected.
+
+- **A table created after you opened the workspace shows up without a reload.** When a schema
+  change lands while the GUI is open — most often the assistant creating a computed table — the
+  new table and its relationships now appear in the Data Model explorer, the graph, and the
+  table-view lineage immediately, instead of only after a restart. (The client was refreshing
+  the table list on a schema change but keeping a stale copy of the relationship graph.)
+
+- **Interrupting a render no longer triggers a false "edited on disk" warning.** A table rollup
+  file is written before the manifest that records it, so a render cancelled partway (e.g. a
+  quick succession of edits, where a newer render supersedes an in-flight one) could leave the
+  file ahead of the manifest — and the next render would mistake its own generated file for a
+  hand edit and warn about it. An interrupted render now records what it wrote, so the warning
+  only fires on a genuine manual edit.
+
+- **Bulk document ingest no longer runs the desktop app out of memory.** The packaged
+  desktop runtime shipped with JavaScript's conservative default memory ceiling — a
+  fraction of what the CLI gets on the same machine — so ingesting a folder of large
+  documents (multi-MB spreadsheets, decks, PDFs) could exhaust the heap mid-batch and
+  crash the whole app. The desktop build now carries a 4 GB heap ceiling, and extraction
+  adds a heavy lane: files over 8 MB extract one at a time while smaller files keep full
+  concurrency, so several large documents can no longer multiply peak memory. Browser
+  uploads also release their in-memory request copy before extraction starts, and the app
+  logs its heap limit at startup so a memory-starved build is visible at a glance.
+
+- **The assistant no longer loses the thread on a short reply.** Answering the assistant's
+  question or offer with a bare "yes" (or "the first one", "do that") is now understood as a
+  continuation: the fast intake step sees the last couple of turns, so a context-dependent
+  reply routes to the real work instead of being treated as a standalone message and answered
+  with a fresh "how can I help?".
+
+- **Workspace registry no longer adopts temporary test/bootstrap workspaces.** On some platforms
+  (notably Windows) the OS temp directory sits under the user profile, so the upward root walk could
+  escape a tmpdir sandbox and adopt workspaces into the developer's real `~/.lattice`
+  registry, or load stale workspaces created in tmpdir during a prior test. The GUI now
+  prunes registry entries whose adopted config files lived in the OS temp directory and no
+  longer exist on disk, and bootstrap tests anchor themselves to an isolated temporary root
+  via `LATTICE_ROOT` to prevent upward walks entirely.
+
+- **Settings Workspaces panel now surfaces switch failures instead of reloading silently.**
+  Workspace switches that failed (e.g. database unreachable, config file gone) were being
+  swallowed by raw fetch without `r.ok` checks, causing a silent reload of the current
+  workspace that looked like a no-op. The panel now uses `fetchJson`, which throws on
+  non-OK responses, so failures show in a toast. Additionally, a 410 error is now returned
+  when a workspace's adopted config file is missing, with a clear message to remove it
+  from the workspace list or restore the file.
+
+- **File and folder ingest now report results (ingested/skipped counts).** After uploading
+  files or a folder, the user now sees feedback: the number of files ingested and (when
+  applicable) the number skipped (unsupported, too large, or unreadable). Special-cases
+  include "nothing ingested" for empty folders and "file was not ingested" for a single
+  file that couldn't be read. The button label changed from "＋ File(s)" to
+  "＋ Add files or folder" to make folder upload discoverable, and the empty-state message
+  now says "No files yet — add files or a whole folder below."
+
+### Added
+
+- **Every derived table shows what it's built from — and the Data Model connects inputs to
+  them.** A derived table's detail panel now shows a **Definition**: the input source(s) it was
+  extracted from (e.g. Files), stated plainly as AI extraction — the honest analogue of a
+  computed table's SQL, since a derived table is read out of your documents, not defined by a
+  query. The Data Model view also draws **ingestion connector lines** from each input to the
+  derived tables it feeds, matching the table-view lineage. The source is inferred from the
+  actual document-to-record links, so a native table with no such link (e.g. Notes) correctly
+  shows no input source.
+
+- **See a table's data lineage below its rows.** Opening a table now shows a lineage map
+  beneath the rows: the table in the centre, the upstream sources / transformations / links
+  that feed it on the left, and the downstream tables that consume it on the right — drawn with
+  the same cards, the same Entity/Field toggle, and the same connecting lines as the Data Model
+  explorer. A derived table always shows its ingestion source (Files), since no table exists
+  without a source. Click any linked table to open it, selected, in the Data Model tab.
+
+- **Share a dashboard and its data comes with it.** On a shared cloud workspace, sharing a
+  dashboard — to everyone, or with specific people — now also shares the data that dashboard
+  reads with the same audience, so recipients open a populated page instead of an empty one.
+  The share is table-level and stays live: rows added to those tables later are included
+  automatically, with no re-share needed. It only ever shares the data you own (never another
+  member's private rows in the same table), skips private-only tables, and is one-way —
+  unsharing a dashboard leaves its underlying data shared.
+
+- **The assistant knows what you're looking at — and diagnoses a broken dashboard itself.**
+  When you ask about the dashboard on screen ("why is this broken?", "why is it empty?"), the
+  assistant now knows which dashboard you mean instead of asking you to identify it, and it runs
+  a new self-diagnosis step that executes the page's live data queries and reports the concrete
+  fault — a failing query with its exact error, or a table that doesn't exist — then offers to
+  fix it. Relatedly, assistant-authored dashboards now stick to portable SQL that runs on both
+  the local (SQLite) and cloud (Postgres) engines, so a Postgres-only construct no longer breaks
+  a tile at render time.
+
+- **The assistant's answer now streams in as it's written.** Chat replies appear
+  token-by-token as the model produces them, instead of the whole answer landing at once
+  after it finishes — so a long answer starts showing in a second or two. Its private
+  "let me look…" step-narration before a tool call stays hidden (only the final answer
+  streams). One edge to note: the invisible auto-recovery for an over-long prompt (trim
+  the oldest bulky context and retry) now only kicks in when nothing has streamed yet —
+  in practice a "prompt too long" error is raised before any text streams, so behavior is
+  unchanged, but a mid-stream context error would surface rather than silently retry.
+
+- **Chat runs asynchronously — send stays responsive, and a reload no longer loses an
+  in-flight answer.** Sending a message now returns immediately; the turn runs in the
+  background and its text streams to the browser over the same multiplexed event
+  WebSocket that already carries live activity, instead of holding one long HTTP response
+  open for the whole answer. Practical wins: closing the panel or navigating away no
+  longer cancels the turn; if the connection blips mid-answer the client reconnects and
+  reconciles (a completed answer is recovered, a still-running one keeps streaming); and
+  reloading the page mid-turn re-attaches to the running answer and keeps painting it. An
+  answer left unfinished by an app restart or crash is shown as an interrupted reply
+  rather than a spinner that never resolves. On a shared team workspace each turn is
+  delivered only to the connection that owns it — one member never sees another's chat.
+  Turns are processed one at a time per workspace, in order.
+
+- **The assistant acknowledges you within seconds — and answers simple things
+  instantly.** The moment you send a message, a fast intake step decides how to handle it:
+  a quick, contextual acknowledgement appears right away for anything that needs to work
+  over your data ("Got it — pulling your Q3 invoices…") so you're never left watching a
+  blank cursor while a multi-step task runs; a greeting, a thank-you, or a general
+  question about what Lattice can do is answered immediately without spinning up the full
+  tool loop; and a genuinely ambiguous request comes back with a short clarifying question
+  instead of a wrong guess. Anything that touches your actual data still runs the real,
+  grounded tool loop — the fast path is reserved for messages that clearly don't, and it
+  falls back to the full loop whenever it's unsure.
+
+- **Excel sheets with more than one table are read correctly, and stray rows aren't
+  dropped.** The Excel reader used to stop at the first blank row, so a tab with a summary
+  block, a blank spacer, and then a detail table kept only the summary. It now splits each
+  sheet into blank-row-delimited blocks, imports the largest table, and — when a sheet holds
+  more than one real table — surfaces a note that the others weren't imported instead of
+  silently leaving them out. Totals-row detection is tighter too: a row is only treated
+  as a totals line when its label starts with "Total" AND every other cell is a number, so a
+  real row like "Total Wine & More" is kept. Rows with no identifying value are now counted
+  and surfaced rather than silently skipped.
+
+- **Spreadsheets import faithfully — every row — and the assistant can do it on request.**
+  A dropped spreadsheet is now materialized only by the deterministic structured importer,
+  which reads every row; the general-purpose text extractor no longer also manufactures a
+  lossy handful of rows from the same workbook (a 53-row file could previously collapse to
+  a 3-row summary). This now covers **CSV and TSV** files too — a new delimited-file reader
+  (quote-aware, auto-detecting comma/semicolon/tab) means a `.csv`/`.tsv` is structured into
+  a real table like an Excel sheet instead of being run through the lossy text extractor.
+  And a new `import_spreadsheet` assistant tool lets Lattice bring an attached
+  `.xlsx`/`.xls`/`.csv`/`.tsv` file in as real, structured data on request — so "build a
+  dashboard from this spreadsheet" works: it imports the whole file (reversible like any
+  change), then answers or builds from it.
+
+- **A dashboard is never reported as "done" when its data doesn't load.** Before a
+  generated dashboard is saved and opened, a deterministic check now confirms it actually
+  binds to real data: every table it reads — via `lattice.query`/`lattice.get` and via the
+  runtime-templated `lattice.sql` queries the best-effort QA pass can't execute — must
+  exist, and every runnable query must execute without error. If a dashboard would bind to
+  a table that doesn't exist yet (or a query errors), it is **not stored, not opened, and
+  not claimed as ready** — the assistant instead tells you plainly what data is missing and
+  offers to bring it in, rather than showing a broken page with "Failed to load — please
+  try again" (which retrying can't fix). Editing a dashboard the same way leaves your
+  existing, working page untouched rather than overwriting it with a broken one. This check
+  is always on — it holds even when the optional AI QA pass is disabled or rate-limited —
+  and a legitimately empty result (0 rows) is still fine, shown as a calm "no data yet"
+  state. Authored pages now also distinguish "no data yet" from "couldn't load the data" so
+  an empty section never masquerades as a failure (or vice-versa).
+
+- **Every new workspace opens on a "Welcome to Lattice!" dashboard.** Instead of a
+  blank canvas, a fresh workspace now starts in the Analytics view with a standard
+  onboarding dashboard already open in the middle: a plain-English tour of what Lattice
+  does, example questions you can ask the assistant, one-click buttons to bring in data
+  (Files / Connector / Database) or open Configure, and a short list of what you can do.
+  It is an ordinary dashboard — edit or delete it like any other, and it is not
+  re-created once you remove it. Its buttons drive the app through a navigation-only
+  bridge (open a view / start an add-source flow / focus the assistant) — never any data
+  access — so the sandboxed dashboard stays as isolated as every other.
+
+- **Dashboards get an automatic QA pass before they're shown.** When the assistant
+  authors or edits a dashboard, its data queries now run through a QA step before the page
+  is stored: each embedded `lattice.sql` query is executed against your live data and
+  checked for (1) whether the results actually answer what you asked, (2) SQL errors that
+  make the output differ from what was intended, (3) ambiguities resolved questionably or
+  confidence that's overstated for the data, and (4) queries that return **no rows at
+  all** — usually a wrong join, the wrong column/terminology, or a literal `=` match where
+  a fuzzy `LIKE`/`ILIKE` was meant. When problems are found the page is re-authored with
+  that specific feedback and re-checked; anything that still doesn't look right is surfaced
+  to you instead of being silently shipped. Best-effort — a QA hiccup never blocks the
+  dashboard.
+
+- **Connect any AI provider by key + endpoint — including the Claude API.** Alongside
+  connecting a Claude account, one "API provider" setup (base URL + API key + model)
+  now covers OpenAI, the **Claude API**, Azure, OpenRouter, a local vLLM / Ollama / LM
+  Studio server, your own gateway, or GitHub Copilot. There is a single calling path:
+  Lattice picks the right protocol from the endpoint automatically — an Anthropic
+  endpoint uses the Anthropic wire (the same code that powers a connected subscription
+  and the managed cloud key), everything else uses the OpenAI `chat/completions` wire —
+  so a Claude API key and an OpenAI key both "just work" from the same screen. Connect it
+  from the first-run screen ("Other AI Endpoint": base URL + API key + model). Every
+  assistant feature — chat, auto-linking / ingestion, computed-table
+  fills, as-of detection, HTML authoring — then runs on the selected provider. No
+  provider-specific auth or headers are shipped: you supply the base URL, the API key
+  (sent as a Bearer token; may be blank for a keyless local server), the model, and any
+  extra headers your endpoint needs. Backward-compatible — with nothing configured the
+  assistant resolves a connected Claude subscription exactly as before. Image / PDF
+  vision still uses a connected Claude subscription when one is available. New endpoints:
+  `POST /api/assistant/provider/openai-compat` (connect), `PUT /api/assistant/provider`
+  (switch active backend), `DELETE /api/assistant/provider/openai-compat` (disconnect);
+  `GET /api/assistant/config` reports `activeProvider` + `openaiCompat` presence (never
+  the key).
+
+### Fixed
+
+- **AI computed columns refill reliably after an input edit.** Editing a column that feeds an
+  `ai_classify` / `ai_transform` field could leave the derived cell permanently blank for the rest
+  of the session: the refill pass scanned for empty cells a moment before the write path cleared
+  the now-stale one, so it saw nothing to fill. Writes now clear the stale cell **before** signalling
+  the refill, so the fill always sees it. (Same ordering fix applied to every write path — update,
+  upsert, upsert-by-key, and enrich.)
+
+- **Manual edits to rendered files are captured before an auto-render overwrites them.** The
+  pre-render pass that ingests on-disk edits was suppressed by the very render it runs ahead of, so
+  edits made just before a render could be silently overwritten. The pre-render ingest now runs
+  regardless; the background file watcher still defers while a render is writing.
+
+- **Computed fields that can't be materialized now fail loudly instead of staying blank.** Declaring
+  an `aggregate`, or an `alias`/`calc` that reaches through a relation (a dotted path), on an
+  **entity** column previously compiled to a column nothing ever filled — a permanently-empty cell
+  with no error. These now raise a clear configuration error at load time pointing you to a computed
+  table (which does support them). Aggregates and relation paths on computed **tables** are
+  unaffected.
+
+- **The legacy root-level `outputFile` cleanup no longer touches a filename you chose.** The one-time
+  migration that re-homes an orphaned auto-generated rollup now rewrites only the exact
+  auto-generated name it was meant to fix, and leaves any deliberately-authored `outputFile` (e.g.
+  `outputFile: tickets.md`) exactly as written.
+
+- **Ingesting a whole folder no longer crashes the desktop app.** The desktop app's SQLite
+  backend compiled a brand-new native database statement for every single query and never
+  reused it — so ingesting a folder of many files piled up thousands of native statements
+  until the runtime ran out of memory and aborted partway through. Prepared statements are now
+  cached and reused by query (the way the non-desktop backend already does internally), keeping
+  the native-statement count flat so bulk ingest completes. (Native image normalization is also
+  serialized as a smaller robustness measure.)
+
+- **Chat file attachments: send files with or without a message.** Sending files **without** a
+  typed message now gets a reply from the assistant instead of navigating away to the file
+  record (the composer's Send always keeps focus on the chat), and a typed message sent
+  alongside files is no longer lost if the file ingest hiccups — the message is still sent.
+  (In the desktop app, add files by dragging them into the chat — the paperclip button relies
+  on a native file picker the desktop webview does not provide.)
+
+- **Image (and scanned-PDF) descriptions now generate with a bring-your-own Claude API key.**
+  Image captioning and scanned-PDF reading used a narrower credential check than chat and text
+  enrichment — it accepted only a managed key or a connected Claude subscription and ignored a
+  Claude API key configured as an API provider pointed at an Anthropic host. So a
+  bring-your-own-key user had working chat but images ingested with no description, and the
+  file view showed "No source text.". Vision extraction now accepts the same credentials as the
+  rest of the assistant.
+
+- **Clicking a just-connected connector or external-database table no longer errors "Unknown
+  table".** Connecting a connector (or an external database) registers its tables, and they
+  appear in the sidebar right away — but the row and read routes validated table names against
+  a snapshot captured when the workspace opened, so a table added after that snapshot 404'd
+  with "Unknown table" when clicked. Those routes now fall back to the live table registry
+  (internal bookkeeping tables stay excluded), so a listed table is always openable — matching
+  what the schema routes already did.
+
+- **The assistant reliably sees the dashboard (or record) you have open.** Asking "why is
+  this dashboard blank?" while viewing a dashboard no longer gets a reply asking you to open
+  the dashboard you are already looking at. The chat sends the currently-open surface with
+  each message so the assistant knows which dashboard/record you mean (and its self-diagnosis
+  step can run) — but that detection still matched only the retired `#/analytics/…` route and
+  saw nothing open on the current workspace routes (`#/w/dash/…`, `#/w/table/…`, `#/w/file/…`).
+  It now recognizes those routes, so the open dashboard, table record, or file is passed to
+  the assistant as context again.
+
+- **A background dashboard auto-repair can no longer crash on an abrupt shutdown.** When
+  the data model changes, dashboards that read the affected tables are re-authored on a
+  short debounce. If the workspace closed before that debounced pass ran, its first data
+  read hit a closed database and surfaced as an unhandled error (only under abrupt
+  teardown — a normal workspace switch already cancels the pass). The pass now catches
+  that case, logs it, and keeps the current pages; its timer no longer holds a shutting-
+  down process open.
+
+- **A connected non-Claude model now actually works for chat and ingestion.** The
+  server-side gate in front of the assistant routes required a connected _Claude_
+  subscription specifically — so if you connected an OpenAI-compatible endpoint (or a
+  Claude API key) the app considered you connected, but chatting or ingesting was still
+  refused with a "not connected" error. The gate now recognizes **any** configured
+  backend (a Claude subscription, the managed cloud key, or an API provider), matching
+  what the connect screen already reports. The Claude usage-limit pre-flight now applies
+  only to the Claude backend — a bring-your-own endpoint is never blocked on Claude's
+  limit.
+
+- **A failed setup test no longer leaves a broken model connected.** During first-run
+  setup, if the "Testing your AI" step failed for an API endpoint, the endpoint had
+  already been saved — so the setup screen could be skipped on the next launch, opening
+  the app with a model that can't answer. A failed test now forgets that endpoint, so
+  you can't proceed until a working model is connected.
+
+- **The assistant stops narrating its steps, finds records reliably, and enriches
+  pasted content like a file.** Three chat-assistant fixes: (1) it no longer surfaces
+  its internal "let me try that / let me search again" working-it-out messages — you see
+  only its final answer; (2) searching by name now returns the right record instead of
+  the most recently-touched row that merely mentions the name, and it finds names split
+  across separate first/last fields; (3) it now recognizes reference material in your
+  messages by TYPE — facts, notes, a pasted document, a link — and automatically runs it
+  through the SAME ingestion engine a dropped file uses, even when the same message also
+  carries a question or instruction (the reference part is saved and linked; your request
+  is still answered). Length no longer matters — a one-line fact is ingested, a long
+  instruction is not. It links the content to the existing records it refers to, pulls
+  out the objects it describes, and links those objects both to each other AND to records
+  already on file (a meeting to its attendees, whether they were just extracted or
+  existed already) — instead of hand-creating records and hoping it links them. The
+  object linking also improves file and URL ingestion, which share the engine. (Auto-
+  ingest can be turned off with `LATTICE_CHAT_AUTOINGEST=false`.)
+
+- **Conversation names now show the AI-generated title, not the raw first message.**
+  A new chat thread is given a short, friendly title (generated from its opening
+  exchange) — but that title is written just after the reply stream closes, and the
+  conversation list had already refreshed with the truncated first-message
+  placeholder, so the raw message lingered until a manual reload. The server now
+  signals when the title lands and the list re-fetches, so the friendly summary
+  ("Company Overview") replaces the verbatim message ("tell me about my company").
+
+- **File drag-drop is scoped to one surface per view, and dropping a folder works.**
+  The drag-drop overlay used to cover the whole screen; the drop is now scoped to a
+  single target and a drop elsewhere is ignored — the target matches where the file
+  goes. In Analytics that target is the Ask Lattice chat window (a dropped file is staged
+  into the composer as removable chips for review + send); in Configure it is the
+  Inputs column only (a dropped file ingests immediately — the Model and Outputs areas
+  are not drop targets). Dropping a **folder** now works too: it is expanded into its
+  files (recursively) and each is ingested/staged, instead of failing with "Load
+  failed".
+
+- **Word / PowerPoint / Excel and other documents preview and extract in the desktop
+  app.** In the packaged desktop app, dropping a `.docx` (or `.doc` / `.pptx` /
+  `.xlsx` / OpenDocument / EPUB) file showed "No inline preview" and pulled no text
+  into search or the assistant, because the document parsers were left out of the app
+  bundle. They are now bundled, so document text extracts and previews on every
+  surface — terminal, desktop, and cloud — exactly as it already did on the web.
+
+- **The assistant responds to a dropped attachment even with no message.** Dropping a
+  file into the chat with an empty box now still gets a reply — the attachment is
+  processed and the assistant looks at it — instead of the file being added silently
+  with no response.
+
+- **A dropped-out AI backend sends you back to setup.** If the assistant's model
+  backend becomes disconnected mid-use (credentials removed or no longer valid), the
+  first-run connect screen reappears so you can reconnect, rather than leaving chat in
+  a broken state. A one-off hiccup or a usage limit does not eject you.
+
+- **Every form uses the same field style.** The connection forms (Connect a Database,
+  Migrate to cloud) rendered their inputs with a different fill, corner radius, and
+  padding than the rest of the app; they now use the same rounded field style as the
+  setup screen and every other form, so fields look consistent everywhere.
+
+- **Switching workspaces now refreshes an open Settings / Version-history panel.**
+  With Settings (or Version history) open, switching to another workspace updated the
+  topbar but left the panel showing the _previous_ workspace's name / database
+  connection / data model / history. The switch now preserves the open takeover and
+  re-renders it for the new workspace instead of routing away and stranding the stale
+  overlay.
+
+### Changed
+
+- **Configure panel and sidebar refinements.** The Configure panel now slides in from the
+  top instead of fading. Its single "Inputs" tab is split into separate **Files**,
+  **Connectors**, and **Databases** tabs, and the Workspaces list moved into the **User**
+  tab (the standalone Lattice tab is gone). In the left sidebar, the Dashboards, Tables, and
+  Files section headers now stay pinned and one section expands at a time, scrolling within
+  its own frame — so every section header is always reachable no matter how long a list gets.
+  Welcome-dashboard suggestion chips now send the question straight to the assistant instead
+  of only filling the box, and open workspace tabs share one uniform width, shrinking evenly
+  to fit before the extras collapse into a "⋯" overflow menu.
+
+- **The first-run screen is a guided setup wizard.** Connecting the assistant now
+  walks through a short flow: choose a backend (a Claude account or any
+  OpenAI-compatible model), fill in its details (the Connect button stays faded until
+  the required fields are filled), then a **"Testing your AI"** step runs a real check
+  before you continue — if it fails you go back to the model screen with the error, and
+  only a working connection proceeds to the dashboard. From Settings, an
+  OpenAI-compatible backend is now editable in place (base URL / key / model) and is
+  re-tested on save; a failed test does not save.
+
+- **One consistent assistant behavior — the aggressiveness selector is gone.** The
+  per-user "inference aggressiveness" slider has been removed; the assistant now uses a
+  single high default for everyone, so its auto-linking and enrichment behave the same
+  across every workspace and account.
+
+- **Ingestion questions live in a dedicated Data Questions tab — no more surprise
+  view switches.** When ingesting files raises a clarifying question, it no longer
+  yanks you from the Configure view over to the Analytics assistant. A transient
+  **Data Questions** tab now appears next to Tables (with an unread badge) while
+  questions are outstanding and disappears once they're all answered or dismissed;
+  the Analytics assistant still surfaces the same questions as chat cards when you're
+  working there, so each surface fits the view you're in. The questions are also
+  phrased in plain, business-forward language — an LLM rewrites each into "Do you want
+  to group all your driver's licenses together?" rather than "add records to
+  <entity>?" — and ingestion never blocks waiting for an answer (a marginal question
+  is enqueued in the background; the file still imports).
+
+- **Folder ingestion now processes files in parallel.** Dragging in a folder used
+  to ingest its files strictly one at a time; it now works on several at once
+  (bounded fan-out), so the per-file AI enrichment overlaps instead of running back
+  to back — a large folder finishes in a fraction of the wall-clock. To keep that
+  safe on the single-connection SQLite backend, schema changes (creating a table,
+  adding a column, creating a link table) are now serialized through a new
+  reentrant schema lock (`Lattice.withSchemaLock`): two files that both introduce
+  the same new object — or the same new field — converge on ONE table/column
+  instead of racing and throwing "table already exists" / "duplicate column name".
+  Row inserts stay fully concurrent (they need no lock). No API change for callers;
+  `addColumn` and the runtime entity/link creators acquire the lock internally.
+
+- **Fewer writes + faster media on file ingest.** Each ingested file is now
+  written to the `files` table ONCE with its final extraction result (was a
+  create-pending followed by an update, i.e. two writes + two audit rows per
+  file). And the vision path streams its Claude response (avoiding the
+  long-request timeout) and asks a scanned PDF for a short summary only, not a
+  full transcription-then-summary.
+
+- **Bulk file ingestion no longer re-renders per file.** A folder ingest now
+  suspends auto-render for the whole walk and fires a SINGLE coalesced render at
+  the end, instead of one render per file (each of which re-scanned the growing
+  file set — O(N²)). Internal bookkeeping tables (`_lattice_*` / `__lattice_*`)
+  never trigger a render. And a file's full `extracted_text` is no longer copied
+  verbatim into every audit row — it is capped to a hash + short preview, keeping
+  the audit log (and every scan of it) small. New `pauseAutoRender()` /
+  `resumeAutoRender()` on `Lattice`.
+
+- **Faster file ingestion — the three per-file AI calls now run in parallel.**
+  Enriching an ingested file (summary, link classification, object extraction)
+  issued three LLM round-trips strictly one after another; they are
+  input-independent, so they now run concurrently (`Promise.allSettled`), cutting
+  the per-file AI wall-clock from their sum toward the single slowest call. All
+  prior semantics are preserved exactly — a classify failure still leaves the
+  description, surfaces the note, and skips extraction; an extract failure still
+  only warns and keeps the links.
+
+- **Switching workspaces keeps you in the same section.** A switch used to be able
+  to drop a Configure view onto Analytics; it now preserves the section you're in
+  (Analytics, brain Graph, Tables, or Objects), resetting only a record-level
+  drill-in to that section's home.
+- **One "＋ File(s)" add-source button.** The separate "＋ Folder" and "＋ File"
+  buttons are combined into a single "＋ File(s)" button with a small menu (add
+  file(s) / add a folder).
+- **Long ingestion status no longer wraps the header.** The top-right status pill
+  is width-capped and ellipsizes, so a long "Ingesting…" notice can't push the
+  Ask Lattice / Configure toggle onto a second line.
+
+- **Composer file-attach UX.** Files staged for Ask Lattice now show as removable "file
+  to add" chips directly above the chat box (they were rendered down in the
+  message feed). The upload button opens the file picker via a native `<label>`
+  (the prior programmatic click was a no-op in the desktop webview). And a
+  drag-drop now behaves by view: on **Analytics** it attaches the file to the
+  the Ask Lattice chat for review; on **Configure** it starts ingestion immediately and
+  stays in Configure (it no longer yanks you to the Analytics chat).
+
+### Fixed
+
+- **SQL-driven dashboards load data again (no more "forbidden table").** The
+  dashboard data broker rejected every `lattice.sql(...)` call as "forbidden
+  table" because the empty-table guard ran before the sql branch, and sql calls
+  carry no table. Aggregation dashboards (GROUP BY / totals — the most common
+  kind) always errored. The table-less `sql` and `search` ops are now handled
+  before the guard (their protection is server-side).
+- **A dashboard Lattice builds now appears in the sidebar immediately.** The
+  Analytics dashboards sidebar/home only refreshed on navigation and cached an
+  empty list, so a newly-created dashboard didn't show up until a hard reload.
+  A dashboards change now refreshes them live from both the realtime and feed
+  streams.
+- **The activity feed no longer floods with "not auto-importable" notices.** A
+  custom/computed-render file that changes on disk but can't round-trip is an
+  expected, non-actionable condition (the render owns the file); it was
+  publishing one feed event per reverse-sync pass, flooding the feed with
+  duplicates. It is now a debug-only log.
+
+### Changed
+
+- **First-run connect wall polish.** The launch screen now leads with the Lattice
+  logo (not a placeholder emoji) and a black Claude-logo "Connect with Claude"
+  button; the copy reads "Connect your Claude account plan (Max, Pro, etc) to
+  continue," and the code field is labelled by its placeholder ("Paste
+  Authentication Code here") with a "Connect" action.
+
+### Fixed
+
+- **Dashboards now open on cloud/team workspaces.** Opening any dashboard on a
+  shared workspace threw (`appendChild` of an HTML string — the per-row
+  visibility line is a string, and `row._access` is only populated on cloud), and
+  the error was swallowed by closing the tab and bouncing to the Analytics home,
+  so dashboards never opened on a shared workspace. The visibility line is now set
+  via `innerHTML`. Local (SQLite) workspaces were unaffected, which is why it
+  slipped through.
+- **Live ingest no longer clobbers the object drill-down graph.** While viewing an
+  object's drill-down graph (`#/graph/<obj>`, whose nodes are rows), any
+  insert/link/schema mutation anywhere in the workspace replaced it with the
+  unrelated top-level schema (table) graph, without the URL changing. The live
+  ingest animation is now gated to the exact top-level `#/graph` route.
+- **Search-driven dashboards return results again.** The dashboard live-data
+  bridge's `lattice.search()` posted to `/api/search`, but only `GET
+/api/search` exists — the request 404'd and the section rendered empty with no
+  error. It now reads the real `GET /api/search?q=` endpoint.
+- **A graph node ingested during the opening animation stays put.** An object that
+  became non-empty during the graph's opening wave-reveal was removed by a later
+  reveal wave (which replayed a stale node prefix) and stayed missing until the
+  next event. The ingest now cancels the in-flight reveal and paints the full set.
+- **The force-graph renderer releases its `ResizeObserver` on teardown.** `stop()`
+  now disconnects the observer, so re-opening/refreshing the graph over a session
+  no longer stacks stale observers on the shared mount.
+
+### Added
+
+- **Edit a connected external database in place.** A connected database in Inputs
+  › Databases now has an Edit affordance that opens the connect drawer pre-filled
+  with the current host / port / user / database / schema (never the password —
+  Lattice does not display stored secrets) and saves via a new
+  `POST /api/db-sources/<id>/reconnect`. Editing reuses the same connection id and
+  table prefix, so the imported tables keep their names and rows re-sync in place
+  (a rotated password or corrected host does not fork a new table set). Leave the
+  password blank to keep the current one; a successful reconnect also clears a
+  prior error state. New `GET /api/db-sources/<id>/connection` serves the
+  non-secret parts for the pre-fill.
+
+### Changed
+
+- **External-DB tables now show a clean name in the Objects list.** A table
+  imported from an external database is stored under a machine-namespaced
+  physical name (`db_<database>_<connid>_<table>`) that title-cased into noise
+  like "Db Postgres 1623 Addresses". The entities payload now carries the clean
+  external table name as `entityLabel`, and the GUI shows "Addresses" (the
+  connector badge already conveys it came from an external database).
+
+- **Claude access is now OAuth-only, enforced server-side.** The assistant
+  authenticates only through a connected Claude subscription (OAuth); the
+  per-user API-key path is removed. A single server-side gate refuses every AI
+  route (`/api/chat`, `/api/ingest/*`, `/api/import/*`, question answers) with
+  `403 claude_not_connected` when no subscription is connected, so the
+  requirement can't be bypassed by calling the API directly. `resolveClaudeAuth`
+  is OAuth-token-or-null and `/api/assistant/config` reports a single `connected`
+  boolean. `PUT`/`DELETE /api/assistant/key` for the `anthropic` kind now return
+  `400` (OAuth-only) — the voice-provider kinds are unaffected. A first-run
+  **connect wall** gates the whole app before any workspace loads, a header
+  **account menu** offers disconnect (with a warning), and the redundant connect
+  step was dropped from the create/join workspace wizard. **Usage-limit
+  messaging**: a genuine Claude usage 429 flips a shared limit state that shows
+  an app-wide banner and, as a pre-flight, refuses chat and Configure-side
+  ingest/import with `429 claude_limit` (a friendly message + `resetAt`) until it
+  auto-clears. The opt-in managed-deployment mode (`LATTICE_MANAGED_MODEL_AUTH`,
+  operator env credential) is unaffected throughout.
+
+- **Marginal import links now ask instead of auto-creating.** Link inference
+  in the structured importer is governed by the clarify threshold (default
+  0.6): a reference field whose values resolve to another table at or above
+  the threshold is linked exactly as before, but candidates between the floor
+  (threshold/2 — 0.3 by default) and the threshold — which previously
+  auto-created a junction — are **no longer created**. The referencing column
+  imports as a plain scalar column and a short clarification question is
+  queued instead (at most 5 per import, highest confidence first): answering
+  "Yes, connect them" creates and fills the junction from the already-imported
+  rows (idempotent, snapshot-aware); "No" or dismissing does nothing; a
+  free-form answer is saved as the column's definition. Below the floor,
+  candidates are dropped as noise, as before. The confirm card echoes the
+  threshold its proposal was inferred under, so apply bands links identically
+  even if the preference changes between upload and confirm.
+- **A background clarification question no longer interrupts active work.** A
+  realtime `question` event used to force the app to the Analytics view to show
+  the pending card — which, mid-build in the computed-table builder
+  (`#/computed/*`), discarded the in-progress form. New questions arriving while
+  you are in the builder now surface via the assistant trigger's notification
+  dot plus a dismissible toast instead of navigating; when you are idle, the
+  assistant still opens automatically as before.
+- **Deleting a computed table or a dashboard now asks first.** Both the
+  computed-table builder's "Remove" action and a dashboard's ⋯ → Delete prompt
+  for confirmation ("… You can undo this from history.") before issuing the
+  delete. The after-the-fact undo toast is unchanged.
+- **Clarification questions are more accessible.** The assistant trigger's
+  accessible name now reflects the number of pending questions (e.g. "… — 2
+  questions waiting") and a polite live region announces new questions, so the
+  waiting state is no longer signalled by the visual dot alone. Dismissing a
+  question now confirms first so a stray click can't discard it.
+- **Freshly-created computed views hint that AI columns are still filling.** A
+  computed view whose definition has AI-derived fields (AI category / AI text)
+  now shows an unobtrusive banner on its collection page while those cells fill
+  in the background, so momentarily-blank AI columns don't read as broken.
+
+### Removed
+
+- **Dead GUI stylesheet rules.** Removed CSS whose markup was retired during the
+  5.0 GUI refactors: the rendered-context block, the provenance graph mount, the
+  legacy table cell-clip/empty-row and row-action controls, the retired mobile
+  assistant-rail drawer, the abandoned multi-group Outputs classes, the
+  Advanced-View toggle switch, and the old record detail card. No visual change
+  — every removed selector was verified to have no remaining markup.
+
+### Added
+
+- **Signed + notarized macOS desktop artifacts (when release credentials are
+  configured).** The macOS desktop build now Developer-ID-signs the app
+  inside-out under the hardened runtime (JIT entitlements in
+  `scripts/lattice.entitlements`, required by the embedded JavaScript runtime),
+  and notarizes + staples the `.app`, `.pkg`, and `.dmg`, hard-failing unless
+  Apple returns Accepted. Signing is entirely env-gated — identities, certs,
+  and notary credentials flow through environment variables / CI secrets,
+  nothing is hardcoded — and without credentials the build produces the same
+  ad-hoc (unsigned) installers as before, so contributor and fork builds are
+  unaffected. See docs/desktop.md → "Code signing (maintainers)".
+- **Excel formula capture.** Reading a workbook now also summarizes each
+  column's formulas (per-sheet, per-column normalized-pattern counts + an
+  example), including same-column shared-formula runs. Cell values still
+  import from the cached formula results exactly as before — the formula text
+  feeds only the computed-table proposals below.
+- **Opt-in computed-table proposals on import.** A new-dataset import proposal
+  can now carry a "Computed tables" section on the confirm card, unchecked by
+  default:
+  - a **calc field** when a spreadsheet column is computed by one dominant
+    row-local formula (≥ 90% of the column's rows) that translates into the
+    sandboxed calc expression grammar — literals, same-row references,
+    `+ - *`, zero-guarded `/`, text-only `&`/`CONCATENATE`, `IF` →
+    `CASE WHEN`, `AND`/`OR`/`NOT`, comparisons, `ROUND`, `ABS`, and `SUM`
+    over a same-row range; anything else simply isn't proposed;
+  - sparingly, a **classifier field** (no model calls at proposal time) for a
+    category-named text column that missed dimension extraction only on
+    cardinality, seeded with a starter label set drawn from the most frequent
+    values (at most 1 per table and 3 per import).
+
+  Checked fields are created after materialize as live computed tables named
+  `<entity>_computed` (deterministic `_2`/`_3` suffix on collision) through
+  the same audited path as the computed-table builder; the raw source columns
+  import as plain values regardless, and a computed-create failure warns
+  without failing the import. The apply route re-derives the proposals from
+  the stored bytes and honors the opt-in by name — the card's payload is
+  never trusted as a definition.
+
+- **Clarification questions — ask when marginal, act when confident.** One
+  threshold (the machine-local `clarify_threshold` preference, default 0.6,
+  settable via `PUT /api/assistant/clarify-threshold`) now governs when an
+  automated inference asks the user instead of guessing: at or above the
+  threshold it acts silently; between the floor (threshold/2) and the threshold
+  it asks a short, information-seeking multiple-choice question (always with a
+  free-form "Other"); below the floor it drops the inference as noise.
+  Questions are always about what the data _means or is for_, never about
+  storage mechanics — and answers are **enrichment, not just disambiguation**:
+  an informative (free-form) answer is also persisted onto the object it
+  describes (as a table/column definition, a row value, or lineage detail), so
+  the knowledge outlives the conversation.
+  - All questions surface in one place — the assistant dock in the Analytics
+    view — as interactive cards above the composer. A new pending question
+    switches to the Analytics view so the cards are seen; while questions wait
+    with the Analytics view hidden, the header's Ask trigger carries a
+    notification dot. Backed by a new question store
+    (`GET /api/questions/pending`, `POST /api/questions/:id/answer`,
+    `POST /api/questions/:id/dismiss`); answering executes the question's
+    deferred action + enrichment writes through the audited mutation paths, and
+    a failed execution leaves the question pending with the error shown on the
+    card.
+  - The assistant gains an in-turn `ask_user` tool: when it is genuinely
+    uncertain about intent or a data object's meaning, it shows one short
+    multiple-choice question inline in the chat and ends its turn; the pick (or
+    free-form reply) is sent as the next message.
+  - First background producer: file-ingest object extraction now reports a
+    confidence for its target-entity decision. Marginal decisions create
+    nothing and ask instead (at most 2 questions per ingested file); confident
+    or confidence-less extractions behave exactly as before.
+
+### Fixed
+
+- **Connecting a database no longer imports every row and then wipes it.** The
+  db-source connect handler treated ANY failure during the initial import —
+  including one thrown _after_ thousands of rows were already committed — as a
+  reason to hard-roll-back the whole connection, soft-deleting every imported row
+  and deleting the registry entry (along with its only error trace). The connect
+  is now two-phase: a **setup** failure (table definition / RLS, before any row
+  lands) still rolls back cleanly so no phantom entry is left behind, but an
+  **import** failure keeps the connection in an error state with its already-
+  imported rows live and the error surfaced loudly, so a Refresh can retry. See
+  `docs/bugs/2026-07-05-db-source-import-then-wipe.md`.
+- **A connected database's tables now appear on the Objects page and survive a
+  restart.** Two gaps made a freshly connected database look like "nothing
+  happened": (1) the Objects page filtered out every source-tier table, so
+  connected tables only showed in the Graph / Tables explorer — now a connected
+  source table with data appears as a browsable object (empty never-connected
+  connector schema stubs stay hidden); and (2) the per-connection tables were
+  registered on the live schema only for the connect session, so after an app
+  restart the imported tables + rows persisted on disk but vanished from every
+  view — the workspace-open path now replays that registration from the persisted
+  connection descriptor.
+
+---
+
+## [5.0.0] — 2026-06-28
+
+Major release. The GUI is reframed around the data-modeling story —
+**Inputs · Model · Outputs** — and gains the ability to **connect an external
+database as an Input**. Underneath, three substrate features land together: a
+self-maintaining, cloud-safe, and tunable **native vector search substrate**; a
+live **force-directed brain graph** across all GUI graph surfaces; and
+**auto-update made visible on every surface** (with an opt-out). Untuned/non-cloud
+behavior matches prior releases; the public API grows additively (a new external-
+database connector).
+
+### Analytics view — ask your company anything
+
+- **The app splits into two views.** **Analytics** is the new landing surface:
+  a Dashboards sidebar, a tab strip of open dashboards, and the assistant
+  docked on the right. **Configure** is the existing Inputs · Model · Outputs
+  workspace. The top-right header button toggles between them, and each side
+  remembers its last location; boot and workspace switches land on Analytics.
+- **Dashboards are a first-class object.** The assistant's HTML-page tools
+  became `create_dashboard` / `edit_dashboard`: a dashboard is a live visual
+  page (charts, tables, key numbers) authored from a plain-language spec,
+  stored in a native `dashboards` table, rendered in the same sandboxed
+  no-network frame as before, and shareable per-row exactly like any record.
+  The page body is writable only by the authoring tools — no other write path
+  can plant executable content — and is redacted from assistant reads.
+- **Dynamic dashboard tabs.** Each open dashboard is a closable, deduped tab;
+  closing falls back to the right neighbor, then left, then the Analytics
+  home; when the strip can't fit, trailing tabs collapse into a "⋯ N" menu
+  that always keeps the active tab visible.
+- **A quieter assistant for non-technical users.** The assistant discusses only
+  what goes into a dashboard and what it shows; structural/data work happens
+  silently with a single transient status line ("Building your dashboard…"),
+  and a plain-text answer with no dashboard is a first-class outcome.
+- **Dashboards are live and self-healing.** A page reads its data at load
+  time through the sandboxed bridge — now including `lattice.sql(...)`, a
+  read-only, capped, single-SELECT surface for aggregations — so a dashboard
+  always shows the current data, never a snapshot. And when the data model
+  changes underneath one (a rename, a delete, a merge — from the assistant or
+  the schema tools), every consuming dashboard is re-authored against the new
+  schema automatically in the background: each repair lands as an ordinary
+  activity-feed update and the open page live-reloads; a repair that cannot
+  run keeps the previous page and says so.
+- **One-time migration.** Existing assistant-authored HTML pages move from
+  `files` into `dashboards` on the next open (same id — sharing grants and
+  ownership are preserved, including member-owned private pages on a cloud);
+  markdown artifacts stay in the Markdown tree. The old floating assistant
+  panel is retired in favor of the Analytics dock.
+
+### Security
+
+- **MCP connector SSRF guard now survives redirects and OAuth discovery.** The
+  user-supplied MCP server URL was validated once, up front — but the client
+  then followed HTTP redirects and fetched the authorization/token/registration
+  endpoints advertised in the server's own OAuth metadata without re-checking
+  them, so a malicious server could point any of those at a
+  private/loopback/link-local/cloud-metadata address after passing the initial
+  check. Every MCP request (transport and OAuth) is now routed through a fetch
+  that re-validates each hop's resolved target before it is fetched, closing the
+  redirect and OAuth-discovery SSRF paths.
+
+- **External-database connections are read-only, enforced in depth.** A
+  connected database is a data source — Lattice must never be able to write to
+  it. Every pooled connection now starts with
+  `default_transaction_read_only = on` (the server itself refuses writes), and
+  the connection wrapper additionally refuses any non-read statement
+  (SELECT/WITH/SHOW/EXPLAIN only) before it touches the network. The connect
+  dialog takes host/port/user/password/database fields only — raw connection
+  strings are no longer accepted (pasting an owner/admin URL wholesale was the
+  risk), and the UI recommends a read-only database user.
+
+- **CSRF / DNS-rebinding hardening for the local GUI server.** State-changing
+  requests and the realtime WebSocket upgrade now require a same-origin request
+  and a `Host` header matching the bound loopback authority, so a web page you
+  visit while the GUI is running can't drive the local API as you. Binding the GUI
+  to a non-loopback address now requires an explicit `--allow-remote` opt-in.
+- **SSRF guard on the generic MCP connector.** A user-supplied MCP server URL is
+  validated (scheme + DNS resolution) and private / loopback / link-local /
+  cloud-metadata targets are refused before any request is made.
+- **Per-member connector key isolation.** Connector rows are namespaced by the
+  per-member connection, so two members connecting the same external instance no
+  longer collide on the shared primary key; connector sync errors are sanitized so
+  a conflicting key value can't leak.
+- **OAuth callback pinned to loopback** — the connector `redirect_uri` is derived
+  from the bound loopback authority, not the request `Host`.
+
+### Privacy
+
+- **Computed views honor per-column audience masking on a team cloud.** A
+  computed table's compiled view read its base and related columns raw and
+  applied only row visibility, so a scoped member reading the view could see the
+  value of a column the owner had masked from their role — a column-level leak
+  that a normal read (through the `<table>_v` masking view) would have caught.
+  Cloud-compiled computed views now read every masked source table through its
+  cell-masking `<table>_v` view instead of the base table, so a masked column
+  reads NULL for a member exactly as it does elsewhere; the masking binds
+  per-viewer (`session_user`), so the row owner still sees the real value. Row
+  visibility is unchanged — a masked source is read through a view that already
+  applies it, so the redundant predicate is dropped. SQLite (single-tenant) is
+  unaffected.
+
+### Performance
+
+- **Provenance builds without an O(files) rendered-content scan.**
+  `/api/provenance` loaded the CONTENT of every rendered context `.md` file from
+  disk to read the table/column/relation structure it actually needs; it now uses
+  the structural (no-content) workspace load, and junction discovery
+  (`tableJunctions` / `fileJunctions`) does the same — no per-request full-tree
+  disk scan.
+- **Clarification-question junction creation reads only the key columns.**
+  `linkMaterializedRows` (the "Yes, connect them" answer path) issued three
+  unbounded `SELECT *` whole-table reads to build its key maps; it now projects
+  just the id + match key (+ `as_of` when the side is dated), so it never pulls
+  every column of every row into JS.
+- **Computed-table registration introspects all views in one round-trip.**
+  Workspace open introspected each computed view's columns with a separate
+  `information_schema` query (one serial round-trip per computed table on a pooled
+  cloud connection); it now batches them into a single query, so an open with K
+  computed tables pays one introspection round-trip instead of K.
+- **Instant undo/redo state.** Header undo/redo availability is computed with
+  bounded `COUNT` queries + an index instead of loading the session's entire audit
+  log (with row snapshots) on every edit and navigation.
+- **Credential key derivation is cached**, removing an event-loop stall during a
+  large connector sync; the sync reuses one MCP transport across the run instead of
+  reconnecting per parent, and prunes vanished rows in a single transaction.
+- **Scoped realtime refresh** — a collaborator's edit invalidates only the changed
+  table's cache, not the whole cache; relation chips skip heavy text columns.
+- **The GUI shell is served with brotli/gzip** content negotiation.
+
+### Added
+
+- **All data renders as markdown.** The files table, connector-synced tables,
+  and imported-database tables now get real per-record markdown contexts (on
+  owner and member opens alike) and appear populated in the Markdown column. A
+  file's context is bounded — the extracted text and raw source JSON never
+  enter the markdown, and the self file is capped — while `secrets` and the
+  conversation tables are hard-excluded from rendering at the derivation
+  itself. Spec-less rollups no longer read their whole table just to write an
+  empty file.
+- **Render progress lives in the Markdown column, per file.** While a
+  workspace renders, not-yet-rendered tables appear faded, the one currently
+  rendering carries an in-node progress bar (real percentages when per-entity
+  counts exist), and each un-fades as it completes — the status of all
+  rendering visible separately in the tree. The old per-card dashboard
+  overlays are gone; the aggregate header pill stays.
+
+- **Computed tables — config-defined, read-only SQL projections (engine).** A
+  new top-level `computed:` section in `lattice.config.yml` declares live SQL
+  views over a base table: `alias` fields (base columns or dotted belongsTo
+  paths), sandboxed `calc` expressions (a dedicated tokenizer + parser is the
+  injection boundary — raw config text never reaches the SQL string),
+  `aggregate` fields folding junction rows to one scalar per base row
+  (`count`/`sum`/`avg`/`min`/`max`/`concat`), and AI-derived fields
+  (`ai_classify`, `ai_transform`). AI fields never re-run a model at read time:
+  outputs are **materialized once** into the `__lattice_ai_map` /
+  `__lattice_ai_cell` bookkeeping tables the view LEFT JOINs, so reads are
+  always deterministic SQL — and a changed source row makes the join miss, so
+  the field reads NULL until the next fill pass, never a stale value. The fill
+  engine takes an injected LLM interface, sends only never-seen distinct values
+  to the classifier, validates every label against the allowed set, and records
+  per-field status in `__lattice_computed_state`. The stored `prompt_hash` is
+  load-bearing: a field definition changed through ANY path (the builder, a
+  hand-edited config) auto-purges its materialized cache at the next open, so
+  stale labels or transforms are never served. Views register at open in
+  dependency order (SQLite drops + recreates; Postgres guards the DDL behind a
+  content-hash migration version so a converged open issues none, and a
+  changed definition drops + force-recreates its dependent computed views in
+  order); a definition
+  that fails to compile is fault-isolated — recorded, reported, never bricking
+  the open — and direct writes are refused (a computed table is a read-only
+  projection; edit its source tables or its definition). New public API:
+  `ComputedTableDef` / `ComputedFieldDef`, `compileComputedTable`,
+  `computedTableOrder`, `registerComputedTables`, the fill engine
+  (`ensureAiTables`, `runComputedFill`, `purgeAiField`, `readComputedState`,
+  `FillLlm`), the expression language (`parseCalcExpr` / `emitCalcExpr`), and
+  `Lattice.isComputedTable` / `getComputedTableNames` /
+  `getComputedRegistration`. On top of the engine, the GUI server ships the
+  full runtime surface: audited, revertible create/update/delete ops (no
+  reopen; persisted to the config YAML; undo/redo round-trips them; deleting
+  or renaming a source table is refused while a computed table reads from
+  it), a dry-run preview, a field picker, and an AI-fill refresh with
+  streamed per-field progress — over `GET/POST/PUT/DELETE
+/api/computed-tables[...]` (+ `/preview`, `/fields?base=`, and
+  `/:name/refresh` as NDJSON). Computed tables are flagged in the entities
+  payload (the Tables explorer's "Computed Tables" tier), row writes against
+  them get a friendly refusal, and on a team cloud the view compiles with
+  per-viewer row-visibility predicates, members are granted SELECT (re-issued
+  on every owner reconcile), and definitions publish through the shared
+  schema so members hydrate them like entities. The GUI completes the story:
+  a full-page builder at `#/computed/new` / `#/computed/<name>` (base picker,
+  per-kind field rows — Copy a field / Calculation / AI category / AI text /
+  Total across links — a dry-run Preview with per-field ✓/✕ marks + the
+  compiled SQL, a streamed "Refresh values" log, and Remove), reached from a
+  "+ New" button on the Computed Tables tier; the computed card's detail panel
+  gains Edit definition / Refresh / a lazy Definition (SQL) block; the schema
+  graph emits a `computes` edge (base → view, drawn dashed in the Tables
+  explorer and listed as upstream/downstream lineage); and computed rows
+  render read-only everywhere — a "Computed" badge, a note saying where the
+  values come from, and no edit affordances on record or collection pages.
+  The assistant drives the same loop through four chat tools —
+  `preview_computed_table`, `create_computed_table`, `update_computed_table`,
+  `refresh_computed_table` — preview-first by prompt (it checks per-field
+  status and fixes failing fields before creating), with the system prompt
+  teaching the derived-vs-new decision ("a table OF existing data" → computed
+  view; "a new kind of record" → entity) and `delete_entity` routing a
+  computed name straight to the definition delete. Computed views are tagged
+  read-only in the assistant's schema context and entity listing so it never
+  edits their rows, and every assistant computed-table mutation is audited and
+  undoable exactly like a builder action.
+  Documented in `docs/computed-tables.md`.
+- **External databases import their relational structure.** Single-column
+  FOREIGN KEYs on the remote are introspected at connect time and materialized as
+  graph edges between the imported tables (same machinery as the other
+  connectors), so a connected database's rows arrive already linked.
+- **Per-connection table namespacing.** Imported table names now carry a short
+  connection-id suffix in addition to the database name, so two connections whose
+  databases share a name (every Supabase database is `postgres`) can never merge
+  into the same imported tables.
+- **Table imports surface like file ingests.** A successful database import (and
+  each refresh) publishes an activity-feed summary — the same live-feedback
+  contract as dropping files.
+
+- **MCP-backed connectors — connect any MCP server as an Input.** Connectors are
+  now powered by the Model Context Protocol: Lattice runs as a **local MCP client**
+  and pulls a server's read tools in as connected data types. Everything runs on
+  your machine — a remote server is reached over Streamable HTTP or SSE with that
+  server's **own OAuth** (tokens stored in the machine-local encrypted store), and a
+  local server runs as a **stdio** child process. Nothing is routed through any
+  cloud middleman. **Any MCP server connects by URL** — it is introspected at connect
+  and modeled into typed, read-only tables (one per record kind, grouped under the
+  server's brand), with a flat `mcp_items` fallback for anything unmodelable. (Earlier
+  5.0 previews shipped a fixed set of _branded_ Gmail/Calendar/Drive/Jira/Trello/monday
+  connectors with per-provider factory exports; those were replaced by this single
+  bring-your-own-URL model before release, and the per-provider exports are not part of
+  the public surface.) Connector data keeps the same conventions as before — typed
+  connected tables, per-member `private` visibility, FTS, graph edges, and rendered
+  context. New public API: `McpConnector` / `isMcpConnector`, `McpConnectorBase` /
+  `SimpleMcpConnector`, `introspectiveConnector`, and the `@modelcontextprotocol/sdk`
+  optional dependency.
+- **Folders view — objects as folders (now the default center tab).** A new
+  **Folders** tab (first, and the landing view) shows the workspace's objects as a
+  grid of folders. Double-click a folder to open it: its rows appear as "files"
+  (icon by file type) and its linked objects nest as sub-folders (a linked object A
+  shows inside B and B inside A). Clicking a file opens that record's page. A folder
+  can be renamed in place (renames the object). Graph and Tables remain as sibling
+  tabs.
+- **Collapsible layout columns.** Each of the three columns — Inputs, Model,
+  Outputs — has a collapse toggle in its header that shrinks it to a thin rail
+  (state persisted in localStorage); the grid always keeps a flexible track, so you
+  can focus any column.
+- **Wire / Merge moved above the tab line and made global.** The **+ Wire** and
+  **Merge** buttons now sit on the tab strip (beside Folders / Graph / Tables) and
+  work in every view. **Drag** one object onto another to link them (many-to-many);
+  **Shift-drag** to merge one into the other — on both the Folders tiles and the
+  Tables cards. On the Graph, the buttons drive a click-to-pick flow (click a
+  source node, then a target) so it doesn't fight the graph's own node dragging. Esc
+  cancels a pick.
+- **Inputs · Model · Outputs GUI reframe.** The desktop GUI / `lattice gui` is
+  reorganized into three columns: **Inputs** (Files, Connectors, Databases),
+  **Model** (two top-level tabs — **Graph** and **Tables** — where Tables is a
+  tiered schema explorer (Source / Model / Derived / Surface) with Entity/Field
+  views, a detail panel of fields + table/field lineage, relationship edges drawn
+  between the tiers, and a **"+ Wire"** mode to link two tables), and **Outputs**
+  (Artifacts, a Markdown view of the rendered context tree, a Tables mirror of the
+  Model view, plus Server Docs / API Docs / MCP). Opening an object shows its rows
+  as a table (mirroring the file list), with breadcrumbs rooted at Tables. The
+  assistant moves from a docked rail to a floating **"Ask Lattice"** panel in the
+  upper-right, and the live activity feed moves to a header popover next to the
+  version-history clock. One shared client serves both the terminal GUI and the
+  desktop app, so the reframe lands on both at once.
+  - **Artifacts** are their own object/table view (a rows table at its own route),
+    and opening an artifact roots its breadcrumb at Artifacts rather than Files.
+  - A record has a **Formatted | Markdown** toggle: Formatted shows the rendered
+    (compiled) markdown document; Markdown shows that same markdown in an editable
+    textarea that writes round-trippable field edits straight back to the record
+    (`PUT /api/tables/:t/rows/:id/context`). The old column-by-column field dump is
+    gone, and a record now shows a single compiled document (no duplicate sections).
+  - Clicking a Markdown file in Outputs opens it in the **center pane** (with a
+    breadcrumb), replacing the slide-in detail drawer.
+  - The **+ New workspace** dialog is a single step — enter a name (and, for a
+    cloud workspace, the Postgres connection) and click **Create**; the optional
+    starter-entities and review steps are gone (entities are added from the
+    workspace itself).
+  - Tables-explorer relationship edges render as **solid** strokes drawn **above**
+    the cards (never hidden behind a table), and links between same-column tables
+    loop out into the side gutter so they read clearly.
+  - Object + Artifacts pages **paginate**: a Prev/Next pager with an "A–B of T"
+    total (rendered "T+" when the count is large). The object page fetches one
+    page at a time (server `limit`/`offset`); the total is an approximate,
+    bounded, RLS-scoped count.
+- **`Lattice.boundedCount(table, opts)`** — a new public query method: like
+  `count`, but it stops after `opts.cap + 1` matching rows (default cap 1000) so it
+  stays cheap on large tables, returning the exact count when `<= cap` or `cap + 1`
+  to signal "more than cap". Used to compute the GUI's approximate pagination total
+  without an unbounded `COUNT(*)`.
+
+- **Tables-explorer "Wire" and "Merge" interactions.** In Model → Tables, both the
+  "+ Wire" mode (link two tables many-to-many) and a new "Merge" mode work by
+  clicking a source then a target **or** by dragging one table card onto another.
+  While a source is held, invalid targets grey out (the source itself, junctions,
+  and — for Wire — already-linked pairs). Merge moves the source's rows into the
+  target and removes the emptied source via the same reversible primitive the
+  assistant uses (`POST /api/schema/entities/:source/merge` — audited and
+  restorable from history).
+
+- **Edit a record as markdown.** A record's **Markdown** view is now an editable
+  textarea; saving it writes the round-trippable fields (YAML frontmatter +
+  `key: value` body) back to the row via `PUT /api/tables/:t/rows/:id/context`,
+  using the same parser the file-watcher uses. Free-form prose that maps to no
+  column is a deliberate no-op (never guessed at), and secret columns are never
+  round-tripped (their served value is masked).
+
+- **Connect an external database as an Input.** A new credential connector imports
+  an external Postgres-family database (AWS RDS Postgres, Supabase, or generic
+  Postgres) — by connection string or host/user/password — introspecting its schema
+  and importing its tables as connected data types via the shared sync engine, so
+  they appear under the Source tier. Credentials and the introspected schema are
+  stored only in the machine-local encrypted store; imports are bounded (keyset/
+  offset paged with a hard page cap).
+
+- **Live force-directed brain graph across all three graph surfaces.** A new,
+  dependency-free force-directed layout engine (many-body repulsion, degree-biased
+  link springs, collision resolution, weak centering, alpha-cooled integration —
+  DOM-free and fully unit-testable) drives a live SVG renderer with continuous
+  animation, drag-to-pin, pan, pinch/wheel zoom, neighbor highlight/dim,
+  zoom-to-fit, and incremental fly-in growth. It drives the schema **Graph** tab;
+  the renderer loads out of band from `/gui-assets/force-graph.mjs`, so the inline
+  host script only maps the schema model to a generic node/edge shape and wires the
+  routing. (Object and folder pages now render as tables, not graphs.) The old
+  static graph builders + hand-rolled layout simulation were removed.
+
+- **Tunable + observable native vector index.** New optional knobs (all default to
+  prior behavior): `embeddings.index = { m, efConstruction }` sets the pgvector HNSW
+  build parameters, and `search()` / `hybridSearch()` accept `efSearch` to set
+  query-time HNSW search breadth (`hnsw.ef_search`). A small internal registry
+  (`__lattice_vector_index`) records each built index's dimension, params, source
+  count, and build time; an auto-rebuild after a bulk refresh reuses the recorded
+  params. New CLI: `lattice reindex <table>` (rebuild) and `lattice index status`
+  (per-table index health), plus `lattice doctor --fix` to rebuild any index it
+  reports as stale. (Configurable distance metric is deferred to a follow-up — it
+  changes scoring semantics across the scan + both backends and warrants its own
+  per-metric recall validation.)
+- **Opt-in half-precision (`halfvec`) index storage** (pgvector ≥ 0.7) via
+  `embeddings.index.quantization = 'halfvec'`: stores the derived ANN index at
+  16-bit half precision — roughly halving its memory — while the embeddings store
+  stays full precision, so the scan fallback (and any later full-precision rebuild)
+  remains exact. Build, incremental maintenance, and query all cast to the index's
+  actual column type. Default `'none'` (full-precision `vector`) is unchanged.
+  Sharding / replication / a distributed index remain out of scope (see
+  `docs/retrieval.md` § Scale) — Lattice runs against a single Postgres/SQLite;
+  reach for a dedicated vector database when you outgrow that.
+- **Semantic + hybrid search now work for cloud members, confined to the rows
+  they may see.** A scoped cloud member has no grant on the internal embeddings
+  store or the native vector index, so `search()` / `hybridSearch()` previously
+  could not serve them. The vector arm now reaches the store only through a new
+  `SECURITY DEFINER` function (`lattice_visible_embeddings`) that returns just the
+  chunk vectors for rows the caller can see — filtered by `lattice_row_visible`,
+  keyed on the member's own role — and scores them in-process. The member scan is
+  exact (no recall loss) and has no over-fetch channel by which a member could
+  infer the existence of rows hidden from it; row materialization additionally
+  re-checks visibility via row-level security on the base relation (or the masked
+  audience view). The routing is automatic — owners and local/non-cloud callers
+  are unchanged.
+- **`--no-auto-update` (and `LATTICE_NO_AUTO_UPDATE=1`) pin the GUI/desktop to the
+  current version.** A new `autoUpdate` option on `startGuiServer` (default on) is
+  the master switch: when off, the in-process update poll never runs (no registry
+  or manifest fetch, no install, no relaunch) and `GET /api/update/status` reports
+  `autoUpdate:false`. Intended for testing, air-gapped, and reproducible-demo runs.
+- **The desktop app surfaces an "Update available — Restart to update" hint.** It
+  probes the same release manifest its bundled updater applies from — read-only, so
+  it never downloads or relaunches until you act — meaning a window left open for
+  days still notices a new version. Acting on it applies the update via the bundled
+  updater and relaunches.
+
+- **Data provenance for every object.** A new `GET /api/provenance?table=<t>` (and
+  `…/row?table=<t>&id=<id>`) traces where an object's data came from across three
+  tiers — **raw** (uploaded files, connectors), **computed** (Lattice-created
+  artifacts, imports), and **observation** (AI / learning-loop edits) — returning a
+  generic tier-typed `{ nodes, edges }` graph. In the GUI an object's page now
+  defaults to this provenance view (a force-directed graph or a grouped source
+  table), and a single row's detail view gains a collapsed, lazy-loaded "Data
+  provenance" panel. Reads are bounded (grouped aggregates / indexed lookups).
+- **Lineage substrate (additive).** A new internal `__lattice_lineage` table records
+  durable source→object edges (file-extraction, import-materialization), and a new
+  nullable `_lattice_gui_audit.source` column persists which actor (`gui`/`ai`/…)
+  produced each change — the basis for the observation tier. Both are additive (no
+  data loss); the lineage table is `__lattice_`-internal (hidden from the Objects
+  list, brain graph, and cloud-member grants).
+
+### Changed
+
+- **Settings and Version history are one full-workspace takeover.** Clicking
+  the header clock or gear opens a single panel that replaces everything below
+  the header; the trigger highlights while open and clicking it again
+  collapses. Version history is a tab of the same panel; the old slide-in
+  drawer and the separate center-pane history page are gone.
+
+- **The legacy table/detail editor is absorbed and retired.** The record page's
+  actions menu gains "Edit fields" — the structured typed-field editor plus the
+  inline relationship manager (chips unlink, the picker links, both atomic) that
+  previously lived only in the legacy `#/objects` view. `#/objects/*` now
+  redirects to the unified pages, and the old table + detail renderers are
+  deleted. Junction/system leftovers ("Other files") no longer display in the
+  Markdown column.
+
+- **One record page for everything.** Regular records, files, and artifacts now
+  share a single page: the Formatted | Markdown toggle (a file's Markdown view
+  shows its source; an artifact edits in place), visibility/privacy/sharing
+  controls, the collapsible Data provenance panel, Connected objects, and a
+  record actions menu (Version history + Delete) — on every record. Files and
+  artifacts are sharable exactly like other rows. The separate file/artifact
+  document renderer and its parallel view-mode state are deleted.
+
+- **The right column is one Markdown view.** Renamed from Outputs; the separate
+  Artifacts and Tables sections (which listed the same content as the markdown
+  tree) are gone. The single tree lists every entity as a folder — same emojis
+  as the Objects grid — with its markdown files inside, and Artifacts as just
+  another category.
+
+- **The Outputs Markdown tree mirrors the Tables list exactly.** One node per
+  (non-junction) table, grouped in the same Source/Tables categories as the
+  Tables mirror; each expands to the table's rollup + per-record folders.
+  Junction context never appears (by construction), and stray root files no
+  table claims trail under "Other files". Tables with no rendered context are
+  listed with an empty state so the two lists never disagree.
+- **One markdown surface.** Clicking a rendered .md in the Outputs tree now
+  resolves it to its record and opens the record page (with its editable
+  Formatted | Markdown toggle) — the separate read-only markdown viewer and its
+  raw file-read endpoint are removed.
+- **Nested tables indent under their parent in the Tables explorer.** A
+  belongsTo (1:N) child renders indented to its nesting depth; the connector
+  LINES between cards now mean many-to-many only.
+- **Nesting and relationships are mutually exclusive.** Between any two tables,
+  a belongsTo nesting and a many-to-many relationship can no longer coexist —
+  and two tables can never nest into each other. Enforced in the shared
+  junction-creation primitive (covering the assistant and auto-linking too),
+  both schema routes, and mirrored in the pickers/drag targets with clear,
+  surfaced errors.
+  =======
+- **The Model → Tables explorer is reorganized into three provenance columns —
+  Inputs / Derived Tables / Computed Tables.** "Source · inputs" is renamed
+  **Inputs**, the "Tables" column becomes **Derived Tables**, and a new
+  **Computed Tables** column is groundwork for upcoming computed tables (live,
+  read-only SQL projections defined over other tables) — it stays empty until
+  that feature lands. Classification is now server-informed: the entities routes
+  stamp each table's `origin` (`'source'` = ingested/connected data, `'derived'`
+  = materialized from ingested data, per the lineage store) and the classifier
+  honors a `computedTable` flag ahead of every other signal. The native
+  `secrets` table (a credentials store, not user data) no longer appears in the
+  explorer, and computed tables can't be wired or merged — they're read-only
+  projections. Underneath, import lineage edges are recorded under tier
+  **`derived`** (`computed` is reserved for computed tables; historical rows are
+  relabeled once, automatically), imports now record table-level lineage for the
+  dimensions, junctions, and views they materialize — not just the entities —
+  and the per-row provenance panel gains a matching **Derived** tier.
+
+  > > > > > > > eb50a5f8 (feat(gui): reshape the Tables explorer into Inputs / Derived Tables / Computed Tables)
+
+- **Source-tier tables are excluded from the Objects grid and the graph.** Files,
+  connector-synced tables, and imported database tables are raw inputs — they're
+  browsed from the Inputs column and listed under the Tables explorer's Source
+  column, never as first-class objects in the Objects/Graph views.
+
+- **The Model → Tables explorer drops the "Derived · AI loop" column.** The tiered
+  schema view is now three columns — Source · inputs, Model · entities, Surface ·
+  app. Tables that were classified as derived (embeddings, proposals, learnings,
+  observations, …) now group under Model like any other entity. The `Tier` type and
+  its `classifyTier` heuristic drop the `derived` tier accordingly.
+- **The native vector index now stays in sync with writes.** Previously
+  `buildVectorIndex` produced a point-in-time snapshot that silently went stale as
+  rows changed, so semantic search could return outdated results until the index
+  was manually rebuilt. Now, once an index exists:
+  - inserts / updates / deletes mirror the affected row into the index
+    incrementally on Postgres/pgvector (on the same background path as the
+    embedding write);
+  - `refreshEmbeddings` reconciles the index after a bulk backfill;
+  - `search()` verifies the index is in sync with the stored vectors before using
+    it (a cheap count-parity check), and otherwise falls back to the exact
+    in-process scan — so a drifted index is never silently served: at worst a
+    slower query, never a wrong result.
+
+  Backward compatible: tables without a native index are unaffected, the public
+  API is unchanged, and default behavior matches prior releases.
+
+- **`GET /api/update/status` now reports a surface-aware `action`**
+  (`upgrade-in-place` for an npm install, `restart-to-update` for the desktop app,
+  `none` otherwise) plus `autoUpdate`. The GUI's existing upgrade link uses it to
+  show the right affordance per surface, instead of appearing only for a supervised
+  npm install.
+- **A development / linked checkout is badged `vX.Y.Z (dev)`** on the version chip
+  (with an "auto-update disabled" tooltip), so a stale dev build can't be mistaken
+  for an auto-updating install.
+
+- **The brain graph shows object↔object relationships only.** `files` is a data
+  _source_, not an object, so it is no longer rendered as a node in the brain graph
+  (it remains a first-class entity everywhere else — the Objects list, the Sources
+  tree, `/api/entities`). This changes the `/api/graph` payload content, not its
+  shape.
+- **Collapsible sidebar groups.** The top-level sidebar organizers (Files, Built by
+  Lattice, Connectors, and Objects/System) are now collapsible, with state
+  persisted per group.
+- The object-type page's prominent "New &lt;object&gt;" tile is replaced by a "New"
+  header action; row browsing remains available via "List view".
+- **The assistant finishes a merge instead of leaving cleanup to you.** When you ask
+  it to consolidate / merge one object into another, it now migrates the rows with
+  the reversible `move_to` path and removes the emptied source itself — without
+  asking first, and without ending the turn by telling you that you "can now delete
+  the old object." The whole merge is recorded in version history, so it can be
+  restored. (An explicit request to delete an object's data outright is still a
+  separate, confirm-first path.)
+- **Workspace switch (and boot / post-mutation reloads) no longer block on a disk
+  scan.** The Objects list is served by a new `GET /api/entities-summary` that
+  returns the tables + row counts WITHOUT the O(files) rendered-file scan the full
+  `/api/entities` does — the GUI never read the scanned field. The schema-only
+  brain graph (`/api/graph?schema=1`, the GUI's only graph mode) likewise skips that
+  scan. Switching a large workspace now renders the sidebar / Tables / graph
+  immediately instead of hanging until the scan finishes. `/api/entities` is
+  unchanged for any consumer that wants the rendered-file list.
+
+### Fixed
+
+- **Connect-a-database / connectors dialog no longer fades the whole screen.**
+  The modal side-drawer's z-index had slipped below its own backdrop, so opening
+  it dimmed the dialog along with everything else. Restored so the dialog sits
+  above its scrim.
+
+- **Clicking a table's markdown file shows markdown.** A whole-table rollup
+  `.md` in the Markdown tree previously landed on the table's rows view. The
+  collection page now carries the same Formatted | Markdown toggle records
+  have — Markdown shows the rendered rollup (read-only; rollups are generated
+  files) — and a rollup click lands directly in that mode.
+
+- **Back/Forward history is per-workspace.** The header navigation buttons now
+  walk an app-managed history scoped to the active workspace — previously they
+  used the browser history, which spans workspace switches (a switch is a soft
+  reload), so Back could land on a record from the PREVIOUS workspace and render
+  "Unknown object". A switch now lands on the new workspace's own last location
+  (home on first visit), each workspace keeps its own stack for the session, and
+  the buttons disable when there is nowhere to go.
+
+- **The rendered Context/ tree reconciles itself — safely.** Table rollup files
+  finally have a lifecycle record: the manifest now tracks every phase-1 rollup
+  (`tableFiles`) and keeps a `retiredFiles` ledger of paths no longer produced
+  (an `outputFile` change, a dropped table — e.g. the legacy root-level rollup a
+  config upgrade re-homed). Reconciliation prunes retired files and stale
+  entity trees under one hard rule: **a file whose content differs from
+  Lattice's own last write is never deleted** — it is left in place with a loud
+  warning, and the ledger retries only after it is gone. A renamed entity
+  directory root now sweeps its old tree (previously orphaned forever), the
+  ledger survives crashes between render and cleanup (entries persist until the
+  file is actually removed), and reconciliation runs at workspace OPEN as well
+  as after mutations — so rows deleted or un-shared while the app was closed no
+  longer linger. A pre-upgrade manifest with no rollup history prunes nothing
+  it cannot prove.
+- **Manual file edits can no longer be lost to a render.** Every auto/background
+  render first DRAINS pending manual edits into the database (changelog-
+  versioned, marked `file-edit`) before rewriting any file — previously an edit
+  made within the file watcher's debounce of a mutation-triggered render was
+  overwritten on disk and vanished without a trace. Edits to generated table
+  rollups (which do not round-trip by design) now produce a loud notice before
+  the render restores them, instead of a silent clobber.
+
+- **Junction tables no longer render their own context folders.** The canonical
+  context derivation now excludes link tables on every surface (owner, member,
+  openWorkspace) via one shared classifier — previously the member path excluded
+  them and the owner path did not, so `Context/<Junction>/` trees and raw
+  `<JUNCTION>.md` dumps appeared on some machines. A junction's content still
+  renders where it belongs: as the many-to-many rollup inside each endpoint's
+  context. Payload columns added to a junction later no longer silently promote
+  it to a first-class entity.
+- **Legacy root-level rollup files stop regenerating.** Early create paths
+  persisted `outputFile: <NAME>.md` at the Context root into the config; the
+  writer fix never migrated existing configs, so orphan rollups (e.g. a table
+  rollup next to its own per-record folder) re-appeared on every render and
+  could not be deleted. Opening a workspace now silently rewrites those values
+  to the hidden `.schema-only/` home (idempotent, comment-preserving), and the
+  owner-published cloud layout is sanitized the same way so members never
+  hydrate the legacy shape.
+
+- **Connect-a-database works, fails atomically, and never corrupts an import.**
+  Connecting an external Postgres crashed with `no such table: __lattice_edges`
+  and left a phantom connection behind. Three defects, all fixed: (1) composite-
+  primary-key record ids were joined with a control character that the row
+  sanitizer strips at storage time, so every freshly imported composite-PK row was
+  judged vanished and soft-deleted by the same sync that inserted it — ids are now
+  a sanitizer-safe JSON array of the key parts; (2) the prune's raw edge cleanup
+  ran against a `__lattice_edges` table that a db-source workspace never creates —
+  it now self-ensures the table (and runs before the soft-delete commit, so a
+  failure can't strand hidden rows), and the exported `removeEdge` got the same
+  guard; (3) a failed initial import now rolls the whole connection back (registry
+  row, stored credentials, schema descriptor, imported rows) so a failed connect
+  leaves nothing behind. A connected database also no longer double-lists under
+  Connectors — it appears only in the Databases section.
+- **The assistant handles dates.** It was never told the current date, so "the
+  meeting I had today" resolved against the model's stale training cutoff and
+  returned months-old rows; and `list_rows` read oldest-first by the row's
+  `created_at` (insert/sync time), so "the most recent" surfaced the oldest match.
+  Now the system prompt carries a `# Current date` section (server wall-clock +
+  viewer timezone); `list_rows` returns newest-first by a real event-time column
+  (a meeting's `start_at`) in preference to `created_at`, and exposes `orderBy` /
+  `orderDir` / a date-range `filter` to the model; and the LIKE search fallback
+  (the scoped-cloud-member path) now orders newest-first so a recent match can't be
+  dropped by the row limit.
+- **Every table gets a `deleted_at` column on open.** A table created without the
+  soft-delete envelope (an import, or an older/non-standard path) had no
+  `deleted_at`, so reversible delete, merge, and undo refused it ("no `deleted_at`
+  column to reversibly remove"). The on-open data upgrade now backfills the
+  standard nullable `deleted_at` on any user table missing it — existing rows read
+  as live (NULL), no data changes — so the soft-delete envelope is universal. It's
+  self-idempotent (only alters tables that currently lack the column) and
+  fault-isolated per table. `deleted_at` was already a non-removable system column.
+- **Secret values no longer leak into a record's Markdown view.** The rendered-
+  context redaction only matched a plain `col:` line, so a secret column rendered in
+  the default `- **col:** value` bullet crossed the wire in plaintext. Redaction now
+  covers the bold-bullet, inline, and frontmatter shapes (the column name is regex-
+  escaped).
+- **Schema mutations are cloud-owner-gated.** Every config- or DDL-mutating schema
+  route — create/rename/delete a table, add/change columns, add/remove a link, merge,
+  and purge — now returns 403 for a scoped cloud member. These edit the owner's
+  on-disk config (a raw file write that Postgres RLS does not protect, and which some
+  routes perform before any DB DDL), so RLS alone can't gate them; local and
+  cloud-owner paths are unaffected.
+- **Multi-line field values now round-trip through the rendered Markdown.** The
+  default renderer inlined a value's newlines into a single `- **key:** value`
+  bullet, and the reverse-sync parser read one line per field — so a multi-line
+  value (a description, a note, a PEM key) was silently truncated to its first line
+  the next time any field on that record was saved. The renderer now writes each
+  extra line as a 2-space-indented continuation line and the parser accumulates
+  them, so a value survives a full render → parse → render cycle unchanged —
+  including interior blank lines, a value whose first line is blank, and lines that
+  look like bullets/headings/`key: value` pairs. A defense-in-depth guard still skips
+  a "value is only the stored value's first line" derivation so a stale parse can
+  never drop lines. Secret multi-line values are masked whole (every continuation
+  line, across interior blank lines), not just their first line, before the context
+  crosses the wire.
+- **The schema-only brain graph no longer runs the O(files) rendered-file scan.**
+  `GET /api/graph?schema=1` (and the table-filtered history route) gathered table
+  names via the full disk scan before building the graph; they now use the no-scan
+  loader, completing the workspace-switch speedup for the graph the ingest animation
+  depends on.
+- **The Tables explorer no longer shows a previous workspace's relationships after a
+  switch.** Its cached relationship edges and any in-flight Wire/Merge selection are
+  reset on workspace switch, so the new workspace's schema is drawn from scratch.
+- **Drag-to-wire/merge cleans up after a cancelled gesture.** A touch-scroll or OS
+  gesture-takeover (`pointercancel`) now tears down the drag (its document
+  listeners, the dragged-card highlight, and the greyed-out targets) instead of
+  leaking them across gestures; `.mt-card` sets `touch-action: none` so a touch drag
+  doesn't scroll the page mid-gesture.
+- **A record's Markdown edit can't save into a record you've navigated away from.**
+  The debounced write-back captures the render generation and bails if the view has
+  been superseded, so a pending save — or its failure notice — never lands on a
+  no-longer-visible record.
+- **Merging one object into another is now lossless, safe, atomic, and asks when it
+  can't proceed.** The merge (drag-to-merge, or the assistant's `move_to`) could drop
+  source-only fields, duplicate rows on a history restore, declassify a secret,
+  hard-fail with jargon over its size cap, and — worst — throw partway through and
+  leave rows split between the two objects. Now it: adds any missing fields to the
+  target so nothing is dropped; refuses a source whose rows aren't soft-deletable
+  (they can't be reversibly removed); refuses to move a secret field into a
+  non-secret target; over the auto-merge size limit, hands the decision back to ask
+  the user instead of dead-ending the assistant; type-checks every value against the
+  target's columns up front (so an incompatible value aborts before anything moves);
+  and runs the entire move inside a single database transaction, so it either
+  completes fully or changes nothing — it can never leave the two objects half-merged.
+  Backed by a new public `Lattice.transaction(fn)` primitive: every write `fn`
+  performs commits together or rolls back together, with read-your-writes inside the
+  transaction, scoped per async context so concurrent callers never share one.
+
+- **Merge carries inbound links across instead of dead-ending.** Merging an object
+  that another table links to used to fail with "these links point at it — remove
+  those links first," forcing you to manually unlink everything before merging. Now
+  the merge rewires those links onto the target: each linking table's foreign keys
+  are updated to the moved rows and its relation is repointed to the merged object,
+  all inside the same transaction as the move. The link table and its column keep
+  their names. (A plain delete of a linked-to table still refuses — there's no
+  target to move the links to — but now suggests merging instead.)
+
+- **Link tables are hidden from every object list, not just the graph.** Junction /
+  link tables (e.g. `Files_<entity>`) cluttered the Outputs > Markdown panel AND the
+  Model > Tables/Entities list with apparent duplicates. They're now hidden from the
+  Markdown panel, the Tables/Entities list, the sidebar, and graph nodes — the same
+  way the brain graph draws junctions as edges, not nodes. This also catches
+  _physical_ link tables created without declared relations (e.g. an AI-built
+  `files_<entity>` shaped `(id, name, x_id, y_id)`) via a display-only column-shape
+  rule that never touches the strict, deletion-safe junction check.
+- **Outputs Markdown no longer leaks across workspaces.** Switching workspaces
+  refreshed entities, the sidebar, and the chat rail but not the Outputs column,
+  so the Markdown context tree (and Tables mirror) kept showing the _previous_
+  workspace's rendered context until a hard reload. `reloadEverything()` now
+  re-renders Outputs on every switch, scoped to the active workspace.
+- **The brain graph now populates in realtime during ingestion.** When the graph
+  was opened on an empty workspace it showed the empty-state and never created a
+  live renderer, so objects added afterward (e.g. while ingesting files) didn't
+  appear until a manual refresh. The ingest animation now does a full graph render
+  when no live handle exists yet, so the first objects fly in as they're created.
+- **The brain graph stays in the viewport.** Panning, zooming, or dragging a node
+  can no longer push the objects out of the visible window — the stage translation
+  is clamped so the graph's bounding box always remains on-screen (fully inside
+  when it fits the pane, always covering the pane when zoomed in), and a dragged
+  node is held within the visible area.
+- **The `sqlite-vec` index build is now atomic** — its rows are populated inside a
+  single transaction, so an interrupted build can no longer leave a half-filled
+  index that looks complete.
+
+---
+
 ## [4.3.8] — 2026-06-25
 
 Patch release. Finishes the job 4.3.7 started: makes the **entire class** of
@@ -4347,7 +5927,7 @@ First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backe
 
 ### Security
 
-- **`SECURITY.md` contact updated** to `contact@automatedindustries.ai`. Supported versions updated to `1.11.x`. GUI HTTP surface added to the in-scope list.
+- **`SECURITY.md` contact updated** to the address listed in `SECURITY.md`. Supported versions updated to `1.11.x`. GUI HTTP surface added to the in-scope list.
 
 ---
 

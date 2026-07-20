@@ -4,6 +4,7 @@ import {
   enableChangelogRls,
   enableChatPrivacyRls,
   enableGuiAuditRls,
+  enableLineageRls,
   ownPolyfillsByGroup,
   enableRlsForTable,
   backfillOwnership,
@@ -156,6 +157,20 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
       // it in skipped[], so batching changes only the round-trip count, not the
       // fault isolation or reporting.
       await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }, group));
+    });
+  }
+
+  // (2b) Computed tables are read-only VIEWS: RLS cannot attach to a view, so
+  // they are excluded from the relkind='r' loop above, and row filtering is
+  // compiled INTO each view via lattice_row_visible predicates instead. The
+  // ops layer grants member SELECT when it creates a view, but the view is
+  // dropped + recreated whenever its definition changes (including the open
+  // path's content-hash migration) — which destroys its grants. Re-issue the
+  // member-group SELECT here so members keep reading computed tables across
+  // reopens and redefinitions.
+  for (const view of db.getComputedTableNames()) {
+    await tryTable(view, async () => {
+      await runAsyncOrSync(db.adapter, `GRANT SELECT ON "${view.replace(/"/g, '""')}" TO ${group}`);
     });
   }
 
@@ -337,6 +352,7 @@ export async function secureCloud(db: Lattice): Promise<void> {
   await enableChangelogRls(db);
   await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables
   await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log (raw row data) — see row_id IS NULL OR lattice_row_visible
+  await enableLineageRls(db); // defense-in-depth: lock the lineage substrate (RLS, no member grant)
   // Neutralize any legacy column-audience spec BEFORE regenerating mask views
   // (secureNewCloudTable → regenerateAudienceViewFromDb compiles each audience).
   await convergeLegacyColumnAudience(db);

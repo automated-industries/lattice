@@ -30,29 +30,65 @@ export interface VisionOptions {
   prompt?: string;
   /** Cap on the normalized JPEG size (bytes). Default ~1.4 MB. */
   maxBytes?: number;
+  /** The image's original media type (e.g. `image/png`). Used for the sharp-free fallback when
+   *  native normalization is unavailable — we send the raw bytes with this exact media type. */
+  mediaType?: string;
   /** Injectable model call (test seam). Defaults to a real Anthropic vision call. */
   sender?: (input: VisionSenderInput) => Promise<string>;
 }
+
+/** Media types Claude vision accepts directly, so a raw-bytes send needs no re-encode. */
+const RAW_VISION_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+/** Conservative raw-bytes cap for a direct inline image (base64 inflates ~33%; API limit ~5 MB). */
+const RAW_INLINE_LIMIT = 3_500_000;
 
 export async function describeImage(
   auth: ClaudeAuth,
   path: string,
   opts: VisionOptions = {},
 ): Promise<string> {
-  const data = (await normalizeImage(path, opts.maxBytes ?? 1_400_000)).toString('base64');
+  const prepared = await prepareImageForVision(path, opts.mediaType, opts.maxBytes ?? 1_400_000);
   const sender = opts.sender ?? defaultSender(auth);
   const text = await sender({
-    media_type: 'image/jpeg',
-    data,
+    media_type: prepared.mediaType,
+    data: prepared.data.toString('base64'),
     prompt: opts.prompt ?? DEFAULT_PROMPT,
     model: opts.model ?? DEFAULT_MODEL,
   });
   return text.trim();
 }
 
+/**
+ * Prepare an image for a vision call. Normalizes with `sharp` (rotate + resize + JPEG) when the
+ * native addon is available; if `sharp` is UNAVAILABLE (e.g. the native binary isn't installed in
+ * this runtime — a common cause of "image vision silently does nothing" in a hosted container) or
+ * fails, fall back to sending the RAW bytes when the file is a directly-supported vision type
+ * within the inline size limit (the API downsizes oversized images itself). Throws a clear,
+ * surfaced error when neither path works — never returns silently empty.
+ */
+async function prepareImageForVision(
+  path: string,
+  mediaType: string | undefined,
+  maxBytes: number,
+): Promise<{ data: Buffer; mediaType: string }> {
+  try {
+    return { data: await normalizeImage(path, maxBytes), mediaType: 'image/jpeg' };
+  } catch (e) {
+    const raw = await readFile(path).catch(() => null);
+    if (raw && mediaType && RAW_VISION_TYPES.has(mediaType) && raw.length <= RAW_INLINE_LIMIT) {
+      return { data: raw, mediaType };
+    }
+    throw new Error(
+      `could not prepare image for vision (${(e as Error).message}); native image ` +
+        `normalization unavailable and no usable raw fallback (type=${mediaType ?? 'unknown'}, ` +
+        `bytes=${raw ? String(raw.length) : 'unread'})`,
+    );
+  }
+}
+
 const DEFAULT_PDF_PROMPT =
-  'Read this document for a knowledge base. First transcribe its readable text, ' +
-  'then add a 2-4 sentence factual summary of what it is and its key details. ' +
+  'Summarize this document for a knowledge base: a 2-4 sentence factual summary of ' +
+  'what it is and its key details. Do NOT transcribe the full text — summary only. ' +
   'It may be a scanned/image-only PDF — read the text from the page images. No preamble.';
 
 export interface PdfSenderInput {
@@ -96,19 +132,45 @@ export async function describePdf(
   return text.trim();
 }
 
-async function normalizeImage(path: string, maxBytes: number): Promise<Buffer> {
-  const sharpMod = (await import('sharp')) as unknown as { default: SharpFactory };
-  const sharp = sharpMod.default;
-  let quality = 80;
-  let buf = await renderJpeg(sharp, path, quality);
-  while (buf.length > maxBytes && quality > 35) {
-    quality -= 15;
-    buf = await renderJpeg(sharp, path, quality);
-  }
-  return buf;
+/**
+ * Native image work is serialized process-wide. `sharp` is a native (libvips)
+ * addon; running several JPEG pipelines at once inside the packaged desktop
+ * runtime crashed the whole process during a bulk folder ingest (many images
+ * normalized concurrently). Serializing just the native step removes the
+ * concurrent native access — the model calls that follow each normalization
+ * stay concurrent, so end-to-end throughput is essentially unchanged
+ * (normalization is fast; the vision call dominates). A rejection never poisons
+ * the next waiter.
+ */
+let nativeImageLock: Promise<unknown> = Promise.resolve();
+
+function runExclusiveNative<T>(fn: () => Promise<T>): Promise<T> {
+  const run = nativeImageLock.then(fn, fn);
+  nativeImageLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
-type SharpFactory = (input: string) => SharpPipeline;
+async function normalizeImage(path: string, maxBytes: number): Promise<Buffer> {
+  return runExclusiveNative(async () => {
+    const sharpMod = (await import('sharp')) as unknown as { default: SharpFactory };
+    const sharp = sharpMod.default;
+    // Also pin libvips' internal thread pool to one thread — belt-and-suspenders
+    // against concurrent native work from a single pipeline.
+    sharp.concurrency(1);
+    let quality = 80;
+    let buf = await renderJpeg(sharp, path, quality);
+    while (buf.length > maxBytes && quality > 35) {
+      quality -= 15;
+      buf = await renderJpeg(sharp, path, quality);
+    }
+    return buf;
+  });
+}
+
+type SharpFactory = ((input: string) => SharpPipeline) & { concurrency(threads: number): number };
 interface SharpPipeline {
   rotate(): SharpPipeline;
   resize(opts: {
@@ -131,11 +193,13 @@ function renderJpeg(sharp: SharpFactory, path: string, quality: number): Promise
 
 // ── Real vision call (lazy SDK) ──────────────────────────────────────────────
 
+type VisionMessage = { content: { type: string; text?: string }[] };
 interface AnthropicMessagesApi {
   messages: {
-    create(
-      params: Record<string, unknown>,
-    ): Promise<{ content: { type: string; text?: string }[] }>;
+    create(params: Record<string, unknown>): Promise<VisionMessage>;
+    // Streaming variant — MessageStream exposes finalMessage() for the resolved
+    // message. Narrowed to what this module uses.
+    stream(params: Record<string, unknown>): { finalMessage(): Promise<VisionMessage> };
   };
 }
 type AnthropicCtor = new (config: Record<string, unknown>) => AnthropicMessagesApi;
@@ -158,6 +222,9 @@ export function buildVisionAnthropicConfig(auth: ClaudeAuth): Record<string, unk
     config.apiKey = null;
   }
   if (auth.betaHeader) config.defaultHeaders = { 'anthropic-beta': auth.betaHeader };
+  // Honor a custom Anthropic host (a BYO custom-host key or a proxy) so vision reaches the SAME
+  // endpoint chat does — without this, a non-default host is dropped and the call 401s.
+  if (auth.baseURL) config.baseURL = auth.baseURL;
   return config;
 }
 
@@ -169,22 +236,27 @@ function defaultSender(auth: ClaudeAuth): (input: VisionSenderInput) => Promise<
     const Anthropic = sdk.Anthropic ?? sdk.default;
     if (!Anthropic) throw new Error("Could not resolve Anthropic from '@anthropic-ai/sdk'");
     const client = new Anthropic(buildVisionAnthropicConfig(auth));
-    const res = await client.messages.create({
-      model: input.model,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: input.media_type, data: input.data },
-            },
-            { type: 'text', text: input.prompt },
-          ],
-        },
-      ],
-    });
+    // Stream: the only non-streaming vision leg. Streaming avoids the SDK's
+    // long-request timeout on a slow model response and returns the same final
+    // message via .finalMessage().
+    const res = await client.messages
+      .stream({
+        model: input.model,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: input.media_type, data: input.data },
+              },
+              { type: 'text', text: input.prompt },
+            ],
+          },
+        ],
+      })
+      .finalMessage();
     return res.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text ?? '')
@@ -200,22 +272,26 @@ function defaultPdfSender(auth: ClaudeAuth): (input: PdfSenderInput) => Promise<
     const Anthropic = sdk.Anthropic ?? sdk.default;
     if (!Anthropic) throw new Error("Could not resolve Anthropic from '@anthropic-ai/sdk'");
     const client = new Anthropic(buildVisionAnthropicConfig(auth));
-    const res = await client.messages.create({
-      model: input.model,
-      max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: 'application/pdf', data: input.data },
-            },
-            { type: 'text', text: input.prompt },
-          ],
-        },
-      ],
-    });
+    // Stream (see the image sender): avoids the long-request timeout; same final
+    // message via .finalMessage().
+    const res = await client.messages
+      .stream({
+        model: input.model,
+        max_tokens: 4096,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: input.data },
+              },
+              { type: 'text', text: input.prompt },
+            ],
+          },
+        ],
+      })
+      .finalMessage();
     return res.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text ?? '')

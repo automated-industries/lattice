@@ -1,0 +1,547 @@
+import type { Lattice } from '../lattice.js';
+import type { AggregateResult, BelongsToRelation, Row } from '../types.js';
+import { allAsyncOrSync } from '../db/adapter.js';
+import { getConnector } from '../connectors/registry.js';
+import { loadGuiData, tableJunctions } from './data.js';
+import { LINEAGE_TABLE } from './lineage-store.js';
+
+/**
+ * Data-provenance / lineage graph for an object table (or a single row).
+ *
+ * Surfaces, for any object, WHERE its data came from across four tiers — `raw`
+ * (uploaded files, connectors, future SQL-warehouse sources), `derived`
+ * (tables materialized from ingested data, e.g. structured imports), `computed`
+ * (computed tables — live read-only projections — plus Lattice-created
+ * artifacts and calculations), and `observation` (AI / learning-loop edits).
+ * Computed from four substrates that already exist (or are added additively by
+ * this feature):
+ *   1. connector-stamped rows (`_source_connector_id` — set by connectors/sync)
+ *   2. the additive `__lattice_lineage` table (file-extraction / import edges)
+ *   3. audit rows authored by the `ai` actor (`_lattice_gui_audit.source='ai'`)
+ *   4. existing `files` many-to-many junctions (raw file sources already linked,
+ *      even when no lineage row was ever recorded — e.g. pre-existing data)
+ *
+ * Bounded reads: no `SELECT *` over a data table on this path. Counts
+ * are computed in the database via grouped `aggregate(...)`; the only row reads
+ * are bounded by `limit` (the small lineage table) or a single-row PK lookup.
+ *
+ * The vocabulary is deliberately generic (object / raw / derived / computed /
+ * observation) — there is no domain coupling to any particular dataset.
+ */
+
+// `related` = a belongsTo parent row this object references; `created` = the
+// universal "this row was authored in Lattice" floor (so no row is ever sourceless).
+export type ProvenanceNodeType =
+  | 'object'
+  | 'raw'
+  | 'derived'
+  | 'computed'
+  | 'observation'
+  | 'related'
+  | 'created';
+
+export interface ProvenanceNode {
+  id: string;
+  label: string;
+  /** `object` = the viewed table/row (graph center); others are source tiers. */
+  type: ProvenanceNodeType;
+  /** Free-text: file | connector | import | artifact | observation | table. */
+  kind: string;
+  /** Backing table, when the node maps to one (the object, or a source table). */
+  table?: string;
+  /** Backing row id, when the node is a single row. */
+  rowId?: string;
+  /** Count of object rows this source contributed (grouped source nodes). */
+  count?: number;
+}
+
+export interface ProvenanceEdge {
+  id: string;
+  /** Node id of the upstream SOURCE. */
+  source: string;
+  /** Node id of the downstream OBJECT (the center). */
+  target: string;
+  /** synced_from | extracted_from | derived_from | materialized_from | observed_by */
+  relation: string;
+  label: string;
+}
+
+export interface ProvenancePayload {
+  nodes: ProvenanceNode[];
+  edges: ProvenanceEdge[];
+}
+
+export interface BuildProvenanceOptions {
+  /** Scope to a single object row (bounded reads). Omit for the whole table. */
+  rowId?: string;
+  /**
+   * The already-fetched object row (the route fetches it to 404 a missing id).
+   * Passing it here lets the row-scoped path read created_at + belongsTo FK values
+   * with ZERO extra DB reads. Optional: the table-scoped path doesn't use it.
+   */
+  row?: Row;
+  /**
+   * GUI config paths. When provided, raw file sources are derived from the
+   * existing `*_files` junctions (so provenance reflects files already linked to
+   * an object, not only future import/extraction lineage). The junction rows are
+   * read through the normal RLS-filtered query path, so a scoped cloud member
+   * only ever sees links for rows it may see; if no `*_files` relation is
+   * declared in the config, the derivation is a no-op (lineage only).
+   */
+  configPath?: string;
+  outputDir?: string;
+}
+
+// ── dedupe helpers (mirror src/gui/data.ts addNode/addEdge) ──────────────────
+function addNode(nodes: Map<string, ProvenanceNode>, node: ProvenanceNode): void {
+  const existing = nodes.get(node.id);
+  if (!existing) {
+    nodes.set(node.id, node);
+  } else if (node.count !== undefined) {
+    existing.count = (existing.count ?? 0) + node.count;
+  }
+}
+
+function addEdge(edges: Map<string, ProvenanceEdge>, edge: Omit<ProvenanceEdge, 'id'>): void {
+  const id = `${edge.source}->${edge.target}:${edge.relation}`;
+  if (!edges.has(id)) edges.set(id, { ...edge, id });
+}
+
+/** Human label for a source. */
+export function labelForSource(kind: string, name?: string): string {
+  const named = (base: string): string => (name ? `${base}: ${name}` : base);
+  switch (kind) {
+    case 'file':
+      return named('File');
+    case 'connector':
+      return named('Connector');
+    case 'import':
+      return named('Import');
+    case 'artifact':
+      return named('Artifact');
+    case 'observation':
+      return named('AI');
+    case 'table':
+      return name ?? 'Table';
+    case 'sql_source':
+      return named('SQL source');
+    case 'calculation':
+      return named('Calculation');
+    default:
+      return name ? `${kind}: ${name}` : kind;
+  }
+}
+
+/** Edge relation verb for a source kind. */
+export function relFor(kind: string): string {
+  switch (kind) {
+    case 'connector':
+      return 'synced_from';
+    case 'file':
+      return 'extracted_from';
+    case 'artifact':
+      return 'derived_from';
+    case 'import':
+      return 'materialized_from';
+    case 'observation':
+      return 'observed_by';
+    case 'calculation':
+      return 'computed_from';
+    default:
+      return 'derived_from';
+  }
+}
+
+const asStr = (v: unknown): string =>
+  typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+
+/**
+ * Build the provenance payload for `table` (or a single row when `rowId` is set).
+ */
+export async function buildProvenanceGraph(
+  db: Lattice,
+  table: string,
+  options: BuildProvenanceOptions = {},
+): Promise<ProvenancePayload> {
+  const nodes = new Map<string, ProvenanceNode>();
+  const edges = new Map<string, ProvenanceEdge>();
+  const rowId = options.rowId;
+  const cols = db.getRegisteredColumns(table) ?? {};
+
+  // The downstream OBJECT — the graph center.
+  const objectId = rowId ? `obj:${table}:${rowId}` : `table:${table}`;
+  addNode(nodes, {
+    id: objectId,
+    label: rowId ? `${table} #${rowId}` : table,
+    type: 'object',
+    kind: 'table',
+    table,
+    ...(rowId ? { rowId } : {}),
+  });
+
+  // ── RAW: connector lineage from `_source_connector_id` ──────────────────────
+  if ('_source_connector_id' in cols) {
+    if (rowId) {
+      const pk = db.getPrimaryKey(table)[0] ?? 'id';
+      const rows = await db.query(table, {
+        projection: ['_source_connector_id'],
+        filters: [{ col: pk, op: 'eq', val: rowId }],
+        limit: 1,
+      });
+      const cid = rows[0] ? asStr(rows[0]._source_connector_id) : '';
+      if (cid) await addConnectorNode(db, nodes, edges, objectId, cid, 1);
+    } else {
+      // Grouped COUNT in SQL — only the grouped rows transfer (bounded read).
+      const groups = await db.aggregate(table, {
+        groupBy: ['_source_connector_id'],
+        aggregates: [{ fn: 'count', as: 'n' }],
+        filters: [{ col: '_source_connector_id', op: 'isNotNull' }],
+        orderBy: 'n',
+        orderDir: 'desc',
+        limit: 100,
+      });
+      for (const g of groups) {
+        const cid = asStr(g._source_connector_id);
+        if (cid) await addConnectorNode(db, nodes, edges, objectId, cid, Number(g.n) || 0);
+      }
+    }
+  }
+
+  // ── RAW: existing file→object links (the `files` many-to-many junctions) ─────
+  // The lineage table only records NEW import/extraction edges; an object whose
+  // files were attached earlier (or by a path that doesn't write lineage) would
+  // otherwise report zero sources even though files clearly feed it. Derive the
+  // raw "file" tier directly from the existing `*_files` junctions so provenance
+  // reflects real file sources without a backfill. Node ids match a `file`
+  // lineage row's scheme, so the two dedupe rather than double-count.
+  if (options.configPath && options.outputDir) {
+    let fileJuncs: { junction: string; selfFk: string; otherFk: string }[] = [];
+    try {
+      fileJuncs = tableJunctions(table, options.configPath, options.outputDir).filter(
+        (j) => j.otherTable === 'files',
+      );
+    } catch {
+      fileJuncs = [];
+    }
+    for (const j of fileJuncs) {
+      if (rowId) {
+        // The file ids linked to THIS row (bounded by an explicit limit).
+        const links = await db.query(j.junction, {
+          projection: [j.otherFk],
+          filters: [{ col: j.selfFk, op: 'eq', val: rowId }],
+          limit: 200,
+        });
+        const fileIds = [...new Set(links.map((l) => asStr(l[j.otherFk])).filter(Boolean))];
+        if (fileIds.length === 0) continue;
+        // Resolve all file names in ONE batched `IN` query (not one PK lookup per
+        // file — that was an N+1 on the provenance read path).
+        const nameById = new Map<string, string>();
+        try {
+          const fpk = db.getPrimaryKey('files')[0] ?? 'id';
+          const frows = await db.query('files', {
+            projection: [fpk, 'name'],
+            filters: [{ col: fpk, op: 'in', val: fileIds }],
+            limit: fileIds.length,
+          });
+          for (const fr of frows) {
+            const nm = asStr(fr.name);
+            if (nm) nameById.set(asStr(fr[fpk]), nm);
+          }
+        } catch {
+          /* keep ids as labels */
+        }
+        for (const fileId of fileIds) {
+          const name = nameById.get(fileId) ?? fileId;
+          const id = `src:file:files:${fileId}`;
+          addNode(nodes, {
+            id,
+            label: labelForSource('file', name),
+            type: 'raw',
+            kind: 'file',
+            table: 'files',
+            rowId: fileId,
+          });
+          addEdge(edges, {
+            source: id,
+            target: objectId,
+            relation: 'extracted_from',
+            label: name,
+          });
+        }
+      } else {
+        // Whole table: count the file links — a grouped COUNT, never the rows.
+        const counted = await db.aggregate(j.junction, {
+          aggregates: [{ fn: 'count', as: 'n' }],
+          filters: [{ col: j.otherFk, op: 'isNotNull' }],
+        });
+        const n = Number(counted[0]?.n) || 0;
+        if (n > 0) {
+          const id = `src:file:files`;
+          addNode(nodes, {
+            id,
+            label: labelForSource('file', 'files'),
+            type: 'raw',
+            kind: 'file',
+            table: 'files',
+            count: n,
+          });
+          addEdge(edges, {
+            source: id,
+            target: objectId,
+            relation: 'extracted_from',
+            label: 'files',
+          });
+        }
+      }
+    }
+  }
+
+  // ── RAW / DERIVED / COMPUTED / OBSERVATION: explicit `__lattice_lineage` rows ─
+  // `__lattice_lineage` is an unregistered raw-DDL table → read it with raw SQL.
+  // Tolerate its absence (no lineage written yet) or a missing grant (a scoped
+  // cloud member): provenance is a best-effort enrichment, so degrade to no
+  // lineage edges rather than failing the whole view. Full per-member lineage is
+  // future work (see the multiplayer-cloud provenance note).
+  if (rowId) {
+    // Bounded by the (object_table, object_id) index + an explicit LIMIT.
+    let lin: Row[] = [];
+    try {
+      lin = await allAsyncOrSync(
+        db.adapter,
+        `SELECT * FROM "${LINEAGE_TABLE}" WHERE "object_table" = ? AND "object_id" = ? LIMIT 500`,
+        [table, rowId],
+      );
+    } catch {
+      lin = [];
+    }
+    for (const l of lin) addLineageRow(nodes, edges, objectId, l);
+  } else {
+    // Whole table: group by (source_kind, source_table, tier, relation) — counts
+    // only, never the rows themselves. The `object_id='*'` table-level sentinel
+    // is folded in here (it isn't scoped to a single row).
+    let groups: AggregateResult[] = [];
+    try {
+      groups = await allAsyncOrSync(
+        db.adapter,
+        `SELECT "source_kind", "source_table", "tier", "relation", COUNT(*) AS n
+           FROM "${LINEAGE_TABLE}" WHERE "object_table" = ?
+           GROUP BY "source_kind", "source_table", "tier", "relation"
+           ORDER BY n DESC LIMIT 200`,
+        [table],
+      );
+    } catch {
+      groups = [];
+    }
+    for (const g of groups) {
+      const kind = asStr(g.source_kind);
+      const srcTable = asStr(g.source_table);
+      const tier = (asStr(g.tier) || 'raw') as ProvenanceNodeType;
+      const relation = asStr(g.relation) || relFor(kind);
+      const id = `src:${kind}:${srcTable || kind}`;
+      // The junction derivation above already emitted (and counted) the grouped
+      // `files` node from the actual file→object links. addNode SUMS counts on a
+      // repeated id, so re-adding the lineage `file` rows here would double-count
+      // files that are both junction-linked AND lineage-recorded — skip them.
+      if (kind === 'file' && nodes.has(id)) continue;
+      addNode(nodes, {
+        id,
+        label: labelForSource(kind, srcTable || undefined),
+        type: tier,
+        kind,
+        ...(srcTable ? { table: srcTable } : {}),
+        count: Number(g.n) || 0,
+      });
+      addEdge(edges, { source: id, target: objectId, relation, label: srcTable || kind });
+    }
+  }
+
+  // ── OBSERVATION: rows authored by the AI actor (audit source='ai') ──────────
+  {
+    const filters: { col: string; op: 'eq'; val: unknown }[] = [
+      { col: 'source', op: 'eq', val: 'ai' },
+      { col: 'table_name', op: 'eq', val: table },
+    ];
+    if (rowId) filters.push({ col: 'row_id', op: 'eq', val: rowId });
+    // Grouped COUNT — never transfers before_json/after_json blobs.
+    const ai = await db.aggregate('_lattice_gui_audit', {
+      aggregates: [{ fn: 'count', as: 'n' }],
+      filters,
+    });
+    const n = Number(ai[0]?.n) || 0;
+    if (n > 0) {
+      const id = 'src:observation:ai';
+      addNode(nodes, {
+        id,
+        label: labelForSource('observation', 'learning loop'),
+        type: 'observation',
+        kind: 'observation',
+        count: n,
+      });
+      addEdge(edges, { source: id, target: objectId, relation: 'observed_by', label: 'ai edits' });
+    }
+  }
+
+  // ── RELATED (owner enrichment): the row's belongsTo PARENTS ─────────────────
+  // An entity row that wasn't connector-synced, file-extracted, imported, or
+  // AI-edited (e.g. a seeded/authored row) still references parents via its FK
+  // columns (project.org_id → orgs, project.client_id → clients). Surface those
+  // parents as upstream "related" nodes so every such row traces back.
+  //
+  // Bounded + RLS-safe: one batched IN query per distinct parent table (count =
+  // number of belongsTo relations, a schema constant — never row-proportional),
+  // run through the RLS-filtered db.query (NOT raw SQL). A parent the viewer may
+  // not see returns no row → no node is emitted (never fabricate one from the bare
+  // FK id — that would leak a hidden row's existence). belongsTo metadata lives
+  // only in the OWNER config, so for a cloud member this whole block is a no-op
+  // (relations are {}), leaving the universal "created" floor below.
+  if (rowId && options.row && options.configPath && options.outputDir) {
+    try {
+      // Structural load only — provenance needs the table's belongsTo relations,
+      // never rendered file CONTENT. Passing withContent=false skips the O(files)
+      // readFileSync scan of every rendered .md that getGuiEntities would trigger.
+      const me = loadGuiData(options.configPath, options.outputDir, false).tables.find(
+        (t) => t.name === table,
+      );
+      const belongs = me
+        ? Object.values(me.relations).filter((r): r is BelongsToRelation => r.type === 'belongsTo')
+        : [];
+      // Group the FK values by parent table (de-duped) so each parent table is one query.
+      const idsByParent = new Map<string, Set<string>>();
+      for (const rel of belongs) {
+        if (rel.table === table) continue; // skip self-references
+        const val = asStr(options.row[rel.foreignKey]);
+        if (!val) continue; // null/empty FK → no parent
+        let set = idsByParent.get(rel.table);
+        if (!set) {
+          set = new Set();
+          idsByParent.set(rel.table, set);
+        }
+        set.add(val);
+      }
+      for (const [parentTable, idSet] of idsByParent) {
+        const ids = [...idSet];
+        const pcols = db.getRegisteredColumns(parentTable) ?? {};
+        // Pick a display column that actually exists (don't hardcode 'name' — a
+        // parent table without it would make the projection throw + silently drop
+        // all enrichment). Fall back to the id when none exists.
+        const displayCol = ['name', 'title', 'label', 'slug'].find((c) => c in pcols);
+        const pk = db.getPrimaryKey(parentTable)[0] ?? 'id';
+        let prows: Row[] = [];
+        try {
+          prows = await db.query(parentTable, {
+            projection: displayCol ? [pk, displayCol] : [pk],
+            filters: [{ col: pk, op: 'in', val: ids }],
+            limit: ids.length,
+          });
+        } catch {
+          prows = [];
+        }
+        for (const pr of prows) {
+          const pid = asStr(pr[pk]);
+          if (!pid) continue; // RLS / missing → emit nothing for this parent
+          const name = (displayCol ? asStr(pr[displayCol]) : '') || pid;
+          const id = `rel:${parentTable}:${pid}`;
+          addNode(nodes, {
+            id,
+            label: name,
+            type: 'related',
+            kind: 'relation',
+            table: parentTable,
+            rowId: pid,
+          });
+          addEdge(edges, { source: id, target: objectId, relation: 'related_to', label: name });
+        }
+      }
+    } catch {
+      // Member shape (no relations) or unreadable config → the creation floor only.
+    }
+  }
+
+  // ── CREATED (universal floor): every ROW traces back to its authoring ────────
+  // The substrates above can all be empty (a seeded/authored row). Guarantee a
+  // non-empty traceback for any row from data it already carries — its created_at
+  // (read from the in-hand row; ZERO extra DB reads). Row-scoped only: the
+  // table-level view stays aggregate (and may legitimately be empty for a fresh
+  // table). Distinct `meta:` namespace so it can never collide with a `src:*` node.
+  if (rowId) {
+    const createdAt = options.row ? asStr(options.row.created_at) : '';
+    const updatedAt = options.row ? asStr(options.row.updated_at) : '';
+    const editedSince = createdAt && updatedAt && updatedAt !== createdAt;
+    const id = `meta:created:${table}`;
+    addNode(nodes, {
+      id,
+      label: createdAt
+        ? editedSince
+          ? `Created ${createdAt} · edited ${updatedAt}`
+          : `Created ${createdAt}`
+        : 'Created in Lattice',
+      type: 'created',
+      kind: 'creation',
+    });
+    addEdge(edges, {
+      source: id,
+      target: objectId,
+      relation: 'created',
+      label: createdAt || 'created',
+    });
+  }
+
+  // ── prune dangling edges (mirror src/gui/data.ts) ──────────────────────────
+  const present = new Set(nodes.keys());
+  const liveEdges = [...edges.values()].filter(
+    (e) => present.has(e.source) && present.has(e.target),
+  );
+  return { nodes: [...nodes.values()], edges: liveEdges };
+}
+
+// Resolve a connector id to a named RAW source node + edge (bounded PK lookup).
+async function addConnectorNode(
+  db: Lattice,
+  nodes: Map<string, ProvenanceNode>,
+  edges: Map<string, ProvenanceEdge>,
+  objectId: string,
+  connectorId: string,
+  count: number,
+): Promise<void> {
+  // getConnector reads __lattice_connectors (no cloud-member grant) — tolerate a
+  // permission error by falling back to the raw id as the label.
+  let rec = null;
+  try {
+    rec = await getConnector(db, connectorId);
+  } catch {
+    rec = null;
+  }
+  const name = rec?.displayName ?? rec?.toolkit ?? connectorId;
+  const id = `src:connector:${connectorId}`;
+  addNode(nodes, {
+    id,
+    label: labelForSource('connector', name),
+    type: 'raw',
+    kind: 'connector',
+    count,
+  });
+  addEdge(edges, { source: id, target: objectId, relation: 'synced_from', label: name });
+}
+
+function addLineageRow(
+  nodes: Map<string, ProvenanceNode>,
+  edges: Map<string, ProvenanceEdge>,
+  objectId: string,
+  l: Row,
+): void {
+  const kind = asStr(l.source_kind);
+  const srcTable = asStr(l.source_table);
+  const srcId = asStr(l.source_id);
+  const tier = (asStr(l.tier) || 'raw') as ProvenanceNodeType;
+  const relation = asStr(l.relation) || relFor(kind);
+  const id = srcId ? `src:${kind}:${srcTable || kind}:${srcId}` : `src:${kind}:${srcTable || kind}`;
+  addNode(nodes, {
+    id,
+    label: labelForSource(kind, srcTable || undefined),
+    type: tier,
+    kind,
+    ...(srcTable ? { table: srcTable } : {}),
+    ...(srcId ? { rowId: srcId } : {}),
+  });
+  addEdge(edges, { source: id, target: objectId, relation, label: srcTable || kind });
+}

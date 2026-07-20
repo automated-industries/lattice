@@ -39,8 +39,14 @@ const FREETEXT = new Set([...NEVER_KEY, 'name', 'title', 'company', 'label']);
 const DIM_MAX_DISTINCT = 64;
 /** ...as long as it is not near-unique (distinct/rows under this ratio). */
 const DIM_MAX_RATIO = 0.5;
-/** Minimum share of a reference field's distinct values that must resolve to call it a linkage. */
-const LINK_MIN_CONFIDENCE = 0.3;
+/**
+ * Default minimum share of a reference field's distinct values that must
+ * resolve before a linkage is created. Mirrors the GUI's clarify-threshold
+ * default: candidates below it but at or above half of it are reported as
+ * {@link ProposedSchema.marginalLinks} for user confirmation instead of being
+ * applied silently.
+ */
+const DEFAULT_LINK_CONFIDENCE = 0.6;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -212,6 +218,16 @@ function pickNaturalKey(
 export interface InferOptions {
   /** Override the inferred entity → table name (sourceKey → name). */
   rename?: Record<string, string>;
+  /**
+   * Confidence bar for creating a linkage (0..1, clamped). At or above it a
+   * link is inferred as usual; in `[minLinkConfidence / 2, minLinkConfidence)`
+   * the candidate is returned on {@link ProposedSchema.marginalLinks} instead
+   * of being created (the referencing column stays a plain scalar column so a
+   * later confirmation can still connect it); below the floor it is dropped as
+   * noise. Dimension links (confidence 1) are unaffected. Defaults to
+   * {@link DEFAULT_LINK_CONFIDENCE}.
+   */
+  minLinkConfidence?: number;
 }
 
 export function inferSchema(
@@ -278,14 +294,28 @@ export function inferSchema(
 
   // Pass 3 — linkages. Match a field's distinct string values against other
   // entities' scalar string columns; the best target above threshold wins.
+  // Confidence is banded: create at/above the threshold, report as marginal in
+  // [floor, threshold), drop below the floor.
+  const linkThreshold = Math.min(1, Math.max(0, opts.minLinkConfidence ?? DEFAULT_LINK_CONFIDENCE));
+  const linkFloor = linkThreshold / 2;
   const linkages: InferredLinkage[] = [];
+  const marginalLinks: InferredLinkage[] = [];
   const consumedFields = new Map<string, Set<string>>(); // entity name → fields used as a linkage
   const linkedTargets = new Map<string, Set<string>>(); // entity name → target entity names already linked
+  const marginalFields = new Map<string, Set<string>>(); // entity name → fields with a pending link question
   const consume = (e: string, f: string): void => {
     let set = consumedFields.get(e);
     if (!set) {
       set = new Set();
       consumedFields.set(e, set);
+    }
+    set.add(f);
+  };
+  const markMarginal = (e: string, f: string): void => {
+    let set = marginalFields.get(e);
+    if (!set) {
+      set = new Set();
+      marginalFields.set(e, set);
     }
     set.add(f);
   };
@@ -335,7 +365,7 @@ export function inferSchema(
         const best = bestTarget(e, p.valueSet);
         if (!best) continue;
         const confidence = best.matched / p.valueSet.size;
-        if (confidence < LINK_MIN_CONFIDENCE) continue;
+        if (confidence < linkFloor) continue; // noise — dropped
         if (linkedTargets.get(e.name)?.has(best.target.name)) {
           // already linked to this target (prefer the m2m array link); just consume the field
           consume(e.name, field);
@@ -352,12 +382,27 @@ export function inferSchema(
           confidence,
         };
         if (pass === 'array') link.junction = `${e.name}_${best.target.name}`;
+        if (confidence < linkThreshold) {
+          // Marginal band: don't create the link and don't consume the field —
+          // the caller asks the user instead, and a "yes" needs the referencing
+          // column to survive as a plain scalar. It IS held out of dimension
+          // extraction below: folding it into a dimension would strip that
+          // very column.
+          marginalLinks.push(link);
+          markMarginal(e.name, field);
+          continue;
+        }
         linkages.push(link);
         consume(e.name, field);
         markTarget(e.name, best.target.name);
       }
     }
   }
+  // A marginal candidate whose target got a confident link from another field
+  // is redundant — connecting it again would just duplicate the relationship.
+  const confirmedMarginal = marginalLinks.filter(
+    (m) => !linkedTargets.get(m.fromEntity)?.has(m.toEntity),
+  );
 
   // Pass 4 — dimensions from remaining categorical string columns.
   const dimColumnNames = new Map<string, EntitySource[]>(); // normalized col name → entities having it as a string col
@@ -380,6 +425,7 @@ export function inferSchema(
       if (p.isArray || p.type !== 'text' || p.numericFraction > 0.5) continue;
       if (field === e.naturalKey) continue;
       if (consumedFields.get(e.name)?.has(field)) continue; // already a linkage field
+      if (marginalFields.get(e.name)?.has(field)) continue; // pending a link question — keep the column
       const nn = normalizeName(field);
       if (FREETEXT.has(nn)) continue;
       const ratio = p.distinct / Math.max(1, e.records.length);
@@ -447,5 +493,5 @@ export function inferSchema(
     };
   });
 
-  return { entities, dimensions, linkages, skipped };
+  return { entities, dimensions, linkages, marginalLinks: confirmedMarginal, skipped };
 }

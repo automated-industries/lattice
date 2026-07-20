@@ -54,6 +54,18 @@ const obj = (
 
 const str = (description: string): JsonSchemaProperty => ({ type: 'string', description });
 
+// The computed-table field shapes, as prose. This minimal JSON-schema helper
+// has no nested object properties (array `items` carry only a description), so
+// every tool that takes a `fields` array documents the per-kind shapes here
+// and shares the exact same wording.
+const COMPUTED_FIELD_SHAPE =
+  'Each item is {name, kind, ...}: kind "alias" needs {source: "<field path>"} (a straight copy of ' +
+  'that field); kind "calc" needs {expr: "<expression over field paths>"}; kind "ai_classify" needs ' +
+  '{input: "<field path>", prompt, labels: [...]} (the model picks one label per row); kind ' +
+  '"ai_transform" needs {inputs: ["<field path>", ...], prompt} (a model-written value per row); kind ' +
+  '"aggregate" needs {via: "<junctionTable>.<relation>", fn: count|sum|avg|min|max|concat, column?}. ' +
+  'A field path is a column on the base ("status") or on a directly linked entity ("company.name").';
+
 export const REGISTRY: readonly LatticeFunctionDef[] = [
   // ── Reads ───────────────────────────────────────────────────────────────
   {
@@ -88,7 +100,11 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'list_rows',
     description:
-      'List rows in a table (paginated, max 200/page). For a large table, page through it with limit + successive offsets instead of trying to read it all at once. Omits soft-deleted rows unless includeDeleted is true.',
+      'List rows in a table (paginated, max 200/page). Returns NEWEST-FIRST by default, ordered by the ' +
+      "table's real event/date column (e.g. a meeting's start_at) when present, else created_at. Page a " +
+      'large table with limit + successive offsets. To find recent/today items, keep the default desc ' +
+      'order and/or pass a `filter` date range (e.g. start_at >= today). Omits soft-deleted rows unless ' +
+      'includeDeleted is true.',
     mutates: false,
     category: 'read',
     args: obj(
@@ -103,6 +119,23 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         offset: {
           type: 'number',
           description: 'Rows to skip from the start — combine with limit to page through a table.',
+        },
+        orderBy: str(
+          "Column to sort by. Defaults to the table's event/date column (e.g. start_at) or created_at. " +
+            "Prefer a real event-time column over created_at, which is the row's insert/sync time.",
+        ),
+        orderDir: {
+          type: 'string',
+          enum: ['asc', 'desc'],
+          description: 'Sort direction. Default "desc" (newest first); use "asc" for oldest first.',
+        },
+        filter: {
+          type: 'array',
+          description:
+            'Filter rows before sorting. Each clause is {col, op, val}; op is one of eq, ne, gt, gte, ' +
+            'lt, lte, like, in, isNull, isNotNull. Clauses are ANDed. For today only: ' +
+            '[{col:"start_at", op:"gte", val:"<today ISO date>"}].',
+          items: { type: 'object', description: 'A single {col, op, val} filter clause.' },
         },
       },
       ['table'],
@@ -210,33 +243,63 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
-    name: 'create_html_file',
+    name: 'create_dashboard',
     description:
-      "Create an HTML file and save it as a file artifact, then open it in the viewer where it renders live. Use this when the user wants a visual page, an interactive view, a report, or a chart/graph of their data — anything richer than a plain markdown document. You do NOT write the HTML; you provide a clear `spec` and a stronger model authors a complete standalone HTML page (it can read the user's live data and draw charts). Follows the same sharing rules as any file (private mode → private).",
+      "Create a NEW, SEPARATE live dashboard — a visual page of charts, tables, and key numbers that answers a question about the user's data — and open it for them. You do NOT write the page yourself: provide a short `title` and a clear `spec` (what to show, from which data) and a stronger model authors a complete standalone page that reads the user's live data and draws charts. Follows the same sharing rules as any record (private mode → private). IMPORTANT: do NOT use this when the user is already VIEWING a dashboard and asks to change it, add to it, restyle it, or 'make this …' something — that is an EDIT of the dashboard on screen, so call edit_dashboard instead. Use create_dashboard ONLY when no dashboard is open, or the user explicitly asks for a NEW / separate / another dashboard.",
     mutates: true,
     category: 'row',
     args: obj(
       {
-        title: str('Short human-readable title for the page (no file extension needed).'),
+        title: str('Short human-readable title for the dashboard.'),
         spec: str(
-          'A clear, specific description of what the HTML page should contain and which data it should show (tables/columns, the kind of chart or layout, any filters). The fuller the spec, the better the result.',
+          'A clear, specific description of what the dashboard should contain and which data it should show (tables/columns, the kind of chart or layout, any filters). The fuller the spec, the better the result.',
         ),
       },
       ['title', 'spec'],
     ),
   },
   {
-    name: 'edit_html_file',
+    name: 'edit_dashboard',
     description:
-      'Change an existing HTML file. By default this edits the HTML file the user is currently viewing, so use it when they ask to tweak, restyle, or extend the page on screen ("make it a pie chart", "add a column", "use blue"). You provide the `instruction`; a stronger model re-authors the page in place and the open view refreshes — no new file is created. Pass `id` only to target a specific HTML file other than the open one.',
+      'Change an existing dashboard. By default this edits the dashboard the user is currently viewing, so use it when they ask to tweak, restyle, or extend the one on screen ("make it a pie chart", "add a column", "use blue"). You provide the `instruction`; a stronger model re-authors the page in place and the open view refreshes — no new dashboard is created. Pass `id` only to target a specific dashboard other than the open one.',
     mutates: true,
     category: 'row',
     args: obj(
       {
-        instruction: str('What to change about the HTML page, in plain language.'),
-        id: str('Optional id of the HTML file to edit. Omit to edit the file the user is viewing.'),
+        instruction: str('What to change about the dashboard, in plain language.'),
+        id: str('Optional id of the dashboard to edit. Omit to edit the one the user is viewing.'),
       },
       ['instruction'],
+    ),
+  },
+  {
+    name: 'investigate',
+    description:
+      'Diagnose why the dashboard the user is viewing is broken, empty, blank, wrong, or showing an error. This RUNS the dashboard\'s live data queries and checks the tables it reads, and returns the CONCRETE faults — a failing query with its exact error (e.g. an "unrecognized token" SQL error), or a table that does not exist. Call this the MOMENT the user says something is broken / not working / empty / wrong, or asks "why is this…", while a dashboard is open — investigate FIRST and report what you find, instead of asking them what is wrong (you can see it yourself). By default it inspects the dashboard on screen; pass `id` to inspect a specific one. After finding a fault, offer to fix it with edit_dashboard.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        id: str(
+          'Optional id of the dashboard to investigate. Omit to inspect the one the user is viewing.',
+        ),
+      },
+      [],
+    ),
+  },
+  {
+    name: 'import_spreadsheet',
+    description:
+      "Import a spreadsheet the user attached (an .xlsx / .xls or .csv / .tsv file) into their workspace as real, structured data — every row, faithfully — so you can then answer questions about it or build a dashboard from it. Use this when the user attaches a spreadsheet and wants its contents available as data, or when a dashboard/answer needs data that lives in a spreadsheet they gave you (e.g. a create_dashboard failed because the data doesn't exist yet). Pass the `file_id` of the attached spreadsheet (from the note listing what they attached). This reads the whole file deterministically — it does not summarize or drop rows. Follows the same sharing rules as any data. Only spreadsheet / delimited files (Excel, CSV, TSV) are supported here; for other content use ingest_text.",
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        file_id: str(
+          'The id of the attached spreadsheet file to import (from the attached-files note).',
+        ),
+      },
+      ['file_id'],
     ),
   },
   {
@@ -252,6 +315,51 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         ),
       },
       ['url'],
+    ),
+  },
+  {
+    name: 'ingest_text',
+    description:
+      'Save a block of content the user gave you in their message — pasted notes, a transcript, an email, meeting minutes, a document, a list, any unstructured content they want kept or remembered — AND automatically connect it to their existing records and pull out the things it is about. It saves the content and runs the SAME enrichment a dropped file gets: it links the content to the existing records it refers to and creates + links the objects it describes. PREFER this over manually creating records whenever the user pastes substantial content for you to save, remember, or organize — it does the finding-and-linking for you, so do NOT hand-create rows and hand-search for the people/things to link. Use it ONLY for content to store, not for a short question or instruction. The content is what the user typed (trusted). Follows the same sharing rules as any file (private mode → private).',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        content: str('The text content to save, taken from the user’s message.'),
+        title: str(
+          'Optional short title for the saved content (e.g. "Meeting notes"). Defaults to a generic label.',
+        ),
+      },
+      ['content'],
+    ),
+  },
+  {
+    name: 'ask_user',
+    description:
+      'Show the user ONE short multiple-choice question and end your turn; their answer arrives ' +
+      "as the next message. Use this when you are genuinely uncertain about the user's intent or " +
+      'about what a data object means or is for — roughly: when you are less than 60% confident. ' +
+      'At or above that confidence, proceed without asking. The question must be information-' +
+      'seeking about what the data MEANS or IS FOR (e.g. "Is this meant to track suppliers?"), ' +
+      'never about storage mechanics. A free-form "Other" answer is always offered alongside your ' +
+      "options. If the user's answer teaches you what data means or is for, persist it with " +
+      'set_definition so the knowledge is not lost when the conversation ends.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        question: str('The single short, information-seeking question to show the user.'),
+        options: {
+          type: 'array',
+          description: 'Two to four short answer choices (a free-form "Other" is added for you).',
+          items: { type: 'string', description: 'One short answer choice.' },
+        },
+        allow_other: {
+          type: 'boolean',
+          description: 'Offer a free-form "Other" answer. Default true.',
+        },
+      },
+      ['question', 'options'],
     ),
   },
   {
@@ -351,6 +459,31 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'merge_rows',
+    description:
+      'Consolidate specific rows the user identified as the same thing (e.g. several ' +
+      'rows for one company) into ONE surviving row. Re-points every reference (junction ' +
+      'link) from the duplicates onto the survivor, then soft-deletes the duplicates ' +
+      '(recoverable). This is the correct way to combine/merge/consolidate records: ' +
+      'delete_row only removes a row and would leave its links dangling. Returns the exact ' +
+      'number of rows merged and references relinked — report those actual counts.',
+    mutates: true,
+    category: 'row',
+    args: obj(
+      {
+        table: str('Table containing the rows.'),
+        survivor_id: str('Primary key of the row to KEEP as the master.'),
+        duplicate_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Primary keys of the duplicate rows to merge into the survivor + soft-delete.',
+        },
+      },
+      ['table', 'survivor_id', 'duplicate_ids'],
+    ),
+  },
+  {
     name: 'update_row',
     description: 'Update columns on an existing row.',
     mutates: true,
@@ -411,7 +544,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   // ── Schema mutations ──────────────────────────────────────────────────────
   {
     name: 'create_entity',
-    description: 'Create a new entity (table) with an optional icon and starter columns.',
+    description:
+      'Create a new entity (table) with an optional icon and starter columns. Use this for a NEW ' +
+      'kind of record the user will fill with new data; if the user wants a table/list/view built ' +
+      'OUT OF data that already exists, use preview_computed_table + create_computed_table instead.',
     mutates: true,
     category: 'schema',
     args: obj(
@@ -447,11 +583,14 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     name: 'delete_entity',
     description:
       'Soft-delete a user table (reversible — the rows are kept and it can be ' +
-      'restored from history). Guarded: an EMPTY table is removed immediately; ' +
-      'a NON-EMPTY table is NOT deleted until you say what to do with its data — ' +
-      'the tool returns the row count and you must ask the user, then call again ' +
-      "with resolution='delete_data' (soft-delete the rows too) or move_to=<table> " +
-      '(move the rows into another table first). Never deletes built-in tables.',
+      'restored from history). Guarded: an EMPTY table is removed immediately; a ' +
+      'NON-EMPTY table is NOT removed until you say what to do with its rows. Two ' +
+      'paths: move_to=<table> MERGES the rows into another existing table and then ' +
+      'removes the emptied source — fully reversible from history, so take this path ' +
+      'WITHOUT asking the user first (use it for any merge / consolidate / combine-into ' +
+      "request). resolution='delete_data' soft-deletes the rows too (true deletion " +
+      'rather than a move) — for THAT path the tool returns the row count and you ' +
+      'must ask the user before calling again. Never deletes built-in tables.',
     mutates: true,
     category: 'schema',
     args: obj(
@@ -461,10 +600,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
           type: 'string',
           enum: ['delete_data'],
           description:
-            'For a NON-empty table: "delete_data" soft-deletes its rows too (reversible). Omit to be told the row count and asked first.',
+            'True-deletion path for a NON-empty table: "delete_data" soft-deletes its rows too (still reversible from history, but it removes the data instead of moving it — ask the user first). Omit to be told the row count. To MERGE into another table instead of deleting, use move_to (no need to ask first).',
         },
         move_to: str(
-          'For a NON-empty table: move its rows into this existing table, then delete the emptied table.',
+          'Reversible MERGE for a NON-empty table: move its rows into this existing table, then remove the emptied source. Use this for any "merge" / "consolidate" / "combine into" request — it is undoable from history, so do NOT ask the user to confirm first.',
         ),
       },
       ['name'],
@@ -529,6 +668,93 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     mutates: true,
     category: 'schema',
     args: obj({ table: str('Table name.'), icon: str('Emoji icon.') }, ['table', 'icon']),
+  },
+
+  // ── Computed tables ───────────────────────────────────────────────────────
+  {
+    name: 'preview_computed_table',
+    description:
+      'Dry-run a computed-table definition and see the result WITHOUT creating anything. A computed ' +
+      'table is a live READ-ONLY projection of ONE existing base entity: each field is a copy ' +
+      '(alias) of a reachable field, a calculation, or an AI transformation of values that already ' +
+      'exist. ALWAYS preview before create_computed_table or update_computed_table and fix failing ' +
+      'fields first. Returns the columns and sample rows (AI fields read as empty until the table ' +
+      'is created and refreshed), or per-field errors when the definition does not compile.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        base: str('Base entity (table) the computed table projects from.'),
+        fields: {
+          type: 'array',
+          description: 'Field definitions, in display order. ' + COMPUTED_FIELD_SHAPE,
+          items: { type: 'object', description: 'One {name, kind, ...} field definition.' },
+        },
+        limit: { type: 'integer', description: 'Sample rows to return (1–50, default 10).' },
+      },
+      ['base', 'fields'],
+    ),
+  },
+  {
+    name: 'create_computed_table',
+    description:
+      'Create a computed table — a live, read-only view built OUT OF data that already exists. Use ' +
+      'this — NOT create_entity — when the user asks for a table/list/view whose contents already ' +
+      'exist in their data: picked, renamed, calculated, categorized, or summarized fields from one ' +
+      'entity and its linked entities. ALWAYS run preview_computed_table first and fix failing ' +
+      'fields. Its rows update with the source records and cannot be edited directly.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        name: str('Name for the new computed table.'),
+        base: str('Base entity (table) the computed table projects from.'),
+        fields: {
+          type: 'array',
+          description: 'Field definitions, in display order. ' + COMPUTED_FIELD_SHAPE,
+          items: { type: 'object', description: 'One {name, kind, ...} field definition.' },
+        },
+      },
+      ['name', 'base', 'fields'],
+    ),
+  },
+  {
+    name: 'update_computed_table',
+    description:
+      "Change an existing computed table's fields. set_fields adds new fields or replaces existing " +
+      'ones by field name (declaration order is preserved); remove_fields drops fields by name. The ' +
+      'base entity can NEVER change — to project from a different base, create a new computed ' +
+      'table. Preview the intended definition with preview_computed_table first.',
+    mutates: true,
+    category: 'schema',
+    args: obj(
+      {
+        name: str('Computed table to update.'),
+        set_fields: {
+          type: 'array',
+          description:
+            'Fields to add, or to replace matched by field name. ' + COMPUTED_FIELD_SHAPE,
+          items: { type: 'object', description: 'One {name, kind, ...} field definition.' },
+        },
+        remove_fields: {
+          type: 'array',
+          description: 'Names of existing fields to remove.',
+          items: { type: 'string' },
+        },
+      },
+      ['name'],
+    ),
+  },
+  {
+    name: 'refresh_computed_table',
+    description:
+      'Recompute the stored AI values (ai_classify / ai_transform fields) of a computed table. ' +
+      'Alias and calculation fields are always live and never need a refresh; only AI-derived ' +
+      'values are materialized. Reports, per AI field, how many values were filled and how many are ' +
+      'still pending.',
+    mutates: true,
+    category: 'row',
+    args: obj({ name: str('Computed table to refresh.') }, ['name']),
   },
 
   // ── History ───────────────────────────────────────────────────────────────

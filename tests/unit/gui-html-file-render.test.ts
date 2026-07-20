@@ -36,8 +36,14 @@ describe('inline HTML-file rendering (client script)', () => {
   it('mediates all data access through a read-only parent postMessage broker', () => {
     expect(appJs).toContain('installHtmlFileBroker');
     expect(appJs).toContain('window.lattice');
-    // The broker only honours messages whose source IS the frame window.
-    expect(appJs).toContain('e.source !== frame.contentWindow');
+    // The broker only honours messages whose source IS a live page frame's
+    // window (any iframe.html-frame — file preview or dashboard canvas).
+    expect(appJs).toContain("querySelectorAll('iframe.html-frame')");
+    expect(appJs).toContain('e.source === frames[fi].contentWindow');
+    // The injected bridge exposes the read-only SQL surface, and the broker
+    // routes it to the server-enforced endpoint (never a raw DB path).
+    expect(appJs).toContain('sql:function(q){return __lreq("sql",{sql:q});}');
+    expect(appJs).toContain("'/api/analytics/sql'");
     // Read-only: it refuses credential/system tables and exposes no write path.
     expect(appJs).toContain('forbidden table');
   });

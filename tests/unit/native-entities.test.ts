@@ -7,6 +7,8 @@ import { Lattice } from '../../src/lattice.js';
 import {
   NATIVE_ENTITY_DEFS,
   NATIVE_ENTITY_NAMES,
+  NATIVE_ANALYTICS_NAMES,
+  isAnalyticsNativeEntity,
   isNativeEntity,
   isInternalNativeEntity,
   registerNativeEntities,
@@ -90,7 +92,7 @@ describe('framework native entities', () => {
         expect(isInternalNativeEntity(t)).toBe(true);
       }
       // User-facing native entities are NOT internal — they stay visible.
-      for (const t of ['secrets', 'files', 'notes']) {
+      for (const t of ['secrets', 'files', 'notes', 'dashboards']) {
         expect(isNativeEntity(t)).toBe(true);
         expect(isInternalNativeEntity(t)).toBe(false);
       }
@@ -213,6 +215,7 @@ describe('framework native entities', () => {
       expect(first.map((r) => r.entity).sort()).toEqual([
         'chat_messages',
         'chat_threads',
+        'dashboards',
         'files',
         'notes',
         'secrets',
@@ -225,6 +228,7 @@ describe('framework native entities', () => {
       expect(bindings.map((b) => b.entity).sort()).toEqual([
         'chat_messages',
         'chat_threads',
+        'dashboards',
         'files',
         'notes',
         'secrets',
@@ -334,5 +338,18 @@ describe('framework native entities', () => {
       expect(rawRow.token).toMatch(/^enc:/);
       db3.close();
     });
+  });
+});
+
+describe('NATIVE_ANALYTICS_NAMES / isAnalyticsNativeEntity', () => {
+  it('flags dashboards as an analytics-surface native — display-gated, not internal', () => {
+    expect([...NATIVE_ANALYTICS_NAMES]).toEqual(['dashboards']);
+    expect(isAnalyticsNativeEntity('dashboards')).toBe(true);
+    // Critically NOT internal: internal natives are forced never-share and
+    // feed-hidden, which would break dashboard sharing + activity cards.
+    expect(isInternalNativeEntity('dashboards')).toBe(false);
+    for (const t of ['files', 'notes', 'secrets', 'chat_threads']) {
+      expect(isAnalyticsNativeEntity(t)).toBe(false);
+    }
   });
 });

@@ -41,20 +41,34 @@ vi.mock('../../src/ai/crawl.js', async (orig) => {
 });
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
 const servers: GuiServerHandle[] = [];
-let savedKey: string | undefined;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  savedKey = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-fake';
+  // Claude access is OAuth-only now, and the AI-mutating ingest routes are gated
+  // server-side. Authenticate by seeding a connected subscription in an isolated
+  // machine-local config dir (the credential store is keyed off LATTICE_CONFIG_DIR)
+  // — NOT by setting ANTHROPIC_API_KEY, which no longer authenticates.
+  const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-vc-cfg-'));
+  dirs.push(cfgDir);
+  for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY']) {
+    savedEnv[k] = process.env[k];
+  }
+  process.env.LATTICE_CONFIG_DIR = cfgDir;
+  process.env.LATTICE_ENCRYPTION_KEY = 'vision-crawl-test-key';
+  delete process.env.ANTHROPIC_API_KEY;
+  seedClaudeOAuth();
 });
 afterEach(async () => {
-  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-  else process.env.ANTHROPIC_API_KEY = savedKey;
   for (const s of servers.splice(0)) await s.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
+    else process.env[k] = v;
+  }
 });
 
 async function boot(): Promise<GuiServerHandle> {

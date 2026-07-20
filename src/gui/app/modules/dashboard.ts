@@ -137,7 +137,12 @@ export const dashboardJs = `    // ───────────────
       'window.lattice={' +
       'query:function(t,o){o=o||{};return __lreq("query",{table:t,limit:o.limit,offset:o.offset});},' +
       'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
-      'search:function(q){return __lreq("search",{query:q});}};';
+      'sql:function(q){return __lreq("sql",{sql:q});},' +
+      'search:function(q){return __lreq("search",{query:q});},' +
+      // Navigation-only, fire-and-forget. The page can ask the host to move the user
+      // around the app (open Configure, an add-source flow, or the assistant) — the
+      // same things they can do themselves — but NEVER read or write data through it.
+      'act:function(name,arg){window.parent.postMessage({__lattice:true,op:"act",name:String(name||""),arg:(arg==null?"":String(arg))},"*");}};';
 
     // Parent-side broker: the ONLY bridge between the isolated frame and the data
     // API. Strictly READ-ONLY — it performs exactly three GET/search reads against
@@ -148,13 +153,32 @@ export const dashboardJs = `    // ───────────────
       var op = msg && msg.op;
       var table = String((msg && msg.table) || '');
       var DENY = { secrets: 1, chat_threads: 1, chat_messages: 1 };
+      // Table-LESS ops (search + sql) are handled BEFORE the table guard: they
+      // carry no msg.table (search uses msg.query, sql uses msg.sql), so the
+      // empty-table check below would wrongly reject them as "forbidden table".
+      // Their protection is enforced server-side (search allowlist; the SQL
+      // endpoint's SELECT-only shape + protected-table deny-list + row cap + a
+      // Postgres READ ONLY txn). This is the bug that made EVERY sql-driven
+      // dashboard (aggregations, GROUP BY) render "Error loading data: forbidden
+      // table" — the most common dashboard shape.
       if (op === 'search') {
-        return fetch('/api/search', {
+        // Workspace search is a GET (/api/search?q=…) — there is no POST route,
+        // so the prior POST silently 404'd and search-driven dashboard sections
+        // rendered empty with no error. Use the real GET endpoint.
+        return fetch('/api/search?q=' + encodeURIComponent(String((msg && msg.query) || '')))
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
+      if (op === 'sql') {
+        return fetch('/api/analytics/sql', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ query: String((msg && msg.query) || '') }),
-        }).then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+          body: JSON.stringify({ sql: String((msg && msg.sql) || '') }),
+        }).then(function (r) { return r.json(); }).then(function (j) {
+          if (j && j.error) return { ok: false, error: String(j.error) };
+          return { ok: true, data: j };
+        });
       }
+      // Table-scoped ops (query / get) must name an allowed table.
       if (!table || table.charAt(0) === '_' || DENY[table]) {
         return Promise.resolve({ ok: false, error: 'forbidden table' });
       }
@@ -170,6 +194,40 @@ export const dashboardJs = `    // ───────────────
       }
       return Promise.resolve({ ok: false, error: 'unsupported op' });
     }
+    // Navigation-ONLY host actions a rendered page may request via window.lattice.act().
+    // Every branch just moves the user somewhere they could already reach by hand (open
+    // Configure, an add-source flow, or the assistant with a prefilled question) — there
+    // is deliberately NO data read/write path here, and an unknown name is ignored.
+    function __latticeDashboardAction(name, arg) {
+      if (name === 'configure') { if (typeof goConfigure === 'function') goConfigure(); return; }
+      if (name === 'analytics') { if (typeof goAnalytics === 'function') goAnalytics(); return; }
+      if (name === 'ask') {
+        // A dashboard "ask" chip SUBMITS the question straight to Lattice — not just
+        // prefill the composer. The Ask Lattice dock is always visible in the single
+        // layout, so no navigation is needed: sendChat posts it, shows the user bubble,
+        // and clears the composer (and guards on chatBusy so a rapid double-click can't
+        // double-send). Fall back to prefilling the composer if the chat isn't wired.
+        var q = arg ? String(arg).trim() : '';
+        if (q && typeof sendChat === 'function') { sendChat(q); return; }
+        var inp = document.getElementById('chat-input');
+        if (inp) { if (q) inp.value = q; inp.focus(); }
+        return;
+      }
+      var addBtn = { 'add-file': 'src-add-files' };
+      var addTab = { 'add-file': 'files', 'add-connector': 'connectors', 'add-database': 'databases' };
+      if (Object.prototype.hasOwnProperty.call(addTab, name)) {
+        // The add-source surfaces live in their own Configure tab (Files/MCP
+        // Connectors/Databases) — open the RIGHT one, then click the add button
+        // where one exists. The MCP Connectors and Databases tabs have their add
+        // forms inline, so opening the tab IS the add surface.
+        if (typeof openConfigureDrawer === 'function') openConfigureDrawer(addTab[name]);
+        else if (typeof goConfigure === 'function') goConfigure();
+        var id = addBtn[name];
+        if (id) setTimeout(function () { var b = document.getElementById(id); if (b) b.click(); }, 90);
+        return;
+      }
+      // Unknown action \\u2014 ignore (fail closed).
+    }
     var __latticeHtmlBrokerInstalled = false;
     function installHtmlFileBroker() {
       if (__latticeHtmlBrokerInstalled) return;
@@ -177,11 +235,23 @@ export const dashboardJs = `    // ───────────────
       window.addEventListener('message', function (e) {
         var d = e.data;
         if (!d || d.__lattice !== true) return;
-        // Identity check: only honour messages whose source IS the live HTML-file
-        // frame's window — an unforgeable handle. (The frame is null-origin, so we
-        // can't match on e.origin; source identity is the real gate.)
-        var frame = document.getElementById('html-file-frame');
-        if (!frame || !frame.contentWindow || e.source !== frame.contentWindow) return;
+        // Identity check: only honour messages whose source IS a live sandboxed
+        // page frame's window — an unforgeable handle. (The frames are null-origin,
+        // so we can't match on e.origin; source identity is the real gate.) Any
+        // .html-frame qualifies: the Configure file preview and the Analytics
+        // dashboard canvas both render through this broker, and the hidden view's
+        // frame may coexist in the DOM.
+        var frame = null;
+        var frames = document.querySelectorAll('iframe.html-frame');
+        for (var fi = 0; fi < frames.length; fi++) {
+          if (frames[fi].contentWindow && e.source === frames[fi].contentWindow) { frame = frames[fi]; break; }
+        }
+        if (!frame) return;
+        // Navigation actions (op:'act') are fire-and-forget and need no reply — a
+        // rendered dashboard asking to move the user around the app. Whitelisted +
+        // navigation-only (see __latticeDashboardAction), so nothing sensitive rides
+        // this even though any sandboxed frame can post it.
+        if (d.op === 'act') { __latticeDashboardAction(String(d.name || ''), d.arg); return; }
         var rid = d.rid;
         var reply = function (payload) {
           payload.__latticeReply = true;
@@ -210,6 +280,22 @@ export const dashboardJs = `    // ───────────────
     // The CSP grants inline script/style only, NO network at all (connect-src 'none'
     // + every fetch-directive 'none'/data:), and no nested browsing contexts — data
     // comes through the postMessage broker, not the network.
+    // Load the vendored Chart.js on demand (it's no longer inlined in the bundle —
+    // ~275 KB off every startup's parse). Sets window.__LATTICE_CHART_LIB__; cached
+    // after the first HTML-file preview. Fail-soft: on a load error the preview still
+    // renders, just without chart support.
+    function ensureChartLib() {
+      if (window.__LATTICE_CHART_LIB__) return Promise.resolve();
+      if (window.__latticeChartLibPromise) return window.__latticeChartLibPromise;
+      window.__latticeChartLibPromise = new Promise(function (resolve) {
+        var s = document.createElement('script');
+        s.src = '/gui-assets/chart-lib.js';
+        s.onload = function () { resolve(); };
+        s.onerror = function () { resolve(); };
+        document.head.appendChild(s);
+      });
+      return window.__latticeChartLibPromise;
+    }
     function htmlFileSrcdoc(rawHtml) {
       var csp = '<meta http-equiv="Content-Security-Policy" content="' +
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
@@ -281,8 +367,12 @@ export const dashboardJs = `    // ───────────────
         // chat edit that rewrites this row's extracted_text reloads the frame with
         // the new page in place — no page refresh.
         installHtmlFileBroker();
-        var frame = document.getElementById('html-file-frame');
-        if (frame) frame.srcdoc = htmlFileSrcdoc(row.extracted_text);
+        // Ensure the chart lib is loaded, THEN set the srcdoc (re-resolve the frame
+        // in case a re-render replaced it while the lib was fetching).
+        ensureChartLib().then(function () {
+          var f = document.getElementById('html-file-frame');
+          if (f) f.srcdoc = htmlFileSrcdoc(row.extracted_text);
+        });
       }
       var openBtn = document.getElementById('file-open');
       if (openBtn) openBtn.addEventListener('click', function () {
@@ -338,7 +428,7 @@ export const dashboardJs = `    // ───────────────
         buttons = '<button class="btn" id="detail-vis-toggle" data-vis-cur="' + vis + '" data-vis-next="' + next + '">' + btnLabel + '</button>' +
           '<button class="btn" id="detail-vis-manage">Specific people…</button>';
       }
-      return '<div class="detail-vis" style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;flex-wrap:wrap">' +
+      return '<div class="detail-vis u-row-wrap" style="margin:6px 0;font-size:13px">' +
         visIcon +
         '<span class="muted" id="detail-vis-info">' + escapeHtml(info) + '</span>' + buttons +
         '</div>' +
@@ -360,11 +450,9 @@ export const dashboardJs = `    // ───────────────
       if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
         var cur = detailVisBtn.getAttribute('data-vis-cur');
         var next = detailVisBtn.getAttribute('data-vis-next') || (cur === 'everyone' ? 'private' : 'everyone');
-        if (cur === 'custom') {
-          var cnt = (row._access && row._access.grantees ? row._access.grantees.length : 0);
-          var who = cnt === 1 ? '1 specific person' : cnt + ' specific people';
-          if (!confirm('This row is shared with ' + who + '. The custom list will stop applying (it is kept and reapplies if you return to specific people). Continue?')) return;
-        }
+        // No confirmation prompt when leaving specific-people sharing: the toggle is an
+        // explicit, reversible action and the custom grantee list is kept (it reapplies
+        // if the row returns to specific-people). Just apply the new visibility.
         withBusy(detailVisBtn, function () {
           return postVisibility(next).then(function () {
             invalidate(tableName);
@@ -433,12 +521,9 @@ export const dashboardJs = `    // ───────────────
               if (!want && have) toRemove.push(m.role);
             });
             if (toAdd.length === 0 && toRemove.length === 0) { closeGrantsPanel(panel); return; }
-            // Confirm the mode change ONCE, here — only when actually switching
-            // INTO specific-people mode (effective vis isn't already custom AND we
-            // are adding at least one grantee). Never per checkbox.
-            if (effectiveVisibility(access) !== 'custom' && toAdd.length > 0) {
-              if (!confirm('Sharing this with specific people switches it off "everyone"/"private". The chosen people will be able to see it. Continue?')) return;
-            }
+            // No confirmation prompt: switching a row into specific-people sharing is
+            // non-destructive and reversible — the prior everyone/private mode is
+            // restorable, and the custom grantee list is kept and reapplies. Just save.
             withBusy(saveBtn, function () {
               return fetchJson('/api/cloud/row-grants', {
                 method: 'POST',
@@ -519,249 +604,22 @@ export const dashboardJs = `    // ───────────────
         }
       }
     }
-    function renderDetail(content, tableName, id) {
-      var myGen = renderGen;
-      var t = tableByName(tableName);
-      if (!t) {
-        // The entity/table was removed (e.g. the assistant dropped it) — return to
-        // the dashboard rather than painting a dead "Unknown entity" view.
-        location.hash = '#/';
-        return;
-      }
-      var d = displayFor(tableName);
-      var intrinsic = intrinsicColumns(t);
-      var belongsTo = belongsToColumns(t);
-      var junctions = junctionsFor(tableName);
-
-      var fetches = [
-        fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id)),
-      ];
-      belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
-      junctions.forEach(function (j) {
-        fetches.push(loadAllRows(j.junction));
-        fetches.push(loadAllRows(j.remoteRel.table));
-      });
-
-      Promise.all(fetches).then(function (results) {
-        if (myGen !== renderGen) return; // superseded by a newer navigation
-        var row = results[0];
-
-        // The open record was deleted out from under the view (assistant, another
-        // client, or a hard delete) — don't repaint a tombstone. Fall back to the
-        // parent table, unless the user is intentionally browsing this table's trash.
-        if (!row || (row.deleted_at && tableViewMode[tableName] !== 'trash')) {
-          location.hash = '#/objects/' + encodeURIComponent(tableName);
-          return;
-        }
-
-        function paint(editing) {
-          var rows = [];
-          intrinsic.forEach(function (c) {
-            var secret = isSecretColumn(tableName, c) || looksEncrypted(row[c]);
-            var dd;
-            if (editing) {
-              dd = fieldFor(c, row[c], t);
-            } else if (row[c] == null || row[c] === '') {
-              dd = '<span class="muted">—</span>';
-            } else if (secret) {
-              dd = '<span class="muted">' + SECRET_MASK + '</span>';
-            } else {
-              dd = escapeHtml(row[c]);
-            }
-            rows.push('<dt' + titleAttr(colDesc(tableName, c)) + '>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + dd + '</dd>');
-          });
-          belongsTo.forEach(function (b) {
-            var dd;
-            if (editing) {
-              dd = fieldFor(b.rel.foreignKey, row[b.rel.foreignKey], t);
-            } else {
-              var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-              dd = chipLink(b.rel.table, ref);
-            }
-            rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + dd + '</dd>');
-          });
-          // Junctions: always editable inline. Click × on a chip to unlink,
-          // pick from the dropdown to link. Mutations are atomic — no Save.
-          junctions.forEach(function (j) {
-            var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
-            var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
-            var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) { return !linkedIds.has(o.id); });
-            var chips = matches.map(function (jr) {
-              var remoteId = jr[j.remoteRel.foreignKey];
-              var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
-              if (!ref) return '';
-              return '<span class="chip-removable"' +
-                ' data-junction="' + escapeHtml(j.junction) + '"' +
-                ' data-localfk="' + escapeHtml(j.localFk) + '"' +
-                ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
-                ' data-local="' + escapeHtml(row.id) + '"' +
-                ' data-remote="' + escapeHtml(remoteId) + '">' +
-                '<a class="chip-link" href="#/objects/' + encodeURIComponent(j.remoteRel.table) +
-                  '/' + encodeURIComponent(remoteId) + '">' + escapeHtml(displayNameFor(ref)) + '</a>' +
-                ' <button class="remove-link" title="Unlink">×</button></span>';
-            }).join(' ');
-            var picker = available.length
-              ? '<select class="dm-add"' +
-                  ' data-junction="' + escapeHtml(j.junction) + '"' +
-                  ' data-localfk="' + escapeHtml(j.localFk) + '"' +
-                  ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
-                  ' data-local="' + escapeHtml(row.id) + '">' +
-                '<option value="">+ Add link…</option>' +
-                available.map(function (o) {
-                  return '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(displayNameFor(o)) + '</option>';
-                }).join('') +
-                '</select>'
-              : '';
-            rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
-                      '<dd>' + (chips || '<span class="muted">None yet</span>') + ' ' + picker + '</dd>');
-          });
-
-          var actions = editing
-            ? '<button class="btn primary" id="save-row">Save</button>' +
-              '<button class="btn" id="cancel-edit">Cancel</button>'
-            : '<button class="btn" id="edit-row">Edit</button>' +
-              '<button class="btn danger" id="del-row">Delete</button>';
-
-          content.innerHTML =
-            '<a class="breadcrumb" href="#/objects/' + tableName + '">← ' + escapeHtml(d.label) + '</a>' +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
-              '<h1>' + escapeHtml(displayNameFor(row) || d.label) + '</h1>' +
-              '<div class="actions">' + actions + '</div>' +
-            '</div>' +
-            detailVisLineEl(row) +
-            lastEditedLineEl(tableName, id) +
-            (tableName === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            '<div class="detail"><dl class="' + (editing ? 'editing' : '') + '">' + rows.join('') + '</dl></div>' +
-            '<div id="row-context"></div>';
-
-          // Seed "last edited by" for this table (cloud only; no-op locally).
-          if (!editing) seedLastEdited(tableName);
-          // Skip the context fetch while editing — the just-PATCHed row may
-          // not have re-rendered yet, so we'd flash stale content.
-          if (!editing) loadRowContext(tableName, id);
-          if (!editing && tableName === 'files') renderFilePreview(row);
-
-          // Per-row sharing controls (shared with the simple fs-item view).
-          wireRowSharing(content, tableName, id, row, function () {
-            renderDetail(content, tableName, id);
-          });
-
-          // Junction link/unlink handlers (active in both read and edit modes).
-          content.querySelectorAll('.remove-link').forEach(function (btn) {
-            btn.addEventListener('click', function (e) {
-              e.preventDefault();
-              e.stopPropagation();
-              var chip = btn.closest('[data-junction]');
-              var body = {};
-              body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
-              body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
-              fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(body),
-              }).then(function () {
-                invalidate(chip.getAttribute('data-junction'));
-                return refreshEntities();
-              }).then(function () {
-                renderDetail(content, tableName, id);
-                showToast('Link removed', { undo: undoLast });
-              }).catch(function (err) { showToast('Unlink failed: ' + err.message, {}); });
-            });
-          });
-          content.querySelectorAll('select.dm-add').forEach(function (sel) {
-            sel.addEventListener('change', function () {
-              if (!sel.value) return;
-              var body = {};
-              body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
-              body[sel.getAttribute('data-remotefk')] = sel.value;
-              fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(body),
-              }).then(function () {
-                invalidate(sel.getAttribute('data-junction'));
-                return refreshEntities();
-              }).then(function () {
-                renderDetail(content, tableName, id);
-                showToast('Linked', { undo: undoLast });
-              }).catch(function (err) { showToast('Link failed: ' + err.message, {}); });
-            });
-          });
-
-          if (editing) {
-            document.getElementById('cancel-edit').addEventListener('click', function () { paint(false); });
-            document.getElementById('save-row').addEventListener('click', function () {
-              var values = collectFormValues(content.querySelector('.detail dl'));
-              rowWrite('PATCH', '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), values).then(function (r) {
-                if (r && r.queued) { renderDetail(content, tableName, id); return; }
-                invalidate(tableName);
-                return refreshEntities().then(function () {
-                  renderDetail(content, tableName, id);
-                  showToast(d.label.replace(/s$/, '') + ' modified', { undo: undoLast });
-                });
-              }).catch(function (err) {
-                showToast('Save failed: ' + err.message, {});
-              });
-            });
-          } else {
-            document.getElementById('edit-row').addEventListener('click', function () { paint(true); });
-            document.getElementById('del-row').addEventListener('click', function () {
-              rowWrite('DELETE', '/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id), null).then(function (r) {
-                if (r && r.queued) { location.hash = '#/objects/' + tableName; return; }
-                invalidate(tableName);
-                return refreshEntities().then(function () {
-                  location.hash = '#/objects/' + tableName;
-                  showToast(d.label.replace(/s$/, '') + ' deleted', { undo: undoLast });
-                });
-              }).catch(function (err) {
-                showToast('Delete failed: ' + err.message, {});
-              });
-            });
-          }
-        }
-
-        paint(false);
-      }).catch(function (err) {
-        // A 404 means the row was hard-deleted out from under the view — go to the
-        // parent table instead of a dead "Failed" pane. Other errors still surface.
-        if (/not found|404|no row|does not exist/i.test(err.message || '')) {
-          location.hash = '#/objects/' + encodeURIComponent(tableName);
-          return;
-        }
-        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
-      });
-    }
-
     // ════════════════════════════════════════════════════════════
-    // File-system workspace (default view) + settings drawer
+    // File-system workspace (the single view) + settings drawer
     //
-    // The default GUI presents each object as a folder of file/folder
-    // tiles; clicking a tile opens an "item view" that renders the row
-    // as a document (built from its columns, click-to-edit) plus its
-    // relationships as sub-folders you can drill into. The classic
-    // row/table editor (renderTable / renderDetail) is preserved behind
-    // an "Advanced mode" toggle in the settings drawer.
+    // Each object is a folder of tiles; clicking one opens the unified
+    // record page (rendered doc / preview, click-to-edit, sharing,
+    // provenance, connected objects, and the actions menu with the
+    // structured fields editor + junction manager). The legacy classic
+    // row/table editor was absorbed into that page and removed;
+    // #/objects/* redirects here.
     // ════════════════════════════════════════════════════════════
-    var FS_KEYS = { advanced: 'lattice-advanced-mode' };
-
+    // The GUI has a SINGLE view: the file workspace. The former "Advanced View"
+    // (classic row/table editor) and its Settings toggle were removed. advancedMode()
+    // remains as a false constant so the call sites that branched on it all resolve
+    // to the file-workspace routes (#/fs/…) with no dead toggle state.
     function advancedMode() {
-      return window.localStorage.getItem(FS_KEYS.advanced) === '1';
-    }
-    function setAdvancedMode(on) {
-      gaTrack('setting_change', { setting: 'advanced_mode', value: !!on }); // coarse enum + bool
-      window.localStorage.setItem(FS_KEYS.advanced, on ? '1' : '0');
-      document.body.classList.toggle('advanced-mode', on);
-      // Preserve context: map the current location between the file-system
-      // (#/fs/…) and the classic (#/objects/…) route families.
-      var cur = location.hash || '#/';
-      var mapped = mapHashForMode(cur, on);
-      renderSidebar();
-      if (mapped && mapped !== cur) location.hash = mapped; // triggers hashchange → renderRoute
-      // Same-hash advanced-mode toggle re-renders the current pane in place — a
-      // soft refresh so it never flashes the loading frame (the data is already
-      // loaded; only the display-config changed).
-      else renderRoute({ soft: true });
+      return false;
     }
 
     // Parse "#/fs/a/b/c…" into its decoded segment list (or null).
@@ -774,36 +632,30 @@ export const dashboardJs = `    // ───────────────
     function fsHref(segs) {
       return '#/fs/' + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
     }
-    // Resolve the terminal (table, id) of a drill path WITHOUT fetching —
-    // relation metadata alone is enough. Used for mode switching.
-    function fsTerminal(segs) {
-      var table = segs[0];
-      var id = null;
-      var i = 1;
-      while (i < segs.length) {
-        id = segs[i]; i++;
-        if (i < segs.length) {
-          var rel = resolveRelation(table, segs[i]); i++;
-          if (!rel) return { table: table, id: id };
-          table = rel.targetTable; id = null;
-        }
-      }
-      return { table: table, id: id };
+    // The record-namespace prefix for a section, so an in-section drill keeps its
+    // section (and thus its lit tab + breadcrumb root). Folders records live under
+    // #/fs, Graph under #/graph, Tables under #/tables — all rendered by the SAME
+    // record/collection renderers, told which section they're in.
+    function sectionHref(section, segs) {
+      var p = section === 'graph' ? '#/graph/'
+        : section === 'tables' ? '#/tables/'
+        : section === 'w:table' ? '#/w/table/'
+        : section === 'w:md' ? '#/w/md/'
+        : section === 'w:file' ? '#/w/file/'
+        : '#/fs/';
+      return p + segs.map(function (s) { return encodeURIComponent(s); }).join('/');
     }
-    function mapHashForMode(hash, advanced) {
-      if (advanced) {
-        var fsegs = fsParse(hash);
-        if (!fsegs) return hash;
-        var term = fsTerminal(fsegs);
-        return term.id
-          ? '#/objects/' + encodeURIComponent(term.table) + '/' + encodeURIComponent(term.id)
-          : '#/objects/' + encodeURIComponent(term.table);
-      }
-      var m = /^#\\/objects\\/([^/]+)(?:\\/(.+))?$/.exec(hash);
-      if (!m) return hash;
-      return m[2]
-        ? '#/fs/' + encodeURIComponent(m[1]) + '/' + encodeURIComponent(m[2])
-        : '#/fs/' + encodeURIComponent(m[1]);
+    // The section a hash belongs to, from its prefix — used by in-place re-renders
+    // (a mode toggle / save) that don't carry the section as an argument. The w:*
+    // sections are the single-layout Workspace tabs (table/markdown/file).
+    function sectionOfHash(hash) {
+      hash = hash || location.hash || '';
+      if (hash.indexOf('#/graph/') === 0) return 'graph';
+      if (hash.indexOf('#/tables/') === 0) return 'tables';
+      if (hash.indexOf('#/w/table/') === 0) return 'w:table';
+      if (hash.indexOf('#/w/md/') === 0) return 'w:md';
+      if (hash.indexOf('#/w/file/') === 0) return 'w:file';
+      return 'folders';
     }
 
     // A human label for one row: first non-empty title-ish column; failing that
@@ -910,11 +762,38 @@ export const dashboardJs = `    // ───────────────
       return step().then(function () { return crumbs; });
     }
 
-    function fsBreadcrumb(segs, crumbs) {
-      var parts = ['<a href="#/">Home</a>'];
+    function fsBreadcrumb(segs, crumbs, section) {
+      // Rooted at the SECTION you drilled in from, so the breadcrumb root matches the
+      // highlighted tab. The w:* single-layout Workspace tabs have NO top-level index
+      // page (Objects/Graph/Tables index pages are gone), so they root directly at the
+      // collection: <Object> ▸ <record>…
+      section = section || 'folders';
+      var isW = section === 'w:table' || section === 'w:md' || section === 'w:file';
+      var parts = [];
+      if (!isW) {
+        var rootHref = section === 'graph' ? '#/graph' : section === 'tables' ? '#/tables' : '#/folders';
+        var rootLabel = section === 'graph' ? 'Graph' : section === 'tables' ? 'Tables' : 'Objects';
+        parts.push('<a href="' + rootHref + '">' + rootLabel + '</a>');
+      }
       var t0 = segs[0];
-      var prefix = '#/fs/' + encodeURIComponent(t0);
-      parts.push('<a href="' + prefix + '">' + escapeHtml(displayFor(t0).label) + '</a>');
+      // The OBJECT crumb opens that section's collection page for t0. 'artifacts' is a
+      // VIRTUAL object (no real table) served only by renderArtifactsView via the
+      // #/fs/artifacts special-case, so it keeps that self-view href in every section.
+      var objHref = t0 === 'artifacts' ? '#/fs/artifacts'
+        : section === 'graph' ? '#/graph/' + encodeURIComponent(t0)
+        : section === 'tables' ? '#/tables/' + encodeURIComponent(t0)
+        : isW ? sectionHref(section, [t0])
+        : '#/folders/' + encodeURIComponent(t0);
+      // Record/relation crumbs accumulate onto the section's RECORD prefix.
+      var prefix = sectionHref(section, [t0]);
+      // An artifact (a file carrying an artifact_type) reads as its own "Artifacts"
+      // object, so its record breadcrumb roots at Artifacts rather than Files.
+      var leafNode = (crumbs || []).filter(function (c) { return c.type === 'node'; }).pop();
+      if (t0 === 'files' && leafNode && leafNode.row && leafNode.row.artifact_type) {
+        parts.push('<a href="#/fs/artifacts">Artifacts</a>');
+      } else {
+        parts.push('<a href="' + objHref + '">' + escapeHtml(displayFor(t0).label) + '</a>');
+      }
       (crumbs || []).forEach(function (c) {
         if (c.type === 'node') {
           prefix += '/' + encodeURIComponent(c.id);
@@ -924,6 +803,10 @@ export const dashboardJs = `    // ───────────────
           parts.push('<a href="' + prefix + '">' + escapeHtml(c.rel.label) + '</a>');
         }
       });
+      // A lone, self-referential crumb — the current table/collection page in a Workspace
+      // tab (no root, no child crumbs) — just repeats the page title directly below it.
+      // Render nothing rather than a double title.
+      if (isW && (!crumbs || crumbs.length === 0)) return '';
       return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
     }
 
@@ -949,168 +832,349 @@ export const dashboardJs = `    // ───────────────
       }
       return escapeHtml(s);
     }
-    function fsFieldHtml(table, row, col) {
-      var ro = fsIsReadonly(table, col);
-      var cls = 'fs-field-val' + (ro ? ' readonly' : ' ce');
-      var attr = ro ? '' : ' data-col="' + escapeHtml(col) + '" title="Click to edit"';
-      return '<div class="fs-field"><div class="fs-field-label"' + titleAttr(colDesc(table, col)) + '>' + escapeHtml(fieldLabel(col)) + '</div>' +
-        '<div class="' + cls + '"' + attr + '>' + fsValInner(table, row, col) + '</div></div>';
+    // Rows-table page size + per-collection page index (keyed by the collection's
+    // hash, so drilling into a record and back preserves your page). A fresh
+    // collection key defaults to page 0.
+    var PAGE_SIZE = 100;
+    var fsPageByPath = {};
+
+    // Shared rows-table renderer for the object + Artifacts pages: thead/body, the
+    // whole-row-click affordance, and a Prev/Next pager with an "A–B of T" total.
+    // The caller supplies the already-sliced page of rows + a pre-formatted
+    // totalLabel ("123" or "1000+") + hasNext, so each caller owns its own
+    // server-capped vs client-side paging semantics.
+    // o = { breadcrumbHtml, icon, label, table, cols, rows, hrefFor, page,
+    //       pageSize, totalLabel, hasNext, onPage, noteHtml }
+    function paintRowsTable(content, o) {
+      var rows = o.rows || [];
+      var cols = o.cols;
+      var pageSize = o.pageSize || PAGE_SIZE;
+      var page = o.page || 0;
+      var thead = cols.map(function (c) { return '<th>' + escapeHtml(fieldLabel(c)) + '</th>'; }).join('');
+      var body = rows.map(function (r) {
+        var href = o.hrefFor(r);
+        var cells = cols.map(function (c, i) {
+          var v = fsCellText(o.table, r, c);
+          if (i === 0) {
+            v = '<a href="' + href + '">' + (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
+          }
+          return '<td>' + v + '</td>';
+        }).join('');
+        return '<tr class="fs-row-click" data-href="' + href + '">' + cells + '</tr>';
+      }).join('');
+      var tableHtml = rows.length
+        ? '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>'
+        : '<div class="fs-empty" style="padding:24px">' + escapeHtml(o.emptyText || 'Nothing here yet.') + '</div>';
+
+      var first = rows.length ? page * pageSize + 1 : 0;
+      var last = page * pageSize + rows.length;
+      var info = rows.length
+        ? first + '\\u2013' + last + ' of ' + escapeHtml(o.totalLabel)
+        : '0 of ' + escapeHtml(o.totalLabel);
+      var hasPrev = page > 0;
+      var hasNext = !!o.hasNext;
+      var pager =
+        '<span class="rows-pager">' +
+          '<span class="rows-pager-info">' + info + '</span>' +
+          '<button type="button" class="btn rows-prev"' + (hasPrev ? '' : ' disabled') + '>\\u2039 Prev</button>' +
+          '<button type="button" class="btn rows-next"' + (hasNext ? '' : ' disabled') + '>Next \\u203a</button>' +
+        '</span>';
+
+      content.innerHTML =
+        o.breadcrumbHtml +
+        '<div class="view-header">' +
+          '<span class="entity-icon">' + o.icon + '</span>' +
+          '<h1>' + escapeHtml(o.label) + '</h1>' +
+          (o.headerExtraHtml || '') +
+          (o.bodyOverrideHtml ? '' : pager) +
+        '</div>' +
+        (o.noteHtml || '') +
+        (o.bodyOverrideHtml || tableHtml);
+
+      content.querySelectorAll('.fs-rows-table tr.fs-row-click').forEach(function (tr) {
+        tr.addEventListener('click', function (ev) {
+          if (ev.target && ev.target.closest && ev.target.closest('a')) return;
+          var h = tr.getAttribute('data-href');
+          if (h) location.hash = h;
+        });
+      });
+      var prevBtn = content.querySelector('.rows-prev');
+      var nextBtn = content.querySelector('.rows-next');
+      if (prevBtn && hasPrev) prevBtn.addEventListener('click', function () { o.onPage(page - 1); });
+      if (nextBtn && hasNext) nextBtn.addEventListener('click', function () { o.onPage(page + 1); });
     }
 
-    // Per-object view mode for the top-level object page: 'graph' (default — a
-    // focused zoom-in of the brain graph) or 'list' (the tile grid).
-    var fsObjectView = {};
-    // Collection view — a folder of tiles. Top-level (#/fs/<table>) shows every
-    // row; a nested path (#/fs/<table>/<id>/<rel>) shows the related rows.
-    function renderFsCollection(content, segs) {
+    // Turn a server page envelope into paintRowsTable terms. env.rows was fetched
+    // with limit PAGE_SIZE + 1 (a sentinel over-fetch): if the extra row came back
+    // there IS a next page — a precise signal that works even when the count is
+    // capped or the total is an exact multiple of the page size (no phantom page).
+    // env.approxTotal is the bounded count (cap + 1 when capped → render "cap+").
+    function fsServerPage(env) {
+      var hasMore = env.rows.length > PAGE_SIZE;
+      return {
+        rows: env.rows.slice(0, PAGE_SIZE),
+        approxTotal: env.approxTotal,
+        totalLabel: env.totalIsCapped ? String(env.approxTotal - 1) + '+' : String(env.approxTotal),
+        hasNext: hasMore,
+      };
+    }
+
+    // The SQL page size for the top-level table runner: pagination appears ONLY when a
+    // query returns MORE than this many rows (client-side, over the already-fetched
+    // result). The default query never paginates.
+    var SQL_PAGE = 100;
+    // Remember the last query run per table this session, so re-opening a table restores
+    // what the user was looking at instead of resetting to the default.
+    var sqlByTable = {};
+
+    // The top-level table page is a SQL RUNNER: an editable, re-runnable query defaulting
+    // to  select * from "<table>" limit 100 , executed against the read-only analytics SQL
+    // endpoint, its result rows in a grid. This is the ONE table view (no Formatted/
+    // Markdown toggle). A result row opens its record (#/w/table/<name>/<id>) when the
+    // result set carries an id column.
+    // Lattice-added internal columns on a connected external mirror — hidden from the SQL runner so
+    // a connected table reads faithfully (its source columns only). Kept in sync with the server's
+    // CONNECTED_INTERNAL_COLUMNS. Only applied to a connected mirror (tsum.connectorToolkit set).
+    var CONNECTED_INTERNAL_COLS = {
+      deleted_at: 1, created_at: 1, updated_at: 1,
+      _source_connector_id: 1, _source_model: 1, _source_synced_at: 1, data: 1, _pk: 1,
+    };
+    function tableSummaryFor(name) {
+      var tarr = (state.entities && state.entities.tables) || [];
+      for (var i = 0; i < tarr.length; i++) { if (tarr[i] && tarr[i].name === name) return tarr[i]; }
+      return null;
+    }
+    function faithfulCols(cols) {
+      return cols.filter(function (c) { return !CONNECTED_INTERNAL_COLS[c]; });
+    }
+    function renderTableSqlRunner(content, table, section) {
+      var myGen = renderGen;
+      var d = displayFor(table);
+      // Default to LIVE rows only: a merged/deleted (soft-deleted) row should not show in
+      // the table view — otherwise a successful consolidation looks like it did nothing.
+      // Only add the filter when the table actually has a deleted_at column; the user can
+      // still edit the SQL to include trashed rows.
+      var tsum = tableSummaryFor(table);
+      var hasDeletedAt = !!(tsum && tsum.columns && tsum.columns.indexOf('deleted_at') !== -1);
+      // A connected external mirror reads faithfully: default to SELECTing only its source
+      // columns (Lattice-added internal columns are hidden), not select *. The deleted_at
+      // filter still applies (it's a valid predicate) — only the projected columns are trimmed.
+      var selectCols = '*';
+      if (tsum && tsum.connectorToolkit && tsum.columns) {
+        var faithful = faithfulCols(tsum.columns);
+        if (faithful.length) selectCols = faithful.map(function (c) { return '"' + c + '"'; }).join(', ');
+      }
+      var defaultSql = hasDeletedAt
+        ? 'select ' + selectCols + ' from "' + table + '" where deleted_at is null limit 100'
+        : 'select ' + selectCols + ' from "' + table + '" limit 100';
+      var sql = sqlByTable[table] || defaultSql;
+      content.innerHTML =
+        fsBreadcrumb([table], [], section) +
+        '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1></div>' +
+        '<div class="sql-runner">' +
+          '<div class="sql-editor-row">' +
+            '<textarea class="sql-editor" id="sql-editor" spellcheck="false" rows="2" aria-label="SQL query">' + escapeHtml(sql) + '</textarea>' +
+            '<button type="button" class="btn primary sql-run" id="sql-run" title="Run (Cmd/Ctrl+Enter)">Run</button>' +
+          '</div>' +
+          '<div class="sql-error" id="sql-error" hidden></div>' +
+          '<div class="sql-results" id="sql-results"></div>' +
+        '</div>' +
+        // Below the rows: the data-lineage map (upstream sources · this table · downstream
+        // consumers), reusing the Data Model explorer's cards + Entity/Field toggle.
+        '<div class="table-lineage" id="table-lineage"></div>';
+      if (typeof renderTableLineage === 'function') {
+        renderTableLineage(content.querySelector('#table-lineage'), table);
+      }
+      var editor = content.querySelector('#sql-editor');
+      var runBtn = content.querySelector('#sql-run');
+      var errEl = content.querySelector('#sql-error');
+      var resEl = content.querySelector('#sql-results');
+      function run() {
+        var q = (editor.value || '').trim();
+        if (!q) return;
+        sqlByTable[table] = q;
+        errEl.hidden = true; errEl.textContent = '';
+        resEl.innerHTML = '<div class="empty-state-sm">Running…</div>';
+        fetch('/api/analytics/sql', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sql: q }),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            if (myGen !== renderGen) return; // superseded by a newer navigation
+            if (res.status !== 200 || (res.body && res.body.error)) {
+              // Loud, visible failure — never a silent empty grid.
+              errEl.textContent = (res.body && res.body.error) || ('Query failed (HTTP ' + res.status + ')');
+              errEl.hidden = false; resEl.innerHTML = '';
+              return;
+            }
+            paintSqlResults(resEl, table, (res.body && res.body.rows) || [], !!(res.body && res.body.truncated));
+          })
+          .catch(function (err) {
+            if (myGen !== renderGen) return;
+            errEl.textContent = 'Request failed: ' + (err && err.message ? err.message : String(err));
+            errEl.hidden = false; resEl.innerHTML = '';
+          });
+      }
+      runBtn.addEventListener('click', run);
+      editor.addEventListener('keydown', function (e) {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+      });
+      run(); // run the default (or remembered) query on open
+    }
+
+    // Render a SQL result set into a grid with client-side pagination (only when the
+    // result exceeds SQL_PAGE rows — the default query never paginates). Columns are the
+    // union of keys across the returned rows (a raw query carries no column metadata); a
+    // row opens its record only when the result includes an id.
+    function paintSqlResults(host, table, rows, truncated) {
+      if (!rows.length) { host.innerHTML = '<div class="fs-empty" style="padding:24px">No rows.</div>'; return; }
+      var cols = [];
+      var seen = {};
+      rows.forEach(function (r) {
+        Object.keys(r).forEach(function (k) { if (!seen[k]) { seen[k] = true; cols.push(k); } });
+      });
+      // For a connected mirror, hide the Lattice-added internal columns even if the user typed
+      // select-star — so the result reads faithfully as the source's columns.
+      var tsumR = tableSummaryFor(table);
+      if (tsumR && tsumR.connectorToolkit) cols = faithfulCols(cols);
+      var pageRef = { page: 0 };
+      function paint() {
+        var page = pageRef.page;
+        var start = page * SQL_PAGE;
+        var slice = rows.slice(start, start + SQL_PAGE);
+        var thead = cols.map(function (c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('');
+        var body = slice.map(function (r) {
+          // Row-click opens the record only when THIS row has a real id — a result set
+          // with no id column, a null id, or an aggregate aliased as id never navigates
+          // to a dead /null record page.
+          var href = (r.id !== undefined && r.id !== null && r.id !== '')
+            ? ('#/w/table/' + encodeURIComponent(table) + '/' + encodeURIComponent(r.id)) : '';
+          var cells = cols.map(function (c) { return '<td>' + fsCellText(table, r, c) + '</td>'; }).join('');
+          return '<tr' + (href ? ' class="fs-row-click" data-href="' + href + '"' : '') + '>' + cells + '</tr>';
+        }).join('');
+        var paged = rows.length > SQL_PAGE;
+        var first = start + 1, lastN = start + slice.length;
+        var pager = paged
+          ? '<span class="rows-pager"><span class="rows-pager-info">' + first + '–' + lastN + ' of ' + rows.length + '</span>' +
+            '<button type="button" class="btn rows-prev"' + (page > 0 ? '' : ' disabled') + '>‹ Prev</button>' +
+            '<button type="button" class="btn rows-next"' + ((start + SQL_PAGE < rows.length) ? '' : ' disabled') + '>Next ›</button></span>'
+          : '';
+        var note = truncated
+          ? '<div class="sql-note">Showing the first ' + rows.length + ' rows — add a filter or a smaller limit to your query to narrow the result.</div>'
+          : '';
+        host.innerHTML =
+          (pager ? '<div class="sql-results-head">' + pager + '</div>' : '') + note +
+          '<table class="pv-table fs-rows-table"><thead><tr>' + thead + '</tr></thead><tbody>' + body + '</tbody></table>';
+        host.querySelectorAll('tr.fs-row-click').forEach(function (tr) {
+          tr.addEventListener('click', function () { var h = tr.getAttribute('data-href'); if (h) location.hash = h; });
+        });
+        var pv = host.querySelector('.rows-prev'), nx = host.querySelector('.rows-next');
+        if (pv && page > 0) pv.addEventListener('click', function () { pageRef.page = page - 1; paint(); });
+        if (nx && start + SQL_PAGE < rows.length) nx.addEventListener('click', function () { pageRef.page = page + 1; paint(); });
+      }
+      paint();
+    }
+
+    // Collection view for a NESTED relation path (#/w/table/<t>/<id>/<rel>): a rows table
+    // of the related records. The top-level table page (#/w/table/<t>) is the SQL runner
+    // above; Artifacts keep their bespoke files-subset table.
+    function renderFsCollection(content, segs, section) {
+      section = section || 'folders';
       var myGen = renderGen;
       clearUnseen(segs[0]);
       var topLevel = segs.length === 1;
-      // The top-level object page defaults to a focused graph (a zoom-in of the
-      // brain graph); "List view" switches to the tile grid. Nested relation
-      // paths always use the grid.
-      if (topLevel && fsObjectView[segs[0]] !== 'list' && tableByName(segs[0])) {
-        renderFsObjectGraph(content, segs[0]);
+      // Artifacts = the files carrying an artifact_type, shown as their own table. Not a
+      // real DB table, so it can't be a SQL runner — keep its bespoke view.
+      if (topLevel && segs[0] === 'artifacts') { renderArtifactsView(content); return; }
+      // The top-level table page IS the SQL runner (files included — a file record still
+      // opens its preview via the row-click record route).
+      if (topLevel) {
+        if (!tableByName(segs[0])) {
+          setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(segs[0]) + '</div>');
+          return;
+        }
+        renderTableSqlRunner(content, segs[0], section);
         return;
       }
-      var crumbsP = topLevel ? Promise.resolve([]) : fsWalk(segs);
-      crumbsP.then(function (crumbs) {
-        var table, rowsP;
-        if (topLevel) {
-          table = segs[0];
-          if (!tableByName(table)) {
-            setContent(content, myGen, '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>');
-            return;
-          }
-          rowsP = fetchRows(table, '');
-        } else {
-          var last = crumbs[crumbs.length - 1];
-          if (!last || last.type !== 'rel') throw new Error('Bad collection path');
-          table = last.rel.targetTable;
-          rowsP = fsRelatedRows(last.parentTable, last.parentRow, last.rel);
-        }
-        return rowsP.then(function (rows) {
+      fsWalk(segs).then(function (crumbs) {
+        var base = sectionHref(section, segs);
+        var page = fsPageByPath[base] || 0;
+        var last = crumbs[crumbs.length - 1];
+        if (!last || last.type !== 'rel') throw new Error('Bad collection path');
+        var table = last.rel.targetTable;
+        // Relation drill: fsRelatedRows returns a bounded array (JS-filtered by
+        // membership), so page client-side over the full array.
+        return fsRelatedRows(last.parentTable, last.parentRow, last.rel).then(function (all) {
           if (myGen !== renderGen) return; // superseded by a newer navigation
+          var view = {
+            rows: all.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+            totalLabel: String(all.length),
+            hasNext: (page + 1) * PAGE_SIZE < all.length,
+          };
+          // A stale page index (rows deleted under us, or a remembered deep page) can land
+          // past the end — clamp to the last real page and re-render.
+          if (!view.rows.length && page > 0) {
+            var lastPage = Math.max(0, Math.ceil(all.length / PAGE_SIZE) - 1);
+            if (lastPage !== page) { fsPageByPath[base] = lastPage; renderFsCollection(content, segs, section); return; }
+          }
           var d = displayFor(table);
-          var base = fsHref(segs);
-          // "New" tile (top-level collections only) — a folder box with a + that
-          // opens a create form. Related-row folders aren't a place to mint a
-          // brand-new object, so the tile is top-level only.
-          var createTile = topLevel
-            ? '<a class="fs-tile fs-tile-create" href="' + fsHref([table, 'new']) + '" title="Create a new ' + escapeHtml(d.label) + '">' +
-                '<div class="fs-tile-icon">➕</div>' +
-                '<div class="fs-tile-label">New ' + escapeHtml(d.label) + '</div>' +
-              '</a>'
-            : '';
-          var rowTiles = rows.length
-            ? rows.map(function (r) {
-                var icon = (table === 'files') ? fileEmoji(r) : '📁';
-                // Per-row privacy indicator in the tile corner (lock = private, eye
-                // = shared); '' on a local workspace (no _access). Same component +
-                // tooltip as the entity-detail header.
-                return '<a class="fs-tile" href="' + base + '/' + encodeURIComponent(r.id) + '">' +
-                  visIndicator(r._access, 'fs-tile-vis') +
-                  '<div class="fs-tile-icon">' + icon + '</div>' +
-                  '<div class="fs-tile-label">' + escapeHtml(fsDisplayName(r)) + '</div>' +
-                '</a>';
-              }).join('')
-            : (topLevel ? '' : '<div class="fs-empty">Nothing here yet.</div>');
-          content.innerHTML =
-            fsBreadcrumb(segs, crumbs) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
-              '<h1>' + escapeHtml(d.label) + '</h1>' +
-              '<span class="count">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</span>' +
-              (topLevel ? '<div class="actions"><button class="btn" id="fsg-view-graph" type="button">Graph view</button></div>' : '') +
-            '</div>' +
-            '<div class="fs-grid">' + createTile + rowTiles + '</div>';
-          var gv = content.querySelector('#fsg-view-graph');
-          if (gv) gv.addEventListener('click', function () {
-            fsObjectView[table] = 'graph';
-            renderFsCollection(content, segs);
+          paintRowsTable(content, {
+            breadcrumbHtml: fsBreadcrumb(segs, crumbs, section),
+            icon: d.icon,
+            label: d.label,
+            table: table,
+            cols: objRowCols(tableByName(table)),
+            rows: view.rows,
+            hrefFor: function (r) { return base + '/' + encodeURIComponent(r.id); },
+            page: page,
+            pageSize: PAGE_SIZE,
+            totalLabel: view.totalLabel,
+            hasNext: view.hasNext,
+            onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderFsCollection(content, segs, section); },
           });
         });
       }).catch(function (err) {
+        if (myGen !== renderGen) return; // a stale error must not clobber a newer view
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
 
-    // ── Object page as a focused graph ──────────────────────────────────────
-    // A zoom-in of the brain graph centered on ONE object: the object node in the
-    // middle, its entity rows around it (bounded for egress safety), and its
-    // related objects on the rim. Click an entity → open its tab; click a related
-    // → zoom into THAT object's graph. Reuses forceLayout + the graph CSS.
-    var FS_GRAPH_ROW_CAP = 50;
-    var FS_GRAPH_ROW_MAX = 250; // hard ceiling for "Show more"
-    var fsGraphCap = {}; // per-table cap override when the user clicks "Show more"
-    function renderFsObjectGraph(content, table) {
-      // Files are special: their object page is the on-disk FOLDER hierarchy
-      // (roots + loose files, drillable), not a flat list of file rows.
-      if (table === 'files') { renderFilesRootView(content); return; }
+    // Artifacts object page: the files that carry an artifact_type, rendered as a
+    // normal rows table (mirroring the object page), each row opening the file
+    // record. Paged server-side (?artifactType=present) like any object page, so
+    // every artifact is reachable. The breadcrumb roots at Artifacts (see fsBreadcrumb).
+    function renderArtifactsView(content) {
       var myGen = renderGen;
-      clearUnseen(table);
-      var t = tableByName(table);
-      var d = displayFor(table);
-      var cap = fsGraphCap[table] || FS_GRAPH_ROW_CAP;
-      var total = (t && t.rowCount != null) ? t.rowCount : 0;
-      // Build the whole view AFTER the bounded fetch (mirrors renderFsCollection):
-      // on a hard nav the router shows its loading frame while this is in flight;
-      // on a soft (live) refresh the existing graph stays on screen until the new
-      // one is ready, so the pane never flashes a loading frame.
-      //
-      // Bounded, egress-safe fetch: only the capped number of rows, with the heavy
-      // text columns projected out (never load a whole table onto a hot path). The
-      // total comes from the cached entity meta, so there is no count query.
-      fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows?limit=' + cap +
-        '&exclude=' + encodeURIComponent('extracted_text,description'))
-        .then(function (resp) {
-          if (myGen !== renderGen) return;
-          // No setTabTitle — object pages share the one exploration (graph) tab,
-          // which stays labeled "Brain Graph"; the breadcrumb shows the location.
-          var rows = (resp && resp.rows) || [];
-          var model = buildObjectGraphModel(table, d, t, rows);
-          var header =
-            fsBreadcrumb([table], []) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + d.icon + '</span>' +
-              '<h1>' + escapeHtml(d.label) + '</h1>' +
-              '<span class="count">' + total + ' item' + (total === 1 ? '' : 's') + '</span>' +
-              '<div class="actions">' +
-                '<a class="btn" href="' + fsHref([table, 'new']) + '">+ New ' + escapeHtml(d.label) + '</a>' +
-                '<button class="btn" id="fsg-view-list" type="button">List view</button>' +
-              '</div>' +
-            '</div>';
-          if (!rows.length && model.nodes.length <= 1) {
-            content.innerHTML = header +
-              '<div class="brain-graph object-graph"><div id="fsg-mount">' +
-                '<div class="fs-empty" style="padding:24px">Nothing here yet. ' +
-                '<a href="' + fsHref([table, 'new']) + '">Create the first ' + escapeHtml(d.label) + '</a>.</div>' +
-              '</div></div>';
-          } else {
-            forceLayout(model.nodes, model.links, 360);
-            content.innerHTML = header +
-              '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
-            var mount = document.getElementById('fsg-mount');
-            if (mount) {
-              wireObjectGraph(mount, model, table);
-              var hidden = (total || rows.length) - rows.length;
-              if (hidden > 0 && cap < FS_GRAPH_ROW_MAX) {
-                var more = document.createElement('button');
-                more.className = 'btn fsg-more';
-                more.type = 'button';
-                more.textContent = 'Show more (' + rows.length + ' of ' + total + ')';
-                more.addEventListener('click', function () {
-                  fsGraphCap[table] = Math.min(FS_GRAPH_ROW_MAX, cap + FS_GRAPH_ROW_CAP);
-                  renderFsObjectGraph(content, table);
-                });
-                mount.appendChild(more);
-              }
-            }
+      var base = '#/fs/artifacts';
+      var page = fsPageByPath[base] || 0;
+      fetchRowsPage('files', {
+        artifactType: 'present',
+        exclude: 'extracted_text,description',
+        limit: PAGE_SIZE + 1,
+        offset: page * PAGE_SIZE,
+      })
+        .then(function (env) {
+          if (myGen !== renderGen) return; // superseded by a newer navigation
+          var view = fsServerPage(env);
+          if (!view.rows.length && page > 0) {
+            var lastPage = Math.max(0, Math.ceil((view.approxTotal || 0) / PAGE_SIZE) - 1);
+            if (lastPage !== page) { fsPageByPath[base] = lastPage; renderArtifactsView(content); return; }
           }
-          var lv = content.querySelector('#fsg-view-list');
-          if (lv) lv.addEventListener('click', function () {
-            fsObjectView[table] = 'list';
-            renderFsCollection(content, [table]);
+          var d = displayFor('artifacts');
+          paintRowsTable(content, {
+            breadcrumbHtml: fsBreadcrumb(['artifacts'], []),
+            icon: d.icon,
+            label: d.label,
+            table: 'files',
+            cols: objRowCols(tableByName('files')),
+            rows: view.rows,
+            hrefFor: function (r) { return '#/fs/files/' + encodeURIComponent(r.id); },
+            page: page,
+            pageSize: PAGE_SIZE,
+            totalLabel: view.totalLabel,
+            hasNext: view.hasNext,
+            emptyText: 'Nothing created yet.',
+            onPage: function (p) { fsPageByPath[base] = p; renderGen++; renderArtifactsView(content); },
           });
         })
         .catch(function (err) {
@@ -1119,133 +1183,33 @@ export const dashboardJs = `    // ───────────────
         });
     }
 
-    // Build the focused-graph model: center object + entity rows + related-object
-    // rim nodes (deduped; only related objects that have rows). Links connect the
-    // center to each node.
-    function buildObjectGraphModel(table, d, t, rows) {
-      var byName = {};
-      ((state.entities && state.entities.tables) || []).forEach(function (e) { byName[e.name] = e; });
-      var nodes = [{ kind: 'object', name: table, label: d.label, icon: d.icon, r: 26, x: 0, y: 0, vx: 0, vy: 0 }];
-      var links = [];
-      rows.forEach(function (row) {
-        var idx = nodes.length;
-        nodes.push({
-          kind: 'entity', id: row.id, label: fsDisplayName(row) || '(untitled)',
-          icon: (table === 'files') ? fileEmoji(row) : '', r: 13, x: 0, y: 0, vx: 0, vy: 0,
-        });
-        links.push({ si: 0, ti: idx });
+    // Columns to show in the object rows table: the object's own fields, minus
+    // internal/system/binary columns, capped so a wide table stays readable.
+    function objRowCols(t) {
+      if (!t || !t.columns) return ['id'];
+      var skip = {
+        deleted_at: 1, blob_path: 1, extracted_text: 1, extraction_status: 1,
+        embedding: 1, vector: 1, _access: 1, _pk: 1, ref_kind: 1,
+      };
+      var cols = t.columns.filter(function (c) {
+        return !skip[c] && c.indexOf('_source_') !== 0 && c.toLowerCase().indexOf('embedding') < 0;
       });
-      var rim = {};
-      fsRelations(table).forEach(function (r) { if (r.targetTable) rim[r.targetTable] = true; });
-      belongsToColumns(t || { relations: {} }).forEach(function (b) { if (b.rel && b.rel.table) rim[b.rel.table] = true; });
-      delete rim[table];
-      Object.keys(rim).forEach(function (rt) {
-        var rc = (byName[rt] && byName[rt].rowCount != null) ? byName[rt].rowCount : 0;
-        if (rc <= 0) return; // only related objects that actually have rows
-        var idx = nodes.length;
-        nodes.push({ kind: 'related', name: rt, label: displayFor(rt).label, icon: displayFor(rt).icon, r: 19, x: 0, y: 0, vx: 0, vy: 0 });
-        links.push({ si: 0, ti: idx });
+      // Lead with a human-ish column when present, not the raw id.
+      cols.sort(function (a, b) {
+        var rank = function (c) { return c === 'id' ? 2 : (/(name|title|label)/i.test(c) ? 0 : 1); };
+        return rank(a) - rank(b);
       });
-      return { nodes: nodes, links: links };
+      return cols.slice(0, 8);
     }
 
-    function objectGraphSvg(model) {
-      var nodes = model.nodes, links = model.links;
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      nodes.forEach(function (nd) {
-        minX = Math.min(minX, nd.x - nd.r); minY = Math.min(minY, nd.y - nd.r);
-        maxX = Math.max(maxX, nd.x + nd.r); maxY = Math.max(maxY, nd.y + nd.r);
-      });
-      var pad = 50;
-      var vb = [minX - pad, minY - pad, (maxX - minX) + 2 * pad, (maxY - minY) + 2 * pad];
-      var edgeSvg = links.map(function (l) {
-        var a = nodes[l.si], b = nodes[l.ti];
-        return '<line class="dm-edge" data-si="' + l.si + '" data-ti="' + l.ti + '" x1="' + a.x.toFixed(1) +
-          '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) +
-          '" stroke="#3b82f6" stroke-width="1.4" opacity="0.5"></line>';
-      }).join('');
-      var nodeSvg = nodes.map(function (nd, i) {
-        var label = nd.label.length > 22 ? nd.label.slice(0, 21) + '…' : nd.label;
-        var attr = nd.kind === 'entity' ? (' data-kind="entity" data-id="' + escapeHtml(String(nd.id)) + '"')
-          : nd.kind === 'related' ? (' data-kind="related" data-table="' + escapeHtml(nd.name) + '"')
-          : nd.kind === 'folder' ? (' data-kind="folder" data-path="' + escapeHtml(String(nd.path)) + '"')
-          : nd.kind === 'file' ? (' data-kind="file" data-path="' + escapeHtml(String(nd.path || '')) + '" data-id="' + escapeHtml(String(nd.id || '')) + '"')
-          : ' data-kind="object"';
-        var iconSvg = nd.icon
-          ? '<text class="gnode-icon" y="' + (nd.r * 0.34).toFixed(1) + '" text-anchor="middle" font-size="' + (nd.r * 0.9).toFixed(1) + '">' + nd.icon + '</text>'
-          : '';
-        return '<g class="gnode ognode-' + nd.kind + '" data-i="' + i + '"' + attr +
-          ' transform="translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')">' +
-          '<circle class="gnode-glow" r="' + (nd.r + 8).toFixed(1) + '"/>' +
-          '<circle class="gnode-dot" r="' + nd.r.toFixed(1) + '"/>' +
-          iconSvg +
-          '<text class="gnode-label" y="' + (nd.r + 15).toFixed(1) + '" text-anchor="middle">' + escapeHtml(label) + '</text>' +
-          '<title>' + escapeHtml(nd.label) + '</title>' +
-          '</g>';
-      }).join('');
-      return '<svg class="dm-graph" viewBox="' + vb.join(' ') + '" preserveAspectRatio="xMidYMid meet">' +
-        '<g class="dm-stage">' + edgeSvg + nodeSvg + '</g></svg>';
-    }
-
-    function wireObjectGraph(mount, model, table) {
-      var svg = mount.querySelector('svg.dm-graph'); if (!svg) return;
-      var nodeEls = {};
-      mount.querySelectorAll('g.gnode').forEach(function (g) { nodeEls[g.getAttribute('data-i')] = g; });
-      var edgeEls = mount.querySelectorAll('line.dm-edge');
-      function vb() { return svg.getAttribute('viewBox').split(' ').map(Number); }
-      function setVb(a) { svg.setAttribute('viewBox', a.join(' ')); syncGraphLabelScale(svg); }
-      var fitVb = vb();
-      syncGraphLabelScale(svg);
-      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { syncGraphLabelScale(svg); }).observe(svg);
-      function toData(ev) {
-        var rect = svg.getBoundingClientRect(); var b = vb();
-        return { x: b[0] + ((ev.clientX - rect.left) / rect.width) * b[2], y: b[1] + ((ev.clientY - rect.top) / rect.height) * b[3] };
-      }
-      function updateNode(i) {
-        var nd = model.nodes[i]; var g = nodeEls[i]; if (!nd || !g) return;
-        g.setAttribute('transform', 'translate(' + nd.x.toFixed(1) + ',' + nd.y.toFixed(1) + ')');
-        edgeEls.forEach(function (ln) {
-          if (ln.getAttribute('data-si') === String(i)) { ln.setAttribute('x1', nd.x.toFixed(1)); ln.setAttribute('y1', nd.y.toFixed(1)); }
-          if (ln.getAttribute('data-ti') === String(i)) { ln.setAttribute('x2', nd.x.toFixed(1)); ln.setAttribute('y2', nd.y.toFixed(1)); }
-        });
-      }
-      svg.addEventListener('wheel', function (ev) {
-        ev.preventDefault();
-        var b = vb(); var pt = toData(ev);
-        var dd = Math.max(-50, Math.min(50, ev.deltaY));
-        var factor = Math.pow(1.0018, dd);
-        var nw = b[2] * factor, nh = b[3] * factor;
-        if (nw >= fitVb[2] || nh >= fitVb[3]) { setVb(fitVb.slice()); return; }
-        setVb([pt.x - (pt.x - b[0]) * (nw / b[2]), pt.y - (pt.y - b[1]) * (nh / b[3]), nw, nh]);
-      }, { passive: false });
-      var drag = null;
-      svg.addEventListener('pointerdown', function (ev) {
-        var g = ev.target.closest && ev.target.closest('g.gnode');
-        if (g) drag = { kind: 'node', i: g.getAttribute('data-i'), moved: false };
-        else drag = { kind: 'pan', sx: ev.clientX, sy: ev.clientY, vb: vb() };
-        svg.setPointerCapture(ev.pointerId);
-      });
-      svg.addEventListener('pointermove', function (ev) {
-        if (!drag) return;
-        if (drag.kind === 'node') {
-          var pt = toData(ev); var nd = model.nodes[Number(drag.i)];
-          if (nd) { nd.x = pt.x; nd.y = pt.y; updateNode(Number(drag.i)); drag.moved = true; }
-        } else {
-          var rect = svg.getBoundingClientRect(); var b = drag.vb;
-          setVb([b[0] - (ev.clientX - drag.sx) * (b[2] / rect.width), b[1] - (ev.clientY - drag.sy) * (b[3] / rect.height), b[2], b[3]]);
-        }
-      });
-      svg.addEventListener('pointerup', function (ev) {
-        if (drag && drag.kind === 'node' && !drag.moved) {
-          var nd = model.nodes[Number(drag.i)];
-          if (nd && nd.kind === 'entity') location.hash = '#/fs/' + encodeURIComponent(table) + '/' + encodeURIComponent(nd.id);
-          else if (nd && nd.kind === 'related') location.hash = '#/fs/' + encodeURIComponent(nd.name);
-          else if (nd && nd.kind === 'folder') location.hash = '#/folder/' + encodeURIComponent(nd.path);
-          else if (nd && nd.kind === 'file') openGraphFile(nd);
-        }
-        drag = null;
-        try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* ignore */ }
-      });
+    // Compact one-line cell value (masked for secrets, truncated) for the rows table.
+    function fsCellText(table, row, col) {
+      var raw = row[col];
+      if (raw == null || raw === '') return '<span class="fs-empty-val">—</span>';
+      if (isSecretColumn(table, col) || looksEncrypted(raw)) return '<span class="muted">' + SECRET_MASK + '</span>';
+      var s = String(raw).replace(/\\s+/g, ' ').trim();
+      if (s.length > 90) s = s.slice(0, 88) + '…';
+      return escapeHtml(s);
     }
 
     // ── Folder navigation (the Files object's on-disk hierarchy) ─────────────
@@ -1272,14 +1236,10 @@ export const dashboardJs = `    // ───────────────
       var c = child.charAt(parent.length);
       return c === '/' || c === '\\\\';
     }
-    function openGraphFile(nd) {
-      if (nd.id) { location.hash = '#/fs/files/' + encodeURIComponent(nd.id); return; }
-      if (nd.path && typeof openSourceFile === 'function') openSourceFile(nd.path); // ingest-then-open
-    }
-    // Home ▸ Files ▸ <root> ▸ …folders… [▸ <leafLabel current>]. Folder crumbs link
-    // to their #/folder route; leafLabel (a filename) is appended non-linked.
+    // Tables ▸ Files ▸ <root> ▸ …folders… [▸ <leafLabel current>]. Folder crumbs
+    // link to their #/folder route; leafLabel (a filename) is appended non-linked.
     function folderBreadcrumb(path, roots, leafLabel) {
-      var parts = ['<a href="#/graph">Home</a>', '<a href="#/fs/files">Files</a>'];
+      var parts = ['<a href="#/tables">Tables</a>', '<a href="#/fs/files">Files</a>'];
       var root = null;
       (roots || []).forEach(function (r) {
         if (r.kind !== 'folder') return;
@@ -1304,39 +1264,42 @@ export const dashboardJs = `    // ───────────────
       if (leafLabel) parts.push('<span class="fs-crumb-cur">' + escapeHtml(leafLabel) + '</span>');
       return '<nav class="fs-crumbs">' + parts.join('<span class="fs-sep">▸</span>') + '</nav>';
     }
-    // center object + folder/file children → graph model (reuses objectGraphSvg).
-    function buildFolderGraphModel(centerLabel, entries, filesByPath) {
-      var nodes = [{ kind: 'object', name: centerLabel, label: centerLabel, icon: '📂', r: 24, x: 0, y: 0, vx: 0, vy: 0 }];
-      var links = [];
-      (entries || []).forEach(function (e) {
-        var idx = nodes.length;
-        if (e.kind === 'folder') {
-          nodes.push({ kind: 'folder', path: e.path, label: e.name, icon: '📁', r: 18, x: 0, y: 0, vx: 0, vy: 0 });
-        } else {
-          var id = e.id || (filesByPath ? filesByPath[e.path] : '') || '';
-          nodes.push({ kind: 'file', path: e.path || '', id: id, label: e.name, icon: '📄', r: 12, x: 0, y: 0, vx: 0, vy: 0 });
-        }
-        links.push({ si: 0, ti: idx });
-      });
-      return { nodes: nodes, links: links };
-    }
-    function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg, listToggle) {
+    // Render a folder's children (the Files object page + folder drill-ins) as a
+    // TABLE — the single object view, no graph. Folders link to their drill-in;
+    // files link to their record. (The name arg is unused now the center node is gone.)
+    function paintFolderGraph(content, header, name, entries, filesByPath, emptyMsg) {
       if (!entries.length) {
-        content.innerHTML = header +
-          '<div class="brain-graph object-graph"><div id="fsg-mount"><div class="fs-empty" style="padding:24px">' +
-          emptyMsg + '</div></div></div>';
-      } else {
-        var model = buildFolderGraphModel(name, entries, filesByPath || {});
-        forceLayout(model.nodes, model.links, 360);
-        content.innerHTML = header +
-          '<div class="brain-graph object-graph"><div id="fsg-mount">' + objectGraphSvg(model) + '</div></div>';
-        var mount = document.getElementById('fsg-mount');
-        if (mount) wireObjectGraph(mount, model, 'files');
+        content.innerHTML = header + '<div class="fs-empty" style="padding:24px">' + emptyMsg + '</div>';
+        return;
       }
-      if (listToggle) {
-        var lv = content.querySelector('#fsg-view-list');
-        if (lv) lv.addEventListener('click', function () { fsObjectView['files'] = 'list'; renderFsCollection(content, ['files']); });
-      }
+      var fbp = filesByPath || {};
+      var sorted = entries.slice().sort(function (a, b) {
+        if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+        return String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase());
+      });
+      var rows = sorted.map(function (e) {
+        var isFolder = e.kind === 'folder';
+        var id = e.id || (e.path ? fbp[e.path] : '') || '';
+        var href = isFolder
+          ? '#/folder/' + encodeURIComponent(e.path)
+          : (id ? '#/fs/files/' + encodeURIComponent(id) : '');
+        var ic = isFolder ? '\\ud83d\\udcc1' : '\\ud83d\\udcc4';
+        var nm = href ? '<a href="' + href + '">' + escapeHtml(e.name) + '</a>' : escapeHtml(e.name);
+        var trAttr = href ? ' class="fs-row-click" data-href="' + href + '"' : '';
+        return '<tr' + trAttr + '><td><span class="src-ic">' + ic + '</span> ' + nm + '</td>' +
+          '<td>' + (isFolder ? 'Folder' : 'File') + '</td>' +
+          '<td class="fs-files-path">' + escapeHtml(e.path || '') + '</td></tr>';
+      }).join('');
+      content.innerHTML = header +
+        '<table class="pv-table fs-files-table"><thead><tr>' +
+        '<th>Name</th><th>Type</th><th>Location</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      content.querySelectorAll('.fs-files-table tr.fs-row-click').forEach(function (tr) {
+        tr.addEventListener('click', function (ev) {
+          if (ev.target && ev.target.closest && ev.target.closest('a')) return;
+          var h = tr.getAttribute('data-href');
+          if (h) location.hash = h;
+        });
+      });
     }
     // #/folder/<abs path> — one folder's immediate children as a graph.
     function renderFolderView(content, path) {
@@ -1359,154 +1322,56 @@ export const dashboardJs = `    // ───────────────
         var header = folderBreadcrumb(path, roots) +
           '<div class="view-header"><span class="entity-icon">📂</span><h1>' + escapeHtml(name) + '</h1>' +
           '<span class="count">' + entries.length + (truncated ? '+' : '') + ' item' + (entries.length === 1 ? '' : 's') + '</span></div>';
-        paintFolderGraph(content, header, name, entries, filesByPath, 'This folder is empty.', false);
+        paintFolderGraph(content, header, name, entries, filesByPath, 'This folder is empty.');
       }).catch(function (err) {
         if (myGen !== renderGen) return;
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
-    // The Files object page (#/fs/files): the folder roots + loose files.
-    function renderFilesRootView(content) {
-      var myGen = renderGen;
-      // No setTabTitle — the Files object page shares the exploration tab.
-      Promise.all([
-        fetchJson('/api/sources/roots').catch(function () { return { roots: [] }; }),
-        fetchJson('/api/tables/files/rows?limit=500&exclude=' + encodeURIComponent('extracted_text,description')).catch(function () { return { rows: [] }; }),
-      ]).then(function (res) {
-        if (myGen !== renderGen) return;
-        var roots = (res[0] && res[0].roots) || [];
-        var rows = ((res[1] && res[1].rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; });
-        var folderPaths = roots.filter(function (r) { return r.kind === 'folder'; }).map(function (r) { return r.path; });
-        var entries = [];
-        roots.forEach(function (r) { if (r.kind === 'folder') entries.push({ kind: 'folder', path: r.path, name: r.name || fsBasename(r.path) }); });
-        rows.forEach(function (r) {
-          var under = r.ref_uri && folderPaths.some(function (p) { return fsUnder(r.ref_uri, p); });
-          if (!under) entries.push({ kind: 'file', path: r.ref_uri || '', name: r.name || r.original_name || 'Untitled', id: r.id });
-        });
-        var d = displayFor('files');
-        var header = fsBreadcrumb(['files'], []) +
-          '<div class="view-header"><span class="entity-icon">' + d.icon + '</span><h1>' + escapeHtml(d.label) + '</h1>' +
-          '<span class="count">' + entries.length + ' item' + (entries.length === 1 ? '' : 's') + '</span>' +
-          '<div class="actions"><button class="btn" id="fsg-view-list" type="button">List view</button></div></div>';
-        paintFolderGraph(content, header, 'Files', entries, {}, 'No files yet. Add a folder or file from the sidebar.', true);
-      }).catch(function (err) {
-        if (myGen !== renderGen) return;
-        content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
-      });
+    // Item view — ONE record page for every row (regular, file, artifact): the
+    // same chrome everywhere — Formatted|Markdown toggle, visibility/sharing,
+    // Data provenance, Connected objects, and the record actions menu. View mode
+    // is PER RECORD: 'formatted' (the rendered doc / file preview) | 'markdown'
+    // (the editable raw markdown, or a file's source) | 'history' (the version
+    // trail, entered from the actions menu, exited via the toggle).
+    var recordViewMode = {};
+    var currentRecordId = null;
+    function setFsItemView(v) {
+      if (currentRecordId == null) return;
+      recordViewMode[currentRecordId] =
+        v === 'markdown' || v === 'history' || v === 'fields' ? v : 'formatted';
+      applyFsItemView();
+    }
+    function applyFsItemView() {
+      var mode = (currentRecordId != null && recordViewMode[currentRecordId]) || 'formatted';
+      var md = mode === 'markdown';
+      var hist = mode === 'history';
+      var flds = mode === 'fields';
+      var ctx = document.getElementById('fs-context');
+      var rendered = ctx && ctx.querySelector('.fs-context-doc');
+      var editor = ctx && ctx.querySelector('.fs-context-edit');
+      var status = ctx && ctx.querySelector('.fs-context-status');
+      var relT = document.querySelector('#content .fs-rel-title');
+      var relF = document.querySelector('#content .fs-rel-folders');
+      var prov = document.getElementById('row-provenance');
+      var histEl = document.getElementById('record-history');
+      var fldsEl = document.getElementById('record-fields');
+      // The relationship folders + provenance belong to the Formatted (reading)
+      // view; hide them while editing (raw markdown or fields) or reading history.
+      [relT, relF, prov].forEach(function (el) { if (el) el.style.display = (md || hist || flds) ? 'none' : ''; });
+      if (ctx) ctx.style.display = (hist || flds) ? 'none' : '';
+      if (rendered) rendered.style.display = md ? 'none' : '';
+      if (editor) editor.style.display = md ? '' : 'none';
+      if (status) status.style.display = md ? '' : 'none';
+      if (histEl) histEl.hidden = !hist;
+      if (fldsEl) fldsEl.hidden = !flds;
+      // The ⋯ menu item flips label to reflect the current view.
+      var mdItem = document.querySelector('#content #file-menu [data-act="markdown"]');
+      if (mdItem) mdItem.textContent = md ? 'View Formatted' : 'View Markdown';
     }
 
-    // Create a new object from the simple view — a form styled like the item
-    // page with blank fields + a Save button, plus a select-menu + "+" for each
-    // many-to-many link. Reuses fieldFor() (intrinsic + belongsTo) and the
-    // existing row-create + junction-row endpoints (no new backend).
-    // Inline create view (#/fs/<table>/new) — mirrors renderFsItem's formatted
-    // layout (.fs-doc/.fs-field) with blank fields + Save/Cancel, instead of a
-    // modal. Reuses fieldFor() + the row-create + junction /link endpoints.
-    function renderFsCreate(content, segs) {
-      var table = segs[0];
-      var t = tableByName(table);
-      if (!t) { content.innerHTML = '<div class="placeholder">Unknown entity: ' + escapeHtml(table) + '</div>'; return; }
-      var d = displayFor(table);
-      var bt = belongsToColumns(t);
-      var juncs = junctionsFor(table);
-      var collectionHref = fsHref([table]);
-      // Preload FK + junction-remote target rows so the <select> menus populate.
-      var needed = bt.map(function (b) { return b.rel.table; })
-        .concat(juncs.map(function (j) { return j.remoteRel.table; }));
-      Promise.all(needed.map(loadAllRows)).then(function () {
-        var fieldsHtml = '';
-        intrinsicColumns(t).forEach(function (c) {
-          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(c)) + '</div>' +
-            '<div class="fs-field-val">' + fieldFor(c, '', t) + '</div></div>';
-        });
-        bt.forEach(function (b) {
-          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) + '</div>' +
-            '<div class="fs-field-val">' + fieldFor(b.rel.foreignKey, '', t) + '</div></div>';
-        });
-        juncs.forEach(function (j) {
-          var remoteRows = loadedTables[j.remoteRel.table] || [];
-          var opts = '<option value="">(none)</option>' + remoteRows.map(function (r) {
-            return '<option value="' + escapeHtml(r.id) + '">' + escapeHtml(displayNameFor(r)) + '</option>';
-          }).join('');
-          fieldsHtml += '<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(j.remoteRel.table)) + ' (links)</div>' +
-            '<div class="fs-field-val">' +
-              '<div class="fs-link-stage" data-junction="' + escapeHtml(j.junction) + '" data-local-fk="' + escapeHtml(j.localFk) + '" data-remote-fk="' + escapeHtml(j.remoteRel.foreignKey) + '">' +
-                '<select class="fs-link-select">' + opts + '</select>' +
-              '</div>' +
-              '<button type="button" class="btn fs-link-add">+ Add another</button>' +
-            '</div></div>';
-        });
-        content.innerHTML =
-          '<nav class="fs-crumbs"><a href="#/">Home</a><span class="fs-sep">▸</span>' +
-            '<a href="' + collectionHref + '">' + escapeHtml(d.label) + '</a><span class="fs-sep">▸</span>' +
-            '<span>New</span></nav>' +
-          '<div class="view-header">' +
-            '<span class="entity-icon">' + d.icon + '</span>' +
-            '<h1>New ' + escapeHtml(d.label) + '</h1>' +
-          '</div>' +
-          '<div class="fs-doc fs-create-form">' + fieldsHtml + '</div>' +
-          '<div class="fs-create-actions">' +
-            '<button class="btn" id="fs-create-cancel">Cancel</button>' +
-            '<button class="btn primary" id="fs-create-save">Save</button>' +
-          '</div>';
-        content.querySelectorAll('.fs-link-add').forEach(function (addBtn) {
-          addBtn.addEventListener('click', function () {
-            var stage = addBtn.previousElementSibling; // the .fs-link-stage
-            var firstSel = stage && stage.querySelector('.fs-link-select');
-            if (!firstSel) return;
-            var clone = firstSel.cloneNode(true);
-            clone.value = '';
-            stage.appendChild(clone);
-          });
-        });
-        content.querySelector('#fs-create-cancel').addEventListener('click', function () {
-          location.hash = collectionHref;
-        });
-        var saveBtn = content.querySelector('#fs-create-save');
-        saveBtn.addEventListener('click', function () {
-          var values = {};
-          content.querySelectorAll('.fs-create-form [name]').forEach(function (el) {
-            var v = el.value;
-            if (v !== '' && v != null) values[el.getAttribute('name')] = v;
-          });
-          var links = [];
-          content.querySelectorAll('.fs-link-stage').forEach(function (stage) {
-            var junction = stage.getAttribute('data-junction');
-            var localFk = stage.getAttribute('data-local-fk');
-            var remoteFk = stage.getAttribute('data-remote-fk');
-            stage.querySelectorAll('.fs-link-select').forEach(function (sel) {
-              if (sel.value) links.push({ junction: junction, localFk: localFk, remoteFk: remoteFk, remoteId: sel.value });
-            });
-          });
-          withBusy(saveBtn, function () {
-            return rowWrite('POST', '/api/tables/' + encodeURIComponent(table) + '/rows', values).then(function (res) {
-              var newId = res && (res.id || (res.row && res.row.id));
-              var chain = Promise.resolve();
-              links.forEach(function (lk) {
-                chain = chain.then(function () {
-                  // Junction /link endpoint (INSERT OR IGNORE on the two FKs) —
-                  // works for pk-less junctions + is idempotent.
-                  var jrow = {};
-                  jrow[lk.localFk] = newId;
-                  jrow[lk.remoteFk] = lk.remoteId;
-                  return rowWrite('POST', '/api/tables/' + encodeURIComponent(lk.junction) + '/link', jrow);
-                });
-              });
-              return chain.then(function () { return newId; });
-            }).then(function (newId) {
-              invalidate(table);
-              return refreshEntities().then(function () {
-                showToast('Created', {});
-                location.hash = newId ? fsHref([table, String(newId)]) : collectionHref;
-              });
-            }).catch(function (err) { showToast('Create failed: ' + err.message, {}); });
-          });
-        });
-      }).catch(function (err) { content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>'; });
-    }
-
-    // Item view — one row as a document (click-to-edit) + its relationship folders.
-    function renderFsItem(content, segs) {
+    function renderFsItem(content, segs, section) {
+      section = section || 'folders';
       var myGen = renderGen;
       fsWalk(segs).then(function (crumbs) {
         var leaf = crumbs[crumbs.length - 1];
@@ -1514,154 +1379,314 @@ export const dashboardJs = `    // ───────────────
         var table = leaf.table, id = leaf.id, row = leaf.row;
         var t = tableByName(table);
         if (!t) { location.hash = '#/'; return; } // table removed → dashboard
-        // The open record was deleted out from under the view — fall back to the
-        // parent folder rather than repaint a tombstone (respect an explicit trash view).
+        // The open record was deleted out from under the view — fall back to this
+        // section's object page rather than repaint a tombstone (respect trash view).
+        // A file tab (w:file) has no collection form under #/w/file/ (the segment is
+        // always a file id), so route to the files-table collection instead.
         if (!row || (row.deleted_at && tableViewMode[table] !== 'trash')) {
-          location.hash = '#/fs/' + encodeURIComponent(table);
+          location.hash = section === 'w:file' ? '#/w/table/' + encodeURIComponent(table) : sectionHref(section, [table]);
           return;
         }
         var d = displayFor(table);
-        // The tab shows the open RECORD's name (e.g. an entity row), not the
-        // object/table name. Guard: only retitle a RECORD ('item:') tab — never the
-        // shared Brain Graph ('graph') tab, even if a record render briefly runs
-        // while the hash still resolves to the graph (which would rename 🧠).
-        if (typeof setTabTitle === 'function') {
-          var fsItemKey = tabKeyForHash(location.hash);
-          if (fsItemKey && fsItemKey.indexOf('item:') === 0) {
-            setTabTitle(fsItemKey, fsDisplayName(row) || d.label);
+        // The Workspace tab shows the open RECORD's name + its entity/file icon (a
+        // file record shows its file-type emoji; other records show the table icon).
+        // Guard on a real typed tab key (null = the home route, no tab) so a record
+        // briefly rendering under the home hash never triggers a stray title update.
+        if (typeof anSetTabMeta === 'function') {
+          var fsItemKey = anTabKeyForHash(location.hash);
+          if (fsItemKey) {
+            var isFileRec = table === 'files';
+            anSetTabMeta(fsItemKey, fsDisplayName(row) || d.label, isFileRec ? fileEmoji(row) : d.icon);
           }
         }
-        // Files + artifacts get the two-view document layout (formatted display +
-        // a View Source toggle) with a Version History + Delete dropdown — not the
-        // column-by-column field dump or the "Inside" grid.
-        if (table === 'files') { renderFsDocItem(content, segs, crumbs, id, row, d); return; }
-        var bt = belongsToColumns(t);
+        // ONE record page for every row: files + artifacts flow through the same
+        // chrome as regular records (toggle, sharing, provenance, connected
+        // objects) — only the CONTENT section differs (preview/source vs the
+        // rendered row context).
+        var isFile = table === 'files';
+        // A computed-view row is read-only: no Formatted|Markdown editing
+        // toggle, no actions menu (the server refuses writes anyway), a
+        // "Computed" badge, and a note saying where the values come from.
+        var isComputed = !!(t && t.computedTable);
         var rels = fsRelations(table);
-        // Preload belongsTo targets so parent links can show names.
-        Promise.all(bt.map(function (b) { return loadAllRows(b.rel.table); })).then(function () {
-          if (myGen !== renderGen) return; // superseded by a newer navigation
-          var fields = [];
-          intrinsicColumns(t).forEach(function (c) { fields.push(fsFieldHtml(table, row, c)); });
-          bt.forEach(function (b) {
-            var ref = (loadedTables[b.rel.table] || []).find(function (x) { return x.id === row[b.rel.foreignKey]; });
-            var dd = ref
-              ? '<a class="fs-link" href="#/fs/' + encodeURIComponent(b.rel.table) + '/' + encodeURIComponent(ref.id) + '">📁 ' + escapeHtml(fsDisplayName(ref)) + '</a>'
-              : '<span class="fs-empty-val">—</span>';
-            fields.push('<div class="fs-field"><div class="fs-field-label">' + escapeHtml(titleCase(b.relName)) +
-              '</div><div class="fs-field-val">' + dd + '</div></div>');
-          });
-          var base = fsHref(segs);
-          var folderTiles = rels.map(function (rel) {
-            return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
-              '<div class="fs-tile-icon">📁</div>' +
-              '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
-              '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
-            '</a>';
-          }).join('');
-          content.innerHTML =
-            fsBreadcrumb(segs, crumbs) +
-            '<div class="view-header">' +
-              '<span class="entity-icon">' + (table === 'files' ? fileEmoji(row) : d.icon) + '</span>' +
-              '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+        if (myGen !== renderGen) return; // superseded by a newer navigation while fsWalk resolved
+        var base = sectionHref(section, segs);
+        var folderTiles = rels.map(function (rel) {
+          // The connected object's OWN emoji (not a folder icon) — these are objects.
+          var relIcon = displayFor(rel.targetTable || rel.token).icon;
+          return '<a class="fs-tile fs-folder" href="' + base + '/' + encodeURIComponent(rel.token) + '">' +
+            '<div class="fs-tile-icon">' + relIcon + '</div>' +
+            '<div class="fs-tile-label">' + escapeHtml(rel.label) + '</div>' +
+            '<div class="fs-folder-count" data-count-for="' + escapeHtml(rel.token) + '">…</div>' +
+          '</a>';
+        }).join('');
+        currentRecordId = id;
+        // The record actions (\u22ef) menu sits on the BREADCRUMB row (top-right), not the
+        // title row \u2014 a computed row is read-only, so it gets no menu. Formatted = the
+        // rendered doc (or file preview); Markdown = the editable raw markdown, reached via
+        // the menu's "View Markdown" (which then reads "View Formatted").
+        var recordMenuHtml = isComputed ? '' :
+          '<div class="actions file-menu-wrap">' +
+            '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">\u22ef</button>' +
+            '<div class="file-menu" id="file-menu" role="menu" hidden>' +
+              '<button class="file-menu-item" data-act="markdown" role="menuitem">View Markdown</button>' +
+              '<button class="file-menu-item" data-act="fields" role="menuitem">Edit fields</button>' +
+              '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' +
+              '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
             '</div>' +
-            detailVisLineEl(row) +
-            (table === 'files' ? '<div class="file-preview" id="file-preview"></div>' : '') +
-            // Formatted markdown (rendered context) sits ABOVE the column-by-column
-            // data view; the raw fields follow underneath.
-            '<div class="fs-context" id="fs-context" hidden></div>' +
-            '<div class="fs-doc">' + fields.join('') + '</div>' +
-            (rels.length ? '<h3 class="fs-rel-title">Inside</h3><div class="fs-grid fs-rel-folders">' + folderTiles + '</div>' : '');
-          if (table === 'files') renderFilePreview(row);
-          loadFsContext(table, id);
-          wireFsEdit(content, table, id, t, row);
-          // Per-row sharing controls — same affordance as the advanced detail view.
-          wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs); });
-          rels.forEach(function (rel) {
-            fsRelatedRows(table, row, rel).then(function (rs) {
-              var el = content.querySelector('[data-count-for="' + rel.token + '"]');
-              if (el) el.textContent = rs.length + (rs.length === 1 ? ' item' : ' items');
-            }).catch(function () { /* count is best-effort */ });
+          '</div>';
+        content.innerHTML =
+          '<div class="record-topbar">' + fsBreadcrumb(segs, crumbs, section) + recordMenuHtml + '</div>' +
+          '<div class="view-header">' +
+            '<span class="entity-icon">' + (isFile ? fileEmoji(row) : d.icon) + '</span>' +
+            '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
+            (isComputed ? '<span class="fs-computed-badge" title="A live, read-only view">Computed</span>' : '') +
+          '</div>' +
+          (isComputed ? '<div class="fs-computed-note">This is a computed view \\u2014 its values come from the records it\\u2019s built from.</div>' : '') +
+          detailVisLineEl(row) +
+          // #fs-context holds BOTH the rendered doc (.fs-context-doc) and the
+          // editable raw view (.fs-context-edit); the fillers below build them and
+          // applyFsItemView toggles which one shows.
+          '<div class="fs-context" id="fs-context" hidden></div>' +
+          '<div class="file-history-view" id="record-history" hidden></div>' +
+          '<div class="detail" id="record-fields" hidden></div>' +
+          // "Connected objects" — the related objects, shown only when they actually
+          // have rows (count > 0). Rendered hidden; revealed once the counts resolve.
+          (rels.length ? '<h3 class="fs-rel-title" hidden>Connected objects</h3><div class="fs-grid fs-rel-folders" hidden>' + folderTiles + '</div>' : '') +
+          '<div id="row-provenance"></div>';
+        if (isFile) loadFileContext(content, segs, row);
+        else if (isComputed) loadComputedContext(table, row);
+        else loadFsContext(table, id);
+        wireRecordMenu(content, segs, table, id, row);
+        // A computed row has only the read-only Formatted view — never restore a
+        // markdown/fields/history mode remembered from another record's chrome.
+        if (isComputed) recordViewMode[id] = 'formatted';
+        var rvm = recordViewMode[id] || 'formatted';
+        if (rvm === 'history') loadRowHistoryInto(content, table, id);
+        if (rvm === 'fields') loadFieldsEditor(content, segs, table, id, row, section);
+        applyFsItemView();
+        // A file under a registered folder root upgrades the breadcrumb to its
+        // real folder path.
+        if (isFile && row.ref_uri) {
+          var crumbGen = renderGen;
+          fetchJson('/api/sources/roots').then(function (data) {
+            if (crumbGen !== renderGen) return;
+            var nav = content.querySelector('.fs-crumbs');
+            if (nav) nav.outerHTML = folderBreadcrumb(fsDirname(row.ref_uri), (data && data.roots) || [], fsDisplayName(row) || d.label);
+          }).catch(function () { /* keep the default breadcrumb */ });
+        }
+        // Collapsed, lazy-loaded "Data provenance" panel for this row.
+        renderProvenancePanel(content.querySelector('#row-provenance'), table, id);
+        // Per-row sharing controls — same affordance as the advanced detail view.
+        wireRowSharing(content, table, id, row, function () { renderFsItem(content, segs, section); });
+        // Resolve every relation's count, then reveal ONLY the non-empty ones and
+        // drop the empties — "Connected objects" lists objects with count > 0. If
+        // none have rows, the whole section stays hidden (removed).
+        if (rels.length) {
+          Promise.all(rels.map(function (rel) {
+            return fsRelatedRows(table, row, rel)
+              .then(function (rs) { return { rel: rel, n: rs.length }; })
+              .catch(function () { return { rel: rel, n: 0 }; });
+          })).then(function (counts) {
+            if (myGen !== renderGen) return;
+            var any = false;
+            counts.forEach(function (c) {
+              var el = content.querySelector('[data-count-for="' + c.rel.token + '"]');
+              var tile = el ? el.closest('.fs-tile') : null;
+              if (c.n > 0) {
+                any = true;
+                if (el) el.textContent = c.n + (c.n === 1 ? ' item' : ' items');
+              } else if (tile && tile.parentNode) {
+                tile.parentNode.removeChild(tile);
+              }
+            });
+            var title = content.querySelector('.fs-rel-title');
+            var grid = content.querySelector('.fs-rel-folders');
+            if (any) { if (title) title.hidden = false; if (grid) grid.hidden = false; }
+            else {
+              if (title && title.parentNode) title.parentNode.removeChild(title);
+              if (grid && grid.parentNode) grid.parentNode.removeChild(grid);
+            }
           });
-        });
+        }
       }).catch(function (err) {
+        if (myGen !== renderGen) return; // a stale error must not clobber a newer view
         content.innerHTML = '<div class="placeholder"><h2>Failed</h2>' + escapeHtml(err.message) + '</div>';
       });
     }
 
-    // ── File / artifact document view (two-view: Display ↔ Source) ──────
-    // Per-open-item view state (display | source), so each tab toggles
-    // independently and re-renders in place without navigating.
-    var fileViewMode = {};
+    // ── Structured FIELDS editor (absorbed from the legacy detail view) ────
+    // The record actions menu's "Edit fields": every column as a typed input
+    // (fieldFor), belongsTo pickers, and the junction manager — chips unlink
+    // with x, the dropdown links, both atomic (no Save needed); scalar fields
+    // save with the Save button. Renders into #record-fields inside the
+    // unified page; Cancel returns to the Formatted view.
+    function loadFieldsEditor(content, segs, table, id, row, section) {
+      var host = content.querySelector('#record-fields');
+      if (!host) return;
+      host.innerHTML = '<div class="muted" style="padding:8px">Loading\u2026</div>';
+      var t = tableByName(table);
+      if (!t) return;
+      var intrinsic = intrinsicColumns(t);
+      var belongsTo = belongsToColumns(t);
+      var junctions = junctionsFor(table);
+      var fetches = [];
+      belongsTo.forEach(function (b) { fetches.push(loadAllRows(b.rel.table)); });
+      junctions.forEach(function (j) {
+        fetches.push(loadAllRows(j.junction));
+        fetches.push(loadAllRows(j.remoteRel.table));
+      });
+      Promise.all(fetches).then(function () {
+        var rows = [];
+        intrinsic.forEach(function (c) {
+          rows.push('<dt' + titleAttr(colDesc(table, c)) + '>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + fieldFor(c, row[c], t) + '</dd>');
+        });
+        belongsTo.forEach(function (b) {
+          rows.push('<dt>' + escapeHtml(titleCase(b.relName)) + '</dt><dd>' + fieldFor(b.rel.foreignKey, row[b.rel.foreignKey], t) + '</dd>');
+        });
+        junctions.forEach(function (j) {
+          var matches = (loadedTables[j.junction] || []).filter(function (jr) { return jr[j.localFk] === row.id; });
+          var linkedIds = new Set(matches.map(function (m) { return m[j.remoteRel.foreignKey]; }));
+          var available = (loadedTables[j.remoteRel.table] || []).filter(function (o) { return !linkedIds.has(o.id); });
+          var chips = matches.map(function (jr) {
+            var remoteId = jr[j.remoteRel.foreignKey];
+            var ref = (loadedTables[j.remoteRel.table] || []).find(function (x) { return x.id === remoteId; });
+            if (!ref) return '';
+            return '<span class="chip-removable"' +
+              ' data-junction="' + escapeHtml(j.junction) + '"' +
+              ' data-localfk="' + escapeHtml(j.localFk) + '"' +
+              ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
+              ' data-local="' + escapeHtml(row.id) + '"' +
+              ' data-remote="' + escapeHtml(remoteId) + '">' +
+              '<a class="chip-link" href="#/fs/' + encodeURIComponent(j.remoteRel.table) +
+                '/' + encodeURIComponent(remoteId) + '">' + escapeHtml(displayNameFor(ref)) + '</a>' +
+              ' <button class="remove-link" title="Unlink">\u00d7</button></span>';
+          }).join(' ');
+          var picker = available.length
+            ? '<select class="dm-add"' +
+                ' data-junction="' + escapeHtml(j.junction) + '"' +
+                ' data-localfk="' + escapeHtml(j.localFk) + '"' +
+                ' data-remotefk="' + escapeHtml(j.remoteRel.foreignKey) + '"' +
+                ' data-local="' + escapeHtml(row.id) + '">' +
+              '<option value="">+ Add link\u2026</option>' +
+              available.map(function (o) {
+                return '<option value="' + escapeHtml(o.id) + '">' + escapeHtml(displayNameFor(o)) + '</option>';
+              }).join('') +
+              '</select>'
+            : '';
+          rows.push('<dt>' + escapeHtml(titleCase(j.remoteRel.table)) + '</dt>' +
+                    '<dd>' + (chips || '<span class="muted">None yet</span>') + ' ' + picker + '</dd>');
+        });
+        host.innerHTML =
+          '<dl class="editing">' + rows.join('') + '</dl>' +
+          '<div class="fs-fields-actions">' +
+            '<button class="btn primary" id="save-row">Save</button>' +
+            '<button class="btn" id="cancel-edit">Cancel</button>' +
+          '</div>';
+        var rerender = function () { renderFsItem(content, segs, section); };
+        host.querySelectorAll('.remove-link').forEach(function (btn) {
+          btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var chip = btn.closest('[data-junction]');
+            var body = {};
+            body[chip.getAttribute('data-localfk')] = chip.getAttribute('data-local');
+            body[chip.getAttribute('data-remotefk')] = chip.getAttribute('data-remote');
+            fetchJson('/api/tables/' + encodeURIComponent(chip.getAttribute('data-junction')) + '/unlink', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).then(function () {
+              invalidate(chip.getAttribute('data-junction'));
+              return refreshEntities();
+            }).then(function () { rerender(); showToast('Link removed', { undo: undoLast }); })
+              .catch(function (err) { showToast('Unlink failed: ' + err.message, {}); });
+          });
+        });
+        host.querySelectorAll('select.dm-add').forEach(function (sel) {
+          sel.addEventListener('change', function () {
+            if (!sel.value) return;
+            var body = {};
+            body[sel.getAttribute('data-localfk')] = sel.getAttribute('data-local');
+            body[sel.getAttribute('data-remotefk')] = sel.value;
+            fetchJson('/api/tables/' + encodeURIComponent(sel.getAttribute('data-junction')) + '/link', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).then(function () {
+              invalidate(sel.getAttribute('data-junction'));
+              return refreshEntities();
+            }).then(function () { rerender(); showToast('Linked', { undo: undoLast }); })
+              .catch(function (err) { showToast('Link failed: ' + err.message, {}); });
+          });
+        });
+        var cancel = host.querySelector('#cancel-edit');
+        if (cancel) cancel.addEventListener('click', function () { setFsItemView('formatted'); });
+        var save = host.querySelector('#save-row');
+        if (save) save.addEventListener('click', function () {
+          var values = collectFormValues(host.querySelector('dl'));
+          rowWrite('PATCH', '/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), values).then(function (r) {
+            recordViewMode[id] = 'formatted';
+            if (r && r.queued) { rerender(); return; }
+            invalidate(table);
+            return refreshEntities().then(function () {
+              rerender();
+              showToast('Saved', { undo: undoLast });
+            });
+          }).catch(function (err) { showToast('Save failed: ' + err.message, {}); });
+        });
+      }).catch(function (e) {
+        host.innerHTML = '<div class="muted" style="padding:8px">Failed: ' + escapeHtml(e.message) + '</div>';
+      });
+    }
+
+    // ── File/artifact CONTENT filler for the unified record page ─────────
+    // Files and artifacts use the same page chrome as every other record; only
+    // the #fs-context filler differs: Formatted = the inline preview (image /
+    // PDF / sandboxed HTML / description banner, with Open in Finder), Markdown
+    // = the source (an artifact edits in place; an ingested file's extracted
+    // text is read-only).
     function sourceTextOf(row) {
       return row && typeof row.extracted_text === 'string' ? row.extracted_text : '';
     }
-    function renderFsDocItem(content, segs, crumbs, id, row, d) {
-      // The tab shows the FILE's name (e.g. "Properties Dashboard"), not the
-      // object name ("Files").
-      if (typeof setTabTitle === 'function') {
-        var fsDocKey = tabKeyForHash(location.hash);
-        if (fsDocKey && fsDocKey.indexOf('item:') === 0) {
-          setTabTitle(fsDocKey, fsDisplayName(row) || d.label);
-        }
-      }
-      var mode = fileViewMode[id] || 'display';
-      // Actions live in a dropdown menu next to the title; View source / Version
-      // history are full-page modes (they replace the body, not overlay it).
-      content.innerHTML =
-        fsBreadcrumb(segs, crumbs) +
-        '<div class="view-header">' +
-          '<span class="entity-icon">' + fileEmoji(row) + '</span>' +
-          '<h1>' + escapeHtml(fsDisplayName(row) || d.label) + '</h1>' +
-          '<div class="actions file-menu-wrap">' +
-            '<button class="btn file-menu-btn" id="file-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Actions">⋯</button>' +
-            '<div class="file-menu" id="file-menu" role="menu" hidden>' +
-              (mode !== 'display' ? '<button class="file-menu-item" data-act="display" role="menuitem">Formatted view</button>' : '') +
-              (mode !== 'source' ? '<button class="file-menu-item" data-act="source" role="menuitem">View source</button>' : '') +
-              (mode !== 'history' ? '<button class="file-menu-item" data-act="history" role="menuitem">Version history</button>' : '') +
-              '<button class="file-menu-item danger" data-act="delete" role="menuitem">Delete</button>' +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-        '<div id="file-body">' + fileBodyHtml(mode, row) + '</div>';
-      if (mode === 'display') renderFilePreview(row);
-      else if (mode === 'history') loadFileHistoryInto(content, id);
-      wireFsDocToolbar(content, segs, id, row);
-      // Upgrade the breadcrumb to the file's FOLDER path (Home ▸ Files ▸ Downloads
-      // ▸ <file>) when it lives under a registered folder root.
-      if (row.ref_uri) {
-        var crumbGen = renderGen;
-        fetchJson('/api/sources/roots').then(function (data) {
-          if (crumbGen !== renderGen) return;
-          var nav = content.querySelector('.fs-crumbs');
-          if (nav) nav.outerHTML = folderBreadcrumb(fsDirname(row.ref_uri), (data && data.roots) || [], fsDisplayName(row) || d.label);
-        }).catch(function () { /* keep the default breadcrumb */ });
-      }
+    function loadFileContext(content, segs, row) {
+      var ctx = content.querySelector('#fs-context');
+      if (!ctx) return;
+      var src = sourceTextOf(row);
+      var editHtml = row.artifact_type
+        ? '<div class="fs-context-edit" style="display:none"><div class="file-source">' +
+            '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
+            '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
+            '<span class="hint">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
+          '</div></div>'
+        : '<div class="fs-context-edit" style="display:none"><pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre></div>';
+      ctx.innerHTML =
+        '<div class="fs-context-doc"><div class="file-preview" id="file-preview"></div></div>' + editHtml;
+      ctx.hidden = false;
+      renderFilePreview(row);
+      var save = ctx.querySelector('#file-source-save');
+      if (save) save.addEventListener('click', function () { saveFileSource(content, segs, row.id); });
     }
 
-    // The body for the current view mode (display | source | history).
-    function fileBodyHtml(mode, row) {
-      if (mode === 'source') {
-        var src = sourceTextOf(row);
-        // An artifact (Lattice-created) edits in place; an ingested file's source
-        // is read-only extracted text.
-        return row.artifact_type
-          ? '<div class="file-source">' +
-              '<textarea id="file-source-text" class="file-source-text" spellcheck="false">' + escapeHtml(src) + '</textarea>' +
-              '<div class="file-source-actions"><button class="btn primary" id="file-source-save">Save</button>' +
-              '<span class="muted" style="font-size:12px">Editing updates this artifact in place; older versions are kept in Version History.</span></div>' +
-            '</div>'
-          : '<pre class="file-source-pre">' + escapeHtml(src || 'No source text.') + '</pre>';
-      }
-      if (mode === 'history') {
-        return '<div class="file-history-view" id="file-history-view"><div class="muted" style="padding:8px">Loading history…</div></div>';
-      }
-      return '<div class="file-preview" id="file-preview"></div>';
+    // Computed-row CONTENT filler: a read-only field list built from the row we
+    // already fetched (a computed view renders no context markdown and has no
+    // editable raw view — its values are derived, not authored).
+    function loadComputedContext(table, row) {
+      var ctx = document.getElementById('fs-context');
+      if (!ctx) return;
+      var t = tableByName(table);
+      var cols = (t && t.columns) || Object.keys(row);
+      var rows = cols.map(function (c) {
+        return '<dt>' + escapeHtml(fieldLabel(c)) + '</dt><dd>' + fsValInner(table, row, c) + '</dd>';
+      }).join('');
+      ctx.innerHTML = '<div class="fs-context-doc"><dl class="fs-computed-fields">' + rows + '</dl></div>';
+      ctx.hidden = false;
+      if (typeof applyFsItemView === 'function') applyFsItemView();
     }
 
-    // ONE document-level outside-click closer for the file-actions menu. The menu
-    // + button are re-created with stable ids on every renderFsDocItem, so a
-    // per-render listener would leak (stale closures accumulating on document and
-    // firing on every click). Registered exactly once; reads the current nodes by id.
+    // ONE document-level outside-click closer for the record actions menu. The
+    // menu + button are re-created with stable ids on every record render, so a
+    // per-render listener would leak. Registered exactly once; reads by id.
     var fileMenuDocWired = false;
     function wireFileMenuGlobal() {
       if (fileMenuDocWired) return;
@@ -1674,7 +1699,8 @@ export const dashboardJs = `    // ───────────────
         menu.hidden = true; if (btn) btn.setAttribute('aria-expanded', 'false');
       });
     }
-    function wireFsDocToolbar(content, segs, id, row) {
+    // The record actions menu (every record page): Version history + Delete.
+    function wireRecordMenu(content, segs, table, id, row) {
       var btn = content.querySelector('#file-menu-btn');
       var menu = content.querySelector('#file-menu');
       if (btn && menu) {
@@ -1689,21 +1715,32 @@ export const dashboardJs = `    // ───────────────
       content.querySelectorAll('.file-menu-item').forEach(function (it) {
         it.addEventListener('click', function (e) {
           e.stopPropagation();
+          if (menu) menu.hidden = true;
           var act = it.getAttribute('data-act');
-          if (act === 'delete') { removeFile(segs, id, row); return; }
-          fileViewMode[id] = act; // display | source | history
-          renderFsItem(content, segs); // re-render this item in the new mode
+          if (act === 'markdown') {
+            // Toggle the raw markdown ⇄ formatted view (records + files share this menu).
+            var cur = (currentRecordId != null && recordViewMode[currentRecordId]) || 'formatted';
+            setFsItemView(cur === 'markdown' ? 'formatted' : 'markdown');
+            return;
+          }
+          if (act === 'delete') { removeRow(table, segs, id, row); return; }
+          if (act === 'fields') {
+            loadFieldsEditor(content, segs, table, id, row, sectionOfHash());
+            setFsItemView('fields');
+            return;
+          }
+          loadRowHistoryInto(content, table, id);
+          setFsItemView('history');
         });
       });
-      var save = content.querySelector('#file-source-save');
-      if (save) save.addEventListener('click', function () { saveFileSource(content, segs, id); });
     }
 
-    // Load the row's version history into the full-page history view.
-    function loadFileHistoryInto(content, id) {
-      var host = content.querySelector('#file-history-view');
+    // Load the row's version history into the record page's history block.
+    function loadRowHistoryInto(content, table, id) {
+      var host = content.querySelector('#record-history');
       if (!host) return;
-      fetchJson('/api/tables/files/rows/' + encodeURIComponent(id) + '/history')
+      host.innerHTML = '<div class="muted" style="padding:8px">Loading history\u2026</div>';
+      fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id) + '/history')
         .then(function (data) {
           var hist = (data && data.history) || [];
           if (!hist.length) { host.innerHTML = '<div class="muted" style="padding:8px">No prior versions yet.</div>'; return; }
@@ -1716,7 +1753,7 @@ export const dashboardJs = `    // ───────────────
                 '<button class="btn fh-revert" data-rev="' + escapeHtml(h.id) + '">Revert</button></li>';
             }).join('') + '</ul>';
           host.querySelectorAll('.fh-revert').forEach(function (b) {
-            b.addEventListener('click', function () { revertFileVersion(b.getAttribute('data-rev')); });
+            b.addEventListener('click', function () { revertRowVersion(table, b.getAttribute('data-rev')); });
           });
         })
         .catch(function (e) {
@@ -1724,10 +1761,10 @@ export const dashboardJs = `    // ───────────────
         });
     }
 
-    function revertFileVersion(auditId) {
+    function revertRowVersion(table, auditId) {
       fetch('/api/history/revert/' + encodeURIComponent(auditId), { method: 'POST' })
         .then(function (r) { if (!r.ok) throw new Error('revert failed (' + r.status + ')'); return r.json(); })
-        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () { invalidate(table); return refreshEntities(); })
         .then(function () { showToast('Reverted', { undo: undoLast }); renderRoute({ soft: true }); })
         .catch(function (e) { showToast('Revert failed: ' + e.message, {}); });
     }
@@ -1743,71 +1780,35 @@ export const dashboardJs = `    // ───────────────
         .then(function (r) { if (!r.ok) throw new Error('save failed (' + r.status + ')'); return r.json(); })
         .then(function () { invalidate('files'); return refreshEntities(); })
         .then(function () {
-          fileViewMode[id] = 'display'; // back to the formatted view
+          setFsItemView('formatted'); // back to the formatted view
           showToast('Saved', { undo: undoLast });
-          renderFsItem(content, segs);
+          renderFsItem(content, segs, sectionOfHash());
         })
         .catch(function (e) { showToast('Save failed: ' + e.message, {}); });
     }
 
-    // Soft-delete (Delete): recoverable, and NEVER touches the on-disk file — it
-    // only soft-deletes the Lattice record. Closes the item's tab afterward.
-    function removeFile(segs, id, row) {
-      fetch('/api/tables/files/rows/' + encodeURIComponent(id), {
+    // Soft-delete (Delete): recoverable, and for a file NEVER touches the
+    // on-disk bytes — it only soft-deletes the Lattice record.
+    function removeRow(table, segs, id, row) {
+      fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
         body: '{}',
       })
         .then(function (r) { if (!r.ok) throw new Error('delete failed (' + r.status + ')'); return r.json(); })
-        .then(function () { invalidate('files'); return refreshEntities(); })
+        .then(function () { invalidate(table); return refreshEntities(); })
         .then(function () {
-          showToast('Deleted "' + (fsDisplayName(row) || 'file') + '"', { undo: undoLast });
-          if (typeof closeTab === 'function') closeTab(tabKeyForHash(location.hash));
-          else location.hash = '#/graph';
+          showToast('Deleted "' + (fsDisplayName(row) || 'record') + '"', { undo: undoLast });
+          // Navigate to the collection in the SAME section the record was opened
+          // from (Graph/Tables/Workspace) — a hard-coded #/fs would yank the user
+          // elsewhere. A file tab (w:file) has no #/w/file/ collection form, so route
+          // to the files-table collection instead of the invalid #/w/file/<name>.
+          var delSec = sectionOfHash();
+          location.hash = delSec === 'w:file' ? '#/w/table/' + encodeURIComponent(table) : sectionHref(delSec, [table]);
         })
         .catch(function (e) { showToast('Delete failed: ' + e.message, {}); });
     }
 
     // Click-to-edit on rendered values. Reuses fieldFor() for the input and the
-    // same PATCH → invalidate → refreshEntities chain as renderDetail's save.
-    function wireFsEdit(content, table, id, t, row) {
-      content.querySelectorAll('.fs-field-val.ce').forEach(function (cell) {
-        cell.addEventListener('click', function (e) {
-          if (cell.classList.contains('editing')) return;
-          if (e.target && e.target.closest('a, button, input, textarea, select')) return;
-          var col = cell.getAttribute('data-col');
-          var current = row[col];
-          cell.classList.add('editing');
-          cell.innerHTML = fieldFor(col, current == null ? '' : current, t);
-          var input = cell.querySelector('input, textarea, select');
-          if (!input) { cell.classList.remove('editing'); cell.innerHTML = fsValInner(table, row, col); return; }
-          input.focus();
-          if (input.select) { try { input.select(); } catch (_) { /* ignore */ } }
-          var done = false;
-          function repaint() { cell.classList.remove('editing'); cell.innerHTML = fsValInner(table, row, col); }
-          function finish(save) {
-            if (done) return; done = true;
-            if (!save) { repaint(); return; }
-            var val = input.value === '' ? null : input.value;
-            var before = current == null ? '' : String(current);
-            if ((val == null ? '' : String(val)) === before) { repaint(); return; }
-            var body = {}; body[col] = val;
-            fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id), {
-              method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-            }).then(function () {
-              row[col] = val; invalidate(table); return refreshEntities();
-            }).then(function () {
-              repaint(); showToast('Updated', { undo: undoLast });
-            }).catch(function (err) { showToast('Save failed: ' + err.message, {}); repaint(); });
-          }
-          input.addEventListener('blur', function () { finish(true); });
-          input.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
-            else if (ev.key === 'Enter' && input.tagName !== 'TEXTAREA') { ev.preventDefault(); finish(true); }
-            else if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); finish(true); }
-          });
-        });
-      });
-    }
-
+    // same PATCH → invalidate → refreshEntities chain as the fields editor's save.
 `;

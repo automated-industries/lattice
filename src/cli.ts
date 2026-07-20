@@ -9,6 +9,7 @@ import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { detectInstallContext } from './update-context.js';
 import { startGuiServer, openUrl } from './gui/server.js';
+import { isLoopbackHost } from './gui/origin-guard.js';
 import { probeRunningGui } from './gui/probe-running.js';
 import { superviseGui } from './gui/supervisor.js';
 import { ensureRootForGui } from './framework/gui-bootstrap.js';
@@ -56,7 +57,11 @@ interface ParsedArgs {
   cleanup: boolean;
   port: number;
   noOpen: boolean;
+  /** `false` when `--no-auto-update` (or env LATTICE_NO_AUTO_UPDATE=1) disables the GUI's auto-update. */
+  autoUpdate: boolean;
   host: string;
+  /** --allow-remote — required to bind the unauthenticated GUI to a non-loopback host. */
+  allowRemote: boolean;
   /** --name <display> — workspace / user display name (workspace create, gui). */
   displayName?: string | undefined;
   /** --json — emit machine-readable JSON instead of formatted text (doctor). */
@@ -69,6 +74,8 @@ interface ParsedArgs {
   topK?: number | undefined;
   /** --explain — print the hybrid-search score breakdown (`search`). */
   explain: boolean;
+  /** --fix — let `doctor` rebuild stale native vector indexes it finds. */
+  fix: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -89,7 +96,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   let cleanup = false;
   let port = 4317;
   let noOpen = false;
+  let autoUpdate = true;
   let host = '127.0.0.1';
+  let allowRemote = false;
   let subcommand: string | undefined;
   let displayName: string | undefined;
   let root: string | undefined;
@@ -98,6 +107,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let table: string | undefined;
   let topK: number | undefined;
   let explain = false;
+  let fix = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -117,6 +127,16 @@ function parseArgs(argv: string[]): ParsedArgs {
     // `lattice search <query>` — the next positional is the query text.
     if (command === 'search' && argv[1] !== undefined && !argv[1].startsWith('-')) {
       query = argv[1];
+      i = 2;
+    }
+    // `lattice reindex <table>` — the next positional is the table name.
+    if (command === 'reindex' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      table = argv[1];
+      i = 2;
+    }
+    // `lattice index <subcommand>` — e.g. `index status`.
+    if (command === 'index' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      subcommand = argv[1];
       i = 2;
     }
   }
@@ -161,9 +181,13 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (!isNaN(parsed)) port = parsed;
     } else if (arg === '--no-open') {
       noOpen = true;
+    } else if (arg === '--no-auto-update') {
+      autoUpdate = false;
     } else if (arg === '--host' && i + 1 < argv.length) {
       i++;
       host = argv[i] ?? host;
+    } else if (arg === '--allow-remote') {
+      allowRemote = true;
     } else if (arg === '--name' && i + 1 < argv.length) {
       i++;
       displayName = argv[i];
@@ -174,6 +198,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       json = true;
     } else if (arg === '--explain') {
       explain = true;
+    } else if (arg === '--fix') {
+      fix = true;
     } else if (arg === '--table' && i + 1 < argv.length) {
       i++;
       table = argv[i];
@@ -204,7 +230,11 @@ function parseArgs(argv: string[]): ParsedArgs {
     cleanup,
     port,
     noOpen,
+    // Env var is the inheritance channel: the supervisor re-spawns the child via
+    // argv, but the desktop shell and any wrapper set the env instead — honor both.
+    autoUpdate: autoUpdate && process.env.LATTICE_NO_AUTO_UPDATE !== '1',
     host,
+    allowRemote,
     displayName,
     root,
     json,
@@ -212,6 +242,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     table,
     topK,
     explain,
+    fix,
   };
 }
 
@@ -236,8 +267,10 @@ function printHelp(): void {
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
-      '  doctor      Report retrieval health (FTS/embedding coverage, extensions)',
+      '  doctor      Report retrieval health (coverage, extensions; --fix rebuilds stale indexes)',
       '  search      Hybrid search a table (--table <t> [--explain] [--topk N])',
+      "  reindex     Rebuild a table's native vector index (reindex <table>)",
+      '  index       Vector index status (index status [--json])',
       '  update      Upgrade latticesql to the latest version',
       '',
       'Options (generate):',
@@ -275,6 +308,7 @@ function printHelp(): void {
       '  --output <dir>         Output directory for rendered context (default: ./context)',
       '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
       '  --no-open              Do not open the browser automatically',
+      '  --no-auto-update       Pin to the current version (disable the GUI auto-update)',
       '',
       'Options (init / workspace):',
       '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
@@ -440,7 +474,23 @@ async function runDoctor(args: ParsedArgs): Promise<void> {
   const db = new Lattice({ config: resolve(args.config) });
   try {
     await db.init();
-    const report = await db.diagnoseRetrieval();
+    let report = await db.diagnoseRetrieval();
+    if (args.fix) {
+      // Rebuild every index the report flagged stale, then re-diagnose so the
+      // printed report reflects the repaired state.
+      const stale = [
+        ...new Set(
+          [...report.issues, ...report.tables.flatMap((t) => t.issues)].flatMap((iss) =>
+            iss.kind === 'index_stale' && iss.table ? [iss.table] : [],
+          ),
+        ),
+      ];
+      for (const t of stale) {
+        process.stderr.write(`Rebuilding stale vector index for "${t}"…\n`);
+        await db.buildVectorIndex(t);
+      }
+      if (stale.length > 0) report = await db.diagnoseRetrieval();
+    }
     if (args.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
@@ -450,6 +500,93 @@ async function runDoctor(args: ParsedArgs): Promise<void> {
     // Exit non-zero when an error-severity issue exists, so `lattice doctor` can
     // gate CI / a deploy on retrieval health.
     if (!report.healthy) process.exitCode = 1;
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runReindex(args: ParsedArgs): Promise<void> {
+  if (!args.table) {
+    console.error('Usage: lattice reindex <table>');
+    process.exit(1);
+  }
+  const db = new Lattice({ config: resolve(args.config) });
+  try {
+    await db.init();
+    const n = await db.buildVectorIndex(args.table);
+    console.log(
+      n > 0
+        ? `Rebuilt native vector index for "${args.table}" (${String(n)} vectors).`
+        : `No native vector extension available — "${args.table}" uses the in-process scan.`,
+    );
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
+async function runIndex(args: ParsedArgs): Promise<void> {
+  const sub = args.subcommand ?? 'status';
+  if (sub !== 'status') {
+    console.error(`Unknown index subcommand: ${sub} (expected: status)`);
+    process.exit(1);
+  }
+  const db = new Lattice({ config: resolve(args.config) });
+  try {
+    await db.init();
+    const report = await db.diagnoseRetrieval();
+    const { getVectorIndexMeta } = await import('./search/vector-index.js');
+    const rows: {
+      table: string;
+      embeddings: number;
+      indexed: boolean;
+      builtAt: string | null;
+      vecDim: number | null;
+      hnswM: number | null;
+      hnswEfConstruction: number | null;
+      stale: boolean;
+    }[] = [];
+    for (const t of report.tables) {
+      const meta = await getVectorIndexMeta(db.adapter, t.table);
+      rows.push({
+        table: t.table,
+        embeddings: t.embeddingCount ?? 0,
+        indexed: meta !== null,
+        builtAt: meta?.builtAt ?? null,
+        vecDim: meta?.vecDim ?? null,
+        hnswM: meta?.hnswM ?? null,
+        hnswEfConstruction: meta?.hnswEfConstruction ?? null,
+        stale: t.issues.some((iss) => iss.kind === 'index_stale'),
+      });
+    }
+    if (args.json) {
+      console.log(
+        JSON.stringify(
+          { dialect: report.dialect, extensions: report.extensions, tables: rows },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(`Vector index status — ${report.dialect}`);
+      if (rows.length === 0) console.log('  (no embedding-enabled tables)');
+      for (const r of rows) {
+        const bits = [
+          `emb=${String(r.embeddings)}`,
+          r.indexed ? `indexed@${String(r.builtAt)}` : 'no-index',
+        ];
+        if (r.indexed && (r.hnswM !== null || r.hnswEfConstruction !== null)) {
+          bits.push(`hnsw(m=${String(r.hnswM)},ef_construction=${String(r.hnswEfConstruction)})`);
+        }
+        if (r.stale) bits.push('STALE — run `lattice reindex` or `doctor --fix`');
+        console.log(`  ${r.table}: ${bits.join(' ')}`);
+      }
+    }
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
@@ -652,7 +789,13 @@ async function runGui(args: ParsedArgs): Promise<void> {
   // self-updates with no manual refresh. The supervised child (and any
   // non-installable context — dev checkout, npx) falls through to run the server
   // directly. `LATTICE_GUI_SUPERVISED` prevents infinite re-supervision.
-  if (!process.env.LATTICE_GUI_SUPERVISED && detectInstallContext().installable) {
+  // `--no-auto-update` skips supervision entirely: run the server in place with
+  // no startup install and no background relaunch.
+  if (
+    args.autoUpdate &&
+    !process.env.LATTICE_GUI_SUPERVISED &&
+    detectInstallContext().installable
+  ) {
     try {
       await superviseGui({
         cliPath: process.argv[1] ?? '',
@@ -673,6 +816,18 @@ async function runGui(args: ParsedArgs): Promise<void> {
     // single switchable workspace. There is no "database mode" fallback — that
     // duality was the source of the inconsistent header/settings lists.
     if (args.root) process.env.LATTICE_ROOT = args.root;
+    // The GUI's data routes are UNAUTHENTICATED — safe only on the loopback. Binding
+    // to a non-loopback host exposes read/write/delete + the connector SSRF surface
+    // to the whole network, so require an explicit opt-in rather than a warning that
+    // is easy to miss. (The same-origin/Host guard still applies either way.)
+    if (!isLoopbackHost(args.host) && !args.allowRemote) {
+      console.error(
+        `Refusing to bind the GUI to non-loopback host "${args.host}": its data routes are ` +
+          `UNAUTHENTICATED and would be reachable from the network. Re-run with --allow-remote ` +
+          `if that is genuinely intended (and only behind your own network controls).`,
+      );
+      process.exit(1);
+    }
     const boot = ensureRootForGui({
       startDir: args.root ?? process.cwd(),
       configPath: resolve(args.config),
@@ -688,10 +843,14 @@ async function runGui(args: ParsedArgs): Promise<void> {
       outputDir: boot.contextDir,
       latticeRoot: boot.root,
       port,
+      // Honored only after the --allow-remote gate above; defaults to loopback.
+      host: args.host,
       openBrowser: !args.noOpen,
       autoRender: true,
       version: getVersion(),
       guiAssetsDir: getGuiAssetsDir(),
+      // Master switch: --no-auto-update (or LATTICE_NO_AUTO_UPDATE=1) pins the version.
+      autoUpdate: args.autoUpdate,
       // Only a supervised child polls + relaunches: exiting to apply an update is
       // safe solely when the supervisor is there to respawn it.
       selfUpdate: process.env.LATTICE_GUI_SUPERVISED === '1',
@@ -862,6 +1021,12 @@ function main(): void {
       break;
     case 'search':
       void runSearch(args);
+      break;
+    case 'reindex':
+      void runReindex(args);
+      break;
+    case 'index':
+      void runIndex(args);
       break;
     default:
       console.error(`Unknown command: ${args.command}`);

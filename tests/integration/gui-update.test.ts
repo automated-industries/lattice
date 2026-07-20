@@ -14,7 +14,15 @@ afterEach(async () => {
 });
 
 async function bootVirgin(version: string): Promise<GuiServerHandle> {
-  const h = await startGuiServer({ port: 0, openBrowser: false, version });
+  const h = await startGuiServer({
+    port: 0,
+    openBrowser: false,
+    version,
+    // The server now builds an update service on every versioned surface, whose
+    // default check hits the npm registry. Inject a deterministic "up to date"
+    // probe so these route-shape tests make no real network call.
+    updateCheck: () => Promise.resolve(null),
+  });
   servers.push(h);
   return h;
 }
@@ -38,6 +46,7 @@ function fakeUpdateService(status: UpdateStatus): {
 async function bootWithUpdateService(
   version: string,
   status: UpdateStatus,
+  opts: { desktopApplyUpdate?: () => void } = {},
 ): Promise<{ handle: GuiServerHandle; checkNow: ReturnType<typeof vi.fn> }> {
   const { service, checkNow } = fakeUpdateService(status);
   const handle = await startGuiServer({
@@ -45,6 +54,7 @@ async function bootWithUpdateService(
     openBrowser: false,
     version,
     updateServiceFactory: () => service,
+    ...(opts.desktopApplyUpdate ? { desktopApplyUpdate: opts.desktopApplyUpdate } : {}),
   });
   servers.push(handle);
   return { handle, checkNow };
@@ -75,6 +85,7 @@ async function bootConfigured(version: string): Promise<GuiServerHandle> {
     port: 0,
     openBrowser: false,
     version,
+    updateCheck: () => Promise.resolve(null), // no real network in tests
   });
   servers.push(h);
   return h;
@@ -97,7 +108,7 @@ describe('GET /api/version', () => {
 });
 
 describe('GET /api/update/status', () => {
-  it('reports a disabled (not-installable) status when self-update is off', async () => {
+  it('reports a not-installable, no-action status when self-update is off', async () => {
     const { url } = await bootVirgin('1.2.3');
     const res = await fetch(`${url}/api/update/status`);
     expect(res.status).toBe(200);
@@ -106,16 +117,19 @@ describe('GET /api/update/status', () => {
     expect(body.installable).toBe(false);
     expect(body.installing).toBe(false);
     expect(body.lastError).toBeNull();
+    expect(body.action).toBe('none');
   });
 });
 
 describe('POST /api/update/apply', () => {
-  it('kicks off the update and returns { ok: true, status } when an update service is present', async () => {
+  it('kicks off the npm update (upgrade-in-place) and returns { ok: true, status }', async () => {
     const status: UpdateStatus = {
       current: '1.0.0',
       latest: '2.0.0',
       kind: 'global',
       installable: true,
+      autoUpdate: true,
+      action: 'upgrade-in-place',
       checking: false,
       installing: false,
       lastError: null,
@@ -130,7 +144,53 @@ describe('POST /api/update/apply', () => {
     expect(checkNow).toHaveBeenCalledWith(true);
   });
 
-  it('returns { ok: false, error } when no update service is available', async () => {
+  it('runs the desktop binary updater (restart-to-update) instead of the npm path', async () => {
+    const status: UpdateStatus = {
+      current: '1.0.0',
+      latest: '2.0.0',
+      kind: 'desktop',
+      installable: false,
+      autoUpdate: true,
+      action: 'restart-to-update',
+      checking: false,
+      installing: false,
+      lastError: null,
+    };
+    const desktopApplyUpdate = vi.fn();
+    const { handle, checkNow } = await bootWithUpdateService('1.0.0', status, {
+      desktopApplyUpdate,
+    });
+    const res = await fetch(`${handle.url}/api/update/apply`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(desktopApplyUpdate).toHaveBeenCalledTimes(1);
+    // Desktop never uses the npm install path.
+    expect(checkNow).not.toHaveBeenCalled();
+  });
+
+  it('returns { ok: false } when auto-update is disabled', async () => {
+    const status: UpdateStatus = {
+      current: '1.0.0',
+      latest: '2.0.0',
+      kind: 'global',
+      installable: true,
+      autoUpdate: false,
+      action: 'none',
+      checking: false,
+      installing: false,
+      lastError: null,
+    };
+    const { handle, checkNow } = await bootWithUpdateService('1.0.0', status);
+    const res = await fetch(`${handle.url}/api/update/apply`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(false);
+    expect(String(body.error)).toMatch(/disabled/i);
+    expect(checkNow).not.toHaveBeenCalled();
+  });
+
+  it('returns { ok: false, error } when the surface offers no apply action', async () => {
     const { url } = await bootVirgin('1.2.3');
     const res = await fetch(`${url}/api/update/apply`, { method: 'POST' });
     expect(res.status).toBe(200);

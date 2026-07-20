@@ -94,4 +94,25 @@ describe('deriveUpdatesFromFile', () => {
       { table: 'agents', pk: { id: 'a1' }, set: { status: 'archived', role: 'Commander' } },
     ]);
   });
+
+  it('never truncates a multi-line field to its first line (write-back safety guard)', () => {
+    // The default render puts a multi-line value on a `- **key:** first` bullet
+    // followed by continuation lines; the body parser reads it back as only the
+    // first line. Editing a DIFFERENT field must NOT clobber the multi-line field
+    // with just its first line (the silent data loss the deleted long-form e2e
+    // used to guard).
+    const multi: Row = { id: 'a1', title: 'Old', body: 'Para one.\n\nPara two.' };
+    const content = '# Old\n\n- **title:** New Title\n- **body:** Para one.\n\nPara two.\n';
+    expect(deriveUpdatesFromFile(content, multi, { table: 'notes', pkCols: ['id'] })).toEqual([
+      { table: 'notes', pk: { id: 'a1' }, set: { title: 'New Title' } },
+    ]);
+  });
+
+  it('still applies a genuine single-line field edit (the guard is narrow)', () => {
+    const r: Row = { id: 'a1', title: 'Old', body: 'keep' };
+    const content = '# Old\n\n- **title:** New\n- **body:** keep\n';
+    expect(deriveUpdatesFromFile(content, r, { table: 'notes', pkCols: ['id'] })).toEqual([
+      { table: 'notes', pk: { id: 'a1' }, set: { title: 'New' } },
+    ]);
+  });
 });

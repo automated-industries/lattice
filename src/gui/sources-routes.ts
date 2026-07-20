@@ -15,6 +15,7 @@ import type { Lattice } from '../lattice.js';
 import { configDir } from '../framework/user-config.js';
 import { localFileOpenEnabled } from './files-routes.js';
 import type { LocalFileIngestResult } from './ingest-routes.js';
+import type { FeedBus } from './feed.js';
 import { sendJson, readJson } from './http.js';
 
 /**
@@ -42,6 +43,8 @@ export interface SourcesRouteDeps {
   configPath: string;
   pathname: string;
   method: string;
+  /** Optional activity feed for live progress signals. */
+  feed?: FeedBus;
 }
 
 /** A registered on-disk source the user added to the sidebar. */
@@ -56,6 +59,18 @@ interface SourceRoot {
 const MAX_LIST_ENTRIES = 2000;
 const MAX_INGEST_FILES = 500;
 const MAX_INGEST_DEPTH = 8;
+// Upper bound on how many file paths a single folder ingest will COLLECT before it
+// stops walking. The cap that matters is MAX_INGEST_FILES *successful* ingests (below);
+// this is only a memory guard so a pathological tree can't collect an unbounded path
+// list. Set well above MAX_INGEST_FILES so skipped files (too-large / unreadable) never
+// starve the success budget — the reason the collect cap is NOT MAX_INGEST_FILES.
+const MAX_INGEST_SCAN = 5000;
+// How many files a folder ingest processes at once. The per-file bottleneck is
+// network-bound LLM enrichment (summary + classify + extract) plus vision, so a
+// small fan-out collapses wall-clock without flooding the model API. DB writes stay
+// safe under this: row inserts are atomic auto-commits, and the schema mutations they
+// trigger (new entity / column / junction) serialize behind the Lattice schema lock.
+const INGEST_CONCURRENCY = 4;
 // Directories never worth ingesting (huge, derived, or VCS internals).
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.DS_Store', '__pycache__', '.venv', 'venv']);
 
@@ -231,16 +246,81 @@ function readdirSafe(dir: string) {
   }
 }
 
+// --- Ingest progress throttle -----------------------------------------------
+
+/**
+ * Decide whether to publish an ingest-progress event now. Throttles to at most
+ * one per 5 completions or per 2 seconds (whichever first allows), and always
+ * permits terminal events (done >= total).
+ *
+ * State is NOT persisted across calls — each call is independent. The caller
+ * must track state across ingest phases.
+ *
+ * @param done Number of files successfully ingested so far.
+ * @param total Total files to ingest.
+ * @param prevDone Files ingested when the last event was published (or 0 on init).
+ * @param prevTime Timestamp of the last published event (or 0 on init), in ms.
+ * @param nowFn Clock function returning current time in ms (default Date.now).
+ * @returns True if an event should be published now.
+ */
+export function shouldPublishIngestProgress(
+  done: number,
+  total: number,
+  prevDone: number,
+  prevTime: number,
+  nowFn: () => number = Date.now,
+): boolean {
+  const now = nowFn();
+  // Always publish when done (terminal event).
+  if (done >= total) return true;
+  // First event (prevTime = 0) or 5+ files completed since last event.
+  if (prevTime === 0 || done - prevDone >= 5) return true;
+  // 2+ seconds since last event.
+  if (now - prevTime >= 2000) return true;
+  return false;
+}
+
 // --- Bounded folder ingest (BFS) --------------------------------------------
 
-async function ingestFolder(
+interface IngestFolderCaps {
+  maxFiles?: number;
+  maxScan?: number;
+  maxDepth?: number;
+}
+
+interface IngestFolderResult {
+  ingested: number;
+  skipped: number;
+  /** Total file paths collected in phase 1 before stopping. */
+  scanned: number;
+  /** True if phase 1 stopped collection at MAX_INGEST_SCAN / caps.maxScan. */
+  scanTruncated: boolean;
+  /** True if phase 2 stopped at MAX_INGEST_FILES / caps.maxFiles success cap. */
+  capped: boolean;
+}
+
+// Exported for tests: the `caps` override is the only way to exercise the cap
+// paths without creating hundreds of files, and it is not exposed via any route.
+export async function ingestFolder(
   abs: string,
   ingestFile: (p: string) => Promise<LocalFileIngestResult>,
-): Promise<{ ingested: number; skipped: number }> {
-  let ingested = 0;
-  let skipped = 0;
+  db: Lattice,
+  caps?: IngestFolderCaps,
+  feed?: FeedBus,
+): Promise<IngestFolderResult> {
+  const maxFiles = caps?.maxFiles ?? MAX_INGEST_FILES;
+  const maxScan = caps?.maxScan ?? MAX_INGEST_SCAN;
+  const maxDepth = caps?.maxDepth ?? MAX_INGEST_DEPTH;
+
+  // Phase 1 — bounded BFS to COLLECT the files to ingest. The directory walk is cheap
+  // (readdir only) and stays sequential + ordered so the depth bound is deterministic
+  // and the file order matches the old loop. Collection stops at maxScan purely
+  // as a memory guard — the meaningful cap (maxFiles successful ingests) is
+  // applied in phase 2, so skipped files here don't reduce how many real files ingest.
+  const files: string[] = [];
   const queue: { dir: string; depth: number }[] = [{ dir: abs, depth: 0 }];
-  while (queue.length) {
+  let scanTruncated = false;
+  walk: while (queue.length) {
     const item = queue.shift();
     if (!item) break;
     const { dir, depth } = item;
@@ -251,16 +331,113 @@ async function ingestFolder(
       if (d.isSymbolicLink()) continue;
       const full = join(dir, d.name);
       if (d.isDirectory()) {
-        if (depth + 1 <= MAX_INGEST_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+        if (depth + 1 <= maxDepth) queue.push({ dir: full, depth: depth + 1 });
       } else if (d.isFile()) {
-        if (ingested >= MAX_INGEST_FILES) return { ingested, skipped };
-        const r = await ingestFile(full);
-        if (r.id) ingested++;
-        else skipped++;
+        files.push(full);
+        if (files.length >= maxScan) {
+          scanTruncated = true;
+          break walk;
+        }
       }
     }
   }
-  return { ingested, skipped };
+
+  // Publish initial progress event if feed is available.
+  if (feed) {
+    feed.publish({
+      table: null,
+      op: 'ingest_progress',
+      rowId: null,
+      source: 'ingest',
+      summary: `Ingesting 0 of ${String(files.length)} files…`,
+      progress: { done: 0, total: files.length },
+    });
+  }
+
+  // Phase 2 — ingest the collected files with a bounded concurrent worker pool.
+  // Suspend auto-render for the WHOLE batch: each of up to maxFiles writes would
+  // otherwise schedule its own render, and because the writes are separated by seconds of
+  // LLM latency the debounce can't coalesce them — so each render re-scanned the growing
+  // file set (O(N²)). The finally arms exactly ONE coalesced render over everything.
+  //
+  // A hand-rolled pool (not mapWithConcurrency) because it needs two properties the plain
+  // map lacks: (1) STOP once maxFiles files have SUCCESSFULLY ingested — matching
+  // the old sequential loop's "cap on successes, not on files examined", so a run of
+  // too-large/unreadable files never shrinks how many real files get in; and (2) a file
+  // that throws (ingestLocalFile is meant not to, but persist()/createRow can still raise
+  // a DB error) is counted as skipped and the pool keeps going — one bad file must not
+  // reject the whole batch and leave sibling workers writing AFTER resumeAutoRender ran.
+  db.pauseAutoRender();
+  let ingested = 0;
+  let skipped = 0;
+  let lastProgressTime = 0;
+  let lastProgressDone = 0;
+  try {
+    let nextIdx = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (ingested >= maxFiles) return; // success cap reached — stop pulling
+        const file = files[nextIdx++];
+        if (file === undefined) return; // past the last file
+        let r: LocalFileIngestResult | null = null;
+        try {
+          r = await ingestFile(file);
+        } catch (e) {
+          // ingestLocalFile is documented not to throw, but a DB/schema error in
+          // persist() can still escape. Surface it and treat the file as skipped —
+          // never let it reject the batch (Promise.all would abort the pool and leave
+          // the other workers writing past the auto-render resume).
+          console.error(`[ingest] file failed: ${file}: ${(e as Error).message}`);
+        }
+        if (r?.id) ingested++;
+        else skipped++;
+        // Publish throttled progress if feed is available.
+        if (
+          feed &&
+          shouldPublishIngestProgress(ingested, files.length, lastProgressDone, lastProgressTime)
+        ) {
+          lastProgressTime = Date.now();
+          lastProgressDone = ingested;
+          feed.publish({
+            table: null,
+            op: 'ingest_progress',
+            rowId: null,
+            source: 'ingest',
+            summary: `Ingesting ${String(ingested)} of ${String(files.length)} files…`,
+            progress: { done: ingested, total: files.length },
+          });
+        }
+      }
+    };
+    const poolSize = Math.max(1, Math.min(INGEST_CONCURRENCY, files.length));
+    await Promise.all(Array.from({ length: poolSize }, () => worker()));
+    // capped is only meaningful if we actually hit the limit AND there were more files
+    const hitFileCap = ingested >= maxFiles && nextIdx < files.length;
+
+    // Publish the terminal progress event if feed is available. `terminal` is
+    // explicit because a capped run ends with done < total — the client must
+    // not have to guess completion from the counts.
+    if (feed) {
+      feed.publish({
+        table: null,
+        op: 'ingest_progress',
+        rowId: null,
+        source: 'ingest',
+        summary: `Ingested ${String(ingested)} of ${String(files.length)} files`,
+        progress: { done: ingested, total: files.length, terminal: true },
+      });
+    }
+
+    return {
+      ingested,
+      skipped,
+      scanned: files.length,
+      scanTruncated,
+      capped: hitFileCap,
+    };
+  } finally {
+    db.resumeAutoRender();
+  }
 }
 
 // --- Dispatcher --------------------------------------------------------------
@@ -318,8 +495,9 @@ export async function dispatchSourcesRoute(
       writeRoots(configPath, roots);
     }
     // Ingest on add (drives the brain-graph animation via source:'ingest' feed).
-    let result: { ingested: number; skipped: number } | LocalFileIngestResult;
-    if (kind === 'folder') result = await ingestFolder(abs, ingestFile);
+    let result: IngestFolderResult | LocalFileIngestResult;
+    if (kind === 'folder')
+      result = await ingestFolder(abs, ingestFile, deps.db, undefined, deps.feed);
     else result = await ingestFile(abs);
     sendJson(res, { root, result });
     return true;
@@ -374,7 +552,7 @@ export async function dispatchSourcesRoute(
       sendJson(res, { error: 'path is outside any registered source root' }, 403);
       return true;
     }
-    sendJson(res, await ingestFolder(abs, ingestFile));
+    sendJson(res, await ingestFolder(abs, ingestFile, deps.db, undefined, deps.feed));
     return true;
   }
 

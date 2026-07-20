@@ -15,6 +15,7 @@ import {
   CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from '../../cloud/settings.js';
 import { setRowVisibility, grantRow, revokeRow, batchRowGrants } from '../../cloud/members.js';
+import { cascadeDashboardDataShare } from '../dashboard-share-cascade.js';
 import { memberGroupFor } from '../../cloud/rls.js';
 import { getAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
 
@@ -232,6 +233,12 @@ export async function dispatchCloudSettings(
         return;
       }
       await setRowVisibility(ctx.db, table, pk, visibility);
+      // Sharing a dashboard cascades to the data it reads so recipients don't get an
+      // empty page. One-way: only when it becomes visible to everyone — never on
+      // 'private' (unsharing a dashboard leaves its data shared).
+      if (table === 'dashboards' && visibility === 'everyone') {
+        await cascadeDashboardDataShare(ctx.db, pk, 'everyone');
+      }
       sendJson(res, { ok: true, table, pk, visibility });
     });
     return true;
@@ -258,6 +265,11 @@ export async function dispatchCloudSettings(
       }
       if (revoke) await revokeRow(ctx.db, table, pk, grantee);
       else await grantRow(ctx.db, table, pk, grantee);
+      // Cascade a dashboard grant to its data for the SAME person. One-way: only on
+      // grant, never on revoke (unsharing a dashboard leaves its data shared).
+      if (table === 'dashboards' && !revoke) {
+        await cascadeDashboardDataShare(ctx.db, pk, 'custom', [grantee]);
+      }
       sendJson(res, { ok: true, table, pk, grantee, revoked: revoke });
     });
     return true;
@@ -289,6 +301,11 @@ export async function dispatchCloudSettings(
         return;
       }
       await batchRowGrants(ctx.db, table, pk, grant, revoke);
+      // Cascade a dashboard's newly-granted people to its data. One-way: only the
+      // `grant` list cascades — the `revoke` list never un-shares the data.
+      if (table === 'dashboards' && grant.length > 0) {
+        await cascadeDashboardDataShare(ctx.db, pk, 'custom', grant);
+      }
       sendJson(res, { ok: true, table, pk, granted: grant, revoked: revoke });
     });
     return true;

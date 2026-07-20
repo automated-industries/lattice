@@ -105,6 +105,24 @@ describe('generateHtmlFile (delegated HTML authoring)', () => {
       }),
     ).rejects.toThrow(/HTML/i);
   });
+
+  // Regression: a dashboard's lattice.sql runs against BOTH SQLite (local/desktop)
+  // and Postgres (cloud). A Postgres-only construct (`::` cast, `:name`/`$1` param,
+  // date_trunc/to_char) throws "unrecognized token" at render time on a SQLite
+  // workspace, leaving a broken tile. The authoring prompt must keep steering the
+  // model to the portable subset (CAST, substr-based date buckets, no `::`/params).
+  it('instructs the model to write PORTABLE SQL (no :: casts / params / engine-specific date fns)', async () => {
+    let seen: TurnParams | undefined;
+    const client = fakeClient('<!doctype html><html><body>x</body></html>', (p) => {
+      seen = p;
+    });
+    await generateHtmlFile({ client, schema: '', spec: 's' });
+    const sys = seen?.system ?? '';
+    expect(sys.toLowerCase()).toContain('portable');
+    expect(sys).toContain('CAST(');
+    expect(sys).toContain('::'); // the prohibition names the Postgres shorthand it forbids
+    expect(sys).toContain('substr(col,1,7)'); // the portable month-bucket idiom
+  });
 });
 
 describe('htmlAuthorModelForAuth', () => {

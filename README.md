@@ -74,6 +74,8 @@ provenance** + a **trust/verification** workflow), reliability (**`withRetry`** 
 seamless **keyless cloud file-byte access** (an in-database SigV4 presigner). All
 opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
 
+**New in 5.0 (major release).** 5.0 reframes the GUI around an **Analytics view** — ask a question about your data and Lattice answers, building a **dashboard** when a picture answers best (the docked assistant is **"Ask Lattice"**). It adds **connected external data**: link a Postgres/other database or an **MCP server** and its tables mirror in as **typed, read-only** tables grouped under the source's name; **import intelligence** (`import_spreadsheet`, faithful every-row import, multi-table Excel sheets); **computed tables** (live read-only projections); and a rebuilt **chat** that acknowledges instantly and streams the answer in the background (reload never cancels an in-flight turn). **Breaking / consumer-facing changes:** the bespoke **Jira/Trello connector exports are removed** (connectors are now MCP-based); the per-user **Anthropic API-key** assistant path is retired in favor of built-in **OAuth** plus a generic **"Other AI Endpoint"** provider (base URL + key + model); and the inference-aggressiveness slider is gone (a fixed high default). Existing 3.0+/4.x configs and data silently upgrade on GUI open. Under the hood, four substrate pieces also land: (1) A **native vector search substrate**: the pgvector / sqlite-vec index now **stays in sync with writes** (inserts/updates/deletes mirror incrementally; a freshness guard falls back to an exact scan rather than ever serving a stale index), **semantic + hybrid search work for scoped cloud members** confined to the rows they may see (via a `SECURITY DEFINER` path keyed on the member's own role — an exact scan with no over-fetch inference channel), and the index is **tunable + observable** (`embeddings.index = { m, efConstruction }`, query-time `efSearch`, an internal index registry, and `lattice reindex` / `lattice index status` / `lattice doctor --fix`), and can be stored at **16-bit half precision** (`embeddings.index.quantization = 'halfvec'`, pgvector ≥ 0.7) to roughly halve its memory while the exact-scan fallback stays full precision. All opt-in; omit the knobs and the build/query is byte-identical to before. (2) A **live force-directed brain graph** across all three GUI graph surfaces (schema, per-object, and folder) — a dependency-free physics engine + live SVG renderer with drag-to-pin, zoom, neighbor highlight, and fly-in growth. (3) **Auto-update is now visible on every surface** (npm, desktop, and dev builds — previously only the npm-supervised CLI surfaced the pill), a long-open desktop window notices new releases on its own, and a `--no-auto-update` / `LATTICE_NO_AUTO_UPDATE=1` switch (default on) pins the version for testing, air-gapped, and reproducible-demo runs. (4) **Data provenance + lineage.** Every object's page now traces where its data came from across three tiers — **raw** (files / connectors), **computed** (imports / artifacts), and **observation** (AI / learning-loop edits) — via `GET /api/provenance`, shown as a force-directed graph or a grouped source table, with a per-row provenance panel; an additive internal lineage substrate (`__lattice_lineage` + an audit `source` column) records source→object edges. Relatedly, the brain graph now shows **object↔object relationships only** (`files` is a source, not a node) and the sidebar groups are collapsible. See **[docs/retrieval.md](docs/retrieval.md)** and **[docs/desktop.md](docs/desktop.md)**.
+
 **New in 4.0 (major release — mostly drop-in):** a major version that decomposes the three largest internal modules and hardens the cloud path for many simultaneous users, while keeping the `Lattice` / GUI surface stable. **Existing 3.0+ configs and databases are migrated forward SILENTLY on open** — you usually need to do nothing. The breaking changes are auto-handled on open (or clearly documented): the per-field `ref:` shorthand is still parsed (and the GUI rewrites it to the explicit `relations:` block on disk); a legacy empty-string `deleted_at` is normalized to `NULL`; a legacy `files.path`-only row is backfilled into the reference model; the render manifest is v2-only and self-upgrades on first render. The one consumer-code change: the exported `MEMBER_GROUP` constant is replaced by **`memberGroupFor(db)`** (the member group role is now **per-cloud** — derived from the database/schema — so unrelated clouds on one Postgres cluster no longer share a group). Opening a cloud workspace is now **much faster** (one batched schema introspection instead of per-table round-trips; the owner-side RLS/grant convergence runs in the background since the owner is BYPASSRLS). See **[docs/MIGRATING-4.0.md](docs/MIGRATING-4.0.md)** for the (mostly no-op) migration and the manual steps for library/non-GUI consumers.
 
 **New in 3.4:** the browser GUI now **updates itself** — launched from an npm install it silently installs the latest published version and keeps checking in the background, relaunching on the same port while the open tab auto-reloads onto the new build (a git checkout / `npx` copy is left untouched); **file loopback** — editing a rendered `.md` context file on disk flows back into the database through the normal write path (changelog/versioned/undoable, live in the GUI), with a public [`reverseSyncFromFiles()`](docs/api-reference.md) for embedders; on a cloud, a member's **rendered context is now scoped to their own visibility** (rendered through their RLS connection + masking view, so their assistant only ever reads rows they may see); the assistant gains a **`get_row_context`** tool (reads a record's pre-joined rendered context in one call) and **`add_column`** (add a field to an existing table on request); and the cloud gets resilience + search fixes — the open-time converge is **per-table fault-isolated** (one un-manageable table no longer breaks the whole workspace), `migrate-to-cloud` now builds the full-text index (with a public [`rebuildFtsIndexes()`](docs/api-reference.md)), and a plaintext `postgres://` URL in a config is healed into an encrypted credential reference on open. New `GET /api/version`, `GET /api/update/status`, and `POST /api/workspaces/reload` endpoints. See [docs/workspaces.md](docs/workspaces.md), [docs/cloud.md](docs/cloud.md), and [docs/assistant.md](docs/assistant.md).
@@ -122,7 +124,7 @@ opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
 - [Pluggable backends (v1.6+)](#pluggable-backends-v16)
 - [Architecture](#architecture)
 - [Examples](#examples)
-- [Connectors (v4.3+)](#connectors-v43)
+- [MCP Connectors](#mcp-connectors)
 - [Staying up to date](#staying-up-to-date)
   - [Auto-update](#auto-update-v11)
 - [Telemetry](#telemetry)
@@ -1088,6 +1090,25 @@ await db.delete(table: string, id: PkLookup): Promise<void>
 ```typescript
 await db.delete('tasks', 'task-001');
 await db.delete('event_seats', { event_id: 'e-1', seat_no: 3 });
+```
+
+#### `transaction()` (v5.0+)
+
+```typescript
+await db.transaction<T>(fn: () => Promise<T>): Promise<T>
+```
+
+Run `fn` inside a single database transaction. Every write `fn` performs through this Lattice (`insert` / `update` / `delete` and their audit + changelog writes) commits together, or rolls back together if `fn` throws. Reads inside `fn` see its own uncommitted writes (read-your-writes). The transaction is scoped to the async context of `fn`, so two concurrent callers never accidentally share one; a nested `transaction()` reuses the outer transaction. When the adapter cannot open a transaction, `fn` runs without one.
+
+```typescript
+// Move every row from one table to another as one atomic unit — either all
+// rows move, or (on any error) nothing does.
+await db.transaction(async () => {
+  for (const row of rows) {
+    await db.insert('archive', row);
+    await db.delete('inbox', row.id);
+  }
+});
 ```
 
 #### `get()`
@@ -2166,11 +2187,14 @@ npx lattice gui
 npx lattice gui --config ./lattice.config.yml --output ./context --port 4317
 ```
 
-### File-system workspace (v2.0+)
+### GUI layout (Analytics view + workspace)
 
-By default the GUI is a **file-system-style workspace**. The home dashboard shows
-one card per object; clicking in opens that object's rows as a grid of **folder
-tiles** rather than a spreadsheet. Click a tile to open an **item view** that
+**In 5.0 the GUI opens on the Analytics view** — a Dashboards sidebar, a tabbed
+dashboard canvas, and the persistent **Ask Lattice** dock. Ask a question and Lattice
+answers there, building a dashboard when a picture answers best; the wrench toggles the
+**Configure** drawer (Data Model / Inputs / Workspace). The data-browsing surface below
+is unchanged and reachable from the sidebar: each object's rows open as a grid of
+**folder tiles** rather than a spreadsheet. Click a tile to open an **item view** that
 renders the row as a document built from its columns — long-form fields render as
 formatted markdown — alongside that row's relationships as **sub-folders** you can
 keep opening (e.g. _Authors → a person → Books → a book → Reviews_). A breadcrumb
@@ -2211,12 +2235,17 @@ across 9 tables") instead of a wall of near-identical rows. The feed is scoped t
 the open conversation: the assistant's data changes are saved with each turn and
 replayed as those cards when you reopen the chat. When the assistant references a record, it emits an inline object-link pill — a clickable chip that opens that row in the mode-aware navigator.
 
-Add a Claude API token in **User Settings → Assistant** (or set
-`ANTHROPIC_API_KEY`) to enable the **AI assistant**: ask questions about your
-data or instruct edits in natural language. The assistant calls the same
-operations the UI does, so its changes are audited, shown in the feed, and
-undoable. A Claude subscription can be connected instead via OAuth when the
-`ANTHROPIC_OAUTH_*` environment variables are configured.
+Connect the **AI assistant** in **User Settings → Assistant** to ask questions
+about your data or instruct edits in natural language. The assistant calls the
+same operations the UI does, so its changes are audited, shown in the feed, and
+undoable. The built-in path is **Connect with Claude** (a subscription OAuth flow —
+no env setup). Or point it at **any endpoint** via **Other AI Endpoint** — an
+OpenAI-compatible `chat/completions` server (OpenAI, Azure, OpenRouter, a local
+vLLM / Ollama / LM Studio server, or your own gateway) OR a Claude-API endpoint
+(the Anthropic wire is auto-selected for an Anthropic host) — the first-run screen
+takes a base URL, API key, and model, and every assistant feature then runs on it.
+(A managed deployment supplies the operator's model key via `ANTHROPIC_API_KEY`
+env; the per-user "paste an Anthropic key" path was retired in 5.0.)
 
 Optional extras, each enabled by its own key/binary:
 
@@ -2389,10 +2418,14 @@ a **Context Constructor** that turns dropped files and pasted text into linked
 Lattice objects. It is **GUI-only and inert until you configure a credential** —
 the library API is unchanged and fully backwards-compatible.
 
-- **Connect Claude.** Paste an Anthropic API key in **Settings → User → Assistant**
-  (or set `ANTHROPIC_API_KEY`); it's stored encrypted in the native `secrets`
-  entity. A subscription **Connect** link (PKCE) appears when the `ANTHROPIC_OAUTH_*`
-  values are set (see [`.env.example`](.env.example)).
+- **Connect the assistant.** The built-in path is **Connect with Claude** — a
+  subscription OAuth flow (PKCE) in **Settings → User → Assistant**, no env setup
+  required. To bring your own model instead, **Other AI Endpoint** takes a base URL +
+  API key + model (an OpenAI-compatible endpoint, or a Claude-API endpoint — the
+  Anthropic wire is auto-selected for an Anthropic host); the credential is stored
+  encrypted in the native `secrets` entity. (The former "paste an Anthropic API key"
+  path was retired in 5.0 — a managed deployment supplies the operator key via
+  `ANTHROPIC_API_KEY` env instead.)
 - **Drop files / paste text / images / URLs.** Sources become native `files` rows
   (referenced, not copied) and are extracted — documents (PDF / Office /
   OpenDocument / EPUB / RTF) parsed **natively in-process**, **images via Claude
@@ -2411,8 +2444,9 @@ the library API is unchanged and fully backwards-compatible.
   the optional `playwright` dependency is installed (graceful static fallback
   otherwise). Tunable via the `LATTICE_URL_*` env vars — see
   [`.env.example`](.env.example).
-- **Inference Aggressiveness** slider tunes how much the assistant extrapolates
-  (temperature + link liberality + auto-junction/auto-create gating).
+- **Inference** — the assistant extrapolates (link liberality + auto-junction/auto-create
+  gating) at a fixed high default. (The earlier user-facing "Inference Aggressiveness"
+  slider was removed in 5.0.)
 - **Context-aware.** The chat knows the record you're viewing, so "delete this
   file" / "summarize this" resolve to it; and it can answer questions about Lattice
   itself (e.g. "what is private mode?") via a `lattice_help` tool that searches
@@ -2805,6 +2839,8 @@ if (result.restartRequired) {
 
 `autoUpdate()` is safe to call on every startup — it skips if already on the latest version. Pass `{ quiet: true }` to suppress console output.
 
+The **GUI and desktop app** auto-update on their own: `lattice gui` (when installed via npm) installs newer versions and relaunches in the background, and the desktop app applies updates on relaunch. Both show an "Update available" link next to the version chip when a newer release is published. To pin to the current version, pass `lattice gui --no-auto-update` or set `LATTICE_NO_AUTO_UPDATE=1` (the latter also covers the desktop app, which has no CLI flags).
+
 **`AutoUpdateResult`**
 
 ```typescript
@@ -2858,76 +2894,62 @@ See Scarf's own [privacy documentation](https://docs.scarf.sh) for the upstream 
 
 ---
 
-## Connectors (v4.3+)
+## MCP Connectors
 
 Connectors sync data from external systems into Lattice as **connected data
 types** — tables whose rows are ingested from a source rather than authored
-locally. A connector talks to one external product directly using your own
-credentials. The built-in connector is **Jira**, which talks to Jira Cloud's
-REST + Agile APIs via [`jira.js`](https://github.com/MrRefactoring/jira.js) — no
-broker service, no extra API key.
+locally. Every connector is a standard **MCP connection**: Lattice runs as a
+local [Model Context Protocol](https://modelcontextprotocol.io) client and
+talks to the server directly from your machine — no broker, no provider-specific
+code. A provider is just another MCP server URL.
 
-`jira.js` is an **optional dependency** — install it only to use the connector:
+In the **GUI**, open **Configure → MCP Connectors**: paste a server URL, sign in
+with the provider's own OAuth in your browser (client identity via a client-ID
+metadata document, dynamic registration, or a pre-registered client id — the
+form asks only when the server requires one). Each server is **introspected at
+connect and modeled into typed, read-only tables — one per record kind** (scalar
+fields become real columns, nested data spills to a `data` JSON column),
+namespaced per connection and grouped under a **per-server header named for the
+server's brand** (e.g. an MCP server at `mcp.acme.com` → an **ACME** group with its
+own tables). A server that exposes nothing modelable falls back to a single flat
+`mcp_items` table. Connect any number of servers side by side; each row shows
+status, last sync, and Refresh / Disconnect / Reconnect. Tokens are stored
+encrypted on your machine and synced data stays local.
 
-```bash
-npm install jira.js
-```
-
-Connect, sync, and disconnect programmatically:
+Programmatically, the same engine is exposed as a library surface:
 
 ```typescript
 import {
-  JiraConnector,
+  genericConnector,
   createConnector,
   syncConnector,
   syncIfStale,
   disconnectConnector,
 } from 'latticesql';
 
-const connector = new JiraConnector();
-
-// 1. Validate + store the member's Atlassian credentials (site + email + API token):
-const { connectionId, displayName } = await connector.connect({
-  site: 'https://your-domain.atlassian.net',
-  email: 'you@example.com',
-  apiToken: process.env.JIRA_API_TOKEN!,
-});
-
-// 2. Register + sync (defines the six jira_* connected tables and ingests):
+const connector = genericConnector();
 const connectorId = await createConnector(db, {
-  connector: 'jira',
-  toolkit: 'jira',
-  displayName: displayName ?? 'jira',
-  connectionRef: connectionId,
+  connector: 'mcp',
+  toolkit: 'mcp',
+  displayName: 'My MCP server',
+  connectionRef: connectionId, // from the OAuth/stdio connect flow
   connectedBy: 'user-123',
 });
-await syncConnector(db, connector, connectorId);
-
-// 3. Keep fresh — no scheduler: re-sync on load if older than an hour.
-await syncIfStale(db, connector, connectorId);
-
-// 4. Disconnect — soft-deletes the ingested rows + drops the stored credentials.
-await disconnectConnector(db, connector, connectorId);
+await syncConnector(db, connector, connectorId); // ingest (idempotent upserts)
+await syncIfStale(db, connector, connectorId); // re-sync on load if > 1h old
+await disconnectConnector(db, connector, connectorId); // soft teardown
 ```
 
-Connected tables (`jira_projects`, `jira_issues`, `jira_comments`, `jira_users`,
-`jira_boards`, `jira_sprints`) are full Lattice tables: queryable, full-text
-searchable, rendered to context, and linked on the graph (issue → project,
-comment → issue, …). Each row carries immutable lineage (`_source_connector_id`,
-`_source_model`); a re-sync upserts on the natural key and soft-deletes rows that
-vanished from the source.
+Connected rows are full Lattice rows: queryable, full-text searchable, rendered
+to context, per-member `private` by default on a cloud
+(`enableConnectorRls(db, connector, 'mcp')`), and stamped with immutable lineage
+(`_source_connector_id`, `_source_model`). A re-sync upserts on the natural key
+and soft-deletes rows that vanished from the source.
 
-On a cloud workspace, the owner calls `enableConnectorRls(db, connector, 'jira')`
-to scope connected rows per member (private by default, or shared per type).
-
-In the **GUI**, all of this is point-and-click: open **Settings → Connectors**,
-enter your Jira site URL + email + API token, and connect / refresh / disconnect.
-Connected data types show a "Connected" badge in the Objects list.
-
-See [docs/connectors.md](docs/connectors.md) for the full guide and the connector
-SPI (to add a new connector).
-
----
+See [docs/connectors.md](docs/connectors.md) for the full guide — the OAuth
+client-identity mechanisms, the privacy model, the per-server typed-table
+modeling (with the `mcp_items` fallback), and the connector SPI for embedding a
+specific provider.
 
 ## Contributing
 
