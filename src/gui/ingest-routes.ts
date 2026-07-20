@@ -4,6 +4,7 @@ import { writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
+import { normalizeUserUrl } from '../sources/url-safety.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, type MutationCtx } from './mutations.js';
 import { parseFile, describe, type ExtractResult } from './ai/extract.js';
@@ -322,10 +323,11 @@ function extractSource(
   });
 }
 
-/** A pasted body that is exactly one http(s) URL — a candidate to crawl. */
+/** A pasted body that is exactly one web address — a candidate to crawl. Accepts a scheme-prefixed
+ *  URL OR a bare domain the user typed (no scheme); still single-token (no internal whitespace). */
 export function looksLikeUrl(s: string): boolean {
   const t = s.trim();
-  return /^https?:\/\/\S+$/i.test(t) && !/\s/.test(t);
+  return !/\s/.test(t) && normalizeUserUrl(t) !== null;
 }
 
 function readBuffer(req: IncomingMessage, maxBytes = MAX_INGEST_BYTES): Promise<Buffer> {

@@ -38,6 +38,7 @@ function publishDashboardQaNote(
   });
 }
 import { FetchBudget } from '../../../ai/fetch-policy.js';
+import { normalizeUserUrl } from '../../../sources/url-safety.js';
 import {
   findTableDuplicates,
   mergeDuplicates,
@@ -99,26 +100,34 @@ export function isWriteConflict(e: unknown): boolean {
   return !!e && typeof e === 'object' && (e as { code?: string }).code === 'row_write_conflict';
 }
 
-/** Normalize a URL for comparison: lowercased host, no trailing slash, no hash. */
+/** Normalize a URL for comparison: lowercased host, no trailing slash, no hash. Infers a scheme
+ *  for a bare domain (via normalizeUserUrl) so "automatedindustries.ai" compares equal to itself. */
 export function normalizeUrl(s: string): string | null {
-  try {
-    const u = new URL(s.trim());
-    const path = u.pathname.replace(/\/+$/, '');
-    return `${u.protocol}//${u.host.toLowerCase()}${path}${u.search}`;
-  } catch {
-    return null;
-  }
+  const full = normalizeUserUrl(s);
+  if (!full) return null;
+  const u = new URL(full);
+  const path = u.pathname.replace(/\/+$/, '');
+  return `${u.protocol}//${u.host.toLowerCase()}${path}${u.search}`;
 }
 
 /**
  * True only when `url` is one the user literally wrote in THIS turn's message —
  * the gate that stops `ingest_url` from fetching a URL the model lifted out of a
- * file, a row, or its own reasoning (an SSRF + prompt-injection vector).
+ * file, a row, or its own reasoning (an SSRF + prompt-injection vector). The
+ * message scan captures both scheme-prefixed URLs AND bare domains the user typed
+ * (e.g. "automatedindustries.ai"); this only WIDENS the confirm-only "did the user
+ * write this?" gate — every SSRF/policy/budget guard on the fetch is unchanged.
  */
 export function userProvidedUrl(userMessage: string | undefined, url: string): boolean {
   const target = normalizeUrl(url);
   if (!target || !userMessage) return false;
-  const found = userMessage.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [];
+  // Two alternatives: (a) any scheme-prefixed URL — including an IP host — exactly as before; plus
+  // (b) a bare domain the user typed (alpha TLD required so "e.g" never matches). (a) preserves the
+  // prior behaviour; (b) is the widening.
+  const found =
+    userMessage.match(
+      /https?:\/\/[^\s<>"')\]]+|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s<>"')\]]*)?/gi,
+    ) ?? [];
   return found.some((u) => normalizeUrl(u) === target);
 }
 
