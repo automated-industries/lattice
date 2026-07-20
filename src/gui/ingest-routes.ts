@@ -7,6 +7,7 @@ import type { Lattice } from '../lattice.js';
 import { normalizeUserUrl } from '../sources/url-safety.js';
 import { FeedBus } from './feed.js';
 import { createRow, updateRow, type MutationCtx } from './mutations.js';
+import { localFileOpenEnabled } from './files-routes.js';
 import { parseFile, describe, type ExtractResult } from './ai/extract.js';
 import { gateExtractionByPath } from './ai/extract-gate.js';
 import { describeImage, describePdf } from '../ai/vision.js';
@@ -559,6 +560,10 @@ export function ingestMutationCtx(ctx: IngestContext): MutationCtx {
     softDeletable: ctx.softDeletable,
     source: 'ingest',
     onColumnsAdded: columnDescriptionHook(ctx.db),
+    // Ingest/upload is the ONE trusted writer of a files row's byte-location columns
+    // (ref_kind/ref_uri/blob_path/…): it sets them from a real ingested/uploaded source. Every
+    // other write path is refused those columns by guardReservedColumns.
+    allowFileLocationCols: true,
   };
 }
 
@@ -602,8 +607,15 @@ export async function dispatchIngestRoute(
     // `x-filepath`). When present, the file already lives at a stable disk
     // location, so the upload references it in place as a `local_ref` (mirroring
     // the /api/ingest/file route) instead of retaining a redundant blob copy.
+    // `x-filepath` names a real OS path to reference in place. Honor it ONLY when local file
+    // open is enabled (desktop/CLI) — off on team cloud, where a tenant-supplied path must never
+    // be read from the host; there the upload falls through to raw-bytes retention below (the
+    // path is simply ignored, so the file still ingests from its bytes).
     const rawFilePath =
-      (typeof req.headers['x-filepath'] === 'string' && req.headers['x-filepath']) || '';
+      (localFileOpenEnabled() &&
+        typeof req.headers['x-filepath'] === 'string' &&
+        req.headers['x-filepath']) ||
+      '';
     let realPath = '';
     if (rawFilePath) {
       try {
@@ -928,7 +940,15 @@ export async function dispatchIngestRoute(
     return true;
   }
 
-  // /api/ingest/file — reference a local path (delegates to the shared core).
+  // /api/ingest/file — reference a local path (delegates to the shared core). This reads an
+  // ARBITRARY path off the server's disk, so it is gated behind the same local-file-open floor
+  // as open-in-finder / the sources routes. That floor is OFF on team cloud, where a tenant must
+  // never coerce the host into reading its filesystem (/proc/self/environ, other tenants' data);
+  // a browser upload (raw bytes, no path) is the cloud ingest path instead.
+  if (!localFileOpenEnabled()) {
+    sendJson(res, { error: 'local file ingest is disabled on this server' }, 403);
+    return true;
+  }
   const rawPath = typeof body.path === 'string' ? body.path.trim() : '';
   if (!rawPath) {
     sendJson(res, { error: 'path is required' }, 400);

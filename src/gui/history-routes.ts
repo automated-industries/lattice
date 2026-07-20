@@ -7,6 +7,7 @@ import {
   undoLast,
   redoLast,
   revertEntry,
+  auditEntryWithoutImages,
   type AuditEntry,
 } from './mutations.js';
 import { applySchemaConfig } from './lifecycle.js';
@@ -85,7 +86,7 @@ export async function handleHistoryRoutes(
         summary: schemaReverseSummary('Undid', target),
       });
       await emitDdlEnvelope(active, target.table_name);
-      sendJson(res, { ok: true, entry: target });
+      sendJson(res, { ok: true, entry: auditEntryWithoutImages(target) });
       return true;
     }
     const entry = await undoLast(ctx.buildMutationCtx());
@@ -93,7 +94,7 @@ export async function handleHistoryRoutes(
       sendJson(res, { error: 'Nothing to undo' }, 400);
       return true;
     }
-    sendJson(res, { ok: true, entry });
+    sendJson(res, { ok: true, entry: auditEntryWithoutImages(entry) });
     return true;
   }
   if (method === 'POST' && pathname === '/api/history/redo') {
@@ -128,7 +129,7 @@ export async function handleHistoryRoutes(
         summary: schemaReverseSummary('Redid', target),
       });
       await emitDdlEnvelope(active, target.table_name);
-      sendJson(res, { ok: true, entry: target });
+      sendJson(res, { ok: true, entry: auditEntryWithoutImages(target) });
       return true;
     }
     const entry = await redoLast(ctx.buildMutationCtx());
@@ -136,7 +137,7 @@ export async function handleHistoryRoutes(
       sendJson(res, { error: 'Nothing to redo' }, 400);
       return true;
     }
-    sendJson(res, { ok: true, entry });
+    sendJson(res, { ok: true, entry: auditEntryWithoutImages(entry) });
     return true;
   }
   if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {

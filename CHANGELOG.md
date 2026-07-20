@@ -519,7 +519,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **File drag-drop is scoped to one surface per view, and dropping a folder works.**
   The drag-drop overlay used to cover the whole screen; the drop is now scoped to a
   single target and a drop elsewhere is ignored — the target matches where the file
-  goes. In Analytics that target is the Gladys chat window (a dropped file is staged
+  goes. In Analytics that target is the Ask Lattice chat window (a dropped file is staged
   into the composer as removable chips for review + send); in Configure it is the
   Inputs column only (a dropped file ingests immediately — the Model and Outputs areas
   are not drop targets). Dropping a **folder** now works too: it is expanded into its
@@ -639,14 +639,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   file(s) / add a folder).
 - **Long ingestion status no longer wraps the header.** The top-right status pill
   is width-capped and ellipsizes, so a long "Ingesting…" notice can't push the
-  Ask Gladys / Configure toggle onto a second line.
+  Ask Lattice / Configure toggle onto a second line.
 
-- **Composer file-attach UX.** Files staged for Gladys now show as removable "file
+- **Composer file-attach UX.** Files staged for Ask Lattice now show as removable "file
   to add" chips directly above the chat box (they were rendered down in the
   message feed). The upload button opens the file picker via a native `<label>`
   (the prior programmatic click was a no-op in the desktop webview). And a
   drag-drop now behaves by view: on **Analytics** it attaches the file to the
-  Gladys chat for review; on **Configure** it starts ingestion immediately and
+  the Ask Lattice chat for review; on **Configure** it starts ingestion immediately and
   stays in Configure (it no longer yanks you to the Analytics chat).
 
 ### Fixed
@@ -657,7 +657,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   carry no table. Aggregation dashboards (GROUP BY / totals — the most common
   kind) always errored. The table-less `sql` and `search` ops are now handled
   before the guard (their protection is server-side).
-- **A dashboard Gladys builds now appears in the sidebar immediately.** The
+- **A dashboard Lattice builds now appears in the sidebar immediately.** The
   Analytics dashboards sidebar/home only refreshed on navigation and cached an
   empty list, so a newly-created dashboard didn't show up until a hard reload.
   A dashboards change now refreshes them live from both the realtime and feed
@@ -1108,15 +1108,17 @@ database connector).
   your machine — a remote server is reached over Streamable HTTP or SSE with that
   server's **own OAuth** (tokens stored in the machine-local encrypted store), and a
   local server runs as a **stdio** child process. Nothing is routed through any
-  cloud middleman. Ships with **Gmail**, **Google Calendar**, and **Google Drive**
-  (typed schemas; point them at a Google-Workspace MCP server), **Jira** (Atlassian
-  Remote MCP) and **monday.com** (both pre-pointed at their hosted endpoints),
-  **Trello**, and a **generic "custom MCP server"** connector you point at any URL.
-  Connector data keeps the same conventions as before — typed connected tables,
-  per-member `private` visibility, FTS, graph edges, and rendered context. New
-  public API: `McpConnector` / `isMcpConnector`, `McpConnectorBase` /
-  `SimpleMcpConnector`, `introspectiveConnector`, the per-provider connector
-  factories, and the `@modelcontextprotocol/sdk` optional dependency.
+  cloud middleman. **Any MCP server connects by URL** — it is introspected at connect
+  and modeled into typed, read-only tables (one per record kind, grouped under the
+  server's brand), with a flat `mcp_items` fallback for anything unmodelable. (Earlier
+  5.0 previews shipped a fixed set of _branded_ Gmail/Calendar/Drive/Jira/Trello/monday
+  connectors with per-provider factory exports; those were replaced by this single
+  bring-your-own-URL model before release, and the per-provider exports are not part of
+  the public surface.) Connector data keeps the same conventions as before — typed
+  connected tables, per-member `private` visibility, FTS, graph edges, and rendered
+  context. New public API: `McpConnector` / `isMcpConnector`, `McpConnectorBase` /
+  `SimpleMcpConnector`, `introspectiveConnector`, and the `@modelcontextprotocol/sdk`
+  optional dependency.
 - **Folders view — objects as folders (now the default center tab).** A new
   **Folders** tab (first, and the landing view) shows the workspace's objects as a
   grid of folders. Double-click a folder to open it: its rows appear as "files"
@@ -5925,7 +5927,7 @@ First slice of the **Lattice Teams** feature: a single Postgres- or SQLite-backe
 
 ### Security
 
-- **`SECURITY.md` contact updated** to `contact@automatedindustries.ai`. Supported versions updated to `1.11.x`. GUI HTTP surface added to the in-scope list.
+- **`SECURITY.md` contact updated** to the address listed in `SECURITY.md`. Supported versions updated to `1.11.x`. GUI HTTP surface added to the in-scope list.
 
 ---
 

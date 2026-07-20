@@ -1,6 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
 import type { Lattice } from '../lattice.js';
 import type { ComputedTableDef, ComputedFieldDef } from '../config/types.js';
 import { getAsyncOrSync } from '../db/adapter.js';
@@ -8,6 +7,7 @@ import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
 import { materializeImport, type ImportMode } from '../import/materialize.js';
+import { localPathOf } from './files-routes.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import {
   excelFormulaSummary,
@@ -78,19 +78,11 @@ function badRequest(message: string): Error & { statusCode: number } {
   return e;
 }
 
-/** The local bytes path a retained files row points at (a `local_ref` or an
- *  on-disk content-addressed blob). Mirrors files-routes' resolution. */
-function localPathOf(row: FileRow, latticeRoot: string | undefined): string | null {
-  if (row.ref_kind === 'local_ref' && row.ref_uri) return row.ref_uri;
-  if ((row.ref_kind === 'blob' || row.ref_kind === 'cloud_ref') && row.blob_path) {
-    return isAbsolute(row.blob_path)
-      ? row.blob_path
-      : latticeRoot
-        ? join(latticeRoot, row.blob_path)
-        : null;
-  }
-  return null;
-}
+// The local-bytes path a retained files row points at is resolved by the SHARED, hardened
+// files-routes `localPathOf` (imported): it gates a `local_ref` behind localFileOpenEnabled()
+// (off on team cloud) and realpath-contains a blob_path to the workspace root. Using the shared
+// resolver keeps this import read-sink from reading /proc/self/environ or another tenant's blob
+// when a `files` row's location columns are forged (the same guard the blob route relies on).
 
 /** The importable (registered, non-native) data tables, for schema matching. */
 export function existingDataTables(db: Lattice): ExistingTable[] {

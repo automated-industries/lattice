@@ -15,8 +15,16 @@ import { parseBulkFilters } from './row-mutations.js';
 
 export const SECRET_MASK = '••••••••';
 
-/** Column names marked secret for a table (via the data-model `set_column_secret`). */
+/**
+ * Column names whose value must be MASKED before a row reaches the assistant / any reader — the
+ * union of two sources: (1) columns a user flagged secret in the data model
+ * (`set_column_secret`, stored in `_lattice_gui_column_meta`), and (2) framework-ENCRYPTED
+ * columns (`encrypted:` in config), which `db.get`/`db.query` DECRYPT on read. Both must be
+ * masked, or a config-encrypted-only column (never gui-flagged) would stream cleartext into the
+ * model context — the same leak the HTTP row route masks via getEncryptedColumns.
+ */
 export async function secretColumnsFor(db: Lattice, table: string): Promise<Set<string>> {
+  const out = new Set<string>(db.getEncryptedColumns(table)); // framework-encrypted (decrypted on read)
   try {
     const rows = (await db.query('_lattice_gui_column_meta', {
       filters: [
@@ -24,11 +32,11 @@ export async function secretColumnsFor(db: Lattice, table: string): Promise<Set<
         { col: 'secret', op: 'eq', val: 1 },
       ],
     })) as { column_name: string }[];
-    return new Set(rows.map((r) => r.column_name));
+    for (const r of rows) out.add(r.column_name);
   } catch {
-    // Meta table absent (fresh DB) — nothing is marked secret.
-    return new Set();
+    // Meta table absent (fresh DB) — only the framework-encrypted set applies.
   }
+  return out;
 }
 
 /**

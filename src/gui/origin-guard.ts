@@ -52,9 +52,17 @@ function first(v?: string | string[]): string | undefined {
  * Non-browser clients that send neither Sec-Fetch-Site nor Origin (curl, the Node
  * test harness) are allowed — a cross-site browser fetch always carries one.
  */
-export function isSameOriginRequest(headers: OriginGuardHeaders, allowed: Set<string>): boolean {
-  // Host must match the bound authority — this is what defeats DNS rebinding.
-  if (!allowed.has((first(headers.host) ?? '').toLowerCase())) return false;
+export function isSameOriginRequest(
+  headers: OriginGuardHeaders,
+  allowed: Set<string>,
+  allowAnyHost = false,
+): boolean {
+  // Host must match the bound authority — this is what defeats DNS rebinding. Skipped ONLY for a
+  // wildcard bind (0.0.0.0 / ::): the operator passed --allow-remote to expose the unauthenticated
+  // GUI to the network, where clients reach it directly by any of the host's IPs/names, so the
+  // loopback-specific rebinding defense doesn't apply (and can't enumerate every valid Host). The
+  // Sec-Fetch-Site / Origin cross-site checks below still run.
+  if (!allowAnyHost && !allowed.has((first(headers.host) ?? '').toLowerCase())) return false;
   // Prefer Sec-Fetch-Site (modern browsers always send it on fetch/XHR/WS).
   const site = first(headers['sec-fetch-site']);
   if (typeof site === 'string') return site === 'same-origin' || site === 'none';

@@ -387,7 +387,29 @@ export interface MutationCtx {
    * See {@link guardReservedColumns}.
    */
   allowReservedFileCols?: boolean;
+  /**
+   * Trusted writer may set a `files` row's byte-LOCATION columns (ref_kind / ref_uri /
+   * ref_provider / blob_path / source_json) — they decide WHERE the bytes are read from. Set
+   * ONLY on the server-side ingest/upload path (ingestMutationCtx). Absent everywhere else
+   * (generic create_row/update_row/bulk_update, the HTTP CRUD routes, the AI tools), so an
+   * untrusted caller — or a prompt injection driving create_row — cannot forge a row that
+   * streams another member's S3 object or an arbitrary host path. See {@link guardReservedColumns}.
+   */
+  allowFileLocationCols?: boolean;
 }
+
+/**
+ * Byte-LOCATION columns on `files`: they decide WHERE a file's bytes are read from (a local
+ * path, a content-addressed blob, or an S3 ref). Only the trusted ingest/upload path may set
+ * them; every other write path is refused (see {@link guardReservedColumns}).
+ */
+export const FILES_BYTE_LOCATION_COLS: ReadonlySet<string> = new Set([
+  'ref_kind',
+  'ref_uri',
+  'ref_provider',
+  'blob_path',
+  'source_json',
+]);
 
 /**
  * Accept a client-supplied edit timestamp ONLY when it's a parseable ISO instant
@@ -537,8 +559,23 @@ export function guardReservedColumns(
   table: string,
   values: Partial<Row> | undefined,
 ): void {
-  if (ctx.allowReservedFileCols || !values) return;
-  if (table === 'files' && (values as Record<string, unknown>).artifact_type === 'html') {
+  if (!values) return;
+  const v = values as Record<string, unknown>;
+  // Byte-location columns on `files` — the chokepoint that closes the S3/host-file forge across
+  // EVERY write path (generic create_row/update_row, bulk_update, the AI tools, the HTTP CRUD
+  // route). Only the trusted ingest/upload path (allowFileLocationCols) may set them; otherwise a
+  // caller who owns a files row could point it at another member's S3 key or an arbitrary host
+  // path and read the bytes via the blob / import route.
+  if (table === 'files' && !ctx.allowFileLocationCols) {
+    const forged = [...FILES_BYTE_LOCATION_COLS].filter((c) => c in v);
+    if (forged.length > 0) {
+      throw new Error(
+        `files location columns (${forged.join(', ')}) may only be set by ingest/upload, not a generic write`,
+      );
+    }
+  }
+  if (ctx.allowReservedFileCols) return;
+  if (table === 'files' && v.artifact_type === 'html') {
     throw new Error(
       "artifact_type='html' marks an executable inline HTML file and may only be set by the create_html_file / edit_html_file tools",
     );
@@ -872,6 +909,45 @@ export interface AuditEntry {
   before_json: string | null;
   after_json: string | null;
   undone: number;
+}
+
+/** Mask for a decrypted value that must never leave the process (audit images, API rows). */
+export const ENCRYPTED_VALUE_MASK = '••••••••';
+
+/**
+ * Mask the framework-encrypted columns in a JSON row-snapshot string (a `before_json` /
+ * `after_json` audit image). Audit images are captured via `db.get`, which DECRYPTS encrypted
+ * columns, so returning them raw over HTTP leaks cleartext credentials. Returns the input
+ * unchanged when there is nothing to mask or the string doesn't parse.
+ */
+export function maskEncryptedJson(
+  json: string | null,
+  encryptedCols: ReadonlySet<string>,
+): string | null {
+  if (json === null || encryptedCols.size === 0) return json;
+  try {
+    const obj = JSON.parse(json) as Record<string, unknown>;
+    let touched = false;
+    for (const c of encryptedCols) {
+      if (c in obj && obj[c] != null && obj[c] !== '') {
+        obj[c] = ENCRYPTED_VALUE_MASK;
+        touched = true;
+      }
+    }
+    return touched ? JSON.stringify(obj) : json;
+  } catch {
+    return json;
+  }
+}
+
+/**
+ * An audit entry with its row-snapshot images dropped. The undo/redo/revert HTTP echoes only
+ * need table_name / row_id / operation to refresh the UI; the before_json / after_json images are
+ * captured via `db.get` (which DECRYPTS encrypted columns), so echoing them raw would leak
+ * cleartext secrets — the same leak `GET /api/history` masks. Drop them at the echo instead.
+ */
+export function auditEntryWithoutImages(e: AuditEntry): AuditEntry {
+  return { ...e, before_json: null, after_json: null };
 }
 
 export function parseAudit(row: Record<string, unknown>): AuditEntry {

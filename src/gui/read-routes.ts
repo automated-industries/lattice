@@ -36,7 +36,7 @@ import { fullTextSearch } from '../search/fts.js';
 import { buildProvenanceGraph } from './provenance.js';
 import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import { resolveColumnDescription, resolveTableDescription } from './column-descriptions.js';
-import { parseAudit, updateRow } from './mutations.js';
+import { parseAudit, updateRow, maskEncryptedJson } from './mutations.js';
 import { deriveUpdatesFromFile } from '../reverse-sync/default-reverse-sync.js';
 import {
   listNativeBindings,
@@ -869,6 +869,21 @@ export async function handleReadRoutes(
         (e) => e.table_name === filterTable || junctionMatchesFilter.has(e.table_name),
       );
     }
+    // Mask credentials in the audit images before returning them. before_json / after_json are
+    // row snapshots taken via db.get, which DECRYPTS encrypted columns — so an unmasked history
+    // read leaks cleartext secrets (the same class S4 closed on /api/tables/:t/rows, via a route
+    // that route's mask never covered). Drop `secrets` entries entirely (incl. pre-fix historical
+    // rows) and mask every framework-encrypted column on all other tables.
+    entries = entries
+      .filter((e) => e.table_name !== 'secrets')
+      .map((e) => {
+        const enc = active.db.getEncryptedColumns(e.table_name);
+        return {
+          ...e,
+          before_json: maskEncryptedJson(e.before_json, enc),
+          after_json: maskEncryptedJson(e.after_json, enc),
+        };
+      });
     // Stack gates (↶/↷) are SESSION-SCOPED to match the session-scoped
     // undo/redo *actions* (POST /api/history/undo|redo filter on
     // session_id). The history LIST above stays global (everyone's
@@ -998,7 +1013,31 @@ export async function handleReadRoutes(
         Promise.resolve([])
       );
     })()) as Record<string, unknown>[];
-    sendJson(res, { rows: rowsResult });
+    // The audit table is the ONE system table that holds row SNAPSHOTS (before_json/after_json,
+    // captured via db.get, which DECRYPTS encrypted columns). Apply the SAME credential mask +
+    // secrets-drop as GET /api/history so this sibling route can't leak cleartext secrets.
+    let rows = rowsResult;
+    if (sysTable === '_lattice_gui_audit') {
+      rows = rows
+        .filter((r) => r.table_name !== 'secrets')
+        .map((r) => {
+          const enc = active.db.getEncryptedColumns(
+            typeof r.table_name === 'string' ? r.table_name : '',
+          );
+          return {
+            ...r,
+            before_json: maskEncryptedJson(
+              typeof r.before_json === 'string' ? r.before_json : null,
+              enc,
+            ),
+            after_json: maskEncryptedJson(
+              typeof r.after_json === 'string' ? r.after_json : null,
+              enc,
+            ),
+          };
+        });
+    }
+    sendJson(res, { rows });
     return true;
   }
 
@@ -1067,7 +1106,14 @@ export async function handleReadRoutes(
         { col: 'secret', op: 'eq', val: 1 },
       ],
     })) as { column_name: string }[];
-    const secretCols = new Set(colMetaRows.map((r) => r.column_name));
+    // Union gui-flagged secret columns with the framework-ENCRYPTED set (mirrors the get_row_context
+    // tool's secretColumnsFor). Encrypted columns render to disk as ciphertext, so masking them here
+    // shows `••••••••` instead of a ciphertext blob AND — crucially — makes the write-back below skip
+    // them (line ~1126), so a re-save never overwrites the encrypted value with the mask.
+    const secretCols = new Set([
+      ...colMetaRows.map((r) => r.column_name),
+      ...active.db.getEncryptedColumns(ctxTable),
+    ]);
 
     // ── Write-back: save an edited rendered record back to its columns ──
     // The record's Markdown view is an editable textarea; saving it derives column

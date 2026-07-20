@@ -59,6 +59,25 @@ describe('origin-guard: CSRF / DNS-rebinding policy', () => {
     ).toBe(true);
   });
 
+  it('wildcard bind (allowAnyHost): accepts a LAN Host that is not a bound authority', () => {
+    // Regression (round-4): a --host 0.0.0.0 --allow-remote bind can't enumerate every Host a
+    // network client uses; the Host-authority check is skipped so a legit same-origin request from
+    // http://192.168.1.50:4317 is served (was 403 → GUI fully broken on a wildcard bind).
+    const lan = { host: '192.168.1.50:4317', 'sec-fetch-site': 'same-origin' as const };
+    expect(isSameOriginRequest(lan, loopback)).toBe(false); // without allowAnyHost → blocked
+    expect(isSameOriginRequest(lan, loopback, true)).toBe(true); // wildcard bind → allowed
+  });
+
+  it('wildcard bind still blocks a CROSS-SITE fetch (Sec-Fetch-Site checks remain)', () => {
+    expect(
+      isSameOriginRequest(
+        { host: '192.168.1.50:4317', 'sec-fetch-site': 'cross-site' },
+        loopback,
+        true,
+      ),
+    ).toBe(false);
+  });
+
   // ── cross-site (attacker) ─────────────────────────────────────────────────
   it('BLOCKS a cross-site fetch (Sec-Fetch-Site: cross-site) even with a valid Host', () => {
     expect(
