@@ -56,6 +56,20 @@ export async function superviseGui(opts: SuperviseOptions): Promise<void> {
       stdio: 'inherit',
       env: { ...process.env, LATTICE_GUI_SUPERVISED: '1' },
     });
+    // A spawn failure (e.g. fd exhaustion) is delivered as an async 'error' EVENT and may
+    // never be followed by 'exit' — with no listener Node makes it a fatal unhandled
+    // exception; with one but no exit handling the supervisor would hang childless.
+    // Mirror the exit path: surface and stop. (If both 'error' and 'exit' fire, whichever
+    // runs first exits the process — no double handling.)
+    child.on('error', (err) => {
+      child = null;
+      if (stopping) {
+        process.exit(0);
+        return;
+      }
+      console.error('[latticesql] failed to spawn the GUI process:', err.message);
+      process.exit(1);
+    });
     child.on('exit', (code, signal) => {
       child = null;
       if (stopping) {

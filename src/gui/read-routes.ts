@@ -591,7 +591,13 @@ export async function handleReadRoutes(
       // these headers don't hurt single-threaded WASM and enable the threaded path.
       'cross-origin-resource-policy': 'same-origin',
     });
-    createReadStream(target).pipe(res);
+    // A mid-stream read failure (file removed/locked after the stat checks above) emits
+    // 'error' on the ReadStream — with no listener it becomes a fatal unhandled exception,
+    // possibly after this handler already returned. Mirror the other static-file streams:
+    // drop the response and move on.
+    const stream = createReadStream(target);
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
     return true;
   }
 
