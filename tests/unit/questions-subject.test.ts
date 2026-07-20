@@ -41,7 +41,7 @@ describe('question context with subject', () => {
   });
 
   it('enqueueQuestion works without subject (backward compatible)', async () => {
-    const qId = await enqueueQuestion(db, feed, {
+    await enqueueQuestion(db, feed, {
       source: 'enrich',
       question: 'Is this a file?',
       options: ['Yes', 'No'],
