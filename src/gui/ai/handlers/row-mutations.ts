@@ -101,7 +101,7 @@ export function isWriteConflict(e: unknown): boolean {
 }
 
 /** Normalize a URL for comparison: lowercased host, no trailing slash, no hash. Infers a scheme
- *  for a bare domain (via normalizeUserUrl) so "automatedindustries.ai" compares equal to itself. */
+ *  for a bare domain (via normalizeUserUrl) so "example.com" compares equal to itself. */
 export function normalizeUrl(s: string): string | null {
   const full = normalizeUserUrl(s);
   if (!full) return null;
@@ -115,7 +115,7 @@ export function normalizeUrl(s: string): string | null {
  * the gate that stops `ingest_url` from fetching a URL the model lifted out of a
  * file, a row, or its own reasoning (an SSRF + prompt-injection vector). The
  * message scan captures both scheme-prefixed URLs AND bare domains the user typed
- * (e.g. "automatedindustries.ai"); this only WIDENS the confirm-only "did the user
+ * (e.g. "example.com"); this only WIDENS the confirm-only "did the user
  * write this?" gate — every SSRF/policy/budget guard on the fetch is unchanged.
  */
 export function userProvidedUrl(userMessage: string | undefined, url: string): boolean {

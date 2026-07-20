@@ -1577,6 +1577,16 @@ export class Lattice {
     return [...this._connectedSources.keys()];
   }
 
+  /**
+   * Column names encrypted-at-rest for `table` (decrypted on read). Any caller that ships rows
+   * OUTSIDE the process — an HTTP API response, a render, a log — must mask these; an unmasked
+   * read returns cleartext credentials. Empty set when the table has no encrypted columns or the
+   * encryption layer isn't built yet.
+   */
+  getEncryptedColumns(table: string): ReadonlySet<string> {
+    return this._encryptionLayer?.encryptedColumns(table) ?? new Set<string>();
+  }
+
   /** Post-insert side effects (changelog, audit, write hooks, embedding sync),
    *  identical for the plain and force-visibility insert paths. */
   private async _afterInsert(

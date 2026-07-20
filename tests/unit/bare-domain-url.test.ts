@@ -4,7 +4,7 @@ import { userProvidedUrl, normalizeUrl } from '../../src/gui/ai/handlers/row-mut
 import { looksLikeUrl } from '../../src/gui/ingest-routes.js';
 
 /**
- * Bug: the user wrote "Enrich the data using automatedindustries.ai" (a bare domain, no scheme).
+ * Bug: a user request like "Enrich the data using example.com" carries a bare domain (no scheme).
  * The model recognized it and called ingest_url, but the URL detectors were scheme-gated, so the
  * tool re-prompted for a full https:// URL. Fix: a single deterministic normalizeUserUrl helper
  * infers https:// for a bare domain, wired into every detector — WITHOUT relaxing any SSRF guard.
@@ -12,7 +12,7 @@ import { looksLikeUrl } from '../../src/gui/ingest-routes.js';
 
 describe('normalizeUserUrl', () => {
   it('infers https:// for a bare domain the user typed', () => {
-    expect(normalizeUserUrl('automatedindustries.ai')).toBe('https://automatedindustries.ai/');
+    expect(normalizeUserUrl('example.com')).toBe('https://example.com/');
     expect(normalizeUserUrl('sub.example.co.uk/path?q=1')).toBe(
       'https://sub.example.co.uk/path?q=1',
     );
@@ -31,9 +31,7 @@ describe('normalizeUserUrl', () => {
 
 describe('userProvidedUrl accepts a bare domain the user wrote (regression)', () => {
   it('matches a scheme-less domain in the message against the tool arg', () => {
-    expect(
-      userProvidedUrl('Enrich the data using automatedindustries.ai', 'automatedindustries.ai'),
-    ).toBe(true);
+    expect(userProvidedUrl('Enrich the data using example.com', 'example.com')).toBe(true);
   });
   it('still matches a scheme-prefixed URL', () => {
     expect(
@@ -49,14 +47,14 @@ describe('userProvidedUrl accepts a bare domain the user wrote (regression)', ()
     expect(userProvidedUrl('do something with my data', 'evil.example.com')).toBe(false);
   });
   it('normalizeUrl compares a bare domain equal to itself', () => {
-    expect(normalizeUrl('automatedindustries.ai')).toBe('https://automatedindustries.ai');
+    expect(normalizeUrl('example.com')).toBe('https://example.com');
   });
 });
 
 describe('assertSafeUrl infers the scheme but keeps every SSRF guard', () => {
   it('accepts a bare domain by inferring https:// (allowPrivate skips the DNS lookup here)', async () => {
-    const u = await assertSafeUrl('automatedindustries.ai', true);
-    expect(u.href).toBe('https://automatedindustries.ai/');
+    const u = await assertSafeUrl('example.com', true);
+    expect(u.href).toBe('https://example.com/');
   });
   it('still rejects a non-http(s) scheme', async () => {
     await expect(assertSafeUrl('ftp://example.com')).rejects.toThrow(/non-http/i);
@@ -68,12 +66,12 @@ describe('assertSafeUrl infers the scheme but keeps every SSRF guard', () => {
 
 describe('looksLikeUrl (auto-ingest triage) accepts a bare domain', () => {
   it('treats a bare domain as a crawlable web address', () => {
-    expect(looksLikeUrl('automatedindustries.ai')).toBe(true);
+    expect(looksLikeUrl('example.com')).toBe(true);
     expect(looksLikeUrl('https://example.com/page')).toBe(true);
   });
   it('is not fooled by prose or a non-address token', () => {
     expect(looksLikeUrl('hello world')).toBe(false);
     expect(looksLikeUrl('e.g')).toBe(false);
-    expect(looksLikeUrl('automatedindustries.ai and more text')).toBe(false); // multi-token body
+    expect(looksLikeUrl('example.com and more text')).toBe(false); // multi-token body
   });
 });

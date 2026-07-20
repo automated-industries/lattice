@@ -679,10 +679,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // bound. Set once the real port is known (below); before that no external request
   // can arrive. This adds NO auth layer — legitimate same-origin GUI requests pass.
   let boundAuthorities: Set<string> | null = null;
+  // A wildcard bind (0.0.0.0 / ::) can't enumerate every Host a network client legitimately uses,
+  // and --allow-remote already accepted network exposure — so the Host-authority (anti-rebinding)
+  // check is skipped for it (the Sec-Fetch-Site cross-site checks still apply). A concrete-IP bind
+  // keeps the full check.
+  const bindIsWildcard = host === '0.0.0.0' || host === '::';
   function requestIsSameOrigin(req: IncomingMessage): boolean {
     const allowed = boundAuthorities;
     if (!allowed) return true; // not yet listening → unreachable
-    return isSameOriginRequest(req.headers, allowed);
+    return isSameOriginRequest(req.headers, allowed, bindIsWildcard);
   }
 
   const server = createServer((req, res) => {
@@ -692,14 +697,43 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const pathname = url.pathname;
         const method = req.method ?? 'GET';
 
-        // Reject cross-site / rebound-Host state changes before any routing. GETs
-        // are covered by the browser same-origin policy (we send no permissive
-        // CORS), except side-effecting GETs which opt in explicitly below.
+        // Reject cross-site / rebound-Host state changes before any routing.
         const mutating =
           method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
         if (mutating && !requestIsSameOrigin(req)) {
           sendJson(res, { error: 'cross-site request blocked' }, 403);
           return;
+        }
+        // DNS-rebinding defense for GET DATA routes. The browser same-origin policy alone does
+        // NOT protect these: a drive-by site can rebind its own hostname to 127.0.0.1 and issue
+        // a "same-origin" fetch to the loopback GUI, reading the JSON body — which for
+        // `/api/tables/*`, `/api/dbconfig`, `/api/entities`, … is the user's data. The
+        // Host-authority check inside requestIsSameOrigin defeats that (the rebound fetch still
+        // carries the attacker's Host, not a bound authority). We exempt only genuine top-level
+        // navigations (Sec-Fetch-Mode: navigate / Dest: document) — an OAuth callback redirect or
+        // a user opening an /api URL directly — because a navigation replaces the tab and cannot
+        // be read into another origin, so it is not an exfiltration vector. Non-browser clients
+        // (curl, the test harness) send no Sec-Fetch / Origin and match the bound Host, so
+        // requestIsSameOrigin already allows them.
+        if (method === 'GET' && pathname.startsWith('/api/') && !requestIsSameOrigin(req)) {
+          const h = req.headers as Record<string, string | string[] | undefined>;
+          const secDest = h['sec-fetch-dest'];
+          const dest = Array.isArray(secDest) ? secDest[0] : secDest;
+          const hostHeader = Array.isArray(h.host) ? h.host[0] : h.host;
+          const hostBound =
+            bindIsWildcard || (boundAuthorities?.has((hostHeader ?? '').toLowerCase()) ?? false);
+          // Exempt ONLY a true top-level DOCUMENT navigation TO A BOUND HOST (an OAuth callback
+          // redirect, or a user opening an /api URL directly). Two conditions, both required:
+          //  • dest === 'document' — not `Sec-Fetch-Mode: navigate`, which iframe/object/embed
+          //    sub-frame navigations ALSO carry, and which a same-origin parent could read.
+          //  • the Host is one we bound — a DNS-rebinding `window.open('http://evil:PORT/api/…')`
+          //    is a document navigation too, but its Host is the ATTACKER's rebound name (not a
+          //    bound authority); the opener stays same-origin post-rebind and would read the JSON,
+          //    so it must NOT be exempt. The frame-ancestors/XFO + COOP headers are the backstop.
+          if (dest !== 'document' || !hostBound) {
+            sendJson(res, { error: 'cross-site request blocked' }, 403);
+            return;
+          }
         }
 
         // Version + update status — answered in BOTH virgin and active states, and

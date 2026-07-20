@@ -10,7 +10,7 @@ const HAS_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 /**
  * Normalize a web address the user WROTE into a full URL string, or null if it isn't one. A token
  * that already carries a scheme is returned canonicalized (if it parses); a bare domain the user
- * typed WITHOUT a scheme (e.g. `automatedindustries.ai`) has `https://` inferred. Deterministic —
+ * typed WITHOUT a scheme (e.g. `example.com`) has `https://` inferred. Deterministic —
  * so the URL detectors never re-prompt for a domain they already recognized. This does NOT
  * authorize a fetch: {@link assertSafeUrl} still enforces http(s)-only + the SSRF host checks, and
  * the policy/budget/concurrency guards still run downstream on the result.
@@ -135,7 +135,7 @@ function isPrivateIpv4(ip: string): boolean {
   const parts = ip.split('.').map((p) => Number(p));
   if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
     return true;
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c] = parts as [number, number, number, number];
   if (a === 0) return true; // 0.0.0.0/8 "this host"
   if (a === 127) return true; // loopback
   if (a === 10) return true; // private
@@ -143,25 +143,90 @@ function isPrivateIpv4(ip: string): boolean {
   if (a === 192 && b === 168) return true; // private
   if (a === 169 && b === 254) return true; // link-local (incl. 169.254.169.254 metadata)
   if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
-  if (a === 192 && b === 0) return true; // 192.0.0.0/24 IETF protocol assignments
+  // 192.0.0.0/24 IETF protocol assignments ONLY — NOT the whole 192.0.0.0/16, which is public
+  // (e.g. 192.0.66/73/78.0/24 = WordPress.com / Jetpack / Gravatar). The third octet MUST be 0.
+  if (a === 192 && b === 0 && c === 0) return true;
   return false;
 }
 
-function isPrivateIpv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === '::1' || lower === '::') return true; // loopback / unspecified
-  // IPv4-mapped (::ffff:a.b.c.d) — re-check the embedded v4.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
-  const head = lower.split(':')[0] ?? '';
-  if (head.startsWith('fc') || head.startsWith('fd')) return true; // fc00::/7 ULA
-  if (
-    head.startsWith('fe8') ||
-    head.startsWith('fe9') ||
-    head.startsWith('fea') ||
-    head.startsWith('feb')
-  ) {
-    return true; // fe80::/10 link-local
+/**
+ * Expand any valid IPv6 literal (compressed `::`, a trailing IPv4 dotted-quad, or a `%zone`
+ * suffix) into its 8 16-bit groups. Returns null if it can't parse — callers MUST treat null
+ * as private (fail closed). The caller has already confirmed `isIP(ip) === 6`, so this is a
+ * normalizer, not a validator.
+ */
+function ipv6ToGroups(ip: string): number[] | null {
+  let s = ip.toLowerCase();
+  const zone = s.indexOf('%');
+  if (zone !== -1) s = s.slice(0, zone); // drop scope id
+  // A trailing IPv4 dotted-quad (::ffff:127.0.0.1, 64:ff9b::1.2.3.4) → two hex groups, so the
+  // rest parses uniformly. This is the whole point: WHATWG `new URL()` also emits the HEX form
+  // (::ffff:7f00:1), which the old dotted-only regex missed — both must resolve identically.
+  const dotted = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (dotted) {
+    const o = [dotted[2], dotted[3], dotted[4], dotted[5]].map((x) => Number(x));
+    if (o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    const [a, b, c, d] = o as [number, number, number, number];
+    const g1 = ((a << 8) | b).toString(16);
+    const g2 = ((c << 8) | d).toString(16);
+    s = `${dotted[1] ?? ''}${g1}:${g2}`;
   }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(':') : []) : null;
+  let groups: string[];
+  if (tail === null) {
+    groups = head;
+  } else {
+    const missing = 8 - head.length - tail.length;
+    if (missing < 0) return null;
+    groups = [...head, ...new Array<string>(missing).fill('0'), ...tail];
+  }
+  if (groups.length !== 8) return null;
+  const nums = groups.map((h) => (h === '' ? 0 : parseInt(h, 16)));
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)) return null;
+  return nums;
+}
+
+function isPrivateIpv6(ip: string): boolean {
+  const g = ipv6ToGroups(ip);
+  if (!g) return true; // unparseable → fail closed (treat as private)
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = g as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (g.every((x) => x === 0)) return true; // :: unspecified
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && g6 === 0 && g7 === 1)
+    return true; // ::1 loopback
+  if ((g0 & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+  if ((g0 & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  // Any IPv6 that EMBEDS an IPv4 address routes to that v4 at the socket layer, so the private/
+  // metadata check must apply to the embedded v4 — for the HEX form as much as the dotted one.
+  const v4 = (hi: number, lo: number): string =>
+    [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].map((n) => String(n)).join('.');
+  // The trailing 32 bits (g6:g7) carry the embedded v4 for the /96 embeddings below.
+  const embeddedV4Low = v4(g6, g7);
+  const firstSixZero = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0;
+  if (firstSixZero && g5 === 0xffff) return isPrivateIpv4(embeddedV4Low); // ::ffff:0:0/96 v4-mapped
+  if (firstSixZero && g5 === 0) return isPrivateIpv4(embeddedV4Low); // ::/96 v4-compatible (deprecated)
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0)
+    return isPrivateIpv4(embeddedV4Low); // 64:ff9b::/96 well-known NAT64 (RFC 6052 /96 → last 32 bits)
+  // 64:ff9b:1::/48 local-use NAT64 (RFC 8215): the embedded v4 lives in DIFFERENT bits than the
+  // /96 form (RFC 6052 §2.2), so the g6:g7 value is NOT its v4. Rather than decode the /48 bit
+  // layout (and risk mis-decoding a metadata address as public), deny the whole prefix — it is a
+  // translation range, never a legitimate public crawl target.
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true;
+  // 6to4 (2002::/16): bits 16-47 (g1:g2) embed the gateway's IPv4 — check it (a 2002:0a00:1::
+  // address routes to 10.0.0.1). Teredo (2001:0::/32): legacy tunneling that embeds server/client
+  // IPv4 in an obfuscated layout — deny the whole prefix (fail closed; not a legit crawl target).
+  if (g0 === 0x2002) return isPrivateIpv4(v4(g1, g2));
+  if (g0 === 0x2001 && g1 === 0x0000) return true;
   return false;
 }

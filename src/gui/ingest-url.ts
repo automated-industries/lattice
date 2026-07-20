@@ -152,8 +152,13 @@ export async function ingestUrlAsFile(
       fetched_at: new Date().toISOString(),
     }),
   };
+  // ingestUrlAsFile is a trusted ingestion primitive: it records the fetched web page as a
+  // `cloud_ref` (ref_provider 'web', ref_uri = the crawled URL, no blob_path / S3 key), which is
+  // a benign reference with no local-path / arbitrary-S3 read vector. Scope the file-location
+  // write privilege to exactly this createRow so its byte-location columns are allowed — every
+  // other caller path (a raw create_row tool) stays refused by guardReservedColumns.
   const { id } = await createRow(
-    ctx.mctx,
+    { ...ctx.mctx, allowFileLocationCols: true },
     'files',
     { ...(await requiredFileDefaults(ctx.db, title, fileId, row)), ...row },
     ctx.privateMode ? 'private' : undefined,

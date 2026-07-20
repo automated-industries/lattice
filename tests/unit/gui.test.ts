@@ -1027,17 +1027,21 @@ describe('isJunctionTable', () => {
 });
 
 describe('GUI server — native entities + table allowlist', () => {
-  it('makes native files/secrets queryable (regression: "Unknown table")', async () => {
+  it('makes native files queryable but REFUSES the secrets credential store (regression: "Unknown table" + S4)', async () => {
     const { configPath, outputDir } = writeFixture(tempDir());
     const server = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
     servers.push(server);
 
-    for (const table of ['files', 'secrets']) {
-      const res = await fetch(`${server.url}/api/tables/${table}/rows`);
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { rows: unknown[] };
-      expect(Array.isArray(body.rows)).toBe(true);
-    }
+    // `files` is a registered native table — queryable.
+    const filesRes = await fetch(`${server.url}/api/tables/files/rows`);
+    expect(filesRes.status).toBe(200);
+    expect(Array.isArray(((await filesRes.json()) as { rows: unknown[] }).rows)).toBe(true);
+
+    // `secrets` is refused on the generic route: `value` is encrypted-at-rest and decrypted on
+    // read, so it must never ship over this API (S4).
+    const secretsRes = await fetch(`${server.url}/api/tables/secrets/rows`);
+    expect(secretsRes.status).toBe(403);
+    expect(JSON.stringify(await secretsRes.json())).not.toContain('value');
 
     // And a row round-trips through the native files table.
     const post = await fetch(`${server.url}/api/tables/files/rows`, {

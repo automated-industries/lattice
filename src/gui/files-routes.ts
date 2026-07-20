@@ -1,6 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createReadStream, statSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import {
+  createReadStream,
+  statSync,
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  realpathSync,
+} from 'node:fs';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Lattice } from '../lattice.js';
 import { sendJson } from './http.js';
@@ -39,7 +46,7 @@ interface FilesContext {
   method: string;
 }
 
-interface FileRow {
+export interface FileRow {
   ref_kind?: string | null;
   ref_uri?: string | null;
   ref_provider?: string | null;
@@ -57,24 +64,44 @@ interface FileRow {
  * holds a URL) and remote-only blobs are not served from here, so they resolve
  * to null.
  */
-function localPathOf(row: FileRow, latticeRoot?: string): string | null {
-  if (row.ref_kind === 'local_ref' && typeof row.ref_uri === 'string' && row.ref_uri) {
-    return row.ref_uri;
+/** realpath that returns null instead of throwing (path absent / not resolvable). */
+function safeRealpath(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
   }
-  // A content-addressed blob under the workspace's data/blobs/. Resolved for both
-  // a local-only 'blob' row AND a 'cloud_ref' row that still has a local copy
-  // (the uploader's hybrid fast path) — the caller stat-checks it and falls back
-  // to S3 when the file isn't on this member's disk.
+}
+
+export function localPathOf(row: FileRow, latticeRoot?: string): string | null {
+  if (row.ref_kind === 'local_ref' && typeof row.ref_uri === 'string' && row.ref_uri) {
+    // A user-linked file on THIS machine's disk, intentionally OUTSIDE the workspace. Serving it
+    // is a desktop/CLI convenience gated behind the SAME local-file-open floor as open-in-finder
+    // (`localFileOpenEnabled()`), which is OFF on team cloud — so a hosted tenant can never coerce
+    // the server into reading an arbitrary host path (e.g. /proc/self/environ) via a crafted row.
+    // The write-side column deny-list (tables-routes) is what stops a row being crafted at all;
+    // this is the second gate.
+    return localFileOpenEnabled() ? row.ref_uri : null;
+  }
+  // A content-addressed blob under the workspace's data/blobs/. Resolved for both a local-only
+  // 'blob' row AND a 'cloud_ref' row that still has a local copy (the uploader's hybrid fast
+  // path) — the caller stat-checks it and falls back to S3 when the file isn't on this disk.
   if (
     (row.ref_kind === 'blob' || row.ref_kind === 'cloud_ref') &&
     typeof row.blob_path === 'string' &&
     row.blob_path
   ) {
-    return isAbsolute(row.blob_path)
-      ? row.blob_path
-      : latticeRoot
-        ? join(latticeRoot, row.blob_path)
-        : null;
+    if (!latticeRoot) return null;
+    const resolved = isAbsolute(row.blob_path) ? row.blob_path : join(latticeRoot, row.blob_path);
+    // Contain the served path to the workspace root: a blob is content-addressed under
+    // <root>/data/blobs, so a `blob_path` that escapes (`../../../etc/passwd`, or an absolute
+    // path elsewhere) must never stream. realpath the actual file (follows symlinks); if it is
+    // absent locally we return null and the caller falls through to S3 / 404.
+    const targetReal = safeRealpath(resolved);
+    if (!targetReal) return null;
+    const rootReal = safeRealpath(latticeRoot) ?? resolve(latticeRoot);
+    if (targetReal !== rootReal && !targetReal.startsWith(rootReal + sep)) return null;
+    return resolved;
   }
   return null;
 }

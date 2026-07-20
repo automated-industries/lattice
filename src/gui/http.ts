@@ -12,6 +12,14 @@ export function sendJson(res: ServerResponse, body: unknown, status = 200): void
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
+    // A JSON API response must never be framed OR read cross-window. Defense in depth against
+    // DNS-rebinding data exfiltration: frame-ancestors/XFO stop an iframe embedding it, and COOP
+    // severs the opener↔popup relationship so a `window.open(...)` cannot retain a readable handle
+    // to the response either. (Belt to the GET same-origin/bound-Host guard's suspenders.)
+    'x-frame-options': 'DENY',
+    'content-security-policy': "frame-ancestors 'none'",
+    'cross-origin-opener-policy': 'same-origin',
+    'x-content-type-options': 'nosniff',
   });
   res.end(JSON.stringify(body));
 }
