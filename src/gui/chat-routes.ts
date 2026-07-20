@@ -1213,7 +1213,11 @@ export async function dispatchChatRoute(
     }, INTENT_ACK_WATCHDOG_MS);
     let intent: IntentResult | null = null;
     try {
-      const recentContext = renderRecentContext(history, 4);
+      // A wider window (was 4) so the fast intent pass can SEE a change the user stated a few
+      // turns ago ("update the tagline to the second one") when they later say "can you edit it"
+      // — otherwise it can't tell what to change and wrongly asks again. Each message is capped
+      // at 800 chars and the whole block sliced to 4000, so this stays cheap.
+      const recentContext = renderRecentContext(history, 10);
       intent = await runIntent(provider.client, message, {
         operatorName: readIdentity().display_name,
         tableNames: [...ctx.validTables],
@@ -1236,7 +1240,18 @@ export async function dispatchChatRoute(
     // otherwise be silently dropped by an inline short-circuit. When files are attached, skip
     // the inline branches and run the real loop (which works on the attachment).
     const hasAttachments = attachedNote.length > 0;
-    if (!hasAttachments && intent?.needs_more_info) {
+    // An edit/go-ahead request on the object the user is VIEWING must not be short-circuited into
+    // an inline clarify. The heavy loop has the full rehydrated thread history + the open-object
+    // grounding, so it resolves "what to change" better than the 4-message intent pass — and can
+    // still ask a grounded question if genuinely unsure. So route it to the loop instead of
+    // re-asking "what would you like to change?". Kept narrow (viewing an object + short
+    // edit/go-ahead phrasing) so general ambiguous questions still get the fast inline clarify.
+    const looksLikeEditOfOpen =
+      !!activeContext &&
+      /\b(edit|change|update|modify|revise|adjust|fix|tweak|rename|redo|make (it|that|this)|do (it|that|this)|go ahead|yes,? (do|go|please))\b/i.test(
+        message,
+      );
+    if (!hasAttachments && intent?.needs_more_info && !looksLikeEditOfOpen) {
       // Ambiguous — the ack_message is a clarifying question; end the turn awaiting a reply.
       await finishWithAnswer(intent.ack_message, 'done');
       return;

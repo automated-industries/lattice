@@ -134,6 +134,21 @@ describe('runIntent', () => {
     expect(sent).not.toMatch(/AUTHORITATIVE/);
   });
 
+  it('biases toward acting on an edit of the viewed object when recent context names the change (not re-asking)', async () => {
+    const { client, calls } = fakeClient(
+      '```json\n{"ack_message":"On it — updating the tagline…","needs_work":true,"needs_more_info":false}\n```',
+    );
+    await runIntent(client, 'can you edit it', {
+      activeView: 'the dashboard "Welcome"',
+      recentContext: "User: use the second tagline\nAssistant: Perfect — we'll use that.",
+    });
+    const sys = calls[0]!.system ?? '';
+    const sent = JSON.stringify(calls[0]!.messages);
+    // The classifier is told not to re-ask when the recent conversation already named the change.
+    expect(sys).toMatch(/do NOT set\s+needs_more_info merely because/i);
+    expect(sent).toMatch(/ACT on that earlier change/i);
+  });
+
   it('grounds the classifier in what the user is viewing so a complaint is actionable, not ambiguous', async () => {
     const { client, calls } = fakeClient(
       '```json\n{"ack_message":"Checking what went wrong…","needs_work":true,"needs_more_info":false}\n```',
