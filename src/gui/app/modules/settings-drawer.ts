@@ -163,15 +163,21 @@ export const settingsDrawerJs = `    // ─────────────�
         var raw = primary.content;
         var strippedRaw = stripFrontmatter(raw);
         var renderedHtml = renderContextMarkdown(strippedRaw);
-        // Build source chips from files array (missing feature 2).
+        // Build source chips from files array: group by table name, skip self/custom/enriched.
         var sourceChipsHtml = '';
         if (files && files.length > 0) {
           var sourceMap = {};
           for (var f = 0; f < files.length; f++) {
             var file = files[f];
-            var src = file && file.source ? String(file.source) : 'unknown';
-            if (!sourceMap[src]) sourceMap[src] = 0;
-            sourceMap[src]++;
+            if (!file || !file.source) continue;
+            var src = file.source;
+            // Skip self, custom, enriched (no table); only show hasMany/belongsTo/manyToMany.
+            if (!src.table || src.type === 'self' || src.type === 'custom' || src.type === 'enriched') {
+              continue;
+            }
+            var srcTable = src.table;
+            if (!sourceMap[srcTable]) sourceMap[srcTable] = 0;
+            sourceMap[srcTable] += (src.count != null ? src.count : 1);
           }
           if (Object.keys(sourceMap).length > 0) {
             sourceChipsHtml = '<div class="source-chips-row">';
