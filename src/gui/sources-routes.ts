@@ -392,7 +392,10 @@ export async function ingestFolder(
         if (r?.id) ingested++;
         else skipped++;
         // Publish throttled progress if feed is available.
-        if (feed && shouldPublishIngestProgress(ingested, files.length, lastProgressDone, lastProgressTime)) {
+        if (
+          feed &&
+          shouldPublishIngestProgress(ingested, files.length, lastProgressDone, lastProgressTime)
+        ) {
           lastProgressTime = Date.now();
           lastProgressDone = ingested;
           feed.publish({
@@ -493,7 +496,8 @@ export async function dispatchSourcesRoute(
     }
     // Ingest on add (drives the brain-graph animation via source:'ingest' feed).
     let result: IngestFolderResult | LocalFileIngestResult;
-    if (kind === 'folder') result = await ingestFolder(abs, ingestFile, deps.db, undefined, deps.feed);
+    if (kind === 'folder')
+      result = await ingestFolder(abs, ingestFile, deps.db, undefined, deps.feed);
     else result = await ingestFile(abs);
     sendJson(res, { root, result });
     return true;

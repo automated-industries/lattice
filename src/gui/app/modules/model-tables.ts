@@ -76,6 +76,9 @@ export const modelTablesJs = `
           neverShare: !!t.neverShare,
           computedTable: !!t.computedTable,
           connectorToolkit: t.connectorToolkit || null,
+          // Clean connector/source label (per-toolkit or external-DB name) — the
+          // upstream provenance node for a connected table, which is NOT itself a table.
+          schemaLabel: t.schemaLabel || null,
           fields: cols.map(function (col) {
             var concept = mtConceptFor(col);
             var ftype = (t.fieldTypes && t.fieldTypes[col]) || (t.columnTypes && t.columnTypes[col]) || '';
@@ -253,8 +256,20 @@ export const modelTablesJs = `
             }
           });
         }
+        // A CONNECTED table (source tier, synced from an external connector/database) has a
+        // real upstream that is NOT a Lattice table: the connector itself. Surface it as an
+        // external upstream node so a connected table always shows its provenance — otherwise
+        // an isolated connected table (no belongsTo/m2m edges to other synced tables) would
+        // render an empty lineage and read as "no lineage" (the intermittent-by-table bug).
+        // MIRROR of connectorUpstreamNode() in src/gui/lineage-source.ts (unit-tested source
+        // of truth) — keep the two in sync.
+        var isConnectedSource = e.tier === 'source' && !!e.connectorToolkit;
+        if (isConnectedSource) {
+          up.unshift({ table: null, external: true, label: e.schemaLabel || 'Connected source', kind: 'connector' });
+        }
         if (!up.length && !down.length) { host.innerHTML = ''; return; }
         var cardOf = function (x) {
+          if (x && x.external) return extCardHtml(x);
           var ent = lineage.byName[x.table];
           return ent ? mtCardHtml(ent, level) : '';
         };
@@ -319,7 +334,9 @@ export const modelTablesJs = `
         var d = 'M ' + fx + ' ' + fy + ' C ' + (fx + dx) + ' ' + fy + ', ' + (tx - dx) + ' ' + ty + ', ' + tx + ' ' + ty;
         var p = document.createElementNS(SVGNS, 'path'); p.setAttribute('d', d); p.setAttribute('class', 'mt-edge mt-edge-m2m'); svg.appendChild(p);
       };
-      tiers.querySelectorAll('#lin-up .mt-card[data-table]').forEach(function (a) {
+      // Include the external connector card (.mt-card-ext, which has no data-table) so a
+      // connected table's provenance root is wired to it, not just table-to-table sources.
+      tiers.querySelectorAll('#lin-up .mt-card').forEach(function (a) {
         var r = a.getBoundingClientRect();
         line(r.right - gr.left + sx, r.top - gr.top + sy + r.height / 2, cLeft, cy);
       });
@@ -698,6 +715,17 @@ export const modelTablesJs = `
           (f.type ? '<span class="mt-field-type">' + escapeHtml(f.type) + '</span>' : '') + '</li>';
       }).join('');
       return head + '<ul class="mt-fields">' + rows + '</ul>';
+    }
+
+    // An EXTERNAL upstream node in the lineage (a connector / external database), not a
+    // Lattice table — so it is non-navigable (no data-table, no click target) and carries a
+    // "connected source" meta. Used to show a connected table's true provenance root.
+    function extCardHtml(x) {
+      return '<div class="mt-card mt-card-ext" title="Connected source — read-only mirror">' +
+        '<span class="mt-card-ic">\\u{1F517}</span>' +
+        '<span class="mt-card-label">' + escapeHtml(x.label || 'Connected source') + '</span>' +
+        '<span class="mt-card-meta">connected source</span>' +
+      '</div>';
     }
 
     // Detail panel: fields, table lineage (upstream sources / downstream

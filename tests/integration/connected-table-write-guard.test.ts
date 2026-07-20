@@ -83,12 +83,12 @@ describe('row-write mutations refuse connected external tables', () => {
     expect(active.db.getConnectedSource('jira_issues')).toBeTruthy();
     const mctx = mctxOf(active);
 
-    await expect(createRow(mctx, 'jira_issues', { issue_key: 'X-1', summary: 's' })).rejects.toThrow(
+    await expect(
+      createRow(mctx, 'jira_issues', { issue_key: 'X-1', summary: 's' }),
+    ).rejects.toThrow(/read-only view of a connected external source/i);
+    await expect(updateRow(mctx, 'jira_issues', 'X-1', { summary: 'edited' })).rejects.toThrow(
       /read-only view of a connected external source/i,
     );
-    await expect(
-      updateRow(mctx, 'jira_issues', 'X-1', { summary: 'edited' }),
-    ).rejects.toThrow(/read-only view of a connected external source/i);
     await expect(deleteRow(mctx, 'jira_issues', 'X-1')).rejects.toThrow(
       /read-only view of a connected external source/i,
     );
@@ -153,8 +153,8 @@ describe('row-write mutations refuse connected external tables', () => {
     await expect(
       updateRow(mctx, m.table, 'row1', { legal_name: 'Automated Industries — AI consulting' }),
     ).rejects.toThrow(/read-only view of a connected external source/i);
-    await expect(
-      createRow(mctx, m.table, { id: 'row2', display_name: 'X' }),
-    ).rejects.toThrow(/read-only view of a connected external source/i);
+    await expect(createRow(mctx, m.table, { id: 'row2', display_name: 'X' })).rejects.toThrow(
+      /read-only view of a connected external source/i,
+    );
   });
 });

@@ -40,13 +40,13 @@ export const analyticsViewJs = `
 
     function initAnalyticsView() {
       // The Configure button + the drawer are wired by wireSettingsDrawer (it now
-      // targets #configure-trigger); the old Ask-Gladys view-toggle button is gone
-      // (the Ask Gladys dock is always visible in the single layout).
+      // targets #configure-trigger); the old Ask-Lattice view-toggle button is gone
+      // (the Ask Lattice dock is always visible in the single layout).
       // "+" in the Dashboards header → open-or-focus the seeded "Welcome to Lattice!"
       // dashboard. Dedupe is automatic: the router reconciles #/w/dash/<id> to the
       // existing tab, so a second click just re-activates it. If Welcome was deleted
       // (not in the loaded list), fall back to the home empty-state, whose prompt box
-      // is the "ask Gladys to build one" starting point.
+      // is the "ask Lattice to build one" starting point.
       var newBtn = document.getElementById('dash-new-btn');
       if (newBtn && !newBtn.__wired) {
         newBtn.__wired = true;
@@ -61,7 +61,7 @@ export const analyticsViewJs = `
       }
       // The brand logo just navigates home (#/) via its href — no view toggle in
       // the single layout.
-      // Restore + wire the adjustable Ask Gladys dock width (drag its left edge).
+      // Restore + wire the adjustable Ask Lattice dock width (drag its left edge).
       var savedW = parseInt(window.localStorage.getItem(ASK_DOCK_KEY) || '', 10);
       if (!isNaN(savedW)) applyAskDockWidth(savedW);
       var handle = document.getElementById('ask-dock-resize');
@@ -107,7 +107,7 @@ export const analyticsViewJs = `
           var activeKey = anTabKeyForHash(location.hash);
           if (!anDashRows.length) {
             host.innerHTML =
-              '<div class="dash-list-empty">No dashboards yet — ask Gladys to build one.</div>';
+              '<div class="dash-list-empty">No dashboards yet — ask Lattice to build one.</div>';
             return;
           }
           host.innerHTML = anDashRows
@@ -140,7 +140,7 @@ export const analyticsViewJs = `
         });
     }
 
-    // Realtime hook: a dashboards row changed (most often Gladys building one via
+    // Realtime hook: a dashboards row changed (most often Lattice building one via
     // chat). Nothing else watches the dashboards table, and renderAnalyticsHome
     // short-circuits on the cached anDashRows (which is [] after the first empty
     // load), so without this a newly-created dashboard never appears in the
@@ -172,14 +172,14 @@ export const analyticsViewJs = `
           '<p class="muted">' +
           (hasDashboards
             ? 'Open a dashboard from the left, or start one below.'
-            : 'Ask Gladys a question about your data — when a picture answers it best, she builds a dashboard for you.') +
+            : 'Ask Lattice a question about your data — when a picture answers it best, it builds a dashboard for you.') +
           '</p>' +
           // A prompt box right in the empty state: describe a dashboard / ask a
-          // question and it goes to Gladys (the same chat turn the dock composer
+          // question and it goes to Lattice (the same chat turn the dock composer
           // fires). This is the "New Dashboard" starting point.
           '<form class="analytics-home-prompt" id="an-home-prompt">' +
           '<textarea id="an-home-input" rows="1" placeholder="Describe a dashboard, or ask a question about your data…"></textarea>' +
-          '<button type="submit" class="btn primary" id="an-home-send">Ask Gladys</button>' +
+          '<button type="submit" class="btn primary" id="an-home-send">Ask Lattice</button>' +
           '</form>' +
           '</div>');
         var form = host.querySelector('#an-home-prompt');
@@ -212,7 +212,7 @@ export const analyticsViewJs = `
             input.value = '';
             input.style.height = 'auto';
             // Hand off to the assistant exactly like the dock composer — the
-            // reply (and any dashboard it builds) streams into the Ask Gladys dock.
+            // reply (and any dashboard it builds) streams into the Ask Lattice dock.
             if (typeof sendChat === 'function') sendChat(q);
           });
         }

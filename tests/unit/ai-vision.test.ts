@@ -70,16 +70,19 @@ describe('describeImage', () => {
     // image/svg+xml is NOT a directly-supported vision type → no raw fallback → a thrown error the
     // caller logs (rather than a silent empty result that reads as "no source text").
     await expect(
-      describeImage({ apiKey: 'x' }, img, { mediaType: 'image/svg+xml', sender: () => Promise.resolve('x') }),
+      describeImage({ apiKey: 'x' }, img, {
+        mediaType: 'image/svg+xml',
+        sender: () => Promise.resolve('x'),
+      }),
     ).rejects.toThrow(/could not prepare image for vision/i);
   });
 });
 
 describe('buildVisionAnthropicConfig', () => {
   it('honors a custom baseURL so vision reaches the same host as chat (proxy / BYO custom host)', () => {
-    expect(buildVisionAnthropicConfig({ apiKey: 'k', baseURL: 'https://proxy.example/v1' }).baseURL).toBe(
-      'https://proxy.example/v1',
-    );
+    expect(
+      buildVisionAnthropicConfig({ apiKey: 'k', baseURL: 'https://proxy.example/v1' }).baseURL,
+    ).toBe('https://proxy.example/v1');
     expect(buildVisionAnthropicConfig({ apiKey: 'k' }).baseURL).toBeUndefined();
   });
 });

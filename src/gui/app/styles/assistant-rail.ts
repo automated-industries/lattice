@@ -66,7 +66,7 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     /* File-drop overlay. In Configure it covers the whole window (drag a file
        anywhere → ingest). In Analytics the chat dock is on screen, so it is
        scoped (.scoped, positioned inline over #ask-dock) to just the chat window —
-       the drop TARGET is the Gladys chat, not the whole screen.
+       the drop TARGET is the Lattice chat, not the whole screen.
        pointer-events:none so the drag/drop events still reach the document handler. */
     .file-drop-overlay {
       position: fixed; inset: 0; z-index: var(--z-dropzone); display: none;
@@ -97,6 +97,14 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       font-size: 12px; font-weight: 600; color: var(--accent);
       display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
+    }
+    /* The assistant's mark is the Lattice logo glyph (same grid as the brand logo /
+       favicon), drawn as an em-sized background so the existing font-size rules on
+       .ask-lattice-mark scale it in each context (dock head, trigger). */
+    .ask-lattice-mark {
+      display: inline-block; flex: none; width: 1.2em; height: 1.2em; vertical-align: -0.24em;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='.5' y='.5' width='23' height='23' rx='5' fill='%23eff6ff' stroke='%23dbeafe'/%3E%3Cpath stroke='%233b82f6' stroke-width='1.25' stroke-linecap='round' d='M6 6h12M6 12h12M6 18h12M6 6v12M12 6v12M18 6v12'/%3E%3Cg fill='%233b82f6'%3E%3Ccircle cx='6' cy='6' r='1.7'/%3E%3Ccircle cx='12' cy='6' r='1.7'/%3E%3Ccircle cx='18' cy='6' r='1.7'/%3E%3Ccircle cx='6' cy='12' r='1.7'/%3E%3Ccircle cx='12' cy='12' r='2.4'/%3E%3Ccircle cx='18' cy='12' r='1.7'/%3E%3Ccircle cx='6' cy='18' r='1.7'/%3E%3Ccircle cx='12' cy='18' r='1.7'/%3E%3Ccircle cx='18' cy='18' r='1.7'/%3E%3C/g%3E%3C/svg%3E");
+      background-size: contain; background-repeat: no-repeat; background-position: center;
     }
     .ask-dock .ask-lattice-mark { color: var(--accent); }
     /* Title glows while the assistant is working (pending feed / typing) */

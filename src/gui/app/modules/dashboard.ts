@@ -202,8 +202,8 @@ export const dashboardJs = `    // ───────────────
       if (name === 'configure') { if (typeof goConfigure === 'function') goConfigure(); return; }
       if (name === 'analytics') { if (typeof goAnalytics === 'function') goAnalytics(); return; }
       if (name === 'ask') {
-        // A dashboard "ask" chip SUBMITS the question straight to Gladys — not just
-        // prefill the composer. The Ask Gladys dock is always visible in the single
+        // A dashboard "ask" chip SUBMITS the question straight to Lattice — not just
+        // prefill the composer. The Ask Lattice dock is always visible in the single
         // layout, so no navigation is needed: sendChat posts it, shows the user bubble,
         // and clears the composer (and guards on chatBusy so a rapid double-click can't
         // double-send). Fall back to prefilling the composer if the chat isn't wired.
@@ -450,11 +450,9 @@ export const dashboardJs = `    // ───────────────
       if (detailVisBtn) detailVisBtn.addEventListener('click', function () {
         var cur = detailVisBtn.getAttribute('data-vis-cur');
         var next = detailVisBtn.getAttribute('data-vis-next') || (cur === 'everyone' ? 'private' : 'everyone');
-        if (cur === 'custom') {
-          var cnt = (row._access && row._access.grantees ? row._access.grantees.length : 0);
-          var who = cnt === 1 ? '1 specific person' : cnt + ' specific people';
-          if (!confirm('This row is shared with ' + who + '. The custom list will stop applying (it is kept and reapplies if you return to specific people). Continue?')) return;
-        }
+        // No confirmation prompt when leaving specific-people sharing: the toggle is an
+        // explicit, reversible action and the custom grantee list is kept (it reapplies
+        // if the row returns to specific-people). Just apply the new visibility.
         withBusy(detailVisBtn, function () {
           return postVisibility(next).then(function () {
             invalidate(tableName);
@@ -523,12 +521,9 @@ export const dashboardJs = `    // ───────────────
               if (!want && have) toRemove.push(m.role);
             });
             if (toAdd.length === 0 && toRemove.length === 0) { closeGrantsPanel(panel); return; }
-            // Confirm the mode change ONCE, here — only when actually switching
-            // INTO specific-people mode (effective vis isn't already custom AND we
-            // are adding at least one grantee). Never per checkbox.
-            if (effectiveVisibility(access) !== 'custom' && toAdd.length > 0) {
-              if (!confirm('Sharing this with specific people switches it off "everyone"/"private". The chosen people will be able to see it. Continue?')) return;
-            }
+            // No confirmation prompt: switching a row into specific-people sharing is
+            // non-destructive and reversible — the prior everyone/private mode is
+            // restorable, and the custom grantee list is kept and reapplies. Just save.
             withBusy(saveBtn, function () {
               return fetchJson('/api/cloud/row-grants', {
                 method: 'POST',

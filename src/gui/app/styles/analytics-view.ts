@@ -6,7 +6,7 @@
 // container differs.
 export const analyticsViewCss = `    /* ── Single workspace layout ────────────────────────── */
     /* One 3-column layout (no view flip): left sidebar │ Workspace tabs │ the
-       persistent Ask Gladys dock (its width is user-adjustable via the divider). */
+       persistent Ask Lattice dock (its width is user-adjustable via the divider). */
     .layout {
       display: grid;
       grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--ask-dock-width, 360px);
@@ -120,7 +120,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
 
     /* ── Column headers (identical style to the Configure view) ── */
     /* All three carry the shared .col-header chrome. Accents mirror Configure:
-       Dashboards=blue (inputs), Workspace=purple (model), Ask Gladys=teal
+       Dashboards=blue (inputs), Workspace=purple (model), Ask Lattice=teal
        (outputs). The Dashboards header holds a compact "+" on the right. */
     .col-dashboards { --col-accent: var(--accent-deep); justify-content: space-between; }
     .dash-new-btn {
@@ -174,7 +174,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .analytics-home h1 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
     .analytics-home p { margin: 0; max-width: 46ch; }
     /* The empty-state prompt box — describe a dashboard / ask a question; it
-       hands the turn to Gladys (streams into the dock). */
+       hands the turn to Lattice (streams into the dock). */
     .analytics-home-prompt {
       display: flex; align-items: flex-end; gap: 8px; width: 100%; max-width: 640px; margin-top: 6px;
     }
@@ -187,7 +187,7 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .analytics-home-prompt .btn { flex: 0 0 auto; height: 42px; padding: 0 16px; border-radius: var(--r-lg); font-weight: 600; }
     .analytics-home-prompt .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
 
-    /* ── Ask Gladys dock: aligned header + adjustable width ── */
+    /* ── Ask Lattice dock: aligned header + adjustable width ── */
     .ask-dock { position: relative; }
     /* The head reuses the shared .col-header chrome (accent bar + 38px height)
        so it lines up with Dashboards + Workspace. Teal accent (outputs), plain

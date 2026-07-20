@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
 import { FeedBus } from '../../src/gui/feed.js';
-import { enqueueQuestion, listPendingQuestions, parseQuestionContext } from '../../src/gui/questions.js';
+import {
+  enqueueQuestion,
+  listPendingQuestions,
+  parseQuestionContext,
+} from '../../src/gui/questions.js';
 
 describe('question context with subject', () => {
   let db: Lattice;

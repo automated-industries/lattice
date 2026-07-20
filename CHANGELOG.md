@@ -10,6 +10,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **The assistant is "Ask Lattice."** The docked assistant is now labeled **Ask Lattice**
+  throughout (the header, the empty-state prompt, the drop-to-attach hint), and its avatar is the
+  **Lattice mark** — the same grid glyph as the brand logo and favicon — in place of the previous
+  emoji. One consistent identity across the terminal GUI and the desktop app.
+
+- **Sharing a row no longer interrupts you with a confirmation.** Switching a row into (or out of)
+  "specific people" sharing used to pop a "this switches it off everyone/private — continue?"
+  prompt. That change is non-destructive and reversible (the prior visibility is restorable and the
+  custom grantee list is kept and reapplies), so the prompt was pure friction — it's gone. Sharing
+  applies immediately on Save / toggle.
+
 - **Connector tables refresh when you actually read them.** On top of the existing on-load
   refresh, running a table-view query or loading a dashboard that reads a connector-backed table
   (MCP-synced, external-DB) now kicks a **throttled background refresh** of that connection, so the
@@ -85,6 +96,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   (a user-edited Welcome dashboard is left untouched).
 
 ### Fixed
+
+- **A connected table always shows its data lineage.** The lineage map below a connected
+  (read-only mirror) table's rows appeared for some connected tables but not others — it was hidden
+  whenever no other synced table happened to link to it (so an isolated mirror like a standalone
+  "Accounts" table showed nothing). A connected table's true upstream is its **connector**, which
+  isn't a Lattice table, so the table-to-table graph couldn't represent it. Its lineage now always
+  renders with an **external "connected source" node** upstream (labeled by the connector / external
+  database), wired to the table — real provenance for every connected table, not just the ones with
+  cross-table relationships.
 
 - **Typed MCP connections: coherence fixes across the flat→typed split.** The new per-server
   typed-table modeling left several places still assuming the old flat `mcp_items` table:
