@@ -324,11 +324,23 @@ function renderSelf(
   };
 }
 
-/** Render a list of related rows (one bullet per row). */
+/** Render a list of related rows (one bullet per row). Row labels become
+ *  lattice:// trace links so values are clickable in the GUI. */
 function renderRelated(table: string): (rows: Row[]) => string {
   return (rows: Row[]): string => {
     if (rows.length === 0) return '';
-    const items = rows.map((r) => `- ${rowLabel(r) || '(row)'}`).join('\n');
+    const items = rows
+      .map((r) => {
+        const label = rowLabel(r) || '(row)';
+        const id = String(r.id ?? '').trim();
+        // Emit a link only if the row has an id. Rows with no id or empty-string
+        // id stay as plain text (e.g., junctions where id is null / not set).
+        if (!id) return `- ${label}`;
+        // URL-encode the id to support PKs with special characters.
+        const encodedId = encodeURIComponent(id);
+        return `- [${label}](lattice://${table}/${encodedId})`;
+      })
+      .join('\n');
     return `# ${titleCase(table)}\n\n${items}\n`;
   };
 }
