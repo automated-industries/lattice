@@ -50,11 +50,13 @@ const renderAssistantHtml = runInNewContext(
 ) as (t: string) => string;
 
 describe('assistant inline object-link pills', () => {
-  it('renders [label](lattice://table/id) as a clickable lattice-ref pill', () => {
+  it('renders [label](lattice://table/id) as an inline lattice-ref word-link', () => {
     const out = renderAssistantHtml(
       "Here's your contract:\n[Northwind Service Agreement](lattice://contracts/9b7c60f0-fbc2-4f87-a550-c59e3c5d761f)",
     );
-    expect(out).toContain('class="chip chip-link lattice-ref"');
+    // The referenced word itself is the link — inline, no boxed chip classes.
+    expect(out).toContain('class="lattice-ref"');
+    expect(out).not.toContain('chip-link');
     expect(out).toContain('data-table="contracts"');
     expect(out).toContain('data-id="9b7c60f0-fbc2-4f87-a550-c59e3c5d761f"');
     expect(out).toContain('Northwind Service Agreement</a>');
