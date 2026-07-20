@@ -10,11 +10,11 @@ import type { ConnectedModelDef } from '../types.js';
 
 /** Standard lifecycle columns every connected table carries (natural key = PK). */
 function baseColumns(naturalKey: string): Record<string, string> {
+  // `deleted_at` is load-bearing (sync soft-deletes vanished rows). created_at/updated_at are
+  // omitted: sync never sets them (always NULL) — dropping them keeps the mirror faithful.
   return {
     [naturalKey]: 'TEXT PRIMARY KEY',
     deleted_at: 'TEXT',
-    created_at: 'TEXT',
-    updated_at: 'TEXT',
   };
 }
 

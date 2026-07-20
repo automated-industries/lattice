@@ -937,6 +937,21 @@ export const dashboardJs = `    // ───────────────
     // endpoint, its result rows in a grid. This is the ONE table view (no Formatted/
     // Markdown toggle). A result row opens its record (#/w/table/<name>/<id>) when the
     // result set carries an id column.
+    // Lattice-added internal columns on a connected external mirror — hidden from the SQL runner so
+    // a connected table reads faithfully (its source columns only). Kept in sync with the server's
+    // CONNECTED_INTERNAL_COLUMNS. Only applied to a connected mirror (tsum.connectorToolkit set).
+    var CONNECTED_INTERNAL_COLS = {
+      deleted_at: 1, created_at: 1, updated_at: 1,
+      _source_connector_id: 1, _source_model: 1, _source_synced_at: 1, data: 1, _pk: 1,
+    };
+    function tableSummaryFor(name) {
+      var tarr = (state.entities && state.entities.tables) || [];
+      for (var i = 0; i < tarr.length; i++) { if (tarr[i] && tarr[i].name === name) return tarr[i]; }
+      return null;
+    }
+    function faithfulCols(cols) {
+      return cols.filter(function (c) { return !CONNECTED_INTERNAL_COLS[c]; });
+    }
     function renderTableSqlRunner(content, table, section) {
       var myGen = renderGen;
       var d = displayFor(table);
@@ -944,13 +959,19 @@ export const dashboardJs = `    // ───────────────
       // the table view — otherwise a successful consolidation looks like it did nothing.
       // Only add the filter when the table actually has a deleted_at column; the user can
       // still edit the SQL to include trashed rows.
-      var tsum = null;
-      var tarr = (state.entities && state.entities.tables) || [];
-      for (var ti = 0; ti < tarr.length; ti++) { if (tarr[ti] && tarr[ti].name === table) { tsum = tarr[ti]; break; } }
+      var tsum = tableSummaryFor(table);
       var hasDeletedAt = !!(tsum && tsum.columns && tsum.columns.indexOf('deleted_at') !== -1);
+      // A connected external mirror reads faithfully: default to SELECTing only its source
+      // columns (Lattice-added internal columns are hidden), not select *. The deleted_at
+      // filter still applies (it's a valid predicate) — only the projected columns are trimmed.
+      var selectCols = '*';
+      if (tsum && tsum.connectorToolkit && tsum.columns) {
+        var faithful = faithfulCols(tsum.columns);
+        if (faithful.length) selectCols = faithful.map(function (c) { return '"' + c + '"'; }).join(', ');
+      }
       var defaultSql = hasDeletedAt
-        ? 'select * from "' + table + '" where deleted_at is null limit 100'
-        : 'select * from "' + table + '" limit 100';
+        ? 'select ' + selectCols + ' from "' + table + '" where deleted_at is null limit 100'
+        : 'select ' + selectCols + ' from "' + table + '" limit 100';
       var sql = sqlByTable[table] || defaultSql;
       content.innerHTML =
         fsBreadcrumb([table], [], section) +
@@ -1017,6 +1038,10 @@ export const dashboardJs = `    // ───────────────
       rows.forEach(function (r) {
         Object.keys(r).forEach(function (k) { if (!seen[k]) { seen[k] = true; cols.push(k); } });
       });
+      // For a connected mirror, hide the Lattice-added internal columns even if the user typed
+      // select-star — so the result reads faithfully as the source's columns.
+      var tsumR = tableSummaryFor(table);
+      if (tsumR && tsumR.connectorToolkit) cols = faithfulCols(cols);
       var pageRef = { page: 0 };
       function paint() {
         var page = pageRef.page;

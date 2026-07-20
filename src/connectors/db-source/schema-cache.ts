@@ -126,9 +126,10 @@ export function buildModelDefs(
     const { key: naturalKey } = naturalKeyFor(t);
     const columns: Record<string, string> = {
       [naturalKey]: 'TEXT PRIMARY KEY',
+      // `deleted_at` is load-bearing (sync soft-deletes vanished rows). created_at/updated_at are
+      // NOT emitted: sync never sets them, so they were always NULL — dropping them keeps a
+      // connected mirror's columns faithful to the source.
       deleted_at: 'TEXT',
-      created_at: 'TEXT',
-      updated_at: 'TEXT',
     };
     for (const c of t.columns) {
       if (c.name === naturalKey) continue; // already declared as the PK

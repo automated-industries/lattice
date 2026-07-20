@@ -498,8 +498,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // new batch reuses live state, past-tense terminal labels. Recaptured.
 // Pending-question banner: store-backed cards collapse behind a one-line count banner
 // (workspace-scoped store vs thread-scoped rail); expand in place on click. Recaptured.
-const ORIGINAL_LENGTH = 728056;
-const ORIGINAL_SHA256 = 'a50faaa8743ac2704a8965f868f20b318dc8fbb354980d6f51ad71f2cec4db17';
+const ORIGINAL_LENGTH = 729574;
+const ORIGINAL_SHA256 = '3a72751f4322479fdcd5c368ddf8be488c86706f648a642984e8a951a7b0cff7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
