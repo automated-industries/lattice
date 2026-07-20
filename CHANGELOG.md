@@ -8,6 +8,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Traceable rendered context — click a value to see where it came from.** Rendered row context
+  (the markdown files in each entity's directory) can now emit **`lattice://table/id` trace links** for
+  row references in related rollups (hasMany, manyToMany, belongsTo). The canonical auto-renderer
+  automatically linkifies row labels in related files: click a link in the formatted view to open a
+  floating provenance card showing the linked row's label, table, id, a few key fields, and an
+  "Open" button. Links do NOT appear in the entity's own self file (write-back constraints), but
+  custom user-supplied render functions can emit them anywhere. The context API response now
+  includes `source` metadata for each file (type, table, and row count for related sources),
+  enabling future UI features like table-scoped filtering and rollup statistics.
+
 ### Changed
 
 - **The assistant is "Ask Lattice."** The docked assistant is now labeled **Ask Lattice**
