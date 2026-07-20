@@ -48,7 +48,7 @@ import {
 import { countManyPostgres, exactCountMany } from './count-many.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { getAllTablePolicies } from '../cloud/table-policy.js';
-import { buildRowContextLocator, readRowContext } from './row-context.js';
+import { buildRowContextLocator, readRowContext, computeContextFileSourceCounts } from './row-context.js';
 import { readManifest } from '../lifecycle/manifest.js';
 import { classifyTier } from './tier-classify.js';
 import { CONTEXT_PATH, ROW_HISTORY_PATH, LAST_EDITED_PATH } from './route-paths.js';
@@ -1149,6 +1149,15 @@ export async function handleReadRoutes(
       // "no rendered context" placeholder.
       sendJson(res, { files: [] });
       return true;
+    }
+    // Compute source counts for each file (hasMany/manyToMany/belongsTo).
+    // This is best-effort: failures degrade to undefined count (client renders as unknown).
+    if (locator.fileSources && def) {
+      try {
+        await computeContextFileSourceCounts(active.db, ctxTable, row, def, locator.fileSources);
+      } catch {
+        // Ignore count-computation failures; proceed with the context render.
+      }
     }
     let files = readRowContext(active.outputDir, locator, secretCols);
     // Render-on-demand fallback. The debounced auto-render can miss a record created moments ago
