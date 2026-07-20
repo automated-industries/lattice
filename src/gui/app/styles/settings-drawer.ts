@@ -170,4 +170,63 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2);
       color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
     .mt-detail-edit:hover { background: var(--row-hover); }
+
+    /* ── Markdown context chips and provenance card ────────────────────── */
+    .chip-trace {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 8px; margin: 0 2px; border-radius: var(--r-sm);
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 13px; font-weight: 500; white-space: nowrap;
+      cursor: pointer; user-select: none; transition: background 0.15s ease, box-shadow 0.15s ease;
+      border: 1px solid var(--accent);
+    }
+    .chip-trace:hover { background: var(--accent); color: var(--btn-text); }
+    .chip-trace:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .source-chips-row {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px;
+      border-radius: var(--r-sm); background: var(--surface-2);
+    }
+    .source-chip {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 4px 8px; border-radius: var(--r-sm);
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); font-size: 12px; font-weight: 500; white-space: nowrap;
+      cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .source-chip:hover { background: var(--row-hover); border-color: var(--border-strong); }
+    .provenance-card {
+      display: flex; flex-direction: column;
+      background: var(--surface); border: 1px solid var(--border-strong);
+      border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+      z-index: 10000; pointer-events: auto;
+    }
+    .provenance-card-body {
+      padding: 12px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .provenance-card-header {
+      font-weight: 500; word-break: break-word; color: var(--text);
+    }
+    .provenance-card-meta {
+      font-size: 0.85em; color: var(--text-muted);
+    }
+    .provenance-card-meta code {
+      background: var(--surface-2); padding: 2px 4px; border-radius: 3px;
+      font-family: var(--font-mono, ui-monospace, monospace);
+    }
+    .provenance-card-content {
+      font-size: 0.85em; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px;
+    }
+    .provenance-fields {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .provenance-field {
+      margin-bottom: 6px; color: var(--text);
+    }
+    .provenance-field strong {
+      color: var(--text); font-weight: 600;
+    }
+    .provenance-tier {
+      font-size: 0.85em; color: var(--text-muted); margin-bottom: 8px;
+      padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
 `;

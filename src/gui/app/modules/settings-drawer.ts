@@ -33,7 +33,14 @@ export const settingsDrawerJs = `    // ─────────────�
           escapeHtml(p.label) + '</span>';
       });
     }
+    function closeExistingProvenanceCard() {
+      var existing = document.querySelector('.provenance-card');
+      if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+      }
+    }
     function openProvenanceCard(chip) {
+      closeExistingProvenanceCard();
       var rect = chip.getBoundingClientRect();
       var tableVal = chip.getAttribute('data-table');
       var idVal = chip.getAttribute('data-id');
@@ -47,27 +54,32 @@ export const settingsDrawerJs = `    // ─────────────�
       card.style.left = Math.min(rect.left, window.innerWidth - 300) + 'px';
       card.style.maxWidth = '300px';
       card.style.zIndex = '10000';
-      card.innerHTML = '<div style="padding:12px;background:var(--surface);border:1px solid var(--border-strong);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);">' +
-        '<div style="font-weight:500;margin-bottom:8px;word-break:break-word;">' + escapeHtml(chip.textContent) + '</div>' +
-        '<div style="font-size:0.85em;color:var(--text-muted);margin-bottom:8px;">' + escapeHtml(tableVal) + '\\u00a0·\\u00a0<code>' + escapeHtml(idVal) + '</code></div>' +
-        '<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">' +
+      card.innerHTML = '<div class="provenance-card-body">' +
+        '<div class="provenance-card-header">' + escapeHtml(chip.textContent) + '</div>' +
+        '<div class="provenance-card-meta">' + escapeHtml(tableVal) + '\\u00a0·\\u00a0<code>' + escapeHtml(idVal) + '</code></div>' +
+        '<div class="provenance-card-content">' +
           '<p style="margin:0;font-size:0.85em;color:var(--text-muted);">Loading...</p>' +
         '</div></div>';
       document.body.appendChild(card);
       var closeCard = function () {
-        if (card.parentNode) card.parentNode.removeChild(card);
+        if (card.parentNode) {
+          card.parentNode.removeChild(card);
+          document.removeEventListener('keydown', onEscape);
+          document.removeEventListener('click', onOutsideClick);
+        }
       };
       var onEscape = function (e) {
-        if (e.key === 'Escape') { closeCard(); document.removeEventListener('keydown', onEscape); }
+        if (e.key === 'Escape') closeCard();
       };
-      card.addEventListener('click', closeCard);
+      var onOutsideClick = function (e) {
+        if (!card.contains(e.target)) closeCard();
+      };
       document.addEventListener('keydown', onEscape);
-      document.addEventListener('click', function (e) {
-        if (!card.contains(e.target) && e.target !== chip) closeCard();
-      }, { once: true, capture: true });
+      document.addEventListener('click', onOutsideClick, { capture: true });
       // Fetch row data to populate the card.
       fetchJson('/api/tables/' + encodeURIComponent(tableVal) + '/rows/' + encodeURIComponent(idVal))
-        .then(function (row) {
+        .then(function (response) {
+          var row = response && typeof response === 'object' ? (response.row || response) : null;
           if (!row) return;
           var fields = [];
           var keysToTry = ['name', 'title', 'label', 'original_name', 'subject', 'description', 'body', 'content'];
@@ -75,26 +87,44 @@ export const settingsDrawerJs = `    // ─────────────�
             var k = keysToTry[i];
             if (row[k]) { fields.push({ key: k, val: String(row[k]).slice(0, 100) }); if (fields.length >= 3) break; }
           }
-          var html = '<div style="font-size:0.85em;">';
+          var html = '<div class="provenance-fields">';
           for (var j = 0; j < fields.length; j++) {
-            html += '<div style="margin-bottom:6px;"><strong>' + escapeHtml(fields[j].key) + ':</strong> ' + escapeHtml(fields[j].val) + '</div>';
+            html += '<div class="provenance-field"><strong>' + escapeHtml(fields[j].key) + ':</strong> ' + escapeHtml(fields[j].val) + '</div>';
           }
           html += '<button class="btn u-mt-2" style="width:100%;" data-act="open">Open ↗</button></div>';
-          card.querySelector('[role="dialog"] > div > div:last-child').innerHTML = html;
-          card.querySelector('[data-act="open"]').addEventListener('click', function () {
-            closeCard();
-            openSearchHit(tableVal, idVal);
-          });
+          var contentEl = card.querySelector('.provenance-card-content');
+          if (contentEl) contentEl.innerHTML = html;
+          var openBtn = card.querySelector('[data-act="open"]');
+          if (openBtn) {
+            openBtn.addEventListener('click', function () {
+              closeCard();
+              openSearchHit(tableVal, idVal);
+            });
+          }
+          // Lazy-load provenance tier.
+          fetchJson('/api/provenance/row?table=' + encodeURIComponent(tableVal) + '&id=' + encodeURIComponent(idVal))
+            .then(function (prov) {
+              if (prov && prov.tier) {
+                var tierEl = document.createElement('div');
+                tierEl.className = 'provenance-tier';
+                tierEl.textContent = 'Source: ' + escapeHtml(prov.tier);
+                var contentEl2 = card.querySelector('.provenance-card-content');
+                if (contentEl2 && contentEl2.firstChild) {
+                  contentEl2.insertBefore(tierEl, contentEl2.firstChild);
+                }
+              }
+            })
+            .catch(function () {});
         })
         .catch(function () {
-          card.querySelector('[role="dialog"] > div > div:last-child').innerHTML = '<p style="margin:0;font-size:0.85em;color:var(--text-muted);">Could not load data.</p>';
+          var contentEl = card.querySelector('.provenance-card-content');
+          if (contentEl) contentEl.innerHTML = '<p style="margin:0;font-size:0.85em;color:var(--text-muted);">Could not load data.</p>';
         });
     }
-    var _contextChipWired = false;
     function ensureContextChipHandler() {
-      if (_contextChipWired) return;
       var mount = document.getElementById('fs-context');
       if (!mount) return;
+      if (mount.getAttribute('data-chips-wired') === 'true') return;
       mount.addEventListener('click', function (e) {
         var chip = e.target && e.target.closest ? e.target.closest('.chip-trace') : null;
         if (!chip) return;
@@ -106,11 +136,13 @@ export const settingsDrawerJs = `    // ─────────────�
           openProvenanceCard(e.target);
         }
       });
-      _contextChipWired = true;
+      mount.setAttribute('data-chips-wired', 'true');
     }
     function loadFsContext(tableName, id) {
       var mount = document.getElementById('fs-context');
       if (!mount) return;
+      // Clear the chips-wired flag since we're recreating the context.
+      mount.removeAttribute('data-chips-wired');
       // Capture the render generation so a debounced save can't fire into a record
       // the user has navigated away from (renderRoute bumps renderGen on every nav).
       var myGen = renderGen;
@@ -131,11 +163,46 @@ export const settingsDrawerJs = `    // ─────────────�
         var raw = primary.content;
         var strippedRaw = stripFrontmatter(raw);
         var renderedHtml = renderContextMarkdown(strippedRaw);
+        // Build source chips from files array (missing feature 2).
+        var sourceChipsHtml = '';
+        if (files && files.length > 0) {
+          var sourceMap = {};
+          for (var f = 0; f < files.length; f++) {
+            var file = files[f];
+            var src = file && file.source ? String(file.source) : 'unknown';
+            if (!sourceMap[src]) sourceMap[src] = 0;
+            sourceMap[src]++;
+          }
+          if (Object.keys(sourceMap).length > 0) {
+            sourceChipsHtml = '<div class="source-chips-row">';
+            for (var srcKey in sourceMap) {
+              if (sourceMap.hasOwnProperty(srcKey)) {
+                sourceChipsHtml += '<span class="source-chip" data-table="' + escapeHtml(srcKey) + '">' +
+                  escapeHtml(srcKey) + '\\u00a0·\\u00a0' + sourceMap[srcKey] + '</span>';
+              }
+            }
+            sourceChipsHtml += '</div>';
+          }
+        }
         mount.innerHTML =
+          sourceChipsHtml +
           '<div class="fs-context-doc"><div class="md-body">' + renderedHtml + '</div></div>' +
           '<textarea class="fs-context-edit" spellcheck="false" aria-label="Edit record markdown"></textarea>' +
           '<div class="fs-context-status" aria-live="polite"></div>';
         mount.hidden = false;
+        // Wire up source chip clicks to navigate to table views.
+        var chipsRow = mount.querySelector('.source-chips-row');
+        if (chipsRow) {
+          chipsRow.addEventListener('click', function (e) {
+            var chip = e.target && e.target.closest ? e.target.closest('.source-chip') : null;
+            if (chip) {
+              var tbl = chip.getAttribute('data-table');
+              if (tbl && typeof openTableView === 'function') {
+                openTableView(tbl);
+              }
+            }
+          });
+        }
         ensureContextChipHandler();
         var ta = mount.querySelector('.fs-context-edit');
         var renderedBody = mount.querySelector('.fs-context-doc .md-body');
