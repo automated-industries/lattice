@@ -200,8 +200,10 @@ export const onboardingJs = `    // ──────────────�
           escapeHtml(p.label) + '</a>';
       });
     }
-    // One delegated click handler on the rail feed: a lattice-ref pill opens its
-    // object through the same mode-aware navigator the activity feed uses.
+    // One delegated click handler on the rail feed: a lattice-ref pill opens the
+    // provenance card (trace-first — the card's Open action navigates), so a
+    // value in an assistant answer traces to its source row in place. Falls back
+    // to direct navigation if the card helper is unavailable.
     var _latticeRefWired = false;
     function ensureLatticeRefHandler() {
       if (_latticeRefWired) return;
@@ -211,7 +213,8 @@ export const onboardingJs = `    // ──────────────�
         var a = e.target && e.target.closest ? e.target.closest('.lattice-ref') : null;
         if (!a) return;
         e.preventDefault();
-        openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
+        if (typeof openProvenanceCard === 'function') openProvenanceCard(a);
+        else openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
       });
       _latticeRefWired = true;
     }
