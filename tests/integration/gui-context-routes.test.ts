@@ -222,6 +222,85 @@ describe('GET /api/context/resolve', () => {
   });
 });
 
+describe('GET /api/tables/:table/rows/:id/context (source metadata)', () => {
+  it('returns source metadata {type, table, count} for related rollup files', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ctx-src-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  agents:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: agents.md',
+        '  tasks:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '      agent_id: { type: uuid }',
+        '    relations:',
+        '      agent: { type: belongsTo, table: agents, foreignKey: agent_id }',
+        '    outputFile: tasks.md',
+        '',
+      ].join('\n'),
+    );
+    const outputDir = join(root, 'context');
+    // Seed rendered context: both agent and task with files
+    mkdirSync(join(outputDir, 'Agents', 'alpha'), { recursive: true });
+    mkdirSync(join(outputDir, 'Tasks', 'task-1'), { recursive: true });
+    writeFileSync(
+      join(outputDir, 'Agents', 'alpha', 'AGENT.md'),
+      '---\nagents_id: agent-1\n---\n\n# Alpha\n',
+    );
+    writeFileSync(
+      join(outputDir, 'Agents', 'alpha', 'TASKS.md'),
+      '# Tasks\n\n- [Task 1](lattice://tasks/task-1)\n',
+    );
+    writeFileSync(
+      join(outputDir, 'Tasks', 'task-1', 'TASK.md'),
+      '---\ntasks_id: task-1\n---\n\n# Task 1\n',
+    );
+    writeFileSync(
+      join(outputDir, 'Tasks', 'task-1', 'AGENTS.md'),
+      '# Agent\n\n- Alpha\n',
+    );
+
+    const s = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(s);
+
+    // Create a task row
+    const taskRes = await fetch(`${s.url}/api/tables/tasks/rows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Task 1', agent_id: 'agent-1' }),
+    });
+    const taskId = ((await taskRes.json()) as { id: string }).id;
+
+    // GET context: check files include source metadata
+    const ctx = await fetch(`${s.url}/api/tables/tasks/rows/${taskId}/context`);
+    const { files } = (await ctx.json()) as {
+      files: { name: string; source?: { type: string; table?: string; count?: number } }[];
+    };
+
+    const taskFile = files.find((f) => f.name === 'TASK.md');
+    const agentFile = files.find((f) => f.name === 'AGENTS.md');
+
+    // Self file: source type is 'self', no table
+    expect(taskFile?.source).toEqual({ type: 'self' });
+
+    // Related file: source type is 'belongsTo', table is set
+    expect(agentFile?.source?.type).toBe('belongsTo');
+    expect(agentFile?.source?.table).toBe('agents');
+    expect(typeof agentFile?.source?.count).toBe('number'); // count should be computed
+  });
+});
+
 describe('GET /api/context/tree (junction filtering)', () => {
   // Regression: the Markdown panel used to list a "Files_<entity>" (link table)
   // folder for every relation alongside the real entity — pure noise that read as
