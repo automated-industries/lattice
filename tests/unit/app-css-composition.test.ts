@@ -238,8 +238,10 @@ import { css } from '../../src/gui/app/css.js';
 // Traceable rendered context: .chip-trace inline trace chips, .source-chips-row /
 // .source-chip per-file source summaries, .provenance-card* floating card (tokens
 // only — z tier via var(--z-popover)). Recaptured.
-const ORIGINAL_LENGTH = 167476;
-const ORIGINAL_SHA256 = 'fd7effc140b32604b96101ac32fc8c02f487d1283114864c4d95dfa4452eb5ca';
+// Chat .lattice-ref inline word-link style (accent tint + dotted underline, flows
+// with the sentence — replaces the boxed pill in answers). Recaptured.
+const ORIGINAL_LENGTH = 168236;
+const ORIGINAL_SHA256 = 'db8df4b144afa1bbb6325326d3f6495b3e0ec547a744abb04df4e26c309910e4';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
