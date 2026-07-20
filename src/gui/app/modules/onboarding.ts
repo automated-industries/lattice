@@ -346,6 +346,11 @@ export const onboardingJs = `    // ──────────────�
       } else if (ev.type === 'text_delta') {
         turn.assembled += ev.delta;
         if (visible) { anToolStatus(null); if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, turn.assembled); var fe = railFeedEl(); if (fe) fe.scrollTop = fe.scrollHeight; }
+      // The answer round re-emitted with deterministic trace links — swap the
+      // bubble's full text so retrieved-record references become clickable.
+      } else if (ev.type === 'text_final') {
+        turn.assembled = ev.text;
+        if (visible && turn.actx) setBubbleText(turn.actx, turn.assembled);
       // A tool round's streamed text (e.g. "I see — I need a different approach…") is real
       // narration the user should keep, so FINALIZE this round's bubble instead of reaping
       // it — the next round opens a fresh bubble via assistant_message_start / the next

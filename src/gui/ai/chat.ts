@@ -7,6 +7,7 @@ import {
 } from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
+import { collectLinkables, applyTraceLinks, type TraceRef } from './trace-links.js';
 import { resolveTableDescription } from '../column-descriptions.js';
 
 /**
@@ -492,6 +493,27 @@ export async function resolveReferencedRecords(
 export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamEvent> {
   const model = opts.model ?? DEFAULT_MODEL;
   const tools = dispatchableTools();
+  // Rows retrieved by this chat's tool calls (label → table/id), harvested for
+  // the deterministic trace-link pass on the final answer text. Seeded from the
+  // history's replayed tool calls too, so a follow-up the model answers from
+  // conversation memory (no new reads) still links the records it names.
+  const linkables = new Map<string, TraceRef | null>();
+  {
+    const toolInputs = new Map<string, unknown>();
+    for (const m of messages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content) {
+        if (b.type === 'tool_use') toolInputs.set(b.id, b.input);
+        else if (b.type === 'tool_result' && typeof b.content === 'string') {
+          try {
+            collectLinkables(toolInputs.get(b.tool_use_id), JSON.parse(b.content), linkables);
+          } catch {
+            // capped/truncated replay content is not valid JSON — nothing to harvest
+          }
+        }
+      }
+    }
+  }
   const messages: LlmMessage[] = [
     ...(opts.history ?? []),
     { role: 'user', content: opts.userMessage },
@@ -605,6 +627,18 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         }
         throw outcome.err;
       }
+      // Deterministic trace links on the ANSWER round (no tool calls): wrap bare
+      // occurrences of retrieved-row labels in lattice:// links and re-emit the
+      // full round text. The model is asked to link records itself, but emission
+      // is stochastic — this pass guarantees it for every row the turn actually
+      // read. Tool rounds are skipped (their narration is preamble, not answer).
+      if (turn.toolUses.length === 0 && turn.text) {
+        const linked = applyTraceLinks(turn.text, linkables);
+        if (linked !== turn.text) {
+          turn = { ...turn, text: linked };
+          yield { type: 'text_final', text: linked };
+        }
+      }
       // A tool-calling round's streamed text was pre-tool preamble ("Let me search…"),
       // NOT the answer — `hadTools` tells the client to reap that round's bubble and
       // the route to drop it from the persisted message, so preamble is never bubbled,
@@ -676,6 +710,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
         if (res.ok) turnAllFailed = false;
         else if (res.error) lastToolError = res.error;
+        if (res.ok) collectLinkables(tu.input, res.result, linkables);
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
         // A tool may ask the GUI to open the row it just created (e.g.
         // create_artifact) in the main viewer. Surface it as a typed event the
