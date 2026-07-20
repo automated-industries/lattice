@@ -196,10 +196,10 @@ export function buildMcpModelDefs(
   const toolkit = mcpToolkitFor(connectionId);
   return descriptor.kinds.map((k) => {
     const columns: Record<string, string> = {
+      // deleted_at is load-bearing (sync soft-deletes vanished rows); created_at/updated_at are
+      // never set by sync (always NULL) so they are omitted to keep the mirror faithful.
       [k.naturalKey]: 'TEXT PRIMARY KEY',
       deleted_at: 'TEXT',
-      created_at: 'TEXT',
-      updated_at: 'TEXT',
     };
     for (const c of k.columns) {
       if (c.name === k.naturalKey) continue;

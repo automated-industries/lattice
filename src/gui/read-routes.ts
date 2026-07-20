@@ -11,6 +11,7 @@ import { extname, join, normalize, sep } from 'node:path';
 import { sendJson, readJson, parsePageParam, sendHtmlCompressed } from './http.js';
 import { isRegisteredTable } from './active-db.js';
 import { Lattice } from '../lattice.js';
+import { isConnectedInternalColumn } from '../schema/connected.js';
 import { allAsyncOrSync, type StorageAdapter } from '../db/adapter.js';
 import { runDashboardSql, isSqlProtectedTable } from './dashboard-sql.js';
 import { classifySchema } from './schema-classify.js';
@@ -107,6 +108,8 @@ function registeredExtraTables(db: Lattice, yamlNames: Set<string>): GuiTableSum
       const cols = db.getRegisteredColumns(name) ?? {};
       return {
         name,
+        // Full column list — internal-logic consumers (origin detection, graph) need the
+        // lineage columns; the user-facing display surfaces apply faithfulColumns themselves.
         columns: Object.keys(cols),
         outputFile: `.schema-only/${name}.md`,
         relations: {},
@@ -268,9 +271,16 @@ async function enrichEntityTables(
       } else if (derivedTables.has(t.name)) {
         base.origin = 'derived';
       }
-      // Column → SQL type, for the Data Model schema cards (name : type).
+      // Column → SQL type, for the Data Model schema cards (name : type). A connected mirror
+      // shows only its source columns (internal Lattice columns are display-hidden).
       const colTypes = db.getRegisteredColumns(t.name);
-      if (colTypes) base.columnTypes = colTypes;
+      if (colTypes) {
+        base.columnTypes = connectedSource
+          ? Object.fromEntries(
+              Object.entries(colTypes).filter(([c]) => !isConnectedInternalColumn(c)),
+            )
+          : colTypes;
+      }
       // Canonical field types (text/uuid/datetime/…) — preferred for display
       // over the lossy SQL spec above. Absent for code-defined tables.
       const fieldTypes = db.getRegisteredFieldTypes(t.name);

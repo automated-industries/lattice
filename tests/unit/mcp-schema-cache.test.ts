@@ -113,18 +113,13 @@ describe('buildMcpModelDefs', () => {
     const ded = defs[0]!;
     expect(ded.model).toBe('deduction_types');
     expect(ded.naturalKey).toBe('_pk');
-    // Lifecycle + typed columns + data overflow, keyed by the per-connection toolkit.
+    // Faithful columns: the natural key (_pk here), the load-bearing deleted_at, the typed
+    // columns, and the data overflow — but NOT created_at/updated_at (never set by sync).
     expect(Object.keys(ded.definition.columns)).toEqual(
-      expect.arrayContaining([
-        '_pk',
-        'deleted_at',
-        'created_at',
-        'updated_at',
-        'code',
-        'name',
-        'data',
-      ]),
+      expect.arrayContaining(['_pk', 'deleted_at', 'code', 'name', 'data']),
     );
+    expect(Object.keys(ded.definition.columns)).not.toContain('created_at');
+    expect(Object.keys(ded.definition.columns)).not.toContain('updated_at');
     expect(ded.definition.source?.toolkit).toBe('mcp:conn-jw');
     expect(ded.definition.source?.connector).toBe('mcp');
     // The company kind keys on `id` (auto-projected), not _pk.
