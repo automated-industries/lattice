@@ -767,7 +767,22 @@ export async function dispatchChatRoute(
     sendJson(res, { error: 'message is required' }, 400);
     return true;
   }
-  const message = rawMessage || 'Take a look at the attached file(s).';
+  // Files-only send: never fabricate a "take a look at this file" user message. The
+  // client sends the attached file name(s) as the message; if a caller sends none,
+  // fall back to those names here. Either way the attached-files note (below) is what
+  // actually directs the model to read them — this string is only the visible/persisted
+  // label + thread title.
+  const attachedLabel =
+    hasAttachments && Array.isArray(body.attachedFiles)
+      ? (body.attachedFiles as unknown[])
+          .map((f) => {
+            const name = (f as { name?: unknown } | null)?.name;
+            return typeof name === 'string' ? name : '';
+          })
+          .filter(Boolean)
+          .join(', ')
+      : '';
+  const message = rawMessage || attachedLabel || 'Attached files';
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
 
   // Fail CLOSED: on a cloud we must know who this is before creating or reading

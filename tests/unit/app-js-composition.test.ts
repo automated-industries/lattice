@@ -502,8 +502,13 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // error-revert to the previous workspace (Bug D), Configure drawer refreshes to the
 // new workspace on the same tab (Bug C), and skipping the middle-pane re-render on
 // chat-only realtime writes (Bug A). Length + hash recaptured.
-const ORIGINAL_LENGTH = 734817;
-const ORIGINAL_SHA256 = 'd5bc6e1035c734cb6e549720bd98bb593fa33a33b9ec2d86b7c24fbf1decb0f9';
+// 5.0.1 chat file-attach fixes (Bug 8): the composer no longer clears the staging
+// tray before ingest — it locks Send + shows "Adding…" while files upload, keeps the
+// files staged (and surfaces a toast) on ingest failure instead of sending the message
+// without them, and a files-only send shows the attached file name(s) rather than a
+// fabricated "take a look at this file" message. Length + hash recaptured.
+const ORIGINAL_LENGTH = 736805;
+const ORIGINAL_SHA256 = 'bfa3b034fc367a5ff2d635b80fa11ce86bcdf8e6ffa191d4237ebe6bf3afe2cd';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

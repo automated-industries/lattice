@@ -235,8 +235,10 @@ import { css } from '../../src/gui/app/css.js';
 // Question cards: .q-subject secondary line (the record a clarification is
 // about) — muted, hover underline. Recaptured.
 // .q-banner collapsed pending-questions banner + #q-stack hidden rule. Recaptured.
-const ORIGINAL_LENGTH = 164910;
-const ORIGINAL_SHA256 = '99565f1bd167014d3fbb0a07db6da242b19341ada61849e88b83da1b18e5f9e4';
+// 5.0.1 Bug 8: .staging-busy state (dim chips, hide remove buttons, pulse the
+// "Adding…" header) while a staged file batch ingests. Recaptured.
+const ORIGINAL_LENGTH = 165407;
+const ORIGINAL_SHA256 = '2e6887e71b5c0e1249d56f28f3c38c6ef5a2d1bcc0881952bf47bd3f5111eeb4';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

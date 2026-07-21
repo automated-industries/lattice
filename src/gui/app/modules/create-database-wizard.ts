@@ -148,6 +148,24 @@ export const createDatabaseWizardJs = `    // ───────────�
       if (el && el.parentNode) el.parentNode.removeChild(el);
     }
     function clearStaging() { stagedFiles = []; removeStagingTray(); }
+    // While a staged batch is ingesting, lock Send + relabel the tray "Adding…"
+    // instead of clearing it — so a single-file ingest (which has no batch bar) still
+    // shows the work in flight, and a failure keeps the files attached to retry.
+    var stagingBusy = false;
+    function setStagingBusy(busy) {
+      stagingBusy = busy;
+      var sendBtn = document.getElementById('chat-send');
+      if (sendBtn) sendBtn.disabled = busy;
+      var tray = document.getElementById('staging-tray');
+      if (tray) tray.classList.toggle('staging-busy', busy);
+      var head = tray && tray.querySelector('.staging-head');
+      if (head) {
+        var n = stagedFiles.length;
+        head.textContent = busy
+          ? (n === 1 ? 'Adding your file…' : 'Adding ' + n + ' files…')
+          : (n + (n === 1 ? ' file to add' : ' files to add'));
+      }
+    }
     function stageFiles(fileList) {
       if (!fileList || !fileList.length) return;
       for (var i = 0; i < fileList.length; i++) {
@@ -292,21 +310,37 @@ export const createDatabaseWizardJs = `    // ───────────�
           function submitComposer() {
             var t = input.value.trim();
             // Lattice is still replying: sendChat's chatBusy guard would drop this turn AFTER
-            // we'd already cleared the tray + ingested the files, silently losing both. Bail
-            // now, keeping the staged files + typed text intact so the user can send once the
-            // reply finishes.
+            // we'd already ingested the files, silently losing them. Bail now, keeping the
+            // staged files + typed text intact so the user can send once the reply finishes.
             if (typeof chatBusy !== 'undefined' && chatBusy) return;
             if (!stagedFiles.length) { if (t) sendChat(t); return; }
+            if (stagingBusy) return; // an ingest for this tray is already in flight
             var batch = stagedFiles.slice();
-            clearStaging();
-            // The composer Send ALWAYS keeps focus on the chat (silent) — a files-only
-            // send should get a Lattice response, not navigate off to the file record.
-            // If ingest fails, still run the turn with the user's text so a typed
-            // message is never lost (a files-only send with a failed ingest no-ops in
-            // sendChat, which is correct — there is nothing to say).
+            // Lock Send + show "Adding…" while the files ingest; do NOT clear the tray up
+            // front. An attachment must never be dropped silently: on failure the files stay
+            // staged and the message is NOT sent without them (the old code cleared the tray
+            // first, then on ingest failure sent the text alone — losing the attachment with
+            // no error, and a files-only send no-oped with the file already gone).
+            setStagingBusy(true);
             uploadFiles(batch, { silent: true }).then(
-              function (refs) { sendChat(t, refs); },
-              function () { sendChat(t); },
+              function (refs) {
+                if (refs && refs.length) {
+                  clearStaging();
+                  stagingBusy = false; // sendChat now owns the Send button for this turn
+                  sendChat(t, refs);
+                } else {
+                  // Ingest produced no usable file — keep the batch + text, surface it,
+                  // never fabricate a turn with no attachment.
+                  setStagingBusy(false);
+                  showToast('Those files couldn’t be added — they’re still attached, tap Send to retry.', {});
+                }
+              },
+              function () {
+                // Ingest failed — keep the staged files (never send the message without its
+                // attachment) and tell the user; they retry with Send.
+                setStagingBusy(false);
+                showToast('Couldn’t add your files — they’re still attached, tap Send to retry.', {});
+              },
             );
           }
           input.addEventListener('keydown', function (e) {

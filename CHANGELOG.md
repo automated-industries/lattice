@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Chat file attach no longer drops the file, invents a message, or hides progress.** Attaching a file
+  then sending could post the message _without_ the file (and a files-only send could no-op with the
+  file already discarded), because the composer cleared the staging tray before ingest and, on ingest
+  failure, sent the typed text alone — silently losing the attachment. Now the tray stays put and Send
+  is locked while the batch ingests (a "Adding…" indicator, covering the single-file case that had no
+  progress bar); on failure the files stay staged with a toast to retry, and the message is never sent
+  without them. A files-only send shows the attached file name(s) instead of a fabricated "Take a look
+  at this file." message, and the assistant no longer asks you to upload a file you already attached.
+  See `docs/bugs/2026-07-21-chat-file-attach.md`.
+
 - **The assistant now answers "most recent / last / latest" questions by date, not by text relevance.**
   A temporal question ("what was the last meeting with …", "most recent by date") was answered with the
   relevance-ranked `search` tool, so a newer record with little text (e.g. a bare calendar "HOLD" with
