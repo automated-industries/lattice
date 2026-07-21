@@ -10,6 +10,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Five more out-of-the-box connectors: Gmail, Google Calendar, Google Drive, Slack, and
+  Salesforce.** Each is a thin hand-authored MCP connector built on the same parameterized-tool
+  pattern the Atlassian connector introduced: no-argument tools populate the top-level tables
+  (Gmail labels/threads, calendars, channels, users, Drive files, Salesforce accounts/contacts/
+  opportunities) and per-parent tools run scoped by the sync parent key (Gmail messages per thread,
+  Calendar events per calendar, Slack messages per channel). Natural keys are parent-namespaced where
+  the provider's id is only unique per parent (Calendar events, Slack message timestamps) and left
+  bare where globally unique (Gmail message ids, Drive file ids, Salesforce ids). All serve over a
+  `/v1/mcp` Streamable-HTTP endpoint (never `/sse`) and carry read-only OAuth scopes. Each has a
+  fake-transport test covering the model schema, the per-parent argument injection, and pagination
+  termination; the mapper field paths, tool names, endpoint URLs, and scopes follow the providers'
+  documented shapes and are marked in-code as needing a live-server spike before general release.
+
 - **Atlassian (Jira + Confluence) connector — the first hand-authored, parameterized-tool MCP
   connector.** The introspective connector only calls no-argument tools, so an Atlassian server
   (whose useful read tools all require a `cloudId`) produced no Jira/Confluence tables. The Atlassian

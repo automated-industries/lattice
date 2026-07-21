@@ -18,6 +18,11 @@
 import type { Connector } from './types.js';
 import { genericConnector } from './generic/connector.js';
 import { atlassianConnector } from './atlassian/connector.js';
+import { gmailConnector } from './gmail/connector.js';
+import { calendarConnector } from './calendar/connector.js';
+import { driveConnector } from './drive/connector.js';
+import { slackConnector } from './slack/connector.js';
+import { salesforceConnector } from './salesforce/connector.js';
 import { DatabaseConnector } from './db-source/connector.js';
 
 /**
@@ -25,11 +30,19 @@ import { DatabaseConnector } from './db-source/connector.js';
  * result to the connectors routes.
  *
  * The generic connector is the bring-your-own-MCP-URL path; the hand-authored
- * connectors (Atlassian first) model parameterized read tools the introspective
- * path can't (their tools need a `cloudId`), so their tables appear out of the box.
+ * connectors model parameterized read tools the introspective path can't (their
+ * tools need a `cloudId` / per-parent scope), so their tables appear out of the box.
  */
 export function builtinConnectors(): Connector[] {
-  return [genericConnector(), atlassianConnector()];
+  return [
+    genericConnector(),
+    atlassianConnector(),
+    gmailConnector(),
+    calendarConnector(),
+    driveConnector(),
+    slackConnector(),
+    salesforceConnector(),
+  ];
 }
 
 /**
