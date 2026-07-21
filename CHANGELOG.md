@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The assistant now answers "most recent / last / latest" questions by date, not by text relevance.**
+  A temporal question ("what was the last meeting with …", "most recent by date") was answered with the
+  relevance-ranked `search` tool, so a newer record with little text (e.g. a bare calendar "HOLD" with
+  no notes) ranked below older, wordier ones and was silently missed — the assistant then confidently
+  named an older record as the latest. The retrieval capability already existed (`list_rows` sorts by
+  the table's real event/date column); the gap was tool selection. The system prompt now routes any
+  time-ordered question to `list_rows` ordered by the date column (`orderDir: "desc"`) with the entity
+  filter — never `search` — re-queries by date when the user says something more recent exists, and
+  says "nothing after <date>" rather than naming an older record. The `search` tool description now
+  states it is relevance-ranked, not time-ordered. See
+  `docs/bugs/2026-07-21-assistant-temporal-queries.md`.
+
 - **A scoped cloud member's connector sync no longer fails with "A record could not be written during
   sync (possible conflict)".** Enabling row-level security is owner-only, so a connected table a member
   first syncs is created without its ownership trigger — those first-sync rows get no ownership record.
