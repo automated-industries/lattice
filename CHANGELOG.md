@@ -8,6 +8,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Atlassian (Jira + Confluence) connector — the first hand-authored, parameterized-tool MCP
+  connector.** The introspective connector only calls no-argument tools, so an Atlassian server
+  (whose useful read tools all require a `cloudId`) produced no Jira/Confluence tables. The Atlassian
+  connector models those parameterized tools explicitly: it lists the accessible sites
+  (`getAccessibleAtlassianResources`), then runs each per-site tool (`searchJiraIssuesUsingJql`,
+  `getVisibleJiraProjects`, `getConfluenceSpaces`, `getConfluencePages`) with that site's `cloudId`
+  supplied as the sync parent key — one connect populates `atlassian_sites`, `jira_projects`,
+  `jira_issues`, `confluence_spaces`, and `confluence_pages`, over the `/v1/mcp` Streamable-HTTP
+  endpoint. This is the reusable pattern for the other built-in connectors. The transport +
+  parameterized-binding wiring is covered by a fake-transport test; the mapper field paths follow
+  Atlassian's documented result shapes and are marked in-code as needing a live-server spike to
+  confirm before general release.
+
 ### Fixed
 
 - **Brain-graph drilling is instant instead of re-fetching every click.** Clicking through the graph

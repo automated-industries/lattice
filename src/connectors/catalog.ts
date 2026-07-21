@@ -17,14 +17,19 @@
 
 import type { Connector } from './types.js';
 import { genericConnector } from './generic/connector.js';
+import { atlassianConnector } from './atlassian/connector.js';
 import { DatabaseConnector } from './db-source/connector.js';
 
 /**
  * The built-in connectors, fresh instances per call. The GUI server passes the
  * result to the connectors routes.
+ *
+ * The generic connector is the bring-your-own-MCP-URL path; the hand-authored
+ * connectors (Atlassian first) model parameterized read tools the introspective
+ * path can't (their tools need a `cloudId`), so their tables appear out of the box.
  */
 export function builtinConnectors(): Connector[] {
-  return [genericConnector()];
+  return [genericConnector(), atlassianConnector()];
 }
 
 /**
