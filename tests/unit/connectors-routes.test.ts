@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Lattice } from '../../src/lattice.js';
-import { dispatchConnectorsRoute } from '../../src/gui/connectors-routes.js';
+import { dispatchConnectorsRoute, connectFailureHint } from '../../src/gui/connectors-routes.js';
 import { getConnectorByToolkit, createConnector } from '../../src/connectors/registry.js';
 import { genericConnector } from '../../src/connectors/generic/connector.js';
 import { setMcpServerUrl, clearMcpConnection } from '../../src/connectors/mcp/oauth.js';
@@ -225,6 +225,22 @@ function fakeRes(): { res: ServerResponse; done: Promise<{ status: number; body:
   } as unknown as ServerResponse;
   return { res, done };
 }
+
+describe('connectFailureHint (MCP connect error classification — Bug 5)', () => {
+  it('surfaces a curated reason for a used/expired code, redirect mismatch, rejection, timeout', () => {
+    expect(connectFailureHint(new Error('token endpoint returned invalid_grant'))).toMatch(
+      /expired or was already used/i,
+    );
+    expect(connectFailureHint(new Error('redirect_uri did not match'))).toMatch(/redirect URL/i);
+    expect(connectFailureHint(new Error('401 invalid_client'))).toMatch(/rejected the authorization/i);
+    expect(connectFailureHint(new Error('MCP initialize ETIMEDOUT'))).toMatch(/[Tt]imed out/);
+  });
+
+  it('returns null for an unknown cause (→ the now-logged generic 500)', () => {
+    expect(connectFailureHint(new Error('some unexpected internal failure'))).toBeNull();
+    expect(connectFailureHint('not even an error')).toBeNull();
+  });
+});
 
 describe('connectors routes (SQLite)', () => {
   let db: Lattice | undefined;

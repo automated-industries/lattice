@@ -53,6 +53,26 @@ function isActionable(err: unknown): err is Error {
   return err instanceof ConnectorUnavailableError;
 }
 
+/**
+ * A curated, user-facing reason for a connect failure, or null when the cause is
+ * unknown (→ the generic 500, which is now logged for diagnosis). We never surface
+ * a raw non-curated error string to the browser; only known, safe patterns get a
+ * specific message.
+ */
+export function connectFailureHint(err: unknown): string | null {
+  if (err instanceof ConnectorUnavailableError) return err.message;
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (/invalid_grant|code (?:has )?(?:expired|already been used|already used)|expired.*code/.test(msg))
+    return 'The authorization code expired or was already used — click Connect again to get a fresh code.';
+  if (/redirect[_ ]uri|redirect url/.test(msg))
+    return 'The redirect URL did not match what the connector expects. Restart the connect flow from Lattice.';
+  if (/invalid_client|unauthorized_client|\b401\b|\b403\b/.test(msg))
+    return 'The connector rejected the authorization (client not authorized). Restart the connect flow.';
+  if (/\btimeout|timed out|etimedout\b/.test(msg))
+    return 'Timed out talking to the connector (its MCP endpoint did not respond in time). Try again.';
+  return null;
+}
+
 /** Index connectors by toolkit (first wins — a toolkit collision is a wiring bug). */
 function indexByToolkit(connectors: Connector[]): Map<string, Connector> {
   const map = new Map<string, Connector>();
@@ -481,6 +501,18 @@ export async function dispatchConnectorsRoute(
           ),
         );
       } catch (e) {
+        // LOG IT. The 500 page below says "check the Lattice logs", but this catch
+        // used to write nothing — every MCP-connect finish failure was a black box
+        // (no message, no stack, nothing on stderr). Surface it FIRST, before any
+        // cleanup that could itself throw and hide the original cause.
+        {
+          const err = e instanceof Error ? e : new Error(String(e));
+          console.error(
+            '[lattice] MCP connector finish failed (toolkit=' + pending.toolkit + '): ' + err.message,
+          );
+          if (err.stack) console.error(err.stack);
+          if (err.cause) console.error('  cause:', err.cause);
+        }
         // The token exchange may have already persisted access/refresh tokens
         // under the new connectionId. If no registry row ended up referencing it
         // (the failure happened before/at row creation), those tokens are a live
@@ -492,8 +524,9 @@ export async function dispatchConnectorsRoute(
           const owned = rows.some((r) => r.connectionRef === exchangedConnectionId);
           if (!owned) clearMcpConnection(exchangedConnectionId);
         }
-        if (isActionable(e)) {
-          htmlErr(e.message, 422);
+        const hint = connectFailureHint(e);
+        if (hint) {
+          htmlErr(hint, 422);
           return true;
         }
         htmlErr('Failed to finish connecting. Check the Lattice logs and try again.', 500);
