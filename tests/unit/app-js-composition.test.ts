@@ -511,8 +511,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // bounded per-table cache (fetchRowsPageCached), invalidated by invalidate() on any
 // mutation, so clicking through layers is instant instead of re-fetching every click.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 738687;
-const ORIGINAL_SHA256 = '828de4abd01380db94f4649ebee599ee6365d8296c55b5b8233640b8b48c229d';
+const ORIGINAL_LENGTH = 738762;
+const ORIGINAL_SHA256 = 'ed6de353d20e2c6f2d6b815eb7034156748d371c998babc43e656e76d1a14819';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

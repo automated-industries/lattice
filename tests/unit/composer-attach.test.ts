@@ -35,8 +35,13 @@ describe('composer file-attach UX', () => {
     // Bug 2: the composer Send ALWAYS keeps focus on the chat (silent) so a files-only
     // send gets a Gladys response instead of navigating away to the file record.
     expect(appJs).toContain('uploadFiles(batch, { silent: true })');
-    // Bug 3: a typed message survives an ingest failure — sendChat runs in the reject path.
-    expect(appJs).toContain('function () { sendChat(t); }');
+    // Bug 3: a typed message + the staged files survive an ingest failure. The failure
+    // path no longer sends the message WITHOUT its files — the old `sendChat(t)` reject
+    // path silently dropped the attachment. It now re-enables Send + the tray and shows a
+    // retry toast, leaving the typed text in the input and the files staged for a retry.
+    expect(appJs).not.toContain('function () { sendChat(t); }');
+    expect(appJs).toContain('setStagingBusy(false)');
+    expect(appJs).toContain('tap Send to retry');
   });
 
   it('a drop attaches to Gladys on Analytics but ingests on the Inputs column in Configure', () => {

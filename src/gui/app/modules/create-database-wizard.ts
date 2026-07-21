@@ -316,28 +316,30 @@ export const createDatabaseWizardJs = `    // ───────────�
             if (!stagedFiles.length) { if (t) sendChat(t); return; }
             if (stagingBusy) return; // an ingest for this tray is already in flight
             var batch = stagedFiles.slice();
-            // Lock Send + show "Adding…" while the files ingest; do NOT clear the tray up
-            // front. An attachment must never be dropped silently: on failure the files stay
-            // staged and the message is NOT sent without them (the old code cleared the tray
-            // first, then on ingest failure sent the text alone — losing the attachment with
-            // no error, and a files-only send no-oped with the file already gone).
+            // Clear the tray for the send (the ingest shows its own "Analyzing…" card) and
+            // LOCK Send while the files ingest. Critically, an attachment must NEVER be dropped
+            // silently: if the ingest fails (or yields no file) we RE-STAGE the batch and never
+            // send the message without it — the old reject path sent the text alone, losing the
+            // file, and a files-only send no-oped with the file already gone.
+            clearStaging();
             setStagingBusy(true);
             uploadFiles(batch, { silent: true }).then(
               function (refs) {
                 if (refs && refs.length) {
-                  clearStaging();
                   stagingBusy = false; // sendChat now owns the Send button for this turn
                   sendChat(t, refs);
                 } else {
-                  // Ingest produced no usable file — keep the batch + text, surface it,
+                  // Ingest produced no usable file — put the files back, keep the text,
                   // never fabricate a turn with no attachment.
+                  stageFiles(batch);
                   setStagingBusy(false);
                   showToast('Those files couldn’t be added — they’re still attached, tap Send to retry.', {});
                 }
               },
               function () {
-                // Ingest failed — keep the staged files (never send the message without its
-                // attachment) and tell the user; they retry with Send.
+                // Ingest failed — put the staged files back (never send the message without
+                // its attachment) and tell the user; they retry with Send.
+                stageFiles(batch);
                 setStagingBusy(false);
                 showToast('Couldn’t add your files — they’re still attached, tap Send to retry.', {});
               },
