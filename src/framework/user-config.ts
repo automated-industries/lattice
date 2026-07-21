@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
@@ -97,23 +97,68 @@ const MASTER_KEY_FILENAME = 'master.key';
  * Losing `master.key` means losing the ability to decrypt anything
  * encrypted with it. Document loudly to consumers.
  */
+/**
+ * A short, NON-reversible fingerprint of a master key — first 8 hex of its
+ * SHA-256. Safe to log (reveals nothing usable about the key); lets an operator
+ * confirm at a glance whether two surfaces (e.g. `lattice gui`/desktop vs. the
+ * CLI) resolved the SAME key, which is exactly what the env-var-shadowing bug
+ * makes ambiguous.
+ */
+export function masterKeyFingerprint(key: string): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 8);
+}
+
+// Log the chosen key SOURCE once per process — never the key, only source +
+// fingerprint. GUI-launched apps inherit a different environment than the shell,
+// so LATTICE_ENCRYPTION_KEY can silently differ between the desktop app and the
+// CLI on the same machine; surfacing the source makes that divergence visible.
+let _keySourceLogged = false;
+function logKeySource(source: 'env' | 'file' | 'generated', key: string): void {
+  if (_keySourceLogged) return;
+  _keySourceLogged = true;
+  // eslint-disable-next-line no-console
+  console.error(
+    `[lattice] encryption key: source=${source} fingerprint=${masterKeyFingerprint(key)}`,
+  );
+}
+
 export function getOrCreateMasterKey(): string {
   const envKey = process.env.LATTICE_ENCRYPTION_KEY;
-  if (envKey && envKey.length > 0) return envKey;
+  if (envKey !== undefined && envKey.trim().length > 0) {
+    logKeySource('env', envKey); // verbatim (unchanged) for a non-blank value
+    return envKey;
+  }
+  if (envKey !== undefined) {
+    // SET-but-blank is the footgun: an empty/whitespace value used to shadow a
+    // perfectly good master.key and make EVERY decrypt fail. Treat it as unset,
+    // loudly, and fall back to the file.
+    // eslint-disable-next-line no-console
+    console.error(
+      '[lattice] LATTICE_ENCRYPTION_KEY is set but blank — ignoring it and using master.key. ' +
+        'Unset the variable to silence this warning.',
+    );
+  }
 
   const dir = ensureConfigDir();
   const keyPath = join(dir, MASTER_KEY_FILENAME);
   if (existsSync(keyPath)) {
-    return readFileSync(keyPath, 'utf8').trim();
+    const key = readFileSync(keyPath, 'utf8').trim();
+    logKeySource('file', key);
+    return key;
   }
   // Create under the cross-process lock with a re-check: two concurrent fresh
   // processes must not write divergent keys, which would make each other's
   // encrypted credentials undecryptable. The first to acquire writes; the rest
   // re-read the key it created.
   return withCredentialLock(() => {
-    if (existsSync(keyPath)) return readFileSync(keyPath, 'utf8').trim();
+    if (existsSync(keyPath)) {
+      const key = readFileSync(keyPath, 'utf8').trim();
+      logKeySource('file', key);
+      return key;
+    }
     const key = randomBytes(32).toString('base64');
     writeFileAtomic(keyPath, key);
+    logKeySource('generated', key);
     return key;
   });
 }

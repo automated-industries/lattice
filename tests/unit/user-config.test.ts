@@ -13,6 +13,7 @@ import {
   getDbCredential,
   getOrCreateAnalyticsId,
   getOrCreateMasterKey,
+  masterKeyFingerprint,
   listDbCredentials,
   listTokens,
   readIdentity,
@@ -76,6 +77,26 @@ describe('framework user-config', () => {
       expect(existsSync(join(tmpDir, 'master.key'))).toBe(true);
       // 32 random bytes encoded base64 is 44 chars (with padding).
       expect(first.length).toBeGreaterThanOrEqual(40);
+    });
+
+    it('ignores a blank/whitespace LATTICE_ENCRYPTION_KEY and falls back to master.key', () => {
+      const fileKey = getOrCreateMasterKey(); // env unset → generates + writes the file
+      expect(existsSync(join(tmpDir, 'master.key'))).toBe(true);
+      // A whitespace-only value used to be taken VERBATIM as the key (so every
+      // decrypt then failed); it must now be treated as unset and fall back.
+      process.env.LATTICE_ENCRYPTION_KEY = '   ';
+      expect(getOrCreateMasterKey()).toBe(fileKey);
+      // An empty string, too.
+      process.env.LATTICE_ENCRYPTION_KEY = '';
+      expect(getOrCreateMasterKey()).toBe(fileKey);
+    });
+
+    it('masterKeyFingerprint is stable, key-specific, and reveals nothing (8 hex, not the key)', () => {
+      const fp = masterKeyFingerprint('some-master-key');
+      expect(fp).toMatch(/^[0-9a-f]{8}$/);
+      expect(masterKeyFingerprint('some-master-key')).toBe(fp); // stable
+      expect(masterKeyFingerprint('other-key')).not.toBe(fp); // key-specific
+      expect(fp).not.toContain('some-master-key'); // never the key itself
     });
   });
 

@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A blank `LATTICE_ENCRYPTION_KEY` no longer breaks secret decryption.** A set-but-empty (or
+  whitespace-only) `LATTICE_ENCRYPTION_KEY` used to be taken verbatim as the encryption key,
+  shadowing a working `master.key` so every stored secret then failed to decrypt with an opaque
+  "unable to authenticate data." It is now treated as unset (with a warning) and falls back to
+  `master.key`. Lattice also logs the resolved key **source** (env / file / generated) and a
+  short non-secret fingerprint once at startup, so a mismatch between the desktop app and the CLI
+  on the same machine is diagnosable at a glance.
+
 - **"Connect with Claude" now explains _why_ a connect fails.** The manual code-paste flow used to
   report every failure the same way: a valid, complete paste could still return "Paste the full
   code from the Claude authorization page" when the real cause was an expired or interrupted
