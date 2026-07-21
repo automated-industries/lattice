@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The desktop app now reads the same credential store as the CLI.** `configDir()` discovered the
+  Lattice root by walking up from the current directory; a GUI app launched from the Dock/Finder has
+  `cwd = /`, so the walk never reached `~/.lattice` and it fell through to the legacy top-level
+  `~/.lattice/` — a stale store in an older envelope the current build can't parse — instead of
+  `~/.lattice/.config/`. Cloud workspaces then failed to open with a misleading "no credential is
+  saved" error even though the CLI/browser worked. When no root is discoverable from the cwd,
+  `configDir()` now anchors to the per-user `~/.lattice/.config` (the same store the CLI uses),
+  falling back to the legacy dir only when it alone holds a key. Also: the `LATTICE_DB_<label>` env
+  var the error message suggests is now actually read by `getDbCredential` (a credential-injection
+  escape hatch), and a present-but-undecryptable machine-local store now warns instead of silently
+  reading as empty.
+
 - **Postgres workspaces now encrypt in transit by default (behavior change).** `PostgresAdapter`
   built its pool with no `ssl`, so node-postgres — which, unlike libpq, never negotiates TLS unless
   asked — connected in **cleartext by default**; a self-hosted Postgres workspace transmitted every

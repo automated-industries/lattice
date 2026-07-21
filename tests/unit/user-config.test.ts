@@ -389,6 +389,22 @@ describe('framework user-config', () => {
       expect(getDbCredential('missing')).toBeNull();
     });
 
+    it('getDbCredential falls back to a LATTICE_DB_<label> env var (Bug 4 — the hint is now functional)', () => {
+      // No saved credential — the env var supplies the URL (the exact label).
+      process.env.LATTICE_DB_mylabel = 'postgres://from-env';
+      expect(getDbCredential('mylabel')).toBe('postgres://from-env');
+      delete process.env.LATTICE_DB_mylabel;
+      // A label with dots/dashes maps to an uppercased/underscored shell-safe name.
+      process.env.LATTICE_DB_MY_DB = 'postgres://safe';
+      expect(getDbCredential('my.db')).toBe('postgres://safe');
+      delete process.env.LATTICE_DB_MY_DB;
+      // A saved credential still wins over the env var.
+      saveDbCredential('mylabel', 'postgres://saved');
+      process.env.LATTICE_DB_mylabel = 'postgres://from-env';
+      expect(getDbCredential('mylabel')).toBe('postgres://saved');
+      delete process.env.LATTICE_DB_mylabel;
+    });
+
     it('encrypts the file on disk', () => {
       saveDbCredential('a', 'postgres://supersecret-password@h/d');
       const raw = readFileSync(join(tmpDir, 'db-credentials.enc'), 'utf8');

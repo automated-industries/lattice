@@ -62,6 +62,18 @@ export function configDir(): string {
     if (existsSync(join(rootDir, MASTER_KEY_FILENAME))) return rootDir;
     if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return rootDir;
   }
+  // No root was discoverable by walking UP from the cwd. A GUI app launched from
+  // the Dock/Finder has cwd=`/`, so the walk never reaches `~/.lattice` and we'd
+  // otherwise fall to the LEGACY top-level dir — a different, stale store than the
+  // one the CLI (whose cwd is near the workspace) resolves to via `<root>/.config`.
+  // That divergence made the desktop read the wrong credential store and report
+  // every credential as missing. Anchor to the per-user `~/.lattice/.config` (the
+  // current-format store) so the desktop and CLI resolve to the SAME place —
+  // unless only the legacy top-level holds a key, in which case keep using it so
+  // an existing legacy install still decrypts.
+  const homeConfig = rootConfigDir(legacy);
+  if (existsSync(join(homeConfig, MASTER_KEY_FILENAME))) return homeConfig;
+  if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return homeConfig;
   return legacy;
 }
 
@@ -700,10 +712,22 @@ export function listDbCredentials(): string[] {
   return Object.keys(loadCredentials()).sort();
 }
 
-/** Return the connection URL stored under `label`, or null if absent. */
+/**
+ * Return the connection URL stored under `label`, or null if absent.
+ *
+ * Falls back to a `LATTICE_DB_<label>` env var (the exact label, then an
+ * uppercased/underscored form for shell-friendliness) — a credential-injection
+ * escape hatch for CI / IT that needs no GUI. This is exactly what the
+ * "…or set LATTICE_DB_<label>" hint on a missing-credential error promises; the
+ * env var used to be suggested but never read.
+ */
 export function getDbCredential(label: string): string | null {
   const creds = loadCredentials();
-  return creds[label] ?? null;
+  if (creds[label] !== undefined) return creds[label];
+  const exact = process.env['LATTICE_DB_' + label];
+  if (exact) return exact;
+  const shellSafe = process.env['LATTICE_DB_' + label.toUpperCase().replace(/[^A-Z0-9]+/g, '_')];
+  return shellSafe ?? null;
 }
 
 /** Persist (or overwrite) the connection URL stored under `label`. */
