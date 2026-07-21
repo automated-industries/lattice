@@ -24,6 +24,7 @@ import {
   writePreferences,
   writeToken,
 } from '../../src/framework/user-config.js';
+import { encrypt, deriveKey } from '../../src/security/encryption.js';
 
 describe('framework user-config', () => {
   let tmpDir: string;
@@ -97,6 +98,49 @@ describe('framework user-config', () => {
       expect(masterKeyFingerprint('some-master-key')).toBe(fp); // stable
       expect(masterKeyFingerprint('other-key')).not.toBe(fp); // key-specific
       expect(fp).not.toContain('some-master-key'); // never the key itself
+    });
+  });
+
+  describe('stale LATTICE_ENCRYPTION_KEY validation (Bug 2c)', () => {
+    // A machine-local store's ciphertext, encrypted with `key` — the witness of
+    // "which key this machine's data was actually written with."
+    const sampleEncryptedWith = (key: string): string =>
+      encrypt('{"claude-oauth":"tok"}', deriveKey(key));
+
+    it("falls back to master.key when the env key can't decrypt this machine's data", () => {
+      const fileKey = 'file-key-that-actually-works';
+      writeFileSync(join(tmpDir, 'master.key'), fileKey);
+      // assistant-credentials.enc encrypted with the FILE key (the real one).
+      writeFileSync(join(tmpDir, 'assistant-credentials.enc'), sampleEncryptedWith(fileKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = 'stale-inherited-env-key';
+      // env can't decrypt the sample; file can → resolve to the file key.
+      expect(getOrCreateMasterKey()).toBe(fileKey);
+    });
+
+    it('keeps the env key when it DOES decrypt this machine’s data', () => {
+      const envKey = 'env-key-that-works';
+      writeFileSync(join(tmpDir, 'master.key'), 'a-different-file-key');
+      writeFileSync(join(tmpDir, 'db-credentials.enc'), sampleEncryptedWith(envKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = envKey;
+      expect(getOrCreateMasterKey()).toBe(envKey);
+    });
+
+    it('keeps env priority when there is no encrypted data to validate against', () => {
+      writeFileSync(join(tmpDir, 'master.key'), 'file-key');
+      process.env.LATTICE_ENCRYPTION_KEY = 'env-key-differs'; // differs, but no sample
+      expect(getOrCreateMasterKey()).toBe('env-key-differs');
+    });
+
+    it('uses a single key for reads AND writes — no split when the file key wins', () => {
+      // Split-key regression: once the file key is chosen, a machine-local WRITE
+      // then READ must round-trip under that SAME key (never the stale env key).
+      const fileKey = 'file-key-that-actually-works';
+      writeFileSync(join(tmpDir, 'master.key'), fileKey);
+      writeFileSync(join(tmpDir, 'assistant-credentials.enc'), sampleEncryptedWith(fileKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = 'stale-inherited-env-key';
+      saveDbCredential('primary', 'postgres://example');
+      expect(getDbCredential('primary')).toBe('postgres://example');
+      expect(getOrCreateMasterKey()).toBe(fileKey);
     });
   });
 

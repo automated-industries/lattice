@@ -10,15 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
-- **A blank `LATTICE_ENCRYPTION_KEY` no longer breaks secret decryption.** A set-but-empty (or
-  whitespace-only) `LATTICE_ENCRYPTION_KEY` used to be taken verbatim as the encryption key,
-  shadowing a working `master.key` so every stored secret then failed to decrypt with an opaque
-  "unable to authenticate data." It is now treated as unset (with a warning) and falls back to
-  `master.key`. And when a decrypt genuinely fails on a key mismatch, the error is now an actionable
-  message that names `LATTICE_ENCRYPTION_KEY` and how to fix it, instead of the opaque crypto-library
-  string. Lattice also logs the resolved key **source** (env / file / generated) and a
-  short non-secret fingerprint once at startup, so a mismatch between the desktop app and the CLI
-  on the same machine is diagnosable at a glance.
+- **A stale `LATTICE_ENCRYPTION_KEY` no longer breaks secret decryption.** `LATTICE_ENCRYPTION_KEY`
+  used to be taken verbatim whenever set (even blank/whitespace), shadowing a working `master.key` so
+  every stored secret then failed to decrypt with an opaque "unable to authenticate data" — a nasty
+  trap because a GUI/desktop app inherits a different environment than the shell, so the desktop app
+  could break while the CLI on the same machine worked. Now the key is resolved consistently for
+  reads **and** writes (never split across two keys): a blank value is treated as unset; and when a
+  non-blank env key and a `master.key` both exist and differ, the key that **actually decrypts this
+  machine's stored data wins** (validated against real ciphertext), so a stale env var can't shadow
+  the working file. When a decrypt still fails on a genuine mismatch, the error now names
+  `LATTICE_ENCRYPTION_KEY` and how to fix it instead of the raw crypto string, and Lattice logs the
+  resolved key **source** (env / file / generated) plus a short non-secret fingerprint once at
+  startup, so a desktop-vs-CLI mismatch is diagnosable at a glance.
 
 - **"Connect with Claude" now explains _why_ a connect fails.** The manual code-paste flow used to
   report every failure the same way: a valid, complete paste could still return "Paste the full
