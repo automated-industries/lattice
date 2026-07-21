@@ -10,6 +10,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Postgres workspaces now encrypt in transit by default (behavior change).** `PostgresAdapter`
+  built its pool with no `ssl`, so node-postgres — which, unlike libpq, never negotiates TLS unless
+  asked — connected in **cleartext by default**; a self-hosted Postgres workspace transmitted every
+  row unencrypted even when the server offered TLS, and there was no supported way to require or
+  verify it. Now a non-local host defaults to **`sslMode=require`** (encrypt; localhost / unix
+  sockets stay `disable`), and a full `sslMode` (`disable` | `require` | `verify-ca` | `verify-full`)
+  - CA bundle can be set via `PostgresAdapterOptions` (`sslMode`, `sslRootCert`), the
+    `LATTICE_PG_SSLMODE` / `PGSSLMODE` and `LATTICE_PG_SSLROOTCERT` / `PGSSLROOTCERT` env vars, or an
+    `sslmode`/`ssl` query param on the connection string. The negotiated transport is logged, and a
+    non-local plaintext connection warns loudly. **Note:** a server that offers no TLS at all will now
+    fail to connect until you set `sslMode=disable` — secure by default, opt out of encryption
+    explicitly.
+
 - **Workspace switching is smoother and safer.** Four related fixes: (1) the full-screen switch
   animation now appears the instant you click a workspace — from the dropdown or the Configure
   panel — instead of a dropdown-closes-then-overlay-appears two-step; (2) switching from the
