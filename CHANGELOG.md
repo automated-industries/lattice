@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **The assistant now follows clean, scalable star-schema data-model best practices.** The system
+  prompt gained a robust data-model-design section: one concept per table, facts vs dimensions,
+  normalize repeated entities into their own related tables, deduplicate real-world duplicates
+  (reversibly), keep derived data as live computed views (never stored copies), and document what
+  objects/fields mean — applied whenever the assistant creates or reorganizes objects, preferring
+  additive, reversible steps and leaving an already-clean model alone. (Part one of the automatic
+  data-model designer; the shared designer routine that runs after ingest/connect follows.)
+
 - **Five more out-of-the-box connectors: Gmail, Google Calendar, Google Drive, Slack, and
   Salesforce.** Each is a thin hand-authored MCP connector built on the same parameterized-tool
   pattern the Atlassian connector introduced: no-argument tools populate the top-level tables
