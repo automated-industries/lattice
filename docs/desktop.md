@@ -13,11 +13,6 @@ Download the installer for your OS from **[latticesql.com/install](https://latti
 
 The CLI path keeps working unchanged: `npm i -g latticesql && lattice gui`.
 
-> **Unsigned builds (current):** the v1 installers are not yet code-signed, so the
-> first launch shows an "unidentified developer" (macOS Gatekeeper) or "unknown
-> publisher" (Windows SmartScreen) prompt. Choose **Open anyway** / **Run anyway**.
-> Signed builds remove this step.
-
 ## How it works
 
 The desktop app is built with [`deno desktop`](https://docs.deno.com/runtime/desktop/).
