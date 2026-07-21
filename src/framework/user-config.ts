@@ -239,8 +239,7 @@ function resolveKeyConflict(envKey: string, fileKey: string): string {
     logKeySource('file', fileKey);
     return fileKey;
   }
-  const cacheKey =
-    configDir() + ' ' + envKey + ' ' + fileKey + ' ' + samplesFingerprint(samples);
+  const cacheKey = configDir() + ' ' + envKey + ' ' + fileKey + ' ' + samplesFingerprint(samples);
   if (_conflictCacheKey === cacheKey && _conflictCacheVal !== null) return _conflictCacheVal;
 
   // Trust the env key ONLY if it decrypts real data (any witness); else the file.
