@@ -10,6 +10,24 @@ interface EncryptedConfig {
   encrypted?: boolean | { columns: string[] };
 }
 
+/**
+ * A decrypt failure that almost always means a key mismatch. The raw AES-GCM
+ * error ("Unsupported state or unable to authenticate data") is opaque and leaks
+ * a crypto-library string to the UI; this replaces it with the actual cause and
+ * the fix, so a stale/wrong `LATTICE_ENCRYPTION_KEY` is self-service to resolve.
+ */
+export class DecryptionKeyError extends Error {
+  constructor(table: string, column: string, cause: unknown) {
+    super(
+      `Could not decrypt ${table}.${column}: the encryption key doesn't match the data it was ` +
+        `stored with. LATTICE_ENCRYPTION_KEY is likely set to the wrong value — unset it to use ` +
+        `this machine's master.key, or set it to the correct key.`,
+    );
+    this.name = 'DecryptionKeyError';
+    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+  }
+}
+
 export interface EncryptionLayerDeps {
   encryptionKeyRaw?: string | undefined;
   getEntityContexts: () => Iterable<[string, EncryptedConfig]>;
@@ -129,7 +147,13 @@ export class EncryptionLayer {
     for (const col of encCols) {
       const val = row[col];
       if (typeof val === 'string' && val.length > 0) {
-        row[col] = decryptValue(val, this._key);
+        try {
+          row[col] = decryptValue(val, this._key);
+        } catch (err) {
+          // `decrypt` passes non-`enc:` values through unchanged, so reaching
+          // here means a real ciphertext failed its auth tag — a key mismatch.
+          throw new DecryptionKeyError(table, col, err);
+        }
       }
     }
     return row;
