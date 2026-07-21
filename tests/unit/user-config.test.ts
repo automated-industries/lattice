@@ -125,10 +125,24 @@ describe('framework user-config', () => {
       expect(getOrCreateMasterKey()).toBe(envKey);
     });
 
-    it('keeps env priority when there is no encrypted data to validate against', () => {
+    it('prefers master.key when there is no encrypted data to validate against (never the stale env)', () => {
       writeFileSync(join(tmpDir, 'master.key'), 'file-key');
-      process.env.LATTICE_ENCRYPTION_KEY = 'env-key-differs'; // differs, but no sample
-      expect(getOrCreateMasterKey()).toBe('env-key-differs');
+      process.env.LATTICE_ENCRYPTION_KEY = 'env-key-differs'; // differs, but nothing to validate
+      // No witness -> prefer the persistent file key, NOT the unvalidated env var.
+      // (This is the local-only-workspace user the adversarial review flagged.)
+      expect(getOrCreateMasterKey()).toBe('file-key');
+    });
+
+    it('validates against ALL witnesses — a foreign first .enc does not poison selection', () => {
+      const envKey = 'env-key-that-works';
+      writeFileSync(join(tmpDir, 'master.key'), 'a-different-file-key');
+      // First witness (assistant-credentials.enc, read first) is under a FOREIGN
+      // key; a later one (db-credentials.enc) is under the env key. env must still
+      // be recognized as valid rather than the first file deciding.
+      writeFileSync(join(tmpDir, 'assistant-credentials.enc'), sampleEncryptedWith('foreign') + '\n');
+      writeFileSync(join(tmpDir, 'db-credentials.enc'), sampleEncryptedWith(envKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = envKey;
+      expect(getOrCreateMasterKey()).toBe(envKey);
     });
 
     it('uses a single key for reads AND writes — no split when the file key wins', () => {

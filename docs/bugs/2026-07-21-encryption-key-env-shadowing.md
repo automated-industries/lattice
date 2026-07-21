@@ -39,12 +39,28 @@ Resolution is folded into `getOrCreateMasterKey()` so **every** caller (the GUI 
 each machine-local store) gets one consistent key — no split. New behavior:
 
 - **Blank/whitespace env key → treated as unset** (with a one-time warning), falling back to the file.
-- **Non-blank env key + a differing `master.key` → validated.** We read one raw ciphertext from a
-  machine-local store (`readMachineLocalCiphertext`) — a faithful witness of which key this
-  machine's data was written with — and return the candidate that actually decrypts it. So a stale
-  env var can't shadow the working file, and the chosen key is used for reads **and** writes. The
-  (expensive) decision is cached per `(configDir, envKey, fileKey)`. It never throws (this is on hot
-  paths); if neither key validates, it keeps the documented priority and warns.
+- **Non-blank env key + a differing `master.key` → validated.** We read the raw ciphertext from
+  **every** machine-local store (`readMachineLocalCiphertexts` — assistant/db/s3, guarded so an
+  unreadable file can't crash the hot path) — collectively a witness of which key this machine's
+  data was written with — and trust the env key **only if it decrypts a witness**; otherwise the
+  `master.key` **file wins** (it is the persistent key; a stale inherited env var is the failure).
+  Crucially, when there are **no** witnesses the file is preferred too — never the unvalidated env
+  key — which is what fixes the local-only user whose only encrypted data is elsewhere. The chosen
+  key is used for reads **and** writes. The decision is cached per
+  `(configDir, envKey, fileKey, samplesFingerprint)` so it re-resolves when a credential is written
+  or rotated; the no-witness decision is not cached (it self-heals once data appears). It never
+  throws (hot path).
+
+- **Machine-local loaders no longer swallow a wrong-key failure.** `loadCredentials` /
+  `loadAssistantCredentials` used to `catch → return {}` on any decrypt error, which both hid a key
+  mismatch and (combined with a later whole-file overwrite) risked destroying the other-key entries.
+  They now warn loudly on a present-but-undecryptable store (mirroring `loadS3Configs`).
+
+**Adversarial review:** a 3-lens skeptic pass caught that an earlier cut validated only the *first*
+machine-local file and, with no witness, silently kept the *stale env key* — leaving the reported
+bug unfixed for the local-only user and risking an unrecoverable split. The design above (prefer the
+persistent file unless env is positively validated, check all witnesses, don't cache the no-witness
+decision) is the result.
 - **Diagnosability:** the resolved key **source** (env / file / generated) + a short, non-reversible
   fingerprint are logged once at startup, and a genuine decrypt mismatch now raises `DecryptionKeyError`
   naming `LATTICE_ENCRYPTION_KEY` and the fix, instead of the raw OpenSSL string.
