@@ -240,8 +240,9 @@ import { css } from '../../src/gui/app/css.js';
 // only — z tier via var(--z-popover)). Recaptured.
 // Chat .lattice-ref inline word-link style (accent tint + dotted underline, flows
 // with the sentence — replaces the boxed pill in answers). Recaptured.
-const ORIGINAL_LENGTH = 168236;
-const ORIGINAL_SHA256 = 'db8df4b144afa1bbb6325326d3f6495b3e0ec547a744abb04df4e26c309910e4';
+// .trace-hl source-data flash on trace-link arrival (accent tint + ring, tokens only). Recaptured.
+const ORIGINAL_LENGTH = 168647;
+const ORIGINAL_SHA256 = 'e174b9fed7858ddef687e08f195c27c728a2b1b89de67bdcf2a0f334a936e4e8';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

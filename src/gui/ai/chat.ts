@@ -7,7 +7,16 @@ import {
 } from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
-import { collectLinkables, applyTraceLinks, type TraceRef } from './trace-links.js';
+import {
+  collectLinkables,
+  collectFromMarkdown,
+  applyTraceLinks,
+  appendSources,
+  enrichExistingLinks,
+  snapshotMissingFields,
+  type TraceRef,
+  type FocusedRef,
+} from './trace-links.js';
 import { resolveTableDescription } from '../column-descriptions.js';
 
 /**
@@ -498,6 +507,9 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // history's replayed tool calls too, so a follow-up the model answers from
   // conversation memory (no new reads) still links the records it names.
   const linkables = new Map<string, TraceRef | null>();
+  // Focused (single-row) reads of THIS turn — cited in a trailing Sources line
+  // when the answer paraphrases a record without ever naming it.
+  const focusedRefs = new Map<string, FocusedRef>();
   const messages: LlmMessage[] = [
     ...(opts.history ?? []),
     { role: 'user', content: opts.userMessage },
@@ -505,9 +517,18 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   {
     const toolInputs = new Map<string, unknown>();
     for (const m of messages) {
+      // Prior assistant text carries the thread's established lattice:// links —
+      // harvest them (with their labels) so an answer-from-memory can still
+      // match or cite the records it paraphrases.
+      if (m.role === 'assistant' && typeof m.content === 'string') {
+        collectFromMarkdown(m.content, linkables, focusedRefs);
+        continue;
+      }
       if (!Array.isArray(m.content)) continue;
       for (const b of m.content) {
-        if (b.type === 'tool_use') toolInputs.set(b.id, b.input);
+        if (b.type === 'text' && m.role === 'assistant') {
+          collectFromMarkdown(b.text, linkables, focusedRefs);
+        } else if (b.type === 'tool_use') toolInputs.set(b.id, b.input);
         else if (b.type === 'tool_result' && typeof b.content === 'string') {
           try {
             collectLinkables(toolInputs.get(b.tool_use_id), JSON.parse(b.content), linkables);
@@ -633,7 +654,18 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       // is stochastic — this pass guarantees it for every row the turn actually
       // read. Tool rounds are skipped (their narration is preamble, not answer).
       if (turn.toolUses.length === 0 && turn.text) {
-        const linked = applyTraceLinks(turn.text, linkables);
+        // History-harvested refs carry no field snapshots — backfill the few
+        // relevant ones (bounded single-row reads) so a Sources citation for an
+        // answer-from-memory still carries its ?f= source-field target.
+        await snapshotMissingFields(
+          (t, i) => opts.dispatch.db.get(t, i) as Promise<Record<string, unknown> | null>,
+          turn.text,
+          focusedRefs,
+        );
+        const linked = appendSources(
+          enrichExistingLinks(applyTraceLinks(turn.text, linkables), focusedRefs),
+          focusedRefs,
+        );
         if (linked !== turn.text) {
           turn = { ...turn, text: linked };
           yield { type: 'text_final', text: linked };
@@ -710,7 +742,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         const res = await executeFunction(opts.dispatch, tu.name, tu.input);
         if (res.ok) turnAllFailed = false;
         else if (res.error) lastToolError = res.error;
-        if (res.ok) collectLinkables(tu.input, res.result, linkables);
+        if (res.ok) collectLinkables(tu.input, res.result, linkables, focusedRefs);
         yield { type: 'tool_result', toolUseId: tu.id, isError: !res.ok };
         // A tool may ask the GUI to open the row it just created (e.g.
         // create_artifact) in the main viewer. Surface it as a typed event the

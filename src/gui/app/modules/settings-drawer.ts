@@ -209,6 +209,38 @@ export const settingsDrawerJs = `    // ─────────────�
           });
         }
         ensureContextChipHandler();
+        // A chat trace link stashed a highlight target for this row: scroll to
+        // the source field line in the rendered doc and flash it, so the click
+        // lands on the actual data the answer drew from. One-shot; expires fast
+        // so a stale stash never highlights an unrelated visit.
+        try {
+          var hlRaw = sessionStorage.getItem('latticeTraceHl');
+          if (hlRaw) {
+            var hl = JSON.parse(hlRaw);
+            if (hl && hl.table === tableName && hl.id === id && Date.now() - hl.ts < 15000) {
+              sessionStorage.removeItem('latticeTraceHl');
+              var doc = mount.querySelector('.fs-context-doc .md-body');
+              var target = null;
+              if (doc && hl.field) {
+                var strongs = doc.querySelectorAll('li > strong, p > strong');
+                for (var s = 0; s < strongs.length; s++) {
+                  if (strongs[s].textContent.indexOf(hl.field + ':') === 0) {
+                    target = strongs[s].parentElement;
+                    break;
+                  }
+                }
+              }
+              var flashEl = target || (doc ? doc.parentElement : null);
+              if (flashEl) {
+                flashEl.classList.add('trace-hl');
+                flashEl.scrollIntoView({ block: 'center' });
+                window.setTimeout(function () { flashEl.classList.remove('trace-hl'); }, 2600);
+              }
+            } else if (hl && Date.now() - hl.ts >= 15000) {
+              sessionStorage.removeItem('latticeTraceHl');
+            }
+          }
+        } catch (_e) { /* highlight is best-effort — the record view stands on its own */ }
         var ta = mount.querySelector('.fs-context-edit');
         var renderedBody = mount.querySelector('.fs-context-doc .md-body');
         var statusEl = mount.querySelector('.fs-context-status');

@@ -21,7 +21,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   enabling future UI features like table-scoped filtering and rollup statistics. Assistant chat
   answers are traceable too: every record a reply mentions is linked inline — the referenced
   word itself is the link, flowing with the sentence — and clicking it opens that record in the
-  workspace.
+  workspace. Linking is deterministic, not model-dependent: retrieved-record labels are matched
+  into the answer text (case-insensitively for distinctive titles), and an answer that
+  paraphrases a record without ever naming it ends with a "Sources:" line citing what was read.
+  Both the tool loop and the fast inline-answer path get the same treatment. Clicking a
+  reference lands on the source data itself: a link whose record field the answer quotes
+  carries that field along, and the record view scroll-flashes the field line on arrival
+  (a file reference flashes the quoted passage in the file's text). Source citations are
+  relevance-ranked — only records the answer actually drew on are cited.
 
 ### Changed
 

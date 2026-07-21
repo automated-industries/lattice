@@ -507,8 +507,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (no boxed pill, no emoji), and click navigates straight to the record. Recaptured.
 // text_final handling: the answer round re-arrives with deterministic trace links and
 // replaces the bubble's accumulated deltas. Recaptured.
-const ORIGINAL_LENGTH = 739889;
-const ORIGINAL_SHA256 = '1fc804b252b2a3e9617bb3eb1ecafdaea1b21d608b28f6dec470c669ed7fbd09';
+// Source-field click-through: a lattice-ref link may carry ?f=<column>; the click
+// stashes the target and the record view scroll-flashes that field line. Recaptured.
+// File-passage highlight: the click also stashes the sentence around the link; a file
+// preview shingle-matches it against its text blocks and flashes the passage. Recaptured.
+const ORIGINAL_LENGTH = 744661;
+const ORIGINAL_SHA256 = '00a60ba54524cf626430477756591e5f51fd9b3bbc2dd9ec82c14133804c26e9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

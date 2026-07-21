@@ -194,6 +194,14 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;
     }
     .source-chip:hover { background: var(--row-hover); border-color: var(--border-strong); }
+    /* Trace-link arrival: the source data line a chat answer drew from flashes
+       so the eye lands on it, then settles back to normal. */
+    .trace-hl {
+      background: color-mix(in srgb, var(--accent) 18%, transparent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+      border-radius: var(--r-xs);
+      transition: background 1.2s ease, box-shadow 1.2s ease;
+    }
     .provenance-card {
       display: flex; flex-direction: column;
       background: var(--surface); border: 1px solid var(--border-strong);

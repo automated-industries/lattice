@@ -188,7 +188,14 @@ export const onboardingJs = `    // ──────────────�
       var pre = String(text == null ? '' : text).replace(
         /\\[([^\\]]+)\\]\\(lattice:\\/\\/([a-zA-Z0-9_]+)\\/([^)\\s]+)\\)/g,
         function (_, label, table, id) {
-          pills.push({ label: label, table: table, id: id });
+          // The id may carry a "?f=<column>" source-field query — the record view
+          // highlights that field on arrival so the click lands on the data itself.
+          var parts = String(id).split('?');
+          var field = '';
+          if (parts[1] && parts[1].indexOf('f=') === 0) {
+            try { field = decodeURIComponent(parts[1].slice(2)); } catch (_e) { field = ''; }
+          }
+          pills.push({ label: label, table: table, id: parts[0], field: field });
           return '\\u0002' + (pills.length - 1) + '\\u0002';
         }
       );
@@ -198,12 +205,14 @@ export const onboardingJs = `    // ──────────────�
         // Inline word-link, not a boxed pill: the referenced word itself is the
         // link, flowing with the sentence.
         return '<a class="lattice-ref" data-table="' + escapeHtml(p.table) +
-          '" data-id="' + escapeHtml(p.id) + '" title="Open this ' + escapeHtml(p.table) + '">' +
+          '" data-id="' + escapeHtml(p.id) + '" data-field="' + escapeHtml(p.field) +
+          '" title="Open this ' + escapeHtml(p.table) + '">' +
           escapeHtml(p.label) + '</a>';
       });
     }
     // One delegated click handler on the rail feed: a lattice-ref word-link
-    // navigates straight to its record in the workspace.
+    // navigates straight to its record in the workspace. The source field (when
+    // the link carries one) is stashed so the record view can highlight it.
     var _latticeRefWired = false;
     function ensureLatticeRefHandler() {
       if (_latticeRefWired) return;
@@ -213,7 +222,24 @@ export const onboardingJs = `    // ──────────────�
         var a = e.target && e.target.closest ? e.target.closest('.lattice-ref') : null;
         if (!a) return;
         e.preventDefault();
-        openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
+        var tbl = a.getAttribute('data-table');
+        var rid = a.getAttribute('data-id');
+        // Stash the whole answer's text too: when the target renders as a text
+        // document (a file preview), the passage the answer drew from can be
+        // found and highlighted — the quote may sit in a different paragraph
+        // than the link itself (e.g. a Sources line), so the full bubble is the
+        // right haystack source.
+        var snippet = '';
+        var bubble = a.closest ? a.closest('.chat-bubble') : null;
+        var pe = bubble || a.parentElement;
+        if (pe && pe.textContent) snippet = pe.textContent.slice(0, 2500);
+        try {
+          sessionStorage.setItem('latticeTraceHl', JSON.stringify({
+            table: tbl, id: rid, field: a.getAttribute('data-field') || '',
+            snippet: snippet, ts: Date.now()
+          }));
+        } catch (_e) { /* storage unavailable — navigation still works */ }
+        openSearchHit(tbl, rid);
       });
       _latticeRefWired = true;
     }
