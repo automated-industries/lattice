@@ -177,7 +177,7 @@ describe('oauth token endpoints (fetch-backed)', () => {
   // A rejected fetch (network layer) — the shape Node/Deno throw for a TLS or
   // connection failure. The bare "fetch failed" string is useless to the user;
   // exchangeCodeForTokens must classify it.
-  function mockFetchReject(err: unknown): void {
+  function mockFetchReject(err: Error): void {
     globalThis.fetch = (() => Promise.reject(err)) as unknown as typeof fetch;
   }
 
