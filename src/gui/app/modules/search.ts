@@ -95,6 +95,20 @@ export const searchJs = `    // ────────────────
      * undo, redo, revert.
      */
     function afterMutation(changedTables) {
+      // Chat streaming writes chat_threads/chat_messages on every turn (and, on
+      // cloud, each lands as a realtime event). Those tables are never shown in the
+      // middle pane or sidebar, so refetching entities + re-rendering the view on
+      // each one just flashes the pane while the assistant is talking. Skip entirely
+      // when the change is ONLY chat tables — the chat rail updates itself directly.
+      if (
+        changedTables &&
+        changedTables.length &&
+        changedTables.every(function (t) {
+          return t === 'chat_threads' || t === 'chat_messages';
+        })
+      ) {
+        return Promise.resolve();
+      }
       // Scoped invalidation: drop only the tables that actually changed so a
       // collaborator's edit to one table doesn't force re-fetching every OTHER
       // cached table this view references (the dominant cloud egress cost). A
@@ -196,6 +210,20 @@ export const searchJs = `    // ────────────────
         // Already on the target home: re-render in place as a soft refresh so a
         // workspace switch/reload doesn't flash the loading frame over the pane.
         else renderRoute({ soft: true });
+        // A Configure drawer opened via the gear icon has no #/settings hash, so the
+        // hash-based re-render above skips it and it would keep the PREVIOUS
+        // workspace's content (name, DB config, data model, the Workspaces registry).
+        // If it's open — and the hash path didn't already reopen it — refresh its tab
+        // directly so it shows the NEW workspace on the same tab.
+        if (
+          typeof drawerIsOpen === 'function' &&
+          drawerIsOpen() &&
+          typeof selectDrawerTab === 'function' &&
+          !(typeof configureRouteFor === 'function' && configureRouteFor(location.hash)) &&
+          (location.hash || '').indexOf('#/settings/') !== 0
+        ) {
+          selectDrawerTab(drawerTab);
+        }
         loadedTables = {};
         // The Tables explorer's cached edges + any in-flight wire/merge selection
         // are per-workspace module state — reset them so the new workspace doesn't

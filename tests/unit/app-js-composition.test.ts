@@ -498,8 +498,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // new batch reuses live state, past-tense terminal labels. Recaptured.
 // Pending-question banner: store-backed cards collapse behind a one-line count banner
 // (workspace-scoped store vs thread-scoped rail); expand in place on click. Recaptured.
-const ORIGINAL_LENGTH = 731145;
-const ORIGINAL_SHA256 = '0ab07e2ddeaf6059d7886f83ecc3bead95fef4d320c7b698b1501acce63a2858';
+// 5.0.1 workspace-switch fixes: instant full-screen overlay on click (Bug B),
+// error-revert to the previous workspace (Bug D), Configure drawer refreshes to the
+// new workspace on the same tab (Bug C), and skipping the middle-pane re-render on
+// chat-only realtime writes (Bug A). Length + hash recaptured.
+const ORIGINAL_LENGTH = 734817;
+const ORIGINAL_SHA256 = 'd5bc6e1035c734cb6e549720bd98bb593fa33a33b9ec2d86b7c24fbf1decb0f9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

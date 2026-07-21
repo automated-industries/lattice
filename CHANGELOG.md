@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Workspace switching is smoother and safer.** Four related fixes: (1) the full-screen switch
+  animation now appears the instant you click a workspace — from the dropdown or the Configure
+  panel — instead of a dropdown-closes-then-overlay-appears two-step; (2) switching from the
+  Configure panel now keeps that panel open on the same tab and **refreshes it to the new
+  workspace** (it used to show the previous workspace's data until you closed and reopened it);
+  (3) if a switch fails, Lattice **reverts to the workspace you were on** rather than stranding you
+  on a broken new-workspace view; and (4) the middle pane no longer **flashes while the assistant
+  is streaming** — chat-only writes no longer trigger a spurious re-render of the view.
+
 - **The desktop app now trusts the OS certificate store (fixes connecting behind a corporate
   proxy).** The desktop runtime's default trust store is its bundled Mozilla roots only, so on a
   managed device behind a TLS-inspecting proxy (Zscaler, Netskope, an SWG…) — whose corporate root
