@@ -10,15 +10,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A scoped cloud member's connector sync no longer fails with "A record could not be written during
+  sync (possible conflict)".** Enabling row-level security is owner-only, so a connected table a member
+  first syncs is created without its ownership trigger — those first-sync rows get no ownership record.
+  Once the owner later `FORCE`-enables RLS, an ownerless row is visible to no one (including the member
+  who synced it), so the member's next sync upsert hits the now-invisible row and Postgres raises "new
+  row violates row-level security policy" (surfaced as the generic "possible conflict"). The sync now
+  stamps ownership on connector rows the instant they exist: a member-callable `SECURITY DEFINER`
+  claims each newly-synced row for the syncing member (prevent), and the owner-side secure step
+  backfills any still-ownerless rows to the member that synced them (heal, recovering already-broken
+  workspaces). Both only ever touch rows that have no owner yet, so neither can take over another
+  member's row. See `docs/bugs/2026-07-21-connector-sync-ownerless-rls-rows.md`.
+
 - **Connecting an MCP connector no longer fails silently.** The connectors OAuth callback caught its
   finish exception and returned a generic "Failed to finish connecting. Check the Lattice logs" — but
   wrote nothing to the logs, so every failure was a black box. It now logs the message + stack, and
   classifies common causes (an expired/used authorization code, a `redirect_uri` mismatch, a rejected
-  client, a timeout) into an actionable on-page message instead of the generic 500. It also fixes the
-  underlying blocker on desktop: a stored OAuth (dynamic-registration) client is bound to the loopback
-  `redirect_uri` it registered with, and a desktop app serves its callback on a new ephemeral port
-  each launch — so a reused client with a stale port was rejected by a strict authorization server.
-  The client is now re-registered with the current `redirect_uri` when the port changes.
+  client, a timeout) into an actionable on-page message instead of the generic 500. Separately (a
+  defensive hardening, not the sync-write cause above): a stored OAuth dynamic-registration client is
+  bound to the loopback `redirect_uri` it registered with, and a desktop app serves its callback on a
+  new ephemeral port each launch — so a reused client with a stale port could be rejected by a strict
+  authorization server. The client is now re-registered with the current `redirect_uri` when the port
+  changes.
 
 - **The desktop app now reads the same credential store as the CLI.** `configDir()` discovered the
   Lattice root by walking up from the current directory; a GUI app launched from the Dock/Finder has
