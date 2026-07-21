@@ -344,6 +344,37 @@ describe('MCP connect flow', () => {
     });
   });
 
+  it('Bug 5b: discards a stored DCR client when the loopback redirect_uri changed between launches', () => {
+    const id = 'conn-5b-redirect';
+    const cbFor = (port: number): string =>
+      `http://127.0.0.1:${String(port)}/api/connectors/oauth/callback`;
+    // Launch 1: register a client bound to port 111.
+    new LatticeOAuthProvider(id, cbFor(111)).saveClientInformation({
+      client_id: 'dcr-old',
+      redirect_uris: [cbFor(111)],
+    });
+    // Same port → the client is reused (no needless re-registration).
+    expect(new LatticeOAuthProvider(id, cbFor(111)).clientInformation()).toMatchObject({
+      client_id: 'dcr-old',
+    });
+    // Launch 2 on a NEW ephemeral port → the stale client is discarded so the SDK
+    // re-registers with the CURRENT redirect_uri (the strict-AS invalid_grant fix).
+    expect(new LatticeOAuthProvider(id, cbFor(222)).clientInformation()).toBeUndefined();
+  });
+
+  it('Bug 5b: saveClientInformation records the redirect_uri even when the DCR response omits it', () => {
+    const id = 'conn-5b-norecord';
+    new LatticeOAuthProvider(id, 'http://127.0.0.1:333/cb').saveClientInformation({
+      client_id: 'dcr-no-redirect', // response carried no redirect_uris
+    });
+    expect(new LatticeOAuthProvider(id, 'http://127.0.0.1:333/cb').clientInformation()).toMatchObject(
+      { client_id: 'dcr-no-redirect' },
+    );
+    expect(
+      new LatticeOAuthProvider(id, 'http://127.0.0.1:444/cb').clientInformation(),
+    ).toBeUndefined();
+  });
+
   it('retains the stored server URL across disconnect (reconnect keeps the address)', async () => {
     const conn = new SimpleMcpConnector(
       { ...emptyModels, servers: [{ name: 'x', url: 'https://mcp.example/x', oauth: false }] },

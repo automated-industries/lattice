@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Connecting an MCP connector no longer fails silently.** The connectors OAuth callback caught its
+  finish exception and returned a generic "Failed to finish connecting. Check the Lattice logs" — but
+  wrote nothing to the logs, so every failure was a black box. It now logs the message + stack, and
+  classifies common causes (an expired/used authorization code, a `redirect_uri` mismatch, a rejected
+  client, a timeout) into an actionable on-page message instead of the generic 500. It also fixes the
+  underlying blocker on desktop: a stored OAuth (dynamic-registration) client is bound to the loopback
+  `redirect_uri` it registered with, and a desktop app serves its callback on a new ephemeral port
+  each launch — so a reused client with a stale port was rejected by a strict authorization server.
+  The client is now re-registered with the current `redirect_uri` when the port changes.
+
 - **The desktop app now reads the same credential store as the CLI.** `configDir()` discovered the
   Lattice root by walking up from the current directory; a GUI app launched from the Dock/Finder has
   `cwd = /`, so the walk never reached `~/.lattice` and it fell through to the legacy top-level

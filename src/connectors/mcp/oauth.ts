@@ -47,6 +47,12 @@ export interface McpClientInformation {
   [k: string]: unknown;
 }
 
+/** The redirect_uris a stored/DCR client is bound to (empty when none recorded). */
+export function clientRedirectUris(client: McpClientInformation): string[] {
+  const r = (client as { redirect_uris?: unknown }).redirect_uris;
+  return Array.isArray(r) ? r.filter((x): x is string => typeof x === 'string') : [];
+}
+
 /** Client metadata the provider advertises for DCR (public PKCE client). */
 export interface McpClientMetadata {
   redirect_uris: string[];
@@ -216,11 +222,28 @@ export class LatticeOAuthProvider {
   }
 
   clientInformation(): McpClientInformation | undefined {
-    return (readJson(cliKey(this.connectionId)) as McpClientInformation | null) ?? undefined;
+    const stored = (readJson(cliKey(this.connectionId)) as McpClientInformation | null) ?? undefined;
+    if (!stored) return undefined;
+    // A stored DCR client is bound to the redirect_uri it registered with. A
+    // desktop app's loopback callback port is ephemeral (a new one each launch),
+    // so a reused client registered with an OLD port is rejected by a strict
+    // authorization server (invalid_grant / redirect mismatch) at token exchange.
+    // If the recorded redirect_uri no longer matches the one we will present,
+    // discard the client so the SDK re-registers with the CURRENT redirect_uri.
+    // (A no-op when they match, or when no redirect_uri was recorded.)
+    const registered = clientRedirectUris(stored);
+    if (registered.length > 0 && !registered.includes(this.redirectUri)) return undefined;
+    return stored;
   }
 
   saveClientInformation(info: McpClientInformation): void {
-    setAssistantCredential(cliKey(this.connectionId), JSON.stringify(info));
+    // Record the redirect_uri this registration is bound to (the DCR response may
+    // omit `redirect_uris`), so a later launch on a different loopback port knows
+    // to re-register rather than reuse a client the server will reject.
+    const withRedirect: McpClientInformation = clientRedirectUris(info).includes(this.redirectUri)
+      ? info
+      : { ...info, redirect_uris: [this.redirectUri] };
+    setAssistantCredential(cliKey(this.connectionId), JSON.stringify(withRedirect));
   }
 
   tokens(): McpOAuthTokens | undefined {
