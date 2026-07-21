@@ -222,7 +222,8 @@ export class LatticeOAuthProvider {
   }
 
   clientInformation(): McpClientInformation | undefined {
-    const stored = (readJson(cliKey(this.connectionId)) as McpClientInformation | null) ?? undefined;
+    const stored =
+      (readJson(cliKey(this.connectionId)) as McpClientInformation | null) ?? undefined;
     if (!stored) return undefined;
     // A stored DCR client is bound to the redirect_uri it registered with. A
     // desktop app's loopback callback port is ephemeral (a new one each launch),

@@ -367,9 +367,9 @@ describe('MCP connect flow', () => {
     new LatticeOAuthProvider(id, 'http://127.0.0.1:333/cb').saveClientInformation({
       client_id: 'dcr-no-redirect', // response carried no redirect_uris
     });
-    expect(new LatticeOAuthProvider(id, 'http://127.0.0.1:333/cb').clientInformation()).toMatchObject(
-      { client_id: 'dcr-no-redirect' },
-    );
+    expect(
+      new LatticeOAuthProvider(id, 'http://127.0.0.1:333/cb').clientInformation(),
+    ).toMatchObject({ client_id: 'dcr-no-redirect' });
     expect(
       new LatticeOAuthProvider(id, 'http://127.0.0.1:444/cb').clientInformation(),
     ).toBeUndefined();
