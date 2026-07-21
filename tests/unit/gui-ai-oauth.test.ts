@@ -197,7 +197,9 @@ describe('oauth token endpoints (fetch-backed)', () => {
   });
 
   it('exchangeCodeForTokens classifies a Deno-style untrusted-cert failure as TLS', async () => {
-    mockFetchReject(new TypeError('error sending request: invalid peer certificate: UnknownIssuer'));
+    mockFetchReject(
+      new TypeError('error sending request: invalid peer certificate: UnknownIssuer'),
+    );
     const err = await exchangeCodeForTokens(cfg, 'c', 'v').catch((e: unknown) => e);
     expect((err as OAuthExchangeError).kind).toBe('tls');
     expect((err as Error).message).toMatch(/proxy|certificate/i);

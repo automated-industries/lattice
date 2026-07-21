@@ -62,7 +62,9 @@ function isActionable(err: unknown): err is Error {
 export function connectFailureHint(err: unknown): string | null {
   if (err instanceof ConnectorUnavailableError) return err.message;
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  if (/invalid_grant|code (?:has )?(?:expired|already been used|already used)|expired.*code/.test(msg))
+  if (
+    /invalid_grant|code (?:has )?(?:expired|already been used|already used)|expired.*code/.test(msg)
+  )
     return 'The authorization code expired or was already used — click Connect again to get a fresh code.';
   if (/redirect[_ ]uri|redirect url/.test(msg))
     return 'The redirect URL did not match what the connector expects. Restart the connect flow from Lattice.';
@@ -508,7 +510,10 @@ export async function dispatchConnectorsRoute(
         {
           const err = e instanceof Error ? e : new Error(String(e));
           console.error(
-            '[lattice] MCP connector finish failed (toolkit=' + pending.toolkit + '): ' + err.message,
+            '[lattice] MCP connector finish failed (toolkit=' +
+              pending.toolkit +
+              '): ' +
+              err.message,
           );
           if (err.stack) console.error(err.stack);
           if (err.cause) console.error('  cause:', err.cause);

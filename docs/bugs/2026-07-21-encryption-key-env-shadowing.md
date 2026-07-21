@@ -56,11 +56,12 @@ each machine-local store) gets one consistent key — no split. New behavior:
   mismatch and (combined with a later whole-file overwrite) risked destroying the other-key entries.
   They now warn loudly on a present-but-undecryptable store (mirroring `loadS3Configs`).
 
-**Adversarial review:** a 3-lens skeptic pass caught that an earlier cut validated only the *first*
-machine-local file and, with no witness, silently kept the *stale env key* — leaving the reported
+**Adversarial review:** a 3-lens skeptic pass caught that an earlier cut validated only the _first_
+machine-local file and, with no witness, silently kept the _stale env key_ — leaving the reported
 bug unfixed for the local-only user and risking an unrecoverable split. The design above (prefer the
 persistent file unless env is positively validated, check all witnesses, don't cache the no-witness
 decision) is the result.
+
 - **Diagnosability:** the resolved key **source** (env / file / generated) + a short, non-reversible
   fingerprint are logged once at startup, and a genuine decrypt mismatch now raises `DecryptionKeyError`
   naming `LATTICE_ENCRYPTION_KEY` and the fix, instead of the raw OpenSSL string.

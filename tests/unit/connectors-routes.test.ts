@@ -232,7 +232,9 @@ describe('connectFailureHint (MCP connect error classification — Bug 5)', () =
       /expired or was already used/i,
     );
     expect(connectFailureHint(new Error('redirect_uri did not match'))).toMatch(/redirect URL/i);
-    expect(connectFailureHint(new Error('401 invalid_client'))).toMatch(/rejected the authorization/i);
+    expect(connectFailureHint(new Error('401 invalid_client'))).toMatch(
+      /rejected the authorization/i,
+    );
     expect(connectFailureHint(new Error('MCP initialize ETIMEDOUT'))).toMatch(/[Tt]imed out/);
   });
 

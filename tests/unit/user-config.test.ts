@@ -139,7 +139,10 @@ describe('framework user-config', () => {
       // First witness (assistant-credentials.enc, read first) is under a FOREIGN
       // key; a later one (db-credentials.enc) is under the env key. env must still
       // be recognized as valid rather than the first file deciding.
-      writeFileSync(join(tmpDir, 'assistant-credentials.enc'), sampleEncryptedWith('foreign') + '\n');
+      writeFileSync(
+        join(tmpDir, 'assistant-credentials.enc'),
+        sampleEncryptedWith('foreign') + '\n',
+      );
       writeFileSync(join(tmpDir, 'db-credentials.enc'), sampleEncryptedWith(envKey) + '\n');
       process.env.LATTICE_ENCRYPTION_KEY = envKey;
       expect(getOrCreateMasterKey()).toBe(envKey);

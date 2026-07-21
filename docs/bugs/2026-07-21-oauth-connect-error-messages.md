@@ -22,8 +22,8 @@ misleading messages, giving the user no way to self-diagnose:
 Two separate gaps in the manual code-paste flow:
 
 1. **`POST /api/assistant/oauth/exchange` conflated two failure modes.** The guard was
-   `if (!code || !verifier)` with a single message about the *code*. But the verifier is a 10-minute
-   cookie (`lat_oauth_verifier`) set at `/oauth/start`; when it is absent the problem is the *flow*
+   `if (!code || !verifier)` with a single message about the _code_. But the verifier is a 10-minute
+   cookie (`lat_oauth_verifier`) set at `/oauth/start`; when it is absent the problem is the _flow_
    (never started here / expired / lost on an app restart), which re-pasting the same code cannot
    fix. Reporting it as a code problem sent users down the wrong path.
 
@@ -39,17 +39,17 @@ Two separate gaps in the manual code-paste flow:
   `kind: 'tls' | 'network' | 'invalid_grant' | 'http'`. `exchangeCodeForTokens` /
   `refreshAccessToken` wrap `fetch` and route a thrown error through `classifyFetchFailure`, which
   walks the error's `cause` chain (Node nests an OpenSSL-style `code`; Deno throws an "invalid peer
-  certificate" string) and emits an actionable message — for TLS: *"…you may be behind a
+  certificate" string) and emits an actionable message — for TLS: _"…you may be behind a
   TLS-inspecting proxy whose root certificate this app doesn't trust yet. Add your corporate root
-  CA (Settings → Network) or contact IT."* A `400` whose body names `invalid_grant`/expired is
+  CA (Settings → Network) or contact IT."_ A `400` whose body names `invalid_grant`/expired is
   reported as a single-use code that must be re-requested.
 - **Distinguish the two paste failures** (`src/gui/assistant-routes.ts`). A missing verifier now
-  says the *attempt* expired/was interrupted — click Connect again for a fresh code; a genuinely
+  says the _attempt_ expired/was interrupted — click Connect again for a fresh code; a genuinely
   empty paste keeps the "paste the full code" message. The `exchange` catch already surfaces the
   thrown error's message, so the classified `OAuthExchangeError` text reaches the UI unchanged.
 
 The related durable fix — the desktop runtime honoring the OS keychain so the corporate root is
-trusted in the first place — is tracked separately; this change makes the failure *legible* when
+trusted in the first place — is tracked separately; this change makes the failure _legible_ when
 trust is missing.
 
 ## Lessons learned
