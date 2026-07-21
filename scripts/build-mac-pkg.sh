@@ -96,6 +96,13 @@ if [ -n "$SIGN_APP_IDENTITY" ]; then
         || "$PLISTBUDDY" -c "Add :$_k string $_v" "$PLIST" 2>/dev/null \
         || echo "warn: could not set $_k in Info.plist (continuing)" >&2
     done
+    # Trust the OS keychain (corporate proxy roots) by default. LSEnvironment sets
+    # the var in the process env BEFORE the runtime starts, so it is honored even
+    # earlier than desktop/main.ts's own fallback. An operator env value still wins.
+    "$PLISTBUDDY" -c "Add :LSEnvironment dict" "$PLIST" 2>/dev/null || true
+    "$PLISTBUDDY" -c "Set :LSEnvironment:DENO_TLS_CA_STORE system,mozilla" "$PLIST" 2>/dev/null \
+      || "$PLISTBUDDY" -c "Add :LSEnvironment:DENO_TLS_CA_STORE string system,mozilla" "$PLIST" 2>/dev/null \
+      || echo "warn: could not set LSEnvironment DENO_TLS_CA_STORE (continuing)" >&2
   else
     echo "warn: PlistBuddy or Info.plist not found — skipping Info.plist alignment" >&2
   fi

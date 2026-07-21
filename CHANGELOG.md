@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **The desktop app now trusts the OS certificate store (fixes connecting behind a corporate
+  proxy).** The desktop runtime's default trust store is its bundled Mozilla roots only, so on a
+  managed device behind a TLS-inspecting proxy (Zscaler, Netskope, an SWG…) — whose corporate root
+  CA lives in the macOS keychain / Windows store but not in the bundle — every HTTPS call to
+  Anthropic ("Connect with Claude", model calls) failed the TLS handshake. The app now defaults
+  `DENO_TLS_CA_STORE` to `system,mozilla` (set both in the app entrypoint and, on the signed macOS
+  `.pkg`, in the bundle's `LSEnvironment` so it applies before the runtime starts), so OS-trusted
+  roots are honored. An explicit value still wins, and a private CA can be pointed at with
+  `DENO_CERT`. Paired with the clearer connect-error message below.
+
 - **A stale `LATTICE_ENCRYPTION_KEY` no longer breaks secret decryption.** `LATTICE_ENCRYPTION_KEY`
   used to be taken verbatim whenever set (even blank/whitespace), shadowing a working `master.key` so
   every stored secret then failed to decrypt with an opaque "unable to authenticate data" — a nasty

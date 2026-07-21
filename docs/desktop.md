@@ -13,6 +13,11 @@ Download the installer for your OS from **[latticesql.com/install](https://latti
 
 The CLI path keeps working unchanged: `npm i -g latticesql && lattice gui`.
 
+> **Behind a corporate/TLS-inspecting proxy?** The app trusts the OS certificate store by default
+> (`DENO_TLS_CA_STORE=system,mozilla`), so a corporate root CA installed in the macOS keychain /
+> Windows store is honored. If your root lives only in a private bundle, point at it with
+> `DENO_CERT=/path/to/root.pem`.
+
 ## How it works
 
 The desktop app is built with [`deno desktop`](https://docs.deno.com/runtime/desktop/).

@@ -15,6 +15,22 @@ import {
 } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 
+// Trust the OS certificate store, not just Deno's bundled Mozilla roots. On a
+// managed/corporate device behind a TLS-inspecting proxy (Zscaler, Netskope, a
+// SWG, …), HTTPS to Anthropic (OAuth token exchange, model calls) is re-signed by
+// a corporate root CA that IS in the macOS keychain / Windows store but is INVISIBLE
+// to Deno's default trust store — so the connection fails TLS with an opaque error.
+// Defaulting DENO_TLS_CA_STORE to "system,mozilla" makes those OS-trusted roots
+// honored (Mozilla kept as a fallback). This runs before any TLS connection is
+// made (the GUI server binds loopback; the first outbound TLS is a user action or
+// the deferred auto-update check). An explicit operator value always wins, and a
+// custom CA bundle can still be pointed at with DENO_CERT=/path/to/root.pem.
+// (The signed macOS .pkg also sets this via the app's Info.plist LSEnvironment, so
+// it is honored even before this line runs; see scripts/build-mac-pkg.sh.)
+if (!Deno.env.get('DENO_TLS_CA_STORE')) {
+  Deno.env.set('DENO_TLS_CA_STORE', 'system,mozilla');
+}
+
 // On-device voice assets (the Whisper worker bundle + ONNX-Runtime WASM) are
 // embedded into the compiled app via `deno desktop --include dist/gui-assets`.
 // At runtime deno extracts included files next to the bundled modules, so resolve
