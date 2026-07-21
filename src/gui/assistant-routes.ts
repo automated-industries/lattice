@@ -933,7 +933,24 @@ export async function dispatchAssistantRoute(
       const hash = raw.indexOf('#');
       const code = hash >= 0 ? raw.slice(0, hash) : raw;
       const pastedState = hash >= 0 ? raw.slice(hash + 1) : '';
-      if (!code || !verifier) {
+      // Distinguish the two failure modes — they were conflated into one
+      // misleading "paste the full code" message. A missing verifier cookie
+      // means the flow itself is gone (never started here, expired after 10 min,
+      // or the app restarted between authorizing and pasting), which re-pasting
+      // the same code can't fix; a missing code is an actually-empty paste.
+      if (!verifier) {
+        sendJson(
+          res,
+          {
+            ok: false,
+            error:
+              'This connection attempt expired or was interrupted — click "Connect with Claude" again to get a fresh code, then paste it right away.',
+          },
+          400,
+        );
+        return true;
+      }
+      if (!code) {
         sendJson(
           res,
           { ok: false, error: 'Paste the full code from the Claude authorization page.' },

@@ -8,6 +8,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Connect with Claude" now explains _why_ a connect fails.** The manual code-paste flow used to
+  report every failure the same way: a valid, complete paste could still return "Paste the full
+  code from the Claude authorization page" when the real cause was an expired or interrupted
+  attempt, and a network or corporate-proxy TLS failure surfaced only as "fetch failed." Failures
+  are now classified — an untrusted TLS certificate (the common blocker behind an HTTPS-inspecting
+  corporate proxy) says exactly that and points you at adding your root CA / contacting IT; an
+  already-used or expired authorization code tells you to reconnect for a fresh one (codes are
+  single-use); and a lost connection attempt is distinguished from a genuinely empty paste.
+
 ### Changed
 
 - **The assistant is "Ask Lattice."** The docked assistant is now labeled **Ask Lattice**
