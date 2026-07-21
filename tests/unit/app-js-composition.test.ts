@@ -507,8 +507,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // files staged (and surfaces a toast) on ingest failure instead of sending the message
 // without them, and a files-only send shows the attached file name(s) rather than a
 // fabricated "take a look at this file" message. Length + hash recaptured.
-const ORIGINAL_LENGTH = 736805;
-const ORIGINAL_SHA256 = 'bfa3b034fc367a5ff2d635b80fa11ce86bcdf8e6ffa191d4237ebe6bf3afe2cd';
+// 5.0.1 brain-graph drill perf (Bug 9): the graph drill now reads rows through a
+// bounded per-table cache (fetchRowsPageCached), invalidated by invalidate() on any
+// mutation, so clicking through layers is instant instead of re-fetching every click.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 738687;
+const ORIGINAL_SHA256 = '828de4abd01380db94f4649ebee599ee6365d8296c55b5b8233640b8b48c229d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

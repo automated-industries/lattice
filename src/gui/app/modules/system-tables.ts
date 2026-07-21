@@ -104,7 +104,7 @@ export const systemTablesJs = `    // ──────────────
       var belongs = [];
       var rels = (t && t.relations) || {};
       for (var k in rels) { if (Object.prototype.hasOwnProperty.call(rels, k) && rels[k] && rels[k].type === 'belongsTo' && rels[k].foreignKey) belongs.push(rels[k]); }
-      fetchRowsPage(table, { limit: 150 }).then(function (page) {
+      fetchRowsPageCached(table, { limit: 150 }).then(function (page) {
         if (myGen !== graphRevealGen) return;
         var rows = page.rows;
         var mount = document.getElementById('graph-mount');
@@ -128,7 +128,7 @@ export const systemTablesJs = `    // ──────────────
         // Label the linked parent rows (bounded fetch per related table).
         var relTables = Object.keys(parentIds);
         Promise.all(relTables.map(function (rt) {
-          return fetchRowsPage(rt, { limit: 300 }).then(function (pp) { return { rt: rt, rows: pp.rows }; }).catch(function () { return { rt: rt, rows: [] }; });
+          return fetchRowsPageCached(rt, { limit: 300 }).then(function (pp) { return { rt: rt, rows: pp.rows }; }).catch(function () { return { rt: rt, rows: [] }; });
         })).then(function (pages) {
           if (myGen !== graphRevealGen) return;
           var labelOf = {};

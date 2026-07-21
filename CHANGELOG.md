@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Brain-graph drilling is instant instead of re-fetching every click.** Clicking through the graph
+  re-ran a full set of row fetches on every drill (the focus object's rows plus every linked table's
+  rows), so on a cloud a few layers deep meant a dozen sequential network round-trips and the UI
+  stalled — the "graph freezes after a click or two". The drill now reads rows through a bounded
+  per-table cache, so after the first load clicking through layers reuses the already-fetched pages.
+  The cache is dropped by the existing post-mutation invalidation (so it never serves stale rows) and
+  caches only the same limited pages as before (no extra egress). See
+  `docs/bugs/2026-07-21-graph-drill-refetch.md`.
+
 - **Chat file attach no longer drops the file, invents a message, or hides progress.** Attaching a file
   then sending could post the message _without_ the file (and a files-only send could no-op with the
   file already discarded), because the composer cleared the staging tray before ingest and, on ingest
