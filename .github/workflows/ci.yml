@@ -74,11 +74,14 @@ jobs:
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
+      # Verify the packaged index re-exports the full managed-cloud API surface a
+      # multi-tenant deployment consumes (not just Lattice) — a dropped re-export
+      # is a silent downstream break. Kept in sync with the export-contract test.
       - name: Verify ESM import
-        run: node -e "import('./dist/index.js').then(m => { if (!m.Lattice) throw new Error('ESM export missing'); console.log('ESM OK'); })"
+        run: node -e "import('./dist/index.js').then(m => { for (const s of ['Lattice','registerNativeEntities','secureCloud','memberGroupFor']) if (!m[s]) throw new Error('ESM export missing '+s); console.log('ESM OK'); })"
 
       - name: Verify CJS require
-        run: node -e "const m = require('./dist/index.cjs'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
+        run: node -e "const m = require('./dist/index.cjs'); for (const s of ['Lattice','registerNativeEntities','secureCloud','memberGroupFor']) if (!m[s]) throw new Error('CJS export missing '+s); console.log('CJS OK');"
 
   # Windows leg: no Postgres (GitHub service containers are Linux-only), so the
   # PG-gated integration tests skip and the SQLite suite runs. This is what
@@ -111,10 +114,10 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Verify ESM import
-        run: node -e "import('./dist/index.js').then(m => { if (!m.Lattice) throw new Error('ESM export missing'); console.log('ESM OK'); })"
+        run: node -e "import('./dist/index.js').then(m => { for (const s of ['Lattice','registerNativeEntities','secureCloud','memberGroupFor']) if (!m[s]) throw new Error('ESM export missing '+s); console.log('ESM OK'); })"
 
       - name: Verify CJS require
-        run: node -e "const m = require('./dist/index.cjs'); if (!m.Lattice) throw new Error('CJS export missing'); console.log('CJS OK');"
+        run: node -e "const m = require('./dist/index.cjs'); for (const s of ['Lattice','registerNativeEntities','secureCloud','memberGroupFor']) if (!m[s]) throw new Error('CJS export missing '+s); console.log('CJS OK');"
 
   # ADVISORY latency SLO gate. Runs the real benchmark and checks observed p95s
   # against committed thresholds. NEVER build-blocking — shared GitHub runners are
