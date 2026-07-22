@@ -870,7 +870,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // never affect the ingest/connect it followed (see scheduleDataModelPlan). The
         // planner is DETERMINISTIC and needs no model provider — it auto-applies only
         // reversible relationships and surfaces the rest as reviewable proposals.
-        const triggerDataModelDesign = (): void => {
+        const triggerDataModelPlan = (): void => {
           const a = active;
           scheduleDataModelPlan(a.configPath, () => Promise.resolve({ active: a, sessionId }));
         };
@@ -1196,7 +1196,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 method,
               });
               // After a data-changing ingest, keep the model a clean star schema.
-              if (ingestHandled && method === 'POST') triggerDataModelDesign();
+              if (ingestHandled && method === 'POST') triggerDataModelPlan();
               return ingestHandled;
             },
           },
@@ -1237,7 +1237,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 feed: active.feed,
               });
               // After a folder ingest, keep the model a clean star schema.
-              if (sourcesHandled && method === 'POST') triggerDataModelDesign();
+              if (sourcesHandled && method === 'POST') triggerDataModelPlan();
               return sourcesHandled;
             },
           },
@@ -1283,7 +1283,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // Skip the boot-time automatic sync-if-stale (fired on every GUI load,
               // usually syncs nothing) — only a real connect/refresh should design.
               if (connectorsHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
-                triggerDataModelDesign();
+                triggerDataModelPlan();
               }
               return connectorsHandled;
             },
@@ -1306,7 +1306,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // After connecting an external database, normalize its imported tables.
               // Skip the boot-time automatic sync-if-stale (see the connectors route).
               if (dbSourcesHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
-                triggerDataModelDesign();
+                triggerDataModelPlan();
               }
               return dbSourcesHandled;
             },
