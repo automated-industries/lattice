@@ -1041,7 +1041,7 @@ describe('connectors routes (prefab catalog)', () => {
     expect((r.body as { pendingId?: string }).pendingId).toBeTruthy();
     expect(mcp.lastServerUrl).toBe('https://mcp.atlassian.com/v1/mcp/authv2');
     expect(mcp.lastScope).toBe(
-      'read:jira-work read:jira-user read:confluence-space.summary read:confluence-content.summary offline_access',
+      'read:jira-work search:confluence read:confluence-user read:space:confluence read:page:confluence offline_access',
     );
   });
 
