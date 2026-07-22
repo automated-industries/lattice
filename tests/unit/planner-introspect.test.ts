@@ -200,4 +200,26 @@ describe('data-model planner — buildModelProfile prefers the canonical field t
     const cols = profile.tables[0].columns;
     expect(cols.map((c) => c.sqlType).sort()).toEqual(['text', 'text', 'text']);
   });
+
+  it('canonicalizes values on the PHYSICAL type, so a canonical-numeric key keeps its raw text form', async () => {
+    // A column declared canonical `integer` but physically TEXT, storing
+    // format-variant codes ('007', '008'). Retype detection must see it as
+    // `integer` (already typed) — but its VALUES must normalize as raw text, NOT
+    // coerce to 7/8, or a text FK's raw '007' would stop matching this key and the
+    // planner would drop an FK the value-overlap check should find.
+    const db = stubDb({
+      getRegisteredColumns: () => ({ id: 'TEXT', code: 'TEXT' }),
+      getRegisteredFieldTypes: () => ({ id: 'uuid', code: 'integer' }),
+      query: async () => [
+        { id: 'a', code: '007' },
+        { id: 'b', code: '008' },
+      ],
+    });
+    const profile = await buildModelProfile(db, [structural]);
+    const code = profile.tables[0].columns.find((c) => c.name === 'code');
+    // Retype-facing type is the canonical `integer` (so no redundant retype op).
+    expect(code?.sqlType).toBe('integer');
+    // …but the sampled values are the raw text, not coerced numbers.
+    expect(code?.sampleValues.sort()).toEqual(['007', '008']);
+  });
 });

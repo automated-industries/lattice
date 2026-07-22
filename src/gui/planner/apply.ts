@@ -10,7 +10,7 @@ import type { AppliedOp, PlanOp } from './types.js';
  * G8 (fail boundary): `applyPlanOp` does NOT swallow — a thrown primitive error
  * propagates to the caller. The unattended `runAutoTier` catches per-op (the
  * pass runs after the ingest already succeeded, so it must never rethrow); an
- * interactive apply route lets the error surface (Rule 16). The swallow lives in
+ * interactive apply route lets the error surface. The swallow lives in
  * the caller, never here.
  */
 export interface ApplyDeps {

@@ -52,9 +52,13 @@ export const DISTINCT_CAP = 200;
 export interface TableStructural {
   name: string;
   tier: TableTier;
-  /** column name → type: the canonical Lattice field type when the column has one
-   *  declared, else the raw SQL spec. `profileTable` lower-cases it. */
-  columns: { name: string; sqlType: string }[];
+  /** Per column: `sqlType` is the raw PHYSICAL SQL type — it drives value
+   *  canonicalization, kept identical across every column so normalization is
+   *  symmetric (a text FK and a numeric key compare on the same footing).
+   *  `canonicalType` is the declared Lattice field type when known, used ONLY for
+   *  retype detection (so a column already typed datetime/integer/uuid isn't
+   *  proposed for retype). `profileTable` lower-cases whichever it surfaces. */
+  columns: { name: string; sqlType: string; canonicalType?: string | undefined }[];
   primaryKey: string[];
   relations: NormalizedRelation[];
   hasDefinition: boolean;
@@ -149,12 +153,17 @@ export function profileTable(struct: TableStructural, rows: Row[]): TableProfile
     struct.relations.filter((r) => r.kind === 'belongsTo').map((r) => r.foreignKey),
   );
 
-  const columns: ColumnStat[] = struct.columns.map(({ name, sqlType }) => {
+  const columns: ColumnStat[] = struct.columns.map(({ name, sqlType, canonicalType }) => {
     const distinct = new Set<string>();
     const sampleValues: string[] = [];
     let nullCount = 0;
     const canon: unknown[] = [];
     for (const r of rows) {
+      // Canonicalize on the PHYSICAL type (not the canonical field type): user
+      // columns are physically TEXT, so this normalizes every column's values the
+      // same way. Keying coercion on the declared type instead would make a
+      // numeric natural key's values (e.g. '007' → 7) stop matching a text FK's
+      // raw '007', dropping an FK the value-overlap check would otherwise find.
       const cv = canonicalizeValue(r[name], sqlType);
       canon.push(cv);
       if (isEmpty(cv)) {
@@ -169,7 +178,11 @@ export function profileTable(struct: TableStructural, rows: Row[]): TableProfile
     }
     return {
       name,
-      sqlType: sqlType.toLowerCase(),
+      // Retype detection (detect.ts) reads this: surface the canonical declared
+      // type when known so an already-typed column isn't proposed for retype,
+      // else the raw physical spec. Value canonicalization above deliberately used
+      // the physical type, so this only affects the retype decision — not matching.
+      sqlType: (canonicalType ?? sqlType).toLowerCase(),
       inferredType: naturalType(canon),
       distinctSampled: distinct.size,
       distinctIsCapped: distinct.size >= DISTINCT_CAP,
@@ -264,15 +277,18 @@ export async function buildModelProfile(
       skipped.push({ table: s.name, reason: 'no registered columns' });
       continue;
     }
-    // Prefer the CANONICAL field type ('uuid'/'integer'/'datetime'/…) over the
-    // raw SQL column spec, which is lossy+noisy: a config-declared datetime/
-    // integer is physically stored as TEXT, so the raw spec would let retype
-    // detection propose retyping a column to the type it already canonically is.
-    // Falls back to the raw spec for code-defined tables with no declared types.
+    // Surface the CANONICAL field type ('uuid'/'integer'/'datetime'/…) alongside
+    // the raw physical spec. Retype detection uses the canonical type (so a
+    // config-declared datetime/integer stored physically as TEXT isn't proposed
+    // for retype to the type it already is); value canonicalization uses the
+    // physical type so normalization stays symmetric across columns. Code-defined
+    // tables with no declared types have no canonicalType → retype falls back to
+    // the raw spec.
     const fieldTypes = db.getRegisteredFieldTypes(s.name);
     const columns = Object.entries(colTypes).map(([name, sqlType]) => ({
       name,
-      sqlType: fieldTypes?.[name] ?? sqlType,
+      sqlType,
+      canonicalType: fieldTypes?.[name],
     }));
     const primaryKey = db.getPrimaryKey(s.name);
     const pkCol = primaryKey[0] ?? (colTypes.id !== undefined ? 'id' : columns[0]?.name);

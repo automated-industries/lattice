@@ -18,7 +18,7 @@ import type { AppliedOp } from './planner/types.js';
  *  - GET  /plan     → run (or return the watermark-cached) plan: auto-applied
  *                     reversible fixes + pending proposals.
  *  - POST /apply    → apply one proposal `{ id }` or `{ all: true }` via the
- *                     audited primitives. Owner-gated; failures surface (Rule 16).
+ *                     audited primitives. Owner-gated; failures surface rather than being swallowed.
  *  - POST /dismiss  → hide a proposal `{ id }` so it is not re-surfaced.
  *
  * The AUTO tier only runs for a caller that can manage the schema (local, or a
@@ -85,7 +85,7 @@ export async function handleDataModelRoutes(
       try {
         applied.push(await applyPlanOp(op, applyDeps));
       } catch (e) {
-        // Interactive action → surface the failure in the response (Rule 16),
+        // Interactive action → surface the failure in the response,
         // never swallow it silently.
         applied.push({
           id: op.id,
