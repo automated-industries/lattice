@@ -15,8 +15,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   normalize repeated entities into their own related tables, deduplicate real-world duplicates
   (reversibly), keep derived data as live computed views (never stored copies), and document what
   objects/fields mean — applied whenever the assistant creates or reorganizes objects, preferring
-  additive, reversible steps and leaving an already-clean model alone. (Part one of the automatic
-  data-model designer; the shared designer routine that runs after ingest/connect follows.)
+  additive, reversible steps and leaving an already-clean model alone.
+
+- **Automatic data-model designer — the shared routine.** A single `designDataModel` routine keeps a
+  workspace a clean star schema by making only ADDITIVE, REVERSIBLE structural improvements (relate
+  tables, add live computed views, document meaning). It runs unattended, so it is safe by
+  construction: it has NO data-writing or destructive tools (no create/update/delete row, no
+  create/delete entity, no bulk update), is conservative + idempotent (does nothing when the model is
+  already clean), and every change lands in the version-history undo stack. It is designed to be
+  consumed from one place everywhere it is needed — the deterministic hooks that run it after a file
+  batch is ingested and after a source is connected are the remaining wiring.
 
 - **Five more out-of-the-box connectors: Gmail, Google Calendar, Google Drive, Slack, and
   Salesforce.** Each is a thin hand-authored MCP connector built on the same parameterized-tool
