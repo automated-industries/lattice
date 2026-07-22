@@ -48,6 +48,9 @@ import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity
 import type { ChatProgressEnvelope } from './chat-progress.js';
 import { resolvedProviderKind } from './ai/provider.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
+import { scheduleDataModelDesign, type DesignJob } from './ai/data-model-designer.js';
+import { resolveLlmClient } from './ai/provider.js';
+import { ASSISTANT_HIDDEN_TABLES, type DispatchCtx } from './ai/dispatch.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
@@ -847,6 +850,43 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // with `activeRef` at every swap site so the next request sees the swap.
         let active: ActiveDb = activeRef;
 
+        // Automatic data-model designer (Bug 11): after a data-changing ingest or a
+        // source connect, schedule a DEBOUNCED, FAIL-SOFT design pass so the workspace
+        // stays a clean star schema. Reads `active` at call time; a whole file batch (or
+        // a connect + its initial sync) coalesces into ONE pass; the pass is best-effort
+        // and can never affect the ingest/connect it followed (see scheduleDataModelDesign).
+        // The designer has only additive, reversible tools (relate tables, add computed
+        // views, document meaning) — it can never invent, overwrite, or drop data.
+        const triggerDataModelDesign = (): void => {
+          const a = active;
+          scheduleDataModelDesign(a.configPath, async (): Promise<DesignJob | null> => {
+            const client = await resolveLlmClient(a.db);
+            if (!client) return null; // no model provider → nothing to run
+            const validTables = new Set(
+              [...a.validTables, ...a.db.getRegisteredTableNames()].filter(
+                (t) =>
+                  !ASSISTANT_HIDDEN_TABLES.has(t) &&
+                  !t.startsWith('__lattice') &&
+                  !t.startsWith('_lattice'),
+              ),
+            );
+            const dispatch: DispatchCtx = {
+              db: a.db,
+              feed: a.feed,
+              validTables,
+              junctionTables: a.junctionTables,
+              computedTables: a.computedTables,
+              softDeletable: a.softDeletable,
+              createEntity: (name, columns) => createUserEntity(a, name, columns, sessionId),
+              createJunction: (x, y) => createUserJunction(a, x, y, sessionId),
+              configPath: a.configPath,
+              outputDir: a.outputDir,
+              aggressiveness: getAggressiveness(),
+            };
+            return { client, dispatch };
+          });
+        };
+
         // Per-request handle the route modules will take as their third arg.
         // Closes over the handler's reassignable bindings (never their values) so
         // ctx.active() is always live and ctx.swapActive is the single write-back
@@ -1146,7 +1186,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           {
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/ingest/')) return false;
-              return await dispatchIngestRoute(req, res, {
+              const ingestHandled = await dispatchIngestRoute(req, res, {
                 db: active.db,
                 feed: active.feed,
                 softDeletable: active.softDeletable,
@@ -1165,6 +1205,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 pathname,
                 method,
               });
+              // After a data-changing ingest, keep the model a clean star schema.
+              if (ingestHandled && method === 'POST') triggerDataModelDesign();
+              return ingestHandled;
             },
           },
           // ── Sources: local file/folder roots for the Sources sidebar ──
@@ -1195,7 +1238,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 method,
               };
               const mctx = ingestMutationCtx(ingestCtx);
-              return await dispatchSourcesRoute(req, res, {
+              const sourcesHandled = await dispatchSourcesRoute(req, res, {
                 db: active.db,
                 ingestFile: (p: string) => ingestLocalFile(ingestCtx, mctx, p, false),
                 configPath: active.configPath,
@@ -1203,6 +1246,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 method,
                 feed: active.feed,
               });
+              // After a folder ingest, keep the model a clean star schema.
+              if (sourcesHandled && method === 'POST') triggerDataModelDesign();
+              return sourcesHandled;
             },
           },
           // ── Structured-source import (apply) ──
@@ -1236,12 +1282,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // On a cloud, key connectors on the member's session_user (the role
               // RLS ownership uses) so partitions + ownership agree; else fallback.
               const connectedBy = await resolveConnectorIdentity(active.db, fallback);
-              return await dispatchConnectorsRoute(req, res, {
+              const connectorsHandled = await dispatchConnectorsRoute(req, res, {
                 db: active.db,
                 connectors: builtinConnectors(),
                 outputDir: active.outputDir,
                 connectedBy,
               });
+              // After connecting/refreshing a source, normalize the new tables into
+              // the star schema (debounced + fail-soft; a no-op if nothing changed).
+              if (connectorsHandled && method === 'POST') triggerDataModelDesign();
+              return connectorsHandled;
             },
           },
           // ── Databases as an Input: connect/list/refresh/disconnect external DBs ──
@@ -1253,12 +1303,15 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               const ident = readIdentity();
               const fallback = ident.email || ident.display_name || 'local';
               const connectedBy = await resolveConnectorIdentity(active.db, fallback);
-              return await dispatchDbSourcesRoute(req, res, {
+              const dbSourcesHandled = await dispatchDbSourcesRoute(req, res, {
                 db: active.db,
                 outputDir: active.outputDir,
                 connectedBy,
                 feed: active.feed,
               });
+              // After connecting an external database, normalize its imported tables.
+              if (dbSourcesHandled && method === 'POST') triggerDataModelDesign();
+              return dbSourcesHandled;
             },
           },
           // ── Files: blob serving + open-in-finder ──

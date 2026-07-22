@@ -17,14 +17,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   objects/fields mean — applied whenever the assistant creates or reorganizes objects, preferring
   additive, reversible steps and leaving an already-clean model alone.
 
-- **Automatic data-model designer — the shared routine.** A single `designDataModel` routine keeps a
-  workspace a clean star schema by making only ADDITIVE, REVERSIBLE structural improvements (relate
-  tables, add live computed views, document meaning). It runs unattended, so it is safe by
-  construction: it has NO data-writing or destructive tools (no create/update/delete row, no
-  create/delete entity, no bulk update), is conservative + idempotent (does nothing when the model is
-  already clean), and every change lands in the version-history undo stack. It is designed to be
-  consumed from one place everywhere it is needed — the deterministic hooks that run it after a file
-  batch is ingested and after a source is connected are the remaining wiring.
+- **Automatic data-model designer.** A single shared `designDataModel` routine now runs automatically
+  after a file batch is ingested and after a source (MCP connector or external database) is connected,
+  keeping the workspace a clean star schema. It is safe by construction: it may make only ADDITIVE,
+  REVERSIBLE structural improvements (relate tables, add live computed views, document meaning) and has
+  NO data-writing or destructive tools (no create/update/delete row, no create/delete entity, no bulk
+  update), so it can never invent, overwrite, or drop data — every change lands in the version-history
+  undo stack. It is conservative + idempotent (does nothing when the model is already clean). The
+  server hooks are DEBOUNCED (a whole batch, or a connect + its initial sync, coalesces into one pass)
+  and FAIL-SOFT (a designer failure — including no model provider configured — is logged and swallowed,
+  and can never affect the ingest/connect it followed).
 
 - **Five more out-of-the-box connectors: Gmail, Google Calendar, Google Drive, Slack, and
   Salesforce.** Each is a thin hand-authored MCP connector built on the same parameterized-tool

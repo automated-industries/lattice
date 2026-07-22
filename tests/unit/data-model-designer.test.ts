@@ -1,10 +1,14 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { FeedBus } from '../../src/gui/feed.js';
-import { designDataModel, type ExecFn } from '../../src/gui/ai/data-model-designer.js';
+import {
+  designDataModel,
+  scheduleDataModelDesign,
+  type ExecFn,
+} from '../../src/gui/ai/data-model-designer.js';
 import type { LlmClient, ToolUse } from '../../src/gui/ai/chat.js';
 import type { DispatchCtx } from '../../src/gui/ai/dispatch.js';
 
@@ -136,6 +140,38 @@ describe('Bug 11: designDataModel', () => {
       'merge_rows',
     ]) {
       expect(toolNames).not.toContain(banned);
+    }
+  });
+});
+
+describe('Bug 11: scheduleDataModelDesign (the deterministic auto-hook)', () => {
+  it('DEBOUNCES — a batch of triggers coalesces into one pass', async () => {
+    vi.useFakeTimers();
+    try {
+      let prepared = 0;
+      const prepare = () => {
+        prepared++;
+        return Promise.resolve(null); // null → skip the design pass (no client needed)
+      };
+      // Three rapid triggers for the same workspace (a 3-file batch).
+      scheduleDataModelDesign('/ws/a', prepare);
+      scheduleDataModelDesign('/ws/a', prepare);
+      scheduleDataModelDesign('/ws/a', prepare);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(prepared).toBe(1); // only the last schedule fired
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is FAIL-SOFT — a prepare/designer failure never escapes', async () => {
+    vi.useFakeTimers();
+    try {
+      // A throwing prepare must not produce an unhandled rejection or throw out.
+      scheduleDataModelDesign('/ws/b', () => Promise.reject(new Error('boom')));
+      await expect(vi.advanceTimersByTimeAsync(6000)).resolves.not.toThrow();
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

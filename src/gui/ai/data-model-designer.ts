@@ -81,6 +81,56 @@ const DESIGNER_SYSTEM = [
   '- Produce NO user-facing prose. Call tools, then stop as soon as there is nothing high-confidence left to do.',
 ].join('\n');
 
+/** What a scheduled design pass needs, resolved lazily at fire time (so a client /
+ *  context that isn't ready yet just yields null and the pass is skipped). */
+export interface DesignJob {
+  client: LlmClient;
+  dispatch: DispatchCtx;
+}
+
+const DESIGN_DEBOUNCE_MS = 4000;
+const designTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Debounced, FAIL-SOFT trigger for a design pass — the deterministic hook the ingest
+ * and connect paths call. Debounced per workspace `key` so a whole file batch (or a
+ * connect + its initial sync) coalesces into ONE pass shortly after the last event.
+ * The pass is scheduled, never awaited, and wrapped in try/catch: a designer failure
+ * (no model provider, a bad tool call, anything) is logged and swallowed — it can
+ * NEVER break the ingest or connect it followed. `prepare()` is called at fire time
+ * and returns the client + dispatch context, or null to skip (e.g. no model
+ * configured).
+ */
+export function scheduleDataModelDesign(
+  key: string,
+  prepare: () => Promise<DesignJob | null>,
+): void {
+  const prev = designTimers.get(key);
+  if (prev) clearTimeout(prev);
+  const timer = setTimeout(() => {
+    designTimers.delete(key);
+    void (async () => {
+      try {
+        const job = await prepare();
+        if (!job) return; // no model provider / not applicable → skip quietly
+        const res = await designDataModel(job.client, job.dispatch);
+        if (res.changes.length > 0) {
+          console.log(
+            `[data-model designer] applied ${String(res.changes.length)} structural improvement(s)`,
+          );
+        }
+      } catch (e) {
+        // FAIL-SOFT: the designer is a best-effort enhancement that runs AFTER the
+        // ingest/connect already succeeded — never surface or rethrow.
+        console.warn('[data-model designer] pass failed (non-fatal):', (e as Error).message);
+      }
+    })();
+  }, DESIGN_DEBOUNCE_MS);
+  // Don't keep the process alive just for a pending design pass.
+  (timer as { unref?: () => void }).unref?.();
+  designTimers.set(key, timer);
+}
+
 export interface DesignChange {
   tool: string;
   ok: boolean;
