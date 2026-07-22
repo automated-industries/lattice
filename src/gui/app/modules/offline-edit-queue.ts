@@ -21,6 +21,21 @@ export const offlineEditQueueJs = `    // ────────────�
       return el ? String(el.textContent || '').replace(/^v/, '').trim() : '';
     })();
     var reloadingForUpdate = false;
+    // Last /api/update/status seen — drives what the update pill's click DOES
+    // (install a staged desktop download, npm-upgrade, or open the manual
+    // download page after a failed auto-update).
+    var updateState = null;
+    var UPDATE_DOWNLOAD_PAGE = 'https://latticesql.com/install';
+    function openDownloadPage() {
+      // Surface-agnostic: a synthetic anchor click is what the desktop webview's
+      // link-interceptor catches (routing to the system browser); a normal browser
+      // just opens a tab. The manual-download escape hatch when auto-update fails.
+      try {
+        var a = document.createElement('a');
+        a.href = UPDATE_DOWNLOAD_PAGE; a.target = '_blank'; a.rel = 'noopener';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      } catch (_) { location.href = UPDATE_DOWNLOAD_PAGE; }
+    }
     function showUpdatePill(text) {
       setStatus({ id: 'update', kind: 'accent', text: text, priority: 60, sticky: true });
     }
@@ -94,17 +109,32 @@ export const offlineEditQueueJs = `    // ────────────�
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (s) {
           if (!s) return;
+          updateState = s;
           applyUpdateBadge(s);
+          // A late-joining client (reconnected mid-download) picks the progress
+          // bar back up from the polled status; live ticks come via update-progress.
+          if (s.phase === 'downloading') {
+            var frac = (s.totalBytes && s.downloadedBytes != null) ? (s.downloadedBytes / s.totalBytes) : null;
+            var p = frac != null ? ' — ' + Math.round(frac * 100) + '%' : '';
+            setStatus({ id: 'update', kind: 'accent', sticky: true, spinner: true,
+              text: 'Downloading update' + (s.latest ? ' v' + s.latest : '') + p, progress: frac });
+          }
           var el = document.getElementById('app-update-link');
           if (!el) return;
           var hasUpdate = s.latest && s.current && s.latest !== s.current;
-          if (hasUpdate && s.action === 'upgrade-in-place') {
+          if (s.action === 'install-and-restart') {
+            // Desktop: the newer signed installer has been auto-downloaded.
+            el.textContent = 'Update ready — Install & restart';
+            el.title = 'Install v' + (s.stagedVersion || s.latest) + ' and restart';
+            el.hidden = false;
+          } else if (hasUpdate && s.action === 'upgrade-in-place') {
             el.textContent = 'Update available — Upgrade';
             el.title = 'Install v' + s.latest + ' and restart';
             el.hidden = false;
-          } else if (hasUpdate && s.action === 'restart-to-update') {
-            el.textContent = 'Update available — Restart to update';
-            el.title = 'Download v' + s.latest + ' and relaunch';
+          } else if (s.phase === 'error') {
+            // Auto-update failed — offer a manual download instead of a spinner.
+            el.textContent = 'Update failed — Download';
+            el.title = s.lastError ? ('Automatic update failed: ' + s.lastError) : 'Download the latest version';
             el.hidden = false;
           } else {
             el.hidden = true;
@@ -142,22 +172,52 @@ export const offlineEditQueueJs = `    // ────────────�
     // success we do nothing else — the update-applied event + the reconnect
     // version check land the page on the new version (no manual reload). A
     // false ok means the install can't run (unsupervised) — toast why.
+    function markUpdateFailed(msg) {
+      // Turn the pill into a manual-download fallback so a click downloads the
+      // installer by hand — never a dead spinner.
+      hideUpdatePill();
+      updateState = { phase: 'error', action: 'none', lastError: msg,
+        latest: (updateState && updateState.latest), current: (updateState && updateState.current) };
+      var el = document.getElementById('app-update-link');
+      if (el) {
+        el.textContent = 'Update failed — Download';
+        el.title = msg ? ('Automatic update failed: ' + msg) : 'Download the latest version';
+        el.hidden = false;
+      }
+    }
     function wireUpdateLink() {
       var el = document.getElementById('app-update-link');
       if (!el) return;
       el.addEventListener('click', function (e) {
         e.preventDefault();
+        var st = updateState || {};
+        // Failed auto-update → the honest recovery is a manual download.
+        if (st.phase === 'error' && st.action !== 'install-and-restart') {
+          openDownloadPage();
+          return;
+        }
+        var applying = st.action === 'install-and-restart';
         el.hidden = true;
-        showUpdatePill('Updating…');
+        showUpdatePill(applying ? 'Installing update — the app will restart…' : 'Updating…');
+        // Stuck-guard (desktop install only): the installer launches and the app
+        // quits within ~1s. If it doesn't (nothing staged / launch failed), stop
+        // spinning and offer a manual download instead of hanging forever.
+        var stuck = applying
+          ? setTimeout(function () { markUpdateFailed('the installer didn\\u2019t start'); }, 15000)
+          : null;
         fetch('/api/update/apply', { method: 'POST' })
           .then(function (r) { return r.json(); })
           .then(function (d) {
             if (d && d.ok === false) {
-              hideUpdatePill();
+              if (stuck) clearTimeout(stuck);
+              markUpdateFailed(d.error || 'Update unavailable');
               showToast(d.error || 'Update unavailable', {});
             }
+            // ok:true → the desktop installer is launching + the app is quitting
+            // (this page goes away), or the npm install kicked off (the reconnect
+            // version check reloads). The stuck-guard covers a silent no-op.
           })
-          .catch(function () { /* server may already be restarting */ });
+          .catch(function () { /* server may already be restarting / quitting */ });
       });
     }
     function dispatchStreamMessage(type, data) {
@@ -239,12 +299,39 @@ export const offlineEditQueueJs = `    // ────────────�
         // replacement for the held-open POST response. Routed to the turn's bubble by
         // messageId; gated per user server-side so one member never sees another's chat.
         if (data && typeof onChatProgress === 'function') onChatProgress(data);
+      } else if (type === 'update-progress') {
+        // Desktop background installer download — a real progress bar, never a
+        // spinner. total may be null early → indeterminate (text only).
+        var frac = (data && data.total) ? (data.done / data.total) : null;
+        var pctTxt = frac != null ? ' — ' + Math.round(frac * 100) + '%' : '';
+        setStatus({ id: 'update', kind: 'accent', sticky: true, spinner: true,
+          text: 'Downloading update' + (data && data.version ? ' v' + data.version : '') + pctTxt,
+          progress: frac });
+        if (updateState) updateState.phase = 'downloading';
+      } else if (type === 'update-ready') {
+        // Installer staged — swap the progress pill for the actionable link.
+        hideUpdatePill();
+        updateState = {
+          phase: 'ready', action: 'install-and-restart',
+          latest: (data && data.version) || (updateState && updateState.latest),
+          stagedVersion: (data && data.version),
+          current: (updateState && updateState.current),
+        };
+        var elr = document.getElementById('app-update-link');
+        if (elr) {
+          elr.textContent = 'Update ready — Install & restart';
+          elr.title = 'Install v' + (data && data.version) + ' and restart';
+          elr.hidden = false;
+        }
       } else if (type === 'update-applied') {
         // Files on disk are the new version; the server is about to relaunch.
         // Don't reload yet (the server is exiting) — the reconnect version check
         // does the actual reload once it's back up on the new code.
         showUpdatePill('Updating…');
       } else if (type === 'update-error') {
+        // A failed auto-update (npm install or desktop download). Clear any
+        // spinner and turn the pill into a manual-download fallback — never hang.
+        markUpdateFailed((data && data.message) || 'unknown error');
         showToast('Update failed: ' + ((data && data.message) || 'unknown error'), {});
       }
     }

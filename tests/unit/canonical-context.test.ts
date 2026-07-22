@@ -53,4 +53,32 @@ describe('deriveCanonicalContexts', () => {
     expect(punct.length).toBeGreaterThan(0);
     expect(punct).toBe('abc123');
   });
+
+  it('emits lattice:// trace links in related rollup files, NOT in self files', () => {
+    const out = deriveCanonicalContexts([
+      { name: 'files', definition: files },
+      { name: 'projects', definition: projects },
+    ]);
+    const byTable = Object.fromEntries(out.map((o) => [o.table, o.definition]));
+
+    // Self file (FILE.md on files table) must NOT contain links.
+    const selfRender = byTable.files.files['FILE.md']!.render;
+    const selfMd = selfRender([{ id: 'file-42', name: 'Test File' }]);
+    expect(selfMd).not.toMatch(/lattice:\/\//); // no links in self file
+
+    // Related rollup (PROJECTS.md on files table) MUST contain links.
+    const relatedRender = byTable.files.files['PROJECTS.md']!.render;
+    const relatedMd = relatedRender([{ id: 'proj-99', name: 'My Project' }]);
+    expect(relatedMd).toContain('lattice://projects/proj-99'); // link in related file
+    expect(relatedMd).toContain('[My Project](lattice://projects/proj-99)'); // markdown link syntax
+
+    // Rows without id should not emit links (plain text fallback).
+    const noIdMd = relatedRender([{ name: 'No ID Project' }]);
+    expect(noIdMd).not.toContain('lattice://');
+    expect(noIdMd).toContain('No ID Project'); // still renders the label
+
+    // Special characters in ID must be URI-encoded.
+    const specialIdMd = relatedRender([{ id: 'proj/special:id', name: 'Special' }]);
+    expect(specialIdMd).toContain('lattice://projects/proj%2Fspecial%3Aid'); // encoded
+  });
 });

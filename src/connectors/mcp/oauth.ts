@@ -73,6 +73,8 @@ export interface McpPendingConnect {
   redirectUri: string;
   /** The HTTP transport used at begin — must match at token exchange. */
   transportKind: 'http' | 'sse';
+  /** OAuth scopes requested at begin — persisted so token exchange + refresh request the SAME scope. */
+  scope?: string;
   /** Set when this connect re-authorizes an existing registry row (reconnect). */
   targetConnectorId?: string;
 }

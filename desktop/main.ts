@@ -2,16 +2,23 @@
 //
 // Serves the EXACT same GUI as the web (`startGuiServer`, version-stamped from
 // the same build constant) in a native window, with a system-browser bridge for
-// external links/OAuth and built-in upgrade-on-run via `Deno.autoUpdate()`.
+// external links/OAuth and background auto-update (signed-bundle swap, installer
+// fallback — see the Auto-update section below).
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
   startGuiServer,
   VERSION,
   ensureRootForGui,
   checkManifestForUpdate,
+  chooseUpdateStrategy,
+  resolveAppBundle,
+  parseTeamIdentifier,
+  sameSigningTeam,
+  BUNDLE_SWAP_SH,
 } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 
@@ -78,31 +85,286 @@ function resolveDocsDir(): string | undefined {
   return undefined; // absent → assistant help degrades to model-only knowledge
 }
 
-// ── Auto-update (upgrade-on-run) ─────────────────────────────────────────────
-// `deno desktop` ships a built-in updater: it polls <baseUrl>/latest.json, applies
-// the bsdiff patch, relaunches, and auto-rolls-back on a failed launch. We point
-// it at the GitHub Releases "latest" path. Overridable via env for staging.
+// ── Auto-update (frictionless bundle swap, installer fallback) ────────────────
+// The compiled desktop app CANNOT self-patch: `Deno.autoUpdate` applies bsdiff
+// DELTAS to the runtime dylib in place, which breaks the app's Developer-ID
+// signature — macOS then SIGKILLs the tampered process (Code Signature Invalid),
+// so it can never take effect on a notarized build.
+//
+// So the GUI's update service auto-DOWNLOADS the update in the background (byte
+// progress streamed to the window) and, once staged, offers a one-click apply.
+// Two staging paths, chosen by `chooseUpdateStrategy`:
+//   • SWAP (frictionless, macOS + writable /Applications): download the signed
+//     `.dmg`, verify the enclosed `.app` (codesign + Gatekeeper + SAME signing
+//     team as the running app), and stage it next to the running bundle. Apply =
+//     a detached helper swaps the whole signed bundle after we quit, then
+//     relaunches — signature stays valid (nothing is patched in place). Zero
+//     password for an admin user.
+//   • INSTALLER (fallback: Windows, a non-admin/non-writable /Applications, or any
+//     swap failure): download the signed `.pkg`/`.msi` and, on apply, launch it +
+//     quit (the user completes the OS installer).
+// Either way it is honest: a progress bar, an explicit apply, or a loud error —
+// never a silent no-op or an endless spinner.
 const UPDATE_BASE_URL =
   Deno.env.get('LATTICE_DESKTOP_UPDATE_URL') ??
   'https://github.com/automated-industries/lattice/releases/latest/download/';
 
 // Master switch (default on). LATTICE_NO_AUTO_UPDATE=1 pins the app to its
-// current version: no manifest probe, no Deno.autoUpdate, no relaunch. Mirrors
-// the CLI's --no-auto-update for the desktop (which has no CLI args).
+// current version: no manifest probe, no download. Mirrors the CLI's
+// --no-auto-update for the desktop (which has no CLI args).
 const AUTO_UPDATE_ENABLED = Deno.env.get('LATTICE_NO_AUTO_UPDATE') !== '1';
 
-async function runAutoUpdate(): Promise<void> {
-  if (!AUTO_UPDATE_ENABLED) return; // pinned — never touch the network
-  const autoUpdate = (
-    Deno as unknown as { autoUpdate?: (o: { baseUrl: string }) => Promise<unknown> }
-  ).autoUpdate;
-  if (typeof autoUpdate !== 'function') return; // not in a compiled desktop build
+// The signed installer we publish per platform (the same artifact the website
+// links to). `releases/latest/download/<name>` always resolves to the newest
+// release, so the URL needs no version interpolation. Linux has no installer
+// artifact → no desktop auto-download there (the GUI still reports the version).
+function installerName(): string | null {
+  if (Deno.build.os === 'darwin') return 'Lattice.pkg';
+  if (Deno.build.os === 'windows') return 'Lattice.msi';
+  return null;
+}
+
+// Where downloads are staged, and what's staged once a download+verify succeeds.
+const updateStageDir = join(homedir(), '.lattice', 'updates');
+let stagedMode: 'swap' | 'installer' | null = null;
+let stagedInstaller: string | null = null; // installer path (.pkg/.msi)
+let stagedSwapApp: string | null = null; // verified new .app, sibling of the running bundle
+let stagedRunningApp: string | null = null; // the running .app bundle the swap replaces
+
+// Run a command, capturing output; never throws (returns ok:false on spawn error).
+async function run(
+  cmd: string,
+  args: string[],
+): Promise<{ ok: boolean; out: string; err: string }> {
   try {
-    await autoUpdate({ baseUrl: UPDATE_BASE_URL });
-  } catch (err) {
-    // Loud, never silent — but a failed update must not block launch.
-    console.error('[desktop] auto-update check failed:', (err as Error).message);
+    const { code, stdout, stderr } = await new Deno.Command(cmd, {
+      args,
+      stdout: 'piped',
+      stderr: 'piped',
+    }).output();
+    const dec = new TextDecoder();
+    return { ok: code === 0, out: dec.decode(stdout), err: dec.decode(stderr) };
+  } catch (e) {
+    return { ok: false, out: '', err: (e as Error).message };
   }
+}
+
+// A real write test — the only reliable check that WE can write the bundle's
+// parent (an admin user's /Applications is group-writable; a standard user's is not).
+async function isDirWritable(dir: string): Promise<boolean> {
+  try {
+    const probe = await Deno.makeTempFile({ dir, prefix: '.lattice-w-' });
+    await Deno.remove(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort: the manifest's expected sha256 + size for a published artifact by
+// filename. Absent/unreachable → nulls (download proceeds unverified-by-hash; the
+// artifacts are themselves code-signed, and the swap path additionally re-verifies
+// the extracted .app with codesign + Gatekeeper).
+async function manifestAsset(
+  filename: string,
+): Promise<{ sha: string | null; size: number | null }> {
+  try {
+    const res = await fetch(new URL('latest.json', UPDATE_BASE_URL), {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const m = (await res.json()) as {
+        assets?: Record<string, { name?: string; sha256?: unknown; sizeBytes?: unknown }>;
+      };
+      for (const asset of Object.values(m.assets ?? {})) {
+        if (asset && asset.name === filename) {
+          return {
+            sha: typeof asset.sha256 === 'string' ? asset.sha256 : null,
+            size: typeof asset.sizeBytes === 'number' ? asset.sizeBytes : null,
+          };
+        }
+      }
+    }
+  } catch {
+    /* manifest unreachable — proceed unverified-by-hash */
+  }
+  return { sha: null, size: null };
+}
+
+// Stream a download to `dest`, reporting byte progress and verifying size + sha256
+// when known. THROWS on any failure so the GUI surfaces it (never a stuck spinner).
+async function streamToFile(
+  url: string,
+  dest: string,
+  expectedSize: number | null,
+  expectedSha: string | null,
+  onProgress: (done: number, total: number | null) => void,
+): Promise<void> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(600_000) });
+  if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+  const total = expectedSize ?? (Number(res.headers.get('content-length')) || null);
+  await Deno.mkdir(dirname(dest), { recursive: true });
+  const file = await Deno.open(dest, { write: true, create: true, truncate: true });
+  const hash = createHash('sha256');
+  let done = 0;
+  onProgress(0, total);
+  const meter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      hash.update(chunk);
+      done += chunk.byteLength;
+      onProgress(done, total);
+      controller.enqueue(chunk);
+    },
+  });
+  await res.body.pipeThrough(meter).pipeTo(file.writable); // closes file on finish
+  if (expectedSize != null && done !== expectedSize) {
+    throw new Error(`download size mismatch: got ${done} bytes, expected ${expectedSize}`);
+  }
+  if (expectedSha && hash.digest('hex') !== expectedSha) {
+    throw new Error('download checksum mismatch — refusing a tampered download');
+  }
+}
+
+// Frictionless path: download the signed .dmg, extract + VERIFY the enclosed .app,
+// and stage it next to the running bundle. Verification is a hard gate — any
+// failure throws (the caller surfaces it), never a silent downgrade to the
+// installer. Staging as `<runningApp>.new` keeps it on the same volume so the
+// eventual swap is an atomic rename.
+async function stageBundleSwap(
+  runningApp: string,
+  onProgress: (done: number, total: number | null) => void,
+): Promise<void> {
+  await Deno.mkdir(updateStageDir, { recursive: true });
+  const dmgPath = join(updateStageDir, 'Lattice.dmg');
+  const { sha, size } = await manifestAsset('Lattice.dmg');
+  await streamToFile(
+    new URL('Lattice.dmg', UPDATE_BASE_URL).toString(),
+    dmgPath,
+    size,
+    sha,
+    onProgress,
+  );
+
+  const mountPoint = await Deno.makeTempDir({ prefix: 'lattice-dmg-' });
+  const att = await run('hdiutil', [
+    'attach',
+    '-nobrowse',
+    '-readonly',
+    '-mountpoint',
+    mountPoint,
+    dmgPath,
+  ]);
+  if (!att.ok) throw new Error('could not mount the update image: ' + att.err.trim());
+  const stagedApp = runningApp + '.new';
+  try {
+    const srcApp = join(mountPoint, 'Lattice.app');
+    if (!existsSync(srcApp)) throw new Error('update image does not contain Lattice.app');
+    await Deno.remove(stagedApp, { recursive: true }).catch(() => {});
+    const dt = await run('ditto', [srcApp, stagedApp]); // preserves the signature + xattrs
+    if (!dt.ok) throw new Error('could not stage the update bundle: ' + dt.err.trim());
+    // Signature-safe gate — only swap in a genuine, notarized, SAME-identity build.
+    const verify = await run('codesign', ['--verify', '--deep', '--strict', stagedApp]);
+    if (!verify.ok) throw new Error('staged update failed code-signature verification');
+    const assess = await run('spctl', ['--assess', '--type', 'execute', stagedApp]);
+    if (!assess.ok) throw new Error('staged update is not notarized (Gatekeeper rejected it)');
+    const runTeam = parseTeamIdentifier((await run('codesign', ['-dvv', runningApp])).err);
+    const newTeam = parseTeamIdentifier((await run('codesign', ['-dvv', stagedApp])).err);
+    if (!sameSigningTeam(runTeam, newTeam)) {
+      throw new Error('staged update has a different signing identity — refusing to swap');
+    }
+    stagedMode = 'swap';
+    stagedSwapApp = stagedApp;
+    stagedRunningApp = runningApp;
+  } catch (err) {
+    await Deno.remove(stagedApp, { recursive: true }).catch(() => {});
+    throw err;
+  } finally {
+    await run('hdiutil', ['detach', mountPoint, '-force']);
+    await Deno.remove(mountPoint).catch(() => {});
+    await Deno.remove(dmgPath).catch(() => {});
+  }
+}
+
+// Fallback path: download the signed OS installer (.pkg/.msi) for a later
+// launch-and-quit apply.
+async function downloadInstaller(
+  onProgress: (done: number, total: number | null) => void,
+): Promise<void> {
+  const name = installerName();
+  if (!name) throw new Error(`no desktop installer for platform "${Deno.build.os}"`);
+  await Deno.mkdir(updateStageDir, { recursive: true });
+  const dest = join(updateStageDir, name);
+  const { sha, size } = await manifestAsset(name);
+  await streamToFile(new URL(name, UPDATE_BASE_URL).toString(), dest, size, sha, onProgress);
+  stagedMode = 'installer';
+  stagedInstaller = dest;
+}
+
+// Auto-download the update in the background — the frictionless bundle swap when
+// it's safe, else the OS installer. THROWS on failure so the GUI shows an error.
+async function downloadUpdate(
+  _version: string,
+  onProgress: (done: number, total: number | null) => void,
+): Promise<void> {
+  stagedMode = null;
+  stagedInstaller = null;
+  stagedSwapApp = null;
+  stagedRunningApp = null;
+
+  const runningApp =
+    Deno.env.get('LATTICE_NO_BUNDLE_SWAP') === '1' ? null : resolveAppBundle(Deno.execPath());
+  const parentWritable = runningApp ? await isDirWritable(dirname(runningApp)) : false;
+  const strategy = chooseUpdateStrategy({
+    platform: Deno.build.os,
+    bundleParentWritable: parentWritable,
+  });
+
+  if (strategy === 'swap' && runningApp) {
+    await stageBundleSwap(runningApp, onProgress);
+  } else {
+    await downloadInstaller(onProgress);
+  }
+}
+
+// Apply the staged update and quit so it can replace the running app.
+//   • swap: spawn a DETACHED helper that waits for us to exit, atomically swaps
+//     the verified bundle into place (with rollback), and relaunches.
+//   • installer: launch the OS installer; the user completes it + re-opens.
+function applyDownloadedUpdate(): void {
+  if (stagedMode === 'swap' && stagedSwapApp && stagedRunningApp) {
+    try {
+      const scriptPath = join(updateStageDir, 'swap.sh');
+      Deno.writeTextFileSync(scriptPath, BUNDLE_SWAP_SH);
+      // stdio null so the helper outlives this process cleanly after we exit.
+      new Deno.Command('sh', {
+        args: [scriptPath, stagedRunningApp, stagedSwapApp, String(Deno.pid)],
+        stdin: 'null',
+        stdout: 'null',
+        stderr: 'null',
+      }).spawn();
+    } catch (err) {
+      console.error('[desktop] failed to launch the update swap helper:', (err as Error).message);
+      return; // stay open so the GUI can surface the failure
+    }
+    setTimeout(() => Deno.exit(0), 400);
+    return;
+  }
+  if (stagedMode === 'installer' && stagedInstaller) {
+    try {
+      const cmd =
+        Deno.build.os === 'windows'
+          ? new Deno.Command('msiexec', { args: ['/i', stagedInstaller] })
+          : new Deno.Command('open', { args: [stagedInstaller] });
+      cmd.spawn();
+    } catch (err) {
+      console.error('[desktop] failed to launch installer:', (err as Error).message);
+      return; // stay open so the GUI can surface the failure
+    }
+    // Give the detached installer a beat to start, then quit so it can overwrite us.
+    setTimeout(() => Deno.exit(0), 800);
+    return;
+  }
+  console.error('[desktop] apply requested but nothing is staged');
 }
 
 // ── Boot the GUI server ──────────────────────────────────────────────────────
@@ -154,16 +416,15 @@ const handle = await startGuiServer({
     packageRoot: null,
     reason: 'desktop app — updates via the bundled binary updater',
   },
-  // Probe the SAME release manifest the binary updater applies from, so the
-  // pill's "available" matches what a restart would actually install. Read-only:
-  // it never downloads or relaunches (that stays the user-triggered apply).
+  // Probe the release manifest for the newest published version (read-only — the
+  // version the auto-download would fetch). The update service uses this to
+  // decide when to start a background installer download.
   updateCheck: () => checkManifestForUpdate(UPDATE_BASE_URL, VERSION),
-  // The "Restart to update" pill POSTs /api/update/apply → this runs the real
-  // binary updater (download + relaunch); the reconnect version check then
-  // reloads the webview onto the new version.
-  desktopApplyUpdate: () => {
-    void runAutoUpdate();
-  },
+  // The update service auto-calls this in the background when a newer version is
+  // found, streaming byte progress to the window; and calls applyDownloadedUpdate
+  // when the user clicks "Install & restart" on the staged download.
+  downloadUpdate,
+  applyDownloadedUpdate,
   // Serve the embedded on-device voice assets when present (omit when absent so
   // the server falls back to its default resolution).
   ...(guiAssetsDir ? { guiAssetsDir } : {}),
@@ -220,9 +481,9 @@ if (!BrowserWindow || useBrowser) {
       : 'Windows (set LATTICE_DESKTOP_WEBVIEW=1 to force the native window)';
   console.log(`[desktop] Opening Lattice in your default browser — ${reason}: ${handle.url}`);
   openInSystemBrowser(handle.url);
-  // No native window owns the process lifetime now; keep the GUI server (and the
-  // upgrade-on-run check) alive until the user quits.
-  setTimeout(() => void runAutoUpdate(), 4000);
+  // No native window owns the process lifetime now; keep the GUI server alive
+  // until the user quits. The update service (started inside startGuiServer)
+  // runs the background version-check + installer download on its own.
   await new Promise<void>(() => {});
 } else {
   const win = new BrowserWindow({ title: 'Lattice', width: 1280, height: 860 });
@@ -242,7 +503,6 @@ if (!BrowserWindow || useBrowser) {
   };
   injectBridge();
   setInterval(injectBridge, 1000);
-
-  // Check for updates shortly after launch (don't block first paint).
-  setTimeout(() => void runAutoUpdate(), 4000);
+  // The update service (started inside startGuiServer) runs the background
+  // version-check + installer download on its own — no separate timer here.
 }

@@ -19,6 +19,76 @@ export const configureDrawerJs = `
     // Configure tab (renderGraphTab). Selecting a table shows its read-only detail in the
     // explorer's own panel; the column/relationship editor stays an opt-in button, so
     // "selecting an object is enough". No 340px side panel eats the width.
+    // ── Data-model planner panel (#dm-panel): the deterministic planner's
+    // auto-applied fixes + reviewable suggestions, fetched from /api/data-model/plan
+    // (the same route the on-open sweep hits). Apply/Dismiss post back to the planner.
+    function renderDataModelPlan(host) {
+      if (!host) return;
+      host.hidden = false;
+      host.innerHTML = '<div class="dm-plan-note">Analyzing data model\\u2026</div>';
+      var toast = typeof showToast === 'function' ? showToast : function () {};
+      var post = function (url, id) {
+        return fetchJson(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: id }),
+        });
+      };
+      var reRender = function () {
+        renderDataModelPlan(host);
+        if (typeof renderModelTables === 'function') renderModelTables(document.getElementById('model-tables-host'));
+      };
+      fetchJson('/api/data-model/plan')
+        .then(function (plan) {
+          var html = '';
+          var applied = (plan.autoApplied || []).filter(function (a) { return a && a.ok; });
+          if (applied.length) {
+            html += '<div class="dm-plan-head">Applied automatically</div>';
+            applied.forEach(function (a) {
+              html += '<div class="dm-plan-applied">' + escapeHtml(a.summary) + '</div>';
+            });
+          }
+          var props = plan.proposals || [];
+          if (props.length) {
+            html += '<div class="dm-plan-head">Suggestions (' + props.length + ')</div>';
+            props.forEach(function (p) {
+              html += '<div class="dm-plan-card" data-id="' + escapeHtml(p.id) + '">' +
+                '<div class="dm-plan-why">' + escapeHtml(p.rationale) + '</div>' +
+                '<button type="button" class="btn btn-sm dm-apply-btn">Apply</button> ' +
+                '<button type="button" class="btn btn-sm btn-ghost dm-dismiss-btn">Dismiss</button>' +
+                '</div>';
+            });
+          }
+          // A clean model → hide the panel entirely rather than leave an empty box.
+          if (!html) { host.hidden = true; host.innerHTML = ''; return; }
+          host.innerHTML = html;
+          Array.prototype.forEach.call(host.querySelectorAll('.dm-apply-btn'), function (btn) {
+            btn.addEventListener('click', function () {
+              var card = btn.closest('.dm-plan-card'); if (!card) return;
+              withBusy(btn, function () {
+                return post('/api/data-model/apply', card.getAttribute('data-id')).then(function (body) {
+                  var a = body && body.applied && body.applied[0];
+                  if (a && !a.ok) { toast('Could not apply: ' + (a.error || 'failed'), {}); renderDataModelPlan(host); return; }
+                  toast((a && a.summary) || 'Applied', {});
+                  if (typeof refreshEntities === 'function') refreshEntities().then(reRender, reRender); else reRender();
+                }).catch(function () { toast('Could not apply', {}); renderDataModelPlan(host); });
+              });
+            });
+          });
+          Array.prototype.forEach.call(host.querySelectorAll('.dm-dismiss-btn'), function (btn) {
+            btn.addEventListener('click', function () {
+              var card = btn.closest('.dm-plan-card'); if (!card) return;
+              withBusy(btn, function () {
+                return post('/api/data-model/dismiss', card.getAttribute('data-id'))
+                  .then(function () { renderDataModelPlan(host); })
+                  .catch(function () { renderDataModelPlan(host); });
+              });
+            });
+          });
+        })
+        .catch(function () { host.hidden = true; host.innerHTML = ''; });
+    }
+
     function renderDataModelTab(body) {
       if (!body) return;
       body.innerHTML =
@@ -27,6 +97,7 @@ export const configureDrawerJs = `
       if (typeof renderModelTables === 'function') {
         renderModelTables(document.getElementById('model-tables-host'));
       }
+      renderDataModelPlan(document.getElementById('dm-panel'));
     }
 
     // ── Graph tab: the force-directed schema graph, FULL WIDTH, with a Link / Merge
@@ -171,9 +242,10 @@ export const configureDrawerJs = `
       // the form persists, so a half-typed URL is never wiped.
       body.innerHTML =
         '<div class="db-panel">' +
-        '<p class="db-lead">Connect any MCP server by URL. You authorize each server directly ' +
-        'with its own sign-in; tokens are stored encrypted on this machine and synced data stays ' +
-        'local. Synced items appear as an <code>mcp_items</code> table in the sidebar.</p>' +
+        '<p class="db-lead">Pick a service below for a guided connect, or add any MCP server by URL. ' +
+        'You authorize each server directly with its own sign-in; tokens are stored encrypted on this ' +
+        'machine and synced data stays local.</p>' +
+        '<div id="mcp-catalog"></div>' +
         '<div id="mcp-connectors-list"></div>' +
         '<div id="mcp-connectors-form" class="db-form-host"></div></div>';
       if (typeof renderConnectorsPanel === 'function') renderConnectorsPanel();

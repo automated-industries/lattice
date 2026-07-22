@@ -516,6 +516,9 @@ class FakeMcpConnector implements McpConnector {
   revoked: string[] = [];
   purged: string[] = [];
   requiresPreregisteredClient = false;
+  /** The last serverUrl/scope the ROUTE threaded into beginConnect (for catalog-resolution tests). */
+  lastServerUrl?: string;
+  lastScope?: string;
   private seq = 0;
   private pendings = new Map<
     string,
@@ -545,10 +548,15 @@ class FakeMcpConnector implements McpConnector {
     opts?: {
       redirectUri?: string;
       serverUrl?: string;
+      scope?: string;
       clientInfo?: { client_id: string; client_secret?: string };
       targetConnectorId?: string;
     },
   ): Promise<McpBeginResult> {
+    // Capture what the route resolved + threaded in, so catalog tests can assert the
+    // curated entry's URL + scope won (over any client-sent values).
+    this.lastServerUrl = opts?.serverUrl;
+    this.lastScope = opts?.scope;
     if (!opts?.serverUrl) return Promise.reject(new Error('needs an MCP server URL'));
     if (this.requiresPreregisteredClient && !opts.clientInfo) {
       return Promise.reject(
@@ -953,5 +961,96 @@ describe('connectors routes (MCP multi-instance)', () => {
     // no orphaned per-connection state accumulates from a denied sign-in.
     expect(peekPendingConnect(pendingId)).toBeNull();
     expect(getMcpServerUrl(newConnId)).toBeNull();
+  });
+});
+
+// ── Prefab catalog: GET exposes it + connect resolves a curated card server-side ──
+
+import { PrefabCatalog } from '../../src/connectors/prefab/index.js';
+
+describe('connectors routes (prefab catalog)', () => {
+  let db: Lattice | undefined;
+  let tmpCfg: string;
+  let prevCfg: string | undefined;
+  // Curated-only catalog: no registry sources, so getEntries() === curatedCatalog() and
+  // refreshInBackground() is a no-op (never touches the network).
+  const catalog = new PrefabCatalog();
+
+  beforeAll(() => {
+    tmpCfg = mkdtempSync(join(tmpdir(), 'lattice-catalog-routes-'));
+    prevCfg = process.env.LATTICE_CONFIG_DIR;
+    process.env.LATTICE_CONFIG_DIR = tmpCfg;
+    process.env.LATTICE_ENCRYPTION_KEY ||= Buffer.alloc(32, 7).toString('base64');
+  });
+  afterAll(() => {
+    if (prevCfg === undefined) delete process.env.LATTICE_CONFIG_DIR;
+    else process.env.LATTICE_CONFIG_DIR = prevCfg;
+    rmSync(tmpCfg, { recursive: true, force: true });
+  });
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+  });
+
+  async function call(
+    mcp: FakeMcpConnector,
+    method: string,
+    url: string,
+    body?: unknown,
+    connectedBy = 'u1',
+  ): Promise<{ status: number; body: unknown }> {
+    const req = fakeReq(method, url, body);
+    const { res, done } = fakeRes();
+    await dispatchConnectorsRoute(req, res, {
+      db: db!,
+      connectors: [mcp],
+      outputDir: '/tmp/does-not-matter',
+      connectedBy,
+      catalog, // the only difference from the MCP-block harness: deps.catalog is set
+    });
+    return done;
+  }
+
+  it('GET /api/connectors exposes the curated catalog + an oauthLoopbackAvailable flag', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    const body = (await call(mcp, 'GET', '/api/connectors')).body as {
+      catalog: { id: string; serverUrl: string; source: string }[];
+      oauthLoopbackAvailable: boolean;
+    };
+    const atlassian = body.catalog.find((e) => e.id === 'atlassian');
+    expect(atlassian).toBeTruthy();
+    expect(atlassian?.source).toBe('curated');
+    // fakeReq sends no Host header → the route defaults to 127.0.0.1, a loopback authority.
+    expect(body.oauthLoopbackAvailable).toBe(true);
+  });
+
+  it('connect by catalogId resolves the entry URL + scope SERVER-SIDE and threads them into beginConnect', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    // The client also sends a bogus serverUrl/scope — both must be IGNORED in favor of the
+    // curated entry's authoritative values (a page can't fabricate an endpoint or scope).
+    const r = await call(mcp, 'POST', '/api/connectors/mcp/connect', {
+      catalogId: 'atlassian',
+      serverUrl: 'https://evil.example/mcp',
+      scope: 'evil:scope',
+    });
+    expect(r.status).toBe(200);
+    expect((r.body as { pendingId?: string }).pendingId).toBeTruthy();
+    expect(mcp.lastServerUrl).toBe('https://mcp.atlassian.com/v1/mcp/authv2');
+    expect(mcp.lastScope).toBe(
+      'read:jira-work search:confluence read:confluence-user read:space:confluence read:page:confluence offline_access',
+    );
+  });
+
+  it('connect with an unknown catalogId returns 404', async () => {
+    db = new Lattice(':memory:');
+    await db.init();
+    const mcp = new FakeMcpConnector();
+    const r = await call(mcp, 'POST', '/api/connectors/mcp/connect', { catalogId: 'nope' });
+    expect(r.status).toBe(404);
+    expect((r.body as { error?: string }).error).toBe('unknown connector');
   });
 });

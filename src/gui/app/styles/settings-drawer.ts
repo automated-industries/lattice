@@ -99,6 +99,19 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-form-actions .btn { height: 36px; padding: 0 16px; border-radius: var(--r-md); font-weight: 600; }
     .conn-form-actions .btn.primary { background: var(--accent); color: var(--btn-text); border: none; }
     .conn-help { font-size: 12px; color: var(--text-muted); }
+    /* Prefab connector catalog grid (#mcp-catalog). */
+    .conn-cat-sec { margin: 0 0 16px; }
+    .conn-cat-head { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin: 0 0 8px; }
+    .conn-cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .conn-cat-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); cursor: pointer; text-align: left; transition: border-color 0.12s, background 0.12s; }
+    .conn-cat-card:hover:not(:disabled) { border-color: var(--accent); }
+    .conn-cat-card:disabled { opacity: 0.5; cursor: not-allowed; }
+    .conn-cat-icon { width: 24px; height: 24px; border-radius: var(--r-sm); }
+    .conn-cat-label { font-size: 13px; font-weight: 600; }
+    .conn-cat-hint { font-size: 11px; color: var(--text-muted); }
+    .conn-cat-more { margin: 0 0 16px; }
+    .conn-cat-more > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); margin: 0 0 8px; }
+    .conn-cat-note { font-size: 12px; color: var(--text-muted); margin: 4px 0 0; }
     .conn-connected { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .conn-status { font-size: 12px; text-transform: capitalize; }
     .conn-sub { font-size: 12px; color: var(--text-muted); }
@@ -147,6 +160,15 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        980px reading cap is lifted for them so the explorer / graph canvas span the pane. */
     .settings-drawer .drawer-body.dm-wide { max-width: none; }
     .dm-panel { min-width: 0; }
+    .dm-panel[hidden] { display: none; }
+    /* Data-model planner panel: applied fixes + reviewable suggestions. */
+    .dm-plan-note { color: var(--text-muted); font-size: 12px; padding: 8px 2px; }
+    .dm-plan-head { font-weight: 600; font-size: 12px; margin: 8px 2px 6px; }
+    .dm-plan-applied { font-size: 12px; padding: 4px 2px; color: var(--text-muted); }
+    .dm-plan-card {
+      border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin: 6px 0;
+    }
+    .dm-plan-why { font-size: 12px; margin-bottom: 6px; }
     /* Data Model tab: the tiered Tables explorer full width. The optional
        column/relationship editor drops in BELOW it (full width), never a fixed side
        column, so selecting an object keeps the explorer spanning the whole pane. */
@@ -170,4 +192,71 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
       border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2);
       color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
     .mt-detail-edit:hover { background: var(--row-hover); }
+
+    /* ── Markdown context chips and provenance card ────────────────────── */
+    .chip-trace {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 8px; margin: 0 2px; border-radius: var(--r-sm);
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 13px; font-weight: 500; white-space: nowrap;
+      cursor: pointer; user-select: none; transition: background 0.15s ease, box-shadow 0.15s ease;
+      border: 1px solid var(--accent);
+    }
+    .chip-trace:hover { background: var(--accent); color: var(--btn-text); }
+    .chip-trace:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .source-chips-row {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px;
+      border-radius: var(--r-sm); background: var(--surface-2);
+    }
+    .source-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 8px; border-radius: var(--r-sm);
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); font-size: 12px; font-weight: 500; white-space: nowrap;
+      cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .source-chip:hover { background: var(--row-hover); border-color: var(--border-strong); }
+    /* Trace-link arrival: the source data line a chat answer drew from flashes
+       so the eye lands on it, then settles back to normal. */
+    .trace-hl {
+      background: color-mix(in srgb, var(--accent) 18%, transparent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+      border-radius: var(--r-xs);
+      transition: background 1.2s ease, box-shadow 1.2s ease;
+    }
+    .provenance-card {
+      display: flex; flex-direction: column;
+      background: var(--surface); border: 1px solid var(--border-strong);
+      border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+      z-index: var(--z-popover); pointer-events: auto;
+    }
+    .provenance-card-body {
+      padding: 12px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .provenance-card-header {
+      font-weight: 500; word-break: break-word; color: var(--text);
+    }
+    .provenance-card-meta {
+      font-size: 0.85em; color: var(--text-muted);
+    }
+    .provenance-card-meta code {
+      background: var(--surface-2); padding: 2px 4px; border-radius: 3px;
+      font-family: var(--font-mono, ui-monospace, monospace);
+    }
+    .provenance-card-content {
+      font-size: 0.85em; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px;
+    }
+    .provenance-fields {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .provenance-field {
+      margin-bottom: 6px; color: var(--text);
+    }
+    .provenance-field strong {
+      color: var(--text); font-weight: 600;
+    }
+    .provenance-tier {
+      font-size: 0.85em; color: var(--text-muted); margin-bottom: 8px;
+      padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
 `;

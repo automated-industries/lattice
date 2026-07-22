@@ -11,6 +11,10 @@ import type { FeedEvent } from '../feed.js';
 export type ChatStreamEvent =
   | { type: 'assistant_message_start'; id: string }
   | { type: 'text_delta'; delta: string }
+  // The answer round's full text with retrieved-record references linkified
+  // (deterministic trace links). Replaces the round's accumulated deltas in both
+  // the live bubble and the persisted message.
+  | { type: 'text_final'; text: string }
   | { type: 'tool_use'; id: string; name: string }
   | { type: 'tool_result'; toolUseId: string; isError: boolean }
   // A tool asked the GUI to open a row it just created (e.g. create_artifact) in

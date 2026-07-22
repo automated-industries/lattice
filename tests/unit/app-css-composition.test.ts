@@ -237,8 +237,15 @@ import { css } from '../../src/gui/app/css.js';
 // .q-banner collapsed pending-questions banner + #q-stack hidden rule. Recaptured.
 // 5.0.1 Bug 8: .staging-busy state (dim chips, hide remove buttons, pulse the
 // "Adding…" header) while a staged file batch ingests. Recaptured.
-const ORIGINAL_LENGTH = 165407;
-const ORIGINAL_SHA256 = '2e6887e71b5c0e1249d56f28f3c38c6ef5a2d1bcc0881952bf47bd3f5111eeb4';
+// v5.1 merge — traceable rendered context (PR #176) folded in: .chip-trace inline trace
+// chips, .source-chips-row / .source-chip per-file source summaries, .provenance-card*
+// floating card (z tier via var(--z-popover)), .lattice-ref inline word-link (accent tint
+// + dotted underline replacing the boxed pill), and .trace-hl source-data flash — tokens
+// only. Length + hash recaptured for the combined v5.1 bundle.
+// Managed token balance + out-of-credit notice: the .chat-bubble.assistant.notice-error
+// red style (the friendly $0-balance chat notice). Length + hash recaptured.
+const ORIGINAL_LENGTH = 171900;
+const ORIGINAL_SHA256 = '62062335ce445d926881c4cad41174215d8db183760c786ea14dc02292b576c5';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

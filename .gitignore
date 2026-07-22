@@ -32,3 +32,4 @@ tests/fixtures/context/
 tests/fixtures/data/
 tests/fixtures/*.config.yml
 !tests/fixtures/lattice.config.yml
+*.tgz

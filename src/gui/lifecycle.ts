@@ -1283,6 +1283,15 @@ export async function applySchemaConfig(
       }
       break;
     }
+    case 'schema.add_relation': {
+      // A belongsTo declared over an EXISTING column (the data-model planner's
+      // link fix). The column is real data, so only the RELATION is added/removed
+      // — never the field (unlike add_link, which owns the FK column it created).
+      const p = after as unknown as { entity: string; relationName?: string; relation?: unknown };
+      if (inv) removeRelation(p.entity, p.relationName);
+      else addRelation(p.entity, p.relationName, p.relation);
+      break;
+    }
     case 'schema.rename_entity': {
       const oldN = (before as unknown as RenameEntityPayload).entity;
       const newN = (after as unknown as RenameEntityPayload).entity;

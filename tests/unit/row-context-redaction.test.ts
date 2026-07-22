@@ -116,3 +116,34 @@ describe('readRowContext secret redaction', () => {
     expect(content).toContain('ends in 42');
   });
 });
+
+describe('source metadata on the manifest-only path', () => {
+  // Plain `--config` serving has no entity-context definitions (manifest-only
+  // mode), so per-file `source` metadata is unavailable there. The locator must
+  // omit fileSources — never invent them — and readRowContext must serve files
+  // without a `source` key rather than erroring.
+  it('omits source metadata when the locator was built from a manifest alone', async () => {
+    const { buildRowContextLocator } = await import('../../src/gui/row-context.js');
+    const manifest = {
+      version: 2 as const,
+      generated_at: '2026-01-01T00:00:00.000Z',
+      entityContexts: {
+        notes: {
+          directoryRoot: 'notes',
+          declaredFiles: ['NOTE.md'],
+          protectedFiles: [],
+          entities: { r1: { 'NOTE.md': { hash: 'abc' } } },
+        },
+      },
+    };
+    const locator = buildRowContextLocator('notes', { id: 'r1' }, undefined, manifest);
+    expect(locator).not.toBeNull();
+    expect(locator!.fileSources).toBeUndefined();
+
+    const { outputDir } = writeRendered('# Note\n\nplain content\n');
+    const files = readRowContext(outputDir, locator!, new Set());
+    expect(files).toHaveLength(1);
+    expect(files[0]!.source).toBeUndefined();
+    expect(files[0]!.content).toContain('plain content');
+  });
+});

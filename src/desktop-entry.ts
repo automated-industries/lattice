@@ -12,8 +12,19 @@ export { ensureRootForGui } from './framework/gui-bootstrap.js';
 export type { GuiBootstrap } from './framework/gui-bootstrap.js';
 // Release-manifest probe — the desktop shell feeds this into the GUI's update
 // service so a long-open window can surface "update available" (read-only; the
-// actual download/relaunch stays the bundled binary updater).
+// actual download + install/swap stays the desktop shell's job).
 export { checkManifestForUpdate } from './update-check.js';
+// Frictionless-update pure helpers — the desktop shell (Deno) uses these to decide
+// swap-vs-installer and to drive the signature-safe bundle swap. Kept here (Node,
+// tested) rather than inline in desktop/main.ts (Deno, untestable).
+export {
+  chooseUpdateStrategy,
+  resolveAppBundle,
+  parseTeamIdentifier,
+  sameSigningTeam,
+  BUNDLE_SWAP_SH,
+  type UpdateStrategy,
+} from './desktop-update.js';
 
 declare const __LATTICE_VERSION__: string | undefined;
 

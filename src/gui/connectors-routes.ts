@@ -5,6 +5,7 @@ import { sendJson, readJson } from './http.js';
 import type { Connector, CredentialField } from '../connectors/types.js';
 import { isCredentialConnector, isMcpConnector } from '../connectors/types.js';
 import type { McpConnector } from '../connectors/types.js';
+import type { PrefabCatalog } from '../connectors/prefab/index.js';
 import {
   listConnectors,
   getConnector,
@@ -46,6 +47,8 @@ export interface ConnectorsRouteDeps {
   outputDir: string;
   /** Identity that owns connections made in this session (member role / user id). */
   connectedBy: string;
+  /** The prefab connector catalog (curated + registry metadata). Omit to disable the grid. */
+  catalog?: PrefabCatalog;
 }
 
 /** Map a ConnectorUnavailableError (no dep / no stored creds / bad input) to a 422 the GUI can show. */
@@ -377,8 +380,26 @@ export async function dispatchConnectorsRoute(
       for (const c of connectors) {
         for (const tk of c.toolkits()) toolkits.push(toolkitDescriptor(c, tk));
       }
+      // Prefab catalog: kick a background registry refresh (never blocks this response) and hide
+      // entries whose server is already connected. OAuth cards need a loopback callback — absent in
+      // a hosted (non-loopback) session — so the client disables them there via oauthLoopbackAvailable.
+      deps.catalog?.refreshInBackground();
+      const connectedHosts = new Set<string>();
+      for (const c of connected) {
+        const impl = connectorForRowToolkit(byToolkit, c.toolkit);
+        const su =
+          impl && isMcpConnector(impl) && c.connectionRef ? getMcpServerUrl(c.connectionRef) : null;
+        const h = hostnameOf(su);
+        if (h) connectedHosts.add(h);
+      }
+      const catalog = (deps.catalog?.getEntries() ?? []).filter((e) => {
+        const h = hostnameOf(e.serverUrl);
+        return !h || !connectedHosts.has(h);
+      });
       sendJson(res, {
         toolkits,
+        catalog,
+        oauthLoopbackAvailable: isLoopbackAuthority(req.headers.host ?? '127.0.0.1'),
         connectors: connected.map((c) => {
           const impl = connectorForRowToolkit(byToolkit, c.toolkit);
           // The URL is retained across disconnects (it is not a secret), so the
@@ -594,11 +615,25 @@ export async function dispatchConnectorsRoute(
               return true;
             }
           }
+          // A prefab catalog card connects by id: the entry's URL + scope are AUTHORITATIVE
+          // (resolved server-side — a page cannot fabricate a scope or endpoint for a curated entry).
+          const catalogId = str('catalogId');
+          let scope: string | undefined;
+          if (catalogId) {
+            const entry = deps.catalog?.getEntries().find((e) => e.id === catalogId);
+            if (!entry) {
+              sendJson(res, { error: 'unknown connector' }, 404);
+              return true;
+            }
+            serverUrl = entry.serverUrl;
+            scope = entry.scope;
+          }
           let begin;
           try {
             begin = await connector.beginConnect(connectedBy, toolkit, {
               redirectUri: mcpOAuthRedirectUri(req),
               ...(serverUrl ? { serverUrl } : {}),
+              ...(scope ? { scope } : {}),
               ...(clientId
                 ? {
                     clientInfo: {

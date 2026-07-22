@@ -188,20 +188,48 @@ export const onboardingJs = `    // ──────────────�
       var pre = String(text == null ? '' : text).replace(
         /\\[([^\\]]+)\\]\\(lattice:\\/\\/([a-zA-Z0-9_]+)\\/([^)\\s]+)\\)/g,
         function (_, label, table, id) {
-          pills.push({ label: label, table: table, id: id });
+          // The id may carry a "?f=<column>" source-field query — the record view
+          // highlights that field on arrival so the click lands on the data itself.
+          var parts = String(id).split('?');
+          var field = '';
+          if (parts[1] && parts[1].indexOf('f=') === 0) {
+            try { field = decodeURIComponent(parts[1].slice(2)); } catch (_e) { field = ''; }
+          }
+          pills.push({ label: label, table: table, id: parts[0], field: field });
           return '\\u0002' + (pills.length - 1) + '\\u0002';
         }
       );
+      // Linkify plain http(s) markdown links (e.g. the out-of-credit notice's
+      // top-up link) — mdToHtml has no [text](url) support, so without this the
+      // link would render as literal markdown. Scheme is restricted to http/https
+      // and both label + href are escaped. Same sentinel trick as the pills.
+      var links = [];
+      pre = pre.replace(
+        /\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g,
+        function (_, label, url) {
+          links.push({ label: label, url: url });
+          return '\\u0003' + (links.length - 1) + '\\u0003';
+        }
+      );
       var html = mdToHtml(pre);
-      return html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
+      html = html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
         var p = pills[Number(n)];
-        return '<a class="chip chip-link lattice-ref" data-table="' + escapeHtml(p.table) +
-          '" data-id="' + escapeHtml(p.id) + '" title="Open this ' + escapeHtml(p.table) + '">🔗 ' +
+        // Inline word-link, not a boxed pill: the referenced word itself is the
+        // link, flowing with the sentence.
+        return '<a class="lattice-ref" data-table="' + escapeHtml(p.table) +
+          '" data-id="' + escapeHtml(p.id) + '" data-field="' + escapeHtml(p.field) +
+          '" title="Open this ' + escapeHtml(p.table) + '">' +
           escapeHtml(p.label) + '</a>';
       });
+      return html.replace(/\\u0003([0-9]+)\\u0003/g, function (_, n) {
+        var l = links[Number(n)];
+        return '<a href="' + escapeHtml(l.url) + '" target="_blank" rel="noopener noreferrer">' +
+          escapeHtml(l.label) + '</a>';
+      });
     }
-    // One delegated click handler on the rail feed: a lattice-ref pill opens its
-    // object through the same mode-aware navigator the activity feed uses.
+    // One delegated click handler on the rail feed: a lattice-ref word-link
+    // navigates straight to its record in the workspace. The source field (when
+    // the link carries one) is stashed so the record view can highlight it.
     var _latticeRefWired = false;
     function ensureLatticeRefHandler() {
       if (_latticeRefWired) return;
@@ -211,7 +239,24 @@ export const onboardingJs = `    // ──────────────�
         var a = e.target && e.target.closest ? e.target.closest('.lattice-ref') : null;
         if (!a) return;
         e.preventDefault();
-        openSearchHit(a.getAttribute('data-table'), a.getAttribute('data-id'));
+        var tbl = a.getAttribute('data-table');
+        var rid = a.getAttribute('data-id');
+        // Stash the whole answer's text too: when the target renders as a text
+        // document (a file preview), the passage the answer drew from can be
+        // found and highlighted — the quote may sit in a different paragraph
+        // than the link itself (e.g. a Sources line), so the full bubble is the
+        // right haystack source.
+        var snippet = '';
+        var bubble = a.closest ? a.closest('.chat-bubble') : null;
+        var pe = bubble || a.parentElement;
+        if (pe && pe.textContent) snippet = pe.textContent.slice(0, 2500);
+        try {
+          sessionStorage.setItem('latticeTraceHl', JSON.stringify({
+            table: tbl, id: rid, field: a.getAttribute('data-field') || '',
+            snippet: snippet, ts: Date.now()
+          }));
+        } catch (_e) { /* storage unavailable — navigation still works */ }
+        openSearchHit(tbl, rid);
       });
       _latticeRefWired = true;
     }
@@ -328,6 +373,19 @@ export const onboardingJs = `    // ──────────────�
     // Apply one streamed event to its turn. Painting is gated on the turn's thread being
     // the one on screen — an off-screen turn (the user switched threads mid-run) still
     // completes + persists server-side and replays when they switch back.
+    // A metered/managed proxy answers "out of credit" with a 402 whose body carries
+    // an insufficient_credit error. The SDK surfaces it as a raw "402 {json}" string;
+    // turn it into a friendly markdown message (with a top-up link pulled from the
+    // body) instead. Returns null for any other error.
+    function insufficientCreditInfo(msg) {
+      var s = String(msg == null ? '' : msg);
+      if (s.indexOf('insufficient_credit') < 0) return null;
+      var m = s.match(/https?:\\/\\/[^\\s"'}]+/);
+      var url = m ? m[0] : '';
+      return 'Out of Lattice tokens. ' +
+        (url ? '[Add more tokens](' + url + ')' : 'Add more tokens') +
+        ' to keep the assistant running.';
+    }
     function applyChatEvent(turn, ev) {
       if (!turn || !ev) return;
       var visible = turn.threadId === currentThreadId;
@@ -344,6 +402,11 @@ export const onboardingJs = `    // ──────────────�
       } else if (ev.type === 'text_delta') {
         turn.assembled += ev.delta;
         if (visible) { anToolStatus(null); if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, turn.assembled); var fe = railFeedEl(); if (fe) fe.scrollTop = fe.scrollHeight; }
+      // The answer round re-emitted with deterministic trace links — swap the
+      // bubble's full text so retrieved-record references become clickable.
+      } else if (ev.type === 'text_final') {
+        turn.assembled = ev.text;
+        if (visible && turn.actx) setBubbleText(turn.actx, turn.assembled);
       // A tool round's streamed text (e.g. "I see — I need a different approach…") is real
       // narration the user should keep, so FINALIZE this round's bubble instead of reaping
       // it — the next round opens a fresh bubble via assistant_message_start / the next
@@ -369,7 +432,12 @@ export const onboardingJs = `    // ──────────────�
         if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); }
         turn.actx = null;
       } else if (ev.type === 'error') {
-        if (visible) { if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, (turn.assembled ? turn.assembled + '\\n' : '') + '⚠ ' + ev.message); }
+        if (visible) {
+          if (!turn.actx) turn.actx = newAssistantBubble();
+          var ic = insufficientCreditInfo(ev.message);
+          if (ic) { turn.actx.bubble.classList.add('notice-error'); setBubbleText(turn.actx, ic); }
+          else { setBubbleText(turn.actx, (turn.assembled ? turn.assembled + '\\n' : '') + '⚠ ' + ev.message); }
+        }
         turn.reonboard = true;
       // A tool (e.g. create_artifact) asked the GUI to open the row it created; navigate
       // once the turn finishes so the main viewer isn't yanked mid-reply.

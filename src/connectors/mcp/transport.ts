@@ -12,6 +12,8 @@
  * (local server processes). Nothing routes through a cloud middleman.
  */
 
+import type { JsonSchemaLike } from './schema-compile.js';
+
 /** One MCP read-tool invocation. */
 export interface McpToolCall {
   /** Tool name (e.g. `'search_threads'`). */
@@ -24,6 +26,10 @@ export interface McpToolCall {
 export interface McpToolInfo {
   name: string;
   description?: string;
+  /** The tool's declared input schema (`tools/list`) — required-arg detection + two-phase binding. */
+  inputSchema?: JsonSchemaLike;
+  /** The tool's declared structured-output contract (2025-06-18); compiled to columns when present. */
+  outputSchema?: JsonSchemaLike;
 }
 
 /** A resource advertised by the server (`resources/list`) — its "available files". */
@@ -32,6 +38,14 @@ export interface McpResourceInfo {
   uri: string;
   description?: string;
   mimeType?: string;
+}
+
+/** One resource body returned by `resources/read`. */
+export interface McpResourceContent {
+  uri: string;
+  mimeType?: string;
+  text?: string;
+  blob?: string;
 }
 
 /**
@@ -49,6 +63,12 @@ export interface McpTransport {
    * Servers without the resources capability yield `[]`, never an error.
    */
   listResources(): Promise<McpResourceInfo[]>;
+  /**
+   * Read one resource's body (standard MCP `resources/read`). Optional — a transport whose SDK
+   * lacks the method returns `[]`; a per-uri read error is surfaced to the caller, which decides
+   * whether to degrade to a metadata-only row. Used to sample resource bodies for column inference.
+   */
+  readResource?(uri: string): Promise<McpResourceContent[]>;
   /** The server's self-reported identity from the `initialize` handshake, if known. */
   serverInfo?(): { name?: string; title?: string; version?: string } | undefined;
   /** Close the underlying client/session. */

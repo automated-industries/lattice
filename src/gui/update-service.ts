@@ -34,16 +34,34 @@ export interface UpdateStatus {
    * What the user can DO about an available update on THIS surface:
    *  - `upgrade-in-place`: an npm install can upgrade this copy now (the GUI's
    *    manual "Upgrade" fallback to the background poll).
-   *  - `restart-to-update`: a newer version exists and the bundled desktop
-   *    updater can apply it on relaunch ("Restart to update").
-   *  - `none`: nothing to offer — already current, auto-update disabled, or a
-   *    surface that can't self-update (a dev/linked checkout, where `latest` is
-   *    still reported for information but there is no apply action).
+   *  - `install-and-restart`: the desktop app has AUTO-DOWNLOADED the newer
+   *    signed installer in the background (see `phase`); clicking runs the
+   *    installer and quits so the user re-opens onto the new version.
+   *  - `none`: nothing to click right now — already current, auto-update
+   *    disabled, still downloading (progress is surfaced via `phase` +
+   *    `downloadedBytes`/`totalBytes`, not a click), a download failure (surfaced
+   *    via `phase:'error'` + `lastError`), or a surface that can't self-update (a
+   *    dev/linked checkout, where `latest` is still reported for information).
    */
-  action: 'upgrade-in-place' | 'restart-to-update' | 'none';
+  action: 'upgrade-in-place' | 'install-and-restart' | 'none';
   checking: boolean;
   installing: boolean;
   lastError: string | null;
+  /**
+   * Desktop auto-download lifecycle (only ever leaves `idle` on the desktop
+   * surface, which can't self-patch and instead pulls the OS installer):
+   *  - `idle`: nothing in flight (up to date, non-desktop, or auto-update off).
+   *  - `checking`: probing the release manifest for a newer version.
+   *  - `downloading`: streaming the signed installer — `downloadedBytes` /
+   *    `totalBytes` drive the progress bar.
+   *  - `ready`: the installer is staged; `stagedVersion` is what will install.
+   *  - `error`: the download/verify failed loudly (`lastError`); the GUI offers a
+   *    manual download link instead of an endless spinner.
+   */
+  phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
+  downloadedBytes: number | null;
+  totalBytes: number | null;
+  stagedVersion: string | null;
 }
 
 export interface UpdateServiceOptions {
@@ -73,6 +91,27 @@ export interface UpdateServiceOptions {
   requestRestart?: () => void;
   /** Delay between `update-applied` broadcast and the relaunch (lets clients see it). */
   restartGraceMs?: number;
+  /**
+   * Desktop shell only. Download + stage the signed OS installer for `version`,
+   * invoking `onProgress(done, total)` as bytes arrive (total may be null until
+   * known). Resolves once the installer is staged and verified; THROWS on any
+   * failure (network, size/hash mismatch) so it surfaces loudly. When provided,
+   * the service auto-downloads on every check that finds a newer version — this
+   * is the desktop's stand-in for an in-place self-update, which the compiled app
+   * can't do (it isn't an npm package and `Deno.autoUpdate` only patches bsdiff
+   * dylib deltas, not our full installers).
+   */
+  downloadUpdate?: (
+    version: string,
+    onProgress: (done: number, total: number | null) => void,
+  ) => Promise<void>;
+  /**
+   * Desktop shell only. Launch the installer staged by {@link downloadUpdate} and
+   * quit the app so the OS installer can replace the running bundle; the user
+   * re-opens onto the new version. Wired to `POST /api/update/apply` once the
+   * download has reached `phase:'ready'`.
+   */
+  applyDownloadedUpdate?: () => void;
 }
 
 export interface UpdateService {
@@ -104,6 +143,11 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   let installing = false;
   let latest: string | null = null;
   let lastError: string | null = null;
+  // Desktop auto-download lifecycle (stays 'idle' on every other surface).
+  let phase: UpdateStatus['phase'] = 'idle';
+  let downloadedBytes: number | null = null;
+  let totalBytes: number | null = null;
+  let stagedVersion: string | null = null;
 
   // What the user can DO about an available update on this surface. `latest` is
   // surfaced for information on every surface (even dev), but the apply action
@@ -112,7 +156,11 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     if (!autoUpdate) return 'none';
     if (!latest || latest === opts.currentVersion) return 'none';
     if (ctx.installable && selfUpdate) return 'upgrade-in-place'; // npm install + relaunch
-    if (ctx.kind === 'desktop') return 'restart-to-update'; // bundled updater applies on relaunch
+    // Desktop can't self-patch; it auto-downloads the signed installer in the
+    // background and offers a one-click "Install & restart" only once staged.
+    // While downloading (progress via `phase`) or on a failed download
+    // (`phase:'error'`) there is no click action — the GUI shows the bar / error.
+    if (ctx.kind === 'desktop') return phase === 'ready' ? 'install-and-restart' : 'none';
     return 'none'; // linked-dev / npx / unknown — informational only
   };
 
@@ -126,7 +174,42 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     checking,
     installing,
     lastError,
+    phase,
+    downloadedBytes,
+    totalBytes,
+    stagedVersion,
   });
+
+  // Desktop: auto-download the signed installer for `version` in the background,
+  // streaming byte progress to connected clients. Idempotent per version — a
+  // second check for the same version while it's downloading/staged is a no-op.
+  const startDownload = async (version: string): Promise<void> => {
+    if (!opts.downloadUpdate) return;
+    if (phase === 'downloading') return; // already in flight
+    if (phase === 'ready' && stagedVersion === version) return; // already staged
+    phase = 'downloading';
+    downloadedBytes = 0;
+    totalBytes = null;
+    lastError = null;
+    stagedVersion = null;
+    opts.emit('update-progress', { version, done: 0, total: null });
+    try {
+      await opts.downloadUpdate(version, (done, total) => {
+        downloadedBytes = done;
+        totalBytes = total;
+        opts.emit('update-progress', { version, done, total });
+      });
+      stagedVersion = version;
+      phase = 'ready';
+      opts.emit('update-ready', { version });
+    } catch (err) {
+      phase = 'error';
+      lastError = err instanceof Error ? err.message : String(err);
+      // Loud — a failed download must be shown, never left as an endless spinner.
+      console.error(`[latticesql] desktop update download failed: ${lastError}`);
+      opts.emit('update-error', { phase: 'download', message: lastError });
+    }
+  };
 
   const applyUpdate = (version: string): void => {
     if (installing) return;
@@ -155,9 +238,15 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
       const found = await check(force);
       latest = found;
       // Auto-install only on the supervised npm surface; other surfaces still
-      // record `latest` so the GUI can surface it (desktop → restart-to-update;
-      // dev → informational), but never npm-install here.
-      if (found && ctx.installable && selfUpdate) applyUpdate(found);
+      // record `latest` so the GUI can surface it, but never npm-install here.
+      if (found && ctx.installable && selfUpdate) {
+        applyUpdate(found);
+      } else if (found && ctx.kind === 'desktop' && opts.downloadUpdate) {
+        // Desktop: kick off the background installer download (idempotent per
+        // version). Fire-and-forget — progress/ready/error reach clients via
+        // events; `startDownload` owns its own error handling.
+        void startDownload(found);
+      }
     } catch {
       // Best-effort: a failed registry check is silent and simply retried next
       // tick (the check, unlike the install, is not a user-facing operation).

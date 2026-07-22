@@ -467,6 +467,29 @@ export async function dispatchAssistantRoute(
     // an alternative backend). Presence + non-secret fields only — never the API key.
     const openaiCompat = readOpenAiCompatConfig();
     const claudeConnected = await isClaudeConnected(db);
+    // Managed-auth prepaid balance (cents), read from the metering proxy that
+    // fronts the model calls. null when not a managed deployment or the proxy
+    // doesn't expose a balance (a plain Anthropic base URL 404s — fail soft).
+    let balanceCents: number | null = null;
+    let topUpUrl: string | null = null;
+    if (isManagedModelAuth()) {
+      try {
+        const base = (process.env.ANTHROPIC_BASE_URL ?? '').replace(/\/$/, '');
+        const key = process.env.ANTHROPIC_API_KEY;
+        if (base && key) {
+          const r = await fetch(`${base}/v1/balance`, {
+            headers: { authorization: `Bearer ${key}` },
+          });
+          if (r.ok) {
+            const b = (await r.json()) as { balance_cents?: number; top_up_url?: string };
+            balanceCents = typeof b.balance_cents === 'number' ? b.balance_cents : null;
+            topUpUrl = typeof b.top_up_url === 'string' ? b.top_up_url : null;
+          }
+        }
+      } catch {
+        /* balance unavailable — the GUI simply omits it */
+      }
+    }
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
@@ -500,8 +523,12 @@ export async function dispatchAssistantRoute(
       managedModelAuth: isManagedModelAuth(),
       // Operator-supplied account page for a managed/hosted deployment (null for a
       // normal install). The header account menu's "Account settings" action opens
-      // it — that page owns balance / billing / sign-out, so none of that lives here.
+      // it — that page owns billing / sign-out. Balance is mirrored here for display.
       accountUrl: process.env.LATTICE_ACCOUNT_URL ?? null,
+      // Prepaid token balance for a managed deployment (cents; null otherwise), plus
+      // where to top up. Shown in the account menu + assistant settings.
+      balanceCents,
+      topUpUrl,
     });
     return true;
   }

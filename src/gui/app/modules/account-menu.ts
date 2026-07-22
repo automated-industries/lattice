@@ -28,6 +28,24 @@ export const accountMenuJs = `    // ── Header account menu ─────�
               : name ? ('Logged in as ' + name)
               : 'Logged in with your Lattice account';
           }).catch(function () { head.textContent = 'Logged in with your Lattice account'; });
+          // Prepaid token balance + a quick top-up link (managed deployment only).
+          if (typeof cfg.balanceCents === 'number') {
+            var bal = document.getElementById('account-menu-balance');
+            if (!bal) {
+              bal = document.createElement('div');
+              bal.id = 'account-menu-balance';
+              bal.style.cssText = 'padding:6px 12px;font-size:12px;color:var(--muted,#8a8a97);border-top:1px solid var(--border,#2a2a35)';
+              if (head.parentNode) head.parentNode.insertBefore(bal, action);
+            }
+            var amt = '$' + (cfg.balanceCents / 100).toFixed(2);
+            var topUrl = cfg.topUpUrl || cfg.accountUrl || '';
+            bal.innerHTML = 'Lattice tokens: <strong>' + amt + '</strong>' +
+              (topUrl ? ' · <a href="#" id="account-menu-topup">Add tokens</a>' : '');
+            if (topUrl) {
+              var tu = document.getElementById('account-menu-topup');
+              if (tu) tu.addEventListener('click', function (e) { e.preventDefault(); window.location.assign(topUrl); });
+            }
+          }
           action.textContent = 'Account settings';
           action.classList.remove('danger');
           onAction = function () { if (cfg.accountUrl) window.location.assign(cfg.accountUrl); };

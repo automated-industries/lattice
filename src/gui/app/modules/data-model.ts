@@ -332,9 +332,18 @@ export const dataModelJs = `    // ───────────────
               '<button id="asst-save" class="btn primary">Save &amp; test</button>' +
             '</div>'
           : '';
+        // Managed deployment: show the prepaid token balance + a top-up link here too.
+        var balanceHtml = (cfg.managedModelAuth === true && typeof cfg.balanceCents === 'number')
+          ? '<div style="margin:2px 0 14px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)">' +
+              '<strong style="font-size:13px;display:block;margin-bottom:4px">Lattice token balance</strong>' +
+              '<span style="font-size:18px;font-weight:700">$' + (cfg.balanceCents / 100).toFixed(2) + '</span>' +
+              ((cfg.topUpUrl || cfg.accountUrl) ? '&nbsp;&nbsp;<a href="#" id="asst-topup">Add tokens</a>' : '') +
+            '</div>'
+          : '';
         host.innerHTML =
           '<div class="dbconfig-panel panel" style="margin-bottom:18px">' +
             '<h3 class="u-m-0 u-mb-2">Assistant</h3>' +
+            balanceHtml +
             // Connect happens at the first-run wall. Disconnect is ALSO offered here (not
             // only the top-bar account menu) so it is discoverable — especially desktop.
             '<p class="lead" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)">' +
@@ -347,6 +356,8 @@ export const dataModelJs = `    // ───────────────
           '</div>';
         var msg = host.querySelector('#assistant-msg');
         function setMsg(t, isError) { if (msg) { msg.textContent = t; msg.style.color = isError ? 'var(--danger,#c0392b)' : 'var(--text-muted)'; } }
+        var asstTopup = host.querySelector('#asst-topup');
+        if (asstTopup) asstTopup.addEventListener('click', function (e) { e.preventDefault(); var u = cfg.topUpUrl || cfg.accountUrl; if (u) window.location.assign(u); });
         // Save & test the edited OpenAI-compatible model (test:true → revert-on-fail).
         var save = host.querySelector('#asst-save');
         if (save) {

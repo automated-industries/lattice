@@ -3,9 +3,29 @@ import type {
   InferredDimension,
   InferredEntity,
   InferredLinkage,
-  InferredType,
   ProposedSchema,
 } from './types.js';
+import {
+  DEFAULT_LINK_CONFIDENCE,
+  DIM_MAX_DISTINCT,
+  FREETEXT,
+  NEVER_KEY,
+  SAMPLE,
+  countValueMatches,
+  inferFieldType,
+  isLowCardinalityDimension,
+  isNumericValue,
+  isPlainObject,
+  norm,
+  normalizeName,
+  pickNaturalKeyFrom,
+  type ColumnProfile,
+} from './infer-core.js';
+
+// These leaf primitives moved to infer-core.ts (shared with the data-model
+// planner). Re-exported here because they have historically been part of this
+// module's public surface (index.ts re-exports them from here).
+export { inferFieldType, normalizeName };
 
 /**
  * Infer a proposed Lattice schema from a parsed JSON source — entities, column
@@ -17,40 +37,6 @@ import type {
  * Heuristics are deliberately conservative and reported with match counts /
  * confidence so a human approves before anything is created.
  */
-
-const SAMPLE = 300;
-/** Field names that make a good stable key, tried in order. */
-const PREFERRED_KEYS = ['code', 'id', 'slug', 'key', 'ticker', 'symbol'];
-/** Never use these as a natural key (free text). */
-const NEVER_KEY = new Set([
-  'description',
-  'notes',
-  'summary',
-  'desc',
-  'comment',
-  'comments',
-  'bio',
-  'text',
-  'body',
-]);
-/** Never normalize these into a dimension (high-cardinality / free text). */
-const FREETEXT = new Set([...NEVER_KEY, 'name', 'title', 'company', 'label']);
-/** A string column with at most this many distinct values is a dimension candidate. */
-const DIM_MAX_DISTINCT = 64;
-/** ...as long as it is not near-unique (distinct/rows under this ratio). */
-const DIM_MAX_RATIO = 0.5;
-/**
- * Default minimum share of a reference field's distinct values that must
- * resolve before a linkage is created. Mirrors the GUI's clarify-threshold
- * default: candidates below it but at or above half of it are reported as
- * {@link ProposedSchema.marginalLinks} for user confirmation instead of being
- * applied silently.
- */
-const DEFAULT_LINK_CONFIDENCE = 0.6;
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
 
 /**
  * Re-extract the raw source records for an entity from the parsed JSON — handling
@@ -75,47 +61,6 @@ export function sourceRecords(
   return v.filter(isPlainObject);
 }
 
-/** Lower-snake-case a JSON key into a safe SQL identifier. */
-export function normalizeName(key: string): string {
-  const s = key
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2') // camelCase → camel_Case
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  if (!s) return 'field';
-  return /^[a-z]/.test(s) ? s : 'f_' + s;
-}
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
-
-/** Infer a column type from a set of values (nulls ignored). Defaults to text. */
-export function inferFieldType(values: unknown[]): InferredType {
-  const present = values.filter((v) => v !== null && v !== undefined && v !== '');
-  if (present.length === 0) return 'text';
-  if (present.every((v) => typeof v === 'number')) {
-    return present.every((v) => Number.isInteger(v)) ? 'integer' : 'real';
-  }
-  if (present.every((v) => typeof v === 'boolean')) return 'boolean';
-  if (present.every((v) => typeof v === 'string')) {
-    if (present.every((v) => ISO_DATE.test(v))) return 'date';
-    if (present.every((v) => ISO_DATETIME.test(v))) return 'datetime';
-  }
-  return 'text';
-}
-
-interface ColumnProfile {
-  sourceKey: string;
-  isArray: boolean;
-  type: InferredType;
-  /** Distinct non-null values across ALL records (string-normalized). */
-  distinct: number;
-  /** Normalized distinct string values (for linkage matching). Empty for non-string columns. */
-  valueSet: Set<string>;
-  /** Fraction of non-null values that are numeric (incl. numbers stored as text). */
-  numericFraction: number;
-}
-
 interface EntitySource {
   name: string;
   sourceKey: string;
@@ -123,19 +68,6 @@ interface EntitySource {
   columnar: boolean;
   profiles: Map<string, ColumnProfile>;
   naturalKey: string | null;
-}
-
-function norm(v: unknown): string {
-  return String(v).trim().toLowerCase();
-}
-
-/** True for a number, or a string that is numeric once currency/percent/grouping
- *  punctuation is stripped (e.g. "1,234", "$5", "12%", "(10)"). */
-function isNumericValue(v: unknown): boolean {
-  if (typeof v === 'number') return Number.isFinite(v);
-  if (typeof v !== 'string') return false;
-  const s = v.replace(/[\s,$%()]/g, '');
-  return s !== '' && Number.isFinite(Number(s));
 }
 
 function profileColumns(records: Record<string, unknown>[]): Map<string, ColumnProfile> {
@@ -201,18 +133,17 @@ function pickNaturalKey(
     }
     return seen.size === n;
   };
-  for (const pref of PREFERRED_KEYS) {
-    for (const [key, p] of profiles) {
-      if (p.isArray) continue;
-      if (normalizeName(key) === pref && isUnique(key)) return key;
-    }
-  }
-  for (const [key, p] of profiles) {
-    if (p.isArray) continue;
-    if (NEVER_KEY.has(normalizeName(key))) continue;
-    if ((p.type === 'text' || p.type === 'integer') && isUnique(key)) return key;
-  }
-  return null;
+  // Ingest excludes only NEVER_KEY (a `name`/`title` column CAN be a key here);
+  // the shared policy walk is otherwise identical to the planner's.
+  return pickNaturalKeyFrom(
+    [...profiles].map(([key, p]) => ({
+      name: key,
+      type: p.type,
+      isUnique: p.isArray ? false : isUnique(key),
+      skip: p.isArray,
+    })),
+    NEVER_KEY,
+  );
 }
 
 export interface InferOptions {
@@ -342,8 +273,7 @@ export function inferSchema(
       if (t.name === self.name || !t.naturalKey) continue;
       const p = t.profiles.get(t.naturalKey);
       if (!p || p.valueSet.size === 0) continue;
-      let matched = 0;
-      for (const v of values) if (p.valueSet.has(v)) matched++;
+      const matched = countValueMatches(values, p.valueSet);
       if (matched > 0 && (best === null || matched > best.matched)) {
         best = { target: t, column: t.naturalKey, matched };
       }
@@ -428,7 +358,6 @@ export function inferSchema(
       if (marginalFields.get(e.name)?.has(field)) continue; // pending a link question — keep the column
       const nn = normalizeName(field);
       if (FREETEXT.has(nn)) continue;
-      const ratio = p.distinct / Math.max(1, e.records.length);
       const sharedAcross = dimColumnNames.get(nn)?.length ?? 1;
       // A dimension is a LOW-cardinality categorical: the distinct cap always
       // applies (so a high-cardinality numeric/text column like an IRR or a
@@ -437,8 +366,8 @@ export function inferSchema(
       // the shared taxonomy) — it does NOT waive the cardinality cap.
       const isDim =
         p.distinct >= 1 &&
-        p.distinct <= DIM_MAX_DISTINCT &&
-        (ratio <= DIM_MAX_RATIO || sharedAcross >= 2);
+        (isLowCardinalityDimension(p.distinct, e.records.length) ||
+          (p.distinct <= DIM_MAX_DISTINCT && sharedAcross >= 2));
       if (!isDim) continue;
       let dim = dimByName.get(nn);
       if (!dim) {

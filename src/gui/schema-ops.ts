@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { parseConfigFile } from '../config/parser.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { isNativeEntity } from '../framework/native-entities.js';
@@ -328,6 +329,14 @@ export async function createFileJunction(
   });
 }
 
+/** Bound an identifier to Postgres's 63-byte limit — a deterministic hash suffix
+ *  when it would overflow, so a long name can't silently truncate and collide on
+ *  PG (SQLite has no such limit). No-op for the common ≤63-byte case. */
+function boundIdentifier(name: string): string {
+  if (Buffer.byteLength(name, 'utf8') <= 63) return name;
+  return name.slice(0, 56) + '_' + createHash('sha1').update(name).digest('hex').slice(0, 6);
+}
+
 /** A many-to-many junction between two user tables (for the chat assistant). */
 export interface UserJunction {
   junction: string;
@@ -363,11 +372,14 @@ export async function createUserJunction(
   const bFk = `${tableB}_id`;
   const has = (n: string): boolean =>
     active.validTables.has(n) || active.db.getRegisteredTableNames().includes(n);
-  // Reuse an existing junction in either column order.
-  const forward = `${tableA}_${tableB}`;
+  // Reuse an existing junction in either column order. The name is BOUNDED to
+  // Postgres's 63-byte identifier limit (a hash suffix when two long table names
+  // would overflow) so a long pair can't silently truncate + collide — the same
+  // hazard bounded for cloud RLS trigger names.
+  const forward = boundIdentifier(`${tableA}_${tableB}`);
   const fwdResult: UserJunction = { junction: forward, tableA, aFk, tableB, bFk };
   const revResult: UserJunction = {
-    junction: `${tableB}_${tableA}`,
+    junction: boundIdentifier(`${tableB}_${tableA}`),
     tableA: tableB,
     aFk: bFk,
     tableB: tableA,
@@ -393,6 +405,76 @@ export async function createUserJunction(
       sessionId,
     );
     return fwdResult;
+  });
+}
+
+/**
+ * Declare a belongsTo relationship from `childTable` to `parentTable` over an
+ * EXISTING foreign-key column — the "table X references table Y" fix the
+ * data-model planner applies. Unlike {@link createUserJunction} (a many-to-many
+ * junction TABLE), this is a config-only `relations:` entry over a column that
+ * ALREADY holds the FK values: additive, non-data-writing, and reversible via the
+ * `schema.add_relation` op (whose inverse removes just the relation, never the
+ * column). Contexts refresh live (no reopen — nothing structural changed), exactly
+ * like the junction path's relation half. Returns the relation name, or null when
+ * the pair can't be related (native/junction/invalid, the column is missing,
+ * they're already related, or a junction / opposite nesting already connects them).
+ */
+export async function createUserRelation(
+  active: ActiveDb,
+  childTable: string,
+  fkColumn: string,
+  parentTable: string,
+  sessionId: string,
+): Promise<{ relationName: string } | null> {
+  const ok = (t: string): boolean =>
+    /^[a-z][a-z0-9_]*$/.test(t) &&
+    t !== 'files' &&
+    !isNativeEntity(t) &&
+    active.validTables.has(t) &&
+    !active.junctionTables.has(t);
+  if (childTable === parentTable || !ok(childTable) || !ok(parentTable)) return null;
+  if (!/^[a-z_][a-z0-9_]*$/i.test(fkColumn)) return null;
+  if (!(fkColumn in (active.db.getRegisteredColumns(childTable) ?? {}))) return null;
+
+  const relName = fkColumn.endsWith('_id') ? fkColumn.slice(0, -3) : fkColumn;
+  const relation = { type: 'belongsTo' as const, table: parentTable, foreignKey: fkColumn };
+
+  // Idempotence + exclusivity, evaluated against the freshly-loaded config.
+  const conflicts = (): boolean => {
+    const cfg = loadConfigDoc(active.configPath).toJSON() as {
+      entities?: Record<string, { relations?: Record<string, { type?: string; table?: string }> }>;
+    };
+    const rels = (t: string): { type?: string; table?: string }[] =>
+      Object.values(cfg.entities?.[t]?.relations ?? {});
+    if (rels(childTable).some((r) => r.type === 'belongsTo' && r.table === parentTable))
+      return true; // already related
+    if (rels(parentTable).some((r) => r.type === 'belongsTo' && r.table === childTable))
+      return true; // opposite nesting
+    if (cfg.entities?.[childTable]?.relations?.[relName] !== undefined) return true; // name clash
+    const names = active.db.getRegisteredTableNames();
+    return (
+      names.includes(`${childTable}_${parentTable}`) ||
+      names.includes(`${parentTable}_${childTable}`)
+    ); // junction exists
+  };
+
+  return active.db.withSchemaLock(async () => {
+    if (conflicts()) return null;
+    const doc = loadConfigDoc(active.configPath);
+    doc.setIn(['entities', childTable, 'relations', relName], relation);
+    saveConfigDoc(active.configPath, doc);
+    syncCanonicalContexts(active); // re-derive the parent's hasMany rollup + child nesting
+    await recordSchemaOp(
+      active,
+      'schema.add_relation',
+      childTable,
+      null,
+      { entity: childTable, relationName: relName, relation },
+      `Related ${childTable} → ${parentTable}`,
+      sessionId,
+    );
+    return { relationName: relName };
   });
 }
 

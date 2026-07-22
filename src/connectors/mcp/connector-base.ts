@@ -159,6 +159,8 @@ export abstract class McpConnectorBase implements McpConnector {
       serverUrl?: string;
       clientInfo?: { client_id: string; client_secret?: string };
       targetConnectorId?: string;
+      /** Per-connect OAuth scopes (a prefab catalog entry's curated scopes); overrides the default. */
+      scope?: string;
     },
   ): Promise<McpBeginResult> {
     const server = this.resolveServer(toolkit, opts?.serverUrl);
@@ -209,7 +211,7 @@ export abstract class McpConnectorBase implements McpConnector {
       state,
       transportKind: httpKind,
     };
-    const scope = this.scope(toolkit);
+    const scope = opts.scope ?? this.scope(toolkit);
     if (scope !== undefined) beginArgs.scope = scope;
     const begin = await this.oauth.begin(beginArgs);
 
@@ -230,6 +232,7 @@ export abstract class McpConnectorBase implements McpConnector {
       serverUrl,
       redirectUri,
       transportKind: httpKind,
+      ...(scope !== undefined ? { scope } : {}),
       ...(targetConnectorId ? { targetConnectorId } : {}),
     });
     return { kind: 'redirect', redirectUrl: begin.authorizationUrl, pendingId: state };
@@ -255,7 +258,7 @@ export abstract class McpConnectorBase implements McpConnector {
       transportKind: pending.transportKind,
       state: pendingId,
     };
-    const scope = this.scope(pending.toolkit);
+    const scope = pending.scope ?? this.scope(pending.toolkit);
     if (scope !== undefined) completeArgs.scope = scope;
     const done = await this.oauth.complete(completeArgs);
     return {
@@ -302,6 +305,27 @@ export abstract class McpConnectorBase implements McpConnector {
     const t = this._sessionTransports.get(connectionId);
     this._sessionTransports.delete(connectionId);
     if (t) await t.close();
+  }
+
+  /**
+   * Get a transport for an out-of-listChanges operation (e.g. a drift reconcile): reuse the active
+   * session transport when one is open (release is a no-op — endSyncSession closes it), else open a
+   * one-shot transport the caller MUST release. Mirrors the listChanges reuse so a reconcile shares
+   * the sync's single connection instead of opening a second one.
+   */
+  protected async acquireTransport(
+    toolkit: string,
+    connectionId: string,
+  ): Promise<{ transport: McpTransport; release: () => Promise<void> }> {
+    const sessionActive = this._activeSessions.has(connectionId);
+    const existing = this._sessionTransports.get(connectionId);
+    if (existing) return { transport: existing, release: () => Promise.resolve() };
+    const transport = await this.openServerTransport(toolkit, connectionId);
+    if (sessionActive) {
+      this._sessionTransports.set(connectionId, transport);
+      return { transport, release: () => Promise.resolve() };
+    }
+    return { transport, release: () => transport.close() };
   }
 
   async *listChanges(

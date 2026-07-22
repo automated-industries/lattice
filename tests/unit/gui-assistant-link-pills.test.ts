@@ -50,11 +50,13 @@ const renderAssistantHtml = runInNewContext(
 ) as (t: string) => string;
 
 describe('assistant inline object-link pills', () => {
-  it('renders [label](lattice://table/id) as a clickable lattice-ref pill', () => {
+  it('renders [label](lattice://table/id) as an inline lattice-ref word-link', () => {
     const out = renderAssistantHtml(
       "Here's your contract:\n[Northwind Service Agreement](lattice://contracts/9b7c60f0-fbc2-4f87-a550-c59e3c5d761f)",
     );
-    expect(out).toContain('class="chip chip-link lattice-ref"');
+    // The referenced word itself is the link — inline, no boxed chip classes.
+    expect(out).toContain('class="lattice-ref"');
+    expect(out).not.toContain('chip-link');
     expect(out).toContain('data-table="contracts"');
     expect(out).toContain('data-id="9b7c60f0-fbc2-4f87-a550-c59e3c5d761f"');
     expect(out).toContain('Northwind Service Agreement</a>');
@@ -84,5 +86,26 @@ describe('assistant inline object-link pills', () => {
     const out = renderAssistantHtml('Just some **bold** text, no object reference here.');
     expect(out).not.toContain('lattice-ref');
     expect(out).toContain('<strong>bold</strong>');
+  });
+
+  it('renders a plain [label](https://url) markdown link as an escaped, clickable anchor', () => {
+    const out = renderAssistantHtml('Please [Add more tokens](https://pay.example.com/topup) now.');
+    expect(out).toContain('<a href="https://pay.example.com/topup"');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+    expect(out).toContain('Add more tokens</a>');
+    expect(out).not.toContain('[Add more tokens]'); // not left as literal markdown
+    expect(out).not.toContain(String.fromCharCode(3)); // no leaked sentinel
+  });
+
+  it('renders the out-of-credit top-up notice as a real link (the 402 recovery affordance)', () => {
+    // The exact shape insufficientCreditInfo() produces on a 402 insufficient_credit.
+    const notice =
+      'Out of Lattice tokens. [Add more tokens](https://billing.example.com/topup) to keep the assistant running.';
+    const out = renderAssistantHtml(notice);
+    expect(out).toMatch(
+      /<a href="https:\/\/billing\.example\.com\/topup"[^>]*>Add more tokens<\/a>/,
+    );
+    expect(out).not.toContain('](http'); // no raw markdown link shown to the user
   });
 });
