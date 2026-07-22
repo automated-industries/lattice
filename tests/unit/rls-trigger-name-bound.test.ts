@@ -11,7 +11,7 @@ import { tableRlsSql } from '../../src/cloud/rls.js';
  */
 function trgName(sql: string): string {
   const m = /CREATE OR REPLACE FUNCTION "([^"]+)"\(\) RETURNS trigger/.exec(sql);
-  if (!m || !m[1]) throw new Error('could not find the trigger function name in the SQL');
+  if (!m?.[1]) throw new Error('could not find the trigger function name in the SQL');
   return m[1];
 }
 
