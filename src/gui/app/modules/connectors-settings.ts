@@ -16,6 +16,9 @@ export const connectorsSettingsJs = `
     // SAME row), and a token guarding out-of-order reconnect polls.
     var mcpToolkit = 'mcp';
     var mcpReconnectId = null;
+    // The prefab catalog card in flight, so a manual-client 422 resubmits by the
+    // SAME catalog id (its pinned URL + curated scopes stay server-authoritative).
+    var mcpCatalogId = null;
 
     function mcpConnStatusChip(status) {
       var color = status === 'connected' ? 'var(--accent)'
@@ -137,11 +140,12 @@ export const connectorsSettingsJs = `
         var urlV = urlEl && urlEl.value ? urlEl.value.trim() : '';
         // A typed URL is always a FRESH connection — never fold it onto a row
         // left targeted by an earlier, abandoned Reconnect.
-        if (urlV) mcpReconnectId = null;
-        if (!urlV && !mcpReconnectId) { setConnMsg('Enter the MCP server URL.'); return; }
+        if (urlV) { mcpReconnectId = null; mcpCatalogId = null; }
+        if (!urlV && !mcpReconnectId && !mcpCatalogId) { setConnMsg('Enter the MCP server URL.'); return; }
         var body = {};
         if (urlV) body.serverUrl = urlV;
         if (mcpReconnectId) body.connectorId = mcpReconnectId;
+        if (mcpCatalogId) body.catalogId = mcpCatalogId;
         var fieldsEl = document.getElementById('mcp-client-fields');
         if (fieldsEl && !fieldsEl.hidden) {
           var cidEl = document.getElementById('mcp-add-client-id');
@@ -175,7 +179,9 @@ export const connectorsSettingsJs = `
 
     function finishConnectSuccess() {
       mcpReconnectId = null;
+      mcpCatalogId = null;
       renderConnectorsAddForm(); // clear the URL / client fields
+      renderToolkitCatalog(); // a newly-connected service drops off the grid
       renderConnectorsTable();
       // Newly-synced connector data should appear in the sidebar tables too.
       if (typeof refreshEntities === 'function') refreshEntities().catch(function () {});
@@ -213,9 +219,77 @@ export const connectorsSettingsJs = `
       }, 3000);
     }
 
-    // Render both halves when the tab opens (called by renderConnectorsTab).
+    // The prefab catalog grid (#mcp-catalog): curated flagship services + a
+    // "browse more" set from the public MCP registry. A card connects by id — the
+    // server resolves its pinned URL + curated scopes (authoritative). OAuth cards
+    // need a loopback callback, unavailable in a hosted session, so they disable there.
+    function renderToolkitCatalog() {
+      var host = document.getElementById('mcp-catalog');
+      if (!host) return;
+      fetchJson('/api/connectors')
+        .then(function (data) {
+          var oauthOk = !data || data.oauthLoopbackAvailable !== false;
+          paintToolkitCatalog(host, (data && data.catalog) || [], oauthOk);
+        })
+        .catch(function () { host.innerHTML = ''; });
+    }
+
+    function catCardHtml(e, oauthOk) {
+      var icon = e.icon
+        ? '<img class="conn-cat-icon" src="' + escapeHtml(e.icon) + '" alt="" onerror="this.remove()">'
+        : '';
+      var hint = e.authHint ? '<span class="conn-cat-hint">' + escapeHtml(e.authHint) + '</span>' : '';
+      return '<button type="button" class="conn-cat-card" data-cat-id="' + escapeHtml(e.id) + '"' +
+        (oauthOk ? '' : ' disabled') + '>' + icon +
+        '<span class="conn-cat-label">' + escapeHtml(e.label) + '</span>' + hint + '</button>';
+    }
+
+    function paintToolkitCatalog(host, catalog, oauthOk) {
+      if (!catalog.length) { host.innerHTML = ''; return; }
+      var curated = catalog.filter(function (e) { return e.source === 'curated'; });
+      var registry = catalog.filter(function (e) { return e.source !== 'curated'; });
+      var html = '';
+      if (curated.length) {
+        html += '<div class="conn-cat-sec"><div class="conn-cat-head">Popular services</div>' +
+          '<div class="conn-cat-grid">' +
+          curated.map(function (e) { return catCardHtml(e, oauthOk); }).join('') + '</div></div>';
+      }
+      if (registry.length) {
+        html += '<details class="conn-cat-more"><summary>Browse more (public registry)</summary>' +
+          '<div class="conn-cat-grid">' +
+          registry.map(function (e) { return catCardHtml(e, oauthOk); }).join('') + '</div></details>';
+      }
+      if (!oauthOk) {
+        html += '<div class="conn-cat-note">Guided sign-in needs the desktop or local app to complete.</div>';
+      }
+      host.innerHTML = html;
+      var index = {};
+      catalog.forEach(function (e) { index[e.id] = e; });
+      host.querySelectorAll('button[data-cat-id]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (b.disabled) return;
+          catalogConnect(index[b.getAttribute('data-cat-id')]);
+        });
+      });
+    }
+
+    // Connect by catalog id: the server resolves the pinned URL + curated scopes.
+    // A 422 (provider needs a pre-registered client) reveals the client-id fields;
+    // the resubmit carries the SAME catalogId so URL/scope stay authoritative.
+    function catalogConnect(entry) {
+      if (!entry) return;
+      mcpReconnectId = null;
+      mcpCatalogId = entry.id;
+      var el = document.getElementById('mcp-client-fields');
+      if (el) el.hidden = true;
+      submitConnect({ catalogId: entry.id });
+    }
+
+    // Render all three sections when the tab opens (called by renderConnectorsTab).
     function renderConnectorsPanel() {
       mcpReconnectId = null;
+      mcpCatalogId = null;
+      renderToolkitCatalog();
       renderConnectorsTable();
       renderConnectorsAddForm();
     }

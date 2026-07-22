@@ -519,8 +519,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // tab renders a review panel in #dm-panel (auto-applied fixes + Apply/Dismiss
 // suggestions from the planner). Length + hash recaptured (combined on this v5.1
 // branch with the desktop auto-update status-indicator client changes).
-const ORIGINAL_LENGTH = 749799;
-const ORIGINAL_SHA256 = 'e909314aca16546a99d5654d1a0097577a4d41ed4c4edfb75c67554d6b076662';
+// prefab MCP connector catalog: the Connectors tab renders a #mcp-catalog card
+// grid (curated services + a "browse more" public-registry section) that connects
+// by catalog id; guided-connect reveals the client-id fields on a 422. Length +
+// hash recaptured.
+const ORIGINAL_LENGTH = 753438;
+const ORIGINAL_SHA256 = 'f9f58e90284f9c7f2807556f6bf5ce5a34a72f97d6cee2e9c12eb328f2297f7f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

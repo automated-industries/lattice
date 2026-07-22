@@ -240,9 +240,10 @@ export const configureDrawerJs = `
       // the form persists, so a half-typed URL is never wiped.
       body.innerHTML =
         '<div class="db-panel">' +
-        '<p class="db-lead">Connect any MCP server by URL. You authorize each server directly ' +
-        'with its own sign-in; tokens are stored encrypted on this machine and synced data stays ' +
-        'local. Synced items appear as an <code>mcp_items</code> table in the sidebar.</p>' +
+        '<p class="db-lead">Pick a service below for a guided connect, or add any MCP server by URL. ' +
+        'You authorize each server directly with its own sign-in; tokens are stored encrypted on this ' +
+        'machine and synced data stays local.</p>' +
+        '<div id="mcp-catalog"></div>' +
         '<div id="mcp-connectors-list"></div>' +
         '<div id="mcp-connectors-form" class="db-form-host"></div></div>';
       if (typeof renderConnectorsPanel === 'function') renderConnectorsPanel();
