@@ -1,11 +1,11 @@
 import {
-  DIM_MAX_DISTINCT,
-  DIM_MAX_RATIO,
   FREETEXT,
   NEVER_KEY,
   normalizeName,
   isSystemColumn,
   countValueMatches,
+  dimensionRatio,
+  isLowCardinalityDimension,
 } from '../../import/infer-core.js';
 import type { ColumnStat, ModelProfile, PlanOp, PlanTier, TableProfile } from './types.js';
 
@@ -215,9 +215,11 @@ function detectDimensions(profile: ModelProfile, linkedCols: Set<string>): PlanO
       const nn = normalizeName(c.name);
       if (FREETEXT.has(nn)) continue;
       if (c.distinctIsCapped) continue; // must know it is genuinely low-cardinality
-      const ratio = c.distinctSampled / Math.max(1, s.sampledRowCount);
+      const ratio = dimensionRatio(c.distinctSampled, s.sampledRowCount);
+      // At least 2 distinct values (a single-value column is not a taxonomy) AND
+      // the shared low-cardinality core (few distinct values that actually repeat).
       const isDim =
-        c.distinctSampled >= 2 && c.distinctSampled <= DIM_MAX_DISTINCT && ratio <= DIM_MAX_RATIO;
+        c.distinctSampled >= 2 && isLowCardinalityDimension(c.distinctSampled, s.sampledRowCount);
       if (!isDim) continue;
       if (alreadyRelated(profile, s, nn)) continue; // idempotence (G6): dimension already extracted
       ops.push({

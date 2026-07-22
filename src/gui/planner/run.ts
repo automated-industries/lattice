@@ -89,6 +89,7 @@ function introspectDb(active: ActiveDb): IntrospectDb {
   return {
     getRegisteredTableNames: () => db.getRegisteredTableNames(),
     getRegisteredColumns: (t) => db.getRegisteredColumns(t),
+    getRegisteredFieldTypes: (t) => db.getRegisteredFieldTypes(t),
     getPrimaryKey: (t) => db.getPrimaryKey(t),
     isComputedTable: (n) => db.isComputedTable(n),
     getConnectedSource: (t) => db.getConnectedSource(t),

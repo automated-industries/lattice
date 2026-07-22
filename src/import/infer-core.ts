@@ -40,6 +40,22 @@ export const DIM_MAX_DISTINCT = 64;
 /** ...as long as it is not near-unique (distinct/rows under this ratio). */
 export const DIM_MAX_RATIO = 0.5;
 
+/** Fraction of rows that are distinct — the dimensionality signal (a low ratio
+ *  means the values repeat, i.e. a categorical worth normalizing). */
+export function dimensionRatio(distinct: number, rows: number): number {
+  return distinct / Math.max(1, rows);
+}
+
+/**
+ * The core low-cardinality-dimension test shared by ingest inference and the
+ * planner: few distinct values (under the cap) AND those values actually repeat
+ * (ratio under the cap). Callers layer their own min-distinct floor and any
+ * shared-across-entities waiver on top; this is the common center of both.
+ */
+export function isLowCardinalityDimension(distinct: number, rows: number): boolean {
+  return distinct <= DIM_MAX_DISTINCT && dimensionRatio(distinct, rows) <= DIM_MAX_RATIO;
+}
+
 /**
  * Default minimum share of a reference field's distinct values that must
  * resolve before a linkage is created. Mirrors the GUI's clarify-threshold

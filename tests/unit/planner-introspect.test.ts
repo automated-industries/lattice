@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildModelProfile,
   canonicalizeValue,
   naturalType,
   profileTable,
+  type IntrospectDb,
+  type StructuralInput,
   type TableStructural,
 } from '../../src/gui/planner/introspect.js';
 
@@ -141,5 +144,60 @@ describe('data-model planner — introspect (G3 cross-dialect canonicalization)'
     expect(naturalType(['2026-01-02', '2026-03-04'])).toBe('date');
     expect(naturalType(['alpha', 'beta'])).toBe('text');
     expect(naturalType([])).toBe('text');
+  });
+});
+
+describe('data-model planner — buildModelProfile prefers the canonical field type', () => {
+  // Lattice stores a config-declared `datetime`/`integer`/`uuid` column
+  // PHYSICALLY as TEXT, so the raw SQL spec (`getRegisteredColumns`) is lossy:
+  // a datetime column reads back as `text`, which would make retype detection
+  // propose retyping it to the type it already canonically is. The introspect
+  // shell must prefer the canonical field type (`getRegisteredFieldTypes`),
+  // falling back to the raw spec only when a column has no declared type.
+  function stubDb(overrides: Partial<IntrospectDb> = {}): IntrospectDb {
+    return {
+      getRegisteredTableNames: () => ['events'],
+      // Raw SQL spec — every user column is physically TEXT.
+      getRegisteredColumns: () => ({ id: 'TEXT', created: 'TEXT', note: 'TEXT' }),
+      // Canonical types — `created` is declared datetime; `note` has none.
+      getRegisteredFieldTypes: () => ({ id: 'uuid', created: 'datetime' }),
+      getPrimaryKey: () => ['id'],
+      isComputedTable: () => false,
+      getConnectedSource: () => undefined,
+      connectedTables: () => [],
+      query: async () => [
+        { id: 'a', created: '2026-01-02T03:04:05Z', note: 'hello' },
+        { id: 'b', created: '2026-02-03T04:05:06Z', note: 'world' },
+      ],
+      boundedCount: async () => 2,
+      ...overrides,
+    };
+  }
+
+  const structural: StructuralInput = {
+    name: 'events',
+    tier: 'lattice',
+    relations: [],
+    hasDefinition: true,
+    junctionPair: null,
+  };
+
+  it('uses the canonical field type for a declared column, raw spec as fallback', async () => {
+    const profile = await buildModelProfile(stubDb(), [structural]);
+    const cols = profile.tables[0].columns;
+    // `created` is canonically datetime — NOT the raw `text` the SQL spec returns.
+    expect(cols.find((c) => c.name === 'created')?.sqlType).toBe('datetime');
+    // `id` is canonically uuid.
+    expect(cols.find((c) => c.name === 'id')?.sqlType).toBe('uuid');
+    // `note` has no declared field type → falls back to the raw spec, `text`.
+    expect(cols.find((c) => c.name === 'note')?.sqlType).toBe('text');
+  });
+
+  it('falls back to the raw SQL spec for every column when no canonical types exist', async () => {
+    const profile = await buildModelProfile(stubDb({ getRegisteredFieldTypes: () => null }), [
+      structural,
+    ]);
+    const cols = profile.tables[0].columns;
+    expect(cols.map((c) => c.sqlType).sort()).toEqual(['text', 'text', 'text']);
   });
 });

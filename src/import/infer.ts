@@ -8,12 +8,12 @@ import type {
 import {
   DEFAULT_LINK_CONFIDENCE,
   DIM_MAX_DISTINCT,
-  DIM_MAX_RATIO,
   FREETEXT,
   NEVER_KEY,
   SAMPLE,
   countValueMatches,
   inferFieldType,
+  isLowCardinalityDimension,
   isNumericValue,
   isPlainObject,
   norm,
@@ -358,7 +358,6 @@ export function inferSchema(
       if (marginalFields.get(e.name)?.has(field)) continue; // pending a link question — keep the column
       const nn = normalizeName(field);
       if (FREETEXT.has(nn)) continue;
-      const ratio = p.distinct / Math.max(1, e.records.length);
       const sharedAcross = dimColumnNames.get(nn)?.length ?? 1;
       // A dimension is a LOW-cardinality categorical: the distinct cap always
       // applies (so a high-cardinality numeric/text column like an IRR or a
@@ -367,8 +366,8 @@ export function inferSchema(
       // the shared taxonomy) — it does NOT waive the cardinality cap.
       const isDim =
         p.distinct >= 1 &&
-        p.distinct <= DIM_MAX_DISTINCT &&
-        (ratio <= DIM_MAX_RATIO || sharedAcross >= 2);
+        (isLowCardinalityDimension(p.distinct, e.records.length) ||
+          (p.distinct <= DIM_MAX_DISTINCT && sharedAcross >= 2));
       if (!isDim) continue;
       let dim = dimByName.get(nn);
       if (!dim) {

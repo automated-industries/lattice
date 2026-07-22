@@ -52,7 +52,8 @@ export const DISTINCT_CAP = 200;
 export interface TableStructural {
   name: string;
   tier: TableTier;
-  /** column name → declared SQL type (already lower-cased). */
+  /** column name → type: the canonical Lattice field type when the column has one
+   *  declared, else the raw SQL spec. `profileTable` lower-cases it. */
   columns: { name: string; sqlType: string }[];
   primaryKey: string[];
   relations: NormalizedRelation[];
@@ -198,6 +199,11 @@ export function profileTable(struct: TableStructural, rows: Row[]): TableProfile
 export interface IntrospectDb {
   getRegisteredTableNames(): string[];
   getRegisteredColumns(table: string): Record<string, string> | null;
+  /** Canonical Lattice field types (`text`/`integer`/`uuid`/`datetime`/…) for the
+   *  table's config-declared columns, or null for a code-defined table with no
+   *  declared types. Preferred over the raw SQL spec `getRegisteredColumns`
+   *  returns, which is lossy+noisy (a config `datetime` is physically TEXT). */
+  getRegisteredFieldTypes(table: string): Record<string, string> | null;
   getPrimaryKey(table: string): string[];
   isComputedTable(name: string): boolean;
   getConnectedSource(table: string): unknown;
@@ -258,7 +264,16 @@ export async function buildModelProfile(
       skipped.push({ table: s.name, reason: 'no registered columns' });
       continue;
     }
-    const columns = Object.entries(colTypes).map(([name, sqlType]) => ({ name, sqlType }));
+    // Prefer the CANONICAL field type ('uuid'/'integer'/'datetime'/…) over the
+    // raw SQL column spec, which is lossy+noisy: a config-declared datetime/
+    // integer is physically stored as TEXT, so the raw spec would let retype
+    // detection propose retyping a column to the type it already canonically is.
+    // Falls back to the raw spec for code-defined tables with no declared types.
+    const fieldTypes = db.getRegisteredFieldTypes(s.name);
+    const columns = Object.entries(colTypes).map(([name, sqlType]) => ({
+      name,
+      sqlType: fieldTypes?.[name] ?? sqlType,
+    }));
     const primaryKey = db.getPrimaryKey(s.name);
     const pkCol = primaryKey[0] ?? (colTypes.id !== undefined ? 'id' : columns[0]?.name);
 

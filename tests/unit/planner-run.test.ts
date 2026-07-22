@@ -65,6 +65,7 @@ describe('data-model planner — run helpers', () => {
       ({
         getRegisteredTableNames: () => Object.keys(cols),
         getRegisteredColumns: (t: string) => cols[t] ?? null,
+        getRegisteredFieldTypes: (t: string) => cols[t] ?? null,
         getPrimaryKey: () => ['id'],
         isComputedTable: () => false,
         getConnectedSource: () => undefined,
