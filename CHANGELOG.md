@@ -37,6 +37,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   and idempotent (a clean model produces no changes). New HTTP surface: `GET /api/data-model/plan`,
   `POST /api/data-model/apply`, `POST /api/data-model/dismiss`.
 
+- **Traceable rendered context + traceable chat answers.** Rendered context now carries
+  `lattice://` trace links back to the source rows, shown as inline trace chips that open a
+  provenance card (row fields + tier + Open), with per-file source chips summarizing each context
+  file's origin table and count. Chat answers linkify the records they retrieved as inline
+  word-links that open the record directly (and a `?f=<column>` link scroll-flashes that field on
+  arrival); the context response carries the source metadata that drives it. Deterministic — the
+  links are derived from the server-computed graph, so scoped cloud members get them too.
+
+- **In-GUI Lattice-token balance + friendly out-of-credit notice (managed installs).** When the
+  assistant runs against a managed endpoint, the header account menu and Configure → Assistant show
+  the prepaid **token balance** and an **Add tokens** link (fetched fail-soft from the endpoint's
+  `/v1/balance`; a plain Anthropic endpoint that doesn't expose it simply shows nothing). A chat turn
+  that hits a `402 insufficient_credit` now renders a friendly red notice with a clickable top-up
+  link instead of raw JSON. Non-managed installs are unaffected.
+
 ### Changed
 
 - **The automatic post-ingest / post-connect data-model pass is now deterministic** and runs on every
@@ -55,6 +70,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   two long table names would overflow, the junction now gets a deterministic hash suffix instead of
   silently truncating — which on a cloud (Postgres) workspace could otherwise collide two different
   relationships onto the same truncated name.
+
+- **Prefer canonical field types for data-model retype detection.** The planner now reads a column's
+  canonical Lattice field type (`uuid`/`datetime`/`integer`/…) rather than the raw physical SQL
+  spec, so a column already typed (but physically stored as TEXT) is no longer proposed for a
+  retype to the type it already is. Value matching for foreign-key inference stays on the physical
+  type, so a numeric key still matches a text foreign key's raw value.
+
+- **Corrected curated MCP connector OAuth scopes.** The prefab connector catalog's OAuth scopes were
+  reconciled against each server's advertised `scopes_supported` (e.g. Atlassian's
+  `search:confluence` / `read:space:confluence` instead of scopes the server does not advertise;
+  Salesforce `api refresh_token`; Google Calendar/Drive read-only scopes), so a first-run connect
+  requests only valid scopes.
 
 ## [5.0.1] — 2026-07-22
 
