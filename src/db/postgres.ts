@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import type {
   StorageAdapter,
   PreparedStatement,
@@ -89,6 +90,37 @@ export interface PostgresAdapterOptions {
    * environments; tune up if you observe pool waits in production.
    */
   poolSize?: number;
+
+  /**
+   * TLS mode for the connection, mirroring libpq's `sslmode`:
+   *   - `disable`      — plaintext (no TLS).
+   *   - `require`      — encrypt, but do NOT verify the server certificate.
+   *   - `verify-ca`    — encrypt + verify the cert chain against the CA (no hostname check).
+   *   - `verify-full`  — encrypt + verify the chain AND the hostname.
+   *
+   * When unset, resolved from `LATTICE_PG_SSLMODE`/`PGSSLMODE`, then an `sslmode`/
+   * `ssl` query param on the connection string, then a default of **`require` for a
+   * non-local host** and `disable` for localhost / a unix socket. node-postgres
+   * ships with NO TLS unless asked, so this default stops a self-hosted workspace
+   * from silently transmitting every row in cleartext.
+   */
+  sslMode?: PgSslMode;
+
+  /**
+   * Path to a CA bundle PEM file (or inline PEM) used to verify the server
+   * certificate for `verify-ca` / `verify-full` — e.g. a private/self-signed root.
+   * Falls back to `LATTICE_PG_SSLROOTCERT`/`PGSSLROOTCERT`. With neither, Node's
+   * built-in CA set is used.
+   */
+  sslRootCert?: string;
+}
+
+export type PgSslMode = 'disable' | 'require' | 'verify-ca' | 'verify-full';
+
+interface PgSslConfig {
+  rejectUnauthorized: boolean;
+  ca?: string;
+  checkServerIdentity?: () => undefined;
 }
 
 // Subset of the `pg` package we actually use. Keeping a local alias avoids
@@ -113,7 +145,87 @@ interface PgPool {
   on(event: 'error', listener: (err: Error) => void): void;
 }
 interface PgModule {
-  Pool: new (config: { connectionString: string; max?: number }) => PgPool;
+  Pool: new (config: {
+    connectionString: string;
+    max?: number;
+    ssl?: PgSslConfig | boolean;
+  }) => PgPool;
+}
+
+// ── TLS resolution ──────────────────────────────────────────────────────
+// node-postgres does NOT negotiate TLS unless the caller opts in (unlike libpq,
+// whose default is opportunistic `prefer`). So without this, a self-hosted
+// Postgres workspace connects in cleartext. We resolve an explicit sslmode and
+// pass a real `ssl` config to the Pool.
+
+function pgHostIsLocal(connectionString: string): boolean {
+  try {
+    const u = new URL(connectionString);
+    const h = u.hostname;
+    // Empty host or a leading-slash host = unix domain socket (always local).
+    return h === '' || h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.startsWith('%2F');
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSslMode(v: string | null | undefined): PgSslMode | undefined {
+  const m = (v ?? '').trim().toLowerCase();
+  if (m === 'disable' || m === 'require' || m === 'verify-ca' || m === 'verify-full') return m;
+  // libpq's opportunistic/relaxed modes → our closest supported behavior: encrypt
+  // without verification (node-pg has no true `prefer` fallback).
+  if (m === 'prefer' || m === 'allow' || m === 'no-verify') return 'require';
+  if (m === 'true' || m === '1' || m === 'on') return 'require';
+  return undefined;
+}
+
+function connStringSslMode(connectionString: string): PgSslMode | undefined {
+  try {
+    const u = new URL(connectionString);
+    return (
+      normalizeSslMode(u.searchParams.get('sslmode')) ?? normalizeSslMode(u.searchParams.get('ssl'))
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the TLS mode + a `pg`-shaped `ssl` config. Precedence: explicit option
+ * → `LATTICE_PG_SSLMODE`/`PGSSLMODE` → connection-string `sslmode`/`ssl` → default
+ * (`require` for a non-local host, `disable` for local). Never throws.
+ */
+export function resolvePgSsl(
+  connectionString: string,
+  options: PostgresAdapterOptions,
+): { ssl: PgSslConfig | false; mode: PgSslMode } {
+  const mode: PgSslMode =
+    options.sslMode ??
+    normalizeSslMode(process.env.LATTICE_PG_SSLMODE) ??
+    normalizeSslMode(process.env.PGSSLMODE) ??
+    connStringSslMode(connectionString) ??
+    (pgHostIsLocal(connectionString) ? 'disable' : 'require');
+
+  if (mode === 'disable') return { ssl: false, mode };
+
+  const caSource =
+    options.sslRootCert ?? process.env.LATTICE_PG_SSLROOTCERT ?? process.env.PGSSLROOTCERT;
+  let ca: string | undefined;
+  if (caSource) {
+    try {
+      ca = caSource.includes('BEGIN CERTIFICATE') ? caSource : readFileSync(caSource, 'utf8');
+    } catch {
+      // Unreadable CA path — proceed without it; a verify mode then fails loudly
+      // at handshake (better than silently trusting anything).
+    }
+  }
+  const verify = mode === 'verify-ca' || mode === 'verify-full';
+  const ssl: PgSslConfig = { rejectUnauthorized: verify };
+  if (ca) ssl.ca = ca;
+  // verify-ca checks the chain but NOT the hostname; verify-full checks both
+  // (pg verifies the hostname by default when rejectUnauthorized is true).
+  if (mode === 'verify-ca') ssl.checkServerIdentity = () => undefined;
+  return { ssl, mode };
 }
 
 const SYNC_NOT_SUPPORTED_MSG =
@@ -152,6 +264,7 @@ export class PostgresAdapter implements StorageAdapter {
   readonly dialect = 'postgres' as const;
   private readonly _connectionString: string;
   private readonly _poolSize: number;
+  private readonly _options: PostgresAdapterOptions;
   private _pool: PgPool | null = null;
   private _polyfillsReady: Promise<void> | null = null;
   private _opened = false;
@@ -159,6 +272,7 @@ export class PostgresAdapter implements StorageAdapter {
   constructor(connectionString: string, options: PostgresAdapterOptions = {}) {
     this._connectionString = connectionString;
     this._poolSize = options.poolSize ?? 10;
+    this._options = options;
   }
 
   open(): void {
@@ -174,10 +288,25 @@ export class PostgresAdapter implements StorageAdapter {
           (err instanceof Error ? err.message : String(err)),
       );
     }
+    const { ssl, mode } = resolvePgSsl(this._connectionString, this._options);
     this._pool = new pgMod.Pool({
       connectionString: toTransactionPoolerUrl(this._connectionString),
       max: this._poolSize,
+      ssl,
     });
+    // Surface the transport state so a plaintext downgrade on a non-local host is
+    // never silent (a confidentiality gap for a synced knowledge store).
+    if (ssl === false) {
+      if (!pgHostIsLocal(this._connectionString)) {
+        console.warn(
+          '[latticesql] Postgres connection to a non-local host is UNENCRYPTED (sslMode=disable) — ' +
+            'every row crosses the network in cleartext. Set sslMode=require (or verify-full), or ' +
+            'LATTICE_PG_SSLMODE=require, to encrypt in transit.',
+        );
+      }
+    } else {
+      console.error('[latticesql] Postgres TLS: sslMode=' + mode);
+    }
     // An idle pooled client can emit 'error' when its TCP connection drops out
     // from under us — a network blip, the Supabase pooler recycling a backend,
     // or a server restart (observed as `read EADDRNOTAVAIL`). Node escalates an

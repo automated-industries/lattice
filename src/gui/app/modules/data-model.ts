@@ -811,12 +811,25 @@ export const dataModelJs = `    // ───────────────
           row.addEventListener('click', function () {
             var id = row.getAttribute('data-switch-id');
             gaTrack('workspace_switch', {}); // event only — never the workspace id/name
-            // Switch the workspace AND close the settings drawer at the same time —
-            // close immediately (concurrent with the switch) so it isn't left open.
-            closeSettingsDrawer();
+            // Bug B: raise the full-screen switch overlay immediately (one motion).
+            // Bug C: do NOT close the drawer — reloadEverything refreshes the open
+            // Configure tab for the new workspace, so we stay on this tab showing the
+            // NEW workspace's data instead of stranding the previous workspace's.
+            showSwitchOverlay();
             fetchJson('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: id }) })
               .then(function () { return reloadEverything(); })
-              .catch(function (err) { showToast('Switch failed: ' + err.message, {}); });
+              .catch(function (err) {
+                showToast('Switch failed: ' + ((err && err.message) || 'try again'), {});
+                // Bug D: revert to the workspace we came from rather than stranding a
+                // broken new-workspace view under the overlay.
+                if (currentId && currentId !== id) {
+                  fetchJson('/api/workspaces/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: currentId }) })
+                    .then(function () { return reloadEverything(); })
+                    .catch(function () { hideSwitchOverlay(); });
+                } else {
+                  hideSwitchOverlay();
+                }
+              });
           });
         });
         host.querySelector('#action-add-db').addEventListener('click', showCreateDatabaseWizard);

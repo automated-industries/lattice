@@ -35,6 +35,13 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
       box-shadow: var(--shadow-1);
     }
     .staging-head { font-size: 12px; font-weight: 600; color: var(--text); }
+    /* While the staged batch is ingesting: dim the chips, hide their remove buttons,
+       and pulse the "Adding…" header so the in-progress state reads clearly — a
+       single-file ingest has no batch progress bar of its own. */
+    .staging-busy { opacity: 0.8; }
+    .staging-busy .staging-file-x { visibility: hidden; }
+    @keyframes staging-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+    .staging-busy .staging-head { animation: staging-pulse 1.1s ease-in-out infinite; }
     .staging-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
     .staging-file { display: flex; align-items: center; gap: 8px; font-size: 13px; }
     .staging-file-ic { flex: none; }

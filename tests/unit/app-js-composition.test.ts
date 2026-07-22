@@ -498,8 +498,24 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // new batch reuses live state, past-tense terminal labels. Recaptured.
 // Pending-question banner: store-backed cards collapse behind a one-line count banner
 // (workspace-scoped store vs thread-scoped rail); expand in place on click. Recaptured.
-const ORIGINAL_LENGTH = 731145;
-const ORIGINAL_SHA256 = '0ab07e2ddeaf6059d7886f83ecc3bead95fef4d320c7b698b1501acce63a2858';
+// 5.0.1 workspace-switch fixes: instant full-screen overlay on click (Bug B),
+// error-revert to the previous workspace (Bug D), Configure drawer refreshes to the
+// new workspace on the same tab (Bug C), and skipping the middle-pane re-render on
+// chat-only realtime writes (Bug A). Length + hash recaptured.
+// 5.0.1 chat file-attach fixes (Bug 8): the composer no longer clears the staging
+// tray before ingest — it locks Send + shows "Adding…" while files upload, keeps the
+// files staged (and surfaces a toast) on ingest failure instead of sending the message
+// without them, and a files-only send shows the attached file name(s) rather than a
+// fabricated "take a look at this file" message. Length + hash recaptured.
+// 5.0.1 brain-graph drill perf (Bug 9): the graph drill now reads rows through a
+// bounded per-table cache (fetchRowsPageCached), invalidated by invalidate() on any
+// mutation, so clicking through layers is instant instead of re-fetching every click.
+// Length + hash recaptured.
+// 5.0.x release-review fixes: staging-lock guards Enter (submitComposer order) + the
+// brain-graph drill cache (graphRowCache) is cleared on workspace switch and
+// invalidated via invalidate()/afterMutation. Length + hash recaptured.
+const ORIGINAL_LENGTH = 739440;
+const ORIGINAL_SHA256 = 'e82e1247035a4f026d52a5c8438b5d994c2cc08029ca64aab001c7aa9617a4e9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

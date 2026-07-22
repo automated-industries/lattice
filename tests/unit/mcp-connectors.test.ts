@@ -344,6 +344,39 @@ describe('MCP connect flow', () => {
     });
   });
 
+  it('returns a stored DCR client REGARDLESS of the presented redirect_uri (no port-drift discard)', () => {
+    // A stored DCR client must be reused on later launches even when the loopback
+    // callback port differs — the provider is rebuilt at sync time with a fixed
+    // placeholder redirect that never matches connect-time, so discarding on a
+    // redirect mismatch (an earlier, refuted attempt) broke token refresh for every
+    // dynamically-registered MCP server. The client is now returned as-is.
+    const id = 'conn-dcr-redirect';
+    const cbFor = (port: number): string =>
+      `http://127.0.0.1:${String(port)}/api/connectors/oauth/callback`;
+    new LatticeOAuthProvider(id, cbFor(111)).saveClientInformation({
+      client_id: 'dcr-old',
+      redirect_uris: [cbFor(111)],
+    });
+    // Same port and a DIFFERENT port both return the stored client (no discard).
+    expect(new LatticeOAuthProvider(id, cbFor(111)).clientInformation()).toMatchObject({
+      client_id: 'dcr-old',
+    });
+    expect(new LatticeOAuthProvider(id, cbFor(222)).clientInformation()).toMatchObject({
+      client_id: 'dcr-old',
+    });
+  });
+
+  it('saveClientInformation stores the DCR response as-is (does not inject a redirect_uri)', () => {
+    const id = 'conn-dcr-store';
+    new LatticeOAuthProvider(id, 'http://127.0.0.1:333/cb').saveClientInformation({
+      client_id: 'dcr-no-redirect', // response carried no redirect_uris
+    });
+    // Retrievable on any later launch/port; no redirect_uris was fabricated.
+    const got = new LatticeOAuthProvider(id, 'http://127.0.0.1:444/cb').clientInformation();
+    expect(got).toMatchObject({ client_id: 'dcr-no-redirect' });
+    expect((got as { redirect_uris?: unknown }).redirect_uris).toBeUndefined();
+  });
+
   it('retains the stored server URL across disconnect (reconnect keeps the address)', async () => {
     const conn = new SimpleMcpConnector(
       { ...emptyModels, servers: [{ name: 'x', url: 'https://mcp.example/x', oauth: false }] },

@@ -129,6 +129,41 @@ export const routerJs = `    // ────────────────
       });
     }
 
+    // Bounded per-table cache for the brain-graph drill. The graph re-renders on
+    // EVERY node click — each drill is a #/graph/<table>/<id> navigation that
+    // re-fetched this table's rows plus each linked table's rows. Over a cloud that
+    // network round-trip per click is what made the graph "slow, then freeze after a
+    // click or two". Cache the page Promise per table+params so clicking through
+    // layers is instant after the first load; invalidate() drops it on any mutation
+    // so it never serves stale rows. Bounded by construction — it stores the SAME
+    // limited pages fetchRowsPage already returns, just once per graph session
+    // instead of once per click, so it adds no extra reads (it removes them).
+    var graphRowCache = {};
+    function graphRowCacheKey(tableName, opts) {
+      opts = opts || {};
+      return (
+        tableName +
+        '|' +
+        (opts.limit != null ? opts.limit : '') +
+        '|' +
+        (opts.deletedMode || '') +
+        '|' +
+        (opts.artifactType || '') +
+        '|' +
+        (opts.exclude || '')
+      );
+    }
+    function fetchRowsPageCached(tableName, opts) {
+      var key = graphRowCacheKey(tableName, opts);
+      if (graphRowCache[key]) return graphRowCache[key];
+      var p = fetchRowsPage(tableName, opts).then(null, function (err) {
+        delete graphRowCache[key]; // never cache a failure — let the next drill retry
+        throw err;
+      });
+      graphRowCache[key] = p;
+      return p;
+    }
+
     /**
      * Invalidate cached rows for one or more tables. Call after any mutation
      * so the next collection/record render re-fetches from the server.
@@ -136,6 +171,14 @@ export const routerJs = `    // ────────────────
     function invalidate(tableNames) {
       (Array.isArray(tableNames) ? tableNames : [tableNames]).forEach(function (n) {
         delete loadedTables[n];
+        // Drop the graph drill cache for this table (all param variants) so the next
+        // graph render re-fetches its rows too.
+        var prefix = n + '|';
+        for (var key in graphRowCache) {
+          if (Object.prototype.hasOwnProperty.call(graphRowCache, key) && key.indexOf(prefix) === 0) {
+            delete graphRowCache[key];
+          }
+        }
       });
     }
 

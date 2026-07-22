@@ -157,6 +157,13 @@ describe('on-access freshness connector set', () => {
     expect(builtinConnectors().some((c) => c.connector === 'db_source')).toBe(false);
     expect(freshnessConnectors().some((c) => c.connector === 'db_source')).toBe(true);
     expect(freshnessConnectors().some((c) => c.connector === 'mcp')).toBe(true);
+    // freshnessConnectors DERIVES from builtinConnectors() (not a hardcoded pair): every
+    // built-in connector is in the freshness set. Today only the generic ('mcp') connector
+    // is built-in (the hand-authored connectors are gated out until spiked); when one is
+    // un-gated, its tables' on-access refresh works with no further wiring.
+    for (const c of builtinConnectors()) {
+      expect(freshnessConnectors().some((x) => x.connector === c.connector)).toBe(true);
+    }
   });
 
   it('refreshes an external-DB (db_source) table when the db_source connector is in the set', async () => {

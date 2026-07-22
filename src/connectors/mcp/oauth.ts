@@ -47,6 +47,12 @@ export interface McpClientInformation {
   [k: string]: unknown;
 }
 
+/** The redirect_uris a stored/DCR client is bound to (empty when none recorded). */
+export function clientRedirectUris(client: McpClientInformation): string[] {
+  const r = (client as { redirect_uris?: unknown }).redirect_uris;
+  return Array.isArray(r) ? r.filter((x): x is string => typeof x === 'string') : [];
+}
+
 /** Client metadata the provider advertises for DCR (public PKCE client). */
 export interface McpClientMetadata {
   redirect_uris: string[];
@@ -216,6 +222,13 @@ export class LatticeOAuthProvider {
   }
 
   clientInformation(): McpClientInformation | undefined {
+    // Return the stored DCR client as-is. (An earlier attempt discarded the client
+    // when its recorded redirect_uri differed from the one being presented, on a
+    // loopback-port-drift theory — but that theory was a confirmed NON-cause, and the
+    // guard's only reachable effect was at SYNC time, where the provider is built with
+    // a fixed placeholder redirect that never matches the connect-time one, so it
+    // discarded a perfectly valid client on every refresh and broke token renewal for
+    // dynamically-registered MCP servers. Do NOT re-add a redirect_uri guard here.)
     return (readJson(cliKey(this.connectionId)) as McpClientInformation | null) ?? undefined;
   }
 
