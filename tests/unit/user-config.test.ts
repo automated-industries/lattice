@@ -13,6 +13,7 @@ import {
   getDbCredential,
   getOrCreateAnalyticsId,
   getOrCreateMasterKey,
+  masterKeyFingerprint,
   listDbCredentials,
   listTokens,
   readIdentity,
@@ -23,6 +24,7 @@ import {
   writePreferences,
   writeToken,
 } from '../../src/framework/user-config.js';
+import { encrypt, deriveKey } from '../../src/security/encryption.js';
 
 describe('framework user-config', () => {
   let tmpDir: string;
@@ -76,6 +78,86 @@ describe('framework user-config', () => {
       expect(existsSync(join(tmpDir, 'master.key'))).toBe(true);
       // 32 random bytes encoded base64 is 44 chars (with padding).
       expect(first.length).toBeGreaterThanOrEqual(40);
+    });
+
+    it('ignores a blank/whitespace LATTICE_ENCRYPTION_KEY and falls back to master.key', () => {
+      const fileKey = getOrCreateMasterKey(); // env unset → generates + writes the file
+      expect(existsSync(join(tmpDir, 'master.key'))).toBe(true);
+      // A whitespace-only value used to be taken VERBATIM as the key (so every
+      // decrypt then failed); it must now be treated as unset and fall back.
+      process.env.LATTICE_ENCRYPTION_KEY = '   ';
+      expect(getOrCreateMasterKey()).toBe(fileKey);
+      // An empty string, too.
+      process.env.LATTICE_ENCRYPTION_KEY = '';
+      expect(getOrCreateMasterKey()).toBe(fileKey);
+    });
+
+    it('masterKeyFingerprint is stable, key-specific, and reveals nothing (8 hex, not the key)', () => {
+      const fp = masterKeyFingerprint('some-master-key');
+      expect(fp).toMatch(/^[0-9a-f]{8}$/);
+      expect(masterKeyFingerprint('some-master-key')).toBe(fp); // stable
+      expect(masterKeyFingerprint('other-key')).not.toBe(fp); // key-specific
+      expect(fp).not.toContain('some-master-key'); // never the key itself
+    });
+  });
+
+  describe('stale LATTICE_ENCRYPTION_KEY validation (Bug 2c)', () => {
+    // A machine-local store's ciphertext, encrypted with `key` — the witness of
+    // "which key this machine's data was actually written with."
+    const sampleEncryptedWith = (key: string): string =>
+      encrypt('{"claude-oauth":"tok"}', deriveKey(key));
+
+    it("falls back to master.key when the env key can't decrypt this machine's data", () => {
+      const fileKey = 'file-key-that-actually-works';
+      writeFileSync(join(tmpDir, 'master.key'), fileKey);
+      // assistant-credentials.enc encrypted with the FILE key (the real one).
+      writeFileSync(join(tmpDir, 'assistant-credentials.enc'), sampleEncryptedWith(fileKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = 'stale-inherited-env-key';
+      // env can't decrypt the sample; file can → resolve to the file key.
+      expect(getOrCreateMasterKey()).toBe(fileKey);
+    });
+
+    it('keeps the env key when it DOES decrypt this machine’s data', () => {
+      const envKey = 'env-key-that-works';
+      writeFileSync(join(tmpDir, 'master.key'), 'a-different-file-key');
+      writeFileSync(join(tmpDir, 'db-credentials.enc'), sampleEncryptedWith(envKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = envKey;
+      expect(getOrCreateMasterKey()).toBe(envKey);
+    });
+
+    it('prefers master.key when there is no encrypted data to validate against (never the stale env)', () => {
+      writeFileSync(join(tmpDir, 'master.key'), 'file-key');
+      process.env.LATTICE_ENCRYPTION_KEY = 'env-key-differs'; // differs, but nothing to validate
+      // No witness -> prefer the persistent file key, NOT the unvalidated env var.
+      // (This is the local-only-workspace user a follow-up review flagged.)
+      expect(getOrCreateMasterKey()).toBe('file-key');
+    });
+
+    it('validates against ALL witnesses — a foreign first .enc does not poison selection', () => {
+      const envKey = 'env-key-that-works';
+      writeFileSync(join(tmpDir, 'master.key'), 'a-different-file-key');
+      // First witness (assistant-credentials.enc, read first) is under a FOREIGN
+      // key; a later one (db-credentials.enc) is under the env key. env must still
+      // be recognized as valid rather than the first file deciding.
+      writeFileSync(
+        join(tmpDir, 'assistant-credentials.enc'),
+        sampleEncryptedWith('foreign') + '\n',
+      );
+      writeFileSync(join(tmpDir, 'db-credentials.enc'), sampleEncryptedWith(envKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = envKey;
+      expect(getOrCreateMasterKey()).toBe(envKey);
+    });
+
+    it('uses a single key for reads AND writes — no split when the file key wins', () => {
+      // Split-key regression: once the file key is chosen, a machine-local WRITE
+      // then READ must round-trip under that SAME key (never the stale env key).
+      const fileKey = 'file-key-that-actually-works';
+      writeFileSync(join(tmpDir, 'master.key'), fileKey);
+      writeFileSync(join(tmpDir, 'assistant-credentials.enc'), sampleEncryptedWith(fileKey) + '\n');
+      process.env.LATTICE_ENCRYPTION_KEY = 'stale-inherited-env-key';
+      saveDbCredential('primary', 'postgres://example');
+      expect(getDbCredential('primary')).toBe('postgres://example');
+      expect(getOrCreateMasterKey()).toBe(fileKey);
     });
   });
 
@@ -308,6 +390,22 @@ describe('framework user-config', () => {
       expect(listDbCredentials()).toEqual(['atlas', 'beta']);
       expect(getDbCredential('atlas')).toBe('postgres://u:p@h:5432/db');
       expect(getDbCredential('missing')).toBeNull();
+    });
+
+    it('getDbCredential falls back to a LATTICE_DB_<label> env var (Bug 4 — the hint is now functional)', () => {
+      // No saved credential — the env var supplies the URL (the exact label).
+      process.env.LATTICE_DB_mylabel = 'postgres://from-env';
+      expect(getDbCredential('mylabel')).toBe('postgres://from-env');
+      delete process.env.LATTICE_DB_mylabel;
+      // A label with dots/dashes maps to an uppercased/underscored shell-safe name.
+      process.env.LATTICE_DB_MY_DB = 'postgres://safe';
+      expect(getDbCredential('my.db')).toBe('postgres://safe');
+      delete process.env.LATTICE_DB_MY_DB;
+      // A saved credential still wins over the env var.
+      saveDbCredential('mylabel', 'postgres://saved');
+      process.env.LATTICE_DB_mylabel = 'postgres://from-env';
+      expect(getDbCredential('mylabel')).toBe('postgres://saved');
+      delete process.env.LATTICE_DB_mylabel;
     });
 
     it('encrypts the file on disk', () => {

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
@@ -62,6 +62,18 @@ export function configDir(): string {
     if (existsSync(join(rootDir, MASTER_KEY_FILENAME))) return rootDir;
     if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return rootDir;
   }
+  // No root was discoverable by walking UP from the cwd. A GUI app launched from
+  // the Dock/Finder has cwd=`/`, so the walk never reaches `~/.lattice` and we'd
+  // otherwise fall to the LEGACY top-level dir — a different, stale store than the
+  // one the CLI (whose cwd is near the workspace) resolves to via `<root>/.config`.
+  // That divergence made the desktop read the wrong credential store and report
+  // every credential as missing. Anchor to the per-user `~/.lattice/.config` (the
+  // current-format store) so the desktop and CLI resolve to the SAME place —
+  // unless only the legacy top-level holds a key, in which case keep using it so
+  // an existing legacy install still decrypts.
+  const homeConfig = rootConfigDir(legacy);
+  if (existsSync(join(homeConfig, MASTER_KEY_FILENAME))) return homeConfig;
+  if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return homeConfig;
   return legacy;
 }
 
@@ -97,23 +109,208 @@ const MASTER_KEY_FILENAME = 'master.key';
  * Losing `master.key` means losing the ability to decrypt anything
  * encrypted with it. Document loudly to consumers.
  */
-export function getOrCreateMasterKey(): string {
-  const envKey = process.env.LATTICE_ENCRYPTION_KEY;
-  if (envKey && envKey.length > 0) return envKey;
+/**
+ * A short, NON-reversible fingerprint of a master key — first 8 hex of its
+ * SHA-256. Safe to log (reveals nothing usable about the key); lets an operator
+ * confirm at a glance whether two surfaces (e.g. `lattice gui`/desktop vs. the
+ * CLI) resolved the SAME key, which is exactly what the env-var-shadowing bug
+ * makes ambiguous.
+ */
+export function masterKeyFingerprint(key: string): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 8);
+}
 
-  const dir = ensureConfigDir();
-  const keyPath = join(dir, MASTER_KEY_FILENAME);
-  if (existsSync(keyPath)) {
-    return readFileSync(keyPath, 'utf8').trim();
+// Log the chosen key SOURCE once per process — never the key, only source +
+// fingerprint. GUI-launched apps inherit a different environment than the shell,
+// so LATTICE_ENCRYPTION_KEY can silently differ between the desktop app and the
+// CLI on the same machine; surfacing the source makes that divergence visible.
+let _keySourceLogged = false;
+function logKeySource(source: 'env' | 'file' | 'generated', key: string): void {
+  if (_keySourceLogged) return;
+  _keySourceLogged = true;
+  console.error(
+    `[lattice] encryption key: source=${source} fingerprint=${masterKeyFingerprint(key)}`,
+  );
+}
+
+/** The env master key, trimmed; undefined when unset or blank (the footgun value). */
+function readEnvMasterKey(): string | undefined {
+  const v = process.env.LATTICE_ENCRYPTION_KEY;
+  return v !== undefined && v.trim().length > 0 ? v : undefined;
+}
+
+/** The on-disk `master.key`, or undefined when absent OR blank. An empty/whitespace
+ *  file is NOT a usable key — treating it as '' would encrypt everything under a
+ *  publicly-derivable blank key (mirrors readEnvMasterKey's blank guard). */
+function readFileMasterKey(): string | undefined {
+  const keyPath = join(ensureConfigDir(), MASTER_KEY_FILENAME);
+  if (!existsSync(keyPath)) return undefined;
+  const c = readFileSync(keyPath, 'utf8').trim();
+  return c.length > 0 ? c : undefined;
+}
+
+/** Does `masterKey` decrypt `ciphertext`? (A wrong key throws an AES-GCM auth-tag error.) */
+function canDecryptWith(ciphertext: string, masterKey: string): boolean {
+  try {
+    decrypt(ciphertext, deriveKey(masterKey));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ALL raw ciphertexts from the machine-local, master-key-encrypted stores — used
+ * to VALIDATE a candidate key without exposing any plaintext. Each of these files
+ * is written with `deriveKey(getOrCreateMasterKey())`, so collectively they
+ * witness which key this machine's data was actually encrypted with. Returns the
+ * ones present (any subset), or `[]` when nothing is encrypted yet. Never throws —
+ * an unreadable file is skipped, so a hot-path key resolution can't crash on it.
+ */
+function readMachineLocalCiphertexts(): string[] {
+  const out: string[] = [];
+  let dir: string;
+  try {
+    dir = ensureConfigDir();
+  } catch {
+    return out;
+  }
+  for (const fn of [ASSISTANT_CREDENTIALS_FILENAME, DB_CREDENTIALS_FILENAME, S3_CONFIG_FILENAME]) {
+    try {
+      const p = join(dir, fn);
+      if (!existsSync(p)) continue;
+      const c = readFileSync(p, 'utf8').trim();
+      if (c.startsWith('enc:')) out.push(c);
+    } catch {
+      /* unreadable — skip this witness, try the next */
+    }
+  }
+  return out;
+}
+
+/** Cheap, stable fingerprint of the sample set, so the cache re-resolves when the witnesses change. */
+function samplesFingerprint(samples: string[]): string {
+  return createHash('sha256').update(samples.join(' ')).digest('hex').slice(0, 16);
+}
+
+let _blankEnvWarned = false;
+function warnBlankEnvKeyOnce(): void {
+  const raw = process.env.LATTICE_ENCRYPTION_KEY;
+  if (raw === undefined || raw.trim().length > 0) return; // unset, or a real value
+  if (_blankEnvWarned) return;
+  _blankEnvWarned = true;
+  console.error(
+    '[lattice] LATTICE_ENCRYPTION_KEY is set but blank — ignoring it and using master.key. ' +
+      'Unset the variable to silence this warning.',
+  );
+}
+
+// Cache the (expensive: 2 scrypt derivations) conflict resolution. Keyed by the
+// config dir + both candidate values, so per-test config dirs and an env swap
+// re-resolve rather than returning a stale decision.
+let _conflictCacheKey: string | null = null;
+let _conflictCacheVal: string | null = null;
+
+/**
+ * A non-blank `LATTICE_ENCRYPTION_KEY` and a `master.key` both exist and DIFFER —
+ * the env-shadows-file footgun (a GUI app inheriting a stale env var is the
+ * documented failure). The `master.key` FILE is the machine's PERSISTENT key, so
+ * the env key is trusted ONLY when it actually decrypts this machine's stored
+ * data; otherwise the file wins. We never proceed under an unvalidated env key
+ * when a file exists — that would risk writing new data under a key that can't
+ * read the old (a split). Validates against ALL machine-local witnesses; with
+ * none, prefers the file (the persistent key), not the stale env. Never throws
+ * (many hot paths); a genuine mismatch surfaces the actionable DecryptionKeyError
+ * downstream.
+ *
+ * Known limit: this validates against machine-local ciphertext, not the workspace
+ * DB. In the rare pre-existing split where machine-local data is under the env key
+ * but the workspace DB is under the file key (keys diverged across sessions), the
+ * env key validates here and the workspace read then surfaces the actionable
+ * mismatch error — it is not silently wrong.
+ */
+function resolveKeyConflict(envKey: string, fileKey: string): string {
+  const samples = readMachineLocalCiphertexts();
+  if (samples.length === 0) {
+    // Nothing to validate against -> prefer the persistent file key. A stale
+    // inherited env var is the documented failure, so we never fall through to it
+    // unvalidated. NOT cached: self-heals the moment encrypted data appears.
+    console.error(
+      '[lattice] LATTICE_ENCRYPTION_KEY differs from master.key and could not be validated (no ' +
+        "encrypted data on disk yet) - using master.key, the machine's persistent key. Unset " +
+        'LATTICE_ENCRYPTION_KEY if it is stale.',
+    );
+    logKeySource('file', fileKey);
+    return fileKey;
+  }
+  const cacheKey = configDir() + ' ' + envKey + ' ' + fileKey + ' ' + samplesFingerprint(samples);
+  if (_conflictCacheKey === cacheKey && _conflictCacheVal !== null) return _conflictCacheVal;
+
+  // Trust the env key ONLY if it decrypts real data (any witness); else the file.
+  const chosen = samples.some((s) => canDecryptWith(s, envKey)) ? envKey : fileKey;
+  if (chosen === envKey) {
+    logKeySource('env', envKey);
+  } else {
+    console.error(
+      samples.some((s) => canDecryptWith(s, fileKey))
+        ? "[lattice] LATTICE_ENCRYPTION_KEY does not decrypt this machine's stored data - using " +
+            'master.key (the key that does). Unset LATTICE_ENCRYPTION_KEY to silence this.'
+        : "[lattice] Neither LATTICE_ENCRYPTION_KEY nor master.key decrypts this machine's stored " +
+            'data - using master.key. If secrets fail to load, the data was encrypted with a ' +
+            'different key; restore it or set the correct key.',
+    );
+    logKeySource('file', fileKey);
+  }
+  _conflictCacheKey = cacheKey;
+  _conflictCacheVal = chosen;
+  return chosen;
+}
+
+/**
+ * Resolve the lattice-wide encryption master key. A single key is returned for
+ * BOTH reads and writes so machine-local stores and the workspace never split
+ * across keys. Priority:
+ *   1. `LATTICE_ENCRYPTION_KEY` (non-blank) when there's no differing `master.key`.
+ *   2. When a non-blank env key AND a differing `master.key` both exist, the key
+ *      that actually decrypts this machine's encrypted data wins (validated) —
+ *      so a stale env var can't shadow the working file (see {@link resolveKeyConflict}).
+ *   3. `master.key` when present; otherwise 32 random bytes, written base64 (0600).
+ *
+ * A set-but-blank env var is treated as unset (with a warning) — it used to be
+ * taken verbatim and break every decrypt.
+ */
+export function getOrCreateMasterKey(): string {
+  const envKey = readEnvMasterKey();
+  const fileKey = readFileMasterKey();
+  warnBlankEnvKeyOnce();
+
+  if (envKey && fileKey && envKey !== fileKey) return resolveKeyConflict(envKey, fileKey);
+  if (envKey) {
+    logKeySource('env', envKey);
+    return envKey;
+  }
+  if (fileKey) {
+    logKeySource('file', fileKey);
+    return fileKey;
   }
   // Create under the cross-process lock with a re-check: two concurrent fresh
   // processes must not write divergent keys, which would make each other's
   // encrypted credentials undecryptable. The first to acquire writes; the rest
   // re-read the key it created.
+  const keyPath = join(ensureConfigDir(), MASTER_KEY_FILENAME);
   return withCredentialLock(() => {
-    if (existsSync(keyPath)) return readFileSync(keyPath, 'utf8').trim();
+    if (existsSync(keyPath)) {
+      const key = readFileSync(keyPath, 'utf8').trim();
+      if (key.length > 0) {
+        logKeySource('file', key);
+        return key;
+      }
+      // An existing but EMPTY/whitespace master.key must NEVER become a blank
+      // encryption key — fall through to generate + atomically write a real one.
+    }
     const key = randomBytes(32).toString('base64');
     writeFileAtomic(keyPath, key);
+    logKeySource('generated', key);
     return key;
   });
 }
@@ -497,9 +694,14 @@ function loadCredentials(): Record<string, string> {
       ) as Record<string, string>;
     }
     return {};
-  } catch {
-    // Corrupt or unreadable — treat as empty rather than throwing.
-    // The caller will simply not find the label they asked for.
+  } catch (e) {
+    // The file EXISTS but won't decrypt/parse — a wrong encryption key or a corrupt
+    // store, NOT "no credentials". Surface it (mirrors loadS3Configs) so a key
+    // mismatch is visible instead of silently presenting the store as empty.
+    console.warn(
+      `[lattice] ${DB_CREDENTIALS_FILENAME} exists but could not be read (wrong encryption key ` +
+        `or corrupt store); treating as empty: ${(e as Error).message}`,
+    );
     return {};
   }
 }
@@ -517,10 +719,22 @@ export function listDbCredentials(): string[] {
   return Object.keys(loadCredentials()).sort();
 }
 
-/** Return the connection URL stored under `label`, or null if absent. */
+/**
+ * Return the connection URL stored under `label`, or null if absent.
+ *
+ * Falls back to a `LATTICE_DB_<label>` env var (the exact label, then an
+ * uppercased/underscored form for shell-friendliness) — a credential-injection
+ * escape hatch for CI / IT that needs no GUI. This is exactly what the
+ * "…or set LATTICE_DB_<label>" hint on a missing-credential error promises; the
+ * env var used to be suggested but never read.
+ */
 export function getDbCredential(label: string): string | null {
   const creds = loadCredentials();
-  return creds[label] ?? null;
+  if (creds[label] !== undefined) return creds[label];
+  const exact = process.env['LATTICE_DB_' + label];
+  if (exact) return exact;
+  const shellSafe = process.env['LATTICE_DB_' + label.toUpperCase().replace(/[^A-Z0-9]+/g, '_')];
+  return shellSafe ?? null;
 }
 
 /** Persist (or overwrite) the connection URL stored under `label`. */
@@ -719,8 +933,13 @@ function loadAssistantCredentials(): Record<string, string> {
       ) as Record<string, string>;
     }
     return {};
-  } catch {
-    // Corrupt or unreadable — treat as empty rather than throwing.
+  } catch (e) {
+    // The file EXISTS but won't decrypt/parse — a wrong encryption key or a corrupt
+    // store, NOT "no credential". Surface it so a key mismatch is visible.
+    console.warn(
+      `[lattice] ${ASSISTANT_CREDENTIALS_FILENAME} exists but could not be read (wrong encryption ` +
+        `key or corrupt store); treating as none: ${(e as Error).message}`,
+    );
     return {};
   }
 }

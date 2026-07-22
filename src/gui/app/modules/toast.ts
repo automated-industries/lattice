@@ -136,6 +136,11 @@ export const toastJs = `    // ────────────────�
             // switch (POST + reloadEverything), independent of the ephemeral
             // menu-item withBusy spinner — the menu can close/rebuild mid-switch.
             beginWsSwitching();
+            // Raise the full-screen switch overlay IMMEDIATELY on click — one
+            // motion, not two. reloadEverything shows it again (idempotent) after
+            // the POST; without this the user first saw the dropdown close + a
+            // bare loading frame, THEN the overlay once the POST resolved.
+            showSwitchOverlay();
             // Repaint the content area to a loading frame IMMEDIATELY so the
             // switch shows the new workspace opening — a cloud open is several
             // network round-trips — rather than leaving the previous workspace's
@@ -172,7 +177,28 @@ export const toastJs = `    // ────────────────�
                 clearActivityFeed();
                 refreshThreadList(true);
                 showToast('Switched workspace', {});
-              }).catch(function (err) { menu.hidden = true; endWsSwitching(true); showToast('Switch failed: ' + err.message, {}); });
+              }).catch(function (err) {
+                menu.hidden = true;
+                endWsSwitching(true);
+                showToast('Switch failed: ' + ((err && err.message) || 'try again'), {});
+                // Revert to the workspace we came from instead of stranding a
+                // broken new-workspace view under the switch overlay. If the POST
+                // failed the server is still on the old one (reloadEverything
+                // refreshes it); if reloadEverything failed after a good POST, the
+                // re-switch recovers it. Either way we land back where we were.
+                if (currentId && currentId !== id) {
+                  fetchJson('/api/workspaces/switch', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ id: currentId }),
+                  }).then(function () {
+                    if (typeof navSetWorkspace === 'function') navSetWorkspace(currentId);
+                    return reloadEverything();
+                  }).catch(function () { hideSwitchOverlay(); });
+                } else {
+                  hideSwitchOverlay();
+                }
+              });
             });
           });
         });

@@ -160,7 +160,11 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     description:
       'Full-text search across the user tables for a query string. Returns ' +
       'matching rows grouped by table (id + snippet). Use this to find records ' +
-      'by their content when you do not know the table or id up front.',
+      'by their content when you do not know the table or id up front. Results are ' +
+      'ranked by TEXT RELEVANCE, not by time — do NOT use search to find the "most ' +
+      'recent / last / latest" record: a newer row with little text ranks below ' +
+      'older, wordier ones and can be missed. For time-ordered questions use ' +
+      'list_rows with orderBy the date column and orderDir "desc" instead.',
     mutates: false,
     category: 'read',
     args: obj(

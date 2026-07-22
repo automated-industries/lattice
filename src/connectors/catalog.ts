@@ -22,6 +22,14 @@ import { DatabaseConnector } from './db-source/connector.js';
 /**
  * The built-in connectors, fresh instances per call. The GUI server passes the
  * result to the connectors routes.
+ *
+ * The generic connector is the bring-your-own-MCP-URL path. The hand-authored,
+ * parameterized-tool connectors (Atlassian/Jira+Confluence, Gmail, Google Calendar,
+ * Google Drive, Slack, Salesforce) live under `src/connectors/<name>/` and are fully
+ * built + tested, but are HELD OUT of this list until each has a live-OAuth spike
+ * confirming its real endpoint URL + result-shape mappers (only Atlassian's URL is a
+ * real MCP endpoint today; the others are documented placeholders). To enable one,
+ * import its factory and add it here — that is the only wiring needed.
  */
 export function builtinConnectors(): Connector[] {
   return [genericConnector()];
@@ -36,5 +44,11 @@ export function builtinConnectors(): Connector[] {
  * resolve no connector implementation and silently never refresh.
  */
 export function freshnessConnectors(): Connector[] {
-  return [genericConnector(), new DatabaseConnector()];
+  // Every built-in connector PLUS the external-DB (db_source) connector, which is
+  // deliberately absent from builtinConnectors() (surfaced via Inputs › Databases, not
+  // the Connectors grid) but whose imported db_… tables must still refresh on access.
+  // Derived from builtinConnectors() rather than hardcoded, so whenever a hand-authored
+  // connector is un-gated there its tables' on-access refresh works automatically
+  // instead of silently no-oping. db_source is not in the built-in list, so no dedupe.
+  return [...builtinConnectors(), new DatabaseConnector()];
 }

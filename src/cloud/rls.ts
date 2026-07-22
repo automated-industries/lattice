@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
@@ -838,6 +839,97 @@ BEGIN
 END $fn$;
 GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${group};
 
+-- A member's connector sync inserts rows into its connected tables. Only the owner
+-- can ALTER … ENABLE ROW LEVEL SECURITY, so a table a member first syncs on a cloud
+-- is born WITHOUT its ownership trigger — those first-sync rows get no ownership
+-- record. Once the owner later FORCE-enables RLS, an ownerless row is visible to
+-- NO ONE (lattice_row_visible returns false for a row with no owner), so the member
+-- can neither see it nor re-sync it: the sync upsert's ON CONFLICT DO UPDATE hits
+-- the now-invisible row and raises "new row violates row-level security policy",
+-- surfaced to the member as an unresolvable sync conflict.
+--
+-- This member-callable helper closes that gap by stamping the CALLING member
+-- (session_user) as owner of every still-ownerless row of ONE of their connectors.
+-- SECURITY DEFINER so it can write __lattice_owners (members have no direct grant)
+-- and see past RLS to find the ownerless rows — but it is safe by construction:
+--   * it ONLY claims rows that have NO owner yet (NOT EXISTS), so it can never take
+--     over another member's already-owned row;
+--   * it ONLY touches a CONNECTED table (one bearing the _source_connector_id
+--     lineage column), never an arbitrary entity/bookkeeping table;
+--   * it is scoped to a single connector id (a member's own sync passes its own).
+-- The claimed rows land at the table's default visibility (private unless the owner
+-- widened it), matching what the ownership trigger would have stamped.
+CREATE OR REPLACE FUNCTION lattice_member_claim_ownerless(p_table text, p_connector_id text)
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER AS $fn$
+DECLARE
+  v_pk_expr text;
+  v_vis     text;
+  v_n       integer;
+BEGIN
+  -- Never internal bookkeeping tables (names start with "_").
+  IF left(p_table, 1) = '_' THEN
+    RAISE EXCEPTION 'lattice: cannot claim rows in internal table "%"', p_table;
+  END IF;
+  -- p_table must be a real base table in THIS schema (search_path pinned to the
+  -- cloud schema by pinDefinerSearchPath).
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = current_schema() AND c.relname = p_table AND c.relkind = 'r'
+  ) THEN
+    RAISE EXCEPTION 'lattice: no such table "%"', p_table;
+  END IF;
+  -- Must be a CONNECTED table — a member may only claim synced rows, never an
+  -- arbitrary user entity.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = p_table
+       AND column_name = '_source_connector_id'
+  ) THEN
+    RAISE EXCEPTION 'lattice: "%" is not a connected table', p_table;
+  END IF;
+  -- The caller may only claim rows of THEIR OWN connector. Even though the claim
+  -- only ever takes OWNERLESS rows (never another member's owned row), require the
+  -- connector to belong to session_user so a member can't reach into another
+  -- member's connector's not-yet-owned rows by guessing its id.
+  IF NOT EXISTS (
+    SELECT 1 FROM "__lattice_connectors" c
+     WHERE c."id" = p_connector_id AND c."connected_by" = session_user
+  ) THEN
+    RAISE EXCEPTION 'lattice: connector "%" is not yours', p_connector_id;
+  END IF;
+
+  -- Canonical pk expression, table-qualified (t.) so it resolves in both the outer
+  -- SELECT and the correlated NOT EXISTS subquery: CAST(t."col" AS TEXT) joined by
+  -- TAB (chr(9)) — the same serialization the RLS policies use.
+  SELECT string_agg(format('CAST(t.%I AS TEXT)', a.attname), ' || chr(9) || '
+                    ORDER BY array_position(i.indkey, a.attnum))
+    INTO v_pk_expr
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+   WHERE n.nspname = current_schema() AND c.relname = p_table AND i.indisprimary;
+  IF v_pk_expr IS NULL THEN
+    RAISE EXCEPTION 'lattice: cannot claim rows in "%": no primary key', p_table;
+  END IF;
+
+  v_vis := COALESCE((SELECT "default_row_visibility" FROM "__lattice_table_policy"
+                      WHERE "table_name" = p_table), 'private');
+
+  EXECUTE format(
+    'INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
+       SELECT %L, %s, session_user, %L FROM %I t
+        WHERE t."_source_connector_id" = %L
+          AND NOT EXISTS (SELECT 1 FROM "__lattice_owners" o
+                           WHERE o."table_name" = %L AND o."pk" = %s)
+     ON CONFLICT ("table_name","pk") DO NOTHING',
+    p_table, v_pk_expr, v_vis, p_table, p_connector_id, p_table, v_pk_expr);
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n;
+END $fn$;
+GRANT EXECUTE ON FUNCTION lattice_member_claim_ownerless(text, text) TO ${group};
+
 -- Member-safe semantic-search source. A member has NO grant on the internal
 -- embeddings store (\`_lattice_embeddings\`) or the per-table vector index, so it
 -- reads ONLY the chunk vectors for rows it may see, through these SECURITY DEFINER
@@ -887,7 +979,18 @@ export function tableRlsSql(table: string, pkCols: readonly string[], group: str
   const pkNew = pkSqlExpr(pkCols, 'NEW.');
   const pkOld = pkSqlExpr(pkCols, 'OLD.');
   const pkRow = pkSqlExpr(pkCols, '');
-  const trg = `lattice_track_${table.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  // The trigger AND its (schema-global) function share this name. Postgres SILENTLY
+  // truncates any identifier to 63 bytes, so a long connector table name would make
+  // two distinct tables collapse to the same truncated `lattice_track_…` function
+  // name — the second CREATE OR REPLACE FUNCTION overwrites the first, corrupting
+  // ownership on a cloud (SQLite has no such limit, so CI never sees it). Bound the
+  // name deterministically + collision-free exactly as mcpTableName does for tables:
+  // hash-suffix when it would exceed 63 bytes.
+  const rawTrg = `lattice_track_${table.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  const trg =
+    Buffer.byteLength(rawTrg, 'utf8') <= 63
+      ? rawTrg
+      : rawTrg.slice(0, 56) + '_' + createHash('sha1').update(rawTrg).digest('hex').slice(0, 6);
   return `
 CREATE OR REPLACE FUNCTION "${trg}"() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 BEGIN

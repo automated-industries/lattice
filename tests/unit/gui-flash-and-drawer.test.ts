@@ -46,3 +46,35 @@ describe('3.3.5 GUI — no-flash refresh + settings-drawer URL sync', () => {
     expect(guiAppHtml).toContain('else renderRoute({ soft: true })');
   });
 });
+
+describe('5.0.1 GUI — workspace-switch flow + middle-pane flash', () => {
+  it('Bug A: afterMutation skips the view re-render when only chat tables changed', () => {
+    // scheduleRealtimeRefresh accumulates ANY changed table (incl. chat_messages/
+    // chat_threads from streaming) and calls afterMutation, which would re-render the
+    // pane on every turn. afterMutation now returns early when the change is chat-only.
+    expect(guiAppHtml).toContain("t === 'chat_threads' || t === 'chat_messages'");
+    expect(guiAppHtml).toContain('function afterMutation(changedTables)');
+  });
+
+  it('Bug B: the switch overlay is raised immediately on click (both switch entry points)', () => {
+    // The dropdown handler and the Configure Workspaces-row handler both call
+    // showSwitchOverlay() before the /api/workspaces/switch POST — one motion, no
+    // dropdown-then-fullscreen two-step.
+    expect(guiAppHtml).toContain('function showSwitchOverlay()');
+    // reloadEverything still shows it (idempotent); the pre-POST call is the new bit.
+    const overlayCalls = (guiAppHtml.match(/showSwitchOverlay\(\)/g) || []).length;
+    expect(overlayCalls).toBeGreaterThan(1);
+  });
+
+  it('Bug C: reloadEverything refreshes an open Configure drawer for the new workspace', () => {
+    // A gear-opened drawer has no #/settings hash, so the hash-based re-render skips
+    // it; reloadEverything now refreshes the open tab directly via selectDrawerTab.
+    expect(guiAppHtml).toContain('drawerIsOpen()');
+    expect(guiAppHtml).toContain('selectDrawerTab(drawerTab)');
+  });
+
+  it('Bug D: a failed switch reverts to the previous workspace instead of stranding it', () => {
+    // On a switch/reload error, re-switch to the workspace we came from + reload.
+    expect(guiAppHtml).toContain('if (currentId && currentId !== id)');
+  });
+});

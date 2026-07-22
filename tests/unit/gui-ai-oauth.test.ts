@@ -10,6 +10,7 @@ import {
   exchangeCodeForTokens,
   refreshAccessToken,
   isManualPasteRedirect,
+  OAuthExchangeError,
   type OAuthConfig,
 } from '../../src/gui/ai/oauth.js';
 import { isLoopbackHost } from '../../src/gui/assistant-routes.js';
@@ -171,5 +172,64 @@ describe('oauth token endpoints (fetch-backed)', () => {
   it('refreshAccessToken throws (with status) on a non-OK response', async () => {
     mockFetch(401, 'expired');
     await expect(refreshAccessToken(cfg, 'rt')).rejects.toThrow(/token refresh failed \(401\)/);
+  });
+
+  // A rejected fetch (network layer) — the shape Node/Deno throw for a TLS or
+  // connection failure. The bare "fetch failed" string is useless to the user;
+  // exchangeCodeForTokens must classify it.
+  function mockFetchReject(err: Error): void {
+    globalThis.fetch = (() => Promise.reject(err)) as unknown as typeof fetch;
+  }
+
+  it('exchangeCodeForTokens classifies a TLS/certificate failure with an actionable proxy hint', async () => {
+    // Node throws TypeError('fetch failed') with the real cause nested; a
+    // TLS-inspecting proxy surfaces as an untrusted-issuer cert error.
+    mockFetchReject(
+      Object.assign(new TypeError('fetch failed'), {
+        cause: new Error('unable to verify the first certificate'),
+      }),
+    );
+    const err = await exchangeCodeForTokens(cfg, 'c', 'v').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OAuthExchangeError);
+    expect((err as OAuthExchangeError).kind).toBe('tls');
+    expect((err as Error).message).toMatch(/proxy|certificate|root CA/i);
+    expect((err as Error).message).not.toBe('fetch failed');
+  });
+
+  it('exchangeCodeForTokens classifies a Deno-style untrusted-cert failure as TLS', async () => {
+    mockFetchReject(
+      new TypeError('error sending request: invalid peer certificate: UnknownIssuer'),
+    );
+    const err = await exchangeCodeForTokens(cfg, 'c', 'v').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('tls');
+    expect((err as Error).message).toMatch(/proxy|certificate/i);
+  });
+
+  it('exchangeCodeForTokens classifies a non-TLS connection failure as network', async () => {
+    mockFetchReject(
+      Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), {
+          code: 'ECONNREFUSED',
+        }),
+      }),
+    );
+    const err = await exchangeCodeForTokens(cfg, 'c', 'v').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('network');
+    expect((err as Error).message).toMatch(/reach|network|connection/i);
+    expect((err as Error).message).not.toMatch(/certificate|proxy/i);
+  });
+
+  it('exchangeCodeForTokens flags an already-used/expired code (400 invalid_grant)', async () => {
+    mockFetch(400, { error: 'invalid_grant', error_description: 'authorization code expired' });
+    const err = await exchangeCodeForTokens(cfg, 'c', 'v').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('invalid_grant');
+    expect((err as Error).message).toMatch(/again|fresh|expired|used/i);
+  });
+
+  it('a generic non-OK response is still reported with its status (unchanged contract)', async () => {
+    mockFetch(400, 'bad request');
+    const err = await exchangeCodeForTokens(cfg, 'c', 'v').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('http');
+    expect((err as Error).message).toMatch(/token exchange failed \(400\)/);
   });
 });

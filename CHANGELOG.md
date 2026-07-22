@@ -8,6 +8,173 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [5.0.1] — 2026-07-22
+
+### Added
+
+- **The assistant now follows clean, scalable star-schema data-model best practices.** The system
+  prompt gained a robust data-model-design section: one concept per table, facts vs dimensions,
+  normalize repeated entities into their own related tables, deduplicate real-world duplicates
+  (reversibly), keep derived data as live computed views (never stored copies), and document what
+  objects/fields mean — applied whenever the assistant creates or reorganizes objects, preferring
+  additive, reversible steps and leaving an already-clean model alone.
+
+- **Automatic data-model designer.** A single shared `designDataModel` routine now runs automatically
+  after a file batch is ingested and after a source (MCP connector or external database) is connected,
+  keeping the workspace a clean star schema. It is safe by construction: it may make only ADDITIVE,
+  REVERSIBLE structural improvements (relate tables, add live computed views, document meaning) and has
+  NO data-writing or destructive tools (no create/update/delete row, no create/delete entity, no bulk
+  update), so it can never invent, overwrite, or drop data — every change lands in the version-history
+  undo stack. It is conservative + idempotent (does nothing when the model is already clean). The
+  server hooks are DEBOUNCED (a whole batch, or a connect + its initial sync, coalesces into one pass)
+  and FAIL-SOFT (a designer failure — including no model provider configured — is logged and swallowed,
+  and can never affect the ingest/connect it followed).
+
+- **Parameterized-tool MCP connector scaffolding (not yet enabled).** A pattern + seven hand-authored
+  connectors (Atlassian/Jira+Confluence, Gmail, Google Calendar, Google Drive, Slack, Salesforce)
+  land under `src/connectors/`, modeling read tools that require an argument the introspective
+  connector can't supply (e.g. an Atlassian `cloudId`, a Slack `channel`) by running them per-parent
+  with that argument as the sync parent key. Each is covered by a fake-transport test (model schema,
+  per-parent argument injection, pagination termination). They are **held out of the connectors panel
+  for now** — the generic bring-your-own-MCP-URL connector remains the only built-in — because their
+  endpoint URLs, tool names, and result-shape mappers follow documented shapes that still need a
+  live-OAuth spike to confirm (only Atlassian's endpoint is a real MCP server today). Enable one by
+  adding its factory to `builtinConnectors()` once spiked.
+
+### Fixed
+
+- **Cloud row-ownership is safe for long connector table names.** The per-table RLS ownership trigger
+  and its schema-global trigger function shared a `lattice_track_<table>` name with no length bound, so
+  a connector table name approaching Postgres's 63-byte identifier limit could truncate two distinct
+  tables to the same function name — silently corrupting ownership (invisible rows / a member-sync
+  failure). The name is now bounded + hash-disambiguated exactly as connected table names are. (Cloud
+  only; SQLite has no such limit, which is why tests never surfaced it.)
+
+- **An empty `master.key` no longer becomes a blank encryption key.** An existing-but-empty/whitespace
+  `master.key` file was read as `''` and adopted as the key, encrypting secrets under a publicly-
+  derivable blank — the on-disk reader now treats a blank file as absent (matching the env-key guard)
+  and generates a real key instead.
+
+- **The automatic data-model designer only runs on real data changes and can build computed views.**
+  It no longer fires on the boot-time automatic connector/database `sync-if-stale` (which usually syncs
+  nothing), avoiding a wasted model call on every GUI load; and its context now carries the computed-
+  table operations, so its "add a live computed view" step actually applies instead of silently failing.
+
+- **Brain-graph drilling is instant instead of re-fetching every click.** Clicking through the graph
+  re-ran a full set of row fetches on every drill (the focus object's rows plus every linked table's
+  rows), so on a cloud a few layers deep meant a dozen sequential network round-trips and the UI
+  stalled — the "graph freezes after a click or two". The drill now reads rows through a bounded
+  per-table cache, so after the first load clicking through layers reuses the already-fetched pages.
+  The cache is dropped by the existing post-mutation invalidation (so it never serves stale rows) and
+  caches only the same limited pages as before (no extra egress). See
+  `docs/bugs/2026-07-21-graph-drill-refetch.md`.
+
+- **Chat file attach no longer drops the file, invents a message, or hides progress.** Attaching a file
+  then sending could post the message _without_ the file (and a files-only send could no-op with the
+  file already discarded), because the composer cleared the staging tray before ingest and, on ingest
+  failure, sent the typed text alone — silently losing the attachment. Now the tray stays put and Send
+  is locked while the batch ingests (a "Adding…" indicator, covering the single-file case that had no
+  progress bar); on failure the files stay staged with a toast to retry, and the message is never sent
+  without them. A files-only send shows the attached file name(s) instead of a fabricated "Take a look
+  at this file." message, and the assistant no longer asks you to upload a file you already attached.
+  See `docs/bugs/2026-07-21-chat-file-attach.md`.
+
+- **The assistant now answers "most recent / last / latest" questions by date, not by text relevance.**
+  A temporal question ("what was the last meeting with …", "most recent by date") was answered with the
+  relevance-ranked `search` tool, so a newer record with little text (e.g. a bare calendar "HOLD" with
+  no notes) ranked below older, wordier ones and was silently missed — the assistant then confidently
+  named an older record as the latest. The retrieval capability already existed (`list_rows` sorts by
+  the table's real event/date column); the gap was tool selection. The system prompt now routes any
+  time-ordered question to `list_rows` ordered by the date column (`orderDir: "desc"`) with the entity
+  filter — never `search` — re-queries by date when the user says something more recent exists, and
+  says "nothing after <date>" rather than naming an older record. The `search` tool description now
+  states it is relevance-ranked, not time-ordered. See
+  `docs/bugs/2026-07-21-assistant-temporal-queries.md`.
+
+- **A scoped cloud member's connector sync no longer fails with "A record could not be written during
+  sync (possible conflict)".** Enabling row-level security is owner-only, so a connected table a member
+  first syncs is created without its ownership trigger — those first-sync rows get no ownership record.
+  Once the owner later `FORCE`-enables RLS, an ownerless row is visible to no one (including the member
+  who synced it), so the member's next sync upsert hits the now-invisible row and Postgres raises "new
+  row violates row-level security policy" (surfaced as the generic "possible conflict"). The sync now
+  stamps ownership on connector rows the instant they exist: a member-callable `SECURITY DEFINER`
+  claims each newly-synced row for the syncing member (prevent), and the owner-side secure step
+  backfills any still-ownerless rows to the member that synced them (heal, recovering already-broken
+  workspaces). Both only ever touch rows that have no owner yet, so neither can take over another
+  member's row. See `docs/bugs/2026-07-21-connector-sync-ownerless-rls-rows.md`.
+
+- **Connecting an MCP connector no longer fails silently.** The connectors OAuth callback caught its
+  finish exception and returned a generic "Failed to finish connecting. Check the Lattice logs" — but
+  wrote nothing to the logs, so every failure was a black box. It now logs the message + stack, and
+  classifies common causes (an expired/used authorization code, a `redirect_uri` mismatch, a rejected
+  client, a timeout) into an actionable on-page message instead of the generic 500.
+
+- **The desktop app now reads the same credential store as the CLI.** `configDir()` discovered the
+  Lattice root by walking up from the current directory; a GUI app launched from the Dock/Finder has
+  `cwd = /`, so the walk never reached `~/.lattice` and it fell through to the legacy top-level
+  `~/.lattice/` — a stale store in an older envelope the current build can't parse — instead of
+  `~/.lattice/.config/`. Cloud workspaces then failed to open with a misleading "no credential is
+  saved" error even though the CLI/browser worked. When no root is discoverable from the cwd,
+  `configDir()` now anchors to the per-user `~/.lattice/.config` (the same store the CLI uses),
+  falling back to the legacy dir only when it alone holds a key. Also: the `LATTICE_DB_<label>` env
+  var the error message suggests is now actually read by `getDbCredential` (a credential-injection
+  escape hatch), and a present-but-undecryptable machine-local store now warns instead of silently
+  reading as empty.
+
+- **Postgres workspaces now encrypt in transit by default (behavior change).** `PostgresAdapter`
+  built its pool with no `ssl`, so node-postgres — which, unlike libpq, never negotiates TLS unless
+  asked — connected in **cleartext by default**; a self-hosted Postgres workspace transmitted every
+  row unencrypted even when the server offered TLS, and there was no supported way to require or
+  verify it. Now a non-local host defaults to **`sslMode=require`** (encrypt; localhost / unix
+  sockets stay `disable`), and a full `sslMode` (`disable` | `require` | `verify-ca` | `verify-full`)
+  - CA bundle can be set via `PostgresAdapterOptions` (`sslMode`, `sslRootCert`), the
+    `LATTICE_PG_SSLMODE` / `PGSSLMODE` and `LATTICE_PG_SSLROOTCERT` / `PGSSLROOTCERT` env vars, or an
+    `sslmode`/`ssl` query param on the connection string. The negotiated transport is logged, and a
+    non-local plaintext connection warns loudly. **Note:** a server that offers no TLS at all will now
+    fail to connect until you set `sslMode=disable` — secure by default, opt out of encryption
+    explicitly.
+
+- **Workspace switching is smoother and safer.** Four related fixes: (1) the full-screen switch
+  animation now appears the instant you click a workspace — from the dropdown or the Configure
+  panel — instead of a dropdown-closes-then-overlay-appears two-step; (2) switching from the
+  Configure panel now keeps that panel open on the same tab and **refreshes it to the new
+  workspace** (it used to show the previous workspace's data until you closed and reopened it);
+  (3) if a switch fails, Lattice **reverts to the workspace you were on** rather than stranding you
+  on a broken new-workspace view; and (4) the middle pane no longer **flashes while the assistant
+  is streaming** — chat-only writes no longer trigger a spurious re-render of the view.
+
+- **The desktop app now trusts the OS certificate store (fixes connecting behind a corporate
+  proxy).** The desktop runtime's default trust store is its bundled Mozilla roots only, so on a
+  managed device behind a TLS-inspecting proxy (Zscaler, Netskope, an SWG…) — whose corporate root
+  CA lives in the macOS keychain / Windows store but not in the bundle — every HTTPS call to
+  Anthropic ("Connect with Claude", model calls) failed the TLS handshake. The app now defaults
+  `DENO_TLS_CA_STORE` to `system,mozilla` (set both in the app entrypoint and, on the signed macOS
+  `.pkg`, in the bundle's `LSEnvironment` so it applies before the runtime starts), so OS-trusted
+  roots are honored. An explicit value still wins, and a private CA can be pointed at with
+  `DENO_CERT`. Paired with the clearer connect-error message below.
+
+- **A stale `LATTICE_ENCRYPTION_KEY` no longer breaks secret decryption.** `LATTICE_ENCRYPTION_KEY`
+  used to be taken verbatim whenever set (even blank/whitespace), shadowing a working `master.key` so
+  every stored secret then failed to decrypt with an opaque "unable to authenticate data" — a nasty
+  trap because a GUI/desktop app inherits a different environment than the shell, so the desktop app
+  could break while the CLI on the same machine worked. Now the key is resolved consistently for
+  reads **and** writes (never split across two keys): a blank value is treated as unset; and when a
+  non-blank env key and a `master.key` both exist and differ, the key that **actually decrypts this
+  machine's stored data wins** (validated against real ciphertext), so a stale env var can't shadow
+  the working file. When a decrypt still fails on a genuine mismatch, the error now names
+  `LATTICE_ENCRYPTION_KEY` and how to fix it instead of the raw crypto string, and Lattice logs the
+  resolved key **source** (env / file / generated) plus a short non-secret fingerprint once at
+  startup, so a desktop-vs-CLI mismatch is diagnosable at a glance.
+
+- **"Connect with Claude" now explains _why_ a connect fails.** The manual code-paste flow used to
+  report every failure the same way: a valid, complete paste could still return "Paste the full
+  code from the Claude authorization page" when the real cause was an expired or interrupted
+  attempt, and a network or corporate-proxy TLS failure surfaced only as "fetch failed." Failures
+  are now classified — an untrusted TLS certificate (the common blocker behind an HTTPS-inspecting
+  corporate proxy) says exactly that and points you at adding your root CA / contacting IT; an
+  already-used or expired authorization code tells you to reconnect for a fresh one (codes are
+  single-use); and a lost connection attempt is distinguished from a genuinely empty paste.
+
 ### Changed
 
 - **The assistant is "Ask Lattice."** The docked assistant is now labeled **Ask Lattice**

@@ -141,6 +141,84 @@ export function parseTokenResponse(raw: unknown, now = Date.now()): OAuthTokens 
   return tokens;
 }
 
+/** Why a token-endpoint call failed — lets the caller show an actionable message. */
+export type OAuthFailureKind = 'tls' | 'network' | 'invalid_grant' | 'http';
+
+/**
+ * A token-endpoint failure carrying a coarse `kind`, so the GUI can tailor its
+ * message. A bare `fetch failed` is useless to a user behind a corporate
+ * TLS-inspecting proxy — the `kind` lets the connect screen say what actually
+ * went wrong (untrusted cert vs. network down vs. a stale/used code).
+ */
+export class OAuthExchangeError extends Error {
+  readonly kind: OAuthFailureKind;
+  readonly status?: number;
+  constructor(kind: OAuthFailureKind, message: string, status?: number) {
+    super(message);
+    this.name = 'OAuthExchangeError';
+    this.kind = kind;
+    if (status !== undefined) this.status = status;
+  }
+}
+
+// TLS-trust failures read differently across runtimes: Node nests the real cause
+// with an OpenSSL-style `code`; Deno throws an "invalid peer certificate" string.
+// Match either — the actionable hint (an untrusted proxy/root CA) is the same.
+const TLS_TEXT =
+  /certificate|self.?signed|unable to (?:verify|get (?:local )?issuer)|invalid peer certificate|unknownissuer|sec_error|\bssl\b|err_cert|\btls\b/i;
+const TLS_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_UNTRUSTED',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+/** Flatten an error + its `cause` chain into searchable text + collected `code`s. */
+function errorChain(err: unknown): { text: string; codes: string[] } {
+  const parts: string[] = [];
+  const codes: string[] = [];
+  let cur: unknown = err;
+  for (let i = 0; i < 6 && cur instanceof Error; i++) {
+    if (cur.message) parts.push(cur.message);
+    const code = (cur as { code?: unknown }).code;
+    if (typeof code === 'string') codes.push(code);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return { text: parts.join(' | '), codes };
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Classify a thrown fetch (network-layer) error into an actionable
+ * {@link OAuthExchangeError}. A TLS/cert failure is the common blocker on
+ * managed devices behind an HTTPS-inspecting proxy.
+ */
+export function classifyFetchFailure(err: unknown, tokenUrl: string): OAuthExchangeError {
+  const host = hostOf(tokenUrl);
+  const { text, codes } = errorChain(err);
+  if (TLS_TEXT.test(text) || codes.some((c) => TLS_CODES.has(c))) {
+    return new OAuthExchangeError(
+      'tls',
+      `Couldn't establish a trusted secure connection to ${host}. The TLS certificate wasn't trusted — on a managed or corporate network you may be behind a TLS-inspecting proxy whose root certificate this app doesn't trust yet. Add your corporate root CA (Settings → Network) or contact IT, then try again.`,
+    );
+  }
+  return new OAuthExchangeError(
+    'network',
+    `Couldn't reach ${host} (${text || 'network error'}). Check your connection and try again.`,
+  );
+}
+
 /**
  * Exchange an authorization code for tokens (form-encoded, per OAuth spec).
  * `state` is included when present — the manual code-paste flow binds the code
@@ -160,14 +238,31 @@ export async function exchangeCodeForTokens(
     code_verifier: codeVerifier,
   });
   if (state) body.set('state', state);
-  const res = await fetch(cfg.tokenUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  let res: Response;
+  try {
+    res = await fetch(cfg.tokenUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+  } catch (err) {
+    throw classifyFetchFailure(err, cfg.tokenUrl);
+  }
   if (!res.ok) {
-    throw new Error(
-      `token exchange failed (${String(res.status)}): ${(await res.text().catch(() => '')).slice(0, 300)}`,
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    // Single-use codes are the #1 cause of a failed manual paste (the app
+    // restarted, the code was already redeemed, or it aged out). Name it.
+    if (res.status === 400 && /invalid_grant|expired|already/i.test(detail)) {
+      throw new OAuthExchangeError(
+        'invalid_grant',
+        'That authorization code was already used or has expired — codes are single-use. Click "Connect with Claude" again to get a fresh code.',
+        400,
+      );
+    }
+    throw new OAuthExchangeError(
+      'http',
+      `token exchange failed (${String(res.status)}): ${detail}`,
+      res.status,
     );
   }
   return parseTokenResponse(await res.json());
@@ -183,14 +278,21 @@ export async function refreshAccessToken(
     client_id: cfg.clientId,
     refresh_token: refreshToken,
   });
-  const res = await fetch(cfg.tokenUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  let res: Response;
+  try {
+    res = await fetch(cfg.tokenUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+  } catch (err) {
+    throw classifyFetchFailure(err, cfg.tokenUrl);
+  }
   if (!res.ok) {
-    throw new Error(
+    throw new OAuthExchangeError(
+      'http',
       `token refresh failed (${String(res.status)}): ${(await res.text().catch(() => '')).slice(0, 300)}`,
+      res.status,
     );
   }
   const tokens = parseTokenResponse(await res.json());

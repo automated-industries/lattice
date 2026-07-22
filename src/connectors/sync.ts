@@ -22,6 +22,7 @@ import { ensureRuntimeEntityContexts } from '../framework/canonical-context.js';
 import type { GraphEdge } from '../search/graph.js';
 import type { Connector, ConnectedModelDef, ListChangesContext } from './types.js';
 import { getConnector, listConnectors, recordSync } from './registry.js';
+import { shouldClaimOwnerlessRows, claimOwnerlessConnectorRows } from './acl.js';
 
 /** Default staleness window — re-sync on load when older than this. */
 export const DEFAULT_STALE_MS = 3_600_000; // 1 hour
@@ -86,6 +87,15 @@ export async function syncConnector(
   // fetches (e.g. only comments of issues changed since then).
   const prevSyncAt = record.lastSyncAt;
 
+  // On a cloud, a scoped member who first syncs a connector writes into tables whose
+  // RLS/ownership trigger only the OWNER can install — so those first-sync rows are
+  // born with no ownership record and, once the owner FORCE-enables RLS, go invisible
+  // to everyone (including the member) and can't be re-synced (the upsert conflicts
+  // with an invisible row → "possible conflict"). Claim each synced table's ownerless
+  // rows to the member right after its writes. Computed once (a member-only, cloud-
+  // only signal); false for the owner / non-cloud / SQLite, where it's unneeded.
+  const claimOwnerless = await shouldClaimOwnerlessRows(db);
+
   // Open ONE shared connection resource (e.g. a single MCP transport) for the whole
   // sync, so listChanges reuses it across every model + parent key instead of
   // reconnecting per parent (the old N+1). No-op for connectors without the hook.
@@ -103,6 +113,10 @@ export async function syncConnector(
         prevSyncAt,
       );
       result.upserted[m.table] = seen.size;
+      // Stamp ownership on the just-written rows before anything else can hide them
+      // (see claimOwnerless above). Inside the try so a failure fails the sync loudly
+      // rather than leaving silently-ownerless rows.
+      if (claimOwnerless) await claimOwnerlessConnectorRows(db, m.table, connectorId);
       // Edges are derived inline from the rows just synced (bounded to what
       // changed) and batched — never a full-table re-scan of the connected table.
       if (edges.length > 0) {
