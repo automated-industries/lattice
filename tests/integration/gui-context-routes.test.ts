@@ -222,6 +222,104 @@ describe('GET /api/context/resolve', () => {
   });
 });
 
+describe('GET /api/tables/:table/rows/:id/context (source metadata)', () => {
+  it('returns source metadata {type, table, count} for related rollup files', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lattice-ctx-src-'));
+    dirs.push(root);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  agents:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '    outputFile: agents.md',
+        '  tasks:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      title: { type: text }',
+        '      agent_id: { type: uuid }',
+        '    relations:',
+        '      agent: { type: belongsTo, table: agents, foreignKey: agent_id }',
+        '    outputFile: tasks.md',
+        '',
+        // Source metadata requires entity-context definitions: plain `--config`
+        // serving without them is manifest-only, where `source` is (by design)
+        // omitted — see the unit coverage of buildRowContextLocator for that path.
+        'entityContexts:',
+        '  agents:',
+        '    slug: "{{id}}"',
+        '    directoryRoot: Agents',
+        '    files:',
+        '      AGENT.md:',
+        '        source: self',
+        '        template: default-detail',
+        '      TASKS.md:',
+        '        source: { type: hasMany, table: tasks, foreignKey: agent_id }',
+        '        template: default-list',
+        '  tasks:',
+        '    slug: "{{id}}"',
+        '    directoryRoot: Tasks',
+        '    files:',
+        '      TASK.md:',
+        '        source: self',
+        '        template: default-detail',
+        '      AGENTS.md:',
+        '        source: { type: belongsTo, table: agents, foreignKey: agent_id }',
+        '        template: default-list',
+        '',
+      ].join('\n'),
+    );
+    const outputDir = join(root, 'context');
+    // No pre-rendered files: source metadata rides the locator, so unrendered
+    // files still carry it (content arrives on the next render).
+    mkdirSync(outputDir, { recursive: true });
+
+    const s = await startGuiServer({ configPath, outputDir, port: 0, openBrowser: false });
+    servers.push(s);
+
+    // One agent with two tasks pointing at it.
+    const post = async (path: string, body: unknown): Promise<{ id: string }> => {
+      const r = await fetch(`${s.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return (await r.json()) as { id: string };
+    };
+    const agent = await post('/api/tables/agents/rows', { name: 'Alpha' });
+    const task = await post('/api/tables/tasks/rows', { title: 'Task 1', agent_id: agent.id });
+    await post('/api/tables/tasks/rows', { title: 'Task 2', agent_id: agent.id });
+
+    type CtxFiles = { name: string; source?: { type: string; table?: string; count?: number } }[];
+    const filesOf = async (table: string, id: string): Promise<CtxFiles> => {
+      const ctx = await fetch(`${s.url}/api/tables/${table}/rows/${id}/context`);
+      return ((await ctx.json()) as { files: CtxFiles }).files;
+    };
+
+    // Task row: self file carries {type:'self'}; belongsTo file names its table
+    // and counts the populated FK (1).
+    const taskFiles = await filesOf('tasks', task.id);
+    expect(taskFiles.find((f) => f.name === 'TASK.md')?.source).toEqual({ type: 'self' });
+    const agentsFile = taskFiles.find((f) => f.name === 'AGENTS.md');
+    expect(agentsFile?.source?.type).toBe('belongsTo');
+    expect(agentsFile?.source?.table).toBe('agents');
+    expect(agentsFile?.source?.count).toBe(1);
+
+    // Agent row: hasMany file counts the two tasks via a bounded SQL COUNT.
+    const agentFiles = await filesOf('agents', agent.id);
+    const tasksFile = agentFiles.find((f) => f.name === 'TASKS.md');
+    expect(tasksFile?.source?.type).toBe('hasMany');
+    expect(tasksFile?.source?.table).toBe('tasks');
+    expect(tasksFile?.source?.count).toBe(2);
+  });
+});
+
 describe('GET /api/context/tree (junction filtering)', () => {
   // Regression: the Markdown panel used to list a "Files_<entity>" (link table)
   // folder for every relation alongside the real entity — pure noise that read as

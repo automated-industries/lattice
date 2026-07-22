@@ -17,8 +17,10 @@ import type {
   McpToolCall,
   McpToolInfo,
   McpResourceInfo,
+  McpResourceContent,
   McpServerRef,
 } from './transport.js';
+import type { JsonSchemaLike } from './schema-compile.js';
 import {
   LatticeOAuthProvider,
   setMcpServerUrl,
@@ -32,6 +34,14 @@ import {
 interface SdkTool {
   name: string;
   description?: string;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+}
+interface SdkResourceContent {
+  uri?: string;
+  mimeType?: string;
+  text?: string;
+  blob?: string;
 }
 interface SdkContentBlock {
   type: string;
@@ -56,6 +66,7 @@ interface SdkClient {
   listResources?(params?: {
     cursor?: string;
   }): Promise<{ resources?: SdkResource[]; nextCursor?: string }>;
+  readResource?(params: { uri: string }): Promise<{ contents?: SdkResourceContent[] }>;
   getServerVersion?(): { name?: string; title?: string; version?: string } | undefined;
   close(): Promise<void>;
 }
@@ -152,6 +163,12 @@ class DirectMcpTransport implements McpTransport {
     return (res.tools ?? []).map((t) => {
       const info: McpToolInfo = { name: t.name };
       if (t.description !== undefined) info.description = t.description;
+      // Carry the declared schemas through the seam (previously discarded): outputSchema drives
+      // contractual column derivation, inputSchema drives required-arg / two-phase detection.
+      if (t.inputSchema && typeof t.inputSchema === 'object')
+        info.inputSchema = t.inputSchema as JsonSchemaLike;
+      if (t.outputSchema && typeof t.outputSchema === 'object')
+        info.outputSchema = t.outputSchema as JsonSchemaLike;
       return info;
     });
   }
@@ -182,6 +199,20 @@ class DirectMcpTransport implements McpTransport {
       // The resources capability is optional; a server that rejects the request
       // simply has no listable resources. Tool data is unaffected.
       return out;
+    }
+    return out;
+  }
+
+  async readResource(uri: string): Promise<McpResourceContent[]> {
+    if (typeof this.client.readResource !== 'function') return [];
+    const res = await this.client.readResource({ uri });
+    const out: McpResourceContent[] = [];
+    for (const c of res.contents ?? []) {
+      const item: McpResourceContent = { uri: c.uri ?? uri };
+      if (c.mimeType !== undefined) item.mimeType = c.mimeType;
+      if (typeof c.text === 'string') item.text = c.text;
+      if (typeof c.blob === 'string') item.blob = c.blob;
+      out.push(item);
     }
     return out;
   }

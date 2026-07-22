@@ -52,7 +52,7 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 function mountTab(): void {
   document.body.innerHTML =
-    '<div class="db-panel"><div id="mcp-connectors-list"></div>' +
+    '<div class="db-panel"><div id="mcp-catalog"></div><div id="mcp-connectors-list"></div>' +
     '<div id="mcp-connectors-form" class="db-form-host"></div></div>';
 }
 
@@ -72,6 +72,62 @@ describe('MCP connectors panel (jsdom)', () => {
     const clientFields = form.querySelector<HTMLElement>('#mcp-client-fields')!;
     expect(clientFields.hidden).toBe(true);
     expect(document.querySelector('#mcp-connectors-form #mcp-add-url')).toBeTruthy();
+  });
+
+  it('renders the prefab catalog grid and connects a card by catalog id', async () => {
+    const calls: FetchCall[] = [];
+    loadPanel(calls);
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.fetchJson = () =>
+      Promise.resolve({
+        connectors: [],
+        oauthLoopbackAvailable: true,
+        catalog: [
+          {
+            id: 'atlassian',
+            label: 'Jira & Confluence',
+            icon: 'data:image/svg+xml,x',
+            source: 'curated',
+          },
+          { id: 'weather', label: 'Weather', icon: 'https://x/y.png', source: 'registry' },
+        ],
+      });
+    (w.renderToolkitCatalog as () => void)();
+    await flush();
+    const grid = document.querySelector('#mcp-catalog')!;
+    expect(grid.textContent).toContain('Jira & Confluence'); // curated card
+    expect(grid.querySelector('.conn-cat-more')).toBeTruthy(); // registry under "browse more"
+    expect(grid.textContent).toContain('Weather');
+    // Clicking a card connects by catalog id (URL + scope resolved server-side).
+    const card = grid.querySelector<HTMLButtonElement>('button[data-cat-id="atlassian"]')!;
+    card.click();
+    await flush();
+    const connect = calls.find((c) => c.url.includes('/connect'));
+    expect(connect).toBeTruthy();
+    expect(JSON.parse(connect!.body ?? '{}')).toMatchObject({ catalogId: 'atlassian' });
+  });
+
+  it('disables catalog cards when the loopback callback is unavailable (hosted session)', async () => {
+    const calls: FetchCall[] = [];
+    loadPanel(calls);
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.fetchJson = () =>
+      Promise.resolve({
+        connectors: [],
+        oauthLoopbackAvailable: false,
+        catalog: [
+          { id: 'atlassian', label: 'Jira & Confluence', icon: 'data:x', source: 'curated' },
+        ],
+      });
+    (w.renderToolkitCatalog as () => void)();
+    await flush();
+    const card = document.querySelector<HTMLButtonElement>(
+      '#mcp-catalog button[data-cat-id="atlassian"]',
+    )!;
+    expect(card.disabled).toBe(true);
+    card.click();
+    await flush();
+    expect(calls.find((c) => c.url.includes('/connect'))).toBeUndefined(); // no connect posted
   });
 
   it('lists connected servers as a multi-column table with name, server, items', async () => {

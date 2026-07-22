@@ -13,6 +13,7 @@
  */
 
 import type { TableDefinition } from '../types.js';
+import type { Lattice } from '../lattice.js';
 
 /**
  * A foreign-key relation on a connected model, used to auto-build graph edges
@@ -172,6 +173,13 @@ export interface Connector {
    */
   beginSyncSession?(connectionId: string): Promise<void>;
   endSyncSession?(connectionId: string): Promise<void>;
+  /**
+   * Optional: reconcile this connector's model set against the live source before a sync
+   * (re-introspect + diff + additive migrate). Called inside the sync session so it can reuse the
+   * open connection; the connector self-gates how often it re-discovers. Additive + never
+   * destructive — new kinds/columns are added, a vanished kind is frozen (kept), never dropped.
+   */
+  reconcileModels?(db: Lattice, connectionId: string, toolkit: string): Promise<void>;
   /** Revoke a connected account (teardown). May retain non-secret reconnect state. */
   disconnect(connectionId: string): Promise<void>;
   /**
@@ -278,6 +286,8 @@ export interface McpConnector extends Connector {
       serverUrl?: string;
       clientInfo?: { client_id: string; client_secret?: string };
       targetConnectorId?: string;
+      /** OAuth scopes to request (e.g. a prefab catalog entry's curated scopes). */
+      scope?: string;
     },
   ): Promise<McpBeginResult>;
   /**

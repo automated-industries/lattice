@@ -27,6 +27,29 @@ export interface McpColumnDesc {
   sqlSpec: McpSqlSpec;
 }
 
+/**
+ * How a required argument of a parameterized read tool is supplied when fanning out (two-phase).
+ * A tool whose useful read requires an argument the introspective sampler can't guess (an Atlassian
+ * `cloudId`, a Slack `channel`) is modeled as a per-parent kind whose arg is bound one of these ways.
+ */
+export interface McpArgBinding {
+  /** The required input arg name, e.g. `cloudId`. */
+  arg: string;
+  /** How the value is supplied. */
+  via: 'discovery' | 'enum' | 'default' | 'context' | 'unresolved';
+  /** via `'discovery'` — the parent kind whose rows supply the arg, and the field to read. */
+  sourceKind?: string;
+  sourceField?: string;
+  /** via `'enum'` — the bounded set of valid values (fanned out, capped). */
+  values?: string[];
+  /** via `'default'` — the schema default, used statically. */
+  value?: string;
+  /** via `'context'` — the operator-supplied connection-context key. */
+  contextKey?: string;
+  /** via `'unresolved'` — why it couldn't be bound (surfaced, tool skipped — never silently dropped). */
+  reason?: string;
+}
+
 /** One record kind discovered on the server → one typed Lattice table. */
 export interface McpKindDesc {
   /** Record kind slug (the table's identity within the connection), e.g. `deduction_types`. */
@@ -37,12 +60,42 @@ export interface McpKindDesc {
   columns: McpColumnDesc[];
   /** The item field used as the natural key, or `_pk` when synthesized (no stable id field). */
   naturalKey: string;
+  /**
+   * Where the columns came from: `'contractual'` = compiled from the tool's declared
+   * `outputSchema` (authoritative — the server MUST conform); `'provisional'` = inferred by
+   * sampling returned items (heuristic). Absent is read as `'provisional'` (v1 descriptors).
+   * A later schema publish PROMOTES a provisional kind to contractual on the next reconcile.
+   */
+  provenance?: 'contractual' | 'provisional';
+  /** What produces this kind's rows: a read `'tool'` (default) or the server's `'resources'` list. */
+  origin?: 'tool' | 'resources';
+  /** For a parameterized read tool: how each required arg is supplied (see {@link McpArgBinding}). */
+  argBindings?: McpArgBinding[];
+  /**
+   * The single discovery (arg-free) kind this kind fans out over — its rows' natural keys are
+   * passed as the `'discovery'`-bound arg. Present only for a per-parent kind; `buildMcpModelDefs`
+   * turns it into a `ConnectedModelDef.parent` so the existing per-parent sync fan-out drives it.
+   */
+  parentKind?: string;
+  /** Set by drift when a kind vanished from the live server: the table + rows are KEPT (frozen),
+   *  writes stop (typed `listChanges` yields nothing). Data is never destroyed on a config change. */
+  retired?: boolean;
 }
 
 export interface McpSchemaDescriptor {
+  /**
+   * Descriptor schema version. Absent / `1` = the original sampled-only descriptor; `2` adds
+   * contractual columns (outputSchema), a resources kind, and two-phase arg bindings. A v1
+   * descriptor loads unchanged (kinds default to sampled/tool) and is promoted on the next reconcile.
+   */
+  version?: number;
   /** Sanitized slug namespacing this connection's tables (from the server brand / display name). */
   prefix: string;
   kinds: McpKindDesc[];
+  /** Read tools whose required args could not be bound (surfaced, never silently dropped). */
+  unresolved?: { tool: string; reason: string }[];
+  /** ISO timestamp of the last (re)introspection — gates how often drift re-discovers. */
+  introspectedAt?: string;
 }
 
 const MCP_TOOLKIT_PREFIX = 'mcp:';
@@ -91,6 +144,28 @@ export function clearMcpSchemaDescriptor(connectionId: string): void {
   deleteAssistantCredential(schemaKind(connectionId));
 }
 
+const ctxKind = (connectionId: string): string => `mcp_ctx:${connectionId}`;
+
+/**
+ * Operator-supplied connection context — values a required tool arg needs that no discovery tool
+ * supplies (a workspace/org id). Captured once at connect and read at introspect + sync to bind an
+ * otherwise open-domain arg. Empty when none is captured (the arg stays `unresolved`).
+ */
+export function getMcpConnectionContext(connectionId: string): Record<string, string> {
+  const raw = getAssistantCredential(ctxKind(connectionId));
+  if (!raw) return {};
+  try {
+    const o = JSON.parse(raw) as unknown;
+    return o && typeof o === 'object' && !Array.isArray(o) ? (o as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function setMcpConnectionContext(connectionId: string, ctx: Record<string, string>): void {
+  setAssistantCredential(ctxKind(connectionId), JSON.stringify(ctx));
+}
+
 /** The imported Lattice table name for a record kind (namespaced by the connection prefix). */
 export function mcpTableName(prefix: string, kind: string): string {
   const raw = `mcp_${prefix}_${slugify(kind)}`;
@@ -108,7 +183,7 @@ export function mcpTableName(prefix: string, kind: string): string {
 // Reserved column names never modeled as their own data column: the lifecycle/base columns,
 // plus `data` — which is the always-present JSON overflow column (a source field literally
 // named `data` would otherwise be overwritten by the whole-item blob). Compared case-folded.
-const RESERVED = new Set(['id', '_pk', 'deleted_at', 'created_at', 'updated_at', 'data']);
+export const RESERVED = new Set(['id', '_pk', 'deleted_at', 'created_at', 'updated_at', 'data']);
 
 /**
  * A case-folded view of an object: keys lowercased, later duplicates winning. Modeled column
@@ -124,7 +199,7 @@ export function lowerKeys(o: Record<string, unknown>): Record<string, unknown> {
 /** Stable id-ish fields preferred, in order, as the natural key when present + scalar. `name`
  *  is intentionally excluded — it is not a stable/unique identifier, so a kind with only a name
  *  synthesizes `_pk` instead. */
-const ID_FIELDS = ['id', 'key', 'uid', 'guid', 'slug'];
+export const ID_FIELDS = ['id', 'key', 'uid', 'guid', 'slug'];
 
 /** The SQL spec for a JSON value: numbers → INTEGER/REAL, everything else → TEXT (JSON for objects). */
 function specFor(v: unknown): McpSqlSpec {
@@ -180,6 +255,8 @@ export function inferKind(kind: string, tool: string, items: unknown[]): McpKind
     tool,
     naturalKey,
     columns: [...cols.entries()].map(([name, sqlSpec]) => ({ name, sqlSpec })),
+    provenance: 'provisional',
+    origin: 'tool',
   };
 }
 
@@ -204,6 +281,26 @@ export function buildMcpModelDefs(
     for (const c of k.columns) {
       if (c.name === k.naturalKey) continue;
       columns[c.name] = c.sqlSpec;
+    }
+    // Two-phase per-parent kind: stamp the FK child column + a `parent` link so the EXISTING
+    // per-parent sync fan-out (sync.ts) drives it — the parent kind's rows supply the argument the
+    // introspective sampler couldn't guess. No sync-engine change: an introspected parent link is
+    // just a `ConnectedModelDef.parent`, identical in shape to a hand-authored connector's.
+    let parent: ConnectedModelDef['parent'];
+    if (k.parentKind) {
+      const p = descriptor.kinds.find((d) => d.kind === k.parentKind);
+      const disc = (k.argBindings ?? []).find(
+        (b) => b.via === 'discovery' && b.sourceKind === k.parentKind,
+      );
+      if (p && disc) {
+        const childCol = disc.arg.toLowerCase();
+        if (!(childCol in columns)) columns[childCol] = 'TEXT';
+        parent = {
+          table: mcpTableName(descriptor.prefix, p.kind),
+          keyColumn: p.naturalKey,
+          childColumn: childCol,
+        };
+      }
     }
     columns.data = 'TEXT'; // JSON overflow for nested/unmodeled fields
     const ftsFields = k.columns
@@ -230,6 +327,7 @@ export function buildMcpModelDefs(
       table: mcpTableName(descriptor.prefix, k.kind),
       naturalKey: k.naturalKey,
       definition,
+      ...(parent ? { parent } : {}),
     };
   });
 }

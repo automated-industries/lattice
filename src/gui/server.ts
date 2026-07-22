@@ -48,9 +48,7 @@ import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity
 import type { ChatProgressEnvelope } from './chat-progress.js';
 import { resolvedProviderKind } from './ai/provider.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
-import { scheduleDataModelDesign, type DesignJob } from './ai/data-model-designer.js';
-import { resolveLlmClient } from './ai/provider.js';
-import { ASSISTANT_HIDDEN_TABLES, type DispatchCtx } from './ai/dispatch.js';
+import { scheduleDataModelPlan } from './planner/run.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
@@ -58,6 +56,7 @@ import { dispatchImportRoute, readImportSourceFromFile } from './import-routes.j
 import { importDataFaithfully } from './import-auto.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
 import { dispatchDbSourcesRoute } from './db-sources-routes.js';
+import { sharedPrefabCatalog } from '../connectors/prefab/index.js';
 import {
   builtinConnectors,
   resolveConnectorIdentity,
@@ -69,6 +68,7 @@ import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
+import { handleDataModelRoutes, type DataModelRoutesDeps } from './data-model-routes.js';
 import {
   createComputedTable,
   updateComputedTable,
@@ -186,18 +186,29 @@ export interface StartGuiServerOptions {
   /**
    * Override the detected install context for the update service. The desktop
    * shell passes `{ kind:'desktop', installable:false, … }` so the status route
-   * reports the desktop surface (→ `action:'restart-to-update'`) rather than
-   * "unknown / not installable".
+   * reports the desktop surface (→ auto-download + `install-and-restart`) rather
+   * than "unknown / not installable".
    */
   updateContext?: InstallContext;
   /**
-   * Desktop shell only: apply a pending update via the bundled binary updater
-   * (download + relaunch). Wired to `POST /api/update/apply` when the surface is
-   * the desktop app, so the "Restart to update" pill triggers the real updater
-   * instead of the npm install path (which the desktop can't use). Omitted ⇒ the
-   * apply route uses the npm path / reports "not available".
+   * Desktop shell only: download + stage the signed OS installer for a newer
+   * version, reporting byte progress. Wired into the update service, which
+   * auto-triggers it in the background whenever a check finds a newer version
+   * (the compiled desktop app can't self-patch, so it pulls the installer
+   * instead). THROWS on failure so the GUI shows an error, never a stuck spinner.
    */
-  desktopApplyUpdate?: () => void;
+  downloadUpdate?: (
+    version: string,
+    onProgress: (done: number, total: number | null) => void,
+  ) => Promise<void>;
+  /**
+   * Desktop shell only: launch the installer staged by {@link downloadUpdate} and
+   * quit the app so the installer can replace the running bundle. Wired to
+   * `POST /api/update/apply` once the background download reaches `phase:'ready'`
+   * (`action:'install-and-restart'`). Omitted ⇒ the apply route reports "not
+   * available".
+   */
+  applyDownloadedUpdate?: () => void;
   /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
@@ -654,6 +665,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const computedDeps: ComputedRoutesDeps = { host };
+  const dataModelDeps: DataModelRoutesDeps = { host };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
   const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
@@ -807,19 +819,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (method === 'POST' && pathname === '/api/update/apply') {
           // Manual trigger behind the "update available" pill. The right action
           // depends on the surface (reported as `status.action`):
-          //  - desktop (`restart-to-update`): run the bundled binary updater,
-          //    which downloads + relaunches — the npm install path can't touch a
-          //    compiled app.
+          //  - desktop (`install-and-restart`): the service has already
+          //    AUTO-DOWNLOADED the signed installer in the background; launch it
+          //    and quit so it can replace the running app (the compiled app can't
+          //    self-patch, so npm-install can't touch it and there is nothing to
+          //    "relaunch onto" in-process).
           //  - npm (`upgrade-in-place`): force a check that installs the latest
           //    and restarts the GUI onto it. The install is slow (an npm
           //    install), so kick it off without blocking — `checkNow(true)`
           //    emits its own progress/errors (update-applied / update-error).
-          //  - anything else (no update, auto-update disabled, or a surface that
-          //    can't self-update): answer with a plain "can't", not a crash, so
-          //    the client can tell the user how to upgrade by hand.
+          //  - anything else (no update, auto-update disabled, still downloading,
+          //    or a surface that can't self-update): answer with a plain "can't",
+          //    not a crash, so the client can tell the user how to upgrade.
           const st = updateService?.status();
-          if (st?.action === 'restart-to-update' && options.desktopApplyUpdate) {
-            options.desktopApplyUpdate();
+          if (st?.action === 'install-and-restart' && options.applyDownloadedUpdate) {
+            options.applyDownloadedUpdate();
             sendJson(res, { ok: true, status: st });
           } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
@@ -850,52 +864,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // with `activeRef` at every swap site so the next request sees the swap.
         let active: ActiveDb = activeRef;
 
-        // Automatic data-model designer (Bug 11): after a data-changing ingest or a
-        // source connect, schedule a DEBOUNCED, FAIL-SOFT design pass so the workspace
-        // stays a clean star schema. Reads `active` at call time; a whole file batch (or
-        // a connect + its initial sync) coalesces into ONE pass; the pass is best-effort
-        // and can never affect the ingest/connect it followed (see scheduleDataModelDesign).
-        // The designer has only additive, reversible tools (relate tables, add computed
-        // views, document meaning) — it can never invent, overwrite, or drop data.
-        const triggerDataModelDesign = (): void => {
+        // Automatic data-model planner: after a data-changing ingest or a source
+        // connect, schedule a DEBOUNCED, FAIL-SOFT pass so the workspace stays a clean
+        // star schema. Reads `active` at call time; a whole file batch (or a connect +
+        // its initial sync) coalesces into ONE pass; the pass is best-effort and can
+        // never affect the ingest/connect it followed (see scheduleDataModelPlan). The
+        // planner is DETERMINISTIC and needs no model provider — it auto-applies only
+        // reversible relationships and surfaces the rest as reviewable proposals.
+        const triggerDataModelPlan = (): void => {
           const a = active;
-          scheduleDataModelDesign(a.configPath, async (): Promise<DesignJob | null> => {
-            const client = await resolveLlmClient(a.db);
-            if (!client) return null; // no model provider → nothing to run
-            const validTables = new Set(
-              [...a.validTables, ...a.db.getRegisteredTableNames()].filter(
-                (t) =>
-                  !ASSISTANT_HIDDEN_TABLES.has(t) &&
-                  !t.startsWith('__lattice') &&
-                  !t.startsWith('_lattice'),
-              ),
-            );
-            const dispatch: DispatchCtx = {
-              db: a.db,
-              feed: a.feed,
-              validTables,
-              junctionTables: a.junctionTables,
-              computedTables: a.computedTables,
-              softDeletable: a.softDeletable,
-              createEntity: (name, columns) => createUserEntity(a, name, columns, sessionId),
-              createJunction: (x, y) => createUserJunction(a, x, y, sessionId),
-              // The designer's computed-view tools (preview/create_computed_table) need
-              // these closures exactly as the chat dispatch provides them — without
-              // them every computed-view write silently fails.
-              computedOps: {
-                list: () => listComputedTables(a),
-                preview: (def, limit) => previewComputedTable(a, def, limit),
-                create: (name, def) => createComputedTable(a, name, def, sessionId),
-                update: (name, def) => updateComputedTable(a, name, def, sessionId),
-                refresh: (name) => refreshComputedTable(a, name, { sessionId }),
-                delete: (name) => deleteComputedTable(a, name, sessionId),
-              },
-              configPath: a.configPath,
-              outputDir: a.outputDir,
-              aggressiveness: getAggressiveness(),
-            };
-            return { client, dispatch };
-          });
+          scheduleDataModelPlan(a.configPath, () => Promise.resolve({ active: a, sessionId }));
         };
 
         // Per-request handle the route modules will take as their third arg.
@@ -949,6 +927,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           { handle: (req, res, ctx) => handleSchemaRoutes(req, res, ctx, schemaDeps) },
           // ── Computed tables: CRUD + preview + refresh (computed-routes.ts) ──
           { handle: (req, res, ctx) => handleComputedRoutes(req, res, ctx, computedDeps) },
+          // ── Data-model planner: plan / apply / dismiss (data-model-routes.ts) ──
+          { handle: (req, res, ctx) => handleDataModelRoutes(req, res, ctx, dataModelDeps) },
           // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
           { handle: (req, res, ctx) => handleHistoryRoutes(req, res, ctx, historyDeps) },
           // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──
@@ -1217,7 +1197,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 method,
               });
               // After a data-changing ingest, keep the model a clean star schema.
-              if (ingestHandled && method === 'POST') triggerDataModelDesign();
+              if (ingestHandled && method === 'POST') triggerDataModelPlan();
               return ingestHandled;
             },
           },
@@ -1258,7 +1238,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 feed: active.feed,
               });
               // After a folder ingest, keep the model a clean star schema.
-              if (sourcesHandled && method === 'POST') triggerDataModelDesign();
+              if (sourcesHandled && method === 'POST') triggerDataModelPlan();
               return sourcesHandled;
             },
           },
@@ -1298,13 +1278,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 connectors: builtinConnectors(),
                 outputDir: active.outputDir,
                 connectedBy,
+                catalog: sharedPrefabCatalog(),
               });
               // After connecting/refreshing a source, normalize the new tables into
               // the star schema (debounced + fail-soft; a no-op if nothing changed).
               // Skip the boot-time automatic sync-if-stale (fired on every GUI load,
               // usually syncs nothing) — only a real connect/refresh should design.
               if (connectorsHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
-                triggerDataModelDesign();
+                triggerDataModelPlan();
               }
               return connectorsHandled;
             },
@@ -1327,7 +1308,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // After connecting an external database, normalize its imported tables.
               // Skip the boot-time automatic sync-if-stale (see the connectors route).
               if (dbSourcesHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
-                triggerDataModelDesign();
+                triggerDataModelPlan();
               }
               return dbSourcesHandled;
             },
@@ -1449,6 +1430,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       selfUpdate: options.selfUpdate ?? false,
       ...(options.updateCheck ? { check: options.updateCheck } : {}),
       ...(options.updateContext ? { context: options.updateContext } : {}),
+      ...(options.downloadUpdate ? { downloadUpdate: options.downloadUpdate } : {}),
+      ...(options.applyDownloadedUpdate
+        ? { applyDownloadedUpdate: options.applyDownloadedUpdate }
+        : {}),
     });
   }
 

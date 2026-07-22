@@ -37,9 +37,11 @@ test('the MCP Connectors tab renders the panel with the add-by-URL form', async 
   await expect(form.locator('#mcp-client-fields')).toBeHidden();
   await expect(form.locator('button[data-conn-act="connect"]')).toBeVisible();
 
-  // No branded connectors and no left-sliding connectors dialog anymore.
-  await expect(page.getByText('Gmail', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Jira', { exact: true })).toHaveCount(0);
+  // The prefab catalog grid renders curated flagship cards (connect is by catalog
+  // id — the server resolves the pinned URL + scopes); no left-sliding dialog.
+  await expect(page.locator('#mcp-catalog')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('Jira & Confluence', { exact: true })).toBeVisible();
+  await expect(page.getByText('Gmail', { exact: true })).toBeVisible();
   await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 
   // The scope bug surfaced as an uncaught "fetchJson is not defined" before the

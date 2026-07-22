@@ -128,4 +128,24 @@ describe('record markdown write-back — PUT /api/tables/:t/rows/:id/context', (
     const missingRow = await putContext(s, 'no-such-id', '---\ntitle: X\n---\n');
     expect(missingRow.status).toBe(404);
   });
+
+  it('round-trips content with lattice:// links without corruption (links as free-form prose)', async () => {
+    const s = await boot();
+    const id = await createNote(s, { title: 'Keep', body: 'keep' });
+
+    // When a link appears in free-form prose (edge case), it round-trips as literal text.
+    // This verifies that the link syntax doesn't confuse the parser.
+    const contentWithLink =
+      '---\ntitle: Updated\n---\n\n# Keep\n\nbody: new body with [link](lattice://other/id-123)\n';
+    const res = await putContext(s, id, contentWithLink);
+    expect(res.status).toBe(200);
+    const result = (await res.json()) as { updated: number; fields: string[] };
+    expect(result.updated).toBe(2); // title + body both updated
+    expect(result.fields.sort()).toEqual(['body', 'title']);
+
+    const row = await getNote(s, id);
+    expect(row.title).toBe('Updated');
+    // The link is part of the body value (free-form prose), not structured
+    expect(row.body).toBe('new body with [link](lattice://other/id-123)');
+  });
 });

@@ -8,16 +8,25 @@
 import { resolve, join, sep } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import type { EntityContextDefinition } from '../schema/entity-context.js';
+import type { Lattice } from '../lattice.js';
 import { entityFileNames, type LatticeManifest } from '../lifecycle/manifest.js';
 
 /** Same value as `SECRET_MASK` in gui/ai/handlers/read.ts — kept local here to
  *  avoid a circular import (read.ts imports {@link readRowContext} from this file). */
 const SECRET_MASK = '••••••••';
 
+/** Per-file source metadata: what kind of data and table the file represents. */
+export interface ContextFileSource {
+  type: 'self' | 'hasMany' | 'manyToMany' | 'belongsTo' | 'custom' | 'enriched';
+  table?: string; // source table for hasMany/manyToMany/belongsTo; null for self/custom/enriched
+  count?: number | null; // row count for the source; null/omitted for custom/enriched or when count is unbounded
+}
+
 export interface ContextFile {
   name: string;
   path: string;
   content: string;
+  source?: ContextFileSource; // source metadata (added in 5.0.0+)
 }
 
 /**
@@ -33,6 +42,8 @@ export interface RowContextLocator {
   slug: string;
   /** Filenames inside the entity directory to surface. */
   fileNames: string[];
+  /** Optional mapping of filename to its source metadata (added in 5.0.0+). */
+  fileSources?: Record<string, ContextFileSource>;
 }
 
 /**
@@ -65,10 +76,27 @@ export function buildRowContextLocator(
   manifest: LatticeManifest | null,
 ): RowContextLocator | null {
   if (schemaDef) {
+    // Extract source metadata from the schema definition: each file's source type
+    // and table (if applicable). Counts are computed separately and merged in later.
+    const fileSources: Record<string, ContextFileSource> = {};
+    for (const [filename, fileSpec] of Object.entries(schemaDef.files)) {
+      const src = fileSpec.source;
+      const source: ContextFileSource = { type: src.type };
+      if (src.type === 'hasMany') {
+        source.table = src.table;
+      } else if (src.type === 'manyToMany') {
+        source.table = src.remoteTable;
+      } else if (src.type === 'belongsTo') {
+        source.table = src.table;
+      }
+      // count is computed separately when needed (see computeContextFileSourceCounts)
+      fileSources[filename] = source;
+    }
     return {
       directoryRoot: schemaDef.directoryRoot ?? '',
       slug: schemaDef.slug(row),
       fileNames: Object.keys(schemaDef.files),
+      fileSources,
     };
   }
   const manifestEntry = manifest?.entityContexts[table];
@@ -85,14 +113,15 @@ export function buildRowContextLocator(
  * Read the rendered context files for one row (relative to `outputDir`), with
  * their content if present on disk. Unrendered files come back with empty
  * content. Secret-column `key: value` lines are redacted so a masked value never
- * leaks through the rendered markdown.
+ * leaks through the rendered markdown. Optionally includes source metadata
+ * (type, table, count) from the locator's fileSources map.
  */
 export function readRowContext(
   outputDir: string,
   locator: RowContextLocator,
   secretCols: Set<string>,
 ): ContextFile[] {
-  const { slug, directoryRoot, fileNames } = locator;
+  const { slug, directoryRoot, fileNames, fileSources } = locator;
   const entityDir = resolve(outputDir, directoryRoot, slug);
   // Defence in depth: the slug must not escape outputDir.
   const resolvedBase = resolve(outputDir);
@@ -102,7 +131,11 @@ export function readRowContext(
   return fileNames.map((filename) => {
     const absPath = join(entityDir, filename);
     const relPath = [directoryRoot, slug, filename].join('/');
-    if (!existsSync(absPath)) return { name: filename, path: relPath, content: '' };
+    if (!existsSync(absPath)) {
+      const file: ContextFile = { name: filename, path: relPath, content: '' };
+      if (fileSources?.[filename]) file.source = fileSources[filename];
+      return file;
+    }
     let content = readFileSync(absPath, 'utf8');
     for (const col of secretCols) {
       // Redact the secret value in EVERY shape the renderer can emit it: the
@@ -128,6 +161,89 @@ export function readRowContext(
         )
         .replace(new RegExp(`^(${esc}:\\s*).*?\\r?$`, 'gm'), `$1${SECRET_MASK}`);
     }
-    return { name: filename, path: relPath, content };
+    const file: ContextFile = { name: filename, path: relPath, content };
+    if (fileSources?.[filename]) file.source = fileSources[filename];
+    return file;
   });
+}
+
+/**
+ * Compute row counts for context file sources. For hasMany/manyToMany/belongsTo
+ * sources, issues a bounded COUNT(*) query; for custom/self/enriched sources,
+ * skips counting. Updates the fileSources map in-place with count values.
+ *
+ * Bounded by construction: each source specifies its foreign key and table,
+ * so the queries stay highly selective (no full-table scans).
+ *
+ * @param db Lattice instance for running queries
+ * @param table The primary table name
+ * @param row The row being rendered (needed to resolve FK values for belongs-to)
+ * @param schemaDef The entity context definition (contains source specs)
+ * @param fileSources Mutable map of filename → source metadata (counts are added here)
+ */
+export async function computeContextFileSourceCounts(
+  db: Lattice,
+  table: string,
+  row: Record<string, unknown>,
+  schemaDef: EntityContextDefinition | undefined,
+  fileSources: Record<string, ContextFileSource>,
+): Promise<void> {
+  if (!schemaDef) return; // manifest-only path: counts unavailable
+
+  // A composite PK falls back to its first column: relation sources reference a
+  // single column, so the first PK column is the only usable join key here.
+  const pkRaw = db.getPrimaryKey(table);
+  const pkCol = Array.isArray(pkRaw) ? pkRaw[0] : pkRaw;
+
+  for (const [filename, fileSpec] of Object.entries(schemaDef.files)) {
+    const source = fileSources[filename];
+    if (
+      !source ||
+      source.type === 'self' ||
+      source.type === 'custom' ||
+      source.type === 'enriched'
+    ) {
+      continue; // counts not applicable
+    }
+
+    try {
+      let count: number | null = null;
+
+      if (source.type === 'hasMany' && fileSpec.source.type === 'hasMany') {
+        // COUNT(*) FROM <source.table> WHERE <fk> = ?
+        const fk = fileSpec.source.foreignKey;
+        const refCol = fileSpec.source.references ?? pkCol ?? 'id';
+        const pkVal = row[refCol];
+        if (pkVal != null) {
+          count = await db.count(fileSpec.source.table, {
+            filters: [{ col: fk, op: 'eq', val: pkVal }],
+          });
+        }
+      } else if (source.type === 'manyToMany' && fileSpec.source.type === 'manyToMany') {
+        // COUNT(*) FROM <junctionTable> WHERE localKey = ?
+        // (junction-row count is the display semantic for m2m rollups)
+        const src = fileSpec.source;
+        const refCol = src.references ?? pkCol ?? 'id';
+        const pkVal = row[refCol];
+        if (pkVal != null) {
+          // Bounded count: only junction rows matching localKey.
+          count = await db.count(src.junctionTable, {
+            filters: [{ col: src.localKey, op: 'eq', val: pkVal }],
+          });
+        }
+      } else if (source.type === 'belongsTo' && fileSpec.source.type === 'belongsTo') {
+        // belongsTo always returns 0 or 1 row. Check if the FK is populated.
+        const fk = fileSpec.source.foreignKey;
+        const fkVal = row[fk];
+        count = fkVal != null ? 1 : 0;
+      }
+
+      if (count !== null) {
+        source.count = count;
+      }
+    } catch {
+      // Best-effort: if the count query fails (permissions, schema issues),
+      // degrade gracefully and leave count undefined.
+    }
+  }
 }

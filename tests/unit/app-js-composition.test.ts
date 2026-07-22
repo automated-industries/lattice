@@ -514,8 +514,31 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // 5.0.x release-review fixes: staging-lock guards Enter (submitComposer order) + the
 // brain-graph drill cache (graphRowCache) is cleared on workspace switch and
 // invalidated via invalidate()/afterMutation. Length + hash recaptured.
-const ORIGINAL_LENGTH = 739440;
-const ORIGINAL_SHA256 = 'e82e1247035a4f026d52a5c8438b5d994c2cc08029ca64aab001c7aa9617a4e9';
+// data-model planner: boot now fires a fire-and-forget on-open sweep
+// (GET /api/data-model/plan) after the stale-connector syncs; and the Data Model
+// tab renders a review panel in #dm-panel (auto-applied fixes + Apply/Dismiss
+// suggestions from the planner). Length + hash recaptured (combined on this v5.1
+// branch with the desktop auto-update status-indicator client changes).
+// v5.1 merge — traceable rendered context (PR #176) folded in: lattice:// references in
+// the record context doc render as trace chips opening a provenance card (row fields +
+// tier + Open), per-file source chips summarize each context file's origin table/count;
+// chat answers use inline word-links that open the provenance card in place, text_final
+// replaces accumulated deltas with deterministic trace links, and a lattice-ref may carry
+// ?f=<column> so the record view scroll-flashes that field (files shingle-match the
+// passage). Length + hash recaptured for the combined v5.1 bundle (planner panel +
+// desktop auto-update + traceable context).
+// v5.1 managed-auth token display: the account menu + the Configure→Assistant
+// panel now show the prepaid token balance (read from /api/assistant/config's new
+// balanceCents, which the config route fetches from the metering proxy's
+// /v1/balance) with an "Add tokens" link; and the chat renders a friendly red
+// "out of tokens" notice for an insufficient_credit 402 (with a top-up link)
+// instead of the raw provider error. Length + hash recaptured.
+// Out-of-credit notice fix: renderAssistantHtml now linkifies plain http(s)
+// markdown links (the top-up link rendered as literal markdown before, since the
+// chat mdToHtml has no [text](url) support) — scheme-restricted + escaped.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 770396;
+const ORIGINAL_SHA256 = '2c8c1377e16c72e4d8cb7a24f1b34e54b9d4180182e88b517c8c63f1deda2ff9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

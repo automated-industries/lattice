@@ -46,7 +46,7 @@ function fakeUpdateService(status: UpdateStatus): {
 async function bootWithUpdateService(
   version: string,
   status: UpdateStatus,
-  opts: { desktopApplyUpdate?: () => void } = {},
+  opts: { applyDownloadedUpdate?: () => void } = {},
 ): Promise<{ handle: GuiServerHandle; checkNow: ReturnType<typeof vi.fn> }> {
   const { service, checkNow } = fakeUpdateService(status);
   const handle = await startGuiServer({
@@ -54,11 +54,20 @@ async function bootWithUpdateService(
     openBrowser: false,
     version,
     updateServiceFactory: () => service,
-    ...(opts.desktopApplyUpdate ? { desktopApplyUpdate: opts.desktopApplyUpdate } : {}),
+    ...(opts.applyDownloadedUpdate ? { applyDownloadedUpdate: opts.applyDownloadedUpdate } : {}),
   });
   servers.push(handle);
   return { handle, checkNow };
 }
+
+// The desktop/idle status fields every UpdateStatus now carries (a non-desktop
+// surface leaves these at their idle defaults).
+const idleDownload = {
+  phase: 'idle' as const,
+  downloadedBytes: null,
+  totalBytes: null,
+  stagedVersion: null,
+};
 
 async function bootConfigured(version: string): Promise<GuiServerHandle> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-update-'));
@@ -133,6 +142,7 @@ describe('POST /api/update/apply', () => {
       checking: false,
       installing: false,
       lastError: null,
+      ...idleDownload,
     };
     const { handle, checkNow } = await bootWithUpdateService('1.0.0', status);
     const res = await fetch(`${handle.url}/api/update/apply`, { method: 'POST' });
@@ -144,27 +154,31 @@ describe('POST /api/update/apply', () => {
     expect(checkNow).toHaveBeenCalledWith(true);
   });
 
-  it('runs the desktop binary updater (restart-to-update) instead of the npm path', async () => {
+  it('launches the staged desktop installer (install-and-restart) instead of the npm path', async () => {
     const status: UpdateStatus = {
       current: '1.0.0',
       latest: '2.0.0',
       kind: 'desktop',
       installable: false,
       autoUpdate: true,
-      action: 'restart-to-update',
+      action: 'install-and-restart',
       checking: false,
       installing: false,
       lastError: null,
+      phase: 'ready',
+      downloadedBytes: 100,
+      totalBytes: 100,
+      stagedVersion: '2.0.0',
     };
-    const desktopApplyUpdate = vi.fn();
+    const applyDownloadedUpdate = vi.fn();
     const { handle, checkNow } = await bootWithUpdateService('1.0.0', status, {
-      desktopApplyUpdate,
+      applyDownloadedUpdate,
     });
     const res = await fetch(`${handle.url}/api/update/apply`, { method: 'POST' });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.ok).toBe(true);
-    expect(desktopApplyUpdate).toHaveBeenCalledTimes(1);
+    expect(applyDownloadedUpdate).toHaveBeenCalledTimes(1);
     // Desktop never uses the npm install path.
     expect(checkNow).not.toHaveBeenCalled();
   });
@@ -180,6 +194,7 @@ describe('POST /api/update/apply', () => {
       checking: false,
       installing: false,
       lastError: null,
+      ...idleDownload,
     };
     const { handle, checkNow } = await bootWithUpdateService('1.0.0', status);
     const res = await fetch(`${handle.url}/api/update/apply`, { method: 'POST' });

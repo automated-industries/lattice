@@ -6,7 +6,82 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [5.1.0] — 2026-07-22
+
+### Added
+
+- **Frictionless desktop auto-update on macOS.** The desktop app now updates itself the way mature
+  Mac apps do: on launch it checks for a newer version and, in the background (with a real progress
+  bar), downloads the new **code-signed, notarized** app, verifies it (valid signature + Gatekeeper
+  acceptance + the _same_ signing identity as the running app), and stages it. Clicking **"Update
+  ready — Restart to apply"** hands off to a small helper that swaps the whole signed bundle into
+  place after the app quits and relaunches it — no installer window, and no password for the common
+  case (an admin user's `/Applications`). Because the entire signed bundle is replaced (rather than
+  the old approach of patching the binary in place, which breaks the code signature and is rejected
+  by macOS), each version stays validly signed and notarized. When the frictionless swap isn't
+  available — a non-admin/read-only install location, Windows, or any verification failure — it falls
+  back automatically to downloading the signed installer and applying it with one click. Set
+  `LATTICE_NO_BUNDLE_SWAP=1` to force the installer path.
+
+- **Deterministic data-model planner.** A workspace now keeps its own data model clean and up to
+  date automatically — without being prompted, and without needing a model provider. After a file
+  batch is ingested or a source is connected (and on workspace open), a deterministic rules engine
+  profiles the model through bounded, dialect-stable reads and:
+  - **auto-applies the reversible fix of relating tables** when a column's values resolve to another
+    table's key, behind a false-positive gate so unattended relationships stay safe;
+  - **surfaces heavier, data-rewriting changes as one-click Apply / Dismiss suggestions** in the Data
+    Model tab — extract a repeated column into its own dimension, deduplicate rows, merge
+    near-duplicate tables, retype a mistyped column, canonicalize a fragile table name.
+
+  The analysis is fully deterministic (the same model always yields the same plan), egress-bounded,
+  and idempotent (a clean model produces no changes). New HTTP surface: `GET /api/data-model/plan`,
+  `POST /api/data-model/apply`, `POST /api/data-model/dismiss`.
+
+- **Traceable rendered context + traceable chat answers.** Rendered context now carries
+  `lattice://` trace links back to the source rows, shown as inline trace chips that open a
+  provenance card (row fields + tier + Open), with per-file source chips summarizing each context
+  file's origin table and count. Chat answers linkify the records they retrieved as inline
+  word-links that open the record directly (and a `?f=<column>` link scroll-flashes that field on
+  arrival); the context response carries the source metadata that drives it. Deterministic — the
+  links are derived from the server-computed graph, so scoped cloud members get them too.
+
+- **In-GUI Lattice-token balance + friendly out-of-credit notice (managed installs).** When the
+  assistant runs against a managed endpoint, the header account menu and Configure → Assistant show
+  the prepaid **token balance** and an **Add tokens** link (fetched fail-soft from the endpoint's
+  `/v1/balance`; a plain Anthropic endpoint that doesn't expose it simply shows nothing). A chat turn
+  that hits a `402 insufficient_credit` now renders a friendly red notice with a clickable top-up
+  link instead of raw JSON. Non-managed installs are unaffected.
+
+### Changed
+
+- **The automatic post-ingest / post-connect data-model pass is now deterministic** and runs on every
+  workspace — it no longer requires a model provider and makes no per-ingest model round-trip. The
+  previous model-driven design routine remains in the codebase but is no longer wired to that trigger.
+
+### Fixed
+
+- **Desktop auto-update no longer hangs on "Updating…".** The previous flow relied on an in-place
+  binary self-update that could not consume the published artifacts, so clicking "Restart to update"
+  spun forever with no feedback and never restarted. The update flow now always shows real progress,
+  an explicit one-click apply, or a clear error with a manual **Download** fallback — never an endless
+  spinner. The GUI status pill also gained a determinate progress bar for long-running operations.
+
+- **Relationship (junction) table names are bounded to Postgres's 63-byte identifier limit.** When
+  two long table names would overflow, the junction now gets a deterministic hash suffix instead of
+  silently truncating — which on a cloud (Postgres) workspace could otherwise collide two different
+  relationships onto the same truncated name.
+
+- **Prefer canonical field types for data-model retype detection.** The planner now reads a column's
+  canonical Lattice field type (`uuid`/`datetime`/`integer`/…) rather than the raw physical SQL
+  spec, so a column already typed (but physically stored as TEXT) is no longer proposed for a
+  retype to the type it already is. Value matching for foreign-key inference stays on the physical
+  type, so a numeric key still matches a text foreign key's raw value.
+
+- **Corrected curated MCP connector OAuth scopes.** The prefab connector catalog's OAuth scopes were
+  reconciled against each server's advertised `scopes_supported` (e.g. Atlassian's
+  `search:confluence` / `read:space:confluence` instead of scopes the server does not advertise;
+  Salesforce `api refresh_token`; Google Calendar/Drive read-only scopes), so a first-run connect
+  requests only valid scopes.
 
 ## [5.0.1] — 2026-07-22
 
@@ -174,6 +249,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   corporate proxy) says exactly that and points you at adding your root CA / contacting IT; an
   already-used or expired authorization code tells you to reconnect for a fresh one (codes are
   single-use); and a lost connection attempt is distinguished from a genuinely empty paste.
+
+### Added
+
+- **Traceable rendered context — click a value to see where it came from.** Rendered row context
+  (the markdown files in each entity's directory) can now emit **`lattice://table/id` trace links** for
+  row references in related rollups (hasMany, manyToMany, belongsTo). The canonical auto-renderer
+  automatically linkifies row labels in related files: click a link in the formatted view to open a
+  floating provenance card showing the linked row's label, table, id, a few key fields, and an
+  "Open" button. Links do NOT appear in the entity's own self file (write-back constraints), but
+  custom user-supplied render functions can emit them anywhere. The context API response now
+  includes `source` metadata for each file (type, table, and row count for related sources),
+  enabling future UI features like table-scoped filtering and rollup statistics. Assistant chat
+  answers are traceable too: every record a reply mentions is linked inline — the referenced
+  word itself is the link, flowing with the sentence — and clicking it opens that record in the
+  workspace. Linking is deterministic, not model-dependent: retrieved-record labels are matched
+  into the answer text (case-insensitively for distinctive titles), and an answer that
+  paraphrases a record without ever naming it ends with a "Sources:" line citing what was read.
+  Both the tool loop and the fast inline-answer path get the same treatment. Clicking a
+  reference lands on the source data itself: a link whose record field the answer quotes
+  carries that field along, and the record view scroll-flashes the field line on arrival
+  (a file reference flashes the quoted passage in the file's text). Source citations are
+  relevance-ranked — only records the answer actually drew on are cited.
 
 ### Changed
 

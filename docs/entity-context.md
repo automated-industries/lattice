@@ -165,6 +165,41 @@ A single parent row accessed via a foreign key on this entity.
 
 SQL equivalent: `SELECT * FROM org WHERE id = :entityRow.org_id`
 
+## Trace Links (v5.0+)
+
+Related rollup files can emit **`lattice://table/id` links** for row references, making row labels clickable in the GUI. The canonical auto-renderer automatically linkifies labels; custom render functions can emit links manually.
+
+### How it works
+
+In a related file (hasMany, manyToMany, belongsTo), the canonical renderer emits links like:
+
+```markdown
+# Tasks
+
+- [Important task](lattice://tasks/task-42)
+- [Urgent task](lattice://tasks/task-99)
+```
+
+The GUI linkifies these into clickable **trace chips**: click one to open a floating provenance card showing the linked row's label, table, id, a few key fields, and an "Open" button to navigate to the row.
+
+### Constraints
+
+- Links do NOT appear in the entity's own `self` file (where write-back round-trips the content back into DB columns). Related rollup files are display-only, so links are safe.
+- Row IDs with special characters are URL-encoded (`encodeURIComponent` on emit, decoded on the client).
+- Links are optional — rows without an `id` or with a null `id` render as plain text.
+
+### Custom render functions
+
+A custom render function can emit trace links anywhere:
+
+```ts
+{
+  filename: 'RELATED.md',
+  source: { type: 'custom', query: (row, adapter) => adapter.query('other_table', ...) },
+  render: (rows) => rows.map((r) => `- [${r.name}](lattice://other_table/${encodeURIComponent(r.id)})`).join('\n'),
+}
+```
+
 ### `custom`
 
 A fully custom synchronous query using the raw `StorageAdapter`.

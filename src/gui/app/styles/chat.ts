@@ -44,6 +44,28 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .chat-bubble.assistant h5, .chat-bubble.assistant h6 { font-size: 14px; }
     .chat-bubble.assistant a { color: var(--accent); text-decoration: underline; }
     .chat-bubble.assistant strong { font-weight: 700; }
+    /* An inline notice for a recoverable problem (e.g. out of prepaid tokens): a
+       red-tinted assistant bubble, distinct from a normal answer. */
+    .chat-bubble.assistant.notice-error {
+      background: color-mix(in srgb, var(--danger, #c0392b) 8%, var(--surface-2));
+      border-color: color-mix(in srgb, var(--danger, #c0392b) 40%, transparent);
+      color: var(--danger, #c0392b);
+    }
+    .chat-bubble.assistant.notice-error a { color: var(--danger, #c0392b); font-weight: 600; }
+    /* Record references in an answer are the words themselves, linked inline —
+       a dotted underline that flows with the sentence (no boxed pill). Click
+       navigates to the record in the workspace. */
+    .chat-bubble.assistant .lattice-ref {
+      color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer;
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+      border-bottom: 1px dotted color-mix(in srgb, var(--accent) 55%, transparent);
+      border-radius: var(--r-xs); padding: 0 2px;
+    }
+    .chat-bubble.assistant .lattice-ref:hover,
+    .chat-bubble.assistant .lattice-ref:focus-visible {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      border-bottom-style: solid;
+    }
     .chat-bubble.assistant code {
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xs);
       padding: 0 4px; font-family: var(--font-mono); font-size: 12px;
