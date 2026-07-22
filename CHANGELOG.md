@@ -8,6 +8,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **Desktop auto-update no longer hangs on "Updating…" — it downloads in the background with a
+  progress bar and applies in one click.** The desktop app previously relied on an in-place binary
+  self-update that could not consume the published installers, so clicking "Restart to update" spun
+  on "Updating…" forever with no feedback and never restarted. Now, on launch, the desktop app
+  checks for a newer version and — if one exists — **automatically** downloads the new code-signed
+  installer in the background, showing a real progress bar (never an endless spinner). Once staged it
+  offers a single **"Update ready — Install & restart"** action that launches the installer and quits
+  so it can replace the running app. Any failure (network, checksum mismatch, or the installer not
+  starting) is surfaced immediately with a manual **Download** fallback — never a stuck spinner. The
+  background download needs no prompt; only the final install-and-restart is a click (an installer
+  can't replace a running app). The GUI status pill also gained a determinate progress bar for
+  long-running operations.
+
 ## [5.0.1] — 2026-07-22
 
 ### Added

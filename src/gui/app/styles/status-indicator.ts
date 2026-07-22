@@ -22,6 +22,16 @@ export const statusIndicatorCss = `    /* ── Top-right status indicator ─�
        leave an empty bubble. Force it gone. */
     .app-status[hidden] { display: none; }
     .app-status .spinner { width: 11px; height: 11px; }
+    /* Determinate progress bar (e.g. an update download) — shown in place of the
+       spinner so a long operation gives real feedback, never an endless spin. */
+    .app-status-bar {
+      flex: 0 0 auto; width: 56px; height: 5px; border-radius: var(--r-pill);
+      overflow: hidden; background: var(--border-strong);
+    }
+    .app-status-bar-fill {
+      display: block; height: 100%; border-radius: var(--r-pill);
+      background: var(--accent); transition: width 0.25s ease;
+    }
     .app-status-accent { color: var(--accent); border-color: var(--accent-soft); }
     .app-status-warn { color: var(--warn); }
     .app-status-error { color: var(--danger); }

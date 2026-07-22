@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
   startGuiServer,
   VERSION,
@@ -78,31 +79,127 @@ function resolveDocsDir(): string | undefined {
   return undefined; // absent → assistant help degrades to model-only knowledge
 }
 
-// ── Auto-update (upgrade-on-run) ─────────────────────────────────────────────
-// `deno desktop` ships a built-in updater: it polls <baseUrl>/latest.json, applies
-// the bsdiff patch, relaunches, and auto-rolls-back on a failed launch. We point
-// it at the GitHub Releases "latest" path. Overridable via env for staging.
+// ── Auto-update (background installer download) ───────────────────────────────
+// The compiled desktop app CANNOT self-patch: it is not an npm package, and
+// Deno's built-in `Deno.autoUpdate` only applies bsdiff DELTAS to a deno-desktop
+// dylib — it can't consume our full, code-signed OS installers, and it never
+// relaunches in the same run. So instead the GUI's update service (which knows
+// this is the `desktop` surface) auto-DOWNLOADS the newer signed installer in the
+// background via `downloadUpdate` below — streaming byte progress to the window —
+// and, once it is staged, offers a one-click "Install & restart" that calls
+// `applyDownloadedUpdate`. This is user-visible + honest: a progress bar, then an
+// explicit install, or a loud error — never a silent no-op or an endless spinner.
 const UPDATE_BASE_URL =
   Deno.env.get('LATTICE_DESKTOP_UPDATE_URL') ??
   'https://github.com/automated-industries/lattice/releases/latest/download/';
 
 // Master switch (default on). LATTICE_NO_AUTO_UPDATE=1 pins the app to its
-// current version: no manifest probe, no Deno.autoUpdate, no relaunch. Mirrors
-// the CLI's --no-auto-update for the desktop (which has no CLI args).
+// current version: no manifest probe, no download. Mirrors the CLI's
+// --no-auto-update for the desktop (which has no CLI args).
 const AUTO_UPDATE_ENABLED = Deno.env.get('LATTICE_NO_AUTO_UPDATE') !== '1';
 
-async function runAutoUpdate(): Promise<void> {
-  if (!AUTO_UPDATE_ENABLED) return; // pinned — never touch the network
-  const autoUpdate = (
-    Deno as unknown as { autoUpdate?: (o: { baseUrl: string }) => Promise<unknown> }
-  ).autoUpdate;
-  if (typeof autoUpdate !== 'function') return; // not in a compiled desktop build
+// The signed installer we publish per platform (the same artifact the website
+// links to). `releases/latest/download/<name>` always resolves to the newest
+// release, so the URL needs no version interpolation. Linux has no installer
+// artifact → no desktop auto-download there (the GUI still reports the version).
+function installerName(): string | null {
+  if (Deno.build.os === 'darwin') return 'Lattice.pkg';
+  if (Deno.build.os === 'windows') return 'Lattice.msi';
+  return null;
+}
+
+// Where a downloaded installer is staged, and the path once a download succeeds.
+const updateStageDir = join(homedir(), '.lattice', 'updates');
+let stagedInstaller: string | null = null;
+
+// Download + verify the signed installer for `version`, streaming byte progress.
+// THROWS on any failure (network, HTTP error, size/hash mismatch) so the GUI
+// surfaces it loudly instead of spinning forever.
+async function downloadUpdate(
+  version: string,
+  onProgress: (done: number, total: number | null) => void,
+): Promise<void> {
+  const name = installerName();
+  if (!name) throw new Error(`no desktop installer for platform "${Deno.build.os}"`);
+
+  // Best-effort: read the manifest's expected size + sha256 for this platform so
+  // the download can be verified. If the manifest is unreachable or doesn't list
+  // this installer, download anyway — the installer is itself code-signed +
+  // notarized (Gatekeeper enforces that at launch) — but verify when we can.
+  let expectedSha: string | null = null;
+  let expectedSize: number | null = null;
   try {
-    await autoUpdate({ baseUrl: UPDATE_BASE_URL });
-  } catch (err) {
-    // Loud, never silent — but a failed update must not block launch.
-    console.error('[desktop] auto-update check failed:', (err as Error).message);
+    const mres = await fetch(new URL('latest.json', UPDATE_BASE_URL), {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (mres.ok) {
+      const m = (await mres.json()) as {
+        assets?: Record<string, { name?: string; sha256?: unknown; sizeBytes?: unknown }>;
+      };
+      const osKey = Deno.build.os === 'darwin' ? 'darwin' : 'windows';
+      const asset = m.assets?.[osKey];
+      if (asset && asset.name === name) {
+        expectedSha = typeof asset.sha256 === 'string' ? asset.sha256 : null;
+        expectedSize = typeof asset.sizeBytes === 'number' ? asset.sizeBytes : null;
+      }
+    }
+  } catch {
+    /* manifest unreachable — proceed with an unverified (but signed) download */
   }
+
+  const res = await fetch(new URL(name, UPDATE_BASE_URL).toString(), {
+    signal: AbortSignal.timeout(600_000), // 10-minute ceiling for a large installer
+  });
+  if (!res.ok || !res.body) throw new Error(`installer download failed: HTTP ${res.status}`);
+  const total = expectedSize ?? (Number(res.headers.get('content-length')) || null);
+
+  await Deno.mkdir(updateStageDir, { recursive: true });
+  const dest = join(updateStageDir, name);
+  const file = await Deno.open(dest, { write: true, create: true, truncate: true });
+  const hash = createHash('sha256');
+  let done = 0;
+  onProgress(0, total);
+  const meter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      hash.update(chunk);
+      done += chunk.byteLength;
+      onProgress(done, total);
+      controller.enqueue(chunk);
+    },
+  });
+  // pipeTo closes `file` when the stream finishes (on success or error).
+  await res.body.pipeThrough(meter).pipeTo(file.writable);
+
+  if (expectedSize != null && done !== expectedSize) {
+    throw new Error(`installer size mismatch: got ${done} bytes, expected ${expectedSize}`);
+  }
+  if (expectedSha && hash.digest('hex') !== expectedSha) {
+    throw new Error('installer checksum mismatch — refusing to stage a tampered download');
+  }
+  stagedInstaller = dest;
+}
+
+// Launch the staged installer and quit so it can replace the running app (macOS
+// won't overwrite a running .app). `open` hands the signed .pkg to the Installer;
+// Windows `msiexec /i` runs the .msi. The user completes the install and re-opens
+// onto the new version.
+function applyDownloadedUpdate(): void {
+  if (!stagedInstaller) {
+    console.error('[desktop] apply requested but no installer is staged');
+    return;
+  }
+  try {
+    const cmd =
+      Deno.build.os === 'windows'
+        ? new Deno.Command('msiexec', { args: ['/i', stagedInstaller] })
+        : new Deno.Command('open', { args: [stagedInstaller] });
+    cmd.spawn();
+  } catch (err) {
+    console.error('[desktop] failed to launch installer:', (err as Error).message);
+    return; // stay open so the GUI can surface the failure
+  }
+  // Give the detached installer a beat to start, then quit so it can overwrite us.
+  setTimeout(() => Deno.exit(0), 800);
 }
 
 // ── Boot the GUI server ──────────────────────────────────────────────────────
@@ -154,16 +251,15 @@ const handle = await startGuiServer({
     packageRoot: null,
     reason: 'desktop app — updates via the bundled binary updater',
   },
-  // Probe the SAME release manifest the binary updater applies from, so the
-  // pill's "available" matches what a restart would actually install. Read-only:
-  // it never downloads or relaunches (that stays the user-triggered apply).
+  // Probe the release manifest for the newest published version (read-only — the
+  // version the auto-download would fetch). The update service uses this to
+  // decide when to start a background installer download.
   updateCheck: () => checkManifestForUpdate(UPDATE_BASE_URL, VERSION),
-  // The "Restart to update" pill POSTs /api/update/apply → this runs the real
-  // binary updater (download + relaunch); the reconnect version check then
-  // reloads the webview onto the new version.
-  desktopApplyUpdate: () => {
-    void runAutoUpdate();
-  },
+  // The update service auto-calls this in the background when a newer version is
+  // found, streaming byte progress to the window; and calls applyDownloadedUpdate
+  // when the user clicks "Install & restart" on the staged download.
+  downloadUpdate,
+  applyDownloadedUpdate,
   // Serve the embedded on-device voice assets when present (omit when absent so
   // the server falls back to its default resolution).
   ...(guiAssetsDir ? { guiAssetsDir } : {}),
@@ -220,9 +316,9 @@ if (!BrowserWindow || useBrowser) {
       : 'Windows (set LATTICE_DESKTOP_WEBVIEW=1 to force the native window)';
   console.log(`[desktop] Opening Lattice in your default browser — ${reason}: ${handle.url}`);
   openInSystemBrowser(handle.url);
-  // No native window owns the process lifetime now; keep the GUI server (and the
-  // upgrade-on-run check) alive until the user quits.
-  setTimeout(() => void runAutoUpdate(), 4000);
+  // No native window owns the process lifetime now; keep the GUI server alive
+  // until the user quits. The update service (started inside startGuiServer)
+  // runs the background version-check + installer download on its own.
   await new Promise<void>(() => {});
 } else {
   const win = new BrowserWindow({ title: 'Lattice', width: 1280, height: 860 });
@@ -242,7 +338,6 @@ if (!BrowserWindow || useBrowser) {
   };
   injectBridge();
   setInterval(injectBridge, 1000);
-
-  // Check for updates shortly after launch (don't block first paint).
-  setTimeout(() => void runAutoUpdate(), 4000);
+  // The update service (started inside startGuiServer) runs the background
+  // version-check + installer download on its own — no separate timer here.
 }

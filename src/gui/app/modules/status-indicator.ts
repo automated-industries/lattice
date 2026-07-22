@@ -46,15 +46,23 @@ export const statusIndicatorJs = `
       if (!el) return;
       var s = pickActiveStatus();
       if (!s) { el.hidden = true; el.innerHTML = ''; return; }
-      var spin = s.spinner ? '<span class="spinner" aria-hidden="true"></span>' : '';
+      // A determinate progress value (0..1) renders a small bar in place of the
+      // spinner — real feedback for a long operation (e.g. an update download),
+      // never an endless spinner. Indeterminate (null) keeps the spinner.
+      var hasBar = typeof s.progress === 'number' && isFinite(s.progress);
+      var spin = (s.spinner && !hasBar) ? '<span class="spinner" aria-hidden="true"></span>' : '';
+      var pct = hasBar ? Math.max(0, Math.min(100, Math.round(s.progress * 100))) : 0;
+      var bar = hasBar
+        ? '<span class="app-status-bar"><span class="app-status-bar-fill" style="width:' + pct + '%"></span></span>'
+        : '';
       el.className = 'app-status' + (s.kind ? ' app-status-' + s.kind : '');
-      el.innerHTML = spin + '<span class="app-status-text">' + escapeHtml(s.text || '') + '</span>';
+      el.innerHTML = spin + '<span class="app-status-text">' + escapeHtml(s.text || '') + '</span>' + bar;
       el.hidden = false;
     }
 
-    /** Register / update a status. {id, text, kind?, priority?, sticky?, spinner?, ttl?}.
+    /** Register / update a status. {id, text, kind?, priority?, sticky?, spinner?, ttl?, progress?}.
      *  A non-sticky status auto-clears after ttl (default 4s) so a transient note
-     *  can never get stuck on screen. */
+     *  can never get stuck on screen. \`progress\` (0..1) draws a determinate bar. */
     function setStatus(opts) {
       if (!opts || !opts.id) return;
       var prev = appStatuses[opts.id];
@@ -66,6 +74,7 @@ export const statusIndicatorJs = `
         priority: opts.priority != null ? opts.priority : 10,
         sticky: !!opts.sticky,
         spinner: opts.spinner !== false,
+        progress: (opts.progress != null && isFinite(opts.progress)) ? opts.progress : null,
         seq: ++appStatusSeq,
         timer: null,
       };

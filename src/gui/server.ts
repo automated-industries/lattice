@@ -186,18 +186,29 @@ export interface StartGuiServerOptions {
   /**
    * Override the detected install context for the update service. The desktop
    * shell passes `{ kind:'desktop', installable:false, … }` so the status route
-   * reports the desktop surface (→ `action:'restart-to-update'`) rather than
-   * "unknown / not installable".
+   * reports the desktop surface (→ auto-download + `install-and-restart`) rather
+   * than "unknown / not installable".
    */
   updateContext?: InstallContext;
   /**
-   * Desktop shell only: apply a pending update via the bundled binary updater
-   * (download + relaunch). Wired to `POST /api/update/apply` when the surface is
-   * the desktop app, so the "Restart to update" pill triggers the real updater
-   * instead of the npm install path (which the desktop can't use). Omitted ⇒ the
-   * apply route uses the npm path / reports "not available".
+   * Desktop shell only: download + stage the signed OS installer for a newer
+   * version, reporting byte progress. Wired into the update service, which
+   * auto-triggers it in the background whenever a check finds a newer version
+   * (the compiled desktop app can't self-patch, so it pulls the installer
+   * instead). THROWS on failure so the GUI shows an error, never a stuck spinner.
    */
-  desktopApplyUpdate?: () => void;
+  downloadUpdate?: (
+    version: string,
+    onProgress: (done: number, total: number | null) => void,
+  ) => Promise<void>;
+  /**
+   * Desktop shell only: launch the installer staged by {@link downloadUpdate} and
+   * quit the app so the installer can replace the running bundle. Wired to
+   * `POST /api/update/apply` once the background download reaches `phase:'ready'`
+   * (`action:'install-and-restart'`). Omitted ⇒ the apply route reports "not
+   * available".
+   */
+  applyDownloadedUpdate?: () => void;
   /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
@@ -807,19 +818,21 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         if (method === 'POST' && pathname === '/api/update/apply') {
           // Manual trigger behind the "update available" pill. The right action
           // depends on the surface (reported as `status.action`):
-          //  - desktop (`restart-to-update`): run the bundled binary updater,
-          //    which downloads + relaunches — the npm install path can't touch a
-          //    compiled app.
+          //  - desktop (`install-and-restart`): the service has already
+          //    AUTO-DOWNLOADED the signed installer in the background; launch it
+          //    and quit so it can replace the running app (the compiled app can't
+          //    self-patch, so npm-install can't touch it and there is nothing to
+          //    "relaunch onto" in-process).
           //  - npm (`upgrade-in-place`): force a check that installs the latest
           //    and restarts the GUI onto it. The install is slow (an npm
           //    install), so kick it off without blocking — `checkNow(true)`
           //    emits its own progress/errors (update-applied / update-error).
-          //  - anything else (no update, auto-update disabled, or a surface that
-          //    can't self-update): answer with a plain "can't", not a crash, so
-          //    the client can tell the user how to upgrade by hand.
+          //  - anything else (no update, auto-update disabled, still downloading,
+          //    or a surface that can't self-update): answer with a plain "can't",
+          //    not a crash, so the client can tell the user how to upgrade.
           const st = updateService?.status();
-          if (st?.action === 'restart-to-update' && options.desktopApplyUpdate) {
-            options.desktopApplyUpdate();
+          if (st?.action === 'install-and-restart' && options.applyDownloadedUpdate) {
+            options.applyDownloadedUpdate();
             sendJson(res, { ok: true, status: st });
           } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
@@ -1449,6 +1462,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       selfUpdate: options.selfUpdate ?? false,
       ...(options.updateCheck ? { check: options.updateCheck } : {}),
       ...(options.updateContext ? { context: options.updateContext } : {}),
+      ...(options.downloadUpdate ? { downloadUpdate: options.downloadUpdate } : {}),
+      ...(options.applyDownloadedUpdate
+        ? { applyDownloadedUpdate: options.applyDownloadedUpdate }
+        : {}),
     });
   }
 
