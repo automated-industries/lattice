@@ -8,22 +8,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
-### Fixed
-
-- **Desktop auto-update no longer hangs on "Updating…" — it downloads in the background with a
-  progress bar and applies in one click.** The desktop app previously relied on an in-place binary
-  self-update that could not consume the published installers, so clicking "Restart to update" spun
-  on "Updating…" forever with no feedback and never restarted. Now, on launch, the desktop app
-  checks for a newer version and — if one exists — **automatically** downloads the new code-signed
-  installer in the background, showing a real progress bar (never an endless spinner). Once staged it
-  offers a single **"Update ready — Install & restart"** action that launches the installer and quits
-  so it can replace the running app. Any failure (network, checksum mismatch, or the installer not
-  starting) is surfaced immediately with a manual **Download** fallback — never a stuck spinner. The
-  background download needs no prompt; only the final install-and-restart is a click (an installer
-  can't replace a running app). The GUI status pill also gained a determinate progress bar for
-  long-running operations.
-
 ### Added
+
+- **Frictionless desktop auto-update on macOS.** The desktop app now updates itself the way mature
+  Mac apps do: on launch it checks for a newer version and, in the background (with a real progress
+  bar), downloads the new **code-signed, notarized** app, verifies it (valid signature + Gatekeeper
+  acceptance + the _same_ signing identity as the running app), and stages it. Clicking **"Update
+  ready — Restart to apply"** hands off to a small helper that swaps the whole signed bundle into
+  place after the app quits and relaunches it — no installer window, and no password for the common
+  case (an admin user's `/Applications`). Because the entire signed bundle is replaced (rather than
+  the old approach of patching the binary in place, which breaks the code signature and is rejected
+  by macOS), each version stays validly signed and notarized. When the frictionless swap isn't
+  available — a non-admin/read-only install location, Windows, or any verification failure — it falls
+  back automatically to downloading the signed installer and applying it with one click. Set
+  `LATTICE_NO_BUNDLE_SWAP=1` to force the installer path.
 
 - **Deterministic data-model planner.** A workspace now keeps its own data model clean and up to
   date automatically — without being prompted, and without needing a model provider. After a file
@@ -44,6 +42,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **The automatic post-ingest / post-connect data-model pass is now deterministic** and runs on every
   workspace — it no longer requires a model provider and makes no per-ingest model round-trip. The
   previous model-driven design routine remains in the codebase but is no longer wired to that trigger.
+
+### Fixed
+
+- **Desktop auto-update no longer hangs on "Updating…".** The previous flow relied on an in-place
+  binary self-update that could not consume the published artifacts, so clicking "Restart to update"
+  spun forever with no feedback and never restarted. The update flow now always shows real progress,
+  an explicit one-click apply, or a clear error with a manual **Download** fallback — never an endless
+  spinner. The GUI status pill also gained a determinate progress bar for long-running operations.
 
 ## [5.0.1] — 2026-07-22
 
