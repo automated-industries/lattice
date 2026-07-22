@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.1.1] — 2026-07-22
+
+### Fixed
+
+- **Instant graph navigation.** Opening the graph — the brain/schema graph, a per-entity graph, or
+  toggling Graph ↔ Tables — no longer blocks behind a spinner while the force layout settles (~5s on
+  _every_ click). The graph now reveals on the first fit and animates into place, and node positions
+  are cached per graph so revisiting one you've already opened re-seeds it already-placed with no
+  re-settle (instant). A never-before-seen graph converges faster too (cools in ~120 ticks instead of
+  ~300) while staying fully visible and interactive the whole time. Reduced-motion still settles and
+  reveals synchronously. The cache is scoped per workspace and cleared on workspace switch, so
+  positions never bleed across workspaces that share a table name.
+- **"Files" breadcrumb no longer errors on a file record.** Clicking the **Files** crumb from a file's
+  record page opened an invalid record route (the table name looked up as a row id → _"Row not
+  found"_); it now opens the Files collection.
+
 ## [5.1.0] — 2026-07-22
 
 ### Added

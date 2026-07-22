@@ -537,8 +537,20 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // markdown links (the top-up link rendered as literal markdown before, since the
 // chat mdToHtml has no [text](url) support) — scheme-restricted + escaped.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 770396;
-const ORIGINAL_SHA256 = '2c8c1377e16c72e4d8cb7a24f1b34e54b9d4180182e88b517c8c63f1deda2ff9';
+// 5.1.1 instant graph navigation: the live force-graph reveals on the FIRST fit
+// instead of blocking behind the spinner until the physics settles (~5s on every
+// click), and tracks the camera as the layout expands so it animates into place;
+// node positions are cached per graph (schema | entity:<table>) so a revisit — or a
+// Graph↔Tables toggle — re-seeds already-placed with no re-settle (force-graph
+// initialPositions/onSettle/positions() + system-tables graphPosCache, cleared on
+// workspace switch in reloadEverything); a cold first-visit layout also cools faster
+// (~120 vs ~300 ticks) while it animates. Length + hash recaptured.
+// 5.1.1 Files breadcrumb fix: on a file record the "Files" object crumb pointed at
+// #/w/file/<table> (a record route fed the table name as a row id → "Row not found");
+// it now opens the files-table collection #/w/table/<table>, mirroring the deleted-
+// record + delete-nav fallbacks (fsBreadcrumb w:file case). Length + hash recaptured.
+const ORIGINAL_LENGTH = 773780;
+const ORIGINAL_SHA256 = '10f9424616c8bbcee705b129d261843ab9bc8259b67837451266c9e5ae04fe65';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

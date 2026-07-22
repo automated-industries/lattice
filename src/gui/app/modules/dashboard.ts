@@ -812,6 +812,12 @@ export const dashboardJs = `    // ───────────────
       var objHref = t0 === 'artifacts' ? '#/fs/artifacts'
         : section === 'graph' ? '#/graph/' + encodeURIComponent(t0)
         : section === 'tables' ? '#/tables/' + encodeURIComponent(t0)
+        // A file tab (w:file) has NO collection form under #/w/file/ — that segment is
+        // always a file id — so the object ("Files") crumb must open the files-table
+        // collection (#/w/table/<t0>), not the invalid #/w/file/<t0> row route which
+        // looks the table name up as a row id ("Row not found"). Mirrors the deleted-
+        // record + delete-nav fallbacks (renderFsItem / row delete).
+        : section === 'w:file' ? '#/w/table/' + encodeURIComponent(t0)
         : isW ? sectionHref(section, [t0])
         : '#/folders/' + encodeURIComponent(t0);
       // Record/relation crumbs accumulate onto the section's RECORD prefix.
