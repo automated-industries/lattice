@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.1.2] — unreleased
+
+### Fixed
+
+- **Desktop app opens reliably on Windows.** On some Windows machines the bundled native WebView2 host
+  crashed or hung the app at launch, even though the app already opens in the default browser on
+  Windows. The WebView2 host initialized its environment eagerly at process start, independent of the
+  app's own window-vs-browser decision; with its default user-data folder under `Program Files`
+  (unwritable for standard users) it failed with `hr=0x80070005` and permanently blocked the runtime's
+  event loop, and with a writable folder it fastfailed the process (`ucrtbase.dll`, exception
+  `0xc0000409`). The Windows build no longer bundles the WebView2 UI layer at all — it now uses the
+  runtime's raw backend. `Deno.BrowserWindow` is unavailable at runtime, so the app's existing
+  no-native-backend path opens the system browser and keeps the GUI server alive. The browser-based
+  Windows experience is unchanged, and macOS keeps its native window.
+
 ## [5.1.1] — 2026-07-22
 
 ### Added
