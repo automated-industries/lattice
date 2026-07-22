@@ -22,7 +22,10 @@ describe('curatedCatalog', () => {
     expect(atlassian.serverUrl).toMatch(/^https:\/\/mcp\.atlassian\.com/);
     const salesforce = curatedCatalog().find((e) => e.id === 'salesforce')!;
     expect(salesforce.needsClientCreds).toBe(true); // guided connect
-    expect(salesforce.scope).toContain('mcp_api'); // the correct scope (not `api`)
+    expect(salesforce.scope).toBe('api refresh_token'); // confirmed against the live metadata (not mcp_api)
+    // Atlassian scopes match the server's advertised scopes_supported (no read:jira-user).
+    expect(atlassian.scope).toContain('read:jira-work');
+    expect(atlassian.scope).not.toContain('read:jira-user');
     // every curated icon is a self-authored data: monogram (no committed brand logos)
     for (const e of curatedCatalog()) expect(e.icon.startsWith('data:image/svg')).toBe(true);
   });

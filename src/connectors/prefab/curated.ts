@@ -1,11 +1,14 @@
 /**
  * The curated flagship catalog — the authoritative prefab entries for the best-known services.
  *
- * ⚠️ SPIKE-VERIFY each endpoint + scope against a LIVE server before shipping one-click connect.
- * The URLs below are the vendors' documented remote MCP endpoints (public information). Only
- * Atlassian is true one-click (OAuth 2.1 + Dynamic Client Registration); the others need a
- * pre-registered OAuth client (the connect form reveals client-id/secret fields for them). Icons
- * are self-authored monograms — no third-party logo bytes are committed.
+ * Endpoints + scopes verified against each vendor's LIVE OAuth metadata (unauthenticated probe of
+ * the server's `.well-known/oauth-protected-resource`) and public docs. Every URL responds as a
+ * real MCP server; the scopes below are drawn from each server's advertised `scopes_supported`.
+ * Only Atlassian is true one-click (OAuth 2.1 + Dynamic Client Registration); the others need a
+ * pre-registered OAuth client (the connect form reveals client-id/secret fields for them). A final
+ * authorized end-to-end smoke (sign in with a real account, confirm tables populate) still wants a
+ * human — the generic engine derives the table schema at connect, so there are no hand-mappers to
+ * verify. Icons are self-authored monograms — no third-party logo bytes are committed.
  */
 
 import { letterIcon } from '../mcp/icon.js';
@@ -19,8 +22,11 @@ export function curatedCatalog(): CatalogEntry[] {
       icon: letterIcon('A', '#0052cc'),
       serverUrl: 'https://mcp.atlassian.com/v1/mcp/authv2',
       transport: 'http',
+      // Scopes confirmed against the live protected-resource metadata's scopes_supported
+      // (auth.atlassian.com); the older read:confluence-*.summary / read:jira-user names are not
+      // advertised by this server.
       scope:
-        'read:jira-work read:jira-user read:confluence-space.summary read:confluence-content.summary offline_access',
+        'read:jira-work search:confluence read:confluence-user read:space:confluence read:page:confluence offline_access',
       oneClick: true,
       helpUrl:
         'https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/',
@@ -44,7 +50,7 @@ export function curatedCatalog(): CatalogEntry[] {
       icon: letterIcon('C', '#4285f4'),
       serverUrl: 'https://calendarmcp.googleapis.com/mcp/v1',
       transport: 'http',
-      scope: 'https://www.googleapis.com/auth/calendar.readonly',
+      scope: 'https://www.googleapis.com/auth/calendar.events.readonly',
       needsClientCreds: true,
       authHint: 'Google Workspace — developer preview',
       helpUrl: 'https://developers.google.com/workspace/guides/configure-mcp-servers',
@@ -56,7 +62,7 @@ export function curatedCatalog(): CatalogEntry[] {
       icon: letterIcon('D', '#0f9d58'),
       serverUrl: 'https://drivemcp.googleapis.com/mcp/v1',
       transport: 'http',
-      scope: 'https://www.googleapis.com/auth/drive.metadata.readonly',
+      scope: 'https://www.googleapis.com/auth/drive.readonly',
       needsClientCreds: true,
       authHint: 'Google Workspace — developer preview',
       helpUrl: 'https://developers.google.com/workspace/guides/configure-mcp-servers',
@@ -80,7 +86,9 @@ export function curatedCatalog(): CatalogEntry[] {
       icon: letterIcon('S', '#00a1e0'),
       serverUrl: 'https://api.salesforce.com/platform/mcp/v1/',
       transport: 'http',
-      scope: 'mcp_api refresh_token',
+      // The server advertises `api`/`sfap_api`/`refresh_token` (live protected-resource metadata);
+      // `mcp_api` is not a valid Salesforce scope.
+      scope: 'api refresh_token',
       needsClientCreds: true,
       authHint: 'Enterprise Edition or above',
       helpUrl: 'https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/',
