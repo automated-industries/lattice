@@ -67,6 +67,7 @@ import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
 import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
+import { handleDataModelRoutes, type DataModelRoutesDeps } from './data-model-routes.js';
 import {
   createComputedTable,
   updateComputedTable,
@@ -652,6 +653,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   const tablesDeps: TablesRoutesDeps = { host };
   const schemaDeps: SchemaRoutesDeps = { host, autoRender };
   const computedDeps: ComputedRoutesDeps = { host };
+  const dataModelDeps: DataModelRoutesDeps = { host };
   const historyDeps: HistoryRoutesDeps = { host, autoRender };
   const workspacesDeps: WorkspacesRoutesDeps = { host, latticeRoot, autoRender };
   const databasesDeps: DatabasesRoutesDeps = { host, autoRender };
@@ -911,6 +913,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           { handle: (req, res, ctx) => handleSchemaRoutes(req, res, ctx, schemaDeps) },
           // ── Computed tables: CRUD + preview + refresh (computed-routes.ts) ──
           { handle: (req, res, ctx) => handleComputedRoutes(req, res, ctx, computedDeps) },
+          // ── Data-model planner: plan / apply / dismiss (data-model-routes.ts) ──
+          { handle: (req, res, ctx) => handleDataModelRoutes(req, res, ctx, dataModelDeps) },
           // ── Version history: undo / redo / revert (extracted leaf — history-routes.ts) ──
           { handle: (req, res, ctx) => handleHistoryRoutes(req, res, ctx, historyDeps) },
           // ── Workspaces: list / switch / create / delete (extracted leaf — workspaces-routes.ts) ──

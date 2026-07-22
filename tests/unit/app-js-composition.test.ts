@@ -514,8 +514,10 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // 5.0.x release-review fixes: staging-lock guards Enter (submitComposer order) + the
 // brain-graph drill cache (graphRowCache) is cleared on workspace switch and
 // invalidated via invalidate()/afterMutation. Length + hash recaptured.
-const ORIGINAL_LENGTH = 739440;
-const ORIGINAL_SHA256 = 'e82e1247035a4f026d52a5c8438b5d994c2cc08029ca64aab001c7aa9617a4e9';
+// data-model planner: boot now fires a fire-and-forget on-open sweep
+// (GET /api/data-model/plan) after the stale-connector syncs. Length + hash recaptured.
+const ORIGINAL_LENGTH = 739716;
+const ORIGINAL_SHA256 = '24555f8bbb139925f07d83d50212e22bed4db901fdef1352cdc5b147fd167e0e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
