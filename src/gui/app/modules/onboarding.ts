@@ -199,8 +199,20 @@ export const onboardingJs = `    // ──────────────�
           return '\\u0002' + (pills.length - 1) + '\\u0002';
         }
       );
+      // Linkify plain http(s) markdown links (e.g. the out-of-credit notice's
+      // top-up link) — mdToHtml has no [text](url) support, so without this the
+      // link would render as literal markdown. Scheme is restricted to http/https
+      // and both label + href are escaped. Same sentinel trick as the pills.
+      var links = [];
+      pre = pre.replace(
+        /\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g,
+        function (_, label, url) {
+          links.push({ label: label, url: url });
+          return '\\u0003' + (links.length - 1) + '\\u0003';
+        }
+      );
       var html = mdToHtml(pre);
-      return html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
+      html = html.replace(/\\u0002([0-9]+)\\u0002/g, function (_, n) {
         var p = pills[Number(n)];
         // Inline word-link, not a boxed pill: the referenced word itself is the
         // link, flowing with the sentence.
@@ -208,6 +220,11 @@ export const onboardingJs = `    // ──────────────�
           '" data-id="' + escapeHtml(p.id) + '" data-field="' + escapeHtml(p.field) +
           '" title="Open this ' + escapeHtml(p.table) + '">' +
           escapeHtml(p.label) + '</a>';
+      });
+      return html.replace(/\\u0003([0-9]+)\\u0003/g, function (_, n) {
+        var l = links[Number(n)];
+        return '<a href="' + escapeHtml(l.url) + '" target="_blank" rel="noopener noreferrer">' +
+          escapeHtml(l.label) + '</a>';
       });
     }
     // One delegated click handler on the rail feed: a lattice-ref word-link

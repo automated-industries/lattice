@@ -87,4 +87,25 @@ describe('assistant inline object-link pills', () => {
     expect(out).not.toContain('lattice-ref');
     expect(out).toContain('<strong>bold</strong>');
   });
+
+  it('renders a plain [label](https://url) markdown link as an escaped, clickable anchor', () => {
+    const out = renderAssistantHtml('Please [Add more tokens](https://pay.example.com/topup) now.');
+    expect(out).toContain('<a href="https://pay.example.com/topup"');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+    expect(out).toContain('Add more tokens</a>');
+    expect(out).not.toContain('[Add more tokens]'); // not left as literal markdown
+    expect(out).not.toContain(String.fromCharCode(3)); // no leaked sentinel
+  });
+
+  it('renders the out-of-credit top-up notice as a real link (the 402 recovery affordance)', () => {
+    // The exact shape insufficientCreditInfo() produces on a 402 insufficient_credit.
+    const notice =
+      'Out of Lattice tokens. [Add more tokens](https://billing.example.com/topup) to keep the assistant running.';
+    const out = renderAssistantHtml(notice);
+    expect(out).toMatch(
+      /<a href="https:\/\/billing\.example\.com\/topup"[^>]*>Add more tokens<\/a>/,
+    );
+    expect(out).not.toContain('](http'); // no raw markdown link shown to the user
+  });
 });

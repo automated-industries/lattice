@@ -533,8 +533,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // /v1/balance) with an "Add tokens" link; and the chat renders a friendly red
 // "out of tokens" notice for an insufficient_credit 402 (with a top-up link)
 // instead of the raw provider error. Length + hash recaptured.
-const ORIGINAL_LENGTH = 769565;
-const ORIGINAL_SHA256 = '05f6b306a2bd632b3fe91c2f4a7ee02ea28ef395e301ee23c2f6aa3b81a21e7c';
+// Out-of-credit notice fix: renderAssistantHtml now linkifies plain http(s)
+// markdown links (the top-up link rendered as literal markdown before, since the
+// chat mdToHtml has no [text](url) support) — scheme-restricted + escaped.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 770396;
+const ORIGINAL_SHA256 = '2c8c1377e16c72e4d8cb7a24f1b34e54b9d4180182e88b517c8c63f1deda2ff9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
