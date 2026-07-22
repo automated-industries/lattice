@@ -54,5 +54,11 @@ export function builtinConnectors(): Connector[] {
  * resolve no connector implementation and silently never refresh.
  */
 export function freshnessConnectors(): Connector[] {
-  return [genericConnector(), new DatabaseConnector()];
+  // Every built-in connector (generic + the 7 hand-authored) PLUS the external-DB
+  // (db_source) connector, which is deliberately absent from builtinConnectors().
+  // Deriving from builtinConnectors() keeps on-access refresh working for the
+  // hand-authored connectors' tables instead of silently no-oping (which would
+  // re-warn + re-read on every dashboard query). db_source is not in the built-in
+  // list, so there is nothing to dedupe.
+  return [...builtinConnectors(), new DatabaseConnector()];
 }

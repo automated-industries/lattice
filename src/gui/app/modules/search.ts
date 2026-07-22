@@ -115,9 +115,13 @@ export const searchJs = `    // ────────────────
       // null/empty list (local mutation, schema change, or unknown table) falls
       // back to a full cache wipe — the safe default.
       if (changedTables && changedTables.length) {
-        for (var i = 0; i < changedTables.length; i++) delete loadedTables[changedTables[i]];
+        // Route through invalidate() so the brain-graph drill cache (graphRowCache)
+        // is dropped in lockstep with loadedTables — otherwise a re-drill after a
+        // collaborator's edit/delete renders stale (deleted/renamed) row nodes.
+        invalidate(changedTables);
       } else {
         loadedTables = {};
+        graphRowCache = {};
       }
       return Promise.all([
         fetchJson('/api/entities-summary'),
@@ -225,6 +229,7 @@ export const searchJs = `    // ────────────────
           selectDrawerTab(drawerTab);
         }
         loadedTables = {};
+        graphRowCache = {}; // per-workspace brain-graph drill cache — never inherit the previous workspace's rows
         // The Tables explorer's cached edges + any in-flight wire/merge selection
         // are per-workspace module state — reset them so the new workspace doesn't
         // inherit the previous one's relationship edges or picked source.

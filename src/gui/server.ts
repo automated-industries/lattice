@@ -879,6 +879,17 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               softDeletable: a.softDeletable,
               createEntity: (name, columns) => createUserEntity(a, name, columns, sessionId),
               createJunction: (x, y) => createUserJunction(a, x, y, sessionId),
+              // The designer's computed-view tools (preview/create_computed_table) need
+              // these closures exactly as the chat dispatch provides them — without
+              // them every computed-view write silently fails.
+              computedOps: {
+                list: () => listComputedTables(a),
+                preview: (def, limit) => previewComputedTable(a, def, limit),
+                create: (name, def) => createComputedTable(a, name, def, sessionId),
+                update: (name, def) => updateComputedTable(a, name, def, sessionId),
+                refresh: (name) => refreshComputedTable(a, name, { sessionId }),
+                delete: (name) => deleteComputedTable(a, name, sessionId),
+              },
               configPath: a.configPath,
               outputDir: a.outputDir,
               aggressiveness: getAggressiveness(),
@@ -1290,7 +1301,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               });
               // After connecting/refreshing a source, normalize the new tables into
               // the star schema (debounced + fail-soft; a no-op if nothing changed).
-              if (connectorsHandled && method === 'POST') triggerDataModelDesign();
+              // Skip the boot-time automatic sync-if-stale (fired on every GUI load,
+              // usually syncs nothing) — only a real connect/refresh should design.
+              if (connectorsHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
+                triggerDataModelDesign();
+              }
               return connectorsHandled;
             },
           },
@@ -1310,7 +1325,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 feed: active.feed,
               });
               // After connecting an external database, normalize its imported tables.
-              if (dbSourcesHandled && method === 'POST') triggerDataModelDesign();
+              // Skip the boot-time automatic sync-if-stale (see the connectors route).
+              if (dbSourcesHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
+                triggerDataModelDesign();
+              }
               return dbSourcesHandled;
             },
           },

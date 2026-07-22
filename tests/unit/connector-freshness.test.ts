@@ -157,6 +157,12 @@ describe('on-access freshness connector set', () => {
     expect(builtinConnectors().some((c) => c.connector === 'db_source')).toBe(false);
     expect(freshnessConnectors().some((c) => c.connector === 'db_source')).toBe(true);
     expect(freshnessConnectors().some((c) => c.connector === 'mcp')).toBe(true);
+    // The hand-authored connectors must ALSO be in the freshness set (freshnessConnectors
+    // now derives from builtinConnectors) — otherwise on-access refresh silently no-ops
+    // for their tables and re-warns on every dashboard query.
+    for (const c of ['atlassian', 'gmail', 'calendar', 'drive', 'slack', 'salesforce']) {
+      expect(freshnessConnectors().some((x) => x.connector === c)).toBe(true);
+    }
   });
 
   it('refreshes an external-DB (db_source) table when the db_source connector is in the set', async () => {

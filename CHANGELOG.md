@@ -56,6 +56,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **Cloud row-ownership is safe for long connector table names.** The per-table RLS ownership trigger
+  and its schema-global trigger function shared a `lattice_track_<table>` name with no length bound, so
+  a connector table name approaching Postgres's 63-byte identifier limit could truncate two distinct
+  tables to the same function name — silently corrupting ownership (invisible rows / a member-sync
+  failure). The name is now bounded + hash-disambiguated exactly as connected table names are. (Cloud
+  only; SQLite has no such limit, which is why tests never surfaced it.)
+
+- **An empty `master.key` no longer becomes a blank encryption key.** An existing-but-empty/whitespace
+  `master.key` file was read as `''` and adopted as the key, encrypting secrets under a publicly-
+  derivable blank — the on-disk reader now treats a blank file as absent (matching the env-key guard)
+  and generates a real key instead.
+
+- **The automatic data-model designer only runs on real data changes and can build computed views.**
+  It no longer fires on the boot-time automatic connector/database `sync-if-stale` (which usually syncs
+  nothing), avoiding a wasted model call on every GUI load; and its context now carries the computed-
+  table operations, so its "add a live computed view" step actually applies instead of silently failing.
+
 - **Brain-graph drilling is instant instead of re-fetching every click.** Clicking through the graph
   re-ran a full set of row fetches on every drill (the focus object's rows plus every linked table's
   rows), so on a cloud a few layers deep meant a dozen sequential network round-trips and the UI
@@ -103,12 +120,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   finish exception and returned a generic "Failed to finish connecting. Check the Lattice logs" — but
   wrote nothing to the logs, so every failure was a black box. It now logs the message + stack, and
   classifies common causes (an expired/used authorization code, a `redirect_uri` mismatch, a rejected
-  client, a timeout) into an actionable on-page message instead of the generic 500. Separately (a
-  defensive hardening, not the sync-write cause above): a stored OAuth dynamic-registration client is
-  bound to the loopback `redirect_uri` it registered with, and a desktop app serves its callback on a
-  new ephemeral port each launch — so a reused client with a stale port could be rejected by a strict
-  authorization server. The client is now re-registered with the current `redirect_uri` when the port
-  changes.
+  client, a timeout) into an actionable on-page message instead of the generic 500.
 
 - **The desktop app now reads the same credential store as the CLI.** `configDir()` discovered the
   Lattice root by walking up from the current directory; a GUI app launched from the Dock/Finder has

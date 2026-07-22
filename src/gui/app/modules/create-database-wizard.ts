@@ -313,8 +313,12 @@ export const createDatabaseWizardJs = `    // ───────────�
             // we'd already ingested the files, silently losing them. Bail now, keeping the
             // staged files + typed text intact so the user can send once the reply finishes.
             if (typeof chatBusy !== 'undefined' && chatBusy) return;
-            if (!stagedFiles.length) { if (t) sendChat(t); return; }
+            // Guard the in-flight ingest FIRST, before the text-only fast path: while a
+            // staged batch ingests, stagedFiles is already cleared, so a second Enter
+            // would otherwise fall into the fast path and fire a text-only turn that
+            // races the files. (Enter isn't covered by the disabled Send button.)
             if (stagingBusy) return; // an ingest for this tray is already in flight
+            if (!stagedFiles.length) { if (t) sendChat(t); return; }
             var batch = stagedFiles.slice();
             // Clear the tray for the send (the ingest shows its own "Analyzing…" card) and
             // LOCK Send while the files ingest. Critically, an attachment must NEVER be dropped

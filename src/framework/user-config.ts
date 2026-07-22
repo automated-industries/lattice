@@ -139,10 +139,14 @@ function readEnvMasterKey(): string | undefined {
   return v !== undefined && v.trim().length > 0 ? v : undefined;
 }
 
-/** The on-disk `master.key`, or undefined when absent. */
+/** The on-disk `master.key`, or undefined when absent OR blank. An empty/whitespace
+ *  file is NOT a usable key — treating it as '' would encrypt everything under a
+ *  publicly-derivable blank key (mirrors readEnvMasterKey's blank guard). */
 function readFileMasterKey(): string | undefined {
   const keyPath = join(ensureConfigDir(), MASTER_KEY_FILENAME);
-  return existsSync(keyPath) ? readFileSync(keyPath, 'utf8').trim() : undefined;
+  if (!existsSync(keyPath)) return undefined;
+  const c = readFileSync(keyPath, 'utf8').trim();
+  return c.length > 0 ? c : undefined;
 }
 
 /** Does `masterKey` decrypt `ciphertext`? (A wrong key throws an AES-GCM auth-tag error.) */
@@ -297,8 +301,12 @@ export function getOrCreateMasterKey(): string {
   return withCredentialLock(() => {
     if (existsSync(keyPath)) {
       const key = readFileSync(keyPath, 'utf8').trim();
-      logKeySource('file', key);
-      return key;
+      if (key.length > 0) {
+        logKeySource('file', key);
+        return key;
+      }
+      // An existing but EMPTY/whitespace master.key must NEVER become a blank
+      // encryption key — fall through to generate + atomically write a real one.
     }
     const key = randomBytes(32).toString('base64');
     writeFileAtomic(keyPath, key);

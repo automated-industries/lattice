@@ -511,8 +511,11 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // bounded per-table cache (fetchRowsPageCached), invalidated by invalidate() on any
 // mutation, so clicking through layers is instant instead of re-fetching every click.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 738762;
-const ORIGINAL_SHA256 = 'ed6de353d20e2c6f2d6b815eb7034156748d371c998babc43e656e76d1a14819';
+// 5.0.x release-review fixes: staging-lock guards Enter (submitComposer order) + the
+// brain-graph drill cache (graphRowCache) is cleared on workspace switch and
+// invalidated via invalidate()/afterMutation. Length + hash recaptured.
+const ORIGINAL_LENGTH = 739440;
+const ORIGINAL_SHA256 = 'e82e1247035a4f026d52a5c8438b5d994c2cc08029ca64aab001c7aa9617a4e9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

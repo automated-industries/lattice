@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import type { Migration } from '../types.js';
 import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
@@ -887,6 +888,16 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'lattice: "%" is not a connected table', p_table;
   END IF;
+  -- The caller may only claim rows of THEIR OWN connector. Even though the claim
+  -- only ever takes OWNERLESS rows (never another member's owned row), require the
+  -- connector to belong to session_user so a member can't reach into another
+  -- member's connector's not-yet-owned rows by guessing its id.
+  IF NOT EXISTS (
+    SELECT 1 FROM "__lattice_connectors" c
+     WHERE c."id" = p_connector_id AND c."connected_by" = session_user
+  ) THEN
+    RAISE EXCEPTION 'lattice: connector "%" is not yours', p_connector_id;
+  END IF;
 
   -- Canonical pk expression, table-qualified (t.) so it resolves in both the outer
   -- SELECT and the correlated NOT EXISTS subquery: CAST(t."col" AS TEXT) joined by
@@ -968,7 +979,18 @@ export function tableRlsSql(table: string, pkCols: readonly string[], group: str
   const pkNew = pkSqlExpr(pkCols, 'NEW.');
   const pkOld = pkSqlExpr(pkCols, 'OLD.');
   const pkRow = pkSqlExpr(pkCols, '');
-  const trg = `lattice_track_${table.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  // The trigger AND its (schema-global) function share this name. Postgres SILENTLY
+  // truncates any identifier to 63 bytes, so a long connector table name would make
+  // two distinct tables collapse to the same truncated `lattice_track_…` function
+  // name — the second CREATE OR REPLACE FUNCTION overwrites the first, corrupting
+  // ownership on a cloud (SQLite has no such limit, so CI never sees it). Bound the
+  // name deterministically + collision-free exactly as mcpTableName does for tables:
+  // hash-suffix when it would exceed 63 bytes.
+  const rawTrg = `lattice_track_${table.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  const trg =
+    Buffer.byteLength(rawTrg, 'utf8') <= 63
+      ? rawTrg
+      : rawTrg.slice(0, 56) + '_' + createHash('sha1').update(rawTrg).digest('hex').slice(0, 6);
   return `
 CREATE OR REPLACE FUNCTION "${trg}"() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 BEGIN

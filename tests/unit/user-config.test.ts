@@ -129,7 +129,7 @@ describe('framework user-config', () => {
       writeFileSync(join(tmpDir, 'master.key'), 'file-key');
       process.env.LATTICE_ENCRYPTION_KEY = 'env-key-differs'; // differs, but nothing to validate
       // No witness -> prefer the persistent file key, NOT the unvalidated env var.
-      // (This is the local-only-workspace user the adversarial review flagged.)
+      // (This is the local-only-workspace user a follow-up review flagged.)
       expect(getOrCreateMasterKey()).toBe('file-key');
     });
 
