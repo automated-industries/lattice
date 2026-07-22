@@ -519,8 +519,16 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // tab renders a review panel in #dm-panel (auto-applied fixes + Apply/Dismiss
 // suggestions from the planner). Length + hash recaptured (combined on this v5.1
 // branch with the desktop auto-update status-indicator client changes).
-const ORIGINAL_LENGTH = 753093;
-const ORIGINAL_SHA256 = '171a561e91e2d7d02a0eceec5c95b755495351170e4114b64437f93bd4d07bcf';
+// v5.1 merge — traceable rendered context (PR #176) folded in: lattice:// references in
+// the record context doc render as trace chips opening a provenance card (row fields +
+// tier + Open), per-file source chips summarize each context file's origin table/count;
+// chat answers use inline word-links that open the provenance card in place, text_final
+// replaces accumulated deltas with deterministic trace links, and a lattice-ref may carry
+// ?f=<column> so the record view scroll-flashes that field (files shingle-match the
+// passage). Length + hash recaptured for the combined v5.1 bundle (planner panel +
+// desktop auto-update + traceable context).
+const ORIGINAL_LENGTH = 766609;
+const ORIGINAL_SHA256 = '11ff19c367aff353e1a030c7efb24bce586643da2f60f09aad3eba201949d98a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -374,6 +374,36 @@ export const dashboardJs = `    // ───────────────
           if (f) f.srcdoc = htmlFileSrcdoc(row.extracted_text);
         });
       }
+      // Trace-link arrival on a file: find the passage the chat answer quoted
+      // (via the stashed sentence around the clicked link) and flash the
+      // paragraph holding it. Shingle match — 8-word runs of the snippet against
+      // each text block — so light paraphrase still lands; no match, no flash.
+      try {
+        var fhlRaw = sessionStorage.getItem('latticeTraceHl');
+        if (fhlRaw) {
+          var fhl = JSON.parse(fhlRaw);
+          if (fhl && fhl.table === 'files' && fhl.id === id && Date.now() - fhl.ts < 15000) {
+            sessionStorage.removeItem('latticeTraceHl');
+            var norm = function (s) { return String(s || '').toLowerCase().replace(/\\s+/g, ' ').trim(); };
+            var words = norm(fhl.snippet).split(' ');
+            var blocks = host.querySelectorAll('p, li, pre, blockquote');
+            var hit = null;
+            for (var w = 0; w + 8 <= words.length && !hit; w += 4) {
+              var shingle = words.slice(w, w + 8).join(' ');
+              for (var bl = 0; bl < blocks.length; bl++) {
+                if (norm(blocks[bl].textContent).indexOf(shingle) >= 0) { hit = blocks[bl]; break; }
+              }
+            }
+            if (hit) {
+              hit.classList.add('trace-hl');
+              hit.scrollIntoView({ block: 'center' });
+              window.setTimeout(function () { hit.classList.remove('trace-hl'); }, 2600);
+            }
+          } else if (fhl && Date.now() - fhl.ts >= 15000) {
+            sessionStorage.removeItem('latticeTraceHl');
+          }
+        }
+      } catch (_e) { /* highlight is best-effort — the preview stands on its own */ }
       var openBtn = document.getElementById('file-open');
       if (openBtn) openBtn.addEventListener('click', function () {
         fetch('/api/files/' + encodeURIComponent(id) + '/open-in-finder', { method: 'POST' })

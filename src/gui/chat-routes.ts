@@ -30,6 +30,62 @@ import {
   type DispatchCtx,
 } from './ai/dispatch.js';
 import { FetchBudget } from '../ai/fetch-policy.js';
+import {
+  collectFromMarkdown,
+  applyTraceLinks,
+  appendSources,
+  enrichExistingLinks,
+  snapshotMissingFields,
+  type TraceRef,
+  type FocusedRef,
+} from './ai/trace-links.js';
+
+/**
+ * Trace-link an intent-inline answer (the fast path that skips the tool loop):
+ * harvest the thread's established lattice:// links from recent persisted
+ * assistant messages, then linkify matches and cite paraphrased records. A
+ * bounded, thread-scoped read; best-effort — a failure returns the text as-is.
+ */
+async function traceLinkInlineAnswer(
+  db: Lattice,
+  threadId: string | null,
+  ownerUserId: string | null,
+  text: string,
+): Promise<string> {
+  if (!threadId || !text) return text;
+  try {
+    const filters = [
+      { col: 'thread_id', op: 'eq' as const, val: threadId },
+      { col: 'role', op: 'eq' as const, val: 'assistant' },
+      { col: 'deleted_at', op: 'isNull' as const },
+    ];
+    if (ownerUserId != null) {
+      filters.push({ col: 'owner_user_id', op: 'eq' as const, val: ownerUserId });
+    }
+    const rows = (await db.query('chat_messages', { filters, limit: 60 })) as Record<
+      string,
+      unknown
+    >[];
+    const linkables = new Map<string, TraceRef | null>();
+    const focused = new Map<string, FocusedRef>();
+    for (const r of rows) {
+      try {
+        const p = JSON.parse(asStr(r.content_json, '{}')) as { text?: string };
+        if (p.text) collectFromMarkdown(p.text, linkables, focused);
+      } catch {
+        // malformed persisted message — nothing to harvest from it
+      }
+    }
+    await snapshotMissingFields(
+      (t, i) => db.get(t, i) as Promise<Record<string, unknown> | null>,
+      text,
+      focused,
+    );
+    return appendSources(enrichExistingLinks(applyTraceLinks(text, linkables), focused), focused);
+  } catch {
+    return text; // best-effort: an unreadable thread must not block the answer
+  }
+}
 
 /** Lifecycle of the assistant row, persisted in content_json so a reload mid-turn can
  *  recover: `pending` (accepted, not started) → `streaming` → `done` | `error`. */
@@ -1121,6 +1177,16 @@ export async function dispatchChatRoute(
           assistantText += ev.delta;
           const cur = turns[turns.length - 1];
           if (cur) cur.text += ev.delta;
+        } else if (ev.type === 'text_final') {
+          // The answer round's text re-emitted with deterministic trace links —
+          // replace the round's accumulated deltas in both records so the
+          // persisted message replays with the links.
+          const cur = turns[turns.length - 1];
+          if (cur) {
+            assistantText =
+              assistantText.slice(0, assistantText.length - cur.text.length) + ev.text;
+            cur.text = ev.text;
+          }
         } else if (ev.type === 'assistant_message_end') {
           // A tool round's streamed narration ("I see — let me try a different approach…")
           // is real content the user should keep — so it stays in BOTH the persisted message
@@ -1273,7 +1339,14 @@ export async function dispatchChatRoute(
     }
     if (!hasAttachments && intent && !intent.needs_work) {
       // Trivial / general — the ack_message IS the complete answer; skip the tool loop.
-      await finishWithAnswer(intent.ack_message, 'done');
+      // An inline answer bypasses the tool loop's trace-link pass, so run it here
+      // against the thread's established links — an answer-from-memory must stay
+      // as traceable as one that re-read the records. (Clarifying questions above
+      // are left alone: citing sources on a question would be noise.)
+      await finishWithAnswer(
+        await traceLinkInlineAnswer(ctx.db, threadId, ownerUserId, intent.ack_message),
+        'done',
+      );
       return;
     }
     // needs_work (or the intent pass failed) → publish the contextual ack (or the generic

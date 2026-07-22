@@ -223,6 +223,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   already-used or expired authorization code tells you to reconnect for a fresh one (codes are
   single-use); and a lost connection attempt is distinguished from a genuinely empty paste.
 
+### Added
+
+- **Traceable rendered context — click a value to see where it came from.** Rendered row context
+  (the markdown files in each entity's directory) can now emit **`lattice://table/id` trace links** for
+  row references in related rollups (hasMany, manyToMany, belongsTo). The canonical auto-renderer
+  automatically linkifies row labels in related files: click a link in the formatted view to open a
+  floating provenance card showing the linked row's label, table, id, a few key fields, and an
+  "Open" button. Links do NOT appear in the entity's own self file (write-back constraints), but
+  custom user-supplied render functions can emit them anywhere. The context API response now
+  includes `source` metadata for each file (type, table, and row count for related sources),
+  enabling future UI features like table-scoped filtering and rollup statistics. Assistant chat
+  answers are traceable too: every record a reply mentions is linked inline — the referenced
+  word itself is the link, flowing with the sentence — and clicking it opens that record in the
+  workspace. Linking is deterministic, not model-dependent: retrieved-record labels are matched
+  into the answer text (case-insensitively for distinctive titles), and an answer that
+  paraphrases a record without ever naming it ends with a "Sources:" line citing what was read.
+  Both the tool loop and the fast inline-answer path get the same treatment. Clicking a
+  reference lands on the source data itself: a link whose record field the answer quotes
+  carries that field along, and the record view scroll-flashes the field line on arrival
+  (a file reference flashes the quoted passage in the file's text). Source citations are
+  relevance-ranked — only records the answer actually drew on are cited.
+
 ### Changed
 
 - **The assistant is "Ask Lattice."** The docked assistant is now labeled **Ask Lattice**
