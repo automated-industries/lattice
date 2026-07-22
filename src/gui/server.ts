@@ -48,9 +48,7 @@ import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity
 import type { ChatProgressEnvelope } from './chat-progress.js';
 import { resolvedProviderKind } from './ai/provider.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
-import { scheduleDataModelDesign, type DesignJob } from './ai/data-model-designer.js';
-import { resolveLlmClient } from './ai/provider.js';
-import { ASSISTANT_HIDDEN_TABLES, type DispatchCtx } from './ai/dispatch.js';
+import { scheduleDataModelPlan } from './planner/run.js';
 import { dispatchQuestionRoute } from './question-routes.js';
 import { dispatchIngestRoute, ingestLocalFile, ingestMutationCtx } from './ingest-routes.js';
 import { dispatchSourcesRoute } from './sources-routes.js';
@@ -850,52 +848,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         // with `activeRef` at every swap site so the next request sees the swap.
         let active: ActiveDb = activeRef;
 
-        // Automatic data-model designer (Bug 11): after a data-changing ingest or a
-        // source connect, schedule a DEBOUNCED, FAIL-SOFT design pass so the workspace
-        // stays a clean star schema. Reads `active` at call time; a whole file batch (or
-        // a connect + its initial sync) coalesces into ONE pass; the pass is best-effort
-        // and can never affect the ingest/connect it followed (see scheduleDataModelDesign).
-        // The designer has only additive, reversible tools (relate tables, add computed
-        // views, document meaning) — it can never invent, overwrite, or drop data.
+        // Automatic data-model planner: after a data-changing ingest or a source
+        // connect, schedule a DEBOUNCED, FAIL-SOFT pass so the workspace stays a clean
+        // star schema. Reads `active` at call time; a whole file batch (or a connect +
+        // its initial sync) coalesces into ONE pass; the pass is best-effort and can
+        // never affect the ingest/connect it followed (see scheduleDataModelPlan). The
+        // planner is DETERMINISTIC and needs no model provider — it auto-applies only
+        // reversible relationships and surfaces the rest as reviewable proposals.
         const triggerDataModelDesign = (): void => {
           const a = active;
-          scheduleDataModelDesign(a.configPath, async (): Promise<DesignJob | null> => {
-            const client = await resolveLlmClient(a.db);
-            if (!client) return null; // no model provider → nothing to run
-            const validTables = new Set(
-              [...a.validTables, ...a.db.getRegisteredTableNames()].filter(
-                (t) =>
-                  !ASSISTANT_HIDDEN_TABLES.has(t) &&
-                  !t.startsWith('__lattice') &&
-                  !t.startsWith('_lattice'),
-              ),
-            );
-            const dispatch: DispatchCtx = {
-              db: a.db,
-              feed: a.feed,
-              validTables,
-              junctionTables: a.junctionTables,
-              computedTables: a.computedTables,
-              softDeletable: a.softDeletable,
-              createEntity: (name, columns) => createUserEntity(a, name, columns, sessionId),
-              createJunction: (x, y) => createUserJunction(a, x, y, sessionId),
-              // The designer's computed-view tools (preview/create_computed_table) need
-              // these closures exactly as the chat dispatch provides them — without
-              // them every computed-view write silently fails.
-              computedOps: {
-                list: () => listComputedTables(a),
-                preview: (def, limit) => previewComputedTable(a, def, limit),
-                create: (name, def) => createComputedTable(a, name, def, sessionId),
-                update: (name, def) => updateComputedTable(a, name, def, sessionId),
-                refresh: (name) => refreshComputedTable(a, name, { sessionId }),
-                delete: (name) => deleteComputedTable(a, name, sessionId),
-              },
-              configPath: a.configPath,
-              outputDir: a.outputDir,
-              aggressiveness: getAggressiveness(),
-            };
-            return { client, dispatch };
-          });
+          scheduleDataModelPlan(a.configPath, () => Promise.resolve({ active: a, sessionId }));
         };
 
         // Per-request handle the route modules will take as their third arg.

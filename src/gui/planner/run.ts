@@ -187,3 +187,43 @@ export async function ensurePlan(active: ActiveDb, opts: EnsurePlanOptions): Pro
 export function invalidatePlanCache(configPath: string): void {
   planCache.delete(configPath);
 }
+
+const PLAN_DEBOUNCE_MS = 4000;
+const planTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Debounced, FAIL-SOFT trigger — the deterministic replacement for the LLM
+ * designer's schedule hook. Coalesces a whole ingest batch (or a connect + its
+ * initial sync) into ONE pass shortly after the last event; the pass is
+ * scheduled, never awaited, and wrapped so a failure can NEVER break the
+ * ingest/connect it followed. `prepare()` resolves the workspace at fire time
+ * (or returns null to skip). Debounced per workspace `key`.
+ */
+export function scheduleDataModelPlan(
+  key: string,
+  prepare: () => Promise<{ active: ActiveDb; sessionId: string } | null>,
+  debounceMs: number = PLAN_DEBOUNCE_MS,
+): void {
+  const prev = planTimers.get(key);
+  if (prev) clearTimeout(prev);
+  const timer = setTimeout(() => {
+    planTimers.delete(key);
+    void (async () => {
+      try {
+        const job = await prepare();
+        if (!job) return;
+        const plan = await ensurePlan(job.active, { sessionId: job.sessionId });
+        const applied = plan.autoApplied.filter((a) => a.ok).length;
+        if (applied > 0) {
+          console.log(`[data-model planner] applied ${String(applied)} structural improvement(s)`);
+        }
+      } catch (e) {
+        // FAIL-SOFT: a best-effort enhancement running AFTER the ingest/connect
+        // already succeeded — never surface or rethrow.
+        console.warn('[data-model planner] pass failed (non-fatal):', (e as Error).message);
+      }
+    })();
+  }, debounceMs);
+  (timer as { unref?: () => void }).unref?.();
+  planTimers.set(key, timer);
+}
