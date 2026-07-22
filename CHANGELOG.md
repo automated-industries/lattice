@@ -8,6 +8,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [5.0.1] — 2026-07-22
+
 ### Added
 
 - **The assistant now follows clean, scalable star-schema data-model best practices.** The system
@@ -28,31 +30,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   and FAIL-SOFT (a designer failure — including no model provider configured — is logged and swallowed,
   and can never affect the ingest/connect it followed).
 
-- **Five more out-of-the-box connectors: Gmail, Google Calendar, Google Drive, Slack, and
-  Salesforce.** Each is a thin hand-authored MCP connector built on the same parameterized-tool
-  pattern the Atlassian connector introduced: no-argument tools populate the top-level tables
-  (Gmail labels/threads, calendars, channels, users, Drive files, Salesforce accounts/contacts/
-  opportunities) and per-parent tools run scoped by the sync parent key (Gmail messages per thread,
-  Calendar events per calendar, Slack messages per channel). Natural keys are parent-namespaced where
-  the provider's id is only unique per parent (Calendar events, Slack message timestamps) and left
-  bare where globally unique (Gmail message ids, Drive file ids, Salesforce ids). All serve over a
-  `/v1/mcp` Streamable-HTTP endpoint (never `/sse`) and carry read-only OAuth scopes. Each has a
-  fake-transport test covering the model schema, the per-parent argument injection, and pagination
-  termination; the mapper field paths, tool names, endpoint URLs, and scopes follow the providers'
-  documented shapes and are marked in-code as needing a live-server spike before general release.
-
-- **Atlassian (Jira + Confluence) connector — the first hand-authored, parameterized-tool MCP
-  connector.** The introspective connector only calls no-argument tools, so an Atlassian server
-  (whose useful read tools all require a `cloudId`) produced no Jira/Confluence tables. The Atlassian
-  connector models those parameterized tools explicitly: it lists the accessible sites
-  (`getAccessibleAtlassianResources`), then runs each per-site tool (`searchJiraIssuesUsingJql`,
-  `getVisibleJiraProjects`, `getConfluenceSpaces`, `getConfluencePages`) with that site's `cloudId`
-  supplied as the sync parent key — one connect populates `atlassian_sites`, `jira_projects`,
-  `jira_issues`, `confluence_spaces`, and `confluence_pages`, over the `/v1/mcp` Streamable-HTTP
-  endpoint. This is the reusable pattern for the other built-in connectors. The transport +
-  parameterized-binding wiring is covered by a fake-transport test; the mapper field paths follow
-  Atlassian's documented result shapes and are marked in-code as needing a live-server spike to
-  confirm before general release.
+- **Parameterized-tool MCP connector scaffolding (not yet enabled).** A pattern + seven hand-authored
+  connectors (Atlassian/Jira+Confluence, Gmail, Google Calendar, Google Drive, Slack, Salesforce)
+  land under `src/connectors/`, modeling read tools that require an argument the introspective
+  connector can't supply (e.g. an Atlassian `cloudId`, a Slack `channel`) by running them per-parent
+  with that argument as the sync parent key. Each is covered by a fake-transport test (model schema,
+  per-parent argument injection, pagination termination). They are **held out of the connectors panel
+  for now** — the generic bring-your-own-MCP-URL connector remains the only built-in — because their
+  endpoint URLs, tool names, and result-shape mappers follow documented shapes that still need a
+  live-OAuth spike to confirm (only Atlassian's endpoint is a real MCP server today). Enable one by
+  adding its factory to `builtinConnectors()` once spiked.
 
 ### Fixed
 
