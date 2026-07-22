@@ -104,6 +104,7 @@ const designTimers = new Map<string, ReturnType<typeof setTimeout>>();
 export function scheduleDataModelDesign(
   key: string,
   prepare: () => Promise<DesignJob | null>,
+  debounceMs: number = DESIGN_DEBOUNCE_MS,
 ): void {
   const prev = designTimers.get(key);
   if (prev) clearTimeout(prev);
@@ -125,7 +126,7 @@ export function scheduleDataModelDesign(
         console.warn('[data-model designer] pass failed (non-fatal):', (e as Error).message);
       }
     })();
-  }, DESIGN_DEBOUNCE_MS);
+  }, debounceMs);
   // Don't keep the process alive just for a pending design pass.
   (timer as { unref?: () => void }).unref?.();
   designTimers.set(key, timer);

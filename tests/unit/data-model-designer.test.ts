@@ -8,6 +8,7 @@ import {
   designDataModel,
   scheduleDataModelDesign,
   type ExecFn,
+  type DesignJob,
 } from '../../src/gui/ai/data-model-designer.js';
 import type { LlmClient, ToolUse } from '../../src/gui/ai/chat.js';
 import type { DispatchCtx } from '../../src/gui/ai/dispatch.js';
@@ -145,33 +146,42 @@ describe('Bug 11: designDataModel', () => {
 });
 
 describe('Bug 11: scheduleDataModelDesign (the deterministic auto-hook)', () => {
+  // Real timers + a tiny injected debounce keep these deterministic across platforms
+  // (fake timers + a fire-and-forget rejected promise raced into an unhandled rejection
+  // on Windows). `wait` gives the scheduled pass time to run + settle.
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
   it('DEBOUNCES — a batch of triggers coalesces into one pass', async () => {
-    vi.useFakeTimers();
-    try {
-      let prepared = 0;
-      const prepare = () => {
-        prepared++;
-        return Promise.resolve(null); // null → skip the design pass (no client needed)
-      };
-      // Three rapid triggers for the same workspace (a 3-file batch).
-      scheduleDataModelDesign('/ws/a', prepare);
-      scheduleDataModelDesign('/ws/a', prepare);
-      scheduleDataModelDesign('/ws/a', prepare);
-      await vi.advanceTimersByTimeAsync(6000);
-      expect(prepared).toBe(1); // only the last schedule fired
-    } finally {
-      vi.useRealTimers();
-    }
+    let prepared = 0;
+    const prepare = (): Promise<null> => {
+      prepared++;
+      return Promise.resolve(null); // null → skip the design pass (no client needed)
+    };
+    // Three rapid triggers for the same workspace (a 3-file batch).
+    scheduleDataModelDesign('/ws/a', prepare, 20);
+    scheduleDataModelDesign('/ws/a', prepare, 20);
+    scheduleDataModelDesign('/ws/a', prepare, 20);
+    await wait(80);
+    expect(prepared).toBe(1); // only the last schedule fired
   });
 
-  it('is FAIL-SOFT — a prepare/designer failure never escapes', async () => {
-    vi.useFakeTimers();
+  it('is FAIL-SOFT — a failing prepare is swallowed + logged, never thrown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      // A throwing prepare must not produce an unhandled rejection or throw out.
-      scheduleDataModelDesign('/ws/b', () => Promise.reject(new Error('boom')));
-      await expect(vi.advanceTimersByTimeAsync(6000)).resolves.not.toThrow();
+      // A prepare whose promise rejects must be caught by the scheduler — never surface
+      // as an unhandled rejection (which would fail the whole run).
+      scheduleDataModelDesign(
+        '/ws/b',
+        async (): Promise<DesignJob> => {
+          await Promise.resolve();
+          throw new Error('boom');
+        },
+        5,
+      );
+      await wait(40);
+      expect(warn).toHaveBeenCalled(); // the failure was logged + swallowed, not rethrown
     } finally {
-      vi.useRealTimers();
+      warn.mockRestore();
     }
   });
 });
