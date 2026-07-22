@@ -67,14 +67,6 @@ export async function syncConnector(
   const pruneVanished = opts.pruneVanished !== false;
   const now = new Date().toISOString();
 
-  const models = connector.models(toolkit);
-  // Ensure all connected tables exist (idempotent; parents before children).
-  for (const m of models) await db.defineLate(m.table, m.definition);
-  // Runtime tables render as markdown too: give each model the same canonical
-  // per-record context a config table gets at open (idempotent; junctions and
-  // the hard-excluded internals are skipped inside the derivation).
-  ensureRuntimeEntityContexts(db, models);
-
   const result: SyncConnectorResult = {
     connectorId,
     upserted: {},
@@ -101,6 +93,16 @@ export async function syncConnector(
   // reconnecting per parent (the old N+1). No-op for connectors without the hook.
   await connector.beginSyncSession?.(ctxBase.connectionId);
   try {
+    // Drift: re-discover the live source + additively migrate this connection's tables BEFORE
+    // reading models, reusing the session transport. No-op for connectors without the hook, and
+    // self-gated by the connector to the stale/refresh cadence.
+    await connector.reconcileModels?.(db, ctxBase.connectionId, toolkit);
+    const models = connector.models(toolkit);
+    // Ensure all connected tables exist (idempotent; parents before children).
+    for (const m of models) await db.defineLate(m.table, m.definition);
+    // Runtime tables render as markdown too: give each model the same canonical per-record context
+    // a config table gets at open (idempotent; junctions + hard-excluded internals are skipped).
+    ensureRuntimeEntityContexts(db, models);
     for (const m of models) {
       const { seen, edges, partial } = await syncModel(
         db,

@@ -56,6 +56,7 @@ import { dispatchImportRoute, readImportSourceFromFile } from './import-routes.j
 import { importDataFaithfully } from './import-auto.js';
 import { dispatchConnectorsRoute } from './connectors-routes.js';
 import { dispatchDbSourcesRoute } from './db-sources-routes.js';
+import { sharedPrefabCatalog } from '../connectors/prefab/index.js';
 import {
   builtinConnectors,
   resolveConnectorIdentity,
@@ -1277,6 +1278,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 connectors: builtinConnectors(),
                 outputDir: active.outputDir,
                 connectedBy,
+                catalog: sharedPrefabCatalog(),
               });
               // After connecting/refreshing a source, normalize the new tables into
               // the star schema (debounced + fail-soft; a no-op if nothing changed).
