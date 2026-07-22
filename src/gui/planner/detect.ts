@@ -175,7 +175,10 @@ function detectRelationships(profile: ModelProfile, opts: Required<DetectOptions
 // ── R3: document structural objects (junctions) ──────────────────────────────
 // A junction table with no definition gets a deterministic, always-correct
 // description. Meaningful entity/column definitions are the demoted LLM assist's
-// job; here we only emit docs whose text is a pure structural fact. Additive.
+// job; here we only emit docs whose text is a pure structural fact. Additive but
+// PROPOSE — a table definition is metadata that is not (yet) on the undo stack,
+// so it is surfaced for one-click apply rather than written unattended (making
+// set_definition revertible is a tracked follow-up).
 function detectDocumentation(profile: ModelProfile): PlanOp[] {
   const ops: PlanOp[] = [];
   const byName = tableByName(profile);
@@ -186,7 +189,7 @@ function detectDocumentation(profile: ModelProfile): PlanOp[] {
       id: opId('document', j.name),
       kind: 'document',
       class: 'additive',
-      tier: 'auto',
+      tier: 'propose',
       target: { table: j.name },
       rationale: `Undocumented join table linking ${j.a} and ${j.b}.`,
       confidence: 1,
