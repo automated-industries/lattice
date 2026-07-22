@@ -191,6 +191,10 @@ export const bootJs = `    // ────────────────�
         // server no-ops when nothing is stale.
         fetch('/api/connectors/sync-if-stale', { method: 'POST' }).catch(function () {});
         fetch('/api/db-sources/sync-if-stale', { method: 'POST' }).catch(function () {});
+        // On-open data-model sweep (fire-and-forget): re-plans + auto-applies
+        // reversible fixes when the model shape changed since the last pass; the
+        // server watermark-skips an unchanged model.
+        fetch('/api/data-model/plan').catch(function () {});
         initLastEdited();
         initOffline();
         initOutputsResize();

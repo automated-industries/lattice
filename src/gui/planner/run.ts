@@ -155,6 +155,12 @@ export interface EnsurePlanOptions {
   dismissed?: Set<string>;
   /** Bypass the watermark cache (e.g. a manual refresh). */
   force?: boolean;
+  /**
+   * Apply the AUTO tier (default true). Set false for a caller that can only
+   * READ the model — a scoped cloud member, whose schema/config writes are
+   * owner-gated and would just fail-soft anyway (G9). Detection still runs.
+   */
+  applyAuto?: boolean;
 }
 
 /**
@@ -174,7 +180,8 @@ export async function ensurePlan(active: ActiveDb, opts: EnsurePlanOptions): Pro
   const dismissed = opts.dismissed ?? new Set<string>();
   const auto = ops.filter((o) => o.tier === 'auto' && !dismissed.has(o.id));
   const proposals = ops.filter((o) => o.tier === 'propose' && !dismissed.has(o.id));
-  const autoApplied = await runAutoTier(auto, applyDepsFor(active, opts.sessionId));
+  const autoApplied =
+    opts.applyAuto === false ? [] : await runAutoTier(auto, applyDepsFor(active, opts.sessionId));
 
   // Recompute the token AFTER the AUTO pass so its own structural writes don't
   // read as "changed" and cause an immediate redundant re-plan.
