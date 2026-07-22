@@ -94,77 +94,83 @@ describe('BUNDLE_SWAP_SH — injection safety', () => {
 
 // Execute the real swap helper against throwaway directories. This is the one
 // piece whose bug could brick an install, so we prove swap + rollback + the
-// never-delete-without-a-replacement guard with actual `sh`.
-describe('BUNDLE_SWAP_SH — execution (swap / guard / rollback)', () => {
-  // A genuinely dead pid so the helper's wait-for-exit loop returns immediately
-  // (a spawned node process that has already exited; its pid is now free).
-  const deadPid = String(spawnSync(process.execPath, ['-e', '0']).pid ?? 999999);
+// never-delete-without-a-replacement guard with actual `sh`. POSIX-only: the
+// bundle swap runs on macOS (Deno.build.os === 'darwin') via a POSIX shell, and
+// the read-only-parent case relies on POSIX permission semantics that Windows
+// (which ignores chmod on directories for this) doesn't honor — so skip there.
+describe.skipIf(process.platform === 'win32')(
+  'BUNDLE_SWAP_SH — execution (swap / guard / rollback)',
+  () => {
+    // A genuinely dead pid so the helper's wait-for-exit loop returns immediately
+    // (a spawned node process that has already exited; its pid is now free).
+    const deadPid = String(spawnSync(process.execPath, ['-e', '0']).pid ?? 999999);
 
-  function runSwap(dir: string, running: string, staged: string): number {
-    const scriptPath = join(dir, 'swap.sh');
-    writeFileSync(scriptPath, BUNDLE_SWAP_SH);
-    // argv form — NOT `sh -c` — so the paths can never be shell-interpreted.
-    const r = spawnSync('sh', [scriptPath, running, staged, deadPid], { timeout: 20000 });
-    return r.status ?? -1;
-  }
-
-  it('swaps the staged bundle into the running path and relaunches', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'swap-ok-'));
-    try {
-      const running = join(dir, 'Lattice.app');
-      const staged = join(dir, 'Lattice.app.new');
-      mkdirSync(running);
-      writeFileSync(join(running, 'marker'), 'OLD');
-      mkdirSync(staged);
-      writeFileSync(join(staged, 'marker'), 'NEW');
-      runSwap(dir, running, staged);
-      // Running path now holds the NEW bundle; the staged copy is consumed.
-      expect(readFileSync(join(running, 'marker'), 'utf8')).toBe('NEW');
-      expect(existsSync(staged)).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+    function runSwap(dir: string, running: string, staged: string): number {
+      const scriptPath = join(dir, 'swap.sh');
+      writeFileSync(scriptPath, BUNDLE_SWAP_SH);
+      // argv form — NOT `sh -c` — so the paths can never be shell-interpreted.
+      const r = spawnSync('sh', [scriptPath, running, staged, deadPid], { timeout: 20000 });
+      return r.status ?? -1;
     }
-  });
 
-  it('NEVER deletes the running app when no staged bundle exists (exit 1, running intact)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'swap-guard-'));
-    try {
-      const running = join(dir, 'Lattice.app');
-      const staged = join(dir, 'Lattice.app.new'); // does NOT exist
-      mkdirSync(running);
-      writeFileSync(join(running, 'marker'), 'OLD');
-      const status = runSwap(dir, running, staged);
-      expect(status).toBe(1); // guard refused
-      // The running app is untouched — the critical never-brick invariant.
-      expect(readFileSync(join(running, 'marker'), 'utf8')).toBe('OLD');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves the running app when the swap cannot proceed (read-only parent)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'swap-ro-'));
-    const parent = join(dir, 'Applications');
-    try {
-      mkdirSync(parent);
-      const running = join(parent, 'Lattice.app');
-      const staged = join(parent, 'Lattice.app.new');
-      mkdirSync(running);
-      writeFileSync(join(running, 'marker'), 'OLD');
-      mkdirSync(staged);
-      writeFileSync(join(staged, 'marker'), 'NEW');
-      chmodSync(parent, 0o500); // read+execute, no write → first mv fails
-      runSwap(dir, running, staged);
-      chmodSync(parent, 0o700); // restore so we can read the assertion + clean up
-      // First mv (running → .bak) failed, so the running app is still the original.
-      expect(readFileSync(join(running, 'marker'), 'utf8')).toBe('OLD');
-    } finally {
+    it('swaps the staged bundle into the running path and relaunches', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'swap-ok-'));
       try {
-        chmodSync(parent, 0o700);
-      } catch {
-        /* already restored */
+        const running = join(dir, 'Lattice.app');
+        const staged = join(dir, 'Lattice.app.new');
+        mkdirSync(running);
+        writeFileSync(join(running, 'marker'), 'OLD');
+        mkdirSync(staged);
+        writeFileSync(join(staged, 'marker'), 'NEW');
+        runSwap(dir, running, staged);
+        // Running path now holds the NEW bundle; the staged copy is consumed.
+        expect(readFileSync(join(running, 'marker'), 'utf8')).toBe('NEW');
+        expect(existsSync(staged)).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
+    });
+
+    it('NEVER deletes the running app when no staged bundle exists (exit 1, running intact)', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'swap-guard-'));
+      try {
+        const running = join(dir, 'Lattice.app');
+        const staged = join(dir, 'Lattice.app.new'); // does NOT exist
+        mkdirSync(running);
+        writeFileSync(join(running, 'marker'), 'OLD');
+        const status = runSwap(dir, running, staged);
+        expect(status).toBe(1); // guard refused
+        // The running app is untouched — the critical never-brick invariant.
+        expect(readFileSync(join(running, 'marker'), 'utf8')).toBe('OLD');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('preserves the running app when the swap cannot proceed (read-only parent)', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'swap-ro-'));
+      const parent = join(dir, 'Applications');
+      try {
+        mkdirSync(parent);
+        const running = join(parent, 'Lattice.app');
+        const staged = join(parent, 'Lattice.app.new');
+        mkdirSync(running);
+        writeFileSync(join(running, 'marker'), 'OLD');
+        mkdirSync(staged);
+        writeFileSync(join(staged, 'marker'), 'NEW');
+        chmodSync(parent, 0o500); // read+execute, no write → first mv fails
+        runSwap(dir, running, staged);
+        chmodSync(parent, 0o700); // restore so we can read the assertion + clean up
+        // First mv (running → .bak) failed, so the running app is still the original.
+        expect(readFileSync(join(running, 'marker'), 'utf8')).toBe('OLD');
+      } finally {
+        try {
+          chmodSync(parent, 0o700);
+        } catch {
+          /* already restored */
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);
