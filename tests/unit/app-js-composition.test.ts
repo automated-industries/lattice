@@ -519,8 +519,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // tab renders a review panel in #dm-panel (auto-applied fixes + Apply/Dismiss
 // suggestions from the planner). Length + hash recaptured (combined on this v5.1
 // branch with the desktop auto-update status-indicator client changes).
-const ORIGINAL_LENGTH = 753519;
-const ORIGINAL_SHA256 = '4e38e5750a65bb676eb90656e9d8bab0402efe53339ea982f1142f358ecb9b3c';
+const ORIGINAL_LENGTH = 753093;
+const ORIGINAL_SHA256 = '171a561e91e2d7d02a0eceec5c95b755495351170e4114b64437f93bd4d07bcf';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

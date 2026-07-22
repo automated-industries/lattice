@@ -24,67 +24,69 @@ export const configureDrawerJs = `
     // (the same route the on-open sweep hits). Apply/Dismiss post back to the planner.
     function renderDataModelPlan(host) {
       if (!host) return;
-      host.innerHTML = '<div style="opacity:.6;font-size:12px;padding:8px 2px;">Analyzing data model\\u2026</div>';
-      fetch('/api/data-model/plan')
-        .then(function (r) { return r.ok ? r.json() : null; })
+      host.hidden = false;
+      host.innerHTML = '<div class="dm-plan-note">Analyzing data model\\u2026</div>';
+      var toast = typeof showToast === 'function' ? showToast : function () {};
+      var post = function (url, id) {
+        return fetchJson(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: id }),
+        });
+      };
+      var reRender = function () {
+        renderDataModelPlan(host);
+        if (typeof renderModelTables === 'function') renderModelTables(document.getElementById('model-tables-host'));
+      };
+      fetchJson('/api/data-model/plan')
         .then(function (plan) {
-          if (!plan) { host.innerHTML = ''; return; }
           var html = '';
           var applied = (plan.autoApplied || []).filter(function (a) { return a && a.ok; });
           if (applied.length) {
-            html += '<div style="font-weight:600;font-size:12px;margin:6px 2px;">Applied automatically</div>';
+            html += '<div class="dm-plan-head">Applied automatically</div>';
             applied.forEach(function (a) {
-              html += '<div style="font-size:12px;padding:4px 2px;opacity:.85;">' + escapeHtml(a.summary) + '</div>';
+              html += '<div class="dm-plan-applied">' + escapeHtml(a.summary) + '</div>';
             });
           }
           var props = plan.proposals || [];
           if (props.length) {
-            html += '<div style="font-weight:600;font-size:12px;margin:10px 2px 6px;">Suggestions (' + props.length + ')</div>';
+            html += '<div class="dm-plan-head">Suggestions (' + props.length + ')</div>';
             props.forEach(function (p) {
-              html += '<div class="dm-plan-card" data-id="' + escapeHtml(p.id) +
-                '" style="border:1px solid var(--border,#333);border-radius:6px;padding:8px;margin:6px 0;">' +
-                '<div style="font-size:12px;margin-bottom:6px;">' + escapeHtml(p.rationale) + '</div>' +
+              html += '<div class="dm-plan-card" data-id="' + escapeHtml(p.id) + '">' +
+                '<div class="dm-plan-why">' + escapeHtml(p.rationale) + '</div>' +
                 '<button type="button" class="btn btn-sm dm-apply-btn">Apply</button> ' +
                 '<button type="button" class="btn btn-sm btn-ghost dm-dismiss-btn">Dismiss</button>' +
                 '</div>';
             });
           }
-          if (!html) html = '<div style="opacity:.6;font-size:12px;padding:8px 2px;">Your data model looks clean.</div>';
+          // A clean model → hide the panel entirely rather than leave an empty box.
+          if (!html) { host.hidden = true; host.innerHTML = ''; return; }
           host.innerHTML = html;
-          var toast = typeof showToast === 'function' ? showToast : function () {};
-          var send = function (url, id, btn, busy) {
-            btn.disabled = true; btn.textContent = busy;
-            return fetch(url, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ id: id }),
-            }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); });
-          };
           Array.prototype.forEach.call(host.querySelectorAll('.dm-apply-btn'), function (btn) {
             btn.addEventListener('click', function () {
               var card = btn.closest('.dm-plan-card'); if (!card) return;
-              send('/api/data-model/apply', card.getAttribute('data-id'), btn, 'Applying\\u2026').then(function (res) {
-                var a = res.body && res.body.applied && res.body.applied[0];
-                if (!res.ok || (a && !a.ok)) { toast('Could not apply: ' + ((a && a.error) || 'failed'), {}); renderDataModelPlan(host); return; }
-                toast((a && a.summary) || 'Applied', {});
-                var done = function () {
-                  renderDataModelPlan(host);
-                  if (typeof renderModelTables === 'function') renderModelTables(document.getElementById('model-tables-host'));
-                };
-                if (typeof refreshEntities === 'function') refreshEntities().then(done, done); else done();
-              }).catch(function () { toast('Could not apply', {}); renderDataModelPlan(host); });
+              withBusy(btn, function () {
+                return post('/api/data-model/apply', card.getAttribute('data-id')).then(function (body) {
+                  var a = body && body.applied && body.applied[0];
+                  if (a && !a.ok) { toast('Could not apply: ' + (a.error || 'failed'), {}); renderDataModelPlan(host); return; }
+                  toast((a && a.summary) || 'Applied', {});
+                  if (typeof refreshEntities === 'function') refreshEntities().then(reRender, reRender); else reRender();
+                }).catch(function () { toast('Could not apply', {}); renderDataModelPlan(host); });
+              });
             });
           });
           Array.prototype.forEach.call(host.querySelectorAll('.dm-dismiss-btn'), function (btn) {
             btn.addEventListener('click', function () {
               var card = btn.closest('.dm-plan-card'); if (!card) return;
-              send('/api/data-model/dismiss', card.getAttribute('data-id'), btn, 'Dismissing\\u2026')
-                .then(function () { renderDataModelPlan(host); })
-                .catch(function () { renderDataModelPlan(host); });
+              withBusy(btn, function () {
+                return post('/api/data-model/dismiss', card.getAttribute('data-id'))
+                  .then(function () { renderDataModelPlan(host); })
+                  .catch(function () { renderDataModelPlan(host); });
+              });
             });
           });
         })
-        .catch(function () { host.innerHTML = ''; });
+        .catch(function () { host.hidden = true; host.innerHTML = ''; });
     }
 
     function renderDataModelTab(body) {

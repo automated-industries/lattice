@@ -1,11 +1,12 @@
 import {
   FREETEXT,
-  NEVER_KEY,
-  PREFERRED_KEYS,
+  ISO_DATE,
+  ISO_DATETIME,
   SAMPLE,
   isNumericValue,
+  isSystemColumn,
   norm,
-  normalizeName,
+  pickNaturalKeyFrom,
 } from '../../import/infer-core.js';
 import type { InferredType } from '../../import/types.js';
 import type {
@@ -21,8 +22,12 @@ import type {
  * bounded, dialect-stable way:
  *
  *  - G1 (deterministic sampling): every read is ordered by the primary key, so
- *    the sample is a stable prefix, not an arbitrary set that shifts run-to-run
- *    or SQLite↔Postgres.
+ *    WITHIN a workspace the sample is a stable prefix — the same rows every run —
+ *    which is what makes "same model → same plan" hold. (A text/UUID key's prefix
+ *    can differ across ENGINES because `ORDER BY` uses each engine's default
+ *    collation; a workspace runs on ONE engine, so its per-workspace determinism
+ *    is unaffected. A byte-stable cross-engine prefix would need `ORDER BY … COLLATE`,
+ *    which the bounded-read API doesn't expose.)
  *  - G3 (cross-dialect canonicalization): node-pg and better-sqlite3 return
  *    different JS types for the same logical value (Date vs ISO string, number
  *    vs numeric string, boolean vs 0/1). We canonicalize at this boundary —
@@ -42,9 +47,6 @@ type Row = Record<string, unknown>;
 
 /** Distinct values tracked per column (cap bounds memory + marks coverage as partial). */
 export const DISTINCT_CAP = 200;
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
 
 /** The declared structure of a table (from the schema/config), fed to `profileTable`. */
 export interface TableStructural {
@@ -115,35 +117,23 @@ export function naturalType(values: unknown[]): InferredType {
   return 'text';
 }
 
-function isSystemColumn(name: string): boolean {
-  return (
-    name === 'id' ||
-    name === 'deleted_at' ||
-    name === 'created_at' ||
-    name === 'updated_at' ||
-    name.startsWith('_')
-  );
-}
-
 /** A stable natural key from the sample: a unique, non-freetext scalar (preferring
- *  stable names), excluding system columns. Mirrors ingest `pickNaturalKey` but
- *  over a bounded live sample. */
+ *  stable names), excluding system columns. Reuses the shared ingest policy over a
+ *  bounded live sample — uniqueness is distinct-count === sampled-row-count (with a
+ *  full, non-null sample), and FREETEXT (a superset of NEVER_KEY) is excluded, so
+ *  the planner is stricter than ingest about what may be a key. */
 function pickNaturalKey(stats: ColumnStat[], sampledRows: number): string | null {
   const uniqueInSample = (c: ColumnStat): boolean =>
     !c.distinctIsCapped && c.distinctSampled === sampledRows && c.nullRate === 0 && sampledRows > 0;
-  for (const pref of PREFERRED_KEYS) {
-    for (const c of stats) {
-      if (isSystemColumn(c.name)) continue;
-      if (normalizeName(c.name) === pref && uniqueInSample(c)) return c.name;
-    }
-  }
-  for (const c of stats) {
-    if (isSystemColumn(c.name)) continue;
-    if (NEVER_KEY.has(normalizeName(c.name)) || FREETEXT.has(normalizeName(c.name))) continue;
-    if ((c.inferredType === 'text' || c.inferredType === 'integer') && uniqueInSample(c))
-      return c.name;
-  }
-  return null;
+  return pickNaturalKeyFrom(
+    stats.map((c) => ({
+      name: c.name,
+      type: c.inferredType,
+      isUnique: uniqueInSample(c),
+      skip: isSystemColumn(c.name),
+    })),
+    FREETEXT,
+  );
 }
 
 /**

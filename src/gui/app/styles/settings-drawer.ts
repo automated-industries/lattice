@@ -160,6 +160,15 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
        980px reading cap is lifted for them so the explorer / graph canvas span the pane. */
     .settings-drawer .drawer-body.dm-wide { max-width: none; }
     .dm-panel { min-width: 0; }
+    .dm-panel[hidden] { display: none; }
+    /* Data-model planner panel: applied fixes + reviewable suggestions. */
+    .dm-plan-note { color: var(--text-muted); font-size: 12px; padding: 8px 2px; }
+    .dm-plan-head { font-weight: 600; font-size: 12px; margin: 8px 2px 6px; }
+    .dm-plan-applied { font-size: 12px; padding: 4px 2px; color: var(--text-muted); }
+    .dm-plan-card {
+      border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin: 6px 0;
+    }
+    .dm-plan-why { font-size: 12px; margin-bottom: 6px; }
     /* Data Model tab: the tiered Tables explorer full width. The optional
        column/relationship editor drops in BELOW it (full width), never a fixed side
        column, so selecting an object keeps the explorer spanning the whole pane. */

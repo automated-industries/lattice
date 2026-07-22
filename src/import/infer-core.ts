@@ -63,8 +63,56 @@ export function normalizeName(key: string): string {
   return /^[a-z]/.test(s) ? s : 'f_' + s;
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+export const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+
+/** System / bookkeeping columns neither engine treats as data (never a key,
+ *  dimension, or FK candidate). Shared by the ingest inferrer + the planner. */
+export function isSystemColumn(name: string): boolean {
+  return (
+    name === 'id' ||
+    name === 'deleted_at' ||
+    name === 'created_at' ||
+    name === 'updated_at' ||
+    name.startsWith('_')
+  );
+}
+
+/** How many of `sourceValues` (already-distinct: an array or set) appear in a
+ *  candidate key's `keyValues` — the core value-overlap mechanic behind FK
+ *  inference. Callers own the candidate loop, the coverage gates, and the
+ *  tie-break; this is only the intersection count. */
+export function countValueMatches(sourceValues: Iterable<string>, keyValues: Set<string>): number {
+  let matched = 0;
+  for (const v of sourceValues) if (keyValues.has(v)) matched++;
+  return matched;
+}
+
+/**
+ * Pick a natural key from pre-profiled columns: a unique, non-freetext scalar,
+ * preferring the stable {@link PREFERRED_KEYS} names. Shape-agnostic — each caller
+ * supplies `{ name, type, isUnique, skip }` from its own profile and its own
+ * key-exclusion set (`NEVER_KEY` for ingest; `FREETEXT` for the stricter planner).
+ * The uniqueness test and the skip predicate stay the caller's (they differ:
+ * full-scan vs bounded-sample uniqueness; isArray vs isSystemColumn skip).
+ */
+export function pickNaturalKeyFrom(
+  cols: { name: string; type: InferredType; isUnique: boolean; skip?: boolean }[],
+  excludeAsKey: Set<string> = NEVER_KEY,
+): string | null {
+  for (const pref of PREFERRED_KEYS) {
+    for (const c of cols) {
+      if (c.skip) continue;
+      if (normalizeName(c.name) === pref && c.isUnique) return c.name;
+    }
+  }
+  for (const c of cols) {
+    if (c.skip) continue;
+    if (excludeAsKey.has(normalizeName(c.name))) continue;
+    if ((c.type === 'text' || c.type === 'integer') && c.isUnique) return c.name;
+  }
+  return null;
+}
 
 /** Infer a column type from a set of values (nulls ignored). Defaults to text. */
 export function inferFieldType(values: unknown[]): InferredType {

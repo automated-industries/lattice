@@ -11,13 +11,14 @@ import {
   DIM_MAX_RATIO,
   FREETEXT,
   NEVER_KEY,
-  PREFERRED_KEYS,
   SAMPLE,
+  countValueMatches,
   inferFieldType,
   isNumericValue,
   isPlainObject,
   norm,
   normalizeName,
+  pickNaturalKeyFrom,
   type ColumnProfile,
 } from './infer-core.js';
 
@@ -132,18 +133,17 @@ function pickNaturalKey(
     }
     return seen.size === n;
   };
-  for (const pref of PREFERRED_KEYS) {
-    for (const [key, p] of profiles) {
-      if (p.isArray) continue;
-      if (normalizeName(key) === pref && isUnique(key)) return key;
-    }
-  }
-  for (const [key, p] of profiles) {
-    if (p.isArray) continue;
-    if (NEVER_KEY.has(normalizeName(key))) continue;
-    if ((p.type === 'text' || p.type === 'integer') && isUnique(key)) return key;
-  }
-  return null;
+  // Ingest excludes only NEVER_KEY (a `name`/`title` column CAN be a key here);
+  // the shared policy walk is otherwise identical to the planner's.
+  return pickNaturalKeyFrom(
+    [...profiles].map(([key, p]) => ({
+      name: key,
+      type: p.type,
+      isUnique: p.isArray ? false : isUnique(key),
+      skip: p.isArray,
+    })),
+    NEVER_KEY,
+  );
 }
 
 export interface InferOptions {
@@ -273,8 +273,7 @@ export function inferSchema(
       if (t.name === self.name || !t.naturalKey) continue;
       const p = t.profiles.get(t.naturalKey);
       if (!p || p.valueSet.size === 0) continue;
-      let matched = 0;
-      for (const v of values) if (p.valueSet.has(v)) matched++;
+      const matched = countValueMatches(values, p.valueSet);
       if (matched > 0 && (best === null || matched > best.matched)) {
         best = { target: t, column: t.naturalKey, matched };
       }

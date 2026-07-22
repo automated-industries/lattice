@@ -237,8 +237,8 @@ import { css } from '../../src/gui/app/css.js';
 // .q-banner collapsed pending-questions banner + #q-stack hidden rule. Recaptured.
 // 5.0.1 Bug 8: .staging-busy state (dim chips, hide remove buttons, pulse the
 // "Adding…" header) while a staged file batch ingests. Recaptured.
-const ORIGINAL_LENGTH = 167123;
-const ORIGINAL_SHA256 = '8de6154028771b8509d343a6f2789dd254ea5f49dd6ae75970b353067a059850';
+const ORIGINAL_LENGTH = 167667;
+const ORIGINAL_SHA256 = 'faeb400d58a5634340b16e70f7649ff48a3b564504a3a78f4955213a6aa21910';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

@@ -4,6 +4,8 @@ import {
   FREETEXT,
   NEVER_KEY,
   normalizeName,
+  isSystemColumn,
+  countValueMatches,
 } from '../../import/infer-core.js';
 import type { ColumnStat, ModelProfile, PlanOp, PlanTier, TableProfile } from './types.js';
 
@@ -50,17 +52,6 @@ const DEFAULTS: Required<DetectOptions> = {
  *  pre-normalized by callers so the id is order-independent. */
 function opId(kind: string, table: string, column = '', toTable = ''): string {
   return `${kind}:${table}:${column}:${toTable}`;
-}
-
-/** System / bookkeeping columns the planner never reasons about. */
-function isSystemColumn(name: string): boolean {
-  return (
-    name === 'id' ||
-    name === 'deleted_at' ||
-    name === 'created_at' ||
-    name === 'updated_at' ||
-    name.startsWith('_')
-  );
 }
 
 function tableByName(profile: ModelProfile): Map<string, TableProfile> {
@@ -120,9 +111,7 @@ function detectRelationships(profile: ModelProfile, opts: Required<DetectOptions
         if (alreadyRelated(profile, s, t.name)) continue; // idempotence (G6)
         const nk = columnByName(t, t.naturalKey);
         if (!nk || nk.sampleValues.length === 0) continue;
-        const nkSet = new Set(nk.sampleValues);
-        let matched = 0;
-        for (const v of c.sampleValues) if (nkSet.has(v)) matched++;
+        const matched = countValueMatches(c.sampleValues, new Set(nk.sampleValues));
         if (matched === 0) continue;
         if (
           best === null ||
