@@ -1,11 +1,11 @@
-import { DIM_MAX_DISTINCT, DIM_MAX_RATIO, FREETEXT, NEVER_KEY, normalizeName } from '../../import/infer-core.js';
-import type {
-  ColumnStat,
-  ModelProfile,
-  PlanOp,
-  PlanTier,
-  TableProfile,
-} from './types.js';
+import {
+  DIM_MAX_DISTINCT,
+  DIM_MAX_RATIO,
+  FREETEXT,
+  NEVER_KEY,
+  normalizeName,
+} from '../../import/infer-core.js';
+import type { ColumnStat, ModelProfile, PlanOp, PlanTier, TableProfile } from './types.js';
 
 /**
  * The deterministic data-model rules engine.
@@ -230,7 +230,11 @@ function detectDimensions(profile: ModelProfile, linkedCols: Set<string>): PlanO
           `${s.name}.${c.name} repeats ${String(c.distinctSampled)} distinct values across ` +
           `${String(s.sampledRowCount)} rows — extract it into a "${nn}" table linked by relationship.`,
         confidence: round2(1 - ratio),
-        evidence: { distinct: c.distinctSampled, sampledRows: s.sampledRowCount, ratio: round2(ratio) },
+        evidence: {
+          distinct: c.distinctSampled,
+          sampledRows: s.sampledRowCount,
+          ratio: round2(ratio),
+        },
       });
     }
   }
@@ -304,7 +308,11 @@ function detectMergeableTables(profile: ModelProfile, opts: Required<DetectOptio
           `${a.name} and ${b.name} share ${String(inter)} columns and the same key ` +
           `"${normalizeName(a.naturalKey)}" (${String(Math.round(jaccard * 100))}% overlap) — likely the same concept.`,
         confidence: round2(jaccard),
-        evidence: { jaccard: round2(jaccard), sharedColumns: inter, key: normalizeName(a.naturalKey) },
+        evidence: {
+          jaccard: round2(jaccard),
+          sharedColumns: inter,
+          key: normalizeName(a.naturalKey),
+        },
       });
     }
   }

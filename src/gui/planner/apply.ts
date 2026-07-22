@@ -26,9 +26,17 @@ export interface ApplyDeps {
   /** Rename a table to a canonical identifier. Reversible (reference-breaking). */
   renameTable(from: string, to: string): Promise<{ ok: boolean; error?: string }>;
   /** Extract a repeated column into its own dimension table + relationship. */
-  extractDimension(table: string, column: string, dimTable: string): Promise<{ ok: boolean; error?: string }>;
+  extractDimension(
+    table: string,
+    column: string,
+    dimTable: string,
+  ): Promise<{ ok: boolean; error?: string }>;
   /** Retype a TEXT column to a narrower type (rewrites stored values). */
-  retypeColumn(table: string, column: string, toType: string): Promise<{ ok: boolean; error?: string }>;
+  retypeColumn(
+    table: string,
+    column: string,
+    toType: string,
+  ): Promise<{ ok: boolean; error?: string }>;
 }
 
 function done(
@@ -65,23 +73,32 @@ export async function applyPlanOp(op: PlanOp, deps: ApplyDeps): Promise<AppliedO
       const { table, toTable } = op.target;
       if (!toTable) return done(op, false, op.rationale, { error: 'missing merge target' });
       const r = await deps.mergeTables(table, toTable);
-      return done(op, r.ok, r.ok ? `Merged ${table} into ${toTable}` : op.rationale, { error: r.error });
+      return done(op, r.ok, r.ok ? `Merged ${table} into ${toTable}` : op.rationale, {
+        error: r.error,
+      });
     }
     case 'dedup_rows': {
       const r = await deps.dedupRows(op.target.table);
-      return done(op, r.ok, r.ok ? `Deduplicated ${op.target.table}` : op.rationale, { error: r.error });
+      return done(op, r.ok, r.ok ? `Deduplicated ${op.target.table}` : op.rationale, {
+        error: r.error,
+      });
     }
     case 'canonical_rename': {
       const { table, toTable } = op.target;
       if (!toTable) return done(op, false, op.rationale, { error: 'missing rename target' });
       const r = await deps.renameTable(table, toTable);
-      return done(op, r.ok, r.ok ? `Renamed ${table} → ${toTable}` : op.rationale, { error: r.error });
+      return done(op, r.ok, r.ok ? `Renamed ${table} → ${toTable}` : op.rationale, {
+        error: r.error,
+      });
     }
     case 'extract_dimension': {
       const { table, column, toTable } = op.target;
-      if (!column || !toTable) return done(op, false, op.rationale, { error: 'missing column/target' });
+      if (!column || !toTable)
+        return done(op, false, op.rationale, { error: 'missing column/target' });
       const r = await deps.extractDimension(table, column, toTable);
-      return done(op, r.ok, r.ok ? `Extracted ${table}.${column} → ${toTable}` : op.rationale, { error: r.error });
+      return done(op, r.ok, r.ok ? `Extracted ${table}.${column} → ${toTable}` : op.rationale, {
+        error: r.error,
+      });
     }
     case 'retype_column': {
       const { table, column } = op.target;
@@ -89,7 +106,9 @@ export async function applyPlanOp(op: PlanOp, deps: ApplyDeps): Promise<AppliedO
       const to = typeof rawTo === 'string' ? rawTo : '';
       if (!column || !to) return done(op, false, op.rationale, { error: 'missing column/type' });
       const r = await deps.retypeColumn(table, column, to);
-      return done(op, r.ok, r.ok ? `Retyped ${table}.${column} to ${to}` : op.rationale, { error: r.error });
+      return done(op, r.ok, r.ok ? `Retyped ${table}.${column} to ${to}` : op.rationale, {
+        error: r.error,
+      });
     }
   }
 }
@@ -106,7 +125,13 @@ export async function runAutoTier(ops: PlanOp[], deps: ApplyDeps): Promise<Appli
     try {
       applied.push(await applyPlanOp(op, deps));
     } catch (e) {
-      applied.push({ id: op.id, kind: op.kind, summary: op.rationale, ok: false, error: (e as Error).message });
+      applied.push({
+        id: op.id,
+        kind: op.kind,
+        summary: op.rationale,
+        ok: false,
+        error: (e as Error).message,
+      });
     }
   }
   return applied;

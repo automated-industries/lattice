@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Lattice } from '../../src/lattice.js';
-import { buildModelProfile, type IntrospectDb, type StructuralInput } from '../../src/gui/planner/introspect.js';
+import {
+  buildModelProfile,
+  type IntrospectDb,
+  type StructuralInput,
+} from '../../src/gui/planner/introspect.js';
 import { detect } from '../../src/gui/planner/detect.js';
 
 /**
@@ -45,9 +49,18 @@ describe('planner — live SQLite introspect + detect', () => {
       outputFile: '/dev/null',
     });
     await db.init();
-    for (let i = 1; i <= 10; i++) await db.insert('customers', { id: `id${String(i)}`, code: `c${String(i)}`, name: `Cust ${String(i)}` });
+    for (let i = 1; i <= 10; i++)
+      await db.insert('customers', {
+        id: `id${String(i)}`,
+        code: `c${String(i)}`,
+        name: `Cust ${String(i)}`,
+      });
     for (let i = 1; i <= 30; i++) {
-      await db.insert('orders', { id: `o${String(i)}`, customer: `c${String((i % 10) + 1)}`, amount: String(i * 5) });
+      await db.insert('orders', {
+        id: `o${String(i)}`,
+        customer: `c${String((i % 10) + 1)}`,
+        amount: String(i * 5),
+      });
     }
 
     const profile = await buildModelProfile(idb(db), [lattice('customers'), lattice('orders')]);
@@ -78,7 +91,8 @@ describe('planner — live SQLite introspect + detect', () => {
       outputFile: '/dev/null',
     });
     await db.init();
-    for (let i = 1; i <= 12; i++) await db.insert('notes', { id: `n${String(i)}`, body: `unique body ${String(i)}` });
+    for (let i = 1; i <= 12; i++)
+      await db.insert('notes', { id: `n${String(i)}`, body: `unique body ${String(i)}` });
 
     const profile = await buildModelProfile(idb(db), [lattice('notes')]);
     const ops = detect(profile);

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalizeValue, naturalType, profileTable, type TableStructural } from '../../src/gui/planner/introspect.js';
+import {
+  canonicalizeValue,
+  naturalType,
+  profileTable,
+  type TableStructural,
+} from '../../src/gui/planner/introspect.js';
 
 // One logical dataset, expressed the way each driver returns it. This is the
 // cross-dialect parity proof (G3): the two representations MUST canonicalize to
@@ -25,16 +30,64 @@ const struct: TableStructural = {
 
 // better-sqlite3 shapes: booleans as 0/1, numerics as JS numbers, timestamps as ISO text.
 const sqliteRows = [
-  { id: 'a', email: 'x@y.com', age: 30, active: 1, balance: 12.5, joined: '2026-01-02T03:04:05.000Z', note: 'hi' },
-  { id: 'b', email: 'p@q.com', age: 40, active: 0, balance: 7, joined: '2026-02-03T04:05:06.000Z', note: 'hi' },
-  { id: 'c', email: 'm@n.com', age: 30, active: 1, balance: 7, joined: '2026-02-03T04:05:06.000Z', note: '' },
+  {
+    id: 'a',
+    email: 'x@y.com',
+    age: 30,
+    active: 1,
+    balance: 12.5,
+    joined: '2026-01-02T03:04:05.000Z',
+    note: 'hi',
+  },
+  {
+    id: 'b',
+    email: 'p@q.com',
+    age: 40,
+    active: 0,
+    balance: 7,
+    joined: '2026-02-03T04:05:06.000Z',
+    note: 'hi',
+  },
+  {
+    id: 'c',
+    email: 'm@n.com',
+    age: 30,
+    active: 1,
+    balance: 7,
+    joined: '2026-02-03T04:05:06.000Z',
+    note: '',
+  },
 ];
 
 // node-pg shapes: booleans as true/false, numeric/decimal as strings, timestamps as Date objects.
 const pgRows = [
-  { id: 'a', email: 'x@y.com', age: 30, active: true, balance: '12.5', joined: new Date('2026-01-02T03:04:05.000Z'), note: 'hi' },
-  { id: 'b', email: 'p@q.com', age: 40, active: false, balance: '7', joined: new Date('2026-02-03T04:05:06.000Z'), note: 'hi' },
-  { id: 'c', email: 'm@n.com', age: 30, active: true, balance: '7', joined: new Date('2026-02-03T04:05:06.000Z'), note: '' },
+  {
+    id: 'a',
+    email: 'x@y.com',
+    age: 30,
+    active: true,
+    balance: '12.5',
+    joined: new Date('2026-01-02T03:04:05.000Z'),
+    note: 'hi',
+  },
+  {
+    id: 'b',
+    email: 'p@q.com',
+    age: 40,
+    active: false,
+    balance: '7',
+    joined: new Date('2026-02-03T04:05:06.000Z'),
+    note: 'hi',
+  },
+  {
+    id: 'c',
+    email: 'm@n.com',
+    age: 30,
+    active: true,
+    balance: '7',
+    joined: new Date('2026-02-03T04:05:06.000Z'),
+    note: '',
+  },
 ];
 
 describe('data-model planner — introspect (G3 cross-dialect canonicalization)', () => {
@@ -75,7 +128,9 @@ describe('data-model planner — introspect (G3 cross-dialect canonicalization)'
     expect(canonicalizeValue('12.5', 'numeric')).toBe(12.5);
     expect(canonicalizeValue(1, 'boolean')).toBe(true);
     expect(canonicalizeValue('f', 'boolean')).toBe(false);
-    expect(canonicalizeValue(new Date('2026-01-02T00:00:00.000Z'), 'timestamp')).toBe('2026-01-02T00:00:00.000Z');
+    expect(canonicalizeValue(new Date('2026-01-02T00:00:00.000Z'), 'timestamp')).toBe(
+      '2026-01-02T00:00:00.000Z',
+    );
     expect(canonicalizeValue('keep', 'text')).toBe('keep');
     expect(canonicalizeValue(null, 'integer')).toBe(null);
   });
