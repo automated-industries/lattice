@@ -18,7 +18,9 @@ function op(over: Partial<PlanOp> & Pick<PlanOp, 'kind'>): PlanOp {
 /** Fresh mocks captured as locals so assertions never reference an unbound method. */
 function makeDeps(over: Partial<ApplyDeps> = {}) {
   const mocks = {
-    addRelationship: vi.fn(async () => ({ junction: 'a_b' }) as { junction: string } | null),
+    addRelationship: vi.fn(
+      async () => ({ relationName: 'customer' }) as { relationName: string } | null,
+    ),
     documentTable: vi.fn(async () => {}),
     mergeTables: vi.fn(async () => ({ ok: true })),
     dedupRows: vi.fn(async () => ({ ok: true })),
@@ -31,20 +33,36 @@ function makeDeps(over: Partial<ApplyDeps> = {}) {
 }
 
 describe('data-model planner — apply', () => {
-  it('add_relationship routes to addRelationship and reports the junction', async () => {
+  it('add_relationship declares a belongsTo over the detected FK column', async () => {
     const { deps, mocks } = makeDeps();
+    const r = await applyPlanOp(
+      op({
+        kind: 'add_relationship',
+        target: { table: 'orders', column: 'customer_id', toTable: 'customers' },
+      }),
+      deps,
+    );
+    expect(mocks.addRelationship).toHaveBeenCalledWith('orders', 'customer_id', 'customers');
+    expect(r).toMatchObject({ ok: true, kind: 'add_relationship', auditId: 'customer' });
+  });
+
+  it('add_relationship fails cleanly when the FK column is missing from the op', async () => {
+    const { deps } = makeDeps();
     const r = await applyPlanOp(
       op({ kind: 'add_relationship', target: { table: 'orders', toTable: 'customers' } }),
       deps,
     );
-    expect(mocks.addRelationship).toHaveBeenCalledWith('orders', 'customers');
-    expect(r).toMatchObject({ ok: true, kind: 'add_relationship', auditId: 'a_b' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/column/);
   });
 
   it('add_relationship reports a clean failure when the primitive declines (null)', async () => {
     const { deps } = makeDeps({ addRelationship: vi.fn(async () => null) });
     const r = await applyPlanOp(
-      op({ kind: 'add_relationship', target: { table: 'orders', toTable: 'files' } }),
+      op({
+        kind: 'add_relationship',
+        target: { table: 'orders', column: 'customer_id', toTable: 'files' },
+      }),
       deps,
     );
     expect(r.ok).toBe(false);
@@ -80,7 +98,11 @@ describe('data-model planner — apply', () => {
   it('runAutoTier runs only auto-tier ops and skips proposals', async () => {
     const { deps, mocks } = makeDeps();
     const ops: PlanOp[] = [
-      op({ kind: 'add_relationship', tier: 'auto', target: { table: 'o', toTable: 'c' } }),
+      op({
+        kind: 'add_relationship',
+        tier: 'auto',
+        target: { table: 'o', column: 'c_id', toTable: 'c' },
+      }),
       op({
         kind: 'extract_dimension',
         tier: 'propose',
@@ -100,7 +122,13 @@ describe('data-model planner — apply', () => {
       }),
     });
     const applied = await runAutoTier(
-      [op({ kind: 'add_relationship', tier: 'auto', target: { table: 'o', toTable: 'c' } })],
+      [
+        op({
+          kind: 'add_relationship',
+          tier: 'auto',
+          target: { table: 'o', column: 'c_id', toTable: 'c' },
+        }),
+      ],
       deps,
     );
     expect(applied[0]).toMatchObject({ ok: false, error: 'boom' });

@@ -80,6 +80,7 @@ export const markdownJs = `    // ───────────────�
         case 'schema.rename_column': return 'Renamed a column on ' + t;
         case 'schema.add_link': return 'Added a link to ' + t;
         case 'schema.create_junction': return 'Added a link from ' + t;
+        case 'schema.add_relation': return 'Related ' + t + ' to another table';
         case 'schema.delete_link': return 'Deleted a link on ' + t + ' <span class="muted">(restorable)</span>';
         case 'schema.create_computed': return 'Created computed table ' + t;
         case 'schema.update_computed': return 'Updated computed table ' + t;

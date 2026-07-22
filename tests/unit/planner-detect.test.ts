@@ -40,10 +40,13 @@ function vals(n: number, prefix = 'c'): string[] {
 }
 
 describe('data-model planner — detect (pure rules engine)', () => {
-  it('R1: AUTO relationship when the FK gate clears', () => {
+  it('R1: AUTO relationship when the FK gate clears (target key PROVEN unique)', () => {
+    // The target dimension is FULLY sampled (sampledRowCount === rowCount) with a
+    // distinct value on every row → its natural key is proven unique table-wide,
+    // which is what makes an unattended AUTO link safe.
     const customers = table('customers', {
       naturalKey: 'code',
-      rowCount: 50,
+      rowCount: 10,
       sampledRowCount: 10,
       columns: [
         col('id', { isPrimaryKey: true }),
@@ -68,6 +71,33 @@ describe('data-model planner — detect (pure rules engine)', () => {
       id: 'add_relationship:orders:customer:customers',
     });
     expect(ops[0].evidence.gatesPass).toBe(true);
+  });
+
+  it('R1: demotes to PROPOSE when the target is only partially sampled (key not proven unique)', () => {
+    // Same match, but the target has 50 rows and only 10 were sampled — its key
+    // could have duplicates in the 40 unseen rows, so it is NOT a safe unattended
+    // link. Still surfaced for one-click review, just not auto-applied.
+    const customers = table('customers', {
+      naturalKey: 'code',
+      rowCount: 50,
+      sampledRowCount: 10,
+      columns: [
+        col('id', { isPrimaryKey: true }),
+        col('code', { distinctSampled: 10, sampleValues: vals(10) }),
+      ],
+    });
+    const orders = table('orders', {
+      rowCount: 50,
+      sampledRowCount: 50,
+      columns: [
+        col('id', { isPrimaryKey: true }),
+        col('customer', { distinctSampled: 10, sampleValues: vals(10) }),
+      ],
+    });
+    const ops = detect(profile([customers, orders]));
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ kind: 'add_relationship', tier: 'propose' });
+    expect(ops[0].evidence.gatesPass).toBe(false);
   });
 
   it('R1: PROPOSE (not AUTO) when the source column is a tiny enum below the distinct floor', () => {

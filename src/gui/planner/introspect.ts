@@ -214,7 +214,12 @@ export interface IntrospectDb {
   connectedTables(): string[];
   query(
     table: string,
-    opts: { limit?: number; orderBy?: string; orderDir?: 'asc' | 'desc' },
+    opts: {
+      limit?: number;
+      orderBy?: string;
+      orderDir?: 'asc' | 'desc';
+      filters?: { col: string; op: string }[];
+    },
   ): Promise<Row[]>;
   boundedCount(table: string, opts: { cap?: number }): Promise<number>;
 }
@@ -231,7 +236,11 @@ export interface StructuralInput {
   junctionPair: { a: string; b: string } | null;
 }
 
-const ROW_CAP = 100_000;
+// The planner only needs to know whether a table is small enough to be FULLY
+// sampled (≤ SAMPLE rows) or larger — an exact count beyond the sample is never
+// used. Bounding the count just past SAMPLE stops Postgres from scanning up to
+// 100k rows PER TABLE on every sweep for a number nothing reads (bounded egress).
+const ROW_CAP = SAMPLE + 1;
 
 /**
  * DB-reading shell: one bounded, PK-ordered sample per table, canonicalized
@@ -269,13 +278,22 @@ export async function buildModelProfile(
     try {
       rowCount = await db.boundedCount(s.name, { cap: ROW_CAP });
       rowCountCapped = rowCount > ROW_CAP;
-      // G1: deterministic PK-ordered prefix. G4: a single bounded read.
-      const queryOpts: { limit: number; orderBy?: string; orderDir?: 'asc' | 'desc' } = {
-        limit: SAMPLE,
-      };
+      // G1: deterministic PK-ordered prefix. G4: a single bounded read. Exclude
+      // SOFT-DELETED rows — latticesql has no default `deleted_at` filter, so
+      // without this the profile (row counts, distinctness, FK/dedup signals)
+      // would be computed over tombstoned rows and mis-detect against dead data.
+      const queryOpts: {
+        limit: number;
+        orderBy?: string;
+        orderDir?: 'asc' | 'desc';
+        filters?: { col: string; op: string }[];
+      } = { limit: SAMPLE };
       if (pkCol) {
         queryOpts.orderBy = pkCol;
         queryOpts.orderDir = 'asc';
+      }
+      if (colTypes.deleted_at !== undefined) {
+        queryOpts.filters = [{ col: 'deleted_at', op: 'isNull' }];
       }
       rows = await db.query(s.name, queryOpts);
     } catch (e) {

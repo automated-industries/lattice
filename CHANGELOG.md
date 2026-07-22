@@ -51,6 +51,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   an explicit one-click apply, or a clear error with a manual **Download** fallback — never an endless
   spinner. The GUI status pill also gained a determinate progress bar for long-running operations.
 
+- **Relationship (junction) table names are bounded to Postgres's 63-byte identifier limit.** When
+  two long table names would overflow, the junction now gets a deterministic hash suffix instead of
+  silently truncating — which on a cloud (Postgres) workspace could otherwise collide two different
+  relationships onto the same truncated name.
+
 ## [5.0.1] — 2026-07-22
 
 ### Added

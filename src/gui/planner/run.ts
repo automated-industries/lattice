@@ -3,7 +3,7 @@ import { isInternalNativeEntity } from '../../framework/native-entities.js';
 import type { ActiveDb } from '../active-db.js';
 import { getGuiEntities, isJunctionTable, type GuiTableSummary } from '../data.js';
 import { upsertTableMeta } from '../column-descriptions.js';
-import { createUserJunction } from '../schema-ops.js';
+import { createUserRelation } from '../schema-ops.js';
 import { detect } from './detect.js';
 import { buildModelProfile, type IntrospectDb, type StructuralInput } from './introspect.js';
 import { runAutoTier, type ApplyDeps } from './apply.js';
@@ -93,25 +93,30 @@ function introspectDb(active: ActiveDb): IntrospectDb {
     isComputedTable: (n) => db.isComputedTable(n),
     getConnectedSource: (t) => db.getConnectedSource(t),
     connectedTables: () => db.connectedTables(),
-    query: (t, o) => db.query(t, o),
+    // The introspect opts are a structural subset of latticesql's QueryOptions
+    // (its `filters` op is a wider string here); the cast hands them straight to
+    // the real bounded reader, which validates the op.
+    query: (t, o) => db.query(t, o as Parameters<typeof db.query>[1]),
     boundedCount: (t, o) => db.boundedCount(t, o),
   };
 }
 
 /**
  * Wire the plan appliers to the real AUDITED primitives. The AUTO tier only ever
- * uses `addRelationship` (a reversible junction, exactly the shipped designer's
- * additive move); the data-rewriting appliers are surfaced for review and are a
- * tracked follow-up (they reuse proven primitives — `mergeDuplicates`,
- * `aiDeleteEntity(move_to)` — but want app-level verification before landing).
+ * uses `addRelationship` — a config-only belongsTo relation over the EXISTING FK
+ * column (`createUserRelation`), which represents the 1:many FK the planner
+ * detected (not an empty m2m junction) and is reversible via the `schema.add_relation`
+ * op. The data-rewriting appliers are surfaced for review and are a tracked
+ * follow-up (they reuse proven primitives — `mergeDuplicates`, `aiDeleteEntity(move_to)`
+ * — but want app-level verification before landing).
  */
 export function applyDepsFor(active: ActiveDb, sessionId: string): ApplyDeps {
   const staged = (what: string): Promise<{ ok: boolean; error?: string }> =>
     Promise.resolve({ ok: false, error: `${what} apply is not wired in this build yet` });
   return {
-    addRelationship: async (a, b) => {
-      const r = await createUserJunction(active, a, b, sessionId);
-      return r ? { junction: r.junction } : null;
+    addRelationship: async (child, column, parent) => {
+      const r = await createUserRelation(active, child, column, parent, sessionId);
+      return r ? { relationName: r.relationName } : null;
     },
     documentTable: async (table, description) => {
       await upsertTableMeta(active.db, table, { description });

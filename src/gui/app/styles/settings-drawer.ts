@@ -103,10 +103,10 @@ export const settingsDrawerCss = `    /* ── Settings / Version-history TAKEO
     .conn-cat-sec { margin: 0 0 16px; }
     .conn-cat-head { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin: 0 0 8px; }
     .conn-cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-    .conn-cat-card { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); cursor: pointer; text-align: left; transition: border-color 0.12s, background 0.12s; }
+    .conn-cat-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); cursor: pointer; text-align: left; transition: border-color 0.12s, background 0.12s; }
     .conn-cat-card:hover:not(:disabled) { border-color: var(--accent); }
     .conn-cat-card:disabled { opacity: 0.5; cursor: not-allowed; }
-    .conn-cat-icon { width: 24px; height: 24px; border-radius: 5px; }
+    .conn-cat-icon { width: 24px; height: 24px; border-radius: var(--r-sm); }
     .conn-cat-label { font-size: 13px; font-weight: 600; }
     .conn-cat-hint { font-size: 11px; color: var(--text-muted); }
     .conn-cat-more { margin: 0 0 16px; }

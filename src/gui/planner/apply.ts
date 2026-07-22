@@ -14,9 +14,16 @@ import type { AppliedOp, PlanOp } from './types.js';
  * the caller, never here.
  */
 export interface ApplyDeps {
-  /** Create (or reuse) the relationship between two tables. Null = not creatable
-   *  (native/computed/source target, already related, invalid). Reversible. */
-  addRelationship(from: string, to: string): Promise<{ junction: string } | null>;
+  /** Declare a belongsTo relationship: `child.column` references `parent` (the
+   *  detected FK). A config-only `relations:` entry over the EXISTING column — not
+   *  a junction table — so it represents the 1:many FK it detected. Null = not
+   *  creatable (native/computed/source target, missing column, already related,
+   *  invalid). Reversible (removes just the relation). */
+  addRelationship(
+    child: string,
+    column: string,
+    parent: string,
+  ): Promise<{ relationName: string } | null>;
   /** Upsert a table definition. (Metadata; see the set-definition-audit follow-up.) */
   documentTable(table: string, description: string): Promise<void>;
   /** Move all rows of `source` into `target`, then retire `source`. Reversible. */
@@ -54,13 +61,15 @@ function done(
 export async function applyPlanOp(op: PlanOp, deps: ApplyDeps): Promise<AppliedOp> {
   switch (op.kind) {
     case 'add_relationship': {
-      const { table, toTable } = op.target;
+      const { table, column, toTable } = op.target;
       if (!toTable) return done(op, false, op.rationale, { error: 'missing target table' });
-      const r = await deps.addRelationship(table, toTable);
+      if (!column) return done(op, false, op.rationale, { error: 'missing foreign-key column' });
+      const r = await deps.addRelationship(table, column, toTable);
       return r
-        ? done(op, true, `Related ${table} ↔ ${toTable}`, { auditId: r.junction })
+        ? done(op, true, `Related ${table} → ${toTable}`, { auditId: r.relationName })
         : done(op, false, op.rationale, {
-            error: 'relationship not created (already related, or target is native/read-only)',
+            error:
+              'relationship not created (already related, target native/read-only, or a junction exists)',
           });
     }
     case 'document': {

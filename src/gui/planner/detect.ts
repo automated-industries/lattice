@@ -138,13 +138,24 @@ function detectRelationships(profile: ModelProfile, opts: Required<DetectOptions
       const coverage = best.matched / c.distinctSampled;
       if (coverage < opts.proposeLinkCoverage) continue; // noise — dropped
 
-      // G2 hard gate for unattended apply.
+      // G2 hard gate for unattended apply. The target must be a GENUINE unique
+      // key, not a low-cardinality column whose values coincidentally overlap:
+      // require the target table to be FULLY sampled (its true size known) and its
+      // natural key to be distinct on every one of those rows — i.e. proven unique
+      // table-wide, not merely unique-in-a-partial-sample. A large/partially-sampled
+      // target can't clear this and falls through to PROPOSE for human review.
+      const targetKeyProvenUnique =
+        !best.t.rowCountCapped &&
+        best.t.sampledRowCount === best.t.rowCount &&
+        best.t.rowCount > 0 &&
+        best.nk.distinctSampled === best.t.sampledRowCount;
       const gatesPass =
         c.distinctSampled >= opts.minFkDistinct &&
         s.rowCount >= opts.minFkRows &&
         !c.distinctIsCapped &&
         !best.nk.distinctIsCapped &&
         best.nk.inferredType === 'text' && // a real dimension key, never a numeric id-space
+        targetKeyProvenUnique &&
         coverage >= opts.autoLinkCoverage;
 
       const tier: PlanTier = gatesPass ? 'auto' : 'propose';
@@ -377,6 +388,14 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Byte-stable (UTF-16 code-unit) order — deterministic across machines. Plain
+ *  `String.localeCompare` uses the runtime's DEFAULT locale, which varies by host,
+ *  so it would make the plan order (and therefore the unattended AUTO apply order)
+ *  non-deterministic — contradicting the "same model → same plan" guarantee. */
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Deterministic total order: additive before restructure, auto before propose,
  *  then by kind, table, column, toTable — so the plan is byte-stable. */
 const KIND_ORDER: Record<string, number> = {
@@ -396,9 +415,9 @@ function comparePlanOps(a: PlanOp, b: PlanOp): number {
     classRank(a) - classRank(b) ||
     tierRank(a) - tierRank(b) ||
     (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99) ||
-    a.target.table.localeCompare(b.target.table) ||
-    (a.target.column ?? '').localeCompare(b.target.column ?? '') ||
-    (a.target.toTable ?? '').localeCompare(b.target.toTable ?? '')
+    cmp(a.target.table, b.target.table) ||
+    cmp(a.target.column ?? '', b.target.column ?? '') ||
+    cmp(a.target.toTable ?? '', b.target.toTable ?? '')
   );
 }
 
