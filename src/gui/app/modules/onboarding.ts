@@ -356,6 +356,19 @@ export const onboardingJs = `    // ──────────────�
     // Apply one streamed event to its turn. Painting is gated on the turn's thread being
     // the one on screen — an off-screen turn (the user switched threads mid-run) still
     // completes + persists server-side and replays when they switch back.
+    // A metered/managed proxy answers "out of credit" with a 402 whose body carries
+    // an insufficient_credit error. The SDK surfaces it as a raw "402 {json}" string;
+    // turn it into a friendly markdown message (with a top-up link pulled from the
+    // body) instead. Returns null for any other error.
+    function insufficientCreditInfo(msg) {
+      var s = String(msg == null ? '' : msg);
+      if (s.indexOf('insufficient_credit') < 0) return null;
+      var m = s.match(/https?:\\/\\/[^\\s"'}]+/);
+      var url = m ? m[0] : '';
+      return 'Out of Lattice tokens. ' +
+        (url ? '[Add more tokens](' + url + ')' : 'Add more tokens') +
+        ' to keep the assistant running.';
+    }
     function applyChatEvent(turn, ev) {
       if (!turn || !ev) return;
       var visible = turn.threadId === currentThreadId;
@@ -402,7 +415,12 @@ export const onboardingJs = `    // ──────────────�
         if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); }
         turn.actx = null;
       } else if (ev.type === 'error') {
-        if (visible) { if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, (turn.assembled ? turn.assembled + '\\n' : '') + '⚠ ' + ev.message); }
+        if (visible) {
+          if (!turn.actx) turn.actx = newAssistantBubble();
+          var ic = insufficientCreditInfo(ev.message);
+          if (ic) { turn.actx.bubble.classList.add('notice-error'); setBubbleText(turn.actx, ic); }
+          else { setBubbleText(turn.actx, (turn.assembled ? turn.assembled + '\\n' : '') + '⚠ ' + ev.message); }
+        }
         turn.reonboard = true;
       // A tool (e.g. create_artifact) asked the GUI to open the row it created; navigate
       // once the turn finishes so the main viewer isn't yanked mid-reply.

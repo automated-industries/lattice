@@ -527,8 +527,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // ?f=<column> so the record view scroll-flashes that field (files shingle-match the
 // passage). Length + hash recaptured for the combined v5.1 bundle (planner panel +
 // desktop auto-update + traceable context).
-const ORIGINAL_LENGTH = 766609;
-const ORIGINAL_SHA256 = '11ff19c367aff353e1a030c7efb24bce586643da2f60f09aad3eba201949d98a';
+// v5.1 managed-auth token display: the account menu + the Configure→Assistant
+// panel now show the prepaid token balance (read from /api/assistant/config's new
+// balanceCents, which the config route fetches from the metering proxy's
+// /v1/balance) with an "Add tokens" link; and the chat renders a friendly red
+// "out of tokens" notice for an insufficient_credit 402 (with a top-up link)
+// instead of the raw provider error. Length + hash recaptured.
+const ORIGINAL_LENGTH = 769565;
+const ORIGINAL_SHA256 = '05f6b306a2bd632b3fe91c2f4a7ee02ea28ef395e301ee23c2f6aa3b81a21e7c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

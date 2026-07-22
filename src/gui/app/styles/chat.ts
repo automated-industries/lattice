@@ -44,6 +44,14 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .chat-bubble.assistant h5, .chat-bubble.assistant h6 { font-size: 14px; }
     .chat-bubble.assistant a { color: var(--accent); text-decoration: underline; }
     .chat-bubble.assistant strong { font-weight: 700; }
+    /* An inline notice for a recoverable problem (e.g. out of prepaid tokens): a
+       red-tinted assistant bubble, distinct from a normal answer. */
+    .chat-bubble.assistant.notice-error {
+      background: color-mix(in srgb, var(--danger, #c0392b) 8%, var(--surface-2));
+      border-color: color-mix(in srgb, var(--danger, #c0392b) 40%, transparent);
+      color: var(--danger, #c0392b);
+    }
+    .chat-bubble.assistant.notice-error a { color: var(--danger, #c0392b); font-weight: 600; }
     /* Record references in an answer are the words themselves, linked inline —
        a dotted underline that flows with the sentence (no boxed pill). Click
        navigates to the record in the workspace. */
