@@ -50,7 +50,7 @@ export function requiredArgs(
  */
 export function argEntityToken(argName: string): { token: string; aliases: string[] } | null {
   const lower = argName.toLowerCase();
-  if (!lower.endsWith("id")) return null;
+  if (!lower.endsWith('id')) return null;
   const token = lower.replace(/_?id$/, '');
   if (!token) return null;
   return { token, aliases: ENTITY_ALIASES[token] ?? [token] };
@@ -79,7 +79,10 @@ function matchDiscovery(
   if (!tok) return null;
   const wanted = new Set([tok.token, ...tok.aliases]);
   for (const d of discoveryKinds) {
-    const kindWords = d.kind.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const kindWords = d.kind
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
     const nkNorm = d.naturalKey.toLowerCase().replace(/_?id$/, '');
     const wordHit = kindWords.some(
       (w) => wanted.has(w) || [...wanted].some((a) => a.length >= 4 && w.includes(a)),
@@ -118,7 +121,12 @@ export function resolveArgBindings(
     }
     const match = matchDiscovery(name, discoveryKinds);
     if (match) {
-      bindings.push({ arg: name, via: 'discovery', sourceKind: match.kind, sourceField: match.field });
+      bindings.push({
+        arg: name,
+        via: 'discovery',
+        sourceKind: match.kind,
+        sourceField: match.field,
+      });
       discoveryParents.push(match.kind);
       continue;
     }
@@ -147,5 +155,7 @@ export function resolveArgBindings(
     return { argBindings: bindings };
   }
   const parent = uniqueParents[0];
-  return parent !== undefined ? { argBindings: bindings, parentKind: parent } : { argBindings: bindings };
+  return parent !== undefined
+    ? { argBindings: bindings, parentKind: parent }
+    : { argBindings: bindings };
 }

@@ -29,7 +29,9 @@ export async function fetchSmithery(
 ): Promise<RawSmithery[]> {
   if (!apiKey) return [];
   const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    ctrl.abort();
+  }, FETCH_TIMEOUT_MS);
   try {
     const res = await safeFetch(url, fetchImpl, {
       init: {

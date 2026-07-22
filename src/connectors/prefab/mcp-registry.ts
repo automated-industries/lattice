@@ -31,7 +31,9 @@ export async function fetchMcpRegistry(
   url: string = DEFAULT_REGISTRY_URL,
 ): Promise<RawServer[]> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    ctrl.abort();
+  }, FETCH_TIMEOUT_MS);
   try {
     const res = await safeFetch(url, fetchImpl, {
       init: { signal: ctrl.signal, headers: { accept: 'application/json' } },

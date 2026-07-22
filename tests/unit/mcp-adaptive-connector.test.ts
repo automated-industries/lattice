@@ -48,8 +48,7 @@ class RichFakeTransport implements McpTransport {
   }
   callTool(call: McpToolCall): Promise<unknown> {
     this.callLog.push(call);
-    const r =
-      typeof this.results === 'function' ? this.results(call) : this.results[call.tool];
+    const r = typeof this.results === 'function' ? this.results(call) : this.results[call.tool];
     return Promise.resolve(r ?? {});
   }
   listResources(): Promise<McpResourceInfo[]> {
@@ -140,7 +139,9 @@ describe('v5.1 resources kind', () => {
     const model = conn.models(TK).find((m) => m.model === res.kind)!;
     expect(model.table).toBe('mcp_ex_resources');
 
-    const rows = await collect(conn.listChanges(TK, res.kind, { connectionId: CONN, userId: 'u1' }));
+    const rows = await collect(
+      conn.listChanges(TK, res.kind, { connectionId: CONN, userId: 'u1' }),
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.id).toBe('file:///handbook.md');
     expect(rows[0]!.row.name).toBe('Handbook');
@@ -171,7 +172,12 @@ describe('v5.1 two-phase arg handling', () => {
       ],
       (call) => {
         if (call.tool === 'getAccessibleSites') {
-          return { items: [{ id: 'cloud_1', name: 'Site One' }, { id: 'cloud_2', name: 'Site Two' }] };
+          return {
+            items: [
+              { id: 'cloud_1', name: 'Site One' },
+              { id: 'cloud_2', name: 'Site Two' },
+            ],
+          };
         }
         if (call.tool === 'searchIssues') {
           return { results: [{ key: `${String(call.args.cloudId)}-1`, summary: 'S' }] };
@@ -202,7 +208,9 @@ describe('v5.1 two-phase arg handling', () => {
     const rows = await collect(conn.listChanges(TK, issues.kind, ctx));
     expect(rows).toHaveLength(1);
     expect(rows[0]!.id).toBe('cloud_1/cloud_1-1');
-    const issueCall = t.callLog.find((c) => c.tool === 'searchIssues' && c.args.cloudId === 'cloud_1')!;
+    const issueCall = t.callLog.find(
+      (c) => c.tool === 'searchIssues' && c.args.cloudId === 'cloud_1',
+    )!;
     expect(issueCall).toBeTruthy();
     expect(issueCall.args.jql).toBe('ORDER BY updated');
     clearMcpSchemaDescriptor(CONN);

@@ -14,7 +14,13 @@
  * Pure + deterministic: no I/O, no persistence.
  */
 
-import { RESERVED, ID_FIELDS, type McpColumnDesc, type McpKindDesc, type McpSqlSpec } from './schema-cache.js';
+import {
+  RESERVED,
+  ID_FIELDS,
+  type McpColumnDesc,
+  type McpKindDesc,
+  type McpSqlSpec,
+} from './schema-cache.js';
 
 /** A permissive JSON-Schema shape — only the keywords the compiler reasons about. */
 export interface JsonSchemaLike {

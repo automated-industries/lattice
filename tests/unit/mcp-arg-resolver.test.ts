@@ -62,7 +62,10 @@ describe('resolveArgBindings', () => {
         tool: 'searchJiraIssuesUsingJql',
         input: {
           type: 'object',
-          properties: { cloudId: { type: 'string' }, jql: { type: 'string', default: 'ORDER BY updated DESC' } },
+          properties: {
+            cloudId: { type: 'string' },
+            jql: { type: 'string', default: 'ORDER BY updated DESC' },
+          },
           required: ['cloudId', 'jql'],
         },
       },
