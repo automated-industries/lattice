@@ -87,7 +87,13 @@ export async function handleDataModelRoutes(
       } catch (e) {
         // Interactive action → surface the failure in the response (Rule 16),
         // never swallow it silently.
-        applied.push({ id: op.id, kind: op.kind, summary: op.rationale, ok: false, error: (e as Error).message });
+        applied.push({
+          id: op.id,
+          kind: op.kind,
+          summary: op.rationale,
+          ok: false,
+          error: (e as Error).message,
+        });
       }
     }
     invalidatePlanCache(active.configPath);

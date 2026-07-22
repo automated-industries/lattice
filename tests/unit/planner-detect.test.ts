@@ -75,7 +75,10 @@ describe('data-model planner — detect (pure rules engine)', () => {
       naturalKey: 'code',
       rowCount: 50,
       sampledRowCount: 10,
-      columns: [col('id', { isPrimaryKey: true }), col('code', { distinctSampled: 10, sampleValues: vals(10) })],
+      columns: [
+        col('id', { isPrimaryKey: true }),
+        col('code', { distinctSampled: 10, sampleValues: vals(10) }),
+      ],
     });
     const orders = table('orders', {
       rowCount: 50,
@@ -157,11 +160,18 @@ describe('data-model planner — detect (pure rules engine)', () => {
       naturalKey: 'email',
       rowCount: 10,
       sampledRowCount: 10,
-      columns: [col('id', { isPrimaryKey: true }), col('email', { distinctSampled: 8, sampleValues: vals(8, 'e') })],
+      columns: [
+        col('id', { isPrimaryKey: true }),
+        col('email', { distinctSampled: 8, sampleValues: vals(8, 'e') }),
+      ],
     });
     const ops = detect(profile([people]));
     expect(ops).toHaveLength(1);
-    expect(ops[0]).toMatchObject({ kind: 'dedup_rows', tier: 'propose', target: { table: 'people' } });
+    expect(ops[0]).toMatchObject({
+      kind: 'dedup_rows',
+      tier: 'propose',
+      target: { table: 'people' },
+    });
   });
 
   it('R7: PROPOSE merge for two tables with overlapping columns + same key', () => {
@@ -213,7 +223,14 @@ describe('data-model planner — detect (pure rules engine)', () => {
       naturalKey: 'order_code',
       rowCount: 200,
       sampledRowCount: 200,
-      relations: [{ name: 'customer', kind: 'belongsTo', targetTable: 'customers', foreignKey: 'customer_id' }],
+      relations: [
+        {
+          name: 'customer',
+          kind: 'belongsTo',
+          targetTable: 'customers',
+          foreignKey: 'customer_id',
+        },
+      ],
       columns: [
         col('id', { isPrimaryKey: true }),
         col('order_code', { distinctSampled: 200, sampleValues: vals(200, 'o') }),
@@ -229,13 +246,18 @@ describe('data-model planner — detect (pure rules engine)', () => {
       naturalKey: 'code',
       rowCount: 50,
       sampledRowCount: 10,
-      columns: [col('id', { isPrimaryKey: true }), col('code', { distinctSampled: 10, sampleValues: vals(10) })],
+      columns: [
+        col('id', { isPrimaryKey: true }),
+        col('code', { distinctSampled: 10, sampleValues: vals(10) }),
+      ],
     });
     const ordersAfterApply = table('orders', {
       rowCount: 50,
       sampledRowCount: 50,
       // the applied relationship is now reflected on the profile
-      relations: [{ name: 'customer', kind: 'belongsTo', targetTable: 'customers', foreignKey: 'customer' }],
+      relations: [
+        { name: 'customer', kind: 'belongsTo', targetTable: 'customers', foreignKey: 'customer' },
+      ],
       columns: [
         col('id', { isPrimaryKey: true }),
         col('customer', { isForeignKey: true, distinctSampled: 10, sampleValues: vals(10) }),
@@ -249,7 +271,10 @@ describe('data-model planner — detect (pure rules engine)', () => {
       naturalKey: 'code',
       rowCount: 50,
       sampledRowCount: 10,
-      columns: [col('id', { isPrimaryKey: true }), col('code', { distinctSampled: 10, sampleValues: vals(10) })],
+      columns: [
+        col('id', { isPrimaryKey: true }),
+        col('code', { distinctSampled: 10, sampleValues: vals(10) }),
+      ],
     });
     const orders = table('Order Lines', {
       naturalKey: 'line_id',
@@ -269,10 +294,18 @@ describe('data-model planner — detect (pure rules engine)', () => {
     expect(JSON.stringify(a)).toEqual(JSON.stringify(b));
     // additive/auto ops sort before restructure/propose ops
     expect(a[0].kind).toBe('add_relationship');
-    expect(a.map((o) => o.tier)).toEqual([...a.map((o) => o.tier)].sort((x, y) => (x === 'auto' ? -1 : 1) - (y === 'auto' ? -1 : 1)));
+    expect(a.map((o) => o.tier)).toEqual(
+      [...a.map((o) => o.tier)].sort((x, y) => (x === 'auto' ? -1 : 1) - (y === 'auto' ? -1 : 1)),
+    );
     // every distinct rule fired exactly once on this rich fixture
     expect(new Set(a.map((o) => o.kind))).toEqual(
-      new Set(['add_relationship', 'dedup_rows', 'extract_dimension', 'retype_column', 'canonical_rename']),
+      new Set([
+        'add_relationship',
+        'dedup_rows',
+        'extract_dimension',
+        'retype_column',
+        'canonical_rename',
+      ]),
     );
   });
 });

@@ -33,27 +33,47 @@ function makeDeps(over: Partial<ApplyDeps> = {}) {
 describe('data-model planner — apply', () => {
   it('add_relationship routes to addRelationship and reports the junction', async () => {
     const { deps, mocks } = makeDeps();
-    const r = await applyPlanOp(op({ kind: 'add_relationship', target: { table: 'orders', toTable: 'customers' } }), deps);
+    const r = await applyPlanOp(
+      op({ kind: 'add_relationship', target: { table: 'orders', toTable: 'customers' } }),
+      deps,
+    );
     expect(mocks.addRelationship).toHaveBeenCalledWith('orders', 'customers');
     expect(r).toMatchObject({ ok: true, kind: 'add_relationship', auditId: 'a_b' });
   });
 
   it('add_relationship reports a clean failure when the primitive declines (null)', async () => {
     const { deps } = makeDeps({ addRelationship: vi.fn(async () => null) });
-    const r = await applyPlanOp(op({ kind: 'add_relationship', target: { table: 'orders', toTable: 'files' } }), deps);
+    const r = await applyPlanOp(
+      op({ kind: 'add_relationship', target: { table: 'orders', toTable: 'files' } }),
+      deps,
+    );
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/not created/);
   });
 
   it('document uses the deterministic text from evidence', async () => {
     const { deps, mocks } = makeDeps();
-    await applyPlanOp(op({ kind: 'document', target: { table: 'a_b' }, evidence: { text: 'Join table linking a and b.' } }), deps);
+    await applyPlanOp(
+      op({
+        kind: 'document',
+        target: { table: 'a_b' },
+        evidence: { text: 'Join table linking a and b.' },
+      }),
+      deps,
+    );
     expect(mocks.documentTable).toHaveBeenCalledWith('a_b', 'Join table linking a and b.');
   });
 
   it('retype_column passes the target type from evidence', async () => {
     const { deps, mocks } = makeDeps();
-    await applyPlanOp(op({ kind: 'retype_column', target: { table: 'e', column: 'count' }, evidence: { to: 'integer' } }), deps);
+    await applyPlanOp(
+      op({
+        kind: 'retype_column',
+        target: { table: 'e', column: 'count' },
+        evidence: { to: 'integer' },
+      }),
+      deps,
+    );
     expect(mocks.retypeColumn).toHaveBeenCalledWith('e', 'count', 'integer');
   });
 
@@ -61,7 +81,11 @@ describe('data-model planner — apply', () => {
     const { deps, mocks } = makeDeps();
     const ops: PlanOp[] = [
       op({ kind: 'add_relationship', tier: 'auto', target: { table: 'o', toTable: 'c' } }),
-      op({ kind: 'extract_dimension', tier: 'propose', target: { table: 'o', column: 'region', toTable: 'region' } }),
+      op({
+        kind: 'extract_dimension',
+        tier: 'propose',
+        target: { table: 'o', column: 'region', toTable: 'region' },
+      }),
     ];
     const applied = await runAutoTier(ops, deps);
     expect(applied).toHaveLength(1);
@@ -75,7 +99,10 @@ describe('data-model planner — apply', () => {
         throw new Error('boom');
       }),
     });
-    const applied = await runAutoTier([op({ kind: 'add_relationship', tier: 'auto', target: { table: 'o', toTable: 'c' } })], deps);
+    const applied = await runAutoTier(
+      [op({ kind: 'add_relationship', tier: 'auto', target: { table: 'o', toTable: 'c' } })],
+      deps,
+    );
     expect(applied[0]).toMatchObject({ ok: false, error: 'boom' });
   });
 });

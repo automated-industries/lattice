@@ -8,6 +8,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Deterministic data-model planner.** A workspace now keeps its own data model clean and up to
+  date automatically — without being prompted, and without needing a model provider. After a file
+  batch is ingested or a source is connected (and on workspace open), a deterministic rules engine
+  profiles the model through bounded, dialect-stable reads and:
+  - **auto-applies the reversible fix of relating tables** when a column's values resolve to another
+    table's key, behind a false-positive gate so unattended relationships stay safe;
+  - **surfaces heavier, data-rewriting changes as one-click Apply / Dismiss suggestions** in the Data
+    Model tab — extract a repeated column into its own dimension, deduplicate rows, merge
+    near-duplicate tables, retype a mistyped column, canonicalize a fragile table name.
+
+  The analysis is fully deterministic (the same model always yields the same plan), egress-bounded,
+  and idempotent (a clean model produces no changes). New HTTP surface: `GET /api/data-model/plan`,
+  `POST /api/data-model/apply`, `POST /api/data-model/dismiss`.
+
+### Changed
+
+- **The automatic post-ingest / post-connect data-model pass is now deterministic** and runs on every
+  workspace — it no longer requires a model provider and makes no per-ingest model round-trip. The
+  previous model-driven design routine remains in the codebase but is no longer wired to that trigger.
+
 ## [5.0.1] — 2026-07-22
 
 ### Added

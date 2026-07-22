@@ -140,7 +140,8 @@ function pickNaturalKey(stats: ColumnStat[], sampledRows: number): string | null
   for (const c of stats) {
     if (isSystemColumn(c.name)) continue;
     if (NEVER_KEY.has(normalizeName(c.name)) || FREETEXT.has(normalizeName(c.name))) continue;
-    if ((c.inferredType === 'text' || c.inferredType === 'integer') && uniqueInSample(c)) return c.name;
+    if ((c.inferredType === 'text' || c.inferredType === 'integer') && uniqueInSample(c))
+      return c.name;
   }
   return null;
 }
@@ -153,7 +154,9 @@ function pickNaturalKey(stats: ColumnStat[], sampledRows: number): string | null
 export function profileTable(struct: TableStructural, rows: Row[]): TableProfile {
   const sampledRowCount = rows.length;
   const pkSet = new Set(struct.primaryKey);
-  const fkSet = new Set(struct.relations.filter((r) => r.kind === 'belongsTo').map((r) => r.foreignKey));
+  const fkSet = new Set(
+    struct.relations.filter((r) => r.kind === 'belongsTo').map((r) => r.foreignKey),
+  );
 
   const columns: ColumnStat[] = struct.columns.map(({ name, sqlType }) => {
     const distinct = new Set<string>();
@@ -209,7 +212,10 @@ export interface IntrospectDb {
   isComputedTable(name: string): boolean;
   getConnectedSource(table: string): unknown;
   connectedTables(): string[];
-  query(table: string, opts: { limit?: number; orderBy?: string; orderDir?: 'asc' | 'desc' }): Promise<Row[]>;
+  query(
+    table: string,
+    opts: { limit?: number; orderBy?: string; orderDir?: 'asc' | 'desc' },
+  ): Promise<Row[]>;
   boundedCount(table: string, opts: { cap?: number }): Promise<number>;
 }
 
@@ -245,7 +251,8 @@ export async function buildModelProfile(
 
   for (const s of structurals) {
     if (s.tier === 'computed') existingComputed.push(s.name);
-    if (s.junctionPair) existingJunctions.push({ name: s.name, a: s.junctionPair.a, b: s.junctionPair.b });
+    if (s.junctionPair)
+      existingJunctions.push({ name: s.name, a: s.junctionPair.a, b: s.junctionPair.b });
 
     const colTypes = db.getRegisteredColumns(s.name);
     if (!colTypes) {
@@ -263,7 +270,9 @@ export async function buildModelProfile(
       rowCount = await db.boundedCount(s.name, { cap: ROW_CAP });
       rowCountCapped = rowCount > ROW_CAP;
       // G1: deterministic PK-ordered prefix. G4: a single bounded read.
-      const queryOpts: { limit: number; orderBy?: string; orderDir?: 'asc' | 'desc' } = { limit: SAMPLE };
+      const queryOpts: { limit: number; orderBy?: string; orderDir?: 'asc' | 'desc' } = {
+        limit: SAMPLE,
+      };
       if (pkCol) {
         queryOpts.orderBy = pkCol;
         queryOpts.orderDir = 'asc';

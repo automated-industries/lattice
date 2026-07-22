@@ -22,7 +22,9 @@ import type { DataModelPlan, NormalizedRelation, TableTier } from './types.js';
 
 /** Tables the planner never reads/reasons about (bookkeeping + assistant storage). */
 function isHiddenTable(name: string): boolean {
-  return name.startsWith('_lattice') || name.startsWith('__lattice') || isInternalNativeEntity(name);
+  return (
+    name.startsWith('_lattice') || name.startsWith('__lattice') || isInternalNativeEntity(name)
+  );
 }
 
 /** Pure tier decision from the resolved provenance flags (unit-tested directly). */
@@ -169,7 +171,10 @@ export interface EnsurePlanOptions {
  * scheduler/sweep wraps this in try/catch; a route lets errors surface) — this
  * function does not swallow.
  */
-export async function ensurePlan(active: ActiveDb, opts: EnsurePlanOptions): Promise<DataModelPlan> {
+export async function ensurePlan(
+  active: ActiveDb,
+  opts: EnsurePlanOptions,
+): Promise<DataModelPlan> {
   const before = shapeToken(introspectDb(active));
   const cached = planCache.get(active.configPath);
   if (!opts.force && cached?.token === before) return cached.plan;
