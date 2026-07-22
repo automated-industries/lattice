@@ -3,9 +3,28 @@ import type {
   InferredDimension,
   InferredEntity,
   InferredLinkage,
-  InferredType,
   ProposedSchema,
 } from './types.js';
+import {
+  DEFAULT_LINK_CONFIDENCE,
+  DIM_MAX_DISTINCT,
+  DIM_MAX_RATIO,
+  FREETEXT,
+  NEVER_KEY,
+  PREFERRED_KEYS,
+  SAMPLE,
+  inferFieldType,
+  isNumericValue,
+  isPlainObject,
+  norm,
+  normalizeName,
+  type ColumnProfile,
+} from './infer-core.js';
+
+// These leaf primitives moved to infer-core.ts (shared with the data-model
+// planner). Re-exported here because they have historically been part of this
+// module's public surface (index.ts re-exports them from here).
+export { inferFieldType, normalizeName };
 
 /**
  * Infer a proposed Lattice schema from a parsed JSON source — entities, column
@@ -17,40 +36,6 @@ import type {
  * Heuristics are deliberately conservative and reported with match counts /
  * confidence so a human approves before anything is created.
  */
-
-const SAMPLE = 300;
-/** Field names that make a good stable key, tried in order. */
-const PREFERRED_KEYS = ['code', 'id', 'slug', 'key', 'ticker', 'symbol'];
-/** Never use these as a natural key (free text). */
-const NEVER_KEY = new Set([
-  'description',
-  'notes',
-  'summary',
-  'desc',
-  'comment',
-  'comments',
-  'bio',
-  'text',
-  'body',
-]);
-/** Never normalize these into a dimension (high-cardinality / free text). */
-const FREETEXT = new Set([...NEVER_KEY, 'name', 'title', 'company', 'label']);
-/** A string column with at most this many distinct values is a dimension candidate. */
-const DIM_MAX_DISTINCT = 64;
-/** ...as long as it is not near-unique (distinct/rows under this ratio). */
-const DIM_MAX_RATIO = 0.5;
-/**
- * Default minimum share of a reference field's distinct values that must
- * resolve before a linkage is created. Mirrors the GUI's clarify-threshold
- * default: candidates below it but at or above half of it are reported as
- * {@link ProposedSchema.marginalLinks} for user confirmation instead of being
- * applied silently.
- */
-const DEFAULT_LINK_CONFIDENCE = 0.6;
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
 
 /**
  * Re-extract the raw source records for an entity from the parsed JSON — handling
@@ -75,47 +60,6 @@ export function sourceRecords(
   return v.filter(isPlainObject);
 }
 
-/** Lower-snake-case a JSON key into a safe SQL identifier. */
-export function normalizeName(key: string): string {
-  const s = key
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2') // camelCase → camel_Case
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  if (!s) return 'field';
-  return /^[a-z]/.test(s) ? s : 'f_' + s;
-}
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
-
-/** Infer a column type from a set of values (nulls ignored). Defaults to text. */
-export function inferFieldType(values: unknown[]): InferredType {
-  const present = values.filter((v) => v !== null && v !== undefined && v !== '');
-  if (present.length === 0) return 'text';
-  if (present.every((v) => typeof v === 'number')) {
-    return present.every((v) => Number.isInteger(v)) ? 'integer' : 'real';
-  }
-  if (present.every((v) => typeof v === 'boolean')) return 'boolean';
-  if (present.every((v) => typeof v === 'string')) {
-    if (present.every((v) => ISO_DATE.test(v))) return 'date';
-    if (present.every((v) => ISO_DATETIME.test(v))) return 'datetime';
-  }
-  return 'text';
-}
-
-interface ColumnProfile {
-  sourceKey: string;
-  isArray: boolean;
-  type: InferredType;
-  /** Distinct non-null values across ALL records (string-normalized). */
-  distinct: number;
-  /** Normalized distinct string values (for linkage matching). Empty for non-string columns. */
-  valueSet: Set<string>;
-  /** Fraction of non-null values that are numeric (incl. numbers stored as text). */
-  numericFraction: number;
-}
-
 interface EntitySource {
   name: string;
   sourceKey: string;
@@ -123,19 +67,6 @@ interface EntitySource {
   columnar: boolean;
   profiles: Map<string, ColumnProfile>;
   naturalKey: string | null;
-}
-
-function norm(v: unknown): string {
-  return String(v).trim().toLowerCase();
-}
-
-/** True for a number, or a string that is numeric once currency/percent/grouping
- *  punctuation is stripped (e.g. "1,234", "$5", "12%", "(10)"). */
-function isNumericValue(v: unknown): boolean {
-  if (typeof v === 'number') return Number.isFinite(v);
-  if (typeof v !== 'string') return false;
-  const s = v.replace(/[\s,$%()]/g, '');
-  return s !== '' && Number.isFinite(Number(s));
 }
 
 function profileColumns(records: Record<string, unknown>[]): Map<string, ColumnProfile> {
