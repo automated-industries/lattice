@@ -8,8 +8,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [5.1.4] — unreleased
 
+### Added
+
+- **You can now queue a follow-up message while the assistant is still answering.** Previously the
+  composer was locked for the whole streaming turn and anything you typed and sent was silently
+  discarded (the text sat in the box but never went anywhere). Now a message sent mid-turn is shown as
+  a dimmed "queued" bubble and is sent automatically as soon as the current turn finishes (first-in,
+  first-out — it does not interrupt or redirect the in-flight answer). Switching or clearing the
+  conversation discards anything still queued, and a queued send that later fails surfaces its error
+  inline like any other send.
+
 ### Fixed
 
+- **Ingesting a large or multi-section document now extracts from the whole file, not just the first
+  ~12,000 characters.** The initial object-extraction pass only ever saw the opening ~12k characters, so
+  anything below that in a long or multi-section document was invisible to it (a later chat turn could
+  page through the file and recover the rest, but the first pass could not). The extraction now scans the
+  document in overlapping windows and merges the results (deduping repeats across the window seams), so
+  sections deep in a large file are surfaced on ingest. Small documents are unaffected — they still make
+  a single extraction pass with identical output. A document too large to scan in full surfaces a note
+  saying how much was covered, instead of silently under-extracting.
+- **Deleting your only workspace now returns you to the welcome screen instead of showing a false
+  error.** Deleting the last workspace succeeded on the server but the UI reported "Failed: No active
+  workspace", left the confirmation dialog open, and never showed the welcome screen. The delete was
+  actually complete; the client now recognizes the emptied-out state, closes the dialog cleanly, and
+  shows the welcome screen with no spurious error.
+- **A multi-step answer no longer repeats the same opening line as several identical bubbles.** When the
+  assistant used several tools in one turn it could restate the same intent before each step, rendering
+  (and saving, and replaying) a stack of identical bubbles. Consecutive identical restatements within a
+  turn are now collapsed to one; genuinely different messages are always kept, and the final answer is
+  never dropped.
+- **Replayed chat messages now show a relative timestamp** (e.g. "3h ago", "yesterday"), so an older
+  answer read back on reload is no longer indistinguishable from a fresh one. The time is shown under
+  each bubble and recomputed on load.
 - **The desktop app no longer gets stuck in an endless "Downloading update → Install & restart →
   Downloading update" loop.** The macOS installer placed the app so the app's own (unprivileged) in-place
   auto-updater could not replace it, so an update could never finish applying — the running version never
@@ -33,6 +64,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   longer drift the desktop version undetected.
 - **`latest.json` now lists the `.pkg` installer** (with sha256 + size) so the installer-fallback download
   is verified by hash instead of downloaded unverified.
+- **The Windows desktop app now opens just the app, not a stray console and a blank window.** Each launch
+  used to pop up a console window and an empty half-drawn native window alongside the real app; closing
+  the console also killed the app. Both extra surfaces are now hidden at startup, leaving only the app
+  itself (logging and auto-update are unaffected).
 
 ### Changed
 
