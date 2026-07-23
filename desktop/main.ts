@@ -21,6 +21,11 @@ import {
   BUNDLE_SWAP_SH,
 } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
+import { hideWindowsStartupChrome } from './windows-chrome.ts';
+
+// Windows (raw backend): hide the stray console + the blank phantom native window
+// before anything logs or a window could flash. No-op on every other platform.
+hideWindowsStartupChrome();
 
 // Trust the OS certificate store, not just Deno's bundled Mozilla roots. On a
 // managed/corporate device behind a TLS-inspecting proxy (Zscaler, Netskope, a
