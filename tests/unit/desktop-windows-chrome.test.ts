@@ -25,14 +25,18 @@ describe('hideWindowsStartupChrome — platform guard', () => {
           throw new Error('dlopen must not be called off Windows');
         },
       };
-      expect(() => hideWindowsStartupChrome()).not.toThrow();
+      expect(() => {
+        hideWindowsStartupChrome();
+      }).not.toThrow();
       expect(dlopenCalled).toBe(false);
     });
   }
 
   it('is a no-op when Deno is undefined (Node/vitest)', () => {
     g.Deno = undefined;
-    expect(() => hideWindowsStartupChrome()).not.toThrow();
+    expect(() => {
+      hideWindowsStartupChrome();
+    }).not.toThrow();
   });
 });
 

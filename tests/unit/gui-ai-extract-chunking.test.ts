@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { extractObjects, type SchemaEntity } from '../../src/gui/ai/summarize.js';
-import {
-  extractionTruncationNote,
-  chunkTextForExtraction,
-} from '../../src/ai/summarize.js';
+import { extractionTruncationNote, chunkTextForExtraction } from '../../src/ai/summarize.js';
 import type { LlmClient, TurnResult } from '../../src/gui/ai/chat.js';
 
 // The section markers seeded through a big document. Windows are 12k wide,

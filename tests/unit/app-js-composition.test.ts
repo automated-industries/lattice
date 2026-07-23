@@ -587,8 +587,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // mirrors from the IIFE-local ingestProgressState; (c) a files-only send no longer double-
 // renders on reload — appendUserBubble suppresses the text bubble when it equals the joined
 // file names. Length + hash recaptured.
-const ORIGINAL_LENGTH = 776992;
-const ORIGINAL_SHA256 = '29ac337b145d67626d3a7dd893e5ca5a5e6e9a05b7d762677b4d3d7299049dfd';
+const ORIGINAL_LENGTH = 781258;
+const ORIGINAL_SHA256 = '52c07fe0eb3f65143dc3b6b87be5365037e4af95b754d3806f514b1e8f1801d8';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -303,14 +303,20 @@ export function mergeExtractedObjects(groups: ExtractedObject[][]): ExtractedObj
         for (const c of obj.columns) if (cols.size < 8) cols.add(c);
         existing.columns = [...cols].slice(0, 8);
       }
-      if (obj.links && obj.links.length) {
+      if (obj.links?.length) {
         const links = new Set(existing.links ?? []);
         for (const l of obj.links) if (links.size < 12) links.add(l);
         existing.links = [...links].slice(0, 12);
       }
     }
   }
-  return order.slice(0, 12).map((k) => byKey.get(k) as ExtractedObject);
+  const merged: ExtractedObject[] = [];
+  for (const k of order) {
+    const obj = byKey.get(k);
+    if (obj) merged.push(obj);
+    if (merged.length >= 12) break;
+  }
+  return merged;
 }
 
 /**
