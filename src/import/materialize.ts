@@ -6,6 +6,7 @@ import { execSql, loadConfigDoc, saveConfigDoc } from '../gui/config-io.js';
 import { recordLineage } from '../gui/lineage-store.js';
 import { normalizeText } from '../dedup/normalize.js';
 import { parseCellDate } from './asof.js';
+import { LOAD_CHUNK_ROWS, ensureNaturalKeyIndex, seedInChunks } from './bulk-load.js';
 import { normalizeName, sourceRecords } from './infer.js';
 import type { DetectedView, InferredEntity, InferredType, ProposedSchema } from './types.js';
 
@@ -214,10 +215,28 @@ export async function materializeImport(
         if (dated) row.as_of = rowAsOf(entity, r);
         return row;
       });
-      await db.seed({
-        data: rows,
+      const naturalKey = dated ? 'content_key' : (entity.naturalKey ?? 'content_key');
+      // Index the dedup key BEFORE loading — turns each per-row existence check
+      // from a full scan of the growing table (O(N²) over the load) into O(log N),
+      // which is what makes a 10^5-row sheet import instead of pegging the CPU and
+      // aborting mid-load. Then load in bounded, atomic chunks that yield the event
+      // loop between commits so the app + socket stay responsive on a large sheet.
+      await ensureNaturalKeyIndex(db, entity.name, naturalKey);
+      await seedInChunks(db, {
         table: entity.name,
-        naturalKey: dated ? 'content_key' : (entity.naturalKey ?? 'content_key'),
+        naturalKey,
+        rows,
+        cleanupOnFailure: tablesCreated.includes(entity.name),
+        onProgress: async (loaded, total) => {
+          if (loaded < total) {
+            await report({
+              phase: 'entities',
+              table: entity.name,
+              count: loaded,
+              message: `Loading ${entity.name}: ${String(loaded)} / ${String(total)} rows`,
+            });
+          }
+        },
       });
       const n = await db.count(entity.name);
       rowsByTable[entity.name] = n;
@@ -387,7 +406,15 @@ export async function materializeImport(
     }
     const unresolved = new Set<string>();
     let created = 0;
+    let processed = 0;
     for (const record of sourceRecords(data, from)) {
+      // Keep the app + socket responsive on a large linked import: yield the
+      // event loop periodically so the per-edge insert loop doesn't monopolize
+      // it (same class of freeze the entity load's chunked yield prevents).
+      if (processed > 0 && processed % LOAD_CHUNK_ROWS === 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      processed += 1;
       const a = rowAsOf(from, record); // this row's snapshot date
       const fromKeyVal =
         from.naturalKey === null ? recordKey(from, record) : record[from.naturalKeySource ?? ''];
