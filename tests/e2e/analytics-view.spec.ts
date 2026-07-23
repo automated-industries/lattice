@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { bootGui, type BootedGui } from './helpers';
 
 // The single 3-column layout: left sidebar (Dashboards + Tables/Files/Markdown
-// nav) │ center Workspace tabs (#content + #antabstrip) │ persistent Ask Gladys
+// nav) │ center Workspace content (#content) │ persistent Ask Gladys
 // dock (#ask-dock). Builder surfaces (Data Model / Inputs) live in the Configure
 // drawer (#settings-drawer, opened by the #configure-trigger wrench). There is no
 // view flip — the workspace is always mounted; dashboards, tables, files, and
@@ -28,7 +28,7 @@ test('a new workspace opens the seeded Welcome dashboard by default', async ({ p
   const wgui = await bootGui(); // welcome seeded (the real default)
   try {
     await page.goto(wgui.url);
-    // Boot opens the Welcome dashboard as a Workspace tab (not the empty home).
+    // Boot opens the Welcome dashboard (not the empty home).
     // The legacy #/analytics/<id> landing normalizes to the single-layout #/w/dash/<id>.
     await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/welcome-lattice');
     // One 3-column layout, always mounted — no view flip.
@@ -52,11 +52,9 @@ test('boot lands on the single-layout workspace with its empty states', async ({
   // persistent Ask Gladys dock are all visible (no view flip, nothing parked hidden).
   await expect(page.locator('.layout')).toBeVisible();
   await expect(page.locator('#ask-dock')).toBeVisible();
-  // No dashboards yet — both empty states, and the tab strip is EMPTY (there is no
-  // permanent tab; the home route shows the hero, no tab).
+  // No dashboards yet — both empty states; the home route shows the hero.
   await expect(page.locator('#dash-list')).toContainText('No dashboards yet');
   await expect(page.locator('.analytics-home h1')).toHaveText('Ask your company anything');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
 });
 
 test('the Configure trigger opens the drawer and reaches the Tables data-model surface', async ({

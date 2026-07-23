@@ -238,9 +238,8 @@ export const searchJs = `    // ────────────────
         // are per-workspace module state — reset them so the new workspace doesn't
         // inherit the previous one's relationship edges or picked source.
         mtResetState();
-        // Open dashboard tabs + the cached Dashboards list are per-workspace too —
-        // stale tabs from the previous workspace would 404 in the new one.
-        anResetTabs();
+        // The cached Dashboards list is per-workspace — drop it so the new
+        // workspace doesn't inherit the previous one's dashboards.
         anDashRows = null;
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event

@@ -247,8 +247,8 @@ import { css } from '../../src/gui/app/css.js';
 // 5.1.1 chat attachment chips: .chat-user-stack (stacks a user bubble + its file chips,
 // right-aligned) + .chat-msg-files / .chat-msg-file(-ic/-name) styling for attachments
 // that now persist in a sent message. Length + hash recaptured.
-const ORIGINAL_LENGTH = 172786;
-const ORIGINAL_SHA256 = '60cca3758abcf5645803b3edec33e1821c713a0842bed90c629648b2b917d245';
+const ORIGINAL_LENGTH = 167957;
+const ORIGINAL_SHA256 = '0fabf83165e77a6b4bbcbb093c3ab242647ff7c2528c08d4d86339e7590cc6c8';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

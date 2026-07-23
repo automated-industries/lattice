@@ -34,6 +34,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **`latest.json` now lists the `.pkg` installer** (with sha256 + size) so the installer-fallback download
   is verified by hash instead of downloaded unverified.
 
+### Changed
+
+- **The Analytics workspace no longer uses a center tab strip.** Opening a dashboard, table, file, or
+  record now shows it directly in the content pane — navigation is entirely via the left sidebar and the
+  breadcrumbs (both unchanged). The tab bar and everything around it (the equal-width tab sizing, the
+  "⋯ N" overflow menu, and closing tabs) are removed, leaving a simpler single-content-pane layout.
+
 ## [5.1.3] — 2026-07-23
 
 ### Fixed

@@ -133,7 +133,6 @@ export const guiAppHtml = `<!doctype html>
     </nav>
     <main class="content-wrap">
       <div class="col-header col-model an-workspace-head"><span class="col-header-text">Workspace</span></div>
-      <div class="antabstrip" id="antabstrip"><div class="antabstrip-tabs" id="antabstrip-tabs"></div></div>
       <div id="content"></div>
     </main>
     <aside class="ask-dock" id="ask-dock" aria-label="Ask Lattice">

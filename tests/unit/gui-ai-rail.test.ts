@@ -8,7 +8,6 @@ describe('assistant dock + Outputs markup + wiring', () => {
     expect(guiAppHtml).toContain('id="ask-dock"');
     expect(guiAppHtml).toContain('class="layout"');
     expect(guiAppHtml).toContain('id="dash-list"');
-    expect(guiAppHtml).toContain('id="antabstrip-tabs"');
     expect(guiAppHtml).toContain('id="configure-trigger"');
     expect(guiAppHtml).toContain('id="rail-feed"');
     // The docked rail, the floating panel, the old Ask-Gladys view toggle, and the

@@ -1,12 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { bootGui, createRow, type BootedGui } from './helpers';
 
-// Dashboards in the Analytics view: the sidebar lists them, each opens as ONE
-// closable deduped tab (recovered dynamic-tab behavior: close falls back right
-// neighbor → left → home; a width-based "⋯ N" overflow keeps the active tab
-// visible), and the per-dashboard ⋯ menu renames/deletes. Rows are seeded
-// through the generic rows API — without a page body, which only the assistant
-// authoring tools may write; the canvas still mounts its frame.
+// Dashboards in the Analytics view: the sidebar lists them, clicking one opens it
+// in the content pane (hash-routed), and the per-dashboard ⋯ menu renames/deletes.
+// Rows are seeded through the generic rows API — without a page body, which only
+// the assistant authoring tools may write; the canvas still mounts its frame.
 
 let gui: BootedGui;
 
@@ -22,7 +20,7 @@ async function seed(title: string): Promise<string> {
   return String(row.id);
 }
 
-test('sidebar lists dashboards; opening = one deduped tab; close falls back to home', async ({
+test('sidebar lists dashboards; clicking one opens it; re-opening re-routes to the same one', async ({
   page,
 }) => {
   const a = await seed('Revenue');
@@ -35,30 +33,27 @@ test('sidebar lists dashboards; opening = one deduped tab; close falls back to h
   await expect(page.locator('.dash-item')).toHaveCount(2);
   await expect(page.locator('#dash-list')).toContainText('Revenue');
 
-  // Open one — a closable tab appears, the canvas mounts the page frame.
+  // Open one — the canvas mounts the page frame and we route to it.
   await page.locator(`.dash-item[data-dash-id="${a}"]`).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + a);
-  await expect(page.locator(`.tab[data-key="dashboard:${a}"]`)).toHaveCount(1);
   await expect(page.locator('.dash-title')).toHaveText('Revenue');
   await expect(page.locator('#dash-frame')).toBeVisible();
 
-  // Re-opening from the sidebar never duplicates the tab.
+  // Re-opening from the sidebar just re-routes to the same dashboard.
   await page.locator(`.dash-item[data-dash-id="${a}"]`).click();
-  await expect(page.locator(`.tab[data-key="dashboard:${a}"]`)).toHaveCount(1);
-
-  // Open the second — two tabs (one per open dashboard; there is no permanent tab);
-  // close the ACTIVE second one → neighbor activates.
-  await page.locator(`.dash-item[data-dash-id="${b}"]`).click();
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(2);
-  await page.locator(`.tab[data-key="dashboard:${b}"] .tab-close`).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + a);
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(1);
+  await expect(page.locator('.dash-title')).toHaveText('Revenue');
 
-  // Close the last dashboard tab → the strip is EMPTY (no permanent tab), the home
-  // route (#/) and its hero are shown.
-  await page.locator(`.tab[data-key="dashboard:${a}"] .tab-close`).click();
+  // Open the second — it routes to its own page.
+  await page.locator(`.dash-item[data-dash-id="${b}"]`).click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + b);
+  await expect(page.locator('.dash-title')).toHaveText('Pipeline');
+
+  // Navigating to the home route shows the hero (no dashboard open).
+  await page.evaluate(() => {
+    window.location.hash = '#/';
+  });
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
   await expect(page.locator('.analytics-home')).toBeVisible();
 });
 
@@ -71,8 +66,8 @@ test('a dashboard on a cloud/team workspace (row carries _access) still opens �
   // SQLite never sets — the ONLY difference at this client layer. That summary
   // made the per-row visibility line render as a non-empty HTML STRING, which
   // renderDashboardPage used to appendChild() → TypeError → swallowed by the
-  // .catch, which closed the tab and bounced to the analytics home. Dashboards
-  // therefore NEVER opened on a shared workspace. Inject `_access` into the
+  // .catch, which bounced to the analytics home. Dashboards therefore NEVER
+  // opened on a shared workspace. Inject `_access` into the
   // dashboards reads to reproduce the cloud read exactly (nothing else about the
   // cloud matters to this path), so this runs in a real browser without a
   // Postgres backend but exercises the true failure trigger.
@@ -137,7 +132,7 @@ test('an sql-driven dashboard loads its data (no "forbidden table") — broker r
   await expect(frame.locator('#out')).not.toContainText('forbidden');
 });
 
-test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({ page }) => {
+test('the ⋯ menu renames (sidebar + title follow) and deletes', async ({ page }) => {
   const id = await seed('Old Name');
   await page.goto(gui.url + '#/w/dash/' + id);
   await expect(page.locator('.dash-title')).toHaveText('Old Name');
@@ -147,10 +142,9 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
   await page.locator('#dash-menu-btn').click();
   await page.locator('#dash-menu [data-act="rename"]').click();
   await expect(page.locator('.dash-title')).toHaveText('New Name');
-  await expect(page.locator(`.tab[data-key="dashboard:${id}"]`)).toContainText('New Name');
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toContainText('New Name');
 
-  // Delete → tab closes, list refreshes, home shows. It now confirms first
+  // Delete → list refreshes, home shows. It now confirms first
   // (guarding against a stray click) — accept the dialog.
   await page.locator('#dash-menu-btn').click();
   page.once('dialog', (d) => void d.accept());
@@ -159,14 +153,13 @@ test('the ⋯ menu renames (sidebar + tab + title follow) and deletes', async ({
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toHaveCount(0);
 });
 
-test('a stale dashboard link drops its tab and lands home', async ({ page }) => {
+test('a stale dashboard link lands home', async ({ page }) => {
   await page.goto(gui.url + '#/w/dash/no-such-dashboard');
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
-  // The strip is empty at the home route — there is no permanent tab.
-  await expect(page.locator('#antabstrip-tabs .tab')).toHaveCount(0);
+  await expect(page.locator('.analytics-home')).toBeVisible();
 });
 
-test('the + button opens-or-focuses the Welcome dashboard (never a duplicate)', async ({
+test('the + button opens-or-focuses the Welcome dashboard (never a duplicate route)', async ({
   page,
 }) => {
   // This one needs the seeded Welcome dashboard, so it boots its own welcome:true gui.
@@ -174,72 +167,15 @@ test('the + button opens-or-focuses the Welcome dashboard (never a duplicate)', 
   try {
     await page.goto(wgui.url + '#/');
     await expect(page.locator('nav.dash-sidebar')).toBeVisible();
-    // Boot auto-opens the Welcome tab — close it so we start from an empty strip.
-    const welcomeClose = page.locator('.tab[data-key="dashboard:welcome-lattice"] .tab-close');
-    if (await welcomeClose.count()) await welcomeClose.click();
-    await expect(page.locator('.tab[data-key="dashboard:welcome-lattice"]')).toHaveCount(0);
-    // "+" opens the Welcome dashboard as a normal tab.
+    // "+" opens the Welcome dashboard.
     await page.locator('#dash-new-btn').click();
     await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/welcome-lattice');
-    await expect(page.locator('.tab[data-key="dashboard:welcome-lattice"]')).toHaveCount(1);
-    // Clicking "+" again focuses the existing tab — it does NOT create a second.
+    await expect(page.locator('.dash-title')).toHaveText('Welcome to Lattice!');
+    // Clicking "+" again re-focuses the SAME dashboard route — never a second one.
     await page.locator('#dash-new-btn').click();
-    await expect(page.locator('.tab[data-key="dashboard:welcome-lattice"]')).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/welcome-lattice');
+    await expect(page.locator('.dash-title')).toHaveText('Welcome to Lattice!');
   } finally {
     await wgui.close();
-  }
-});
-
-test('many open tabs collapse into a "⋯ N" overflow with the active tab visible', async ({
-  page,
-}) => {
-  // Own fresh gui: this asserts exact overflow behavior against a known set, so it must
-  // not inherit the other specs' accumulated dashboards (which share the beforeAll gui).
-  // 16 also stress-tests clicking a sidebar item when the Dashboards list is long (the
-  // whole sidebar scrolls) — the item must still be reachable/clickable.
-  const ogui = await bootGui({ welcome: false });
-  try {
-    const ids: string[] = [];
-    for (let i = 0; i < 16; i++) {
-      const row = await createRow(ogui.url, 'dashboards', {
-        title: 'Board ' + String(i).padStart(2, '0'),
-        description: 'overview',
-      });
-      ids.push(String(row.id));
-    }
-
-    await page.setViewportSize({ width: 900, height: 700 });
-    await page.goto(ogui.url);
-    // Dashboards is a collapsible accordion section (TABLES opens by default); expand it.
-    // With a long list the OPEN section scrolls internally, so each item stays reachable.
-    await page.locator('.section-toggle[data-group="nav-dashboards"]').click();
-    // Open all sixteen.
-    for (const id of ids) {
-      await page.locator(`.dash-item[data-dash-id="${id}"]`).click();
-      await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + id);
-    }
-    // The strip cannot fit them all: the overflow button shows a count, and the
-    // ACTIVE (last-opened) tab is still visible in the strip.
-    const ov = page.locator('#antab-overflow-btn');
-    await expect(ov).toBeVisible();
-    await expect(ov).toContainText('⋯');
-    await expect(
-      page.locator(`#antabstrip-tabs .tab[data-key="dashboard:${ids[ids.length - 1]}"]`),
-    ).toBeVisible();
-
-    // The overflow menu lists the hidden (trailing, non-active) tabs and
-    // activates one — whichever it holds first.
-    await ov.click();
-    const menu = page.locator('#antab-overflow-menu');
-    await expect(menu).toBeVisible();
-    const first = menu.locator('.tab-ov-item').first();
-    const key = await first.getAttribute('data-key');
-    expect(key).toBeTruthy();
-    await first.click();
-    await expect
-      .poll(() => page.evaluate(() => location.hash))
-      .toBe('#/w/dash/' + String(key).replace(/^dashboard:/, ''));
-  } finally {
-    await ogui.close();
   }
 });
