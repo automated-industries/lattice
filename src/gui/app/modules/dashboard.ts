@@ -812,10 +812,20 @@ export const dashboardJs = `    // ───────────────
       var objHref = t0 === 'artifacts' ? '#/fs/artifacts'
         : section === 'graph' ? '#/graph/' + encodeURIComponent(t0)
         : section === 'tables' ? '#/tables/' + encodeURIComponent(t0)
+        // A file tab (w:file) has NO collection form under #/w/file/ — that segment is
+        // always a file id — so the object ("Files") crumb must open the files-table
+        // collection (#/w/table/<t0>), not the invalid #/w/file/<t0> row route which
+        // looks the table name up as a row id ("Row not found"). Mirrors the deleted-
+        // record + delete-nav fallbacks (renderFsItem / row delete).
+        : section === 'w:file' ? '#/w/table/' + encodeURIComponent(t0)
         : isW ? sectionHref(section, [t0])
         : '#/folders/' + encodeURIComponent(t0);
-      // Record/relation crumbs accumulate onto the section's RECORD prefix.
-      var prefix = sectionHref(section, [t0]);
+      // Record/relation crumbs accumulate onto the section's RECORD prefix. For w:file the
+      // route is #/w/file/<id> (the router reads the FIRST segment as the file id and implies
+      // the 'files' table), so the prefix must NOT carry the table segment — otherwise the
+      // leaf self-crumb becomes the invalid #/w/file/files/<id> and 404s ("Row not found"),
+      // the same shape the object crumb above already avoids.
+      var prefix = section === 'w:file' ? '#/w/file' : sectionHref(section, [t0]);
       // An artifact (a file carrying an artifact_type) reads as its own "Artifacts"
       // object, so its record breadcrumb roots at Artifacts rather than Files.
       var leafNode = (crumbs || []).filter(function (c) { return c.type === 'node'; }).pop();

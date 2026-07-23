@@ -19,6 +19,30 @@ export const systemTablesJs = `    // ──────────────
     // sets this to drill into that table's rows; null falls back to opening the row view.
     var schemaNodeDrill = null;
 
+    // Per-graph node-position cache so revisiting a graph — or toggling Graph↔Tables,
+    // or clicking back to an object you've already opened — is INSTANT: nodes seed
+    // from their last-settled coordinates instead of cold-spawning and re-settling
+    // (~5s). Keyed by graph identity ('schema' | 'entity:<table>'). Cleared on every
+    // workspace switch (reloadEverything) so positions never bleed across workspaces
+    // that share a table name.
+    var graphPosCache = {};
+    var currentGraphKey = null; // identity of the currently-mounted graph handle
+    function resetGraphPositionCache() { graphPosCache = {}; currentGraphKey = null; }
+    // Save the live handle's current positions under the key it was mounted with —
+    // called BEFORE teardown so an in-progress or settled layout is preserved for the
+    // next visit even if the user navigates away before it settles.
+    function saveGraphPositions() {
+      if (schemaGraphHandle && currentGraphKey && typeof schemaGraphHandle.positions === 'function') {
+        var p = schemaGraphHandle.positions();
+        if (p && Object.keys(p).length) graphPosCache[currentGraphKey] = p;
+      }
+    }
+    // Tear down the live graph handle, saving its positions first (never after —
+    // stop() discards nothing but keeps the contract "save before teardown").
+    function stopSchemaGraph() {
+      if (schemaGraphHandle) { saveGraphPositions(); schemaGraphHandle.stop(); schemaGraphHandle = null; }
+    }
+
     /** Columns that are structurally part of every entity and shouldn't be
      * renamed or removed from the GUI. id is the primary key; deleted_at is
      * the soft-delete column whose semantics undo/redo depends on. */
@@ -148,11 +172,16 @@ export const systemTablesJs = `    // ──────────────
             if (myGen !== graphRevealGen) return;
             var liveMount = document.getElementById('graph-mount');
             if (!liveMount) return;
-            if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
+            stopSchemaGraph();
             liveMount.innerHTML = '';
+            var entityKey = 'entity:' + table;
+            currentGraphKey = entityKey;
+            var seededPos = graphPosCache[entityKey] || null;
             schemaGraphHandle = mod.createForceGraph(liveMount, {
               nodes: [], edges: [],
               reducedMotion: graphReducedMotion(),
+              initialPositions: seededPos,
+              onSettle: function (pos) { graphPosCache[entityKey] = pos; },
               onNode: function (node) {
                 // Click a row node → that record. opts.onRecord overrides the target (the
                 // Graph tab opens the record's row view); default is the #/graph record route.
@@ -163,7 +192,10 @@ export const systemTablesJs = `    // ──────────────
                 else location.hash = '#/graph/' + encodeURIComponent(nt) + '/' + encodeURIComponent(nid);
               },
             });
-            revealGraphInWaves(nodes, edges, myGen);
+            // Warm revisit (every node already cached) → skip the wave animation and
+            // place them all at once; seeding makes that instant with no re-settle.
+            var warm = !!seededPos && nodes.every(function (n) { return seededPos[n.id]; });
+            revealGraphInWaves(nodes, edges, myGen, warm);
           });
         });
       }).catch(function (err) {
@@ -275,8 +307,10 @@ export const systemTablesJs = `    // ──────────────
           if (myGen !== graphRevealGen) return; // navigated away / re-rendered
           var liveMount = document.getElementById('graph-mount');
           if (!liveMount) return;
-          if (schemaGraphHandle) { schemaGraphHandle.stop(); schemaGraphHandle = null; }
+          stopSchemaGraph();
           liveMount.innerHTML = '';
+          currentGraphKey = 'schema';
+          var seededPos = graphPosCache['schema'] || null;
           var data = schemaGraphData(model);
           // Mount EMPTY so the canvas is up instantly, then reveal the nodes in
           // waves so they fly in progressively (the same delta animation the live
@@ -285,6 +319,8 @@ export const systemTablesJs = `    // ──────────────
             nodes: [],
             edges: [],
             reducedMotion: graphReducedMotion(),
+            initialPositions: seededPos,
+            onSettle: function (pos) { graphPosCache['schema'] = pos; },
             onNode: function (node) {
               // In Wire/Merge mode a node click picks a source then a target (drag
               // stays off the graph, which owns node repositioning). Otherwise drill
@@ -307,7 +343,10 @@ export const systemTablesJs = `    // ──────────────
               else location.hash = '#/w/table/' + encodeURIComponent(target);
             },
           });
-          revealGraphInWaves(data.nodes, data.edges, myGen);
+          // Warm revisit (every node already cached) → skip the wave animation and
+          // place them all at once; seeding makes that instant with no re-settle.
+          var warm = !!seededPos && data.nodes.every(function (n) { return seededPos[n.id]; });
+          revealGraphInWaves(data.nodes, data.edges, myGen, warm);
         }).catch(function (err) {
           var m = document.getElementById('graph-mount');
           if (m) m.innerHTML = '<div class="empty-state">Failed to load the graph renderer: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
@@ -323,9 +362,11 @@ export const systemTablesJs = `    // ──────────────
     // is a diff — it animates the delta and skips edges whose endpoints aren't in
     // yet, so passing ALL edges every wave is safe). Big hubs first (by radius) reads
     // as the graph "building out". Reduced motion or a tiny graph → one shot.
-    function revealGraphInWaves(allNodes, allEdges, myGen) {
+    function revealGraphInWaves(allNodes, allEdges, myGen, warm) {
       if (!schemaGraphHandle) return;
-      if (graphReducedMotion() || allNodes.length <= 8) {
+      // Warm revisit, reduced motion, or a tiny graph → one shot (no fly-in waves).
+      // A warm set seeds every node from cache, so the single setData lands instantly.
+      if (warm || graphReducedMotion() || allNodes.length <= 8) {
         schemaGraphHandle.setData(allNodes, allEdges);
         return;
       }

@@ -203,6 +203,104 @@ describe('createForceGraph — framing + label sizing (regressions)', () => {
   });
 });
 
+describe('createForceGraph — instant reveal + position cache', () => {
+  function sizedMount(): HTMLElement {
+    const mount = document.createElement('div');
+    document.body.appendChild(mount);
+    // jsdom lays nothing out (clientWidth/Height are 0), which makes the fit defer.
+    // Stub a real size so a fit lands instead of deferring.
+    Object.defineProperty(mount, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(mount, 'clientHeight', { value: 600, configurable: true });
+    return mount;
+  }
+
+  // Part 1: the stage reveals the moment the FIRST fit lands — it must NOT wait for
+  // the physics to settle (the old behavior blocked ~5s behind a spinner on every
+  // open). Driven deterministically through the ResizeObserver's first-fit path.
+  it('reveals the stage on the first fit — without waiting for the sim to settle', () => {
+    let cb: (() => void) | null = null;
+    const orig = (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      constructor(c: () => void) {
+        cb = c;
+      }
+      observe(): void {}
+      disconnect(): void {}
+    };
+    try {
+      const mount = sizedMount();
+      createForceGraph(mount as unknown as Mount, { nodes: NODES, edges: EDGES, autostart: false });
+      const stage = mount.querySelector('.dm-stage') as unknown as HTMLElement;
+      expect(stage.style.visibility).toBe('hidden'); // nothing has fit yet
+      expect(cb).not.toBeNull();
+      cb!(); // first ResizeObserver fit lands — no settle has run
+      expect(stage.style.visibility).toBe('visible');
+      mount.remove();
+    } finally {
+      (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver = orig;
+    }
+  });
+
+  // Part 1: reduced motion still settles + reveals synchronously (one paint, no loop).
+  it('reveals synchronously under reduced motion', () => {
+    const mount = sizedMount();
+    createForceGraph(mount as unknown as Mount, {
+      nodes: NODES,
+      edges: EDGES,
+      reducedMotion: true,
+    });
+    const stage = mount.querySelector('.dm-stage') as unknown as HTMLElement;
+    expect(stage.style.visibility).toBe('visible');
+    mount.remove();
+  });
+
+  // Part 2: a new node with a cached position spawns THERE, not on the cold spiral.
+  it('seeds a new node at its cached position (initialPositions)', () => {
+    const mount = document.createElement('div');
+    document.body.appendChild(mount);
+    const handle = createForceGraph(mount as unknown as Mount, {
+      nodes: NODES,
+      edges: EDGES,
+      autostart: false, // no ticks → the seed is the untouched coordinate
+      initialPositions: { a: { x: 111, y: 222 } },
+    });
+    const pos = handle.positions();
+    expect(pos.a).toEqual({ x: 111, y: 222 });
+    mount.remove();
+  });
+
+  // Part 2: positions() reads back the layout; feeding it into a fresh mount as
+  // initialPositions yields a warm start that stays put under stepping (no re-settle).
+  it('reads positions back and a warm mount lands already-placed (no motion)', () => {
+    const m1 = document.createElement('div');
+    document.body.appendChild(m1);
+    const h1 = createForceGraph(m1 as unknown as Mount, {
+      nodes: NODES,
+      edges: EDGES,
+      autostart: false,
+    });
+    h1.step(150); // settle a first-visit layout
+    const settled = h1.positions();
+
+    const m2 = document.createElement('div');
+    document.body.appendChild(m2);
+    const h2 = createForceGraph(m2 as unknown as Mount, {
+      nodes: NODES,
+      edges: EDGES,
+      autostart: false,
+      initialPositions: settled,
+    });
+    h2.step(30); // a warm layout is already settled → nodes should not drift
+    const after = h2.positions();
+    for (const id of ['a', 'b', 'c']) {
+      expect(Math.abs(after[id].x - settled[id].x)).toBeLessThan(1);
+      expect(Math.abs(after[id].y - settled[id].y)).toBeLessThan(1);
+    }
+    m1.remove();
+    m2.remove();
+  });
+});
+
 describe('clampAxis — keep the graph inside the viewport (pan/zoom clamp)', () => {
   // Box [0,100] world units, k=1, pane 500, margin 10 -> translation v in [10, 390].
   it('keeps a box smaller than the pane fully inside [m, pane-m]', () => {

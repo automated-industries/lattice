@@ -42,21 +42,26 @@ When you drop a recognized JSON / `.xlsx` source into the chat:
 
 ## Silent import vs. the inline confirm card
 
-The chat drop chooses one of three paths automatically:
+The chat drop chooses a path automatically. **Most drops import silently** — a
+confirm card only appears for the one genuinely ambiguous case:
 
+- **Brand-new structured data → silent import.** Tables and rows are created
+  directly (plus any detected computed views), shown as a compact live-progress
+  card with no confirm gate. Uncertain, low-confidence choices still interrupt:
+  a **marginal link** the importer isn't sure about becomes a question in the
+  assistant panel ("connect these?"), rather than being guessed at.
 - **Recognized dataset + a confident date → silent import.** The file matches
   tables already in the workspace and a date was confidently detected, so it is
   imported straight away as a dated snapshot and reported in the activity feed.
 - **Recognized dataset but no / ambiguous date → confirm card.** Importing
-  undated would overwrite the prior snapshot, so an **inline confirm card**
-  proposes the date (and any per-row date column) before anything is written.
-- **Brand-new structured data → confirm card.** Tables are never created
-  silently from a chat drop. The card proposes the full schema, the date, and
-  the mode for you to review and apply.
+  undated would overwrite the prior snapshot — a genuinely low-confidence choice
+  — so an **inline confirm card** proposes the date (and any per-row date column)
+  before anything is written.
 
-Either way, nothing is written until a confident match resolves silently or you
-confirm the card; the confirmed proposal is applied via `POST /api/import/apply`,
-which streams the materialization progress back as NDJSON.
+Silent and confirmed imports both apply via `POST /api/import/apply`, which
+streams the materialization progress back as NDJSON. After an import lands, the
+data-model planner runs over the new tables to apply safe normalizations and
+surface further suggestions.
 
 ## File-size cap
 

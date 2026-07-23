@@ -121,6 +121,18 @@ export interface ForceGraphOptions {
    * scheduler exists, e.g. SSR / tests).
    */
   reducedMotion?: boolean;
+  /**
+   * Seed node coordinates from a prior layout (keyed by node id). A new node with
+   * a seed spawns at its cached position instead of the cold spiral, so a revisit
+   * to a graph you've already settled reappears in place with no re-settle. Unknown
+   * nodes still spiral-in and animate.
+   */
+  initialPositions?: Record<string, { x: number; y: number }>;
+  /**
+   * Fired once each time the layout first settles, with the final node positions.
+   * Callers cache these to seed a later mount (see {@link initialPositions}).
+   */
+  onSettle?: (positions: Record<string, { x: number; y: number }>) => void;
 }
 
 export interface ForceGraphHandle {
@@ -134,6 +146,8 @@ export interface ForceGraphHandle {
   reheat(): void;
   /** Advance the simulation N steps and repaint — for tests / manual control. */
   step(n?: number): void;
+  /** Current node coordinates keyed by id — cache these to seed a later mount. */
+  positions(): Record<string, { x: number; y: number }>;
   /** Stop the animation loop (call on unmount, before discarding the DOM). */
   stop(): void;
 }
@@ -155,6 +169,13 @@ interface FEdge {
 
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
+
+// Cool a cold/first-visit layout to rest in ~120 ticks (~2s at 60fps) instead of
+// the sim's ~300-tick (~5s) default — a first visit converges quickly while it
+// animates in, and the 400-tick safety net in frame() still bounds a pathological
+// never-settle. Scoped to the initial + data-change layout only; a drag restores
+// the default decay (below) so pinning/reheating still feels normal.
+const FAST_ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 120); // ≈ 0.056
 
 /**
  * Clamp one axis of the stage translation so the graph's bounding box can never be
@@ -207,6 +228,10 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     collideIterations: 3,
     center: { x: 0, y: 0, strength: 0.05 },
   });
+  // The sim's standard cooling rate (settles in ~300 ticks). A cold layout swaps in
+  // FAST_ALPHA_DECAY for a quicker converge; a drag restores this so reheat feels
+  // normal. Captured (not hard-coded) so it tracks the sim's default.
+  const DEFAULT_ALPHA_DECAY = sim.alphaDecay;
 
   const svg = document.createElementNS(SVGNS, 'svg');
   svg.setAttribute('class', 'dm-graph');
@@ -224,13 +249,16 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   stage.appendChild(nodeLayer);
   svg.appendChild(stage);
   mount.appendChild(svg);
-  // Keep the stage hidden behind a loading spinner until the layout has SETTLED
-  // and been centred — so the graph never appears off-centre / clustered and then
-  // "jumps" into place. The user sees a spinner, then the finished, centred graph.
-  // (Later live-ingest updates animate normally — this only gates the FIRST paint.)
+  // Keep the stage hidden ONLY until the first real fit lands (mount has a size and
+  // nodes are placed) — then reveal immediately and let the layout animate into
+  // place, rather than blocking behind a spinner until the physics fully settles
+  // (~5s on every open). The one-frame hide still prevents a top-left corner flash
+  // before the first centring fit; a not-yet-sized mount defers the fit and stays
+  // hidden until it has a box. (Later live-ingest updates animate normally.)
   stage.style.visibility = 'hidden';
   let revealed = false;
   let settledOnce = false;
+  let settleReported = false;
   const loadingEl = document.createElement('div');
   loadingEl.setAttribute('class', 'graph-loading');
   const spinnerEl = document.createElement('div');
@@ -340,19 +368,41 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     sim.tick(1);
     paint();
     graphTicks++;
-    // Reveal once the sim has settled (normal path) — or after a generous tick
-    // budget as a safety net, so a pathological never-settle never leaves the
-    // graph stuck behind the spinner.
+    // settledOnce still gates the safety-net reveal, but reveal no longer WAITS for
+    // it — the first fit below reveals immediately (see fitTo). Kept as the "layout
+    // is done" signal + the never-settle backstop.
     if (!settledOnce && (sim.settled || graphTicks > 400)) settledOnce = true;
-    if (!framed && settledOnce) {
+    if (!framed) {
+      // Frame + REVEAL on the first real fit — don't wait for the sim to settle. The
+      // user sees the graph at once and watches it glide into place instead of ~5s of
+      // blank spinner. (fitTo defers at 0×0 and retries, so a not-yet-sized mount
+      // stays hidden — no corner flash.)
       framed = true;
-      fitAll(); // fitTo reveals once settledOnce is set (centred, settled positions)
+      fitAll();
+    } else if (!sim.settled && Math.abs(view.k - fitK) < 1e-3) {
+      // Track the camera with the expanding layout while the user is still at the
+      // auto-fit zoom (hasn't manually panned/zoomed) — the growing graph stays
+      // centred + framed each tick instead of nodes flying past the viewport edge.
+      fitAll();
     }
     if (sim.settled) {
       running = false;
+      reportSettle();
       return;
     }
     raf = requestAnimationFrame(frame);
+  }
+
+  /** Fire onSettle once per cold layout with the final positions (for caching). */
+  function reportSettle(): void {
+    if (settleReported) return;
+    settleReported = true;
+    options.onSettle?.(readPositions());
+  }
+  function readPositions(): Record<string, { x: number; y: number }> {
+    const out: Record<string, { x: number; y: number }> = {};
+    for (const n of nodeMap.values()) out[n.id] = { x: n.x, y: n.y };
+    return out;
   }
 
   function start(): void {
@@ -379,22 +429,29 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       fitAll();
     }
     reveal();
+    reportSettle();
   }
 
   // ── data ──────────────────────────────────────────────────────────────────
   function setData(nodes: GraphNode[], newEdges: GraphEdge[]): void {
     let changed = false;
+    let spawnedUnseeded = false; // a new node with no cached position (needs layout)
+    let removedAny = false;
     let spawnIndex = nodeMap.size;
     for (const node of nodes) {
       if (nodeMap.has(node.id)) continue;
       changed = true;
+      // Seed from a cached position when we have one (a revisit) so the node
+      // reappears in place; otherwise cold-spawn on the spiral and animate in.
+      const seed = options.initialPositions?.[node.id];
+      if (!seed) spawnedUnseeded = true;
       const angle = spawnIndex++;
       const fnode: FNode = {
         id: node.id,
         source: node,
         radius: radiusOf(node),
-        x: Math.cos(angle) * 40,
-        y: Math.sin(angle) * 40,
+        x: seed ? seed.x : Math.cos(angle) * 40,
+        y: seed ? seed.y : Math.sin(angle) * 40,
         vx: 0,
         vy: 0,
         g: document.createElementNS(SVGNS, 'g'),
@@ -413,6 +470,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
         fnode.g.remove();
         nodeMap.delete(id);
         changed = true;
+        removedAny = true;
       }
     }
 
@@ -440,11 +498,22 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     if (!changed) return;
     sim.setNodes([...nodeMap.values()]);
     sim.setLinks(edges.map((e) => ({ source: e.source.id, target: e.target.id })));
-    sim.reheat(0.9);
     // Re-frame once the grown/shrunk graph settles: the settle path re-runs fitAll,
     // which both centres the new node set and refreshes the zoom-out floor (fitK)
     // so you can always zoom out to see everything that was just ingested.
     framed = false;
+    // Warm revisit: every node added this update came from the position cache and
+    // nothing was removed → the layout is already in its final arrangement, so start
+    // ALREADY-SETTLED (alpha 0). The first fit frames it and it appears instantly
+    // with no motion. Otherwise cold-reheat with the faster decay so genuinely new
+    // nodes spring in and the layout re-converges quickly.
+    if (nodeMap.size > 0 && !spawnedUnseeded && !removedAny) {
+      sim.reheat(0); // alpha 0, target 0 → settled: framed by the first fit, no motion
+    } else {
+      settleReported = false; // a fresh cold layout will re-report its settle
+      sim.alphaDecay = FAST_ALPHA_DECAY;
+      sim.reheat(0.9);
+    }
     start();
   }
 
@@ -532,6 +601,9 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
       downY = e.clientY;
       n.fx = n.x;
       n.fy = n.y;
+      // Restore the standard cooling rate for interaction so a drag/pin reheat
+      // settles at its normal pace (the fast decay is only for the cold layout).
+      sim.alphaDecay = DEFAULT_ALPHA_DECAY;
       sim.reheat(Math.max(sim.alpha, 0.3), 0.3);
       start();
       tryCapture(n.g, e.pointerId);
@@ -666,8 +738,8 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   function fitTo(ns: FNode[]): void {
     if (!ns.length) {
       // Nothing to frame (e.g. setHighlight matched no nodes). Keep the current
-      // view, but never leave the stage hidden when the graph has settled content.
-      if (nodeMap.size && settledOnce) reveal();
+      // view, but never leave the stage hidden when the graph has content.
+      if (nodeMap.size) reveal();
       return;
     }
     // Defer the fit until the mount actually has a layout box. A freshly-cleared
@@ -708,9 +780,10 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     view.x = W() / 2 - ((minX + maxX) / 2) * k;
     view.y = H() / 2 - ((minY + maxY) / 2) * k;
     applyView();
-    // Reveal only after a real fit has landed AND the layout has settled — so the
-    // first thing the user sees is the centred, finished graph (no fly-in jump).
-    if (settledOnce) reveal();
+    // Reveal as soon as a real fit lands (we're past the 0×0 defer, so the mount is
+    // sized and the nodes are placed + centred). Don't wait for the sim to settle —
+    // the graph shows immediately and animates into its final layout.
+    reveal();
   }
 
   function setHighlight(ids: string[] | null): void {
@@ -766,6 +839,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
     paint();
   }
   function reheat(): void {
+    sim.alphaDecay = DEFAULT_ALPHA_DECAY; // an explicit reheat cools at the normal pace
     sim.reheat(0.7);
     start();
   }
@@ -776,7 +850,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   }
   if (options.autostart === false) stop();
 
-  return { setData, setHighlight, setSelected, reheat, step, stop };
+  return { setData, setHighlight, setSelected, reheat, step, positions: readPositions, stop };
 }
 
 function buildDefs(): El {

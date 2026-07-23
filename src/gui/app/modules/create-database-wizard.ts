@@ -109,7 +109,7 @@ export const createDatabaseWizardJs = `    // ───────────�
           // an autoImport proposal — render the inline confirm card instead of
           // navigating to the file record. A silent import (autoImport.imported,
           // no reason) or a plain file keeps the open-the-record behavior.
-          if (j && j.autoImport && j.autoImport.reason) renderInlineImportCard(j.autoImport);
+          if (j && j.autoImport && j.autoImport.reason) handleAutoImport(j.autoImport);
           else if (!opts.silent && j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
           var sid = j && (j.duplicateOf || j.id);
           return sid ? [{ id: sid, name: files[0].name }] : [];
@@ -126,7 +126,7 @@ export const createDatabaseWizardJs = `    // ───────────�
             return uploadFile(f).then(function (j) {
               // A structured source within a batch still gets its own inline
               // confirm card (the batch as a whole does not navigate).
-              if (j && j.autoImport && j.autoImport.reason) renderInlineImportCard(j.autoImport);
+              if (j && j.autoImport && j.autoImport.reason) handleAutoImport(j.autoImport);
               var fid = j && (j.duplicateOf || j.id);
               if (fid) refs.push({ id: fid, name: f.name });
             });

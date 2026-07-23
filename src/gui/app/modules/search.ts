@@ -172,6 +172,10 @@ export const searchJs = `    // ────────────────
         fetchJson('/api/workspaces').catch(function () { return null; }),
         fetchJson('/api/dbconfig').catch(function () { return {}; }),
       ]).then(function (results) {
+        // Drop cached graph node positions from the workspace we're leaving — a
+        // different workspace can have a table of the same name, and seeding its
+        // graph from the old workspace's coordinates would place nodes wrongly.
+        if (typeof resetGraphPositionCache === 'function') resetGraphPositionCache();
         state.entities = results[0];
         state.iconOverrides = results[1] || {};
         state.columnMeta = results[2] || {};

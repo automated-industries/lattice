@@ -28,14 +28,20 @@ Lattice has no opinions about your schema, your agents, or your file format. You
 data by dropping a file into the assistant.** The **structured-source importer**
 turns a JSON or `.xlsx` source into a schema (entities / dimensions / junctions)
 and materializes it: Excel sheets become records (header + data-region detection),
-per-slice tabs become read-only **views** (no duplicated rows), an **as-of date**
+**Word/PowerPoint tables are extracted row-for-row** (a document of tabular data
+imports every row, not a lossy sample), per-slice tabs become read-only **views**
+(no duplicated rows), an **as-of date**
 is detected (contents → name → Excel preamble → Claude fallback, or per-row from a
 date column) so re-importing a newer period keeps a **point-in-time snapshot**
 beside the prior one, and a re-upload is fingerprinted + matched to existing tables
 (new snapshot, not duplicate tables). It's reachable only by dropping a file in the
-assistant rail: a confident match + detected date imports silently; otherwise an
-**inline confirm card** proposes the schema, date, and mode before anything is
-written (applied via `POST /api/import/apply`). New exports: `inferSchema`,
+assistant rail, and a **brand-new dataset imports silently** — every base table +
+row, plus any detected computed views, applied directly with a compact live-progress
+card and no confirm gate; only genuinely uncertain choices interrupt (marginal links
+become questions in the assistant panel, and re-importing a **known** dataset with no
+detectable date asks which snapshot to file it under). Applied via
+`POST /api/import/apply`; the freshly-imported model is auto-tidied by the data-model
+planner. New exports: `inferSchema`,
 `inferFieldType`, `normalizeName`, `sourceRecords`, `materializeImport`,
 `detectAsOf`, `detectAsOfCandidates`, `detectAsOfColumns`, `parseCellDate`,
 `matchSchemaToExisting`, `renameEntities`, `excelToRecords`,
