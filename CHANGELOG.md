@@ -6,6 +6,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.1.3] — 2026-07-23
+
+### Fixed
+
+- **A large single worksheet (10⁵+ rows) now imports reliably instead of failing partway and leaving a
+  half-loaded table.** Importing one big sheet (≈145K rows in the report) would create the table, then
+  error with a bare "Load failed" after loading ~97% of the rows — leaving the table silently truncated
+  — while the CPU pegged and the assistant/UI froze. Smaller sheets were fine. Root cause: the per-row
+  load did an existence check (`SELECT … WHERE <key> = ?`) against the row-dedup key, but that column was
+  **never indexed**, so every one of the 145K inserts full-scanned the growing table — O(N²) over the
+  load. That pegged a CPU core, and because the whole load ran on the request event loop with no yield
+  and no wrapping transaction, the browser's `fetch` connection died mid-load ("Load failed" is the
+  network-layer message) while already-inserted rows stayed committed. The load path is rebuilt:
+  - **The dedup key is indexed before the load** — the per-row existence check goes from a full scan to
+    a B-tree lookup (O(N²) → O(N·log N)), which is what makes a 10⁵-row sheet import at all.
+  - **Rows load in bounded, atomic chunks.** Each chunk commits together (a torn chunk rolls back), and
+    batching the commit replaces ~145K autocommits with a couple dozen — a large speedup on its own.
+  - **The app stays responsive during a large import.** The loader yields the event loop _between_
+    chunks (never inside an open transaction), and streams `Loading <table>: X / Y rows` progress, so
+    config, workspace list, graph, and chat keep answering while a big sheet loads. The link/junction
+    builder yields the same way.
+  - **A failed load never leaves a silently-truncated table.** On a genuine load error the freshly
+    created table is cleared and an **actionable** error is thrown — naming the table, how many rows
+    were loaded, and the underlying cause — instead of the bare, undiagnosable "Load failed".
+
 ## [5.1.2] — 2026-07-23
 
 ### Fixed
