@@ -32,10 +32,13 @@ export const inlineImportJs = `
     // some data may still be loading. Counts silent structured imports PLUS any browser/
     // server file-ingest batch (the shared ingestProgressState).
     var iiActiveImports = 0;
+    // ingestProgressState (browser/server file-ingest batches) lives inside an EARLIER IIFE
+    // and is NOT in scope here, so the batch-ingest signal is mirrored onto this outer-scope
+    // flag by the progress renderer (ingest-progress-state sets it on every state change).
+    // Structured imports count via iiActiveImports.
+    var iiBatchIngestActive = false;
     function ingestOrImportActive() {
-      if (iiActiveImports > 0) return true;
-      if (typeof ingestProgressState !== 'undefined' && ingestProgressState && !ingestProgressState.terminal) return true;
-      return false;
+      return iiActiveImports > 0 || iiBatchIngestActive;
     }
 
     // Read a newline-delimited-JSON response body, invoking onEvent(obj) per line.

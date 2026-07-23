@@ -820,8 +820,12 @@ export const dashboardJs = `    // ───────────────
         : section === 'w:file' ? '#/w/table/' + encodeURIComponent(t0)
         : isW ? sectionHref(section, [t0])
         : '#/folders/' + encodeURIComponent(t0);
-      // Record/relation crumbs accumulate onto the section's RECORD prefix.
-      var prefix = sectionHref(section, [t0]);
+      // Record/relation crumbs accumulate onto the section's RECORD prefix. For w:file the
+      // route is #/w/file/<id> (the router reads the FIRST segment as the file id and implies
+      // the 'files' table), so the prefix must NOT carry the table segment — otherwise the
+      // leaf self-crumb becomes the invalid #/w/file/files/<id> and 404s ("Row not found"),
+      // the same shape the object crumb above already avoids.
+      var prefix = section === 'w:file' ? '#/w/file' : sectionHref(section, [t0]);
       // An artifact (a file carrying an artifact_type) reads as its own "Artifacts"
       // object, so its record breadcrumb roots at Artifacts rather than Files.
       var leafNode = (crumbs || []).filter(function (c) { return c.type === 'node'; }).pop();

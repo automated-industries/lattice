@@ -575,8 +575,15 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (+ the shared ingestProgressState) via ingestOrImportActive(); the composer sends
 // ingestInProgress to /api/chat so the server prepends a note telling the model some
 // data may still be importing. Length + hash recaptured.
-const ORIGINAL_LENGTH = 784020;
-const ORIGINAL_SHA256 = '94b5d7e92e6d21766129dea15d74aa9eb9d13d014003af8f0fdd34a2725c0e21';
+// 5.1.1 release-review fixes: (a) the file-record breadcrumb LEAF crumb no longer 404s —
+// fsBreadcrumb's w:file prefix drops the table segment so the self-link is #/w/file/<id>,
+// not the invalid #/w/file/files/<id>; (b) chat-awareness now sees file-ingest batches —
+// ingestOrImportActive reads an outer-scope iiBatchIngestActive that ingest-progress-state
+// mirrors from the IIFE-local ingestProgressState; (c) a files-only send no longer double-
+// renders on reload — appendUserBubble suppresses the text bubble when it equals the joined
+// file names. Length + hash recaptured.
+const ORIGINAL_LENGTH = 785274;
+const ORIGINAL_SHA256 = '305704bedfc135092e80deb35fd9e414cb68a6238db992e50ba0270d31d3afd7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -163,7 +163,11 @@ export const onboardingJs = `    // ──────────────�
       // text-only message keeps the plain single-bubble layout unchanged.
       var host = msg;
       if (hasFiles) { host = document.createElement('div'); host.className = 'chat-user-stack'; msg.appendChild(host); }
-      if (text) {
+      // Suppress the text bubble when it's just the attached file names: a files-only send
+      // persists the joined names as its message text, and the chips already show them — so
+      // on reload we'd otherwise render the names twice (a bubble AND the chips).
+      var showText = !!text && !(hasFiles && text === fileNames.join(', '));
+      if (showText) {
         var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = text;
         host.appendChild(b);
       }

@@ -51,6 +51,9 @@ export const ingestProgressStateJs = `    // ───────────�
       };
     }
     function refreshIngestProgressBar() {
+      // Mirror the batch-ingest active state onto the outer-scope flag the chat composer
+      // reads for ingestion-awareness (ingestProgressState is IIFE-local and invisible there).
+      iiBatchIngestActive = !!(ingestProgressState && !ingestProgressState.terminal);
       var feedEl = document.getElementById('rail-feed');
       if (!feedEl || !ingestProgressState) return;
       // Find the existing progress node or create one.
