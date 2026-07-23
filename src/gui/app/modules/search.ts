@@ -165,7 +165,7 @@ export const searchJs = `    // ────────────────
     function reloadEverything() {
       showSwitchOverlay();
       return Promise.all([
-        fetchJson('/api/entities-summary'),
+        fetchJson('/api/entities-summary').catch(function () { return { tables: [], __failed: true }; }),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),
