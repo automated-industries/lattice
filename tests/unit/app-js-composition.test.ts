@@ -575,6 +575,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // (+ the shared ingestProgressState) via ingestOrImportActive(); the composer sends
 // ingestInProgress to /api/chat so the server prepends a note telling the model some
 // data may still be importing. Length + hash recaptured.
+// 5.1.2 import-safety hotfix: handleAutoImport now routes a low-confidence new-dataset
+// proposal (server scale guard tripped) to the confirm CARD instead of silent import, so a
+// pathological import (hundreds of tables / mostly-template / doc fan-out) can be reviewed +
+// declined; runInlineImport sends override:true on explicit Apply (past the server table cap);
+// the silent path's failure copy now says "Kept as a file" (not "Import failed"); the card
+// shows the guardReason. Length + hash recaptured.
 // 5.1.1 release-review fixes: (a) the file-record breadcrumb LEAF crumb no longer 404s —
 // fsBreadcrumb's w:file prefix drops the table segment so the self-link is #/w/file/<id>,
 // not the invalid #/w/file/files/<id>; (b) chat-awareness now sees file-ingest batches —
@@ -582,8 +588,8 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // mirrors from the IIFE-local ingestProgressState; (c) a files-only send no longer double-
 // renders on reload — appendUserBubble suppresses the text bubble when it equals the joined
 // file names. Length + hash recaptured.
-const ORIGINAL_LENGTH = 785274;
-const ORIGINAL_SHA256 = '305704bedfc135092e80deb35fd9e414cb68a6238db992e50ba0270d31d3afd7';
+const ORIGINAL_LENGTH = 786402;
+const ORIGINAL_SHA256 = '14f8fdb19c3a2918888b80d9b69a7998d59edc38d6e265b675fb0ac947b6b6f1';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

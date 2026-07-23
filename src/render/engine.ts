@@ -113,6 +113,13 @@ function entityContentChanged(
 const YIELD_EVERY_ENTITIES = 200;
 
 /**
+ * Yield to the event loop every N tables in the phase-1 render loop. A workspace with
+ * hundreds of tables (e.g. an accidental over-import) would otherwise render them all in one
+ * synchronous burst on the single request loop and starve every read endpoint. Cheap.
+ */
+const YIELD_EVERY_TABLES = 25;
+
+/**
  * How many entity-context tables to render at once. Bounded on purpose: each
  * table loads its whole row set, so an unbounded fan-out would multiply peak
  * memory + DB egress. A small cap lets several tables progress simultaneously
@@ -275,7 +282,14 @@ export class RenderEngine {
     this._preflightWritable(outputDir);
 
     // Single-table renders (phase 1 — fast; lightweight table-done only).
+    let phase1Index = 0;
     for (const [name, def] of this._schema.getTables()) {
+      // Periodically yield so a huge workspace's phase-1 render can't monopolize the single
+      // request loop and time out read endpoints (config/workspace/graph). Output unchanged.
+      if (phase1Index > 0 && phase1Index % YIELD_EVERY_TABLES === 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      phase1Index += 1;
       // Bail before each table if the render was aborted (e.g. a workspace
       // switch). Returns the partial manifest, which the caller discards.
       if (signal?.aborted)
