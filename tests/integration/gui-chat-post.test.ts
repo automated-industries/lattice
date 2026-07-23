@@ -137,4 +137,36 @@ describe('POST /api/chat', () => {
     // settle to 'error' once the background turn fails against the dead endpoint).
     expect(msgs.messages.some((m) => m.role === 'assistant' && m.id === ack.messageId)).toBe(true);
   });
+
+  it('persists attached file names on the user message so they survive a reload', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1'; // background turn fails fast; persistence is synchronous
+    const s = await boot();
+    seedClaudeOAuth();
+    const r = await fetch(`${s.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message: 'look at these',
+        attachedFiles: [
+          { id: 'f1', name: 'report.pdf' },
+          { id: 'f2', name: 'notes.docx' },
+        ],
+      }),
+    });
+    expect(r.status).toBe(202);
+    const threads = (await fetch(`${s.url}/api/chat/threads`).then((x) => x.json())) as {
+      threads: { id: string }[];
+    };
+    const tid = threads.threads[0]!.id;
+    const msgs = (await fetch(`${s.url}/api/chat/threads/${tid}/messages`).then((x) =>
+      x.json(),
+    )) as {
+      messages: { role: string; text: string; files?: string[] }[];
+    };
+    const user = msgs.messages.find((m) => m.role === 'user');
+    expect(user?.text).toBe('look at these');
+    // The reload (GET /messages) returns the attachment names so the client re-renders
+    // its chips — they used to be lost because only the message text was persisted.
+    expect(user?.files).toEqual(['report.pdf', 'notes.docx']);
+  });
 });

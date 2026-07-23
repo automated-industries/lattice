@@ -1249,7 +1249,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           {
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/import/')) return false;
-              return await dispatchImportRoute(req, res, {
+              const importHandled = await dispatchImportRoute(req, res, {
                 db: active.db,
                 configPath: active.configPath,
                 latticeRoot: dirname(active.configPath),
@@ -1260,6 +1260,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // audited op as the builder UI (view DDL + YAML + undo/redo).
                 createComputed: (name, def) => createComputedTable(active, name, def, sessionId),
               });
+              // After a data-changing import, tidy the model into a clean star schema —
+              // server-side (like the ingest/sources routes) so it runs even if the client
+              // disconnects before the apply stream's 'done'. Debounced + fail-soft.
+              if (importHandled && method === 'POST') triggerDataModelPlan();
+              return importHandled;
             },
           },
           // ── Connectors: connect/refresh/disconnect external sources ──

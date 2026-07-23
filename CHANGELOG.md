@@ -6,6 +6,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.1.1] — 2026-07-22
+
+### Added
+
+- **Deterministic table extraction from Word and PowerPoint.** A `.docx` or `.pptx` containing tabular
+  data now imports **every row** of its embedded tables through the same faithful importer as a
+  spreadsheet (`inferSchema → materialize`), instead of only being read as prose. Previously the
+  structured importer accepted only `.xlsx/.csv/.tsv/.json`, so a document's tables were left to
+  best-effort text handling; a `.docx`/`.pptx` of, say, 46 rows now yields 46 records, not a handful.
+  A document with no tables is unchanged (kept as a reference file, text-ingested for its prose).
+
+### Changed
+
+- **Structured files import silently — no confirm card.** Dropping a brand-new structured source
+  (spreadsheet, CSV/JSON, or a Word/PowerPoint with tables) now imports it directly: every base table
+  and row, plus all detected computed views, are created immediately, shown as a compact live-progress
+  card with no "Apply" gate. Uncertain/marginal links still surface as questions in the assistant
+  panel (that's a genuine low-confidence choice), and re-importing a **known** dataset with no
+  detectable date still asks which snapshot to file it under.
+- **The data model tidies itself after an import.** Right after a file imports, the data-model
+  planner runs automatically over the new tables — applying safe normalizations immediately and
+  surfacing the rest as one-click suggestions in the Data Model panel — so a fresh import lands
+  already-organized instead of requiring a manual reorg.
+- **The assistant knows when your data is still importing.** If you ask a question while files or
+  data are mid-import, the assistant is told so — instead of answering about data that may still be
+  loading as though it were complete, it lets you know it's still importing and to try again shortly.
+
+### Fixed
+
+- **Instant graph navigation.** Opening the graph — the brain/schema graph, a per-entity graph, or
+  toggling Graph ↔ Tables — no longer blocks behind a spinner while the force layout settles (~5s on
+  _every_ click). The graph now reveals on the first fit and animates into place, and node positions
+  are cached per graph so revisiting one you've already opened re-seeds it already-placed with no
+  re-settle (instant). A never-before-seen graph converges faster too (cools in ~120 ticks instead of
+  ~300) while staying fully visible and interactive the whole time. Reduced-motion still settles and
+  reveals synchronously. The cache is scoped per workspace and cleared on workspace switch, so
+  positions never bleed across workspaces that share a table name.
+- **"Files" breadcrumb no longer errors on a file record.** Clicking the **Files** crumb from a file's
+  record page opened an invalid record route (the table name looked up as a row id → _"Row not
+  found"_); it now opens the Files collection.
+- **A record with no rendered context no longer reads _"No rendered markdown for this record yet."_**
+  The record view now falls back to the row's own columns (title + long-form fields + a key/value
+  list), rendered read-only — the same content the assistant sees — so a freshly-added record always
+  shows its content instead of a dead empty state.
+- **Chat attachments no longer disappear when sent with a message.** Attaching a file and typing a
+  message, then sending both, used to post the message but drop the file from the conversation. The
+  attached file(s) now render as persistent chips in the sent message and re-render from thread
+  history.
+
 ## [5.1.0] — 2026-07-22
 
 ### Added

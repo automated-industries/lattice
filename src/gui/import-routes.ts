@@ -16,6 +16,7 @@ import {
   type WorkbookFormulaSummary,
 } from '../import/excel.js';
 import { csvToRecords } from '../import/csv.js';
+import { docxToRecords, pptxToRecords } from './ai/doc/doc-tables.js';
 import {
   buildComputedProposals,
   type ComputedFieldProposal,
@@ -148,6 +149,15 @@ export async function readImportSourceFromFile(
   }
   if (/\.(csv|tsv)$/i.test(name) || mime.includes('csv') || mime.includes('tab-separated')) {
     return { data: csvToRecords(path, name), formulaSummary: null, importWarnings: [] };
+  }
+  // Documents: extract embedded tables (every row) so the Apply route materializes a
+  // .docx/.pptx the SAME way autoImportStructured proposed it — without this, a silent
+  // import of a Word/PowerPoint file fails here with "not valid JSON".
+  if (/\.docx$/i.test(name) || mime.includes('wordprocessingml')) {
+    return { data: await docxToRecords(path), formulaSummary: null, importWarnings: [] };
+  }
+  if (/\.pptx$/i.test(name) || mime.includes('presentationml')) {
+    return { data: await pptxToRecords(path), formulaSummary: null, importWarnings: [] };
   }
   let parsed: unknown;
   try {

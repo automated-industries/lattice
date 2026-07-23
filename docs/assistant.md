@@ -205,11 +205,14 @@ keeps a **dated snapshot** beside the prior one; a re-upload is fingerprinted an
 matched to the tables already in the workspace, so it lands as a new snapshot
 rather than duplicate tables.
 
-A **recognized dataset with a confident date imports silently** as a dated
-snapshot (reported in the activity feed); a brand-new dataset, or a recognized one
-with no confident date, surfaces an **inline confirm card** that proposes the
-schema, the as-of date (and any per-row date column), and the mode before anything
-is written — applied via `POST /api/import/apply`. The same inference +
+A **brand-new dataset imports silently** (base tables + rows + any detected
+computed views, shown as a live-progress card), as does a **recognized dataset with
+a confident date** (a dated snapshot, reported in the activity feed). Only a
+recognized dataset with **no confident date** surfaces an **inline confirm card** —
+importing undated would overwrite the prior snapshot — proposing the as-of date
+(and any per-row date column) before it is written; genuinely uncertain links in a
+silent import become questions in the assistant panel instead of being guessed at.
+Applied via `POST /api/import/apply`. The same inference +
 materialization functions (`inferSchema`, `materializeImport`, `detectAsOf*`,
 `excelToRecords`, `dedupeAndDetectViews`, …) are exported from `latticesql` for
 library use. See [importing.md](importing.md) for the full walkthrough.

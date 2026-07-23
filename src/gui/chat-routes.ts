@@ -637,6 +637,7 @@ async function persistMessage(
   startedAt?: string,
   id?: string,
   status?: ChatMessageStatus,
+  files?: string[],
 ): Promise<void> {
   // `text` stays for backward-compat (old clients + the model-history replay);
   // `turns` carries the rich structure so a reloaded conversation shows the same
@@ -649,9 +650,13 @@ async function persistMessage(
     turns?: PersistedTurn[];
     startedAt?: string;
     status?: ChatMessageStatus;
+    files?: string[];
   } = turns && turns.length > 0 ? { text, turns } : { text };
   if (startedAt) payload.startedAt = startedAt;
   if (status) payload.status = status;
+  // Attached-file names ride along so a reloaded message re-renders its attachment
+  // chips (the live send shows them; without this they'd vanish on refresh).
+  if (files && files.length > 0) payload.files = files.slice(0, 25);
   // Upsert-by-id powers incremental assistant checkpointing: the same row is
   // inserted early in the turn and UPDATEd as it streams, so a mid-turn refresh
   // recovers the work so far. Without an id (e.g. the user message) a fresh row
@@ -751,16 +756,22 @@ export async function dispatchChatRoute(
         let turns: PersistedTurn[] | undefined;
         let startedAt: string | undefined;
         let status: ChatMessageStatus | undefined;
+        let files: string[] | undefined;
         try {
           const parsed = JSON.parse(asStr(r.content_json, '{}')) as {
             text?: string;
             turns?: PersistedTurn[];
             startedAt?: string;
             status?: ChatMessageStatus;
+            files?: string[];
           };
           text = parsed.text ?? '';
           if (typeof parsed.startedAt === 'string') startedAt = parsed.startedAt;
           if (typeof parsed.status === 'string') status = parsed.status;
+          if (Array.isArray(parsed.files)) {
+            const fs = parsed.files.filter((f): f is string => typeof f === 'string');
+            if (fs.length > 0) files = fs;
+          }
           if (Array.isArray(parsed.turns)) {
             // Strip toolCalls — the GUI only needs text + the data-change events
             // (replayed as activity cards); raw tool result content stays
@@ -784,6 +795,7 @@ export async function dispatchChatRoute(
           ...(turns ? { turns } : {}),
           ...(startedAt ? { startedAt } : {}),
           ...(status ? { status } : {}),
+          ...(files ? { files } : {}),
           created_at: asStr(r.created_at),
         };
       })
@@ -828,7 +840,7 @@ export async function dispatchChatRoute(
   // fall back to those names here. Either way the attached-files note (below) is what
   // actually directs the model to read them — this string is only the visible/persisted
   // label + thread title.
-  const attachedLabel =
+  const attachedNames =
     hasAttachments && Array.isArray(body.attachedFiles)
       ? (body.attachedFiles as unknown[])
           .map((f) => {
@@ -836,8 +848,8 @@ export async function dispatchChatRoute(
             return typeof name === 'string' ? name : '';
           })
           .filter(Boolean)
-          .join(', ')
-      : '';
+      : [];
+  const attachedLabel = attachedNames.join(', ');
   const message = rawMessage || attachedLabel || 'Attached files';
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
 
@@ -871,7 +883,18 @@ export async function dispatchChatRoute(
   let threadId = '';
   try {
     threadId = await ensureThread(ctx.db, requestedThread, message, ownerUserId);
-    await persistMessage(ctx.db, threadId, 'user', message, ownerUserId);
+    await persistMessage(
+      ctx.db,
+      threadId,
+      'user',
+      message,
+      ownerUserId,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      attachedNames.length > 0 ? attachedNames : undefined,
+    );
   } catch (e) {
     console.warn('[chat] persist user message failed:', (e as Error).message);
   }
@@ -879,6 +902,15 @@ export async function dispatchChatRoute(
   // Connect the request to the files the user just attached (ingested via the
   // composer Send) so the assistant works on them with its existing file tools.
   const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
+  // Chat-awareness of in-progress ingestion (client signal): a file/data import is
+  // still running as the user asks, so tell the model — it must not answer about data
+  // that may still be loading as if it were already complete.
+  const ingestInProgressNote =
+    body.ingestInProgress === true
+      ? '[Note: the user is CURRENTLY importing files or data into their workspace — some ' +
+        'tables or rows may not be fully available yet. If they ask about data that seems ' +
+        'missing or incomplete, say it may still be importing and to try again in a moment.]\n\n'
+      : '';
   // What the user is currently looking at, so "this"/"it"/"why is this broken"
   // resolve to the open dashboard/record (and a complaint routes to `investigate`).
   const activeView = await describeActiveView(ctx.db, activeContext);
@@ -1154,7 +1186,7 @@ export async function dispatchChatRoute(
         // Prefix the active-view + attached-files + auto-ingest notes (if any) so the model
         // knows what's on screen and connects the request to what was just added; the
         // dispatch + tools still see the real message.
-        userMessage: activeView.note + attachedNote + ingestNote + message,
+        userMessage: activeView.note + attachedNote + ingestNote + ingestInProgressNote + message,
         temperature,
         // Give the assistant the operator's name so it addresses them and
         // resolves "me"/"my" without asking for a name it already has.

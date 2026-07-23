@@ -24,6 +24,19 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
       border-radius: var(--r-xl) var(--r-xl) var(--r-xs) var(--r-xl);
       box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--accent-deep) 50%, transparent);
     }
+    /* A sent user message can carry attached-file chips below its bubble (stacked,
+       right-aligned) so an attachment stays visible in the feed after sending — it
+       used to vanish when sent together with a text message. */
+    .chat-user-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 85%; }
+    .chat-msg-files { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+    .chat-msg-file {
+      display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+      padding: 2px 8px; font-size: 12px; line-height: 1.3;
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid rgba(15, 23, 42, 0.08); border-radius: var(--r-md, 8px);
+    }
+    .chat-msg-file-ic { flex: none; }
+    .chat-msg-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
     .chat-bubble.assistant {
       background: var(--surface-2); color: var(--text); border: 1px solid rgba(15, 23, 42, 0.04);
       border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-xs);
