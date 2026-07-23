@@ -181,3 +181,39 @@ jobs:
             dist-desktop/Lattice.pkg
             dist-desktop/Lattice.msi
             dist-desktop/latest.json
+      - name: Verify the published manifest is live and matches the tag
+        run: |
+          # Re-fetch the manifest THROUGH the releases/latest pointer the desktop clients
+          # resolve, and hard-fail unless its version equals the tag. Catches "release
+          # created but not marked latest" and asset-upload races that a local generate +
+          # upload can't — the failure modes that otherwise leave every desktop client
+          # silently pinned to the previous manifest.
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
+          for i in $(seq 1 12); do
+            MANIFEST_VERSION="$(curl -fsSL "$URL" 2>/dev/null | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{try{console.log(JSON.parse(s).version||'')}catch{console.log('')}})" 2>/dev/null || echo '')"
+            if [ "$MANIFEST_VERSION" = "$TAG_VERSION" ]; then echo "manifest live at $MANIFEST_VERSION"; exit 0; fi
+            echo "  attempt $i: manifest version='${MANIFEST_VERSION}' (want ${TAG_VERSION}) — retrying"; sleep 10
+          done
+          echo "::error::published manifest never reported version ${TAG_VERSION} via releases/latest — desktop clients would stay on the previous version"
+          exit 1
+
+  notify-failure:
+    name: Alert on desktop-release failure
+    needs: [build-macos, build-windows, release]
+    if: failure() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Desktop Release ${tag} failed`,
+              body: `The Desktop Release workflow for \`${tag}\` did not complete — desktop installers and/or the auto-update manifest were not published, so the desktop channel stays on the previous version. Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['release-failure'],
+            });

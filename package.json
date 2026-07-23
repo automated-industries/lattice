@@ -45,11 +45,12 @@
     "test:e2e": "playwright test",
     "docs": "typedoc --out docs-generated src/index.ts",
     "desktop:version:check": "node scripts/sync-desktop-version.mjs --check",
+    "desktop:version:fix": "node scripts/sync-desktop-version.mjs",
     "test:deno": "deno test --no-check -A tests/deno/",
     "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-all desktop/main.ts",
-    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.dmg desktop/main.ts",
-    "desktop:build:mac:pkg": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.app desktop/main.ts && sh scripts/build-mac-pkg.sh",
-    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --backend raw --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.msi desktop/main.ts",
+    "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs --check && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.dmg desktop/main.ts",
+    "desktop:build:mac:pkg": "npm run build && node scripts/sync-desktop-version.mjs --check && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.app desktop/main.ts && sh scripts/build-mac-pkg.sh",
+    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs --check && deno desktop --backend raw --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.msi desktop/main.ts",
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {
