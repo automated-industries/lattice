@@ -104,6 +104,50 @@ describe('create_dashboard / edit_dashboard tools', () => {
     expect(events.some((e) => e.table === 'dashboards' && e.source === 'ai')).toBe(true);
   });
 
+  it('strips a sandbox-dead control from the stored page and tells the user in the feed', async () => {
+    const events: FeedEvent[] = [];
+    feed.subscribe((e) => events.push(e));
+    // Author a page with a "Print / PDF" button — a control that can only fail inside
+    // the strict artifact sandbox (no allow-modals), plus a real data read so the
+    // binding gate passes.
+    const sandboxCtx: DispatchCtx = {
+      ...ctx,
+      htmlAuthor: () =>
+        Promise.resolve(
+          `<!doctype html><html><body>` +
+            `<button onclick="window.print()">Print / PDF</button>` +
+            `<div id="report">report body</div>` +
+            `<script>lattice.query('widgets', { limit: 50 })</scr` +
+            `ipt></body></html>`,
+        ),
+    };
+    const res = await executeFunction(sandboxCtx, 'create_dashboard', {
+      title: 'Report',
+      spec: 'a printable report',
+    });
+    expect(res.ok).toBe(true);
+    const result = res.result as { id: string; sandboxRemoved?: string[] };
+    expect(result.sandboxRemoved?.length).toBeGreaterThan(0);
+
+    // The STORED page has no dead print button — the sandbox stays strict, the artifact
+    // ships clean.
+    const row = (await db.get('dashboards', result.id)) as Record<string, unknown>;
+    expect(String(row.html)).not.toContain('window.print()');
+    expect(String(row.html)).not.toContain('<button');
+    // The real content (and its live data read) survives.
+    expect(String(row.html)).toContain('report body');
+    expect(JSON.parse(String(row.source_tables))).toEqual(['widgets']);
+
+    // The user is told, in the feed, what was removed and why.
+    expect(
+      events.some(
+        (e) =>
+          e.table === 'dashboards' &&
+          /secure preview/i.test((e as { summary?: string }).summary ?? ''),
+      ),
+    ).toBe(true);
+  });
+
   it('reports unavailable (fails loud) when no author client is configured', async () => {
     const res = await executeFunction({ ...ctx, htmlAuthor: undefined }, 'create_dashboard', {
       title: 'X',

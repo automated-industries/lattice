@@ -12,6 +12,7 @@ import {
 import { artifactFileRow } from '../../file-row.js';
 import { dashboardRow, extractSourceTables } from '../../dashboard-row.js';
 import { verifyDashboardBinding, bindingFailureMessage } from '../dashboard-qa.js';
+import { sanitizeSandboxedHtml } from '../../artifact-sanitize.js';
 
 /**
  * Surface residual dashboard-QA issues to the user via the activity feed. The tool_result
@@ -35,6 +36,25 @@ function publishDashboardQaNote(
         .slice(0, 3)
         .map((i) => i.detail)
         .join(' · '),
+  });
+}
+
+/**
+ * Tell the user, via the activity feed, which interactive elements were stripped from an
+ * authored artifact because they can only fail inside the strict preview sandbox (print,
+ * pop-out, dialog, submit). Deterministic — the tool_result reaches only the model.
+ */
+function publishSandboxNote(mctx: MutationCtx, rowId: string, removed: string[]): void {
+  if (removed.length === 0) return;
+  const noun = removed.length === 1 ? 'element' : 'elements';
+  mctx.feed.publish({
+    table: 'dashboards',
+    op: 'update',
+    rowId,
+    source: mctx.source,
+    summary: `Removed ${String(removed.length)} ${noun} that can't run in the secure preview: ${removed
+      .slice(0, 3)
+      .join(' · ')}`,
   });
 }
 import { FetchBudget } from '../../../ai/fetch-policy.js';
@@ -244,6 +264,12 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         html = qa.html;
         qaIssues = qa.issues;
       }
+      // Strip interactive elements that can only fail inside the strict preview sandbox
+      // (print / pop-out / dialog / submit) so the artifact ships with no dead buttons —
+      // the sandbox itself stays strict. Runs AFTER QA (which may re-author) so a
+      // re-introduced dead control is still caught.
+      const sandbox = sanitizeSandboxedHtml(html);
+      html = sandbox.html;
       // Deterministic honesty gate (always on, independent of the best-effort QA above): a
       // dashboard that binds to a table that doesn't exist, or whose SQL errors, is a broken
       // shell — do NOT store or open it, and fail loud so the assistant tells the user what
@@ -263,6 +289,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         ctx.privateMode ? 'private' : undefined,
       );
       publishDashboardQaNote(mctx, id, qaIssues);
+      publishSandboxNote(mctx, id, sandbox.removed);
       return {
         ok: true,
         result: {
@@ -274,6 +301,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
           title,
           link: `lattice://dashboards/${id}`,
           ...(qaIssues.length > 0 ? { qaIssues } : {}),
+          ...(sandbox.removed.length > 0 ? { sandboxRemoved: sandbox.removed } : {}),
         },
       };
     }
@@ -316,6 +344,10 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         html = qa.html;
         qaIssues = qa.issues;
       }
+      // Strip preview-sandbox-dead controls (see create_dashboard) from the re-authored
+      // page before it replaces the live one.
+      const sandbox = sanitizeSandboxedHtml(html);
+      html = sandbox.html;
       // Honesty gate (same as create): a re-authored page that doesn't bind to real data is
       // NOT applied — the last-good dashboard stays intact rather than being overwritten
       // with a broken shell — and the failure is relayed to the user.
@@ -334,6 +366,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         source_tables: sources ? JSON.stringify(sources) : null,
       });
       publishDashboardQaNote(mctx, targetId, qaIssues);
+      publishSandboxNote(mctx, targetId, sandbox.removed);
       return {
         ok: true,
         result: {
@@ -343,6 +376,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
           // Ready-made clickable link for the assistant's reply (see create_dashboard).
           link: `lattice://dashboards/${targetId}`,
           ...(qaIssues.length > 0 ? { qaIssues } : {}),
+          ...(sandbox.removed.length > 0 ? { sandboxRemoved: sandbox.removed } : {}),
         },
       };
     }
