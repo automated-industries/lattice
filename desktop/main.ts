@@ -425,6 +425,10 @@ const handle = await startGuiServer({
   // when the user clicks "Install & restart" on the staged download.
   downloadUpdate,
   applyDownloadedUpdate,
+  // Escape hatch surfaced if a staged update is detected to have not installed
+  // (e.g. a bundle swap that couldn't persist) — so the app shows a one-time
+  // "download manually" error instead of re-downloading the same version forever.
+  updateManualDownloadUrl: 'https://latticesql.com/install',
   // Serve the embedded on-device voice assets when present (omit when absent so
   // the server falls back to its default resolution).
   ...(guiAssetsDir ? { guiAssetsDir } : {}),

@@ -158,7 +158,8 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
           node scripts/gen-desktop-manifest.mjs "$VERSION" "$BASE" \
-            darwin=dist-desktop/Lattice.dmg windows=dist-desktop/Lattice.msi \
+            darwin=dist-desktop/Lattice.dmg darwin-pkg=dist-desktop/Lattice.pkg \
+            windows=dist-desktop/Lattice.msi \
             > dist-desktop/latest.json
           cat dist-desktop/latest.json
       - name: Publish to GitHub Release

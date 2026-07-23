@@ -6,6 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.1.4] — unreleased
+
+### Fixed
+
+- **The desktop app no longer gets stuck in an endless "Downloading update → Install & restart →
+  Downloading update" loop.** When a staged update failed to replace the running app bundle (e.g. an
+  App-Translocated or non-writable `/Applications`, or a failed swap), the swap helper silently
+  relaunched the **old** app, which re-detected the same update and re-downloaded it — forever, with no
+  error shown. The update service now records the version it hands off to install; on the next launch,
+  if the app comes back still running the old version, it reports the failed install **once, loudly**
+  ("the install didn't complete — download it manually: …") and **stops re-downloading** that version.
+  A genuinely newer release still supersedes a stuck one and downloads normally. (A successfully
+  installed update was never affected — an up-to-date app doesn't loop.)
+- **Version-sync hygiene.** `deno.json` (the desktop app's self-reported version, which drives the
+  update comparison) is re-synced to `package.json`, and the version-match check now runs on **every**
+  PR instead of only PRs that touch the desktop build — so a version bump in an unrelated change can no
+  longer drift the desktop version undetected.
+- **`latest.json` now lists `Lattice.pkg`** (with sha256 + size) so the installer-fallback download is
+  verified by hash instead of downloaded unverified.
+
 ## [5.1.3] — 2026-07-23
 
 ### Fixed

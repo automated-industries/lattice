@@ -210,6 +210,13 @@ export interface StartGuiServerOptions {
    */
   applyDownloadedUpdate?: () => void;
   /**
+   * Desktop shell only: where to point the user when a staged update is detected
+   * to have failed to install (the releases page). Surfaced in the loud one-time
+   * "stuck update" error so a swap that can't persist has a manual escape hatch
+   * instead of an endless re-download loop. Omitted ⇒ the error omits the link.
+   */
+  updateManualDownloadUrl?: string;
+  /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
    * to `GET /api/desktop/open` which calls this. Omitted for the web/CLI GUI —
@@ -833,7 +840,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           //    not a crash, so the client can tell the user how to upgrade.
           const st = updateService?.status();
           if (st?.action === 'install-and-restart' && options.applyDownloadedUpdate) {
-            options.applyDownloadedUpdate();
+            // Route through the service's apply() so it records the attempt for the
+            // failed-apply loop guard before launching the installer + quitting.
+            updateService?.apply();
             sendJson(res, { ok: true, status: st });
           } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
@@ -1438,6 +1447,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       ...(options.downloadUpdate ? { downloadUpdate: options.downloadUpdate } : {}),
       ...(options.applyDownloadedUpdate
         ? { applyDownloadedUpdate: options.applyDownloadedUpdate }
+        : {}),
+      ...(options.updateManualDownloadUrl
+        ? { manualDownloadUrl: options.updateManualDownloadUrl }
         : {}),
     });
   }
