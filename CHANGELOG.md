@@ -8,6 +8,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [5.1.1] — 2026-07-22
 
+### Added
+
+- **Deterministic table extraction from Word and PowerPoint.** A `.docx` or `.pptx` containing tabular
+  data now imports **every row** of its embedded tables through the same faithful importer as a
+  spreadsheet (`inferSchema → materialize`), instead of only being read as prose. Previously the
+  structured importer accepted only `.xlsx/.csv/.tsv/.json`, so a document's tables were left to
+  best-effort text handling; a `.docx`/`.pptx` of, say, 46 rows now yields 46 records, not a handful.
+  A document with no tables is unchanged (kept as a reference file, text-ingested for its prose).
+
 ### Fixed
 
 - **Instant graph navigation.** Opening the graph — the brain/schema graph, a per-entity graph, or
