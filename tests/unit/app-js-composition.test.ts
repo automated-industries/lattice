@@ -549,8 +549,13 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // #/w/file/<table> (a record route fed the table name as a row id → "Row not found");
 // it now opens the files-table collection #/w/table/<table>, mirroring the deleted-
 // record + delete-nav fallbacks (fsBreadcrumb w:file case). Length + hash recaptured.
-const ORIGINAL_LENGTH = 773780;
-const ORIGINAL_SHA256 = '10f9424616c8bbcee705b129d261843ab9bc8259b67837451266c9e5ae04fe65';
+// 5.1.1 record-view markdown fallback: a record with no rendered context file no longer
+// shows the dead "No rendered markdown for this record yet." — loadFsContext now falls
+// back to the row's OWN columns (rowToFallbackMarkdown: title heading + long-form fields
+// + a key:value list), rendered read-only, matching what the assistant reads from the
+// row. Length + hash recaptured.
+const ORIGINAL_LENGTH = 776883;
+const ORIGINAL_SHA256 = '6f2ff163a34d62350926b09a959151fbf1546c8ef2d019651e4f506f0dbfb90f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

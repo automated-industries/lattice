@@ -21,6 +21,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **"Files" breadcrumb no longer errors on a file record.** Clicking the **Files** crumb from a file's
   record page opened an invalid record route (the table name looked up as a row id → _"Row not
   found"_); it now opens the Files collection.
+- **A record with no rendered context no longer reads _"No rendered markdown for this record yet."_**
+  The record view now falls back to the row's own columns (title + long-form fields + a key/value
+  list), rendered read-only — the same content the assistant sees — so a freshly-added record always
+  shows its content instead of a dead empty state.
 
 ## [5.1.0] — 2026-07-22
 

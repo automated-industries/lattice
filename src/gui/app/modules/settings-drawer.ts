@@ -137,6 +137,39 @@ export const settingsDrawerJs = `    // ─────────────�
       });
       mount.setAttribute('data-chips-wired', 'true');
     }
+    // A fallback record document built from a row's OWN columns, for records with no
+    // rendered context file yet (a freshly-ingested row the debounced auto-render
+    // hasn't compiled, or a table with no registered context). Mirrors what the
+    // assistant reads from the row, so the record view shows real content instead of a
+    // dead "No rendered markdown" state. Title heading, long-form fields as paragraphs,
+    // the rest as a \`- **key:** value\` list (matching the rendered-doc shape).
+    function rowToFallbackMarkdown(row) {
+      if (!row) return '';
+      var NL = String.fromCharCode(10);
+      var titleKeys = ['name', 'title', 'label', 'original_name', 'subject'];
+      var longKeys = ['description', 'summary', 'body', 'content', 'abstract', 'notes',
+        'text', 'transcript', 'review', 'message', 'bio'];
+      var skip = { id: 1, created_at: 1, updated_at: 1, deleted_at: 1, blob_path: 1, path: 1,
+        extracted_text: 1, extraction_status: 1, mime: 1, size_bytes: 1 };
+      var title = '';
+      for (var i = 0; i < titleKeys.length; i++) { if (row[titleKeys[i]]) { title = String(row[titleKeys[i]]); break; } }
+      var blocks = [];
+      if (title) blocks.push('# ' + title);
+      for (var j = 0; j < longKeys.length; j++) {
+        var lv = row[longKeys[j]];
+        if (lv != null && String(lv).trim()) blocks.push(String(lv));
+      }
+      var kv = [];
+      for (var k in row) {
+        if (!Object.prototype.hasOwnProperty.call(row, k)) continue;
+        if (skip[k] || titleKeys.indexOf(k) >= 0 || longKeys.indexOf(k) >= 0) continue;
+        var v = row[k];
+        if (v == null || v === '' || typeof v === 'object') continue;
+        kv.push('- **' + k + ':** ' + String(v));
+      }
+      if (kv.length) blocks.push(kv.join(NL));
+      return blocks.join(NL + NL).trim();
+    }
     function loadFsContext(tableName, id) {
       var mount = document.getElementById('fs-context');
       if (!mount) return;
@@ -154,9 +187,28 @@ export const settingsDrawerJs = `    // ─────────────�
           if (files[i] && files[i].content) { primary = files[i]; break; }
         }
         if (!primary) {
-          mount.innerHTML = '<div class="fs-empty" style="padding:16px">No rendered markdown for this record yet.</div>';
-          mount.hidden = false;
-          if (typeof applyFsItemView === 'function') applyFsItemView();
+          // No rendered context file yet — fall back to the row's own columns (the same
+          // content the assistant reads) rendered read-only, so a record with data never
+          // shows a dead "No rendered markdown" state. Read-only: a synthesized-from-
+          // columns doc has no rendered file to round-trip, so there's no write-back.
+          fetchJson('/api/tables/' + encodeURIComponent(tableName) + '/rows/' + encodeURIComponent(id))
+            .then(function (resp) {
+              if (myGen !== renderGen) return;
+              var row = resp && (resp.row || resp);
+              var md = rowToFallbackMarkdown(row);
+              mount.innerHTML = md
+                ? '<div class="fs-context-doc"><div class="md-body">' + renderContextMarkdown(md) + '</div></div>' +
+                  '<div class="fs-context-edit" style="display:none"><pre class="file-source-pre">' + escapeHtml(md) + '</pre></div>'
+                : '<div class="fs-empty" style="padding:16px">No content for this record yet.</div>';
+              if (md) ensureContextChipHandler();
+              mount.hidden = false;
+              if (typeof applyFsItemView === 'function') applyFsItemView();
+            })
+            .catch(function () {
+              mount.innerHTML = '<div class="fs-empty" style="padding:16px">No rendered markdown for this record yet.</div>';
+              mount.hidden = false;
+              if (typeof applyFsItemView === 'function') applyFsItemView();
+            });
           return;
         }
         var raw = primary.content;
