@@ -65,4 +65,35 @@ describe('sanitizeSandboxedHtml', () => {
     expect(out.removed).toEqual([]);
     expect(out.html).toBe(html);
   });
+
+  it('does NOT strip in-page methods that merely share a name with a window method', () => {
+    // sidebar.open / ctx.moveTo / indexedDB.open are ordinary DOM/JS that work under the
+    // sandbox — only window.open/window.print/etc. are blocked. A false strip would delete
+    // a working control.
+    for (const call of [
+      'sidebar.open()',
+      'drawer.open(true)',
+      'panel.moveTo(1,2)',
+      'indexedDB.open("db")',
+      'ctx.moveTo(0,0)',
+      'foo.print()',
+    ]) {
+      const out = sanitizeSandboxedHtml(`<button onclick='${call}'>Go</button>`);
+      expect(out.removed).toEqual([]);
+      expect(out.html).toContain('<button');
+    }
+  });
+
+  it('neutralizes a blocked handler on a CONTAINER but keeps its wrapped content', () => {
+    // A whole-card clickable wrapper must not take its heading/chart/table down with it.
+    const html =
+      '<section onclick="window.print()"><h1>Q3</h1><canvas id="c"></canvas>' +
+      '<table><tr><td>x</td></tr></table></section>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(1);
+    expect(out.html).toContain('<h1>Q3</h1>');
+    expect(out.html).toContain('<canvas');
+    expect(out.html).toContain('<td>x</td>');
+    expect(out.html).not.toContain('onclick');
+  });
 });

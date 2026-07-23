@@ -11,6 +11,9 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual recovery: if the desktop channel was merely slow and the wait below timed out,
+  # re-run this workflow against the same tag once the manifest is live — no re-tagging.
+  workflow_dispatch:
 
 jobs:
   # Fast, secret-free gate: the package must lint/typecheck/test/build, and its version
@@ -47,6 +50,12 @@ jobs:
   # manifest, so npm can't advertise a version the desktop channel doesn't yet serve. Polls
   # the published manifest with a bounded timeout; a desktop build that never finishes (or
   # publishes a mismatched version) times out here and blocks the npm publish.
+  #
+  # The budget must clear the WHOLE desktop pipeline, which runs concurrently and includes
+  # TWO sequential Apple notarization waits (.pkg then .dmg) with no vendor SLA — those can
+  # each spike well past ten minutes. Sized generously (45 min) so a slow-but-successful
+  # desktop release can't strand the npm publish; on a genuine timeout, re-run this
+  # workflow against the tag (workflow_dispatch above) once the manifest is live.
   await-desktop:
     name: Await verified desktop manifest
     runs-on: ubuntu-latest
@@ -56,14 +65,14 @@ jobs:
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
           echo "waiting for $URL to report version $TAG_VERSION"
-          for i in $(seq 1 60); do   # up to ~20 min (60 x 20s)
+          for i in $(seq 1 90); do   # up to ~45 min (90 x 30s)
             BODY="$(curl -fsSL "$URL" 2>/dev/null || echo '')"
             MANIFEST_VERSION="$(printf '%s' "$BODY" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{try{console.log(JSON.parse(s).version||'')}catch{console.log('')}})" 2>/dev/null || echo '')"
             if [ "$MANIFEST_VERSION" = "$TAG_VERSION" ]; then
               echo "desktop manifest is live at $MANIFEST_VERSION"; exit 0
             fi
-            echo "  attempt $i: manifest version='${MANIFEST_VERSION}' (want ${TAG_VERSION}) — retrying in 20s"
-            sleep 20
+            echo "  attempt $i: manifest version='${MANIFEST_VERSION}' (want ${TAG_VERSION}) — retrying in 30s"
+            sleep 30
           done
           echo "::error::desktop manifest did not reach version ${TAG_VERSION} in time — refusing to publish npm ahead of the desktop channel"
           exit 1

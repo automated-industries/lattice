@@ -162,9 +162,15 @@ export const offlineEditQueueJs = `    // ────────────�
           checkUpdateAvailable();
           if (reason === 'manual') {
             clearStatus('update-check');
+            // A null latest is ambiguous on its own: it means EITHER "checked, you're
+            // current" OR "the check couldn't run" (offline / registry unreachable / no
+            // update service). lastCheckOk disambiguates — never report up-to-date for a
+            // check that never completed, or the release stays invisible exactly as before.
+            var checked = !s || s.lastCheckOk !== false;
             var has = s && s.latest && s.current && s.latest !== s.current;
             if (typeof showToast === 'function') {
-              showToast(has ? ('Update available: v' + s.latest) : "You're on the latest version.", {});
+              if (!checked) showToast("Couldn't check for updates right now — try again.", {});
+              else showToast(has ? ('Update available: v' + s.latest) : "You're on the latest version.", {});
             }
           }
         })

@@ -70,6 +70,19 @@ describe('parsePkgTeamIdentifier', () => {
   it('returns null when no team id is present', () => {
     expect(parsePkgTeamIdentifier('Status: no signature')).toBeNull();
   });
+
+  it('anchors to the leaf signing line and takes the trailing team id', () => {
+    // The team id always trails the CN. A parenthesized token embedded in the org name —
+    // or anywhere else in the printed chain — must not be picked instead, since this
+    // value is what the installer identity is pinned on.
+    const out =
+      'Package "Lattice.pkg":\n' +
+      '   Status: signed by a developer certificate\n' +
+      '   Certificate Chain:\n' +
+      '    1. Developer ID Installer: Acme (SUBSID1234) LLC (REALTEAM01)\n' +
+      '    2. Developer ID Certification Authority\n';
+    expect(parsePkgTeamIdentifier(out)).toBe('REALTEAM01');
+  });
 });
 
 describe('installerTrustError — installer-path parity', () => {

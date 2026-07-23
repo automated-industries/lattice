@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      actions: read # to see whether a release workflow is in flight (publish-window guard)
     steps:
       - uses: actions/github-script@v7
         with:
@@ -45,18 +46,62 @@ jobs:
               return;
             }
             core.info(`npm latest=${npmLatest} desktop manifest=${manifestVersion}`);
-            if (!npmLatest || !manifestVersion || npmLatest === manifestVersion) return;
 
-            // Divergent. Avoid duplicate noise: only open an issue if there isn't already an
-            // open reconcile issue for this exact pair.
-            const marker = `reconcile:${npmLatest}:${manifestVersion}`;
-            const existing = await github.rest.issues.listForRepo({
+            const openDivergenceIssues = async () =>
+              (
+                await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  labels: 'release-divergence',
+                })
+              ).data;
+
+            // Converged (or unreadable): close any stale divergence issue so a transient
+            // alert doesn't linger forever after the channels caught up.
+            if (!npmLatest || !manifestVersion || npmLatest === manifestVersion) {
+              for (const issue of await openDivergenceIssues()) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `Channels re-converged (npm \`${npmLatest}\` = desktop \`${manifestVersion}\`). Closing.`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed',
+                });
+              }
+              return;
+            }
+
+            // Divergent — but the coupling makes the desktop manifest advance FIRST on
+            // every healthy release, so there is a normal multi-minute window where
+            // desktop is ahead of npm while the publish job runs. Don't cry wolf during
+            // it: skip when a release workflow is in flight or just finished.
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open',
-              labels: 'release-divergence',
+              per_page: 30,
             });
-            if (existing.data.some((i) => (i.body || '').includes(marker))) return;
+            const RELEASE_WORKFLOWS = ['Release', 'Desktop Release'];
+            const recentlyActive = runs.data.workflow_runs.some((r) => {
+              if (!RELEASE_WORKFLOWS.includes(r.name || '')) return false;
+              if (r.status === 'in_progress' || r.status === 'queued') return true;
+              const finished = r.updated_at ? Date.parse(r.updated_at) : 0;
+              return finished > 0 && Date.now() - finished < 30 * 60 * 1000;
+            });
+            if (recentlyActive) {
+              core.info('a release is in flight or just finished — treating the gap as the normal publish window');
+              return;
+            }
+
+            // Avoid duplicate noise: only open an issue if there isn't already an open
+            // reconcile issue for this exact pair.
+            const marker = `reconcile:${npmLatest}:${manifestVersion}`;
+            if ((await openDivergenceIssues()).some((i) => (i.body || '').includes(marker))) return;
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,

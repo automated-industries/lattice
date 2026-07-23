@@ -98,9 +98,22 @@ export const bootJs = `    // ────────────────�
       bootSelfHealing = true;
       if (bootSelfHealTimer) { clearTimeout(bootSelfHealTimer); bootSelfHealTimer = null; }
       state.bootDegraded = false;
-      return reloadEverything().then(function () {
+      // Silent: the boot-degraded notice already signals "reconnecting", so don't flash
+      // the full-screen switch overlay on each retry.
+      return reloadEverything({ silent: true }).then(function () {
         bootSelfHealing = false;
-        bootSelfHealDelay = 800;
+        // reloadEverything resolves once entities-summary is readable, but the workspaces
+        // list is fetched separately and may still have failed (renderWsSwitcher left the
+        // switcher unbuilt → state.wsListLoaded === false). Only treat the boot as healed
+        // when BOTH load-bearing reads recovered; otherwise keep retrying with backoff, so
+        // a workspaces-only failure can't strand the switcher after a single attempt.
+        if (state.wsListLoaded === false) {
+          state.bootDegraded = true;
+          bootSelfHealDelay = Math.min(bootSelfHealDelay * 2, 30000);
+          scheduleBootSelfHeal();
+        } else {
+          bootSelfHealDelay = 800;
+        }
       }).catch(function () {
         bootSelfHealing = false;
         state.bootDegraded = true;

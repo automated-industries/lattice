@@ -97,3 +97,28 @@ test('a degraded boot self-heals once the reads recover, with no manual reload',
   await expect(page.locator('#content .boot-degraded-notice')).toBeHidden({ timeout: 20000 });
   await expect(page.locator('#ws-name')).toHaveText('Alpha', { timeout: 8000 });
 });
+
+test('self-heals a workspaces-list-only failure (entities healthy) until the list recovers', async ({
+  page,
+}) => {
+  // Only the workspace LIST read fails (its own transient registry/FS error); entities
+  // read fine, so the content pane works but the switcher is unbuilt. The self-heal must
+  // keep retrying until the list recovers — not declare success just because entities is
+  // readable. Fail the first few /api/workspaces calls, then let them succeed.
+  let wsCalls = 0;
+  await page.route('**/api/workspaces', (route) => {
+    wsCalls += 1;
+    if (wsCalls <= 3)
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"x"}' });
+    return route.continue();
+  });
+
+  await page.goto(server.url + '#/');
+
+  // The header switcher starts on the generic shell label (list unknown)…
+  await expect(page.locator('#ws-name')).toHaveText('workspace');
+  // …and self-heals to the real workspace once the list read recovers, no manual reload.
+  // Before the fix, the self-heal cleared the degraded flag after one entities-only
+  // success and never retried the list, so the switcher stayed stuck on 'workspace'.
+  await expect(page.locator('#ws-name')).toHaveText('Alpha', { timeout: 20000 });
+});

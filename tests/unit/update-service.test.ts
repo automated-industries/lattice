@@ -27,6 +27,35 @@ const desktop: InstallContext = {
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 
 describe('createUpdateService', () => {
+  it('reports lastCheckOk=false when the registry check FAILS (not a false up-to-date)', async () => {
+    // A failed check leaves `latest` null — the same shape as "you're already current".
+    // lastCheckOk is what keeps an on-demand check from reporting a reassuring
+    // "you're on the latest version" for a check that never actually completed.
+    const svc = createUpdateService({
+      currentVersion: '1.0.0',
+      context: installable,
+      emit: vi.fn(),
+      selfUpdate: false,
+      check: () => Promise.reject(new Error('registry unreachable')),
+    });
+    const status = await svc.checkNow(true);
+    expect(status.latest).toBeNull();
+    expect(status.lastCheckOk).toBe(false);
+  });
+
+  it('reports lastCheckOk=true when the check completes and finds nothing newer', async () => {
+    const svc = createUpdateService({
+      currentVersion: '1.0.0',
+      context: installable,
+      emit: vi.fn(),
+      selfUpdate: false,
+      check: () => Promise.resolve(null), // completed; already current
+    });
+    const status = await svc.checkNow(true);
+    expect(status.latest).toBeNull();
+    expect(status.lastCheckOk).toBe(true);
+  });
+
   it('installs, broadcasts update-applied, and requests a relaunch on a newer version', async () => {
     const emit = vi.fn();
     const install = vi.fn(() => true);

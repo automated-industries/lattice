@@ -57,9 +57,18 @@ export async function resolveVerifiedAsset(
 /**
  * Parse the 10-character Apple Team Identifier from `pkgutil --check-signature` output.
  * The signing-cert line reads e.g. `Developer ID Installer: Some Co (ABCDE12345)`.
+ *
+ * pkgutil prints the WHOLE certificate chain, so anchor to the leaf (signing) line and
+ * take the LAST parenthesized token on it — the Team Identifier always trails the CN.
+ * A first-match-anywhere parse could otherwise pick a parenthesized token from elsewhere
+ * in the chain or embedded in the org name, which is the wrong value to pin identity on.
  */
 export function parsePkgTeamIdentifier(pkgutilOutput: string): string | null {
-  const m = /\(([A-Z0-9]{10})\)/.exec(pkgutilOutput);
+  const leaf = pkgutilOutput.split('\n').find((l) => /Developer ID Installer:/i.test(l));
+  const scope = leaf ?? pkgutilOutput;
+  const all = scope.match(/\(([A-Z0-9]{10})\)/g);
+  if (!all || all.length === 0) return null;
+  const m = /\(([A-Z0-9]{10})\)/.exec(all[all.length - 1]);
   return m ? m[1] : null;
 }
 

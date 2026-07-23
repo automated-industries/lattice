@@ -20,10 +20,14 @@ export interface ArtifactSanitizeResult {
   removed: string[];
 }
 
-// A sandbox-blocked capability referenced from an inline handler or javascript: URL.
-// (These are the calls that silently no-op under the artifact sandbox.)
+// A sandbox-blocked capability invoked as a GLOBAL. Two shapes: (1) window/self/globalThis
+// .<method>( for the window-object methods — these names collide with same-named, perfectly
+// valid in-page methods (element.open, canvas ctx.moveTo, indexedDB.open) that work under
+// allow-scripts, so we only flag them on an explicit window receiver; (2) a BARE dialog /
+// print global not written as a member access (`print(`, `alert(`, …) — a `.print(` on some
+// object is not window.print and must not match.
 const BLOCKED_CALL =
-  /\b(?:window\s*\.\s*)?(?:print|open|alert|confirm|prompt|showModalDialog|moveTo|moveBy|resizeTo|resizeBy)\s*\(/;
+  /\b(?:window|self|globalThis)\s*\.\s*(?:print|open|alert|confirm|prompt|showModalDialog|moveTo|moveBy|resizeTo|resizeBy)\s*\(|(?<![\w$.])(?:print|alert|confirm|prompt|showModalDialog)\s*\(/;
 // Reaching out of the frame (also blocked: no allow-top-navigation / opaque origin).
 const TOP_NAV = /\b(?:top|parent)\b\s*\.\s*(?:location|open)\b/;
 
@@ -42,6 +46,13 @@ const HANDLER_ATTRS = [
 function describe(tag: string, label: string, why: string): string {
   const name = label ? `"${label.replace(/\s+/g, ' ').trim().slice(0, 40)}"` : `a <${tag}>`;
   return `${name} — ${why}`;
+}
+
+// A control whose whole purpose is a click action (safe to delete entirely) vs. a
+// container that wraps real content (only its dead handler should be stripped). Buttons /
+// links / inputs / areas are controls; so is any element with no child elements.
+function isLeafControl(tag: string, el: Element): boolean {
+  return /^(?:button|a|area|input)$/.test(tag) || el.children.length === 0;
 }
 
 /**
@@ -77,24 +88,46 @@ export function sanitizeSandboxedHtml(rawHtml: string): ArtifactSanitizeResult {
       }
     }
     if (handlerHit) {
-      removed.push(
-        describe(
-          tag,
-          label,
-          "it triggers a browser action (print, pop-out, or dialog) that can't run in the secure preview",
-        ),
-      );
-      el.remove();
+      if (isLeafControl(tag, el)) {
+        // A control whose whole purpose is the dead action — remove it.
+        removed.push(
+          describe(
+            tag,
+            label,
+            "it triggers a browser action (print, pop-out, or dialog) that can't run in the secure preview",
+          ),
+        );
+        el.remove();
+      } else {
+        // A container that merely carries a blocked inline handler wraps real content —
+        // neutralize only the handler and keep the children (mirrors the neutralize-not-
+        // delete approach used for target=_blank / form action below).
+        el.removeAttribute(handlerHit);
+        removed.push(
+          describe(tag, label, "a click action that can't run in the secure preview was disabled"),
+        );
+      }
       continue;
     }
 
     // 2) A javascript: link that invokes a blocked capability — same story.
     const href = el.getAttribute('href');
     if (href && /^\s*javascript:/i.test(href) && (BLOCKED_CALL.test(href) || TOP_NAV.test(href))) {
-      removed.push(
-        describe(tag, label, "its link runs a browser action that can't run in the secure preview"),
-      );
-      el.remove();
+      if (isLeafControl(tag, el)) {
+        removed.push(
+          describe(
+            tag,
+            label,
+            "its link runs a browser action that can't run in the secure preview",
+          ),
+        );
+        el.remove();
+      } else {
+        el.removeAttribute('href');
+        removed.push(
+          describe(tag, label, "a link action that can't run in the secure preview was disabled"),
+        );
+      }
       continue;
     }
 

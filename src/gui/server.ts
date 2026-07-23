@@ -827,6 +827,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               checking: false,
               installing: false,
               lastError: null,
+              lastCheckOk: false,
             },
           );
           return;
@@ -871,7 +872,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // On-demand "check for updates now": force an immediate check so a user who
           // knows a release exists doesn't have to wait for the next background poll (or
           // restart the app). Returns the resulting status. Safe when no update service
-          // is configured (unsupervised / auto-update off) — reports the idle status.
+          // is configured (unsupervised / auto-update off). lastCheckOk:false says the
+          // check could NOT actually run, so the client reports "couldn't check" rather
+          // than a false "you're on the latest version".
           if (!updateService) {
             sendJson(res, {
               current: guiVersion,
@@ -883,6 +886,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               checking: false,
               installing: false,
               lastError: null,
+              lastCheckOk: false,
             });
             return;
           }

@@ -96,6 +96,10 @@ export const toastJs = `    // ────────────────�
       // elsewhere. Don't repaint a misleading empty switcher (no workspaces, generic
       // "workspace" label) over a transient failure; leave the current switcher as-is
       // and let the boot self-heal repopulate it once the fetch recovers.
+      // Record whether the workspace list actually loaded — a null argument is an
+      // unknown (failed) list, and the boot self-heal must keep retrying until it's known,
+      // NOT declare success just because the (separately-fetched) entities read recovered.
+      state.wsListLoaded = data != null;
       if (data == null) return;
       activeWsId = (data && data.current) || null; // keys the per-workspace chat-thread memory
       // The workspace switcher is the SINGLE switcher: every database — local or
