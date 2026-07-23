@@ -7,6 +7,10 @@ export const onboardingJs = `    // ──────────────�
     // ────────────────────────────────────────────────────────────
     var chatHistory = [];
     var chatBusy = false;
+    // Follow-ups typed while a turn streams are queued (FIFO) and sent when the
+    // turn finishes — never dropped. Each item: { text, files, node } where node
+    // is the dimmed "queued" placeholder bubble.
+    var chatQueue = [];
     var COMPOSER_MAX_H = 160; // px — textarea auto-grow ceiling (then it scrolls)
     function railFeedEl() { return document.getElementById('rail-feed'); }
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
@@ -29,6 +33,9 @@ export const onboardingJs = `    // ──────────────�
     }
     function clearChat() {
       chatHistory = [];
+      // Discard any follow-ups queued for the conversation we're leaving, so they
+      // never leak into a different thread.
+      chatQueue = [];
       var feedEl = railFeedEl();
       if (!feedEl) return;
       // The rail is conversation-scoped: clearing or switching a conversation
@@ -350,6 +357,9 @@ export const onboardingJs = `    // ──────────────�
       feedTurnActive = streaming;
       var sb = document.getElementById('chat-send'); if (sb) sb.disabled = streaming;
       if (!streaming) { var inp = document.getElementById('chat-input'); if (inp) inp.focus(); }
+      // Turn finished (also fires on a pre-flight refusal / network reject): drain
+      // the next queued follow-up, if any.
+      if (!streaming) flushChatQueue();
     }
     // Reconcile bound (streaming) turns after the /api/stream WebSocket reconnects. The bus
     // has NO replay buffer, so any event — including the terminal 'done' — published while
@@ -513,9 +523,42 @@ export const onboardingJs = `    // ──────────────�
         setTimeout(function () { if (!chatTurns[msg.messageId]) delete chatEventBuffer[msg.messageId]; }, 5000);
       }
     }
+    // A dimmed placeholder for a follow-up typed mid-turn; removed when it flushes.
+    function appendQueuedBubble(text, fileNames) {
+      railEmptyGone();
+      var feedEl = railFeedEl(); if (!feedEl) return null;
+      var msg = document.createElement('div'); msg.className = 'chat-msg user queued';
+      var label = text || (fileNames && fileNames.length ? fileNames.join(', ') : '');
+      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = label;
+      msg.appendChild(b);
+      var tag = document.createElement('span'); tag.className = 'chat-queued-tag'; tag.textContent = 'queued';
+      msg.appendChild(tag);
+      feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      return msg;
+    }
+    // Queue a follow-up sent while a turn is streaming: show a placeholder, clear
+    // the composer (like a real send), and remember it to flush on turn-done.
+    function enqueueChat(text, attachedFiles) {
+      var fileNames = (attachedFiles || []).map(function (f) { return f && f.name ? f.name : 'file'; });
+      var node = appendQueuedBubble(text, fileNames);
+      var input = document.getElementById('chat-input');
+      if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
+      chatQueue.push({ text: text, files: attachedFiles, node: node });
+    }
+    // Send the next queued follow-up once the composer is free. Each flushed send
+    // keeps sendChat's own inline error handling, so a failed queued send surfaces
+    // loudly rather than dropping.
+    function flushChatQueue() {
+      if (chatBusy || !chatQueue.length) return;
+      var item = chatQueue.shift();
+      if (item.node && item.node.remove) item.node.remove();
+      sendChat(item.text, item.files);
+    }
     function sendChat(text, attachedFiles) {
       var hasFiles = !!(attachedFiles && attachedFiles.length);
-      if (chatBusy || (!text && !hasFiles)) return;
+      if (!text && !hasFiles) return;
+      // Streaming: don't drop the message — queue it and drain on turn-done.
+      if (chatBusy) { enqueueChat(text, attachedFiles); return; }
       // A files-only send (no message) must NOT fabricate a "take a look at this file"
       // sentence — show the attached file name(s) as the bubble instead. That is
       // truthful (it is what the user attached), and the server's attached-files note

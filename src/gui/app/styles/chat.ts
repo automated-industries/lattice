@@ -4,6 +4,12 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
+    /* A follow-up typed mid-turn: dimmed, tagged "queued", sent when the turn ends. */
+    .chat-msg.queued { opacity: 0.6; }
+    .chat-queued-tag {
+      align-self: center; margin: 0 6px; flex: none;
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted);
+    }
     /* The assistant speaks with the Lattice mark as its avatar (same grid glyph as the
        brand logo / favicon) so replies read as coming from Lattice. One mark per
        assistant turn (incl. the "typing…" bubble), to the left of the bubble; user
