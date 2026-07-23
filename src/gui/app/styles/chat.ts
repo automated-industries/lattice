@@ -1,9 +1,14 @@
 // Auto-composed section of the GUI stylesheet. Verbatim substring of the original
 // css template literal — do not hand-edit; see styles/index.ts for composition.
 export const chatCss = `    /* ── Chat bubbles + tool pills ─────────────────────── */
-    .chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }
+    .chat-msg { display: flex; flex-wrap: wrap; animation: feedIn var(--dur-2) ease-out; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
+    /* A relative timestamp under each bubble; recomputed on reload so an older reply
+       reads as older. Full-width row (flex-wrap) so it sits beneath the bubble. */
+    .chat-time { flex-basis: 100%; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .chat-msg.user .chat-time { text-align: right; }
+    .chat-msg.assistant .chat-time { text-align: left; padding-left: 28px; }
     /* A follow-up typed mid-turn: dimmed, tagged "queued", sent when the turn ends. */
     .chat-msg.queued { opacity: 0.6; }
     .chat-queued-tag {

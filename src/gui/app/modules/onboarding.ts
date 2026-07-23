@@ -118,7 +118,7 @@ export const onboardingJs = `    // ──────────────�
         rememberThread(id);
         var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
         msgs.forEach(function (m, mi) {
-          if (m.role === 'user') { appendUserBubble(m.text, m.files); chatHistory.push({ role: 'user', text: m.text, files: m.files }); }
+          if (m.role === 'user') { appendUserBubble(m.text, m.files, m.created_at); chatHistory.push({ role: 'user', text: m.text, files: m.files }); }
           else if (m.role === 'assistant') {
             // A turn still running when the page reloaded (the newest message, status
             // 'streaming'/'pending'). Distinguish FRESH from STALE: a fresh row is almost
@@ -131,7 +131,7 @@ export const onboardingJs = `    // ──────────────�
             // interrupted reply and leave the composer free.
             var streaming = (m.status === 'streaming' || m.status === 'pending') && !!m.id && mi === msgs.length - 1;
             if (streaming && chatTurnFresh(m.startedAt)) {
-              var rctx = newAssistantBubble();
+              var rctx = newAssistantBubble(m.startedAt || m.created_at);
               if (m.text) setBubbleText(rctx, m.text);
               bindChatTurn({ messageId: m.id, threadId: id, actx: rctx, assembled: m.text || '', pendingOpen: null, done: false });
               chatBusy = true; feedTurnActive = true;
@@ -139,7 +139,7 @@ export const onboardingJs = `    // ──────────────�
             } else if (streaming) {
               // Orphaned in-flight turn: show what was saved (or a soft interrupted note)
               // as final — no bind, no composer lock, no lingering turn.
-              var ictx = newAssistantBubble();
+              var ictx = newAssistantBubble(m.startedAt || m.created_at);
               setBubbleText(ictx, m.text || '\\u26a0 This reply was interrupted and did not finish.');
             } else if (Array.isArray(m.turns) && m.turns.length > 0) {
               // Rich replay: the saved per-turn structure (text + the data-change activity
@@ -147,7 +147,7 @@ export const onboardingJs = `    // ──────────────�
               m.turns.forEach(function (t) { appendAssistantTurn(t, m.created_at, m.startedAt); });
             } else {
               // Plain text bubble — messages saved before turns were persisted.
-              var c = newAssistantBubble(); setBubbleText(c, m.text);
+              var c = newAssistantBubble(m.startedAt || m.created_at); setBubbleText(c, m.text);
             }
             chatHistory.push({ role: 'assistant', text: m.text });
           }
@@ -161,7 +161,19 @@ export const onboardingJs = `    // ──────────────�
       if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
       refreshThreadList(true); // restore the most recent conversation on load
     }
-    function appendUserBubble(text, fileNames) {
+    // Append a relative-time label as a SIBLING of the bubble (so setBubbleText's
+    // innerHTML rewrite of the bubble never clobbers it). Recomputed on each reload
+    // via relTime — which is exactly what defeats reading a stale reply as current.
+    // iso defaults to now, so live sends get a fresh "just now" label.
+    function stampBubble(msgEl, iso) {
+      if (!msgEl) return;
+      var when = iso || new Date().toISOString();
+      var t = document.createElement('span'); t.className = 'chat-time';
+      t.textContent = relTime(when);
+      try { t.title = new Date(when).toLocaleString(); } catch (_) { /* invalid date → no title */ }
+      msgEl.appendChild(t);
+    }
+    function appendUserBubble(text, fileNames, createdAt) {
       railEmptyGone();
       var feedEl = railFeedEl(); if (!feedEl) return;
       var msg = document.createElement('div'); msg.className = 'chat-msg user';
@@ -193,9 +205,10 @@ export const onboardingJs = `    // ──────────────�
         }
         host.appendChild(tray);
       }
+      stampBubble(msg, createdAt);
       feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
     }
-    function newAssistantBubble() {
+    function newAssistantBubble(createdAt) {
       railEmptyGone();
       var feedEl = railFeedEl();
       var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
@@ -203,7 +216,7 @@ export const onboardingJs = `    // ──────────────�
       // Show an animated typing indicator until the first text delta arrives.
       b.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
       b.setAttribute('data-typing', '1');
-      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      msg.appendChild(b); stampBubble(msg, createdAt); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
       return { bubble: b, msg: msg };
     }
     /** Set an assistant bubble's text, clearing the typing indicator. */
@@ -316,7 +329,7 @@ export const onboardingJs = `    // ──────────────�
      *  as events, so a read-only turn with no text renders nothing. createdAt
      *  stamps the cards' relative time (events carry no ts of their own). */
     function appendAssistantTurn(turn, createdAt, startedAt) {
-      var ctx = newAssistantBubble();
+      var ctx = newAssistantBubble(startedAt || createdAt);
       if (turn.text) setBubbleText(ctx, turn.text);
       else finalizeBubble(ctx); // no text → drop the empty typing bubble
       var events = (turn.events || []).map(function (e) {
