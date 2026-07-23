@@ -545,7 +545,7 @@ export const onboardingJs = `    // ──────────────�
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        body: JSON.stringify({ message: effectiveText, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25) })
+        body: JSON.stringify({ message: effectiveText, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25), ingestInProgress: (typeof ingestOrImportActive === 'function' && ingestOrImportActive()) })
       }).then(function (r) {
         var tid = r.headers.get('x-thread-id');
         if (r.status === 202) {

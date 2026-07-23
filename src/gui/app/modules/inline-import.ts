@@ -27,6 +27,17 @@ export const inlineImportJs = `
         .catch(function () {});
     }
 
+    // In-progress signal so a chat turn can be made AWARE that ingestion is running: the
+    // composer passes ingestOrImportActive() to /api/chat and the server tells the model
+    // some data may still be loading. Counts silent structured imports PLUS any browser/
+    // server file-ingest batch (the shared ingestProgressState).
+    var iiActiveImports = 0;
+    function ingestOrImportActive() {
+      if (iiActiveImports > 0) return true;
+      if (typeof ingestProgressState !== 'undefined' && ingestProgressState && !ingestProgressState.terminal) return true;
+      return false;
+    }
+
     // Read a newline-delimited-JSON response body, invoking onEvent(obj) per line.
     // Self-contained on purpose — this segment must not depend on any other.
     function iiStreamNdjson(url, payload, onEvent) {
@@ -83,6 +94,7 @@ export const inlineImportJs = `
     // questions in the assistant's panel (the apply route enqueues them regardless).
     function runInlineImportSilent(autoImport) {
       if (!autoImport || !autoImport.fileId) return;
+      iiActiveImports++; // chat-awareness: a turn sent now knows the import is running
       // Auto-select every detected computed view (the silent path has no opt-in card).
       var computedSel = (autoImport.computedProposals || []).map(function (p) {
         return { table: p.table, fields: (p.fields || []).map(function (f) { return f.name; }) };
@@ -120,6 +132,7 @@ export const inlineImportJs = `
       }, function (evt) {
         if (!evt) return;
         if (evt.phase === 'done') {
+          iiActiveImports = Math.max(0, iiActiveImports - 1);
           var r = evt.result || {};
           var rbt = r.rowsByTable || {};
           var names = Object.keys(rbt);
@@ -140,6 +153,7 @@ export const inlineImportJs = `
             }
           });
         } else if (evt.phase === 'error') {
+          iiActiveImports = Math.max(0, iiActiveImports - 1);
           title.textContent = 'Import failed';
           addLine('Error: ' + (evt.message || 'import failed'), 'imp-err');
         } else if (evt.message) {

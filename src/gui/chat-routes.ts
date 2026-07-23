@@ -902,6 +902,15 @@ export async function dispatchChatRoute(
   // Connect the request to the files the user just attached (ingested via the
   // composer Send) so the assistant works on them with its existing file tools.
   const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
+  // Chat-awareness of in-progress ingestion (client signal): a file/data import is
+  // still running as the user asks, so tell the model — it must not answer about data
+  // that may still be loading as if it were already complete.
+  const ingestInProgressNote =
+    body.ingestInProgress === true
+      ? '[Note: the user is CURRENTLY importing files or data into their workspace — some ' +
+        'tables or rows may not be fully available yet. If they ask about data that seems ' +
+        'missing or incomplete, say it may still be importing and to try again in a moment.]\n\n'
+      : '';
   // What the user is currently looking at, so "this"/"it"/"why is this broken"
   // resolve to the open dashboard/record (and a complaint routes to `investigate`).
   const activeView = await describeActiveView(ctx.db, activeContext);
@@ -1177,7 +1186,7 @@ export async function dispatchChatRoute(
         // Prefix the active-view + attached-files + auto-ingest notes (if any) so the model
         // knows what's on screen and connects the request to what was just added; the
         // dispatch + tools still see the real message.
-        userMessage: activeView.note + attachedNote + ingestNote + message,
+        userMessage: activeView.note + attachedNote + ingestNote + ingestInProgressNote + message,
         temperature,
         // Give the assistant the operator's name so it addresses them and
         // resolves "me"/"my" without asking for a name it already has.

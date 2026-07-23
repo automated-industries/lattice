@@ -29,6 +29,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   planner runs automatically over the new tables — applying safe normalizations immediately and
   surfacing the rest as one-click suggestions in the Data Model panel — so a fresh import lands
   already-organized instead of requiring a manual reorg.
+- **The assistant knows when your data is still importing.** If you ask a question while files or
+  data are mid-import, the assistant is told so — instead of answering about data that may still be
+  loading as though it were complete, it lets you know it's still importing and to try again shortly.
 
 ### Fixed
 

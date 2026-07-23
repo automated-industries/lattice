@@ -571,8 +571,12 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // paths), so the freshly-imported tables get safe normalizations applied immediately
 // (the rest surface as one-click suggestions) instead of needing a manual reorg; a
 // re-refresh shows any auto-applied change at once. Length + hash recaptured.
-const ORIGINAL_LENGTH = 783121;
-const ORIGINAL_SHA256 = 'd1792c3de941be5c13303ce684540d69dfcd3087446252e47558a5e6aa6aa6c8';
+// 5.1.1 chat-awareness of in-progress ingestion: inline-import tracks iiActiveImports
+// (+ the shared ingestProgressState) via ingestOrImportActive(); the composer sends
+// ingestInProgress to /api/chat so the server prepends a note telling the model some
+// data may still be importing. Length + hash recaptured.
+const ORIGINAL_LENGTH = 784020;
+const ORIGINAL_SHA256 = '94b5d7e92e6d21766129dea15d74aa9eb9d13d014003af8f0fdd34a2725c0e21';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
