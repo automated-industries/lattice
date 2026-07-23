@@ -25,6 +25,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   card with no "Apply" gate. Uncertain/marginal links still surface as questions in the assistant
   panel (that's a genuine low-confidence choice), and re-importing a **known** dataset with no
   detectable date still asks which snapshot to file it under.
+- **The data model tidies itself after an import.** Right after a file imports, the data-model
+  planner runs automatically over the new tables — applying safe normalizations immediately and
+  surfacing the rest as one-click suggestions in the Data Model panel — so a fresh import lands
+  already-organized instead of requiring a manual reorg.
 
 ### Fixed
 

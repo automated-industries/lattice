@@ -16,6 +16,17 @@ export const inlineImportJs = `
       if (e) e.parentNode && e.parentNode.removeChild(e);
     }
 
+    // Auto-run the data-model planner on the freshly-imported tables — it applies safe
+    // normalizations immediately (and surfaces the rest as one-click suggestions in the
+    // Data Model panel), so an import lands already-tidied instead of needing a manual
+    // reorg. Fire-and-forget + a re-refresh so any auto-applied change shows right away.
+    function iiAutoTidy() {
+      fetch('/api/data-model/plan')
+        .then(function () { return refreshEntities(); })
+        .then(function () { renderSidebar(); renderRoute(); })
+        .catch(function () {});
+    }
+
     // Read a newline-delimited-JSON response body, invoking onEvent(obj) per line.
     // Self-contained on purpose — this segment must not depend on any other.
     function iiStreamNdjson(url, payload, onEvent) {
@@ -121,6 +132,7 @@ export const inlineImportJs = `
             renderSidebar();
             renderRoute();
             if (upd) { upd.className = 'imp-card-line imp-done'; upd.textContent = '✓ Done'; }
+            iiAutoTidy();
           }).catch(function () {
             if (upd) {
               upd.className = 'imp-card-line imp-err';
@@ -345,6 +357,7 @@ export const inlineImportJs = `
               upd.className = 'imp-card-line imp-done';
               upd.textContent = '✓ Done — ' + count + ' objects in your workspace';
             }
+            iiAutoTidy();
           }).catch(function () {
             if (upd) {
               upd.className = 'imp-card-line imp-err';
