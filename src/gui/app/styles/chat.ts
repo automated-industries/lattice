@@ -1,7 +1,11 @@
 // Auto-composed section of the GUI stylesheet. Verbatim substring of the original
 // css template literal — do not hand-edit; see styles/index.ts for composition.
 export const chatCss = `    /* ── Chat bubbles + tool pills ─────────────────────── */
-    .chat-msg { display: flex; flex-wrap: wrap; animation: feedIn var(--dur-2) ease-out; }
+    .chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }
+    /* Only a non-queued bubble wraps, so its full-width .chat-time drops beneath it.
+       A queued follow-up carries no timestamp and must stay on one row, so its
+       "queued" tag sits beside the bubble instead of dropping below it. */
+    .chat-msg:not(.queued) { flex-wrap: wrap; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
     /* A relative timestamp under each bubble; recomputed on reload so an older reply

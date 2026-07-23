@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { renderProgressJs } from '../../src/gui/app/modules/render-progress.js';
 import { onboardingJs } from '../../src/gui/app/modules/onboarding.js';
+import { chatCss } from '../../src/gui/app/styles/chat.js';
 
 /**
  * A replayed chat bubble must carry a relative timestamp so an older reply reads
@@ -52,5 +53,18 @@ describe('chat bubble relative timestamp', () => {
     const time = document.querySelector('#rail-feed .chat-msg.user .chat-time');
     expect(time).not.toBeNull();
     expect(time?.textContent).toMatch(/s ago|m ago/);
+  });
+});
+
+describe('chat bubble layout scoping', () => {
+  it('wraps only non-queued bubbles, so a queued follow-up tag stays beside its bubble', () => {
+    // The timestamp needs the row to wrap (the full-width .chat-time drops beneath
+    // the bubble); a queued follow-up carries no timestamp and must NOT wrap, or its
+    // "queued" tag drops below the bubble instead of sitting beside it. So flex-wrap
+    // must be scoped to :not(.queued) and never live on the shared .chat-msg base.
+    expect(chatCss).toContain('.chat-msg:not(.queued) { flex-wrap: wrap; }');
+    expect(chatCss).toContain(
+      '.chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }',
+    );
   });
 });

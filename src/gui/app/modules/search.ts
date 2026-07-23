@@ -165,7 +165,11 @@ export const searchJs = `    // ────────────────
     function reloadEverything() {
       showSwitchOverlay();
       return Promise.all([
-        fetchJson('/api/entities-summary').catch(function () { return { tables: [], __failed: true }; }),
+        // entities-summary is load-bearing (it IS the workspace's table list): a
+        // failure here must reject the whole reload so the switch/delete callers
+        // surface it loudly and revert, rather than rendering a blank workspace
+        // under a false success. The remaining fetches are decorative and fail-soft.
+        fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
         fetchJson('/api/system-tables').catch(function () { return { tables: [] }; }),

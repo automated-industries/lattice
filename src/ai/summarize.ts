@@ -279,6 +279,12 @@ export function extractionTruncationNote(name: string, len: number): string | nu
  * capped at 12. A single group in → the same objects out (small-doc path).
  */
 export function mergeExtractedObjects(groups: ExtractedObject[][]): ExtractedObject[] {
+  // A single window (a ≤12k document is always exactly one window) is returned
+  // verbatim — no dedup/merge — so a small document's output stays byte-identical
+  // to the pre-chunking path. The merge exists only to reconcile the overlap seams
+  // between multiple windows; running it on one window would silently collapse two
+  // same-labeled objects the model returned in a single response.
+  if (groups.length <= 1) return groups[0] ?? [];
   const byKey = new Map<string, ExtractedObject>();
   const order: string[] = [];
   for (const group of groups) {

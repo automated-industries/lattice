@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { extractObjects, type SchemaEntity } from '../../src/gui/ai/summarize.js';
-import { extractionTruncationNote, chunkTextForExtraction } from '../../src/ai/summarize.js';
+import {
+  extractionTruncationNote,
+  chunkTextForExtraction,
+  mergeExtractedObjects,
+} from '../../src/ai/summarize.js';
 import type { LlmClient, TurnResult } from '../../src/gui/ai/chat.js';
 
 // The section markers seeded through a big document. Windows are 12k wide,
@@ -91,5 +95,40 @@ describe('full-document object extraction (chunk + merge)', () => {
     expect(note).not.toBeNull();
     expect(note).toContain('67,000');
     expect(note).toContain('120,000');
+  });
+});
+
+describe('mergeExtractedObjects', () => {
+  const obj = (label: string, values: Record<string, string>) => ({
+    entity: 'person',
+    isNew: false,
+    label,
+    columns: ['name'],
+    values,
+  });
+
+  it('returns a single window verbatim — no dedup — so a ≤12k doc is byte-identical to the pre-chunk path', () => {
+    // A ≤12k document is always exactly one window/one LLM call. Two objects the
+    // model returns in that one response sharing entity + case/whitespace-normalized
+    // label must BOTH survive (the un-chunked path returned parseObjects verbatim);
+    // collapsing them would silently drop a distinct row on a small document.
+    const single = [
+      [obj('Alice', { name: 'Alice', role: 'eng' }), obj('alice ', { name: 'Alice', team: 'x' })],
+    ];
+    const out = mergeExtractedObjects(single);
+    expect(out).toHaveLength(2);
+    expect(out).toEqual(single[0]);
+  });
+
+  it('still dedupes the same key ACROSS windows (the overlap-seam case merge exists for)', () => {
+    const across = [
+      [obj('Alice', { name: 'Alice', role: 'eng' })],
+      [obj('alice ', { name: 'Alice', team: 'x' })],
+    ];
+    const out = mergeExtractedObjects(across);
+    expect(out).toHaveLength(1);
+    // First occurrence wins; the later window fills the missing value key.
+    expect(out[0].label).toBe('Alice');
+    expect(out[0].values).toMatchObject({ role: 'eng', team: 'x' });
   });
 });
