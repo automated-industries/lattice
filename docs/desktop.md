@@ -25,6 +25,13 @@ It boots the standard `startGuiServer()` on a local port and points a native
 webview window at it — the webview talks to the local server exactly like a
 browser tab.
 
+On Windows, the app opens in the default browser instead of a native window. The
+bundled WebView2 host proved unreliable on some Windows machines — it could crash
+or hang the app at launch — so the Windows build ships without that UI layer,
+using the runtime's raw backend instead. The app still renders the same local
+server and works identically to the browser-launched version. macOS retains its
+native webview window.
+
 - **Same version as the web GUI.** The app and its installer report the same
   `latticesql` version the web GUI shows (one build constant; `deno.json`'s
   version is kept in lockstep with `package.json` by `scripts/sync-desktop-version.mjs`).

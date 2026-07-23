@@ -64,6 +64,13 @@ export interface AutoImportResult {
   /** Reconciliation warnings from the read (a stacked-table sheet where only the largest
    *  table was imported) — surfaced on the confirm card so a partial import is never silent. */
   importWarnings?: string[];
+  /** Scale guard: true when a brand-new import looks pathological (too many tables, a
+   *  mostly-empty/template set, a document fan-out, or partial-import warnings). The client
+   *  then surfaces the confirm card instead of silently materializing — "silent by default,
+   *  interrupt on genuine low confidence." */
+  lowConfidence?: boolean;
+  /** Human-readable reason the scale guard tripped (shown on the card). */
+  guardReason?: string;
 }
 
 function existingDataTables(db: Lattice): ExistingTable[] {
@@ -97,6 +104,59 @@ async function readStructured(abs: string, name: string): Promise<Record<string,
   return JSON.parse(readFileSync(abs, 'utf8')) as Record<string, unknown>;
 }
 
+/** True when a parsed document's extracted tables include at least one SUBSTANTIVE table
+ *  (>=2 columns AND >=2 data rows) — a real dataset, not an incidental layout table. */
+function hasSubstantiveDocTable(data: Record<string, unknown>): boolean {
+  for (const recs of Object.values(data)) {
+    if (Array.isArray(recs) && recs.length >= 2) {
+      const first: unknown = recs[0];
+      if (first && typeof first === 'object' && Object.keys(first).length >= 2) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Above this many tables a brand-new import is treated as low-confidence. */
+const MAX_SILENT_TABLES = 12;
+
+/**
+ * Scale guard for a brand-new import: trips when the proposal looks pathological — too many
+ * tables, a mostly empty/template set, a document fan-out of auto-named tables, or a partial
+ * import — so the client surfaces the confirm card (a preview/decline surface) instead of
+ * silently materializing dozens/hundreds of tables. Small, clean imports do not trip.
+ */
+function importScaleGuard(
+  plan: {
+    entities: { name: string; rowCount?: number; columns?: unknown[] }[];
+    dimensions: unknown[];
+  },
+  importWarnings: string[],
+): { trip: boolean; reason: string } {
+  const tableCount = plan.entities.length + plan.dimensions.length;
+  if (tableCount >= MAX_SILENT_TABLES) {
+    return { trip: true, reason: `${String(tableCount)} tables — review before importing` };
+  }
+  const thin = plan.entities.filter(
+    (e) => (e.rowCount ?? 0) <= 1 || (e.columns?.length ?? 0) <= 1,
+  ).length;
+  if (plan.entities.length >= 2 && thin > plan.entities.length / 2) {
+    return { trip: true, reason: 'mostly empty or template tables — review before importing' };
+  }
+  const fanout = plan.entities.filter((e) => /^table_\d+$/i.test(e.name)).length;
+  if (fanout >= 8) {
+    return {
+      trip: true,
+      reason: 'many auto-named tables from a document — review before importing',
+    };
+  }
+  if (importWarnings.length > 0) {
+    return { trip: true, reason: 'a partial or ambiguous import — review before importing' };
+  }
+  return { trip: false, reason: '' };
+}
+
 export async function autoImportStructured(
   db: Lattice,
   configPath: string | null,
@@ -110,6 +170,10 @@ export async function autoImportStructured(
   } catch {
     return null; // not structured data we can model — leave it as a reference file
   }
+  // Documents: only propose a structured import when the extracted tables are SUBSTANTIVE
+  // (>=2 columns AND >=2 rows) — a real dataset, not an incidental layout/instructions table.
+  // Otherwise keep the doc as a plain reference file rather than erroring or over-importing.
+  if (/\.(docx|pptx)$/i.test(name) && !hasSubstantiveDocTable(data)) return null;
   // The user's clarify threshold decides which inferred links are created vs
   // asked about; carried on the proposal so apply uses the same bar.
   const linkConfidence = getClarifyThreshold();
@@ -142,9 +206,10 @@ export async function autoImportStructured(
     ...(importWarnings.length > 0 ? { importWarnings } : {}),
   };
 
-  // Brand-new structured data: never silently create from a chat drop — surface
-  // a 'new-dataset' card (with any opt-in computed-table proposals); tables are
-  // created only on Apply.
+  // Brand-new structured data → a 'new-dataset' proposal. The client imports it SILENTLY
+  // (5.1.1) unless the scale guard trips (too many tables / mostly template / doc fan-out /
+  // partial import), in which case `lowConfidence` tells the client to surface the confirm
+  // card so the user can review + decline instead of silently getting hundreds of tables.
   if (!schemaMatch.isKnownDocument) {
     const computedProposals = buildComputedProposals({
       data,
@@ -154,7 +219,15 @@ export async function autoImportStructured(
       formulaSummary: /\.xlsx?$/i.test(name) ? excelFormulaSummary(abs) : null,
       existingTables: existing.map((t) => t.name),
     });
-    return { imported: false, reason: 'new-dataset', asOf, ...proposal, computedProposals };
+    const guard = importScaleGuard(inferredPlan, importWarnings);
+    return {
+      imported: false,
+      reason: 'new-dataset',
+      asOf,
+      ...proposal,
+      computedProposals,
+      ...(guard.trip ? { lowConfidence: true, guardReason: guard.reason } : {}),
+    };
   }
   // Recognized as a known dataset but no confident date — importing undated would
   // overwrite the prior snapshot, so surface a 'needs-confirm' card.

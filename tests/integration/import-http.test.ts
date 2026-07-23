@@ -322,6 +322,8 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     autoImport?: {
       reason?: string;
       fileId?: string;
+      lowConfidence?: boolean;
+      guardReason?: string;
       plan?: { entities: { name: string }[] };
       views?: { name: string; master: string }[];
       linkConfidence?: number;
@@ -417,6 +419,42 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
       body: JSON.stringify({ mode: 'both' }),
     });
     expect(bad.status).toBe(400);
+  });
+
+  it('caps a runaway import (many tables) unless the user explicitly confirms (override)', async () => {
+    const { server } = await freshServer('lattice-import-tablecap-');
+    // 55 distinct arrays → 55 entities, over MAX_IMPORT_TABLES (50) and over the silent scale
+    // guard — the exact over-fragmentation shape (Bug 1) that pegged a workspace at ~740 tables.
+    const many: Record<string, unknown> = {};
+    for (let i = 0; i < 55; i++) {
+      many['t' + String(i)] = [
+        { id: i, v: 'a' + String(i) },
+        { id: i + 1000, v: 'b' + String(i) },
+      ];
+    }
+    const up = await uploadFile(
+      server,
+      'many.json',
+      'application/json',
+      Buffer.from(JSON.stringify(many), 'utf8'),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+    expect(up.autoImport?.lowConfidence).toBe(true); // scale guard → client shows the card
+    const fileId = up.autoImport!.fileId!;
+
+    // No override → hard cap blocks it, materializes nothing.
+    const blocked = await applyImport(server, fileId);
+    expect(blocked.some((e) => e.phase === 'error' && /safe limit/i.test(e.message ?? ''))).toBe(
+      true,
+    );
+    const before = (await (await fetch(`${server.url}/api/tables/t0/rows`)).json()) as {
+      error?: string;
+    };
+    expect(before.error).toBeTruthy(); // table t0 does not exist yet — nothing materialized
+
+    // Explicit user confirm (override) → proceeds.
+    const ok = await applyImport(server, fileId, { override: true });
+    expect(ok.some((e) => e.phase === 'done' && e.ok)).toBe(true);
   });
 
   it('imports an .xlsx drop: per-fund tabs become read-only views of the master', async () => {

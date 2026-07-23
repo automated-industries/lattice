@@ -87,7 +87,11 @@ export const inlineImportJs = `
     // that is a genuine low-confidence choice (which snapshot date to file it under?).
     function handleAutoImport(autoImport) {
       if (!autoImport || !autoImport.reason) return;
-      if (autoImport.reason === 'new-dataset') runInlineImportSilent(autoImport);
+      // Silent creation ONLY when confident. If the server's scale guard tripped
+      // (lowConfidence: too many tables, mostly-empty/template tables, a document fan-out, or
+      // a partial import), surface the confirm card instead — so the user reviews the scope and
+      // can decline rather than silently getting hundreds of tables. needs-confirm keeps its card.
+      if (autoImport.reason === 'new-dataset' && !autoImport.lowConfidence) runInlineImportSilent(autoImport);
       else renderInlineImportCard(autoImport);
     }
 
@@ -157,8 +161,10 @@ export const inlineImportJs = `
           });
         } else if (evt.phase === 'error') {
           iiActiveImports = Math.max(0, iiActiveImports - 1);
-          title.textContent = 'Import failed';
-          addLine('Error: ' + (evt.message || 'import failed'), 'imp-err');
+          // A passive drop that could not be modeled as tables is NOT data loss — the file was
+          // already saved as a reference you can open. Say that instead of "Import failed".
+          title.textContent = 'Kept as a file';
+          addLine((evt.message || 'Could not model this as tables') + ' — it is saved as a file you can open.', 'imp-err');
         } else if (evt.message) {
           addLine(evt.message);
         }
@@ -183,7 +189,7 @@ export const inlineImportJs = `
       var computed = autoImport.computedProposals || [];
       var headerText = autoImport.reason === 'needs-confirm'
         ? 'Add a dated snapshot'
-        : 'Import as a new dataset';
+        : (autoImport.lowConfidence ? 'Review this import' : 'Import as a new dataset');
 
       iiRailEmptyGone();
       var feedEl = iiRailFeed();
@@ -200,6 +206,10 @@ export const inlineImportJs = `
       bodyEl.appendChild(title);
 
       var parts = [];
+      if (autoImport.lowConfidence && autoImport.guardReason) {
+        parts.push('<div class="cd-status">Heads up — ' + escapeHtml(autoImport.guardReason) +
+          '. Review the tables below before importing.</div>');
+      }
       if (schemaMatch.isKnownDocument) {
         parts.push('<div class="cd-status ok imp-match">Recognized as a new period of an existing document &mdash; ' +
           schemaMatch.matchedCount + ' of ' + schemaMatch.totalEntities +
@@ -356,6 +366,9 @@ export const inlineImportJs = `
         // re-derivation bands links identically.
         linkConfidence: autoImport.linkConfidence,
         computed: computedSel,
+        // Explicit user Apply — allowed past the server's over-fragmentation table cap
+        // (the silent path never sets this, so it can't blow the workspace up unattended).
+        override: true,
       }, function (evt) {
         if (!evt) return;
         if (evt.phase === 'done') {

@@ -157,6 +157,14 @@ export function shapeToken(db: IntrospectDb): string {
 
 const planCache = new Map<string, { token: string; plan: DataModelPlan }>();
 
+/**
+ * Above this many modellable tables the planner skips its (O(tables²), synchronous)
+ * detection pass rather than block the single request loop — an over-imported workspace
+ * would otherwise peg a core and time out every endpoint. Auto-tidy is best-effort; a
+ * workspace this large is past the point where auto-normalization helps anyway.
+ */
+export const MAX_PLANNER_TABLES = 150;
+
 export interface EnsurePlanOptions {
   sessionId: string;
   /** Dismissed proposal fingerprints (never re-surfaced). */
@@ -186,6 +194,17 @@ export async function ensurePlan(
   if (!opts.force && cached?.token === before) return cached.plan;
 
   const structurals = buildStructurals(active);
+  // Scale guard: the relationship/merge detection below (detect) is an O(tables^2)
+  // SYNCHRONOUS pass, and buildModelProfile's reads only cross microtask boundaries, so on
+  // a very large workspace (e.g. an accidental over-import of hundreds of tables) this pegs
+  // a CPU core on the single request loop and starves every other endpoint. Above the cap,
+  // skip the tidy pass entirely (a no-op plan) so the app stays responsive. Auto-tidy is
+  // best-effort; normal-size workspaces are unaffected.
+  if (structurals.length > MAX_PLANNER_TABLES) {
+    const skipped: DataModelPlan = { autoApplied: [], proposals: [], profileHash: before };
+    planCache.set(active.configPath, { token: before, plan: skipped });
+    return skipped;
+  }
   const profile = await buildModelProfile(introspectDb(active), structurals);
   const ops = detect(profile);
   const dismissed = opts.dismissed ?? new Set<string>();

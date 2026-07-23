@@ -1,6 +1,6 @@
 {
   "name": "latticesql",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "description": "Persistent structured memory for AI agent systems — pluggable SQLite or Postgres backend, LLM context bridge",
   "type": "module",
   "main": "./dist/index.js",
@@ -49,7 +49,7 @@
     "desktop:dev": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-all desktop/main.ts",
     "desktop:build:mac": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.dmg desktop/main.ts",
     "desktop:build:mac:pkg": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.app desktop/main.ts && sh scripts/build-mac-pkg.sh",
-    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.msi desktop/main.ts",
+    "desktop:build:win": "npm run build && node scripts/sync-desktop-version.mjs && deno desktop --backend raw --v8-flags=--max-old-space-size=4096 --no-check --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --include dist/gui-assets --include docs --output dist-desktop/Lattice.msi desktop/main.ts",
     "prepublishOnly": "npm run check:generic && npm run build && npm run typecheck && npm test"
   },
   "dependencies": {

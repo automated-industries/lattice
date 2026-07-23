@@ -59,6 +59,10 @@ export interface ImportRouteDeps {
 
 /** At most this many marginal-link questions are enqueued per import. */
 const MAX_LINK_QUESTIONS = 5;
+
+/** A single import that would create more than this many tables requires an explicit
+ *  `override:true` (the confirm card sets it on Apply) — a guard against over-fragmentation. */
+const MAX_IMPORT_TABLES = 50;
 /** The affirmative option — the deferred action runs only on this exact pick. */
 const LINK_YES = 'Yes, connect them';
 const LINK_NO = "No, it's just text";
@@ -257,6 +261,7 @@ export async function dispatchImportRoute(
     asOfColumn?: unknown;
     linkConfidence?: unknown;
     computed?: unknown;
+    override?: unknown;
   }>(req).catch(() => ({}) as Record<string, unknown>);
   const fileId = typeof body.fileId === 'string' ? body.fileId : '';
   const mode: ImportMode = body.mode === 'schema' || body.mode === 'contents' ? body.mode : 'both';
@@ -310,6 +315,22 @@ export async function dispatchImportRoute(
     const existing = existingDataTables(deps.db);
     const match = matchSchemaToExisting(existing, inferredPlan);
     const { plan, views } = renameEntities(inferredPlan, inferredViews, match.rename);
+    // Hard cap (defense in depth): never materialize an unreasonable number of tables from
+    // one import without an explicit override. The confirm card sends override:true on Apply
+    // (a user who reviewed the scope may proceed); a silent import or a direct/assistant
+    // caller cannot blow the workspace up past the cap. Complements the client scale guard.
+    const plannedTables =
+      plan.entities.length +
+      plan.dimensions.length +
+      new Set(plan.linkages.map((l) => l.junction).filter(Boolean)).size;
+    if (plannedTables > MAX_IMPORT_TABLES && body.override !== true) {
+      emit({
+        phase: 'error',
+        message: `This import would create ${String(plannedTables)} tables, over the safe limit of ${String(MAX_IMPORT_TABLES)}. Review and confirm the import to proceed.`,
+      });
+      res.end();
+      return true;
+    }
     if (views.length > 0) {
       emit({
         phase: 'detect',
