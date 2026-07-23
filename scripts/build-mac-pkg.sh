@@ -31,6 +31,11 @@ IDENTIFIER="com.latticesql.desktop"
 VERSION="$(node -p "require('$REPO/package.json').version" 2>/dev/null || echo 0.0.0)"
 ENTS="$REPO/scripts/lattice.entitlements"
 APPNAME="$(basename "$APP")"
+# Installer postinstall: hand the installed bundle to the logged-in user so the
+# app's unprivileged in-place auto-updater can replace it (a root-owned install
+# can never self-update). See scripts/pkg-scripts/postinstall.
+PKG_SCRIPTS_DIR="$REPO/scripts/pkg-scripts"
+chmod +x "$PKG_SCRIPTS_DIR/postinstall" 2>/dev/null || true
 
 [ -d "$APP" ] || { echo "error: $APP not found — run 'npm run desktop:build:mac' first" >&2; exit 1; }
 
@@ -145,10 +150,12 @@ if [ -n "$SIGN_APP_IDENTITY" ]; then
   /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$CPLIST" 2>/dev/null || true
   if [ -n "$SIGN_INSTALLER_IDENTITY" ]; then
     pkgbuild --root "$APP" --component-plist "$CPLIST" --install-location "/Applications/$APPNAME" \
+      --scripts "$PKG_SCRIPTS_DIR" \
       --identifier "$IDENTIFIER" --version "$VERSION" \
       --sign "$SIGN_INSTALLER_IDENTITY" --timestamp "$OUT"
   else
     pkgbuild --root "$APP" --component-plist "$CPLIST" --install-location "/Applications/$APPNAME" \
+      --scripts "$PKG_SCRIPTS_DIR" \
       --identifier "$IDENTIFIER" --version "$VERSION" "$OUT"
   fi
   rm -f "$CPLIST"
@@ -183,7 +190,7 @@ else
   pkgbuild --analyze --root "$PKGROOT" "$CPLIST" >/dev/null
   /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$CPLIST" 2>/dev/null || true
   COMPONENT="$TMPD/component.pkg"
-  pkgbuild --root "$PKGROOT" --component-plist "$CPLIST" \
+  pkgbuild --root "$PKGROOT" --component-plist "$CPLIST" --scripts "$PKG_SCRIPTS_DIR" \
     --identifier "$IDENTIFIER" --version "$VERSION" --install-location "/" "$COMPONENT"
   # Wrap the component into a distribution product archive: a bare component pkg
   # installs unreliably when double-clicked in Finder, Installer.app expects a

@@ -16,6 +16,7 @@ import {
   summarizeText,
   classifyLinks,
   extractObjects,
+  extractionTruncationNote,
   rephraseClarifyQuestion,
   type CatalogEntity,
   type ClassifyMatch,
@@ -331,6 +332,19 @@ export async function enrichWithLlm(
         // "object extraction failed" warn (and keep links + note fallback) holds.
         if (proposedR.status === 'rejected') throw proposedR.reason;
         const proposed = proposedR.value;
+        // Disclose partial coverage when the document exceeded the extraction
+        // window budget — only a prefix was scanned for structured objects, so
+        // surface that rather than silently under-extracting an oversized file.
+        const truncNote = extractionTruncationNote(name, text.length);
+        if (truncNote) {
+          mctx.feed.publish({
+            table: 'files',
+            op: 'update',
+            rowId: fileId,
+            source: mctx.source,
+            summary: truncNote,
+          });
+        }
         const allowNewEntity = aggressiveness >= 0.5;
         const existing = new Set(db.getRegisteredTableNames().filter((t) => !isNativeEntity(t)));
         // Ask-when-marginal gate: each extracted object carries the model's 0-1

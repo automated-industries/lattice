@@ -152,6 +152,62 @@ test('reload renders a STALE orphaned turn as interrupted (composer stays free)'
   await expect(page.locator('#chat-send')).toBeEnabled();
 });
 
+test('a follow-up typed mid-turn is queued and sent when the turn finishes', async ({ page }) => {
+  // Turn 1 streams a reply but never sends `done`, so the composer stays busy.
+  // A follow-up typed + Entered mid-stream must QUEUE (not drop); finishing turn 1
+  // then flushes it as turn 2.
+  const THREAD = 't-q';
+  let posts = 0;
+  const bodies: string[] = [];
+  let socket: import('@playwright/test').WebSocketRoute | null = null;
+  const send = (msg: string, event: Record<string, unknown>): void => {
+    socket?.send(
+      JSON.stringify({ type: 'chat-progress', data: { threadId: THREAD, messageId: msg, event } }),
+    );
+  };
+  await page.routeWebSocket('**/api/stream', (ws) => {
+    socket = ws;
+  });
+  await page.route('**/api/chat', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posts += 1;
+    bodies.push(route.request().postData() || '');
+    const n = posts;
+    const msg = 'm' + String(n);
+    await route.fulfill({
+      status: 202,
+      headers: { 'content-type': 'application/json', 'x-thread-id': THREAD },
+      body: JSON.stringify({ threadId: THREAD, messageId: msg }),
+    });
+    // Turn 1: start + a delta, but withhold `done` (stays streaming). Turn 2: full.
+    send(msg, { type: 'assistant_message_start', id: msg + '-a' });
+    send(msg, { type: 'text_delta', delta: n === 1 ? 'First reply…' : 'Second reply.' });
+    if (n === 2) send(msg, { type: 'done' });
+  });
+
+  const input = await enableComposer(page, gui.url);
+  await input.fill('turn one');
+  await input.press('Enter');
+  await expect(page.locator('.chat-bubble.assistant')).toContainText('First reply');
+  await expect(page.locator('#chat-send')).toBeDisabled();
+
+  // Type a follow-up mid-stream → it queues (dimmed placeholder), the composer
+  // clears, and NO second POST fires yet. (Pre-fix the message was dropped.)
+  await input.fill('follow up while busy');
+  await input.press('Enter');
+  await expect(page.locator('.chat-msg.queued')).toHaveCount(1);
+  await expect(page.locator('.chat-msg.queued')).toContainText('follow up while busy');
+  await expect(input).toHaveValue('');
+  expect(posts).toBe(1);
+
+  // Finish turn 1 → the queued follow-up flushes as turn 2.
+  send('m1', { type: 'done' });
+  await expect.poll(() => posts).toBe(2);
+  await expect(page.locator('.chat-msg.queued')).toHaveCount(0);
+  await expect(page.locator('.chat-bubble.assistant').last()).toContainText('Second reply');
+  expect(bodies[1]).toContain('follow up while busy');
+});
+
 test('the composer textarea grows to fit multi-line input', async ({ page }) => {
   const input = await enableComposer(page, gui.url);
   // Measure the textarea's LAYOUT height (offsetHeight), not boundingBox(): the

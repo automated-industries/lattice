@@ -3,6 +3,9 @@ import { DEFAULT_MODEL } from './chat.js';
 import {
   parseObjects,
   parseMatches,
+  chunkTextForExtraction,
+  mergeExtractedObjects,
+  extractionTruncationNote,
   type SchemaEntity,
   type ExtractedObject,
   type CatalogEntity,
@@ -21,7 +24,7 @@ import {
  * functions live here (they take the GUI client type + a temperature param).
  */
 
-export { parseObjects, parseMatches };
+export { parseObjects, parseMatches, extractionTruncationNote };
 export type { SchemaEntity, ExtractedObject, CatalogEntity, CatalogRecord, ClassifyMatch };
 
 /**
@@ -288,22 +291,29 @@ export async function extractObjects(
   untrusted = false,
 ): Promise<ExtractedObject[]> {
   if (text.trim().length === 0) return [];
-  const turn = await client.runTurn({
-    model: DEFAULT_MODEL,
-    system: systemFor(EXTRACT_SYSTEM, untrusted),
-    messages: [
-      {
-        role: 'user',
-        content:
-          `# Existing entities\n${buildSchemaBlock(existing)}\n\n# Document: ${name}\n\n` +
-          `${documentBlock(text, untrusted)}\n\n# Task\nReturn the JSON array of objects to create.`,
-      },
-    ],
-    tools: [],
-    ...(temperature !== undefined ? { temperature } : {}),
-    onText: () => undefined,
-  });
-  return parseObjects(turn.text);
+  // Scan the whole document in bounded overlapping windows (a ≤12k doc is exactly
+  // one window → identical to the pre-chunking path), then merge + dedupe so
+  // objects past the first 12k are still extracted.
+  const groups: ExtractedObject[][] = [];
+  for (const chunk of chunkTextForExtraction(text)) {
+    const turn = await client.runTurn({
+      model: DEFAULT_MODEL,
+      system: systemFor(EXTRACT_SYSTEM, untrusted),
+      messages: [
+        {
+          role: 'user',
+          content:
+            `# Existing entities\n${buildSchemaBlock(existing)}\n\n# Document: ${name}\n\n` +
+            `${documentBlock(chunk, untrusted)}\n\n# Task\nReturn the JSON array of objects to create.`,
+        },
+      ],
+      tools: [],
+      ...(temperature !== undefined ? { temperature } : {}),
+      onText: () => undefined,
+    });
+    groups.push(parseObjects(turn.text));
+  }
+  return mergeExtractedObjects(groups);
 }
 
 const REPHRASE_SYSTEM =

@@ -29,7 +29,10 @@ async function bootVirgin(version: string): Promise<GuiServerHandle> {
 
 // A fully fake update service — no real registry check, no real npm install.
 // `checkNow` is a deterministic spy so the apply route never touches the network.
-function fakeUpdateService(status: UpdateStatus): {
+function fakeUpdateService(
+  status: UpdateStatus,
+  applyDownloadedUpdate?: () => void,
+): {
   service: UpdateService;
   checkNow: ReturnType<typeof vi.fn>;
 } {
@@ -39,6 +42,12 @@ function fakeUpdateService(status: UpdateStatus): {
     stop: () => undefined,
     status: () => status,
     checkNow,
+    // Mirrors the real service: apply() is the single entry point the route calls,
+    // and it invokes the desktop applyDownloadedUpdate (after arming the loop guard,
+    // which the real service does and the fake elides).
+    apply: () => {
+      applyDownloadedUpdate?.();
+    },
   };
   return { service, checkNow };
 }
@@ -48,7 +57,7 @@ async function bootWithUpdateService(
   status: UpdateStatus,
   opts: { applyDownloadedUpdate?: () => void } = {},
 ): Promise<{ handle: GuiServerHandle; checkNow: ReturnType<typeof vi.fn> }> {
-  const { service, checkNow } = fakeUpdateService(status);
+  const { service, checkNow } = fakeUpdateService(status, opts.applyDownloadedUpdate);
   const handle = await startGuiServer({
     port: 0,
     openBrowser: false,

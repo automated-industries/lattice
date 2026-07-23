@@ -1428,17 +1428,6 @@ export const dashboardJs = `    // ───────────────
           return;
         }
         var d = displayFor(table);
-        // The Workspace tab shows the open RECORD's name + its entity/file icon (a
-        // file record shows its file-type emoji; other records show the table icon).
-        // Guard on a real typed tab key (null = the home route, no tab) so a record
-        // briefly rendering under the home hash never triggers a stray title update.
-        if (typeof anSetTabMeta === 'function') {
-          var fsItemKey = anTabKeyForHash(location.hash);
-          if (fsItemKey) {
-            var isFileRec = table === 'files';
-            anSetTabMeta(fsItemKey, fsDisplayName(row) || d.label, isFileRec ? fileEmoji(row) : d.icon);
-          }
-        }
         // ONE record page for every row: files + artifacts flow through the same
         // chrome as regular records (toggle, sharing, provenance, connected
         // objects) — only the CONTENT section differs (preview/source vs the

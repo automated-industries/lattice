@@ -1,11 +1,9 @@
 // Auto-composed section of the GUI stylesheet (see styles/index.ts). The
 // Analytics view: the app-level view toggle, the Dashboards sidebar, the
-// dashboard tab strip + canvas, the assistant dock's status line, and the
-// header trigger visibility. The tab buttons themselves reuse the .tab /
-// .tab-close / .tab-overflow-* classes from tabs.ts (styles) — only the
-// container differs.
+// dashboard canvas, the assistant dock's status line, and the header trigger
+// visibility.
 export const analyticsViewCss = `    /* ── Single workspace layout ────────────────────────── */
-    /* One 3-column layout (no view flip): left sidebar │ Workspace tabs │ the
+    /* One 3-column layout (no view flip): left sidebar │ Workspace content │ the
        persistent Ask Lattice dock (its width is user-adjustable via the divider). */
     .layout {
       display: grid;
@@ -133,36 +131,6 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     /* ── Workspace header + tab strip BELOW it + canvas ─── */
     .content-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .an-workspace-head { flex: 0 0 auto; }
-    /* The tab strip is its OWN row beneath the Workspace header (not inside it).
-       Folder-style tabs so even a single tab reads unmistakably as a TAB rather
-       than an underlined heading: a tinted strip with raised, rounded, bordered
-       tabs whose ACTIVE one is filled to the canvas surface and merges into the
-       content below. */
-    .antabstrip {
-      flex: 0 0 auto; display: flex; align-items: flex-end; min-height: 40px;
-      padding: 6px 10px 0; border-bottom: 1px solid var(--border); background: var(--surface-2);
-    }
-    .antabstrip-tabs { display: flex; align-items: flex-end; gap: 4px; flex: 1; min-width: 0; }
-    /* Every tab is FORCED to one width (flex:1 1 0 → equal share). With a few tabs each
-       caps at the natural ~180px ("Certificate Holders" width); as more open they shrink
-       uniformly down to 38px — icon-only (title/× clip under overflow:hidden). 38px is
-       AN_TAB_MIN_W in analytics-tabs.ts; once even that won't fit, the trailing tabs
-       collapse into the "⋯ N" overflow menu (JS), so no horizontal scrollbar appears. */
-    .antabstrip .tab {
-      border: 1px solid transparent; border-radius: var(--r-md) var(--r-md) 0 0;
-      padding: 8px 12px; margin: 0; background: transparent;
-      color: var(--text-muted); font-weight: 500;
-      flex: 1 1 0; min-width: 38px; max-width: 180px;
-    }
-    /* The overflow "⋯ N" button is NOT a uniform tab — keep it natural width so it
-       always shows its full count and never shrinks to an icon. */
-    .antabstrip .tab.tab-overflow-btn { flex: 0 0 auto; min-width: 40px; max-width: none; }
-    .antabstrip .tab:hover { background: var(--row-hover); color: var(--text); }
-    .antabstrip .tab.active {
-      background: var(--surface); border-color: var(--border);
-      border-bottom: 1px solid var(--surface); margin-bottom: -1px;
-      color: var(--text); font-weight: 600;
-    }
     #analytics-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
     /* ── Analytics home (empty states) ──────────────────── */

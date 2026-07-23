@@ -3,19 +3,19 @@
 // offline queue, ingest, background render) register a status by id, and exactly
 // ONE shows at a time — highest priority, ties → most recent. Because every status
 // stays registered until cleared, a lower-priority status that is still active
-// auto-resumes when a higher one clears (a queue, not a stack). Mounts into the tab
-// strip's #tabstrip-status slot (falls back to the topbar). Must stay INSIDE the
-// client IIFE; inserted after realtimeFeedJs.
+// auto-resumes when a higher one clears (a queue, not a stack). Mounts into the
+// header status slot (falls back to the topbar). Must stay INSIDE the client IIFE;
+// inserted after realtimeFeedJs.
 export const statusIndicatorJs = `
     var appStatuses = {};
     var appStatusSeq = 0;
 
     // Resolve (creating once) the #app-status node, re-homing it into the header
     // status slot (where the version used to sit) if a re-render replaced its
-    // container. Falls back to the tab strip's slot, then the topbar.
+    // container. Falls back to the topbar.
     function appStatusHost() {
       var slot = document.getElementById('header-status-slot') ||
-        document.getElementById('tabstrip-status') || document.querySelector('header.topbar');
+        document.querySelector('header.topbar');
       if (!slot) return null;
       var el = document.getElementById('app-status');
       if (!el) {

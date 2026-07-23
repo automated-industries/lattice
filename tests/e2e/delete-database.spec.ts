@@ -94,3 +94,71 @@ test('Workspace Settings danger zone deletes the active workspace after typed co
     })
     .toBe('Beta|Beta');
 });
+
+// Deleting the ONLY workspace lands the server in the zero-workspace state
+// (switchedTo === null). The client must go straight to the welcome screen —
+// pre-fix it unconditionally reloaded data routes, which 409 on the virgin
+// server, throwing → a false failure toast, the confirm modal left open, and no
+// welcome transition. Own hermetic single-workspace server (env is process-wide).
+test.describe('deleting the last workspace returns to the welcome screen', () => {
+  let soloServer: GuiServerHandle;
+  let soloBase: string;
+
+  test.beforeAll(async () => {
+    soloBase = mkdtempSync(join(tmpdir(), 'lattice-e2e-del-solo-'));
+    process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-e2e-del-solo-home-'));
+    process.env.LATTICE_ENCRYPTION_KEY = 'e2e-test-key';
+    seedClaudeOAuth();
+    process.env.LATTICE_ROOT = join(soloBase, '.lattice');
+    const root = ensureLatticeRoot(soloBase);
+    const solo = addWorkspace(root, { displayName: 'Solo' });
+    const db = await Lattice.openWorkspace({ root, workspaceId: solo.id });
+    db.close();
+    const ps = resolveWorkspacePaths(root, solo);
+    soloServer = await startGuiServer({
+      configPath: ps.configPath,
+      outputDir: ps.contextDir,
+      port: 0,
+      host: '127.0.0.1',
+      teamCloud: false,
+      openBrowser: false,
+    });
+  });
+
+  test.afterAll(async () => {
+    await soloServer.close();
+    rmSync(soloBase, { recursive: true, force: true });
+  });
+
+  test('shows #virgin-state with no error toast or lingering modal', async ({ page }) => {
+    await page.goto(`${soloServer.url}#/settings/database`);
+    await expect(page.locator('#settings-drawer.open')).toBeVisible();
+    await page.locator('.drawer-tab[data-tab="database"]').click();
+
+    const deleteBtn = page.locator('#db-delete-btn');
+    await expect(deleteBtn).toBeVisible();
+    await deleteBtn.click();
+
+    const ok = page.locator('.modal-backdrop [data-act="ok"]');
+    await page.locator('#confirm-db-name').fill('Solo');
+    await expect(ok).toBeEnabled();
+    await ok.click();
+
+    // The load-bearing flip: the welcome (virgin) screen appears.
+    await expect(page.locator('#virgin-state')).toBeVisible();
+    // No false-failure toast, and the confirm modal closed.
+    await expect(page.locator('.toast')).toHaveCount(0);
+    await expect(page.locator('.modal-backdrop')).toHaveCount(0);
+    // The switch overlay did not get stuck visible.
+    await expect(page.locator('#ws-switch-overlay.show')).toHaveCount(0);
+
+    // Corroborate server state: zero workspaces, virgin.
+    await expect
+      .poll(async () => {
+        const res = await page.request.get(`${soloServer.url}/api/workspaces`);
+        const body = (await res.json()) as { virgin?: boolean; workspaces: unknown[] };
+        return `${body.virgin === true}|${body.workspaces.length}`;
+      })
+      .toBe('true|0');
+  });
+});

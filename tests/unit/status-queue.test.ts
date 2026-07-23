@@ -27,7 +27,9 @@ const statusEl = (): HTMLElement | null => document.getElementById('app-status')
 
 describe('status indicator queue', () => {
   beforeEach(() => {
-    document.body.innerHTML = '<div id="tabstrip-status"></div>';
+    // The indicator mounts into the header status slot (the tab strip that used to
+    // host it was removed); seed that slot so the factory has a home to render into.
+    document.body.innerHTML = '<span id="header-status-slot"></span>';
   });
 
   it('shows exactly one — the highest priority', () => {

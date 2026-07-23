@@ -98,32 +98,27 @@ test('a non-empty object appears as a node in the graph', async ({ page }) => {
   });
 });
 
-test('record drill-ins never spawn a second tab; legacy namespaces converge on one Workspace tab', async ({
+test('legacy record/graph namespaces converge on one canonical Workspace route', async ({
   page,
 }) => {
   await bootReady(page);
   // A record opened under the legacy Objects namespace (#/fs/*) normalizes to the
-  // single Workspace table tab #/w/table/items/<id> — a record is NOT its own tab.
+  // single Workspace table route #/w/table/items/<id>.
   await page.evaluate((id) => {
     window.location.hash = '#/fs/items/' + id;
   }, itemId);
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/items/' + itemId);
-  const itemsTab = page.locator('#antabstrip-tabs .tab[data-key="table:items"]');
-  await expect(itemsTab).toHaveCount(1);
-  await expect(itemsTab).toHaveClass(/active/);
   // The SAME record under the legacy Tables namespace (#/tables/*) converges on the
-  // SAME tab — no duplicate, still exactly one `table:items` tab.
+  // SAME route — no divergence.
   await page.evaluate((id) => {
     window.location.hash = '#/tables/items/' + id;
   }, itemId);
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/items/' + itemId);
-  await expect(page.locator('#antabstrip-tabs .tab[data-key="table:items"]')).toHaveCount(1);
-  // A graph-node drill-in (legacy #/graph/<obj>) also normalizes onto the table tab.
+  // A graph-node drill-in (legacy #/graph/<obj>) also normalizes onto the table route.
   await page.evaluate(() => {
     window.location.hash = '#/graph/items';
   });
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/table/items');
-  await expect(page.locator('#antabstrip-tabs .tab[data-key="table:items"]')).toHaveClass(/active/);
 });
 
 // Selecting a Data Model object shows its detail DIRECTLY — no "Open object" link and no

@@ -8,10 +8,23 @@
 // pipeline the Configure file preview uses (installHtmlFileBroker matches any
 // iframe.html-frame), and sharing reuses detailVisLineEl/wireRowSharing
 // unchanged. Must stay INSIDE the client IIFE (uses fetchJson/escapeHtml/
-// showToast/undoLast + dashboard.ts + analytics-tabs.ts helpers); inserted
-// after analyticsTabsJs in modules/index.ts. (Exported as analyticsViewJs —
+// showToast/undoLast + dashboard.ts helpers). (Exported as analyticsViewJs —
 // the bare analyticsJs name belongs to the separate telemetry script.)
 export const analyticsViewJs = `
+    // Route helpers (pure hash → logical-key derivation + the home-route constant).
+    // Used by the sidebar active-dashboard highlight and home navigation — they
+    // read the route only, never any view state.
+    var AN_HOME_HASH = '#/';
+    function anTabKeyForHash(hash) {
+      hash = hash || '';
+      var m = /^#\\/w\\/(dash|table|file|md)\\/([^\\/]+)/.exec(hash);
+      if (m) {
+        var kindMap = { dash: 'dashboard', table: 'table', file: 'file', md: 'markdown' };
+        return kindMap[m[1]] + ':' + decodeURIComponent(m[2]);
+      }
+      return null;
+    }
+
     // Single layout: everything IS the workspace, so this predicate is always true
     // (kept as a shim so drop-to-dock + other call sites keep working unchanged).
     function isAnalyticsHash(h) { return true; }
@@ -43,8 +56,8 @@ export const analyticsViewJs = `
       // targets #configure-trigger); the old Ask-Lattice view-toggle button is gone
       // (the Ask Lattice dock is always visible in the single layout).
       // "+" in the Dashboards header → open-or-focus the seeded "Welcome to Lattice!"
-      // dashboard. Dedupe is automatic: the router reconciles #/w/dash/<id> to the
-      // existing tab, so a second click just re-activates it. If Welcome was deleted
+      // dashboard. The router renders #/w/dash/<id>, so a second click just
+      // re-navigates to it. If Welcome was deleted
       // (not in the loaded list), fall back to the home empty-state, whose prompt box
       // is the "ask Lattice to build one" starting point.
       var newBtn = document.getElementById('dash-new-btn');
@@ -92,7 +105,7 @@ export const analyticsViewJs = `
     }
 
     // ── Dashboards sidebar ─────────────────────────────────────────────────
-    // The fetched list is cached so the home empty-state and tab titles can
+    // The fetched list is cached so the home empty-state and the sidebar can
     // read it without refetching; soft refreshes re-fetch (an assistant-created
     // dashboard appears live via the same afterMutation → renderRoute(soft)
     // path every other view uses).
@@ -157,9 +170,9 @@ export const analyticsViewJs = `
       });
     }
 
-    // ── Analytics home (no tab open) ───────────────────────────────────────
+    // ── Analytics home ─────────────────────────────────────────────────────
     // A chat-only turn is a first-class outcome: the home stays useful with no
-    // dashboards at all, and the strip legitimately shows no tabs.
+    // dashboards at all.
     function renderAnalyticsHome(host) {
       var myGen = renderGen;
       var ready = anDashRows !== null ? Promise.resolve() : renderDashList();
@@ -219,13 +232,12 @@ export const analyticsViewJs = `
       });
     }
 
-    // ── Dashboard page (one open tab) ──────────────────────────────────────
+    // ── Dashboard page ─────────────────────────────────────────────────────
     function renderDashboardPage(host, id) {
       var myGen = renderGen;
       fetchJson('/api/tables/dashboards/rows/' + encodeURIComponent(id))
         .then(function (row) {
           if (!row || row.error || !row.id) throw new Error('not found');
-          anSetTabTitle('dashboard:' + id, String(row.title || 'Dashboard'));
           if (myGen !== renderGen) return;
           setContent(host, myGen,
             '<div class="dash-page">' +
@@ -251,7 +263,7 @@ export const analyticsViewJs = `
             // detailVisLineEl returns an HTML STRING (not a node) — set it as
             // innerHTML. Using appendChild here threw on cloud/team workspaces
             // (where row._access is populated, so the string is non-empty),
-            // which the outer .catch swallowed by closing the tab and bouncing
+            // which the outer .catch swallowed by bouncing
             // home — dashboards never opened on a shared workspace.
             var visHtml = detailVisLineEl(row);
             if (visHtml) {
@@ -271,8 +283,7 @@ export const analyticsViewJs = `
           });
         })
         .catch(function () {
-          // Deleted / never existed / not visible: drop the tab and land home.
-          anCloseTab('dashboard:' + id);
+          // Deleted / never existed / not visible: land home.
           if (location.hash !== AN_HOME_HASH) location.hash = AN_HOME_HASH;
           showToast('That dashboard is no longer available', {});
         });
@@ -306,7 +317,6 @@ export const analyticsViewJs = `
               .then(function (r) { if (!r.ok) throw new Error('rename failed (' + r.status + ')'); })
               .then(function () {
                 row.title = next;
-                anSetTabTitle('dashboard:' + id, next);
                 var h1 = host.querySelector('.dash-title');
                 if (h1) h1.textContent = next;
                 renderDashList();
@@ -330,7 +340,6 @@ export const analyticsViewJs = `
               .then(function (r) { if (!r.ok) throw new Error('delete failed (' + r.status + ')'); return r.json(); })
               .then(function () {
                 showToast('Deleted "' + (row.title || 'dashboard') + '"', { undo: undoLast });
-                anCloseTab('dashboard:' + id);
                 renderDashList();
                 if (isAnalyticsHash(location.hash) && anTabKeyForHash(location.hash) === 'dashboard:' + id) {
                   location.hash = AN_HOME_HASH;
@@ -404,14 +413,12 @@ export const analyticsViewJs = `
     // bumps renderGen and applies the view class, BEFORE it would paint the
     // Configure loading frame (the hidden Configure content must stay intact).
     function renderAnalyticsRoute(hash, soft) {
-      anReconcileTab(hash);
-      anRenderTabStrip();
       renderDashList();
       if (typeof renderNavSections === 'function') renderNavSections();
       var host = document.getElementById('content');
       if (!host) return;
       if (!soft) host.innerHTML = routeLoadingHtml();
-      // Typed Workspace tabs: #/w/(dash|table|file|md)/<first>[/<drill-in>…].
+      // Typed Workspace routes: #/w/(dash|table|file|md)/<first>[/<drill-in>…].
       var m = /^#\\/w\\/(dash|table|file|md)\\/(.+)$/.exec(hash);
       if (m) {
         var kind = m[1], rest = m[2];

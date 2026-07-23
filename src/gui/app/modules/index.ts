@@ -21,7 +21,6 @@ import { searchJs } from './search.js';
 import { toastJs } from './toast.js';
 import { versionHistoryUndoJs } from './version-history-undo.js';
 import { workspaceSwitchProgressJs } from './workspace-switch-progress.js';
-import { analyticsTabsJs } from './analytics-tabs.js';
 import { sidebarJs } from './sidebar.js';
 import { routerJs } from './router.js';
 import { dashboardJs } from './dashboard.js';
@@ -73,7 +72,6 @@ export const appJs = [
   toastJs,
   versionHistoryUndoJs,
   workspaceSwitchProgressJs,
-  analyticsTabsJs,
   sidebarJs,
   routerJs,
   dashboardJs,

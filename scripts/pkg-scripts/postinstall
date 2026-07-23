@@ -1,0 +1,20 @@
+#!/bin/sh
+# Make the freshly-installed app owned by the user who is logged in at install
+# time, rather than root.
+#
+# A .pkg payload installs as root, so without this the app bundle is owned by root.
+# The app's built-in auto-updater runs UNPRIVILEGED (as the logged-in user) and
+# swaps the whole bundle in place on update; it can never overwrite a root-owned
+# bundle, so the update silently never lands and the app re-offers the same update
+# on every launch. Handing the bundle to the installing user lets the in-place
+# self-update actually complete.
+#
+# Best-effort: on a headless / management install with no console user (or the
+# console user is root), leave ownership as-is — those deployments manage updates
+# out of band and there is no unprivileged updater to satisfy.
+APP="/Applications/Lattice.app"
+CONSOLE_USER="$(stat -f "%Su" /dev/console 2>/dev/null || true)"
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ -d "$APP" ]; then
+  chown -R "$CONSOLE_USER:staff" "$APP" 2>/dev/null || true
+fi
+exit 0

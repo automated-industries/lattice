@@ -1,5 +1,5 @@
-// Auto-composed section of the GUI stylesheet (see styles/index.ts). The center
-// tab strip, the tabbed content pane, the brain-graph view, and the Settings →
+// Auto-composed section of the GUI stylesheet (see styles/index.ts). The column
+// headers, the Workspace content pane, the brain-graph view, and the Settings →
 // Data Model entity list.
 export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs) ─────────── */
     /* One shared font/size/weight/position across all three columns; the columns
@@ -20,54 +20,8 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     .col-model   { --col-accent: var(--hue-violet-deep); }
     .col-outputs { --col-accent: var(--hue-teal-deep); }
 
-    /* ── Center "Model" header: label + seamless Graph|Tables tabs ── */
+    /* ── The Workspace content pane ────────────────────────── */
     #content { flex: 1; overflow: auto; padding: 24px; min-height: 0; }
-    .tabstrip { align-items: stretch; padding: 0 12px; }
-    .tabstrip .col-header-text { align-self: center; margin-right: 18px; flex: 0 0 auto; }
-    .tabstrip-tabs { display: flex; align-items: stretch; gap: 6px; overflow: visible; flex: 1; min-width: 0; }
-    .tabstrip-status { display: flex; align-items: center; margin-left: auto; padding: 0 6px; }
-    /* Underline tabs that sit ON the header's bottom border — seamless, no box. */
-    .tab {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 0 10px; margin: 0; border: 0; border-radius: 0;
-      border-bottom: 2px solid transparent; margin-bottom: -1px;
-      background: transparent; color: var(--text-muted); font-size: 13px; font-weight: 500;
-      cursor: pointer; flex: 0 0 auto; max-width: 220px; white-space: nowrap; overflow: hidden;
-    }
-    .tab:hover { color: var(--text); background: transparent; }
-    .tab.active { color: var(--col-accent, var(--accent)); border-bottom-color: var(--col-accent, var(--accent)); font-weight: 700; }
-    .tab-icon { font-size: 13px; flex: none; }
-    .tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .tab-close {
-      display: inline-flex; align-items: center; justify-content: center; flex: none;
-      width: 16px; height: 16px; border-radius: var(--r-xs); font-size: 11px; color: var(--text-muted);
-    }
-    .tab-close:hover { background: var(--row-hover); color: var(--text); }
-    /* Unread-count badge on the Data Questions tab. */
-    .tab-badge {
-      display: inline-flex; align-items: center; justify-content: center; flex: none;
-      min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-md);
-      font-size: 11px; font-weight: 700; line-height: 1;
-      background: var(--danger); color: var(--btn-text);
-    }
-    /* Tab overflow: the "⋯ N" button + a dropdown listing the collapsed tabs. */
-    .tab-overflow-wrap { position: relative; display: inline-flex; align-items: stretch; }
-    .tab-overflow-btn { flex: none; min-width: 40px; font-weight: 500; }
-    .tab-overflow-menu {
-      position: absolute; right: 0; top: calc(100% + 2px); z-index: var(--z-menu);
-      min-width: 220px; max-height: 60vh; overflow-y: auto;
-      display: flex; flex-direction: column; padding: 6px;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
-    }
-    .tab-overflow-menu[hidden] { display: none; }
-    .tab-ov-item {
-      display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm);
-      font-size: 13px; color: var(--text-muted); cursor: pointer;
-    }
-    .tab-ov-item:hover { background: var(--row-hover); color: var(--text); }
-    .tab-ov-item.active { color: var(--accent); }
-    .tab-ov-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* The brain graph fills the whole content pane. */
     .brain-graph { height: 100%; }

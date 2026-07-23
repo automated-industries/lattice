@@ -134,3 +134,44 @@ test('Back/Forward history is per-workspace: a switch never carries the old hash
   if (await backBtn.isEnabled()) await backBtn.click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
 });
+
+test('a switch whose reload fails surfaces a loud "Switch failed", never a false success', async ({
+  page,
+}) => {
+  await page.goto(server.url + '#/');
+  await expect(page.locator('#ws-name')).toBeVisible();
+  const startName = (await page.locator('#ws-name').textContent()) ?? '';
+
+  // The switch POST itself succeeds (the server does switch), but the target
+  // workspace's entities-summary load 500s once (a transient read degradation).
+  // That fetch is load-bearing — its failure must reject the reload so the switch
+  // reports the failure loudly and reverts, rather than swallowing it into a blank
+  // workspace shown under a false "Switched workspace". Fail only the first call
+  // (the forward switch's reload); the revert's own reload then recovers. Routed
+  // now, after the initial boot has rendered the switcher.
+  let entitySummaryCalls = 0;
+  await page.route('**/api/entities-summary', (route) => {
+    entitySummaryCalls += 1;
+    if (entitySummaryCalls === 1) {
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: '{"error":"degraded"}',
+      });
+    }
+    return route.continue();
+  });
+
+  await page.locator('#ws-button').click();
+  await page.locator('#ws-menu button.db-item:not(.active)').first().click();
+
+  // The reload rejection reaches the switch handler's catch: a "Switch failed"
+  // toast (before the fix the swallowed 500 let the reload resolve, firing a
+  // false "Switched workspace" toast instead — so this assertion fails).
+  const toast = page.locator('.toast');
+  await expect(toast).toContainText('Switch failed', { timeout: 8000 });
+  await expect(toast).not.toContainText('Switched workspace');
+  // And the header reverts to where we came from — the failed switch never strands
+  // a blank view of the degraded target.
+  await expect(page.locator('#ws-name')).toHaveText(startName, { timeout: 8000 });
+});

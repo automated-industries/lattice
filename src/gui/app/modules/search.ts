@@ -165,6 +165,10 @@ export const searchJs = `    // ────────────────
     function reloadEverything() {
       showSwitchOverlay();
       return Promise.all([
+        // entities-summary is load-bearing (it IS the workspace's table list): a
+        // failure here must reject the whole reload so the switch/delete callers
+        // surface it loudly and revert, rather than rendering a blank workspace
+        // under a false success. The remaining fetches are decorative and fail-soft.
         fetchJson('/api/entities-summary'),
         fetchJson('/api/gui-meta').catch(function () { return {}; }),
         fetchJson('/api/gui-meta/columns').catch(function () { return {}; }),
@@ -238,9 +242,8 @@ export const searchJs = `    // ────────────────
         // are per-workspace module state — reset them so the new workspace doesn't
         // inherit the previous one's relationship edges or picked source.
         mtResetState();
-        // Open dashboard tabs + the cached Dashboards list are per-workspace too —
-        // stale tabs from the previous workspace would 404 in the new one.
-        anResetTabs();
+        // The cached Dashboards list is per-workspace — drop it so the new
+        // workspace doesn't inherit the previous one's dashboards.
         anDashRows = null;
         // A switch swaps the server-side buses to the new workspace; drop the old
         // workspace's render overlay state and reconnect the multiplexed event

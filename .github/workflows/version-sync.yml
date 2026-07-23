@@ -1,0 +1,24 @@
+# Fast, always-on guard: the desktop app version (deno.json) must match
+# package.json. This runs on EVERY pull request — deliberately NOT path-scoped —
+# because the desktop version is the value the app compares against the release
+# manifest to decide "is there a newer version?", and a bump in an otherwise
+# unrelated change must not be allowed to drift it. (The heavier desktop CI that
+# runs the Deno adapter tests stays path-scoped; this split keeps the cheap check
+# universal without dragging the slow one onto every PR.)
+name: Version sync
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  version-sync:
+    name: deno.json version == package.json version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/sync-desktop-version.mjs --check

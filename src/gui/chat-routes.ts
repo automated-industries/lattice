@@ -1220,15 +1220,22 @@ export async function dispatchChatRoute(
             cur.text = ev.text;
           }
         } else if (ev.type === 'assistant_message_end') {
-          // A tool round's streamed narration ("I see — let me try a different approach…")
-          // is real content the user should keep — so it stays in BOTH the persisted message
-          // and the per-round record. Separate one round's text from the next with a blank
-          // line so the persisted message reads as clean paragraphs on reload (matching the
-          // live view, where each round is its own bubble). A round with no text adds no
-          // separator. assistant_message_end fires after this round's text_delta and before
-          // its tool_use, so appending here lands the break between rounds.
-          if (ev.hadTools) {
-            const cur = turns[turns.length - 1];
+          const cur = turns[turns.length - 1];
+          if (ev.dropText && cur) {
+            // This round's preamble exactly repeated the previous kept one — roll
+            // its text off the persisted message (its deltas are the tail of
+            // assistantText, same as text_final) and blank the per-round record so
+            // it is neither saved nor replayed.
+            assistantText = assistantText.slice(0, assistantText.length - cur.text.length);
+            cur.text = '';
+          } else if (ev.hadTools) {
+            // A tool round's streamed narration ("I see — let me try a different approach…")
+            // is real content the user should keep — so it stays in BOTH the persisted message
+            // and the per-round record. Separate one round's text from the next with a blank
+            // line so the persisted message reads as clean paragraphs on reload (matching the
+            // live view, where each round is its own bubble). A round with no text adds no
+            // separator. assistant_message_end fires after this round's text_delta and before
+            // its tool_use, so appending here lands the break between rounds.
             if (cur?.text) assistantText += '\n\n';
           }
         } else if (ev.type === 'tool_use') {
