@@ -309,10 +309,10 @@ export const createDatabaseWizardJs = `    // ───────────�
           // → add them AND chat, so Lattice always responds to an attachment.
           function submitComposer() {
             var t = input.value.trim();
-            // Lattice is still replying: sendChat's chatBusy guard would drop this turn AFTER
-            // we'd already ingested the files, silently losing them. Bail now, keeping the
-            // staged files + typed text intact so the user can send once the reply finishes.
-            if (typeof chatBusy !== 'undefined' && chatBusy) return;
+            // Lattice is still replying: DON'T bail — sendChat now queues a follow-up
+            // sent while a turn streams (see the FIFO queue in onboarding.ts) instead
+            // of dropping it. A text-only send queues directly; a send with staged
+            // files ingests them (so they're added now) and queues the chat about them.
             // Guard the in-flight ingest FIRST, before the text-only fast path: while a
             // staged batch ingests, stagedFiles is already cleared, so a second Enter
             // would otherwise fall into the fast path and fire a text-only turn that

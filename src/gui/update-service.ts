@@ -14,11 +14,32 @@
  * version bumped and reloads onto the new code. The registry *check* is quiet
  * (network blips just retry next tick); only the *install* is loud.
  */
-import { checkForUpdate } from '../update-check.js';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { checkForUpdate, isNewer } from '../update-check.js';
 import { detectInstallContext, installLatest, type InstallContext } from '../update-context.js';
 
 /** Exit code the server uses to ask its supervisor to relaunch it. */
 export const GUI_RESTART_EXIT_CODE = 75;
+
+/**
+ * Persisted record of the last update we told the OS to apply, written just
+ * before the desktop app quits to run the installer/swap. Read on the next boot
+ * to detect an apply that did NOT take (the running version is still below the
+ * version we tried to install) — the signal that turns a silent
+ * download→apply→relaunch-old→download loop into a single loud error.
+ */
+interface ApplyAttempt {
+  /** Version we staged + told the OS to install. */
+  version: string;
+  /** Running version at apply time (the version we were upgrading FROM). */
+  fromVersion: string;
+  /** Epoch ms of the apply, for diagnostics. */
+  at: number;
+}
+
+const APPLY_ATTEMPT_FILE = 'apply-attempt.json';
 
 /** Default registry poll cadence while the GUI is open (3h). */
 const DEFAULT_POLL_MS = 3 * 60 * 60 * 1000;
@@ -109,9 +130,31 @@ export interface UpdateServiceOptions {
    * Desktop shell only. Launch the installer staged by {@link downloadUpdate} and
    * quit the app so the OS installer can replace the running bundle; the user
    * re-opens onto the new version. Wired to `POST /api/update/apply` once the
-   * download has reached `phase:'ready'`.
+   * download has reached `phase:'ready'`. Prefer calling {@link UpdateService.apply}
+   * (which records the attempt for loop-detection) over invoking this directly.
    */
   applyDownloadedUpdate?: () => void;
+  /**
+   * Directory for the persisted apply-attempt marker (default `~/.lattice/updates`).
+   * Test seam. The marker lets a restarted process detect an apply that did not
+   * take and refuse to re-download the same version forever.
+   */
+  stateDir?: string;
+  /**
+   * Where to point the user when an apply is detected to have failed (e.g. the
+   * releases page). Surfaced in the error message so a stuck update has a manual
+   * escape hatch instead of an endless retry.
+   */
+  manualDownloadUrl?: string;
+  /**
+   * Desktop shell only. Whether THIS installed copy can actually apply an in-place
+   * self-update — i.e. the running bundle is owned by the current user, so the
+   * unprivileged updater can replace it. When explicitly `false`, the service does
+   * NOT download an update it can never finish applying; it surfaces the available
+   * version with a one-time "reinstall to update" message instead of burning a full
+   * installer download every check. Omitted / `true` ⇒ normal auto-download.
+   */
+  selfUpdatable?: boolean;
 }
 
 export interface UpdateService {
@@ -120,6 +163,13 @@ export interface UpdateService {
   status(): UpdateStatus;
   /** Run a check now (and install if applicable). Returns the resulting status. */
   checkNow(force?: boolean): Promise<UpdateStatus>;
+  /**
+   * Desktop only. Record the apply attempt (so a restart can detect a swap that
+   * did not take) and then invoke {@link UpdateServiceOptions.applyDownloadedUpdate}.
+   * No-op when there is nothing staged. The GUI's `POST /api/update/apply` route
+   * calls this instead of the raw callback so the loop guard is armed.
+   */
+  apply(): void;
 }
 
 export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
@@ -148,6 +198,54 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   let downloadedBytes: number | null = null;
   let totalBytes: number | null = null;
   let stagedVersion: string | null = null;
+
+  // ── Failed-apply loop guard ────────────────────────────────────────────────
+  // Persist what we last told the OS to install; on the next boot, a version we
+  // already tried to apply but are STILL below means the swap/install didn't take
+  // — surface that once, loudly, and refuse to re-download it (the endless
+  // download→apply→relaunch-old→download loop otherwise).
+  const stateDir = opts.stateDir ?? join(homedir(), '.lattice', 'updates');
+  const attemptPath = join(stateDir, APPLY_ATTEMPT_FILE);
+  // The version whose apply we've detected as failed this session (blocks its
+  // re-download). Null until a boot observes a not-taken apply.
+  let failedApplyVersion: string | null = null;
+  // Emit the loud "stuck update" error only once per session, not every poll tick.
+  let failedApplyEmitted = false;
+  // Emit the "this install can't self-update, reinstall" notice only once.
+  let selfUpdateBlockedEmitted = false;
+
+  const readAttempt = (): ApplyAttempt | null => {
+    try {
+      if (!existsSync(attemptPath)) return null;
+      const m = JSON.parse(readFileSync(attemptPath, 'utf-8')) as Partial<ApplyAttempt>;
+      if (typeof m.version !== 'string' || typeof m.fromVersion !== 'string') return null;
+      return { version: m.version, fromVersion: m.fromVersion, at: Number(m.at) || 0 };
+    } catch {
+      return null;
+    }
+  };
+  const clearAttempt = (): void => {
+    try {
+      if (existsSync(attemptPath)) rmSync(attemptPath);
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  // On construction, reconcile any prior apply attempt against where we actually
+  // booted. If we reached (or passed) the target version, the apply SUCCEEDED —
+  // clear the marker. If we're still below it, the apply FAILED — arm the guard so
+  // this session reports it and won't re-download that exact version.
+  {
+    const prior = readAttempt();
+    if (prior) {
+      if (!isNewer(prior.version, opts.currentVersion)) {
+        clearAttempt(); // currentVersion >= target → success (or a newer manual install)
+      } else {
+        failedApplyVersion = prior.version; // still below target → the apply didn't take
+      }
+    }
+  }
 
   // What the user can DO about an available update on this surface. `latest` is
   // surfaced for information on every surface (even dev), but the apply action
@@ -237,6 +335,50 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     try {
       const found = await check(force);
       latest = found;
+      // Loop guard: a version we ALREADY tried to apply but are still below did not
+      // install. Never silently re-download it — surface it once, loudly, with a
+      // manual escape hatch, and leave the download disarmed. This is what breaks
+      // the download→apply→relaunch-old→re-download loop when a bundle swap fails.
+      if (found && failedApplyVersion && !isNewer(found, failedApplyVersion)) {
+        phase = 'error';
+        lastError =
+          `Update to ${found} was downloaded and applied, but the app is still running ` +
+          `${opts.currentVersion} — the install didn't complete.` +
+          (opts.manualDownloadUrl ? ` Download it manually: ${opts.manualDownloadUrl}` : '');
+        if (!failedApplyEmitted) {
+          failedApplyEmitted = true;
+          console.error(`[latticesql] auto-update stuck: ${lastError}`);
+          opts.emit('update-error', { phase: 'apply', message: lastError, stuckVersion: found });
+        }
+        return; // do NOT re-download the version that failed to apply
+      }
+      // A newer release supersedes a previously-stuck version → clear the guard and
+      // let the fresh version download normally.
+      if (found && failedApplyVersion && isNewer(found, failedApplyVersion)) {
+        failedApplyVersion = null;
+        failedApplyEmitted = false;
+        clearAttempt();
+        phase = 'idle';
+        lastError = null;
+      }
+      // Proactive guard: if this installed copy can't apply an in-place update
+      // (the running bundle isn't owned by the current user, so the unprivileged
+      // updater can never replace it), do NOT download an installer it can never
+      // finish applying — surface the available version with a one-time
+      // "reinstall to update" notice instead of burning a full download per check.
+      if (found && ctx.kind === 'desktop' && opts.selfUpdatable === false) {
+        phase = 'error';
+        lastError =
+          `Update ${found} is available, but this installation can't update itself ` +
+          `automatically.` +
+          (opts.manualDownloadUrl ? ` Reinstall the latest from ${opts.manualDownloadUrl}.` : '');
+        if (!selfUpdateBlockedEmitted) {
+          selfUpdateBlockedEmitted = true;
+          console.error(`[latticesql] auto-update unavailable for this install: ${lastError}`);
+          opts.emit('update-error', { phase: 'unsupported', message: lastError, version: found });
+        }
+        return; // never download an update this install cannot apply
+      }
       // Auto-install only on the supervised npm surface; other surfaces still
       // record `latest` so the GUI can surface it, but never npm-install here.
       if (found && ctx.installable && selfUpdate) {
@@ -273,6 +415,26 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     async checkNow(force = true): Promise<UpdateStatus> {
       await runCheck(force); // no-ops when autoUpdate is off
       return status();
+    },
+    apply(): void {
+      // Record what we're about to install BEFORE handing off + quitting, so a
+      // restart that comes back on the old version can detect the failed apply and
+      // stop re-downloading it. Only meaningful for the desktop staged-installer
+      // path; a no-op when nothing is staged or there's no apply callback.
+      if (phase !== 'ready' || !stagedVersion || !opts.applyDownloadedUpdate) return;
+      const attempt: ApplyAttempt = {
+        version: stagedVersion,
+        fromVersion: opts.currentVersion,
+        at: Date.now(),
+      };
+      try {
+        if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true });
+        writeFileSync(attemptPath, JSON.stringify(attempt));
+      } catch {
+        // If we can't persist the marker we still apply — worst case we fall back
+        // to the pre-guard behavior for this one attempt, never worse.
+      }
+      opts.applyDownloadedUpdate();
     },
   };
 }

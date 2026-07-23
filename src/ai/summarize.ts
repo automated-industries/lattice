@@ -220,6 +220,111 @@ export function parseObjects(raw: string): ExtractedObject[] {
   return out;
 }
 
+// ── Full-document extraction: chunk → per-window extract → merge ──────────────
+// The model only sees ~12k chars per call, so an oversized document used to be
+// truncated to its first window. Instead scan it in a bounded set of overlapping
+// windows and merge the results, so objects past the first 12k are still found.
+
+/** Chars the model sees per extraction call (matches documentBlock's clamp). */
+export const EXTRACTION_WINDOW = 12000;
+/** Window step — a 1k overlap so an object straddling a boundary is seen whole. */
+const EXTRACTION_STEP = 11000;
+/** Hard cap on extraction round-trips for one document (bounds cost + latency). */
+const EXTRACTION_MAX_WINDOWS = 6;
+
+/**
+ * Split a document into the fixed windows the object extractor scans. A document
+ * within one window returns `[text]` (byte-identical to the pre-chunking path);
+ * a larger one returns up to {@link EXTRACTION_MAX_WINDOWS} overlapping windows.
+ */
+export function chunkTextForExtraction(text: string): string[] {
+  if (text.length <= EXTRACTION_WINDOW) return [text];
+  const chunks: string[] = [];
+  for (
+    let start = 0;
+    start < text.length && chunks.length < EXTRACTION_MAX_WINDOWS;
+    start += EXTRACTION_STEP
+  ) {
+    chunks.push(text.slice(start, start + EXTRACTION_WINDOW));
+  }
+  return chunks;
+}
+
+/** Chars actually scanned for objects given the window budget. */
+export function extractionScannedChars(len: number): number {
+  if (len <= EXTRACTION_WINDOW) return len;
+  const budget = (EXTRACTION_MAX_WINDOWS - 1) * EXTRACTION_STEP + EXTRACTION_WINDOW;
+  return Math.min(len, budget);
+}
+
+/**
+ * A disclosure note when a document is larger than the extraction window budget,
+ * so only a prefix was scanned for structured objects. Null when fully covered
+ * (the common case) — the caller surfaces it only when non-null.
+ */
+export function extractionTruncationNote(name: string, len: number): string | null {
+  const scanned = extractionScannedChars(len);
+  if (scanned >= len) return null;
+  return (
+    `Extracted structured objects from the first ${scanned.toLocaleString()} of ` +
+    `${len.toLocaleString()} characters of "${name}"; the remainder was indexed ` +
+    `but not scanned for objects.`
+  );
+}
+
+/**
+ * Merge the per-window extraction results into one deduped list. Keyed by
+ * entity + normalized label; the FIRST occurrence wins, and later windows only
+ * fill missing value keys and union columns (≤8) / links (≤12). Final list
+ * capped at 12. A single group in → the same objects out (small-doc path).
+ */
+export function mergeExtractedObjects(groups: ExtractedObject[][]): ExtractedObject[] {
+  // A single window (a ≤12k document is always exactly one window) is returned
+  // verbatim — no dedup/merge — so a small document's output stays byte-identical
+  // to the pre-chunking path. The merge exists only to reconcile the overlap seams
+  // between multiple windows; running it on one window would silently collapse two
+  // same-labeled objects the model returned in a single response.
+  if (groups.length <= 1) return groups[0] ?? [];
+  const byKey = new Map<string, ExtractedObject>();
+  const order: string[] = [];
+  for (const group of groups) {
+    for (const obj of group) {
+      const key = obj.entity + '\0' + obj.label.trim().toLowerCase();
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, {
+          ...obj,
+          columns: obj.columns.slice(0, 8),
+          values: { ...obj.values },
+          ...(obj.links ? { links: obj.links.slice(0, 12) } : {}),
+        });
+        order.push(key);
+        continue;
+      }
+      for (const [k, v] of Object.entries(obj.values)) {
+        if (!(k in existing.values)) existing.values[k] = v;
+      }
+      if (obj.columns.length) {
+        const cols = new Set(existing.columns);
+        for (const c of obj.columns) if (cols.size < 8) cols.add(c);
+        existing.columns = [...cols].slice(0, 8);
+      }
+      if (obj.links?.length) {
+        const links = new Set(existing.links ?? []);
+        for (const l of obj.links) if (links.size < 12) links.add(l);
+        existing.links = [...links].slice(0, 12);
+      }
+    }
+  }
+  const merged: ExtractedObject[] = [];
+  for (const k of order) {
+    const obj = byKey.get(k);
+    if (obj) merged.push(obj);
+    if (merged.length >= 12) break;
+  }
+  return merged;
+}
+
 /**
  * Ask the model to extract the structured objects a document represents, given
  * the user's current schema. Reuses existing entities or proposes new ones.
@@ -234,22 +339,26 @@ export async function extractObjects(
   temperature?: number,
 ): Promise<ExtractedObject[]> {
   if (text.trim().length === 0) return [];
-  const turn = await client.runTurn({
-    model: DEFAULT_MODEL,
-    system: EXTRACT_SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content:
-          `# Existing entities\n${buildSchemaBlock(existing)}\n\n# Document: ${name}\n\n` +
-          `${text.slice(0, 12000)}\n\n# Task\nReturn the JSON array of objects to create.`,
-      },
-    ],
-    tools: [],
-    ...(temperature !== undefined ? { temperature } : {}),
-    onText: () => undefined,
-  });
-  return parseObjects(turn.text);
+  const groups: ExtractedObject[][] = [];
+  for (const chunk of chunkTextForExtraction(text)) {
+    const turn = await client.runTurn({
+      model: DEFAULT_MODEL,
+      system: EXTRACT_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content:
+            `# Existing entities\n${buildSchemaBlock(existing)}\n\n# Document: ${name}\n\n` +
+            `${chunk}\n\n# Task\nReturn the JSON array of objects to create.`,
+        },
+      ],
+      tools: [],
+      ...(temperature !== undefined ? { temperature } : {}),
+      onText: () => undefined,
+    });
+    groups.push(parseObjects(turn.text));
+  }
+  return mergeExtractedObjects(groups);
 }
 
 /**

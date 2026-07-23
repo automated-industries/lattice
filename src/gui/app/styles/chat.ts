@@ -2,8 +2,23 @@
 // css template literal — do not hand-edit; see styles/index.ts for composition.
 export const chatCss = `    /* ── Chat bubbles + tool pills ─────────────────────── */
     .chat-msg { display: flex; animation: feedIn var(--dur-2) ease-out; }
+    /* Only a non-queued bubble wraps, so its full-width .chat-time drops beneath it.
+       A queued follow-up carries no timestamp and must stay on one row, so its
+       "queued" tag sits beside the bubble instead of dropping below it. */
+    .chat-msg:not(.queued) { flex-wrap: wrap; }
     .chat-msg.user { justify-content: flex-end; }
     .chat-msg.assistant { justify-content: flex-start; }
+    /* A relative timestamp under each bubble; recomputed on reload so an older reply
+       reads as older. Full-width row (flex-wrap) so it sits beneath the bubble. */
+    .chat-time { flex-basis: 100%; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .chat-msg.user .chat-time { text-align: right; }
+    .chat-msg.assistant .chat-time { text-align: left; padding-left: 28px; }
+    /* A follow-up typed mid-turn: dimmed, tagged "queued", sent when the turn ends. */
+    .chat-msg.queued { opacity: 0.6; }
+    .chat-queued-tag {
+      align-self: center; margin: 0 6px; flex: none;
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted);
+    }
     /* The assistant speaks with the Lattice mark as its avatar (same grid glyph as the
        brand logo / favicon) so replies read as coming from Lattice. One mark per
        assistant turn (incl. the "typing…" bubble), to the left of the bubble; user

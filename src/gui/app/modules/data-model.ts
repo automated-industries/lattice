@@ -620,12 +620,21 @@ export const dataModelJs = `    // ───────────────
             '<button class="btn destructive" id="db-delete-btn">Delete workspace</button>' +
           '</div>';
         host.querySelector('#db-delete-btn').addEventListener('click', function () {
-          confirmDeleteDatabase(id, label, function () {
-            // We just deleted the active workspace; the server switched to a
-            // fallback. Re-render the drawer's Workspace-settings tab so it
-            // reflects the NEW active workspace — previously this rendered into
-            // #content behind the open drawer, leaving the user stuck on the
-            // deleted workspace's settings.
+          confirmDeleteDatabase(id, label, function (result) {
+            // Deleting the LAST workspace leaves the server at the zero-workspace
+            // state (switchedTo === null), where data routes intentionally 409.
+            // Go straight to the welcome screen — reloading everything would 409
+            // and surface a false failure toast with the modal left open.
+            if (result && result.switchedTo === null) {
+              hideSwitchOverlay();
+              closeSettingsDrawer();
+              renderVirginState();
+              return;
+            }
+            // A sibling workspace became active; re-render the drawer's
+            // Workspace-settings tab so it reflects the NEW active workspace —
+            // previously this rendered into #content behind the open drawer,
+            // leaving the user stuck on the deleted workspace's settings.
             return reloadEverything().then(function () {
               var drawer = document.getElementById('settings-drawer');
               if (drawer && !drawer.hidden) selectDrawerTab('database');

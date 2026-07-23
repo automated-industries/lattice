@@ -7,6 +7,10 @@ export const onboardingJs = `    // ──────────────�
     // ────────────────────────────────────────────────────────────
     var chatHistory = [];
     var chatBusy = false;
+    // Follow-ups typed while a turn streams are queued (FIFO) and sent when the
+    // turn finishes — never dropped. Each item: { text, files, node } where node
+    // is the dimmed "queued" placeholder bubble.
+    var chatQueue = [];
     var COMPOSER_MAX_H = 160; // px — textarea auto-grow ceiling (then it scrolls)
     function railFeedEl() { return document.getElementById('rail-feed'); }
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
@@ -29,6 +33,9 @@ export const onboardingJs = `    // ──────────────�
     }
     function clearChat() {
       chatHistory = [];
+      // Discard any follow-ups queued for the conversation we're leaving, so they
+      // never leak into a different thread.
+      chatQueue = [];
       var feedEl = railFeedEl();
       if (!feedEl) return;
       // The rail is conversation-scoped: clearing or switching a conversation
@@ -111,7 +118,7 @@ export const onboardingJs = `    // ──────────────�
         rememberThread(id);
         var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
         msgs.forEach(function (m, mi) {
-          if (m.role === 'user') { appendUserBubble(m.text, m.files); chatHistory.push({ role: 'user', text: m.text, files: m.files }); }
+          if (m.role === 'user') { appendUserBubble(m.text, m.files, m.created_at); chatHistory.push({ role: 'user', text: m.text, files: m.files }); }
           else if (m.role === 'assistant') {
             // A turn still running when the page reloaded (the newest message, status
             // 'streaming'/'pending'). Distinguish FRESH from STALE: a fresh row is almost
@@ -124,7 +131,7 @@ export const onboardingJs = `    // ──────────────�
             // interrupted reply and leave the composer free.
             var streaming = (m.status === 'streaming' || m.status === 'pending') && !!m.id && mi === msgs.length - 1;
             if (streaming && chatTurnFresh(m.startedAt)) {
-              var rctx = newAssistantBubble();
+              var rctx = newAssistantBubble(m.startedAt || m.created_at);
               if (m.text) setBubbleText(rctx, m.text);
               bindChatTurn({ messageId: m.id, threadId: id, actx: rctx, assembled: m.text || '', pendingOpen: null, done: false });
               chatBusy = true; feedTurnActive = true;
@@ -132,7 +139,7 @@ export const onboardingJs = `    // ──────────────�
             } else if (streaming) {
               // Orphaned in-flight turn: show what was saved (or a soft interrupted note)
               // as final — no bind, no composer lock, no lingering turn.
-              var ictx = newAssistantBubble();
+              var ictx = newAssistantBubble(m.startedAt || m.created_at);
               setBubbleText(ictx, m.text || '\\u26a0 This reply was interrupted and did not finish.');
             } else if (Array.isArray(m.turns) && m.turns.length > 0) {
               // Rich replay: the saved per-turn structure (text + the data-change activity
@@ -140,7 +147,7 @@ export const onboardingJs = `    // ──────────────�
               m.turns.forEach(function (t) { appendAssistantTurn(t, m.created_at, m.startedAt); });
             } else {
               // Plain text bubble — messages saved before turns were persisted.
-              var c = newAssistantBubble(); setBubbleText(c, m.text);
+              var c = newAssistantBubble(m.startedAt || m.created_at); setBubbleText(c, m.text);
             }
             chatHistory.push({ role: 'assistant', text: m.text });
           }
@@ -154,7 +161,19 @@ export const onboardingJs = `    // ──────────────�
       if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
       refreshThreadList(true); // restore the most recent conversation on load
     }
-    function appendUserBubble(text, fileNames) {
+    // Append a relative-time label as a SIBLING of the bubble (so setBubbleText's
+    // innerHTML rewrite of the bubble never clobbers it). Recomputed on each reload
+    // via relTime — which is exactly what defeats reading a stale reply as current.
+    // iso defaults to now, so live sends get a fresh "just now" label.
+    function stampBubble(msgEl, iso) {
+      if (!msgEl) return;
+      var when = iso || new Date().toISOString();
+      var t = document.createElement('span'); t.className = 'chat-time';
+      t.textContent = relTime(when);
+      try { t.title = new Date(when).toLocaleString(); } catch (_) { /* invalid date → no title */ }
+      msgEl.appendChild(t);
+    }
+    function appendUserBubble(text, fileNames, createdAt) {
       railEmptyGone();
       var feedEl = railFeedEl(); if (!feedEl) return;
       var msg = document.createElement('div'); msg.className = 'chat-msg user';
@@ -186,9 +205,10 @@ export const onboardingJs = `    // ──────────────�
         }
         host.appendChild(tray);
       }
+      stampBubble(msg, createdAt);
       feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
     }
-    function newAssistantBubble() {
+    function newAssistantBubble(createdAt) {
       railEmptyGone();
       var feedEl = railFeedEl();
       var msg = document.createElement('div'); msg.className = 'chat-msg assistant';
@@ -196,7 +216,7 @@ export const onboardingJs = `    // ──────────────�
       // Show an animated typing indicator until the first text delta arrives.
       b.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
       b.setAttribute('data-typing', '1');
-      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      msg.appendChild(b); stampBubble(msg, createdAt); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
       return { bubble: b, msg: msg };
     }
     /** Set an assistant bubble's text, clearing the typing indicator. */
@@ -309,7 +329,7 @@ export const onboardingJs = `    // ──────────────�
      *  as events, so a read-only turn with no text renders nothing. createdAt
      *  stamps the cards' relative time (events carry no ts of their own). */
     function appendAssistantTurn(turn, createdAt, startedAt) {
-      var ctx = newAssistantBubble();
+      var ctx = newAssistantBubble(startedAt || createdAt);
       if (turn.text) setBubbleText(ctx, turn.text);
       else finalizeBubble(ctx); // no text → drop the empty typing bubble
       var events = (turn.events || []).map(function (e) {
@@ -350,6 +370,9 @@ export const onboardingJs = `    // ──────────────�
       feedTurnActive = streaming;
       var sb = document.getElementById('chat-send'); if (sb) sb.disabled = streaming;
       if (!streaming) { var inp = document.getElementById('chat-input'); if (inp) inp.focus(); }
+      // Turn finished (also fires on a pre-flight refusal / network reject): drain
+      // the next queued follow-up, if any.
+      if (!streaming) flushChatQueue();
     }
     // Reconcile bound (streaming) turns after the /api/stream WebSocket reconnects. The bus
     // has NO replay buffer, so any event — including the terminal 'done' — published while
@@ -440,7 +463,13 @@ export const onboardingJs = `    // ──────────────�
       // text_delta. finalizeBubble drops an empty (no-text) round's typing bubble on its own,
       // so a bare tool call with no narration leaves nothing behind.
       } else if (ev.type === 'assistant_message_end' && ev.hadTools) {
-        if (visible) finalizeBubble(turn.actx);
+        // dropText: this round's preamble exactly repeated the previous kept one —
+        // remove its just-streamed bubble instead of finalizing it, so a multi-step
+        // turn doesn't show the same intent several times over.
+        if (visible) {
+          if (ev.dropText && turn.actx && turn.actx.msg && turn.actx.msg.remove) turn.actx.msg.remove();
+          else finalizeBubble(turn.actx);
+        }
         turn.actx = null; turn.assembled = '';
       // tool_use / tool_result are not painted as inline pills — the assistant's data
       // changes stream in as activity cards over the feed. The only in-chat acknowledgement
@@ -513,9 +542,42 @@ export const onboardingJs = `    // ──────────────�
         setTimeout(function () { if (!chatTurns[msg.messageId]) delete chatEventBuffer[msg.messageId]; }, 5000);
       }
     }
+    // A dimmed placeholder for a follow-up typed mid-turn; removed when it flushes.
+    function appendQueuedBubble(text, fileNames) {
+      railEmptyGone();
+      var feedEl = railFeedEl(); if (!feedEl) return null;
+      var msg = document.createElement('div'); msg.className = 'chat-msg user queued';
+      var label = text || (fileNames && fileNames.length ? fileNames.join(', ') : '');
+      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = label;
+      msg.appendChild(b);
+      var tag = document.createElement('span'); tag.className = 'chat-queued-tag'; tag.textContent = 'queued';
+      msg.appendChild(tag);
+      feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      return msg;
+    }
+    // Queue a follow-up sent while a turn is streaming: show a placeholder, clear
+    // the composer (like a real send), and remember it to flush on turn-done.
+    function enqueueChat(text, attachedFiles) {
+      var fileNames = (attachedFiles || []).map(function (f) { return f && f.name ? f.name : 'file'; });
+      var node = appendQueuedBubble(text, fileNames);
+      var input = document.getElementById('chat-input');
+      if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
+      chatQueue.push({ text: text, files: attachedFiles, node: node });
+    }
+    // Send the next queued follow-up once the composer is free. Each flushed send
+    // keeps sendChat's own inline error handling, so a failed queued send surfaces
+    // loudly rather than dropping.
+    function flushChatQueue() {
+      if (chatBusy || !chatQueue.length) return;
+      var item = chatQueue.shift();
+      if (item.node && item.node.remove) item.node.remove();
+      sendChat(item.text, item.files);
+    }
     function sendChat(text, attachedFiles) {
       var hasFiles = !!(attachedFiles && attachedFiles.length);
-      if (chatBusy || (!text && !hasFiles)) return;
+      if (!text && !hasFiles) return;
+      // Streaming: don't drop the message — queue it and drain on turn-done.
+      if (chatBusy) { enqueueChat(text, attachedFiles); return; }
       // A files-only send (no message) must NOT fabricate a "take a look at this file"
       // sentence — show the attached file name(s) as the bubble instead. That is
       // truthful (it is what the user attached), and the server's attached-files note

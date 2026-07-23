@@ -210,6 +210,21 @@ export interface StartGuiServerOptions {
    */
   applyDownloadedUpdate?: () => void;
   /**
+   * Desktop shell only: where to point the user when a staged update is detected
+   * to have failed to install (the releases page). Surfaced in the loud one-time
+   * "stuck update" error so a swap that can't persist has a manual escape hatch
+   * instead of an endless re-download loop. Omitted ⇒ the error omits the link.
+   */
+  updateManualDownloadUrl?: string;
+  /**
+   * Desktop shell only: whether this installed copy can apply an in-place
+   * self-update (the running bundle is owned by the current user). When `false`,
+   * the update service surfaces the available version with a "reinstall to update"
+   * notice instead of downloading an installer it can never finish applying.
+   * Omitted ⇒ treated as updatable (normal auto-download).
+   */
+  updateSelfUpdatable?: boolean;
+  /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
    * to `GET /api/desktop/open` which calls this. Omitted for the web/CLI GUI —
@@ -833,7 +848,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           //    not a crash, so the client can tell the user how to upgrade.
           const st = updateService?.status();
           if (st?.action === 'install-and-restart' && options.applyDownloadedUpdate) {
-            options.applyDownloadedUpdate();
+            // Route through the service's apply() so it records the attempt for the
+            // failed-apply loop guard before launching the installer + quitting.
+            updateService?.apply();
             sendJson(res, { ok: true, status: st });
           } else if (updateService && st?.action === 'upgrade-in-place') {
             void updateService.checkNow(true);
@@ -1439,6 +1456,12 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       ...(options.applyDownloadedUpdate
         ? { applyDownloadedUpdate: options.applyDownloadedUpdate }
         : {}),
+      ...(options.updateManualDownloadUrl
+        ? { manualDownloadUrl: options.updateManualDownloadUrl }
+        : {}),
+      ...(options.updateSelfUpdatable === undefined
+        ? {}
+        : { selfUpdatable: options.updateSelfUpdatable }),
     });
   }
 
