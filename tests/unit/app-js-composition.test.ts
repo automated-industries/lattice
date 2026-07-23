@@ -560,8 +560,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // text), sendChat passes the real text + file names (not the synthesized effectiveText),
 // files are recorded in chatHistory, and loadThread re-renders them. Length + hash
 // recaptured.
-const ORIGINAL_LENGTH = 778484;
-const ORIGINAL_SHA256 = '109550da53d68f110025a2ff41ebde57b9ab15ff3ed544416b5bf3dd8aebdae5';
+// 5.1.1 silent import: a brand-new structured drop no longer shows a confirm card —
+// handleAutoImport routes 'new-dataset' to runInlineImportSilent, which auto-applies the
+// whole proposal (every base table + row + ALL detected computed views) via
+// /api/import/apply with a compact live-progress card and no Apply gate; marginal-link
+// questions still enqueue to the assistant panel. 'needs-confirm' (undated known
+// re-import) keeps its card. Length + hash recaptured.
+const ORIGINAL_LENGTH = 782491;
+const ORIGINAL_SHA256 = '2b0b106931c8d431a3ccd468bf596139fe2bfc0789c076002ec1082b4747115f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

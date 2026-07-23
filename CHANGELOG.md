@@ -17,6 +17,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   best-effort text handling; a `.docx`/`.pptx` of, say, 46 rows now yields 46 records, not a handful.
   A document with no tables is unchanged (kept as a reference file, text-ingested for its prose).
 
+### Changed
+
+- **Structured files import silently — no confirm card.** Dropping a brand-new structured source
+  (spreadsheet, CSV/JSON, or a Word/PowerPoint with tables) now imports it directly: every base table
+  and row, plus all detected computed views, are created immediately, shown as a compact live-progress
+  card with no "Apply" gate. Uncertain/marginal links still surface as questions in the assistant
+  panel (that's a genuine low-confidence choice), and re-importing a **known** dataset with no
+  detectable date still asks which snapshot to file it under.
+
 ### Fixed
 
 - **Instant graph navigation.** Opening the graph — the brain/schema graph, a per-entity graph, or

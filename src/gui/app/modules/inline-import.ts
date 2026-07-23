@@ -56,6 +56,86 @@ export const inlineImportJs = `
       });
     }
 
+    // Dispatch an upload's autoImport proposal. Silent creation: a brand-new structured
+    // dataset imports DIRECTLY — no confirm card, because confirmation cards are clunky.
+    // A known-dataset re-import with no detectable date (needs-confirm) still asks, since
+    // that is a genuine low-confidence choice (which snapshot date to file it under?).
+    function handleAutoImport(autoImport) {
+      if (!autoImport || !autoImport.reason) return;
+      if (autoImport.reason === 'new-dataset') runInlineImportSilent(autoImport);
+      else renderInlineImportCard(autoImport);
+    }
+
+    // Silent import of a brand-new dataset: materialize every base table + row plus ALL
+    // detected computed views immediately (no opt-in UI), streaming a compact live-
+    // progress card — there is no Apply gate. Marginal/uncertain links still surface as
+    // questions in the assistant's panel (the apply route enqueues them regardless).
+    function runInlineImportSilent(autoImport) {
+      if (!autoImport || !autoImport.fileId) return;
+      // Auto-select every detected computed view (the silent path has no opt-in card).
+      var computedSel = (autoImport.computedProposals || []).map(function (p) {
+        return { table: p.table, fields: (p.fields || []).map(function (f) { return f.name; }) };
+      });
+      iiRailEmptyGone();
+      var feedEl = iiRailFeed();
+      var card = document.createElement('div');
+      card.className = 'feed-item import-live';
+      var icon = document.createElement('div'); icon.className = 'feed-icon'; icon.textContent = '⤓';
+      var bodyEl = document.createElement('div'); bodyEl.className = 'feed-body';
+      var title = document.createElement('div'); title.className = 'feed-summary';
+      title.textContent = 'Importing your data…';
+      var log = document.createElement('div'); log.className = 'imp-card-log';
+      bodyEl.appendChild(title); bodyEl.appendChild(log);
+      card.appendChild(icon); card.appendChild(bodyEl);
+      if (feedEl) { feedEl.appendChild(card); feedEl.scrollTop = feedEl.scrollHeight; }
+      function addLine(text, cls) {
+        var d = document.createElement('div');
+        d.className = 'imp-card-line' + (cls ? ' ' + cls : '');
+        d.textContent = text;
+        log.appendChild(d);
+        while (log.childNodes.length > 60) log.removeChild(log.firstChild);
+        if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+        return d;
+      }
+      addLine('Starting…');
+      iiStreamNdjson('/api/import/apply', {
+        fileId: autoImport.fileId,
+        mode: 'both',
+        asOf: '',
+        asOfColumn: '',
+        // Echo the threshold the proposal was inferred under so apply bands links identically.
+        linkConfidence: autoImport.linkConfidence,
+        computed: computedSel,
+      }, function (evt) {
+        if (!evt) return;
+        if (evt.phase === 'done') {
+          var r = evt.result || {};
+          var rbt = r.rowsByTable || {};
+          var names = Object.keys(rbt);
+          var total = 0;
+          names.forEach(function (n) { total += (rbt[n] || 0); });
+          title.textContent = 'Imported ' + names.length + ' table' + (names.length === 1 ? '' : 's') +
+            ', ' + total + ' row' + (total === 1 ? '' : 's');
+          var upd = addLine('Updating your objects…', 'imp-spin');
+          refreshEntities().then(function () {
+            renderSidebar();
+            renderRoute();
+            if (upd) { upd.className = 'imp-card-line imp-done'; upd.textContent = '✓ Done'; }
+          }).catch(function () {
+            if (upd) {
+              upd.className = 'imp-card-line imp-err';
+              upd.textContent = 'Imported, but refreshing the view failed — reload to see your objects.';
+            }
+          });
+        } else if (evt.phase === 'error') {
+          title.textContent = 'Import failed';
+          addLine('Error: ' + (evt.message || 'import failed'), 'imp-err');
+        } else if (evt.message) {
+          addLine(evt.message);
+        }
+      });
+    }
+
     // Render the confirm card for a structured drop the server flagged as
     // needing confirmation. autoImport is the upload response's proposal:
     // { reason, fileId, plan:{entities,dimensions,linkages}, views, asOf,
