@@ -85,12 +85,19 @@ export const toastJs = `    // ────────────────�
 
     var wsOutsideClickBound = false;
     function renderWsSwitcher(data) {
-      activeWsId = (data && data.current) || null; // keys the per-workspace chat-thread memory
       var wrap = document.getElementById('ws-switcher');
       var btn = document.getElementById('ws-button');
       var menu = document.getElementById('ws-menu');
       var nameEl = document.getElementById('ws-name');
       if (!wrap || !btn || !menu || !nameEl) return;
+      // A null argument means the /api/workspaces fetch FAILED (its .catch fallback),
+      // NOT that there are zero workspaces — a real response is always an object with a
+      // workspaces array, and a genuinely empty registry is the virgin state handled
+      // elsewhere. Don't repaint a misleading empty switcher (no workspaces, generic
+      // "workspace" label) over a transient failure; leave the current switcher as-is
+      // and let the boot self-heal repopulate it once the fetch recovers.
+      if (data == null) return;
+      activeWsId = (data && data.current) || null; // keys the per-workspace chat-thread memory
       // The workspace switcher is the SINGLE switcher: every database — local or
       // cloud, created or joined — is a workspace under the .lattice root, and
       // the GUI always has a root (see ensureRootForGui). No database mode.

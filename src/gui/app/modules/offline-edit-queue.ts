@@ -142,6 +142,39 @@ export const offlineEditQueueJs = `    // ────────────�
         })
         .catch(function () { /* best-effort — keep the link hidden */ });
     }
+    // Ask the server to check the registry NOW rather than waiting for its background
+    // poll, then refresh the pill. Debounced for non-manual triggers (window focus) so
+    // rapid fires can't spam it; a manual "Check for updates" always runs and reports its
+    // result. Powers the on-demand control + focus re-check (the poll alone can leave a
+    // fresh release invisible for a while).
+    var lastForcedUpdateCheck = 0;
+    function forceUpdateCheck(reason) {
+      var now = Date.now();
+      if (reason !== 'manual' && now - lastForcedUpdateCheck < 15000) return;
+      lastForcedUpdateCheck = now;
+      if (reason === 'manual') {
+        setStatus({ id: 'update-check', kind: 'info', spinner: true, ttl: 8000, text: 'Checking for updates…' });
+      }
+      fetch('/api/update/check', { method: 'POST' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (s) {
+          if (s) { updateState = s; applyUpdateBadge(s); }
+          checkUpdateAvailable();
+          if (reason === 'manual') {
+            clearStatus('update-check');
+            var has = s && s.latest && s.current && s.latest !== s.current;
+            if (typeof showToast === 'function') {
+              showToast(has ? ('Update available: v' + s.latest) : "You're on the latest version.", {});
+            }
+          }
+        })
+        .catch(function () {
+          if (reason === 'manual') {
+            clearStatus('update-check');
+            if (typeof showToast === 'function') showToast('Update check failed — try again.', {});
+          }
+        });
+    }
     // On every (re)connect, ask the server its version. A change vs BOOT_VERSION
     // means a relaunch onto new code → reload. Best-effort; never throws.
     function checkServerVersion() {
@@ -369,6 +402,10 @@ export const offlineEditQueueJs = `    // ────────────�
         // The bus has no replay: reconcile any chat turn bound before this (re)connect, so
         // a terminal 'done' published while the socket was down can't strand the composer.
         if (typeof resyncChatTurns === 'function') resyncChatTurns();
+        // A regained connection is the cue to recover a degraded boot: if a load-bearing
+        // read failed at startup (empty/unknown workspace), refetch + re-render now
+        // instead of stranding the user until a manual reload.
+        if (state.bootDegraded && typeof bootSelfHeal === 'function') bootSelfHeal();
       };
       ws.onmessage = function (ev) {
         var msg = null;

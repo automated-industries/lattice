@@ -224,3 +224,37 @@ describe('POST /api/update/apply', () => {
     expect(String(body.error)).toMatch(/not available|latticesql\.com/i);
   });
 });
+
+describe('POST /api/update/check', () => {
+  it('forces an immediate check and returns the resulting status', async () => {
+    const status: UpdateStatus = {
+      current: '1.0.0',
+      latest: '2.0.0',
+      kind: 'global',
+      installable: true,
+      autoUpdate: true,
+      action: 'upgrade-in-place',
+      checking: false,
+      installing: false,
+      lastError: null,
+      ...idleDownload,
+    };
+    const { handle, checkNow } = await bootWithUpdateService('1.0.0', status);
+    const res = await fetch(`${handle.url}/api/update/check`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // The on-demand check forces a real (forced) registry check and returns the status.
+    expect(checkNow).toHaveBeenCalledWith(true);
+    expect(body.latest).toBe('2.0.0');
+    expect(body.action).toBe('upgrade-in-place');
+  });
+
+  it('reports an idle status (no crash) when no update service is configured', async () => {
+    const { url } = await bootVirgin('1.2.3');
+    const res = await fetch(`${url}/api/update/check`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.current).toBe('1.2.3');
+    expect(body.action).toBe('none');
+  });
+});

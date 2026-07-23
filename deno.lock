@@ -20,6 +20,7 @@
       "dependencies": [
         "npm:@anthropic-ai/sdk@~0.71.2",
         "npm:@eslint/js@9",
+        "npm:@huggingface/transformers@^4.2.0",
         "npm:@mozilla/readability@0.5",
         "npm:@playwright/test@^1.48.0",
         "npm:@scarf/scarf@^1.4.0",

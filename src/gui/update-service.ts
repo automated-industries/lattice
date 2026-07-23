@@ -41,8 +41,12 @@ interface ApplyAttempt {
 
 const APPLY_ATTEMPT_FILE = 'apply-attempt.json';
 
-/** Default registry poll cadence while the GUI is open (3h). */
-const DEFAULT_POLL_MS = 3 * 60 * 60 * 1000;
+/**
+ * Default registry poll cadence while the GUI is open (30 min). Kept tight so a release
+ * becomes visible within half an hour without a restart; the on-demand `/api/update/check`
+ * route + the client's window-focus re-check cover the "I know it's out NOW" case.
+ */
+const DEFAULT_POLL_MS = 30 * 60 * 1000;
 
 export interface UpdateStatus {
   current: string;

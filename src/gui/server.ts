@@ -867,6 +867,29 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           return;
         }
+        if (method === 'POST' && pathname === '/api/update/check') {
+          // On-demand "check for updates now": force an immediate check so a user who
+          // knows a release exists doesn't have to wait for the next background poll (or
+          // restart the app). Returns the resulting status. Safe when no update service
+          // is configured (unsupervised / auto-update off) — reports the idle status.
+          if (!updateService) {
+            sendJson(res, {
+              current: guiVersion,
+              latest: null,
+              kind: 'unknown',
+              installable: false,
+              autoUpdate,
+              action: 'none',
+              checking: false,
+              installing: false,
+              lastError: null,
+            });
+            return;
+          }
+          const status = await updateService.checkNow(true);
+          sendJson(res, status);
+          return;
+        }
 
         // Zero-workspace "virgin" state: no active DB. Serve only the shell +
         // the workspace-management & onboarding routes; everything else 409s
@@ -1623,6 +1646,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     ws.on('error', cleanup);
   };
 
+  // Kick the initial background render at most once. Deferred (see below) so it can't
+  // run concurrently with a fresh tab's boot reads and starve them — the first GUI
+  // client's event-stream connect is the signal that its boot has completed.
+  let initialRenderKicked = false;
+  const kickInitialRender = (): void => {
+    if (initialRenderKicked || !activeRef) return;
+    initialRenderKicked = true;
+    startBackgroundRender(activeRef);
+  };
+
   server.on('upgrade', (req, socket, head) => {
     const { pathname } = new URL(req.url ?? '/', `http://${host}`);
     // Same guard as mutating HTTP: a cross-site page must not open the realtime
@@ -1634,6 +1667,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleEventStream(ws);
+      // A GUI client just connected its event stream — its boot reads are done, so the
+      // initial render can run now without competing with them.
+      kickInitialRender();
     });
   });
 
@@ -1648,12 +1684,17 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // Now the real port is known — arm the CSRF/rebinding guard with the exact Host
   // authorities the server actually answers on.
   boundAuthorities = computeBoundAuthorities(host, port, hostIsLoopback);
-  // Now that the server is accepting connections, render the initial workspace's
-  // context tree in the background — `/` and `/api/entities` answer instantly
-  // while it churns, and a render that finishes before any tab connects is
-  // covered by the `render-snapshot` replay on the `/api/stream` WebSocket. No-op
-  // when virgin (no workspace open yet — the welcome screen is showing).
-  if (activeRef) startBackgroundRender(activeRef);
+  // Render the initial workspace's context tree in the background — `/` and
+  // `/api/entities` answer instantly while it churns, and a render that finishes
+  // before any tab connects is covered by the `render-snapshot` replay on the
+  // `/api/stream` WebSocket. No-op when virgin (no workspace open yet).
+  //
+  // DEFERRED, not immediate: a full render kicked the instant the port opens competes
+  // with the first tab's ~8 concurrent boot reads and can starve them into a degraded,
+  // empty-looking boot. So it starts on the first GUI client's event-stream connect
+  // (its boot reads are done by then), with a short fallback so headless/CLI use —
+  // where no browser tab attaches — still renders.
+  if (activeRef) setTimeout(kickInitialRender, 4000);
   // Begin the auto-update poll now that we're listening (no-op unless a
   // supervised child enabled it). The first tick checks immediately.
   updateService?.start();
