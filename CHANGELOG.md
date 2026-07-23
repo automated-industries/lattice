@@ -11,20 +11,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ### Fixed
 
 - **The desktop app no longer gets stuck in an endless "Downloading update → Install & restart →
-  Downloading update" loop.** When a staged update failed to replace the running app bundle (e.g. an
-  App-Translocated or non-writable `/Applications`, or a failed swap), the swap helper silently
-  relaunched the **old** app, which re-detected the same update and re-downloaded it — forever, with no
-  error shown. The update service now records the version it hands off to install; on the next launch,
-  if the app comes back still running the old version, it reports the failed install **once, loudly**
-  ("the install didn't complete — download it manually: …") and **stops re-downloading** that version.
-  A genuinely newer release still supersedes a stuck one and downloads normally. (A successfully
-  installed update was never affected — an up-to-date app doesn't loop.)
+  Downloading update" loop.** The macOS installer placed the app so the app's own (unprivileged) in-place
+  auto-updater could not replace it, so an update could never finish applying — the running version never
+  advanced, the app kept seeing the same update as available, and re-downloaded it on every launch.
+  Fixed at three independent layers:
+  - **The installer now hands the app to the installing user**, so the in-place self-update can actually
+    complete — a bundle owned by root can never be replaced by an unprivileged updater.
+  - **A failed apply now fails loud, once, instead of looping.** The updater records the version it hands
+    off to install; if the app relaunches still on the old version, it surfaces the failed install a
+    single time (with a link to reinstall the latest) and stops re-downloading that version, rather than
+    silently re-downloading forever. A genuinely newer release still supersedes a stuck one. (A
+    successfully installed update was never affected — an up-to-date app doesn't loop.)
+  - **The release manifest advertises the built binary's version** (the single source of truth), and a
+    release tag that doesn't match the built version now fails the release — so a version can never be
+    advertised that the shipped binary can't reach.
 - **Version-sync hygiene.** `deno.json` (the desktop app's self-reported version, which drives the
   update comparison) is re-synced to `package.json`, and the version-match check now runs on **every**
   PR instead of only PRs that touch the desktop build — so a version bump in an unrelated change can no
   longer drift the desktop version undetected.
-- **`latest.json` now lists `Lattice.pkg`** (with sha256 + size) so the installer-fallback download is
-  verified by hash instead of downloaded unverified.
+- **`latest.json` now lists the `.pkg` installer** (with sha256 + size) so the installer-fallback download
+  is verified by hash instead of downloaded unverified.
 
 ## [5.1.3] — 2026-07-23
 
