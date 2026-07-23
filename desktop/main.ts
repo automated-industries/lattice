@@ -22,6 +22,11 @@ import {
 } from '../dist/desktop-entry.js';
 import { openInSystemBrowser, LINK_INTERCEPTOR_JS } from './system-browser.ts';
 import { hideWindowsStartupChrome } from './windows-chrome.ts';
+import {
+  resolveVerifiedAsset,
+  parsePkgTeamIdentifier,
+  installerTrustError,
+} from './update-verify.ts';
 
 // Windows (raw backend): hide the stray console + the blank phantom native window
 // before anything logs or a window could flash. No-op on every other platform.
@@ -166,34 +171,13 @@ async function isDirWritable(dir: string): Promise<boolean> {
   }
 }
 
-// Best-effort: the manifest's expected sha256 + size for a published artifact by
-// filename. Absent/unreachable → nulls (download proceeds unverified-by-hash; the
-// artifacts are themselves code-signed, and the swap path additionally re-verifies
-// the extracted .app with codesign + Gatekeeper).
-async function manifestAsset(
-  filename: string,
-): Promise<{ sha: string | null; size: number | null }> {
-  try {
-    const res = await fetch(new URL('latest.json', UPDATE_BASE_URL), {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (res.ok) {
-      const m = (await res.json()) as {
-        assets?: Record<string, { name?: string; sha256?: unknown; sizeBytes?: unknown }>;
-      };
-      for (const asset of Object.values(m.assets ?? {})) {
-        if (asset && asset.name === filename) {
-          return {
-            sha: typeof asset.sha256 === 'string' ? asset.sha256 : null,
-            size: typeof asset.sizeBytes === 'number' ? asset.sizeBytes : null,
-          };
-        }
-      }
-    }
-  } catch {
-    /* manifest unreachable — proceed unverified-by-hash */
-  }
-  return { sha: null, size: null };
+// The manifest's expected sha256 + size for a published artifact by filename, FAILING
+// CLOSED: throws when the manifest is unreachable, lists no such artifact, or the entry
+// carries no checksum, so a download that can't be integrity-checked is refused rather
+// than run unverified. (A party able to tamper with a download can also fail the
+// manifest fetch — skipping the check on that failure is the wrong polarity.)
+async function manifestAsset(filename: string): Promise<{ sha: string; size: number | null }> {
+  return resolveVerifiedAsset(fetch, new URL('latest.json', UPDATE_BASE_URL).toString(), filename);
 }
 
 // Stream a download to `dest`, reporting byte progress and verifying size + sha256
@@ -202,9 +186,13 @@ async function streamToFile(
   url: string,
   dest: string,
   expectedSize: number | null,
-  expectedSha: string | null,
+  expectedSha: string,
   onProgress: (done: number, total: number | null) => void,
 ): Promise<void> {
+  // Fail closed: a download with no expected checksum is never saved. Callers derive the
+  // sha from the fail-closed manifest lookup, so this should never fire — it is the last
+  // backstop against an unverified write.
+  if (!expectedSha) throw new Error('refusing a download with no expected checksum');
   const res = await fetch(url, { signal: AbortSignal.timeout(600_000) });
   if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
   const total = expectedSize ?? (Number(res.headers.get('content-length')) || null);
@@ -225,7 +213,7 @@ async function streamToFile(
   if (expectedSize != null && done !== expectedSize) {
     throw new Error(`download size mismatch: got ${done} bytes, expected ${expectedSize}`);
   }
-  if (expectedSha && hash.digest('hex') !== expectedSha) {
+  if (hash.digest('hex') !== expectedSha) {
     throw new Error('download checksum mismatch — refusing a tampered download');
   }
 }
@@ -294,6 +282,7 @@ async function stageBundleSwap(
 // launch-and-quit apply.
 async function downloadInstaller(
   onProgress: (done: number, total: number | null) => void,
+  runningApp: string | null,
 ): Promise<void> {
   const name = installerName();
   if (!name) throw new Error(`no desktop installer for platform "${Deno.build.os}"`);
@@ -301,8 +290,33 @@ async function downloadInstaller(
   const dest = join(updateStageDir, name);
   const { sha, size } = await manifestAsset(name);
   await streamToFile(new URL(name, UPDATE_BASE_URL).toString(), dest, size, sha, onProgress);
+  // Installer-path parity with the bundle-swap gate: before this installer is ever
+  // launched, verify Gatekeeper accepts it AND pin its signing team to the running app's
+  // — so a validly-signed but different-identity package can't be substituted. The hash
+  // check above is no longer the ONLY app-level control on this path.
+  await verifyInstaller(dest, runningApp);
   stagedMode = 'installer';
   stagedInstaller = dest;
+}
+
+// Verify a downloaded OS installer is trustworthy before it can be launched (macOS: the
+// .pkg is Developer-ID-signed + notarized). Windows .msi trust is the OS installer's own
+// UAC/Authenticode prompt, so there is nothing to add app-side there.
+async function verifyInstaller(installerPath: string, runningApp: string | null): Promise<void> {
+  if (Deno.build.os !== 'darwin') return;
+  const gate = await run('spctl', ['--assess', '--type', 'install', installerPath]);
+  const runningTeam = runningApp
+    ? parseTeamIdentifier((await run('codesign', ['-dvv', runningApp])).err)
+    : null;
+  const installerTeam = parsePkgTeamIdentifier(
+    (await run('pkgutil', ['--check-signature', installerPath])).out,
+  );
+  const err = installerTrustError({
+    gatekeeperAccepted: gate.ok,
+    runningTeam,
+    installerTeam,
+  });
+  if (err) throw new Error(err);
 }
 
 // Auto-download the update in the background — the frictionless bundle swap when
@@ -327,7 +341,7 @@ async function downloadUpdate(
   if (strategy === 'swap' && runningApp) {
     await stageBundleSwap(runningApp, onProgress);
   } else {
-    await downloadInstaller(onProgress);
+    await downloadInstaller(onProgress, runningApp);
   }
 }
 
