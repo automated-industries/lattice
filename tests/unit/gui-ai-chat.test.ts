@@ -154,6 +154,52 @@ describe('chat tool loop', () => {
     expect(ends[1]?.hadTools).toBe(false); // final answer round (no tools)
   });
 
+  it('collapses repeated tool-step preambles (dropText) but never the final answer', async () => {
+    // Three tool rounds restate the SAME intent, then a final answer. The first
+    // preamble is kept; the two exact repeats carry dropText; the answer never does.
+    const narration = 'Let me look into that';
+    const tool = (id: string) => ({
+      id,
+      name: 'list_rows',
+      input: { table: 'people' },
+    });
+    const client = scriptedClient([
+      { text: narration, toolUses: [tool('t1')] },
+      { text: narration, toolUses: [tool('t2')] },
+      { text: narration, toolUses: [tool('t3')] },
+      { text: 'Here is the answer.' },
+    ]);
+    const events = await collect(runChat({ client, dispatch, userMessage: 'do it' }));
+    const ends = events.filter((e) => e.type === 'assistant_message_end') as {
+      type: 'assistant_message_end';
+      hadTools?: boolean;
+      dropText?: boolean;
+    }[];
+    expect(ends.length).toBe(4);
+    expect(ends.filter((e) => e.dropText === true).length).toBe(2); // zero before the fix
+    expect(ends[0]?.dropText).toBeFalsy(); // first preamble kept
+    expect(ends[1]?.dropText).toBe(true); // exact repeat dropped
+    expect(ends[2]?.dropText).toBe(true); // exact repeat dropped
+    expect(ends[3]?.hadTools).toBe(false); // final answer round
+    expect(ends[3]?.dropText).toBeFalsy(); // the answer is never collapsed
+  });
+
+  it('never collapses DISTINCT tool-step narrations', async () => {
+    const tool = (id: string) => ({ id, name: 'list_rows', input: { table: 'people' } });
+    const client = scriptedClient([
+      { text: 'Searching the people', toolUses: [tool('a')] },
+      { text: 'Now checking again', toolUses: [tool('b')] },
+      { text: 'And once more', toolUses: [tool('c')] },
+      { text: 'All done.' },
+    ]);
+    const events = await collect(runChat({ client, dispatch, userMessage: 'reconcile' }));
+    const ends = events.filter((e) => e.type === 'assistant_message_end') as {
+      type: 'assistant_message_end';
+      dropText?: boolean;
+    }[];
+    expect(ends.filter((e) => e.dropText === true).length).toBe(0);
+  });
+
   it('streams deltas that arrive across an await (live channel, not buffered per turn)', async () => {
     // The turn produces text, yields to the event loop, then produces more text
     // before resolving. The generator must yield BOTH deltas (the drain loop keeps

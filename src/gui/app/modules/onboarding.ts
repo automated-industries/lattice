@@ -450,7 +450,13 @@ export const onboardingJs = `    // ──────────────�
       // text_delta. finalizeBubble drops an empty (no-text) round's typing bubble on its own,
       // so a bare tool call with no narration leaves nothing behind.
       } else if (ev.type === 'assistant_message_end' && ev.hadTools) {
-        if (visible) finalizeBubble(turn.actx);
+        // dropText: this round's preamble exactly repeated the previous kept one —
+        // remove its just-streamed bubble instead of finalizing it, so a multi-step
+        // turn doesn't show the same intent several times over.
+        if (visible) {
+          if (ev.dropText && turn.actx && turn.actx.msg && turn.actx.msg.remove) turn.actx.msg.remove();
+          else finalizeBubble(turn.actx);
+        }
         turn.actx = null; turn.assembled = '';
       // tool_use / tool_result are not painted as inline pills — the assistant's data
       // changes stream in as activity cards over the feed. The only in-chat acknowledgement

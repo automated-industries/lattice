@@ -564,6 +564,10 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
 
   let loop = 0;
   let consecutiveAllFailed = 0;
+  // Collapse consecutive tool-round preambles that restate the same intent
+  // verbatim: the text of the last KEPT preamble round, to compare the next
+  // against (presentational — the model still keeps every round in its context).
+  let lastKeptPreamble = '';
   try {
     for (; loop < MAX_TOOL_LOOPS; loop++) {
       yield { type: 'assistant_message_start', id: `m${String(loop)}` };
@@ -679,7 +683,18 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       // the route to drop it from the persisted message, so preamble is never bubbled,
       // persisted, or replayed (its text still enters `assistantBlocks` below, so the
       // model keeps its own reasoning context).
-      yield { type: 'assistant_message_end', hadTools: turn.toolUses.length > 0 };
+      // `dropText` additionally collapses a tool round whose preamble EXACTLY repeats
+      // the previous kept one, so a multi-step turn doesn't render the same intent
+      // several times over. Never applies to the final (no-tool) answer round.
+      const roundHadTools = turn.toolUses.length > 0;
+      const roundText = (turn.text || '').trim();
+      const dropText = roundHadTools && roundText.length > 0 && roundText === lastKeptPreamble;
+      if (roundHadTools && !dropText && roundText.length > 0) lastKeptPreamble = roundText;
+      yield {
+        type: 'assistant_message_end',
+        hadTools: roundHadTools,
+        ...(dropText ? { dropText: true } : {}),
+      };
 
       // Record the assistant turn (text + any tool_use blocks).
       const assistantBlocks: ContentBlock[] = [];

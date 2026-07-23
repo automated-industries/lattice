@@ -29,7 +29,10 @@ export type ChatStreamEvent =
   // reaps that round's bubble and the route drops it from the persisted message.
   // (Text now streams LIVE as it arrives, before tool use is known, so this flag is
   // how a preamble round is distinguished from the final answer after the fact.)
-  | { type: 'assistant_message_end'; hadTools?: boolean }
+  // `dropText`: this round's preamble exactly repeated the previous kept one, so
+  // the client removes its bubble and the route rolls its text off the persisted
+  // message (a consumer that ignores the field degrades to the pre-collapse behavior).
+  | { type: 'assistant_message_end'; hadTools?: boolean; dropText?: boolean }
   // A fast, contextual acknowledgement published the instant a turn is accepted, BEFORE
   // the (possibly slow) tool loop starts — "Got it, pulling your Q3 invoices…". Rendered
   // as a transient bubble; the real answer streams into its own bubble after. Not
