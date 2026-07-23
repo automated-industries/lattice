@@ -111,7 +111,7 @@ export const onboardingJs = `    // ──────────────�
         rememberThread(id);
         var sel = document.getElementById('rail-threads'); if (sel) sel.value = id;
         msgs.forEach(function (m, mi) {
-          if (m.role === 'user') { appendUserBubble(m.text); chatHistory.push({ role: 'user', text: m.text }); }
+          if (m.role === 'user') { appendUserBubble(m.text, m.files); chatHistory.push({ role: 'user', text: m.text, files: m.files }); }
           else if (m.role === 'assistant') {
             // A turn still running when the page reloaded (the newest message, status
             // 'streaming'/'pending'). Distinguish FRESH from STALE: a fresh row is almost
@@ -154,12 +154,35 @@ export const onboardingJs = `    // ──────────────�
       if (sel) sel.addEventListener('change', function () { if (sel.value) loadThread(sel.value); else newChat(); });
       refreshThreadList(true); // restore the most recent conversation on load
     }
-    function appendUserBubble(text) {
+    function appendUserBubble(text, fileNames) {
       railEmptyGone();
       var feedEl = railFeedEl(); if (!feedEl) return;
       var msg = document.createElement('div'); msg.className = 'chat-msg user';
-      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = text;
-      msg.appendChild(b); feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      var hasFiles = !!(fileNames && fileNames.length);
+      // With files, stack the bubble + file chips vertically (right-aligned); a
+      // text-only message keeps the plain single-bubble layout unchanged.
+      var host = msg;
+      if (hasFiles) { host = document.createElement('div'); host.className = 'chat-user-stack'; msg.appendChild(host); }
+      if (text) {
+        var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = text;
+        host.appendChild(b);
+      }
+      // Attached files render as persistent chips IN the sent message. They used to
+      // vanish on a text+file send (the bubble showed only the text), so the user
+      // couldn't see what they'd attached; now the attachment stays visible in the
+      // feed and re-renders from thread history.
+      if (hasFiles) {
+        var tray = document.createElement('div'); tray.className = 'chat-msg-files';
+        for (var i = 0; i < fileNames.length; i++) {
+          var chip = document.createElement('span'); chip.className = 'chat-msg-file';
+          var ic = document.createElement('span'); ic.className = 'chat-msg-file-ic'; ic.textContent = '📄';
+          var nm = document.createElement('span'); nm.className = 'chat-msg-file-name';
+          nm.textContent = fileNames[i] || 'file';
+          chip.appendChild(ic); chip.appendChild(nm); tray.appendChild(chip);
+        }
+        host.appendChild(tray);
+      }
+      feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
     }
     function newAssistantBubble() {
       railEmptyGone();
@@ -503,9 +526,12 @@ export const onboardingJs = `    // ──────────────�
       feedTurnId += 1;
       feedTurnStartMs = Date.now();
       feedTurnActive = true;
-      appendUserBubble(effectiveText);
+      // Show the REAL typed text (empty on a files-only send) plus the attached files
+      // as chips — not the synthesized effectiveText, which would otherwise hide the
+      // files behind the message on a text+file send.
+      appendUserBubble(text, fileNames);
       var historyToSend = chatHistory.slice();
-      chatHistory.push({ role: 'user', text: effectiveText });
+      chatHistory.push({ role: 'user', text: effectiveText, files: fileNames });
       var input = document.getElementById('chat-input');
       var sendBtn = document.getElementById('chat-send');
       // Clear + collapse the textarea back to one line (reuse its auto-grow so

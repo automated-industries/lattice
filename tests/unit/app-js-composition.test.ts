@@ -554,8 +554,14 @@ import { analyticsTabsJs } from '../../src/gui/app/modules/analytics-tabs.js';
 // back to the row's OWN columns (rowToFallbackMarkdown: title heading + long-form fields
 // + a key:value list), rendered read-only, matching what the assistant reads from the
 // row. Length + hash recaptured.
-const ORIGINAL_LENGTH = 776883;
-const ORIGINAL_SHA256 = '6f2ff163a34d62350926b09a959151fbf1546c8ef2d019651e4f506f0dbfb90f';
+// 5.1.1 chat attachment persistence: attaching a file AND typing a message then sending
+// both no longer drops the file from the bubble — appendUserBubble(text, fileNames) now
+// renders the attached files as persistent chips below the message (stacked when there's
+// text), sendChat passes the real text + file names (not the synthesized effectiveText),
+// files are recorded in chatHistory, and loadThread re-renders them. Length + hash
+// recaptured.
+const ORIGINAL_LENGTH = 778484;
+const ORIGINAL_SHA256 = '109550da53d68f110025a2ff41ebde57b9ab15ff3ed544416b5bf3dd8aebdae5';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

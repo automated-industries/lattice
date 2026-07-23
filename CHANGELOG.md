@@ -34,6 +34,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   The record view now falls back to the row's own columns (title + long-form fields + a key/value
   list), rendered read-only — the same content the assistant sees — so a freshly-added record always
   shows its content instead of a dead empty state.
+- **Chat attachments no longer disappear when sent with a message.** Attaching a file and typing a
+  message, then sending both, used to post the message but drop the file from the conversation. The
+  attached file(s) now render as persistent chips in the sent message and re-render from thread
+  history.
 
 ## [5.1.0] — 2026-07-22
 

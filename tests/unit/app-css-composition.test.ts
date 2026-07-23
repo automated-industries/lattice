@@ -244,8 +244,11 @@ import { css } from '../../src/gui/app/css.js';
 // only. Length + hash recaptured for the combined v5.1 bundle.
 // Managed token balance + out-of-credit notice: the .chat-bubble.assistant.notice-error
 // red style (the friendly $0-balance chat notice). Length + hash recaptured.
-const ORIGINAL_LENGTH = 171900;
-const ORIGINAL_SHA256 = '62062335ce445d926881c4cad41174215d8db183760c786ea14dc02292b576c5';
+// 5.1.1 chat attachment chips: .chat-user-stack (stacks a user bubble + its file chips,
+// right-aligned) + .chat-msg-files / .chat-msg-file(-ic/-name) styling for attachments
+// that now persist in a sent message. Length + hash recaptured.
+const ORIGINAL_LENGTH = 172786;
+const ORIGINAL_SHA256 = '60cca3758abcf5645803b3edec33e1821c713a0842bed90c629648b2b917d245';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
