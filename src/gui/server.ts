@@ -217,6 +217,14 @@ export interface StartGuiServerOptions {
    */
   updateManualDownloadUrl?: string;
   /**
+   * Desktop shell only: whether this installed copy can apply an in-place
+   * self-update (the running bundle is owned by the current user). When `false`,
+   * the update service surfaces the available version with a "reinstall to update"
+   * notice instead of downloading an installer it can never finish applying.
+   * Omitted ⇒ treated as updatable (normal auto-download).
+   */
+  updateSelfUpdatable?: boolean;
+  /**
    * Desktop shell only: open an external URL in the OS default browser. The
    * embedded desktop webview has no tabs, so `target="_blank"` links are routed
    * to `GET /api/desktop/open` which calls this. Omitted for the web/CLI GUI —
@@ -1451,6 +1459,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       ...(options.updateManualDownloadUrl
         ? { manualDownloadUrl: options.updateManualDownloadUrl }
         : {}),
+      ...(options.updateSelfUpdatable === undefined
+        ? {}
+        : { selfUpdatable: options.updateSelfUpdatable }),
     });
   }
 

@@ -92,7 +92,7 @@ describe('desktop auto-update — no infinite re-download loop on a failed apply
   // A desktop update service wired to the manifest server + a counting downloader.
   // `applyDownloadedUpdate` is a no-op: the "OS install" outcome is modeled by what
   // `currentVersion` the NEXT boot is constructed with (same version = swap failed).
-  function boot(currentVersion: string, stateDir: string) {
+  function boot(currentVersion: string, stateDir: string, extra: { selfUpdatable?: boolean } = {}) {
     const emit = vi.fn();
     let downloads = 0;
     const svc = createUpdateService({
@@ -109,6 +109,7 @@ describe('desktop auto-update — no infinite re-download loop on a failed apply
       applyDownloadedUpdate: () => {
         /* OS install simulated by the next boot's currentVersion */
       },
+      ...(extra.selfUpdatable === undefined ? {} : { selfUpdatable: extra.selfUpdatable }),
     });
     return { svc, emit, downloads: () => downloads };
   }
@@ -195,6 +196,29 @@ describe('desktop auto-update — no infinite re-download loop on a failed apply
     expect(b2.svc.status().phase).toBe('ready');
     expect(b2.svc.status().stagedVersion).toBe('5.1.4');
     b2.svc.stop();
+  });
+
+  it('an install that can NOT self-update never downloads — it surfaces a one-time reinstall notice', async () => {
+    // A copy the unprivileged updater can't replace (e.g. a root-owned install):
+    // proactively refuse to download an installer it can never finish applying.
+    mf = await manifestServer();
+    mf.setVersion('5.1.3');
+    const stateDir = freshStateDir();
+
+    const b = boot('5.1.2', stateDir, { selfUpdatable: false });
+    for (let i = 0; i < 4; i++) {
+      await b.svc.checkNow();
+      await tick();
+    }
+    const st = b.svc.status();
+    expect(b.downloads()).toBe(0); // never burns a full installer download
+    expect(st.latest).toBe('5.1.3'); // still surfaces the available version
+    expect(st.action).toBe('none');
+    expect(st.lastError).toMatch(/can't update itself automatically/);
+    expect(st.lastError).toContain('https://latticesql.com/install');
+    const errs = b.emit.mock.calls.filter((c) => c[0] === 'update-error');
+    expect(errs.length).toBe(1); // once, not per poll
+    b.svc.stop();
   });
 
   it('with no prior attempt, a first-time desktop update downloads normally (guard never over-blocks)', async () => {

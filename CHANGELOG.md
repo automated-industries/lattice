@@ -21,7 +21,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
     off to install; if the app relaunches still on the old version, it surfaces the failed install a
     single time (with a link to reinstall the latest) and stops re-downloading that version, rather than
     silently re-downloading forever. A genuinely newer release still supersedes a stuck one. (A
-    successfully installed update was never affected — an up-to-date app doesn't loop.)
+    successfully installed update was never affected — an up-to-date app doesn't loop.) And a copy that
+    can't update itself at all — one the unprivileged updater can't replace — is detected up front and
+    shown the reinstall notice **without** downloading an installer it could never apply.
   - **The release manifest advertises the built binary's version** (the single source of truth), and a
     release tag that doesn't match the built version now fails the release — so a version can never be
     advertised that the shipped binary can't reach.

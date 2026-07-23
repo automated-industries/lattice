@@ -367,6 +367,29 @@ function applyDownloadedUpdate(): void {
   console.error('[desktop] apply requested but nothing is staged');
 }
 
+// True when the running app bundle is owned by the current user, so the
+// unprivileged in-place updater can actually replace it. A bundle placed by a
+// root installer is owned by root and cannot be swapped by the user — the OS
+// blocks a non-owner from renaming/removing an app bundle in /Applications — so
+// the update would download + stage but never finalize, and re-offer forever.
+// Detecting that lets the update service surface a "reinstall to update" notice
+// instead of burning a full installer download on every check. Unknown (dev run,
+// not a packaged bundle, or a platform without POSIX ownership) ⇒ treated as
+// updatable; the apply-failure floor is the backstop either way.
+function runningBundleUserOwned(): boolean {
+  try {
+    const bundle = resolveAppBundle(Deno.execPath());
+    if (!bundle) return true; // not a packaged bundle (dev / CLI) — don't block
+    const uid = Deno.uid?.();
+    if (uid == null) return true; // no POSIX uid (e.g. Windows) — don't block
+    const info = Deno.statSync(bundle);
+    if (info.uid == null) return true; // ownership unknown — don't block
+    return info.uid === uid;
+  } catch {
+    return true; // can't determine — don't block; the floor covers a real failure
+  }
+}
+
 // ── Boot the GUI server ──────────────────────────────────────────────────────
 // Data dir lives under the user's home directory. `HOME` is Unix-only and is
 // unset on Windows, where the old `Deno.cwd()` fallback resolved to the app's
@@ -429,6 +452,11 @@ const handle = await startGuiServer({
   // (e.g. a bundle swap that couldn't persist) — so the app shows a one-time
   // "download manually" error instead of re-downloading the same version forever.
   updateManualDownloadUrl: 'https://latticesql.com/install',
+  // If this copy isn't owned by the current user, the in-place updater can never
+  // replace it — surface "reinstall to update" instead of downloading an
+  // installer that can't be applied. (New installs are made user-owned; this
+  // guards a legacy root-owned install cleanly until it's reinstalled.)
+  updateSelfUpdatable: runningBundleUserOwned(),
   // Serve the embedded on-device voice assets when present (omit when absent so
   // the server falls back to its default resolution).
   ...(guiAssetsDir ? { guiAssetsDir } : {}),

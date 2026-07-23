@@ -146,6 +146,15 @@ export interface UpdateServiceOptions {
    * escape hatch instead of an endless retry.
    */
   manualDownloadUrl?: string;
+  /**
+   * Desktop shell only. Whether THIS installed copy can actually apply an in-place
+   * self-update — i.e. the running bundle is owned by the current user, so the
+   * unprivileged updater can replace it. When explicitly `false`, the service does
+   * NOT download an update it can never finish applying; it surfaces the available
+   * version with a one-time "reinstall to update" message instead of burning a full
+   * installer download every check. Omitted / `true` ⇒ normal auto-download.
+   */
+  selfUpdatable?: boolean;
 }
 
 export interface UpdateService {
@@ -202,6 +211,8 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   let failedApplyVersion: string | null = null;
   // Emit the loud "stuck update" error only once per session, not every poll tick.
   let failedApplyEmitted = false;
+  // Emit the "this install can't self-update, reinstall" notice only once.
+  let selfUpdateBlockedEmitted = false;
 
   const readAttempt = (): ApplyAttempt | null => {
     try {
@@ -349,6 +360,24 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
         clearAttempt();
         phase = 'idle';
         lastError = null;
+      }
+      // Proactive guard: if this installed copy can't apply an in-place update
+      // (the running bundle isn't owned by the current user, so the unprivileged
+      // updater can never replace it), do NOT download an installer it can never
+      // finish applying — surface the available version with a one-time
+      // "reinstall to update" notice instead of burning a full download per check.
+      if (found && ctx.kind === 'desktop' && opts.selfUpdatable === false) {
+        phase = 'error';
+        lastError =
+          `Update ${found} is available, but this installation can't update itself ` +
+          `automatically.` +
+          (opts.manualDownloadUrl ? ` Reinstall the latest from ${opts.manualDownloadUrl}.` : '');
+        if (!selfUpdateBlockedEmitted) {
+          selfUpdateBlockedEmitted = true;
+          console.error(`[latticesql] auto-update unavailable for this install: ${lastError}`);
+          opts.emit('update-error', { phase: 'unsupported', message: lastError, version: found });
+        }
+        return; // never download an update this install cannot apply
       }
       // Auto-install only on the supervised npm surface; other surfaces still
       // record `latest` so the GUI can surface it, but never npm-install here.
