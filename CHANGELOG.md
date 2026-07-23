@@ -6,10 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [5.1.2] — unreleased
+## [5.1.2] — 2026-07-23
 
 ### Fixed
 
+- **A messy import no longer silently explodes into hundreds of tables, or hangs the app.** Importing a
+  batch of real-world spreadsheets could silently create an unreasonable number of tables (over-split
+  tabs/blocks, per-column dimensions), and the follow-on processing then pegged a CPU core and froze
+  every surface (assistant, workspace API, graph). Three guards now bound this:
+  - **Scale guard on import.** A brand-new import that would create many tables (or is mostly
+    empty/template tables, or a document fan-out) is flagged low-confidence and surfaces the confirm
+    card for you to review and decline — instead of materializing silently. Small, clean imports still
+    import silently. A hard server-side cap additionally refuses a runaway import (many tables) unless
+    you explicitly confirm.
+  - **The app stays responsive during post-import processing.** The data-model planner now skips its
+    (expensive) analysis on very large workspaces instead of blocking the request loop, and the
+    renderer yields periodically — so config, workspace list, graph, and chat keep answering while a
+    large import is processed.
+  - **Non-tabular documents stay files.** A Word/PowerPoint file whose tables aren't a real dataset
+    (a layout or instructions table) is kept as a reference file rather than being force-imported;
+    and when a passive drop can't be modeled as tables, the message says it was kept as a file
+    (not "Import failed").
 - **Desktop app opens reliably on Windows.** On some Windows machines the bundled native WebView2 host
   crashed or hung the app at launch, even though the app already opens in the default browser on
   Windows. The WebView2 host initialized its environment eagerly at process start, independent of the

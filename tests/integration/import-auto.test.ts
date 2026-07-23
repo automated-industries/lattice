@@ -174,6 +174,42 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     expect(r).toBeNull();
   });
 
+  it('trips the scale guard (lowConfidence) when an import would explode into many tables', async () => {
+    const { db, configPath, base } = await freshWorkspace();
+    // 14 distinct top-level arrays → 14 entities, over MAX_SILENT_TABLES (12). Without the
+    // guard the 5.1.1 silent path would materialize all of them unattended (Bug 1 / ~740 tables).
+    const many: Record<string, unknown> = {};
+    for (let i = 0; i < 14; i++) {
+      many['set' + String(i)] = [
+        { id: i, label: 'a' + String(i) },
+        { id: i + 100, label: 'b' + String(i) },
+      ];
+    }
+    const p = join(base, 'many.json');
+    writeFileSync(p, JSON.stringify(many));
+    const r = await autoImportStructured(db, configPath, p, 'many.json');
+    expect(r?.reason).toBe('new-dataset');
+    expect(r?.lowConfidence).toBe(true); // → the client surfaces the confirm card, not silent
+    expect(typeof r?.guardReason).toBe('string');
+  });
+
+  it('does NOT trip the scale guard on a small clean import (stays silent)', async () => {
+    const { db, configPath, base } = await freshWorkspace();
+    const p = join(base, 'orders.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        orders: [
+          { order_id: 1, sku: 'X', qty: 3 },
+          { order_id: 2, sku: 'Y', qty: 5 },
+        ],
+      }),
+    );
+    const r = await autoImportStructured(db, configPath, p, 'orders.json');
+    expect(r?.reason).toBe('new-dataset');
+    expect(r?.lowConfidence).toBeFalsy();
+  });
+
   it('flags a matched document with no detectable date instead of overwriting', async () => {
     const { db, configPath, base } = await freshWorkspace();
     await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
