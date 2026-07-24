@@ -253,7 +253,7 @@ import { css } from '../../src/gui/app/css.js';
 // the retired list/grid toggle's .inputs-files-toggle / .ift-btn rules were removed.
 // Length + hash recaptured.
 const ORIGINAL_LENGTH = 170277;
-const ORIGINAL_SHA256 = '48eae9faa10a6d39730f7de8588c6cecc564b66898a0f8655cf84fa10a985773';
+const ORIGINAL_SHA256 = '8867b1f21cb98b16d2d0f86f18ffd43c63b5ff9e60a0b345a7e99657ab2ec282';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

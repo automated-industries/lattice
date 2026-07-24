@@ -38,7 +38,7 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .src-del {
       flex: none; margin-left: auto; border: none; background: none; cursor: pointer;
-      color: var(--text-muted); font-size: 13px; line-height: 1; padding: 2px 5px;
+      color: var(--text-muted); font-size: 13px; line-height: 1; padding: 2px 4px;
       border-radius: var(--r-sm); opacity: 0; transition: opacity .1s;
     }
     .src-row:hover .src-del { opacity: 1; }
@@ -66,7 +66,7 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     }
     .ifg-tile-wrap:hover .src-del { opacity: 1; }
     /* Nested children: indented, and a real grid only when shown. */
-    .ifg-children { margin: 8px 0 8px 22px; padding-left: 10px; border-left: 1px solid var(--border); }
+    .ifg-children { margin: 8px 0 8px 20px; padding-left: 10px; border-left: 1px solid var(--border); }
     .ifg-children[hidden] { display: none; }
     .ifg-open > .fs-tile { border-color: var(--accent); }
 
