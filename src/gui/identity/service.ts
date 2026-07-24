@@ -59,6 +59,17 @@ export interface IssuedCredential {
 let cachedEndpoints: { at: number; endpoints: IdentityEndpoints } | null = null;
 const MANIFEST_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * True when `base` may carry the personal bearer + a scoped Postgres credential.
+ * HTTPS is required — those secrets must never ride cleartext — EXCEPT for a
+ * loopback base (an operator/dev/test pointing `LATTICE_IDENTITY_URL` at
+ * `http://127.0.0.1:…`), which never leaves the machine.
+ */
+function isTrustedBase(base: string): boolean {
+  if (/^https:\/\//i.test(base)) return true;
+  return /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(base);
+}
+
 function endpointsFromBase(base: string): IdentityEndpoints {
   const b = base.replace(/\/$/, '');
   return {
@@ -84,7 +95,7 @@ export function resetIdentityDiscovery(): void {
  */
 export async function discoverIdentityService(): Promise<IdentityEndpoints | null> {
   const direct = process.env.LATTICE_IDENTITY_URL;
-  if (direct) return endpointsFromBase(direct);
+  if (direct) return isTrustedBase(direct) ? endpointsFromBase(direct) : null;
   if (process.env.LATTICE_IDENTITY_DISCOVERY === 'off') return null;
   if (cachedEndpoints && Date.now() - cachedEndpoints.at < MANIFEST_TTL_MS) {
     return cachedEndpoints.endpoints;
@@ -97,7 +108,9 @@ export async function discoverIdentityService(): Promise<IdentityEndpoints | nul
     if (!res.ok) return null;
     const doc = (await res.json()) as { identity?: { base?: string } };
     const base = doc.identity?.base;
-    if (typeof base !== 'string' || !/^https?:\/\//.test(base)) return null;
+    // Require an HTTPS (or loopback) base — the bearer + scoped credential get
+    // sent here, so a tampered manifest must never downgrade them to cleartext.
+    if (typeof base !== 'string' || !isTrustedBase(base)) return null;
     const endpoints = endpointsFromBase(base);
     cachedEndpoints = { at: Date.now(), endpoints };
     return endpoints;

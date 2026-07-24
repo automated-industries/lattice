@@ -496,6 +496,19 @@ export async function dispatchCloudState(
   // (the GUI "Kick" control). Wires the previously-unreachable revokeMemberRole.
   if (pathname === '/api/cloud/remove-member' && method === 'POST') {
     await tryHandler(res, async () => {
+      // Managed sessions delegate ALL member management to the manager (whose
+      // revoke is full-stack). Dropping a role in-GUI here would desync the
+      // control-plane membership records from the tenant's actual roles — the
+      // same class of drift the invite refusal prevents. Use Kick in the members
+      // list (→ the manager's revoke) instead.
+      if (isManagedWorkspaces()) {
+        sendJson(
+          res,
+          { error: 'This workspace is managed — remove members from the members list.' },
+          403,
+        );
+        return;
+      }
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
         sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
         return;
@@ -554,6 +567,12 @@ export async function dispatchCloudState(
   // without migrating from a local SQLite store first.
   if (pathname === '/api/cloud/secure' && method === 'POST') {
     await tryHandler(res, async () => {
+      // A managed session's tenant is already provisioned + secured by the
+      // control plane; re-running secureCloud in-GUI is never the managed path.
+      if (isManagedWorkspaces()) {
+        sendJson(res, { error: 'This workspace is managed by your team.' }, 403);
+        return;
+      }
       if (ctx.db.getDialect() !== 'postgres') {
         sendJson(res, { error: 'Only a Postgres database can be secured as a cloud' }, 400);
         return;

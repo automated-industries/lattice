@@ -30,6 +30,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   forms, no token join. The in-GUI token invite endpoint is refused outright in managed sessions, so
   a hosted session can never mint a member the manager's records don't know about. Sessions without
   the seam behave exactly as before.
+- **Identity security hardening** (defense-in-depth, from an adversarial auth/RLS review that found no
+  exploitable flaw): a discovered identity-service base is required to be HTTPS (loopback excepted for
+  dev), so a tampered discovery manifest can never downgrade the personal bearer or a scoped credential
+  to cleartext; and in a managed session every in-GUI role-mutating cloud endpoint — not just invite,
+  but also remove-member and secure — is refused, so member management can't drift the tenant's roles
+  out of sync with the manager's records.
 
 - **Tables imported from Word/PowerPoint documents are now named from the document itself.** Embedded
   tables used to be keyed positionally (`Table 1`, `Table 2`, …), which materialized as meaningless

@@ -11,7 +11,7 @@ import {
   resolveWorkspacePaths,
 } from '../../src/index.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
-import { resetIdentityDiscovery } from '../../src/gui/identity/service.js';
+import { discoverIdentityService, resetIdentityDiscovery } from '../../src/gui/identity/service.js';
 import { resetPendingSignIn } from '../../src/gui/identity/routes.js';
 import {
   clearIdentitySession,
@@ -150,6 +150,41 @@ function startIdentityStub(opts?: {
     });
   });
 }
+
+describe('discovery hardening — the bearer + credential never ride cleartext', () => {
+  it('accepts an https manifest base but REJECTS an http (downgraded) one', async () => {
+    isolateConfig();
+    // An http base would receive the bearer + scoped Postgres URL in cleartext.
+    const httpStub = await new Promise<{ base: string }>((resolve) => {
+      const srv = createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ identity: { base: 'http://attacker.example' } }));
+      });
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address();
+        stubs.push(srv);
+        resolve({
+          base: `http://127.0.0.1:${String(typeof addr === 'object' && addr ? addr.port : 0)}`,
+        });
+      });
+    });
+    process.env.LATTICE_IDENTITY_MANIFEST = `${httpStub.base}/manifest`;
+    expect(await discoverIdentityService()).toBeNull(); // http base refused
+  });
+
+  it('a direct LATTICE_IDENTITY_URL must be https (or loopback for dev)', async () => {
+    isolateConfig();
+    process.env.LATTICE_IDENTITY_URL = 'http://identity.example';
+    expect(await discoverIdentityService()).toBeNull();
+    resetIdentityDiscovery();
+    process.env.LATTICE_IDENTITY_URL = 'https://identity.example';
+    expect((await discoverIdentityService())?.base).toBe('https://identity.example');
+    resetIdentityDiscovery();
+    // Loopback http is allowed (dev/tests) — it never leaves the machine.
+    process.env.LATTICE_IDENTITY_URL = 'http://127.0.0.1:9999';
+    expect((await discoverIdentityService())?.base).toBe('http://127.0.0.1:9999');
+  });
+});
 
 describe('identity session store', () => {
   it('round-trips encrypted — the bearer never touches disk in plaintext', () => {
@@ -314,17 +349,22 @@ describe('identity + managed routes over the GUI server', () => {
     expect(status.linked).toBe(false);
   });
 
-  it('managed mode: /api/cloud/invite is refused — no shadow member can be minted (6b)', async () => {
+  it('managed mode refuses EVERY in-GUI role-mutating endpoint (invite/remove-member/secure)', async () => {
     process.env.LATTICE_MANAGED_WORKSPACES_URL = 'http://127.0.0.1:9/managed/tok';
     const { origin } = await bootServer();
-    const res = await fetch(`${origin}/api/cloud/invite`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'x@example.com' }),
-    });
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as { error?: string };
-    expect(body.error ?? '').toContain('managed');
+    for (const [path, payload] of [
+      ['/api/cloud/invite', { email: 'x@example.com' }],
+      ['/api/cloud/remove-member', { role: 'lm_x' }],
+      ['/api/cloud/secure', {}],
+    ] as const) {
+      const res = await fetch(`${origin}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      expect(res.status, `${path} should be refused in managed mode`).toBe(403);
+      expect(((await res.json()) as { error?: string }).error ?? '').toMatch(/managed|team/i);
+    }
   });
 
   it('managed proxy forwards invite/members/create to the manager verbatim', async () => {
