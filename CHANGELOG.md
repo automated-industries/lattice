@@ -6,7 +6,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [5.1.4] — unreleased
+## [5.1.5] — unreleased
+
+### Added
+
+- **On-demand "Check for updates."** A "Check for updates" control (in the account menu) forces an
+  immediate check instead of waiting for the background poll, the window re-checks when you return to
+  it, and the poll cadence drops from 3 hours to 30 minutes — so a fresh release becomes visible
+  without restarting the app.
+
+### Fixed
+
+- **A transient read failure at startup no longer strands the app in an empty, unusable workspace.**
+  If a load-bearing boot request failed, the app used to fall into a shell that looked functional but
+  listed no workspaces and no tables, with no error and no retry — only a manual reload recovered it.
+  Now the failure is surfaced as a clear "still loading — reconnecting" notice (that a re-render can no
+  longer clobber), an unreadable workspace list is treated as _unknown_ rather than _empty_, and the app
+  **self-heals**: it retries with backoff and the moment its connection is regained, with no manual
+  reload. The initial background render is also deferred until the first client has loaded, so it can't
+  starve that first load.
+- **Authored HTML artifacts no longer render dead buttons.** An artifact runs in a strict, no-network
+  sandbox, so a "Print / PDF", "pop out", dialog, or form-submit control silently did nothing on click.
+  Those controls are now removed before the artifact is shown — with a note telling you what was removed
+  and why — and the assistant is guided not to add them in the first place. The sandbox stays strict.
+- **Desktop update verification now fails closed.** Update integrity checking used to silently skip the
+  checksum when the release manifest couldn't be reached or didn't describe the download; it now refuses
+  any download it can't verify. The installer-fallback path also verifies the downloaded installer's
+  signature and pins it to the running app's signing identity before launching it.
+
+### Changed
+
+- **The npm and desktop release channels now advance together.** npm publishes only after the desktop
+  auto-update manifest for the same version is published and verified, both release workflows verify the
+  published version matches the tag and alert on failure, and a scheduled job reconciles the two channels
+  — so an npm-supervised install and a desktop app can no longer end up on different versions, and a
+  failed desktop release can no longer pass unnoticed.
+
+## [5.1.4] — 2026-07-23
 
 ### Added
 

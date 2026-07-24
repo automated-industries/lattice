@@ -11,6 +11,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*'] # also on the RELEASE path — a mistagged version must fail here too
 
 jobs:
   version-sync:
@@ -21,4 +22,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node scripts/sync-desktop-version.mjs --check
+      - name: deno.json == package.json
+        run: node scripts/sync-desktop-version.mjs --check
+      - name: On a tag, assert package.json == deno.json == tag (three-way)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          DENO="$(node -p "require('./deno.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "package.json=$PKG deno.json=$DENO tag=$TAG"
+          if [ "$PKG" != "$TAG" ] || [ "$DENO" != "$TAG" ]; then
+            echo "::error::version mismatch on tag: package.json=$PKG deno.json=$DENO tag=$TAG"
+            exit 1
+          fi

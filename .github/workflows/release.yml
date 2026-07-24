@@ -1,43 +1,131 @@
 name: Release
 
+# npm publish for a version tag. The npm and desktop channels are deliberately COUPLED:
+# npm does not publish until the Desktop Release workflow has published + verified the
+# auto-update manifest for the same tag. This inverts the old race (npm going out 5-12 min
+# ahead of desktop, so an npm-supervised install saw a version the desktop channel didn't
+# yet serve) — the two channels now advance together, and a desktop-build failure blocks
+# the npm publish loudly instead of silently leaving the channels divergent.
+
 on:
   push:
     tags:
       - 'v*'
+  # Manual recovery: if the desktop channel was merely slow and the wait below timed out,
+  # re-run this workflow against the same tag once the manifest is live — no re-tagging.
+  workflow_dispatch:
 
 jobs:
-  release:
-    name: Build and publish
+  # Fast, secret-free gate: the package must lint/typecheck/test/build, and its version
+  # must equal the tag (a mistagged push must fail here, not publish to npm unchallenged).
+  checks:
+    name: Checks + version-vs-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Assert package.json version == tag
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($VERSION) does not match tag ($TAG_VERSION); refusing to publish"
+            exit 1
+          fi
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  # Wait for the Desktop Release workflow (same tag) to publish + verify the auto-update
+  # manifest, so npm can't advertise a version the desktop channel doesn't yet serve. Polls
+  # the published manifest with a bounded timeout; a desktop build that never finishes (or
+  # publishes a mismatched version) times out here and blocks the npm publish.
+  #
+  # The budget must clear the WHOLE desktop pipeline, which runs concurrently and includes
+  # TWO sequential Apple notarization waits (.pkg then .dmg) with no vendor SLA — those can
+  # each spike well past ten minutes. Sized generously (45 min) so a slow-but-successful
+  # desktop release can't strand the npm publish; on a genuine timeout, re-run this
+  # workflow against the tag (workflow_dispatch above) once the manifest is live.
+  await-desktop:
+    name: Await verified desktop manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll releases/latest/latest.json for this tag's version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
+          echo "waiting for $URL to report version $TAG_VERSION"
+          for i in $(seq 1 90); do   # up to ~45 min (90 x 30s)
+            BODY="$(curl -fsSL "$URL" 2>/dev/null || echo '')"
+            MANIFEST_VERSION="$(printf '%s' "$BODY" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{try{console.log(JSON.parse(s).version||'')}catch{console.log('')}})" 2>/dev/null || echo '')"
+            if [ "$MANIFEST_VERSION" = "$TAG_VERSION" ]; then
+              echo "desktop manifest is live at $MANIFEST_VERSION"; exit 0
+            fi
+            echo "  attempt $i: manifest version='${MANIFEST_VERSION}' (want ${TAG_VERSION}) — retrying in 30s"
+            sleep 30
+          done
+          echo "::error::desktop manifest did not reach version ${TAG_VERSION} in time — refusing to publish npm ahead of the desktop channel"
+          exit 1
+
+  publish:
+    name: Publish to npm
+    needs: [checks, await-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # for npm provenance
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
-
       - name: Install dependencies
         run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test
-        run: npm test
-
       - name: Build
         run: npm run build
-
       - name: Publish
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify the published version matches the tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 10); do
+            PUBLISHED="$(npm view latticesql version 2>/dev/null || echo '')"
+            if [ "$PUBLISHED" = "$TAG_VERSION" ]; then echo "npm latest = $PUBLISHED"; exit 0; fi
+            echo "  registry not yet showing $TAG_VERSION (saw '${PUBLISHED}') — retrying"; sleep 10
+          done
+          echo "::error::npm latest never reached ${TAG_VERSION} after publish"
+          exit 1
+
+  notify-failure:
+    name: Alert on release failure
+    needs: [checks, await-desktop, publish]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Release ${tag}: npm publish did not complete`,
+              body: `The Release workflow for \`${tag}\` failed or was blocked (checks, desktop-manifest wait, or publish). Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['release-failure'],
+            });

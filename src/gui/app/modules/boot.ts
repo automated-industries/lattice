@@ -35,6 +35,11 @@ export const bootJs = `    // ────────────────�
       // every socket reconnect, but a stable connection never reconnects, so a
       // long-open desktop/web window would otherwise never re-check.
       setInterval(checkUpdateAvailable, 30 * 60 * 1000);
+      // Re-check the moment the user returns to the window: a release published while
+      // they were away becomes visible immediately instead of on the next slow poll.
+      window.addEventListener('focus', function () {
+        if (typeof forceUpdateCheck === 'function') forceUpdateCheck('focus');
+      });
       // Failsafe: never leave the overlay up forever if a fetch hangs without
       // rejecting, or a future early-return (e.g. the virgin-state screen)
       // bypasses the .then() tail. Idempotent, so a later real hide is a no-op.
@@ -77,6 +82,51 @@ export const bootJs = `    // ────────────────�
         return undefined;
       }
       return bootWorkspace();
+    }
+
+    // Self-heal a degraded boot. reloadEverything refetches the load-bearing reads
+    // and re-renders the switcher/sidebar/route; it REJECTS when entities-summary is
+    // still failing (that read is load-bearing), which is exactly our retry signal.
+    // The degraded flag is cleared optimistically so the fresh event-stream connect
+    // that a successful reload opens can't re-enter this; a still-failing read re-arms
+    // it with capped backoff.
+    var bootSelfHealTimer = null;
+    var bootSelfHealDelay = 800;
+    var bootSelfHealing = false;
+    function bootSelfHeal() {
+      if (bootSelfHealing) return Promise.resolve();
+      bootSelfHealing = true;
+      if (bootSelfHealTimer) { clearTimeout(bootSelfHealTimer); bootSelfHealTimer = null; }
+      state.bootDegraded = false;
+      // Silent: the boot-degraded notice already signals "reconnecting", so don't flash
+      // the full-screen switch overlay on each retry.
+      return reloadEverything({ silent: true }).then(function () {
+        bootSelfHealing = false;
+        // reloadEverything resolves once entities-summary is readable, but the workspaces
+        // list is fetched separately and may still have failed (renderWsSwitcher left the
+        // switcher unbuilt → state.wsListLoaded === false). Only treat the boot as healed
+        // when BOTH load-bearing reads recovered; otherwise keep retrying with backoff, so
+        // a workspaces-only failure can't strand the switcher after a single attempt.
+        if (state.wsListLoaded === false) {
+          state.bootDegraded = true;
+          bootSelfHealDelay = Math.min(bootSelfHealDelay * 2, 30000);
+          scheduleBootSelfHeal();
+        } else {
+          bootSelfHealDelay = 800;
+        }
+      }).catch(function () {
+        bootSelfHealing = false;
+        state.bootDegraded = true;
+        bootSelfHealDelay = Math.min(bootSelfHealDelay * 2, 30000);
+        scheduleBootSelfHeal();
+      });
+    }
+    function scheduleBootSelfHeal() {
+      if (bootSelfHealTimer || bootSelfHealing) return;
+      bootSelfHealTimer = setTimeout(function () {
+        bootSelfHealTimer = null;
+        bootSelfHeal();
+      }, bootSelfHealDelay);
     }
 
     function bootWorkspace() {
@@ -167,6 +217,13 @@ export const bootJs = `    // ────────────────�
         }
         document.body.classList.toggle('advanced-mode', advancedMode());
         wireSettingsDrawer();
+        // A boot is DEGRADED when a load-bearing read failed: entities-summary
+        // self-caught to {__failed:true}, or /api/workspaces self-caught to null.
+        // Neither empty/unknown result may be presented as real state — surface it
+        // and self-heal, never silently brick into an empty-looking workspace.
+        var entitiesFailed = !!(results[0] && results[0].__failed);
+        var workspacesFailed = results[5] == null;
+        state.bootDegraded = entitiesFailed || workspacesFailed;
         renderWsSwitcher(results[5]);
         // Swap the default topbar mark for the cloud owner's logo (if set). Null
         // logoEtag (local workspace / unset) leaves the default Lattice SVG.
@@ -174,16 +231,16 @@ export const bootJs = `    // ────────────────�
         renderSidebar();
         wireHistoryControls();
         refreshHistoryState();
+        // renderRoute self-gates on state.entities.__failed: a degraded workspace (its
+        // data couldn't be read) renders the escape-hatch notice — and keeps it across
+        // every re-render (incl. the boot hashchange) — while a healthy boot renders the
+        // route normally. No manual placeholder here (writing one after renderRoute is
+        // exactly how the old error got clobbered).
         renderRoute();
-        // The active workspace opened but its data couldn't be read — the switcher
-        // is mounted (above), so surface a clear escape hatch instead of a blank pane.
-        if (results[0] && results[0].__failed) {
-          var failEl = document.getElementById('content');
-          if (failEl) failEl.innerHTML =
-            '<div class="placeholder"><h2>This workspace could not load</h2>' +
-            '<p>Its data could not be read. Pick another workspace from the switcher above, ' +
-            'or check the database connection, then reload.</p></div>';
-        }
+        // A degraded boot self-heals: a bounded backoff retry (and any WebSocket
+        // reconnect, see startEventStream) refetches and re-renders, turning a
+        // permanent brick into a brief blip.
+        if (state.bootDegraded) scheduleBootSelfHeal();
         startEventStream();
         // Kick the stale-connector sync (fire-and-forget): in a fresh process
         // connector/database tables only exist after their first sync registers

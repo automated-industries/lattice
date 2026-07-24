@@ -161,9 +161,12 @@ export const searchJs = `    // ────────────────
     function showSwitchOverlay() { wsOverlayEl().classList.add('show'); }
     function hideSwitchOverlay() { var el = document.getElementById('ws-switch-overlay'); if (el) el.classList.remove('show'); }
 
-    /** Refetch everything after a DB switch and rerender. */
-    function reloadEverything() {
-      showSwitchOverlay();
+    /** Refetch everything after a DB switch and rerender. opts.silent skips the
+     *  full-screen switch overlay (used by the boot self-heal, which already shows its
+     *  own "reconnecting" notice and would otherwise flash the overlay on every retry). */
+    function reloadEverything(opts) {
+      var silent = !!(opts && opts.silent);
+      if (!silent) showSwitchOverlay();
       return Promise.all([
         // entities-summary is load-bearing (it IS the workspace's table list): a
         // failure here must reject the whole reload so the switch/delete callers
@@ -257,7 +260,7 @@ export const searchJs = `    // ────────────────
       }).finally(function () {
         // Reveal the freshly-rebuilt columns together (a short tick lets the last
         // synchronous renders settle before the overlay fades out).
-        setTimeout(hideSwitchOverlay, 60);
+        if (!silent) setTimeout(hideSwitchOverlay, 60);
       });
     }
 
