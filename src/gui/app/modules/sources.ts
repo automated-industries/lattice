@@ -35,19 +35,27 @@ export const sourcesJs = `
       wireSourcesButtons();
     }
 
-    function sourceNodeHtml(path, name, kind, depth) {
+    function sourceNodeHtml(path, name, kind, depth, rootId, twinFileId) {
       var pad = depth * 12;
+      // A ✕ shows only on top-level roots (the thing the user added). twinFileId is set
+      // when this file root also has an ingested files-row at the same path, so removing
+      // clears both. Folder CHILDREN pass no rootId → no ✕ (covered by their parent root).
+      var del = rootId
+        ? '<button class="src-del" data-root-id="' + escapeHtml(rootId) + '"' +
+          (twinFileId ? ' data-file-id="' + escapeHtml(twinFileId) + '"' : '') +
+          ' title="Remove from Lattice (your file stays on disk)">✕</button>'
+        : '';
       if (kind === 'folder') {
         return '<li class="src-node src-folder" data-path="' + escapeHtml(path) +
           '" data-depth="' + depth + '" data-loaded="0">' +
           '<div class="src-row" style="padding-left:' + pad + 'px">' +
             '<span class="src-caret">▸</span><span class="src-ic">📁</span>' +
-            '<span class="src-name">' + escapeHtml(name) + '</span></div>' +
+            '<span class="src-name">' + escapeHtml(name) + '</span>' + del + '</div>' +
           '<ul class="src-children" hidden></ul></li>';
       }
       return '<li class="src-node src-file" data-path="' + escapeHtml(path) +
         '"><div class="src-row" style="padding-left:' + (pad + 14) + 'px">' +
-        '<span class="src-ic">📄</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
+        '<span class="src-ic">📄</span><span class="src-name">' + escapeHtml(name) + '</span>' + del + '</div></li>';
     }
 
     function renderSourcesFiles(sourceFiles) {
@@ -73,11 +81,20 @@ export const sourcesJs = `
           // Windows (the server stores native-separator absolute paths) as well as
           // POSIX — '\\' → '/'.
           var fsNorm = function (p) { return (p || '').replace(/\\\\/g, '/'); };
-          // Loose files = source files NOT under a registered folder root (those show
-          // inside the tree); an uploaded file (no on-disk path) is always loose.
+          // A file can be BOTH a registered file-root AND an ingested files-row at the
+          // same path — which rendered the file twice. Map both by normalized path so it
+          // shows ONCE (as the root) and the ✕ can clear both in one click.
+          var fileRootByPath = {};
+          roots.forEach(function (r) { if (r.kind === 'file' && r.path) fileRootByPath[fsNorm(r.path)] = r.id; });
+          var fileRowByPath = {};
+          sourceFiles.forEach(function (r) { if (r.ref_uri) fileRowByPath[fsNorm(r.ref_uri)] = r.id; });
+          // Loose files = source files NOT under a registered folder root and NOT already
+          // shown as a file root (those render once, as the root); an uploaded file (no
+          // on-disk path) is always loose.
           var loose = sourceFiles.filter(function (r) {
             if (!r.ref_uri) return true;
             var u = fsNorm(r.ref_uri);
+            if (fileRootByPath[u]) return false;
             return !folderPaths.some(function (p) {
               var np = fsNorm(p);
               return u === np || u.indexOf(np + '/') === 0;
@@ -97,7 +114,8 @@ export const sourcesJs = `
           });
           var rootsHtml = topRoots.length
             ? '<ul class="src-tree">' + topRoots.map(function (r) {
-                return sourceNodeHtml(r.path, r.name, r.kind, 0);
+                var twin = (r.kind === 'file' && r.path) ? fileRowByPath[fsNorm(r.path)] : '';
+                return sourceNodeHtml(r.path, r.name, r.kind, 0, r.id, twin);
               }).join('') + '</ul>'
             : '';
           var looseHtml = loose.length
@@ -106,7 +124,9 @@ export const sourcesJs = `
                 return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
                   '"><div class="src-row" style="padding-left:14px">' +
                   '<span class="src-ic">' + fileEmoji(r) + '</span>' +
-                  '<span class="src-name">' + escapeHtml(name) + '</span></div></li>';
+                  '<span class="src-name">' + escapeHtml(name) + '</span>' +
+                  '<button class="src-del" data-file-id="' + escapeHtml(r.id) +
+                  '" title="Remove from Lattice">✕</button></div></li>';
               }).join('') + '</ul>'
             : '';
           // Preserve expanded folders across this re-render so an in-progress
@@ -140,7 +160,46 @@ export const sourcesJs = `
         .catch(function () { host.innerHTML = ''; });
     }
 
+    // Remove a source from Lattice. A file root → DELETE its root registration; an
+    // ingested files-row → soft-delete the row; a file that is both → clear both. The
+    // on-disk file is never touched (roots delete is "never disk"; row delete is a
+    // deleted_at soft delete). Re-renders the Files list on success.
+    function removeSource(name, rootId, fileId) {
+      var doDelete = function () {
+        var ps = [];
+        if (rootId) ps.push(fetch('/api/sources/roots/' + encodeURIComponent(rootId), { method: 'DELETE' }));
+        if (fileId) ps.push(fetch('/api/tables/files/rows/' + encodeURIComponent(fileId), { method: 'DELETE' }));
+        return Promise.all(ps).then(function () {
+          // Refresh whichever Files surface is showing: the sidebar always, and the
+          // Configure drawer's Files tab if it's open (it renders into #inputs-files-tree).
+          if (typeof renderSources === 'function') renderSources();
+          var body = document.getElementById('drawer-body');
+          if (body && document.getElementById('inputs-files-tree') && typeof renderFilesTab === 'function') {
+            renderFilesTab(body);
+          }
+        });
+      };
+      if (typeof showModal === 'function') {
+        showModal('Remove from Lattice',
+          '<p>Remove <strong>' + escapeHtml(name) + '</strong> from Lattice?</p>' +
+          '<p class="hint">Your file stays on your disk — this only stops Lattice from tracking it.</p>',
+          { primaryLabel: 'Remove', primaryClass: 'destructive', onSubmit: doDelete });
+      } else if (window.confirm('Remove "' + name + '" from Lattice? Your file stays on your disk.')) {
+        doDelete();
+      }
+    }
+
     function wireSourceTree(scope) {
+      scope.querySelectorAll('.src-del').forEach(function (btn) {
+        if (btn.__wired) return;
+        btn.__wired = true;
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var nameEl = btn.parentNode.querySelector('.src-name');
+          removeSource(nameEl ? nameEl.textContent : 'this item',
+            btn.getAttribute('data-root-id'), btn.getAttribute('data-file-id'));
+        });
+      });
       scope.querySelectorAll('.src-folder > .src-row').forEach(function (row) {
         if (row.__wired) return;
         row.__wired = true;

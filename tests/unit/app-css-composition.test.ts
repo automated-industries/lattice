@@ -247,8 +247,10 @@ import { css } from '../../src/gui/app/css.js';
 // 5.1.1 chat attachment chips: .chat-user-stack (stacks a user bubble + its file chips,
 // right-aligned) + .chat-msg-files / .chat-msg-file(-ic/-name) styling for attachments
 // that now persist in a sent message. Length + hash recaptured.
-const ORIGINAL_LENGTH = 168953;
-const ORIGINAL_SHA256 = '7c0459089edec2d33f1715c69f6fa9b5c198d9cf95d4d54c235224096d276a47';
+// Files/Sources: per-row remove ("✕") control styling (hover-reveal) added to the
+// sources tree. Length +398.
+const ORIGINAL_LENGTH = 169351;
+const ORIGINAL_SHA256 = 'f052cf9734d7593b71cef5ca705131bb13516130409c0eecb9b34cdc19772eba';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

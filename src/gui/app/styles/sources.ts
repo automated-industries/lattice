@@ -35,7 +35,14 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     .src-row:hover { background: var(--row-hover); }
     .src-caret { width: 10px; font-size: 10px; color: var(--text-muted); flex: none; }
     .src-ic { width: 16px; text-align: center; flex: none; }
-    .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .src-del {
+      flex: none; margin-left: auto; border: none; background: none; cursor: pointer;
+      color: var(--text-muted); font-size: 13px; line-height: 1; padding: 2px 5px;
+      border-radius: var(--r-sm); opacity: 0; transition: opacity .1s;
+    }
+    .src-row:hover .src-del { opacity: 1; }
+    .src-del:hover { background: var(--row-hover); color: var(--danger, #d03b3b); }
     .src-children { list-style: none; margin: 0; padding: 0; }
 
 `;
