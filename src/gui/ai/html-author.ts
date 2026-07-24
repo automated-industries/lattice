@@ -62,6 +62,7 @@ const HTML_SYSTEM = [
   '- Self-contained: put CSS in an inline `<style>` and JS in an inline `<script>`. Do NOT add any `<script src="...">` and do NOT reference any external/CDN URL.',
   '- The page runs fully isolated with NO network access: `fetch`, `XMLHttpRequest`, WebSocket, and remote images are all blocked. Read data ONLY through the injected `window.lattice` bridge (described below). Never attempt a direct network call — it will fail.',
   '- A charting library is ALREADY loaded in the page: a global `Chart` (Chart.js) is available. Call `new Chart(canvasEl, {...})` directly when a chart helps. Never load your own chart library.',
+  '- The preview sandbox blocks browser-chrome actions: `window.print()`, `window.open()`, `alert()`/`confirm()`/`prompt()`, `target="_blank"`, and form submission all silently do NOTHING. Do NOT add Print / Export-PDF / Download / "Open in new tab" / submit buttons or any control that calls those — it renders as a dead button, and Lattice strips it and tells the user. Build interactivity IN the page instead (tabs, toggles, filters, sorts that re-render the DOM).',
   '',
   "Live data (optional — only when the page should show the user's data):",
   '- A global `window.lattice` object is preloaded. Every method returns a Promise:',

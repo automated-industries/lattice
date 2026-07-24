@@ -16,6 +16,22 @@ export const accountMenuJs = `    // ── Header account menu ─────�
       if (!wrap || !btn || !menu || !head || !action) return;
       function closeMenu() { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
       function openMenu() { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); }
+      // A manual "Check for updates" row — the background poll is periodic, so a user who
+      // knows a release is out can pull it now instead of waiting (or restarting).
+      var chk = document.getElementById('account-menu-check-updates');
+      if (!chk) {
+        chk = document.createElement('a');
+        chk.id = 'account-menu-check-updates';
+        chk.href = '#';
+        chk.textContent = 'Check for updates';
+        chk.style.cssText = 'display:block;padding:6px 12px;font-size:13px;color:var(--accent,#3b82f6);text-decoration:none;border-top:1px solid var(--border,#2a2a35)';
+        if (head.parentNode) head.parentNode.insertBefore(chk, action);
+        chk.addEventListener('click', function (e) {
+          e.preventDefault();
+          closeMenu();
+          if (typeof forceUpdateCheck === 'function') forceUpdateCheck('manual');
+        });
+      }
       var onAction = function () {};
       fetchJson('/api/assistant/config').then(function (cfg) {
         if (cfg && cfg.managedModelAuth === true) {

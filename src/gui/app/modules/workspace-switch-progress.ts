@@ -72,6 +72,18 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       // data is ready (setContent + the renderGen guard), so the pane never flashes.
       var soft = !!(opts && opts.soft);
       var content = document.getElementById('content');
+      // A degraded boot — the active workspace's data could not be read — shows the
+      // escape-hatch notice INSTEAD of a route render, and keeps showing it across every
+      // re-render (the boot hashchange, a render-done event, etc.) until the self-heal
+      // repopulates state.entities. Without this guard the async route render clobbers a
+      // one-shot placeholder written after it, and the failure goes silently invisible.
+      if (state.entities && state.entities.__failed) {
+        if (content) content.innerHTML =
+          '<div class="placeholder boot-degraded-notice"><h2>This workspace is still loading</h2>' +
+          '<p>Its data could not be read yet. Reconnecting automatically. You can also ' +
+          'pick another workspace from the switcher above, or reload.</p></div>';
+        return;
+      }
       var hash = location.hash || '#/';
       renderGen++;
       // Redirect legacy hashes to the canonical single-layout scheme (no history spam).

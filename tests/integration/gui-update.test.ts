@@ -224,3 +224,57 @@ describe('POST /api/update/apply', () => {
     expect(String(body.error)).toMatch(/not available|latticesql\.com/i);
   });
 });
+
+describe('POST /api/update/check', () => {
+  it('forces an immediate check and returns the resulting status', async () => {
+    const status: UpdateStatus = {
+      current: '1.0.0',
+      latest: '2.0.0',
+      kind: 'global',
+      installable: true,
+      autoUpdate: true,
+      action: 'upgrade-in-place',
+      checking: false,
+      installing: false,
+      lastError: null,
+      ...idleDownload,
+    };
+    const { handle, checkNow } = await bootWithUpdateService('1.0.0', status);
+    const res = await fetch(`${handle.url}/api/update/check`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // The on-demand check forces a real (forced) registry check and returns the status.
+    expect(checkNow).toHaveBeenCalledWith(true);
+    expect(body.latest).toBe('2.0.0');
+    expect(body.action).toBe('upgrade-in-place');
+  });
+
+  it('reports a COMPLETED check that found nothing newer', async () => {
+    const { url } = await bootVirgin('1.2.3'); // injected probe resolves null = up to date
+    const res = await fetch(`${url}/api/update/check`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.current).toBe('1.2.3');
+    expect(body.action).toBe('none');
+    // The check ran and found nothing — only THIS may read as "you're on the latest".
+    expect(body.lastCheckOk).toBe(true);
+  });
+
+  it('reports lastCheckOk=false when the forced check FAILS (never a false up-to-date)', async () => {
+    // Offline / registry unreachable: `latest` is null exactly as in the up-to-date case,
+    // so without this signal the client would falsely reassure the user and the release
+    // would stay invisible — the very problem the on-demand check exists to solve.
+    const h = await startGuiServer({
+      port: 0,
+      openBrowser: false,
+      version: '1.2.3',
+      updateCheck: () => Promise.reject(new Error('registry unreachable')),
+    });
+    servers.push(h);
+    const res = await fetch(`${h.url}/api/update/check`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.latest).toBeNull();
+    expect(body.lastCheckOk).toBe(false);
+  });
+});

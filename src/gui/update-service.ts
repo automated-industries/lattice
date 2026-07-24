@@ -41,8 +41,12 @@ interface ApplyAttempt {
 
 const APPLY_ATTEMPT_FILE = 'apply-attempt.json';
 
-/** Default registry poll cadence while the GUI is open (3h). */
-const DEFAULT_POLL_MS = 3 * 60 * 60 * 1000;
+/**
+ * Default registry poll cadence while the GUI is open (30 min). Kept tight so a release
+ * becomes visible within half an hour without a restart; the on-demand `/api/update/check`
+ * route + the client's window-focus re-check cover the "I know it's out NOW" case.
+ */
+const DEFAULT_POLL_MS = 30 * 60 * 1000;
 
 export interface UpdateStatus {
   current: string;
@@ -68,6 +72,9 @@ export interface UpdateStatus {
   checking: boolean;
   installing: boolean;
   lastError: string | null;
+  /** Whether the most recent registry check completed (vs. failed or never ran). Lets the
+   *  on-demand check distinguish "up to date" from "couldn't check right now". */
+  lastCheckOk: boolean;
   /**
    * Desktop auto-download lifecycle (only ever leaves `idle` on the desktop
    * surface, which can't self-patch and instead pulls the OS installer):
@@ -193,6 +200,11 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
   let installing = false;
   let latest: string | null = null;
   let lastError: string | null = null;
+  // Whether a registry check has actually COMPLETED. Lets the on-demand check tell
+  // "checked, you're up to date" (latest null AND ok) apart from "the check couldn't run"
+  // (latest null because the fetch failed, auto-update is off, or nothing has checked
+  // yet) — none of which may read as up-to-date. Starts false: nothing has checked yet.
+  let lastCheckOk = false;
   // Desktop auto-download lifecycle (stays 'idle' on every other surface).
   let phase: UpdateStatus['phase'] = 'idle';
   let downloadedBytes: number | null = null;
@@ -272,6 +284,7 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     checking,
     installing,
     lastError,
+    lastCheckOk,
     phase,
     downloadedBytes,
     totalBytes,
@@ -335,6 +348,7 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
     try {
       const found = await check(force);
       latest = found;
+      lastCheckOk = true; // the registry check completed (found may still be null = current)
       // Loop guard: a version we ALREADY tried to apply but are still below did not
       // install. Never silently re-download it — surface it once, loudly, with a
       // manual escape hatch, and leave the download disarmed. This is what breaks
@@ -390,8 +404,10 @@ export function createUpdateService(opts: UpdateServiceOptions): UpdateService {
         void startDownload(found);
       }
     } catch {
-      // Best-effort: a failed registry check is silent and simply retried next
-      // tick (the check, unlike the install, is not a user-facing operation).
+      // Best-effort: a failed background registry check stays silent and is retried next
+      // tick. But record that it did NOT complete, so an on-demand "Check for updates"
+      // can report "couldn't check" instead of a false "you're on the latest version".
+      lastCheckOk = false;
     } finally {
       checking = false;
     }
