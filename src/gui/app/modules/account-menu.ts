@@ -33,7 +33,84 @@ export const accountMenuJs = `    // ── Header account menu ─────�
         });
       }
       var onAction = function () {};
+      // ── Workspace-identity sign-in (local launchers only) ──
+      // When an identity service is reachable and this is NOT a hosted session
+      // (which already carries a verified identity), the menu offers Sign in /
+      // signed-in-as + Sign out. Signing in links the hosted account: invited
+      // and owned cloud workspaces then appear in the switcher on their own.
+      function initIdentityRow(cfg) {
+        if (cfg && cfg.managedModelAuth === true) return; // hosted session — identity is injected
+        fetchJson('/api/identity/status').then(function (st) {
+          if (!st || (st.serviceAvailable !== true && st.linked !== true)) return;
+          var row = document.getElementById('account-menu-identity');
+          if (!row) {
+            row = document.createElement('a');
+            row.id = 'account-menu-identity';
+            row.href = '#';
+            row.style.cssText = 'display:block;padding:6px 12px;font-size:13px;color:var(--accent,#3b82f6);text-decoration:none;border-top:1px solid var(--border,#2a2a35)';
+            if (head.parentNode) head.parentNode.insertBefore(row, action);
+          }
+          function renderRow(status) {
+            row.textContent = status.linked
+              ? 'Signed in as ' + (status.email || 'your account') + ' — Sign out'
+              : 'Sign in to your Lattice account';
+            row.onclick = function (e) {
+              e.preventDefault();
+              closeMenu();
+              if (status.linked) {
+                fetchJson('/api/identity/signout', { method: 'POST' }).then(function () {
+                  if (typeof showToast === 'function') showToast('Signed out.');
+                  renderRow({ linked: false });
+                });
+                return;
+              }
+              fetchJson('/api/identity/signin/start', { method: 'POST' }).then(function (r) {
+                if (!r || !r.verifyUrl) throw new Error('sign-in unavailable');
+                // Desktop webviews have no tabs — the server-side bridge opens the
+                // system browser; a plain browser tab just opens the URL.
+                window.open(r.verifyUrl, '_blank');
+                showIdentityCodePrompt();
+              }).catch(function (err) {
+                if (typeof showToast === 'function') showToast('Sign-in failed: ' + (err && err.message ? err.message : 'try again'), { type: 'error' });
+              });
+            };
+          }
+          renderRow(st);
+          // The loopback hand-back completes sign-in without a paste — poll the
+          // status briefly after a start so the row flips to signed-in on its own.
+          function showIdentityCodePrompt() {
+            var code = window.prompt(
+              'Finish signing in from your browser. If it shows a code, paste it here — otherwise leave this empty and press OK once the browser says you are signed in.'
+            );
+            var done = function () {
+              fetchJson('/api/identity/status').then(function (st2) {
+                renderRow(st2 || { linked: false });
+                if (st2 && st2.linked) {
+                  if (typeof showToast === 'function') showToast('Signed in as ' + (st2.email || 'your account') + ' — syncing your workspaces…');
+                  fetchJson('/api/identity/sync', { method: 'POST' }).then(function (syncRes) {
+                    if (syncRes && syncRes.added && syncRes.added.length && typeof showToast === 'function') {
+                      showToast(String(syncRes.added.length) + ' cloud workspace' + (syncRes.added.length > 1 ? 's' : '') + ' added — check the switcher.');
+                    }
+                  }).catch(function () {});
+                }
+              });
+            };
+            if (code && code.trim()) {
+              fetchJson('/api/identity/signin/complete', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ code: code.trim() }),
+              }).then(done).catch(function (err) {
+                if (typeof showToast === 'function') showToast('Sign-in failed: ' + (err && err.message ? err.message : 'invalid code'), { type: 'error' });
+              });
+            } else {
+              done();
+            }
+          }
+        }).catch(function () {});
+      }
       fetchJson('/api/assistant/config').then(function (cfg) {
+        initIdentityRow(cfg);
         if (cfg && cfg.managedModelAuth === true) {
           // Managed/hosted: identity + "Account settings" (→ operator account page).
           fetchJson('/api/userconfig/identity').then(function (id) {

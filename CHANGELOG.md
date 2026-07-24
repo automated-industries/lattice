@@ -10,6 +10,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Sign in with a workspace identity service — one identity, every launcher.** When a deployment
+  offers an identity service (discovered from a `.well-known` manifest on this project's public
+  website, or pointed at directly with `LATTICE_IDENTITY_URL`), the account menu gains **Sign in**:
+  a browser-approved handshake (loopback hand-back on the same machine, a pasted one-time code as the
+  universal fallback) links the account, with the session bearer stored **encrypted with the same
+  master key as the credential store**. Once signed in, **invited and owned cloud workspaces appear
+  in the switcher on their own** — membership sync obtains each membership's scoped credential over
+  the authenticated channel and materializes one workspace per membership through the same join path
+  token redemption uses. Revoked memberships are surfaced, never silently hidden; signing out during
+  an in-flight sync can never resurrect the cleared session. Self-hosted installs without an identity
+  service are untouched — the token flow remains fully functional.
+- **Managed-workspace mode** (`LATTICE_MANAGED_WORKSPACES_URL`, injected by a hosting layer per
+  session — the same seam pattern as managed model auth): workspace management delegates to the
+  deployment's manager. Inviting is **email-only** ("they'll have access when they sign in" — no
+  token is minted or shown), the members list reflects the manager's records **including pending
+  invites**, Kick performs the manager's full revoke, and creating a workspace is a single name →
+  create flow on both the wizard and first-run onboarding — no kind picker, no Postgres coordinate
+  forms, no token join. The in-GUI token invite endpoint is refused outright in managed sessions, so
+  a hosted session can never mint a member the manager's records don't know about. Sessions without
+  the seam behave exactly as before.
+
 - **Tables imported from Word/PowerPoint documents are now named from the document itself.** Embedded
   tables used to be keyed positionally (`Table 1`, `Table 2`, …), which materialized as meaningless
   `table_N` tables. Each table is now named by a deterministic ladder: its explicit Word caption

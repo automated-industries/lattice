@@ -25,6 +25,7 @@ import {
   writePreferences,
 } from '../framework/user-config.js';
 import { sendJson, readJson } from './http.js';
+import { isManagedWorkspaces } from './identity/managed.js';
 import {
   readOpenAiCompatConfig,
   setOpenAiCompatConfig,
@@ -521,6 +522,11 @@ export async function dispatchAssistantRoute(
       // Managed deployment: the host supplies the model credential and per-user
       // credential controls are disabled. The GUI hides the connect/key UI.
       managedModelAuth: isManagedModelAuth(),
+      // Managed workspaces: a workspace manager owns invite/members/revoke/create
+      // for this session — the GUI delegates (email-only invite, single create
+      // flow) and the token machinery has no caller. Same seam pattern as
+      // managedModelAuth; a session without it behaves exactly as before.
+      managedWorkspaces: isManagedWorkspaces(),
       // Operator-supplied account page for a managed/hosted deployment (null for a
       // normal install). The header account menu's "Account settings" action opens
       // it — that page owns billing / sign-out. Balance is mirrored here for display.

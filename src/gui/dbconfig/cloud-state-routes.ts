@@ -33,6 +33,7 @@ import {
   revokeMemberRole,
 } from '../../cloud/members.js';
 import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../../cloud/invite.js';
+import { isManagedWorkspaces } from '../identity/managed.js';
 import { slugify } from '../../render/markdown.js';
 import { getAsyncOrSync, runAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
 import {
@@ -403,6 +404,18 @@ export async function dispatchCloudState(
   // credential leaves in the response except inside the opaque token.
   if (pathname === '/api/cloud/invite' && method === 'POST') {
     await tryHandler(res, async () => {
+      // In a MANAGED session the workspace manager is the only member minter:
+      // an in-GUI token invite here would create a scoped role the manager's
+      // membership records never see — a shadow member invisible to its member
+      // cap, revoke flow, and session-kill machinery. Hard-refused, not hidden.
+      if (isManagedWorkspaces()) {
+        sendJson(
+          res,
+          { error: 'This workspace is managed — invite members by email from Workspace settings.' },
+          403,
+        );
+        return;
+      }
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
         sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
         return;

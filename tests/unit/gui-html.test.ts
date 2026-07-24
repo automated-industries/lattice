@@ -324,3 +324,29 @@ describe('5.2 welcome-first home — the landing never shows when a dashboard ex
     expect(guiAppHtml).toContain("hasWelcome ? 'welcome-lattice' : String(anDashRows[0].id)");
   });
 });
+
+describe('5.2 identity + managed-workspace gating (wiring guards)', () => {
+  it('the account menu offers provider-generic sign-in wired to the identity routes', () => {
+    expect(guiAppHtml).toContain("fetchJson('/api/identity/status')");
+    expect(guiAppHtml).toContain("fetchJson('/api/identity/signin/start', { method: 'POST' })");
+    expect(guiAppHtml).toContain("'/api/identity/signin/complete'");
+    expect(guiAppHtml).toContain("fetchJson('/api/identity/signout', { method: 'POST' })");
+    // Hosted sessions (managedModelAuth) never show the local sign-in row.
+    expect(guiAppHtml).toContain('if (cfg && cfg.managedModelAuth === true) return;');
+  });
+
+  it('managed sessions collapse creation to name→create and never mint tokens', () => {
+    // Boot caches the seam once.
+    expect(guiAppHtml).toContain(
+      'state.managedWorkspaces = !!(cfg && cfg.managedWorkspaces === true)',
+    );
+    // Wizard: no kind picker; managed create posts to the manager.
+    expect(guiAppHtml).toContain("'/api/cloud/managed/create'");
+    expect(guiAppHtml).toContain('function submitManaged()');
+    // Invite: email-only, via the manager — the token modal has no managed caller.
+    expect(guiAppHtml).toContain("'/api/cloud/managed/invite'");
+    // Members list reflects the manager's records; kick delegates to revoke.
+    expect(guiAppHtml).toContain("'/api/cloud/managed/revoke'");
+    expect(guiAppHtml).toContain('data-kick-membership');
+  });
+});

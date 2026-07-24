@@ -602,8 +602,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // dashboard) whenever one exists — a fresh workspace opens onto Welcome, and the
 // Ask-Lattice landing survives only as the zero-dashboards fallback. Gated on the LIVE
 // hash so the render-beneath-the-Configure-drawer path never redirects. Recaptured.
-const ORIGINAL_LENGTH = 792863;
-const ORIGINAL_SHA256 = 'bd4eec077115ed1e87792ec9a75dc222b5f037197ca5609e48d2e922aa6b08be';
+// 5.2 identity + managed workspaces: the account menu gains a provider-generic
+// Sign in / signed-in-as row (identity service discovered server-side; loopback or
+// pasted-code completion; membership sync toast). Managed sessions (the
+// managedWorkspaces seam, cached on state at boot) collapse the new-workspace wizard
+// and virgin onboarding to a single name→create flow (manager-provisioned cloud),
+// replace the token-invite dialog with email-only invite, list the manager's
+// memberships (incl. INVITED pending rows) with Kick→revoke, and drop the token-join
+// affordances. Recaptured.
+const ORIGINAL_LENGTH = 804743;
+const ORIGINAL_SHA256 = '5846b22e0010f5cd509f6b1005d833e129e7dd814a9f4b5dc0d0878a5cd5f2fd';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

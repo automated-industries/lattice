@@ -41,6 +41,8 @@ import {
 } from './schema-ops.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
+import { dispatchIdentityRoute } from './identity/routes.js';
+import { probeCloud } from '../framework/cloud-connect.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
@@ -1377,6 +1379,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             },
           },
           // ── DB Config routes ──
+          // Identity client (user-menu sign-in + membership sync) and the
+          // managed-workspace delegation — plus the loopback receiver the
+          // browser-approved sign-in hands its one-time code back to.
+          {
+            handle: async (req, res) => {
+              return await dispatchIdentityRoute(req, res, {
+                pathname,
+                method,
+                createCloudWorkspace,
+                probeCloud,
+              });
+            },
+          },
           // Project Config "Database" panel — read / save / connect / test.
           // The `swap` callback re-opens the active configPath so the
           // YAML rewrite written by `/save` takes effect.
