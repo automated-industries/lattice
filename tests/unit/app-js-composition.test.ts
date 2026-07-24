@@ -610,8 +610,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // replace the token-invite dialog with email-only invite, list the manager's
 // memberships (incl. INVITED pending rows) with Kick→revoke, and drop the token-join
 // affordances. Recaptured.
-const ORIGINAL_LENGTH = 804743;
-const ORIGINAL_SHA256 = '5846b22e0010f5cd509f6b1005d833e129e7dd814a9f4b5dc0d0878a5cd5f2fd';
+// 5.2 Sources panel: a per-row remove (✕) control on source roots + loose ingested
+// files (wired to the root-registration + files-row delete endpoints, with a confirm
+// and a refresh of the open Files surface); a de-dupe so a file that is both a source
+// root and an ingested row shows once and one ✕ clears both; and the Configure → Files
+// tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
+// kept as expandable tile groups. Length + hash recaptured.
+const ORIGINAL_LENGTH = 812551;
+const ORIGINAL_SHA256 = 'bedcf547abfd8c299c0f050958b49e708ffa7e626c9bc7fa9465252fafc242b7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

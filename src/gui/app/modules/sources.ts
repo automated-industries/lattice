@@ -35,69 +35,138 @@ export const sourcesJs = `
       wireSourcesButtons();
     }
 
-    function sourceNodeHtml(path, name, kind, depth) {
+    // A hover ✕ for a TOP-LEVEL source root or a loose ingested file. For a root,
+    // fileId carries its TWIN files-row (a file that is both root and ingested), so one
+    // click clears both. Folder CHILDREN pass no rootId/fileId → no ✕ (their parent
+    // root's ✕ covers them).
+    function srcRemoveBtn(rootId, fileId) {
+      if (!rootId && !fileId) return '';
+      return '<button type="button" class="src-del"' +
+        (rootId ? ' data-root-id="' + escapeHtml(rootId) + '"' : '') +
+        (fileId ? ' data-file-id="' + escapeHtml(fileId) + '"' : '') +
+        ' title="Remove from Lattice (your file stays on disk)">✕</button>';
+    }
+    function sourceNodeHtml(path, name, kind, depth, rootId, twinFileId) {
       var pad = depth * 12;
+      var rm = srcRemoveBtn(rootId, twinFileId);
       if (kind === 'folder') {
         return '<li class="src-node src-folder" data-path="' + escapeHtml(path) +
           '" data-depth="' + depth + '" data-loaded="0">' +
           '<div class="src-row" style="padding-left:' + pad + 'px">' +
             '<span class="src-caret">▸</span><span class="src-ic">📁</span>' +
-            '<span class="src-name">' + escapeHtml(name) + '</span></div>' +
+            '<span class="src-name">' + escapeHtml(name) + '</span>' + rm + '</div>' +
           '<ul class="src-children" hidden></ul></li>';
       }
       return '<li class="src-node src-file" data-path="' + escapeHtml(path) +
         '"><div class="src-row" style="padding-left:' + (pad + 14) + 'px">' +
-        '<span class="src-ic">📄</span><span class="src-name">' + escapeHtml(name) + '</span></div></li>';
+        '<span class="src-ic">📄</span><span class="src-name">' + escapeHtml(name) + '</span>' + rm + '</div></li>';
     }
 
     function renderSourcesFiles(sourceFiles) {
       renderSourcesFilesInto(document.getElementById('src-files-tree'), sourceFiles);
     }
-    // Render the source-files tree (roots + loose files + lazy folders) INTO a given
-    // host element — used by the Configure drawer's Files tab (#inputs-files-tree). Leaf
-    // clicks navigate to #/fs/files/<id>, which the router normalizes to #/w/file/<id>.
-    function renderSourcesFilesInto(host, sourceFiles) {
-      if (!host) return;
+    // Normalize path separators so containment checks work on Windows (the server
+    // stores native-separator absolute paths) as well as POSIX — '\\' → '/'.
+    function srcFsNorm(p) { return (p || '').replace(/\\\\/g, '/'); }
+    // Prepare the source-files data ONCE (shared by the sidebar tree AND the
+    // Configure grid): fetch the registered roots, compute the top-level roots
+    // (each stamped with its twin files-row id, if a files row sits at the same
+    // path) and the DEDUPED loose files. Registering a FILE source creates both a
+    // file-root and a files row at the same path — so a loose file whose path
+    // matches ANY root (file or folder) is dropped here and shows once, as the
+    // root; the root then carries the twin id so one ✕ clears both. the cb receives
+    // { topRoots, loose } or null on failure.
+    function prepareSourcesData(sourceFiles, cb) {
       sourceFiles = sourceFiles || [];
-      // The Files section shows the user's source files (ingested/uploaded) PLUS any
-      // registered on-disk roots as lazy trees. Roots live on the local FS so the
-      // roots endpoint reports enabled:false on a cloud/locked workspace; the
-      // already-ingested source files still show there (they're DB rows).
       fetchJson('/api/sources/roots')
         .then(function (data) {
           var roots = (data && data.roots) || [];
           var folderPaths = roots
             .filter(function (r) { return r.kind === 'folder'; })
             .map(function (r) { return r.path; });
-          // Normalize path separators so the containment checks below work on
-          // Windows (the server stores native-separator absolute paths) as well as
-          // POSIX — '\\' → '/'.
-          var fsNorm = function (p) { return (p || '').replace(/\\\\/g, '/'); };
-          // Loose files = source files NOT under a registered folder root (those show
-          // inside the tree); an uploaded file (no on-disk path) is always loose.
+          // path → files-row id, for stamping a root's twin (and for the dedupe).
+          var idByPath = {};
+          sourceFiles.forEach(function (r) { if (r.ref_uri) idByPath[srcFsNorm(r.ref_uri)] = r.id; });
+          var rootPathSet = {};
+          roots.forEach(function (r) { if (r.path) rootPathSet[srcFsNorm(r.path)] = true; });
+          // Loose files = source files NOT under a registered folder root AND not a
+          // file that is itself a root (that shows as the root). An uploaded file
+          // (no on-disk path) is always loose.
           var loose = sourceFiles.filter(function (r) {
             if (!r.ref_uri) return true;
-            var u = fsNorm(r.ref_uri);
+            var u = srcFsNorm(r.ref_uri);
+            if (rootPathSet[u]) return false; // dedupe: this file IS a root
             return !folderPaths.some(function (p) {
-              var np = fsNorm(p);
+              var np = srcFsNorm(p);
               return u === np || u.indexOf(np + '/') === 0;
             });
           });
-          // Only show roots that aren't nested INSIDE another shown root. A folder
-          // that physically lives under another folder (e.g. Downloads/Hello world)
-          // must appear ONLY in its real place — lazily, under its parent — never
-          // duplicated at the top level. Mirrors the real filesystem tree (separator-
-          // agnostic, so it holds on Windows too).
+          // Only show roots that aren't nested INSIDE another shown root (a folder
+          // physically under another folder shows lazily under its parent, never
+          // duplicated at the top level). Each top root is stamped with its twin id.
           var topRoots = roots.filter(function (r) {
             if (r.kind !== 'folder' || !r.path) return true;
-            var rn = fsNorm(r.path);
+            var rn = srcFsNorm(r.path);
             return !roots.some(function (o) {
-              return o !== r && o.kind === 'folder' && o.path && rn.indexOf(fsNorm(o.path) + '/') === 0;
+              return o !== r && o.kind === 'folder' && o.path && rn.indexOf(srcFsNorm(o.path) + '/') === 0;
             });
+          }).map(function (r) {
+            return { id: r.id, path: r.path, name: r.name, kind: r.kind, twinId: idByPath[srcFsNorm(r.path)] || '' };
           });
+          cb({ topRoots: topRoots, loose: loose });
+        })
+        .catch(function () { cb(null); });
+    }
+    // Remove a source from Lattice (never touches disk). A file/folder root → DELETE
+    // its root registration; an ingested files-row (a loose file, or a root's twin) →
+    // soft-delete the row; a file that is both → clear both. Refreshes whichever Files
+    // surface is showing on success.
+    function removeSource(name, rootId, fileId) {
+      var doDelete = function () {
+        var ps = [];
+        if (rootId) ps.push(fetch('/api/sources/roots/' + encodeURIComponent(rootId), { method: 'DELETE' }));
+        if (fileId) ps.push(fetch('/api/tables/files/rows/' + encodeURIComponent(fileId), { method: 'DELETE' }));
+        return Promise.all(ps).then(function () {
+          if (typeof renderSources === 'function') renderSources();          // sidebar
+          var body = document.getElementById('drawer-body');
+          if (body && document.getElementById('inputs-files-tree') && typeof renderFilesTab === 'function') {
+            renderFilesTab(body);                                            // Configure Files tab, if open
+          }
+        });
+      };
+      if (typeof showModal === 'function') {
+        showModal('Remove from Lattice',
+          '<p>Remove <strong>' + escapeHtml(name) + '</strong> from Lattice?</p>' +
+          '<p class="hint">Your file stays on your disk — this only stops Lattice from tracking it.</p>',
+          { primaryLabel: 'Remove', primaryClass: 'destructive', onSubmit: doDelete });
+      } else if (window.confirm('Remove "' + name + '" from Lattice? Your file stays on your disk.')) {
+        doDelete();
+      }
+    }
+    // Wire the ✕ controls in a scope — stop the click from bubbling to the row's
+    // open/expand handler; read the name from the sibling label for the confirm.
+    function wireSourceRemoval(scope) {
+      scope.querySelectorAll('.src-del').forEach(function (btn) {
+        if (btn.__wired) return; btn.__wired = true;
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var nameEl = btn.parentNode.querySelector('.src-name') || (btn.closest ? btn.closest('.fs-tile-wrap') : null);
+          var nm = nameEl && nameEl.textContent ? nameEl.textContent : (btn.getAttribute('data-name') || 'this item');
+          removeSource(nm, btn.getAttribute('data-root-id'), btn.getAttribute('data-file-id'));
+        });
+      });
+    }
+    // Render the source-files tree (roots + loose files + lazy folders) INTO a given
+    // host element — used by the left-sidebar Files section. Leaf clicks navigate to
+    // #/fs/files/<id>, which the router normalizes to #/w/file/<id>.
+    function renderSourcesFilesInto(host, sourceFiles) {
+      if (!host) return;
+      prepareSourcesData(sourceFiles, function (prep) {
+        if (!prep) { host.innerHTML = ''; return; }
+        var topRoots = prep.topRoots, loose = prep.loose;
           var rootsHtml = topRoots.length
             ? '<ul class="src-tree">' + topRoots.map(function (r) {
-                return sourceNodeHtml(r.path, r.name, r.kind, 0);
+                return sourceNodeHtml(r.path, r.name, r.kind, 0, r.id, r.twinId);
               }).join('') + '</ul>'
             : '';
           var looseHtml = loose.length
@@ -106,7 +175,8 @@ export const sourcesJs = `
                 return '<li class="src-node src-file" data-id="' + escapeHtml(r.id) +
                   '"><div class="src-row" style="padding-left:14px">' +
                   '<span class="src-ic">' + fileEmoji(r) + '</span>' +
-                  '<span class="src-name">' + escapeHtml(name) + '</span></div></li>';
+                  '<span class="src-name">' + escapeHtml(name) + '</span>' +
+                  srcRemoveBtn('', r.id) + '</div></li>';
               }).join('') + '</ul>'
             : '';
           // Preserve expanded folders across this re-render so an in-progress
@@ -124,6 +194,7 @@ export const sourcesJs = `
           }
           host.innerHTML = rootsHtml + looseHtml;
           wireSourceTree(host);
+          wireSourceRemoval(host);
           host.querySelectorAll('.src-folder').forEach(function (li) {
             var saved = openFolders[li.getAttribute('data-path')];
             if (saved == null) return;
@@ -136,8 +207,99 @@ export const sourcesJs = `
             if (caret) caret.textContent = '▾';
             wireSourceTree(ul1);
           });
+      });
+    }
+
+    // ── Grid renderer for the Configure → Files tab (grid-only, nested folders) ──
+    // Reuses prepareSourcesData, so the DEDUPE + twin-id + ✕ from the tree come for
+    // free (the dedupe lives in the data prep, not a per-view renderer). Folder roots
+    // render as EXPANDABLE groups (a folder tile → a nested tile grid, lazily loaded
+    // exactly as the tree does); file roots + loose files render as top-level tiles.
+    // fsTileHtml stays shared (also serves the record page) — the ✕ is a hover overlay
+    // added here, not baked into the tile.
+    function srcGridTile(href, icon, name, kind, rootId, fileId, folderPath, depth) {
+      var inner = fsTileHtml(href || '', icon, name, 'files', '', kind === 'folder' ? 'folder' : 'file');
+      var del = srcRemoveBtn(rootId, fileId);
+      // Grid tiles have no .src-name sibling — stamp the name for the confirm dialog.
+      if (del) del = del.replace('<button ', '<button data-name="' + escapeHtml(name) + '" ');
+      var attrs = kind === 'folder'
+        ? ' data-folder-path="' + escapeHtml(folderPath || '') + '" data-depth="' + (depth || 0) + '" data-loaded="0"'
+        : (href ? '' : ' data-open-path="' + escapeHtml(folderPath || '') + '"');
+      return '<div class="ifg-tile-wrap' + (kind === 'folder' ? ' ifg-folder' : '') + '"' + attrs + '>' + inner + del + '</div>';
+    }
+    function renderSourcesGridInto(host, sourceFiles) {
+      if (!host) return;
+      prepareSourcesData(sourceFiles, function (prep) {
+        if (!prep) { host.innerHTML = ''; return; }
+        var groups = [];   // folder-root expandable groups (full-width blocks)
+        var flat = [];     // file-root + loose file tiles
+        prep.topRoots.forEach(function (r) {
+          if (r.kind === 'folder') {
+            groups.push('<div class="ifg-group">' +
+              srcGridTile('', '📁', r.name, 'folder', r.id, r.twinId, r.path, 0) +
+              '<div class="fs-grid ifg-children" hidden></div></div>');
+          } else {
+            var href = r.twinId ? '#/w/file/' + encodeURIComponent(r.twinId) : '';
+            flat.push(srcGridTile(href, '📄', r.name, 'file', r.id, r.twinId, r.path, 0));
+          }
+        });
+        prep.loose.forEach(function (r) {
+          var name = r.name || r.original_name || 'Untitled';
+          flat.push(srcGridTile('#/w/file/' + encodeURIComponent(r.id), fileEmoji(r), name, 'file', '', r.id, '', 0));
+        });
+        if (!groups.length && !flat.length) {
+          host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below.</div>';
+          return;
+        }
+        host.innerHTML = groups.join('') +
+          (flat.length ? '<div class="fs-grid inputs-files-grid">' + flat.join('') + '</div>' : '');
+        wireSourcesGrid(host);
+      });
+    }
+    function wireSourcesGrid(scope) {
+      wireSourceRemoval(scope);
+      // Open a file tile (not a folder, not an unresolved on-disk child).
+      scope.querySelectorAll('.ifg-tile-wrap:not(.ifg-folder) .fs-tile[data-href]').forEach(function (t) {
+        if (t.__wired) return; t.__wired = true;
+        t.addEventListener('click', function () { var h = t.getAttribute('data-href'); if (h) location.hash = h; });
+      });
+      // A child file present on disk but not yet a row — ingest-on-open by path.
+      scope.querySelectorAll('.ifg-tile-wrap[data-open-path] .fs-tile').forEach(function (t) {
+        if (t.__wired) return; t.__wired = true;
+        t.addEventListener('click', function () { openSourceFile(t.parentNode.getAttribute('data-open-path')); });
+      });
+      // Expand a folder group (lazy, mirrors the tree's toggleSourceFolder).
+      scope.querySelectorAll('.ifg-tile-wrap.ifg-folder').forEach(function (wrap) {
+        var tile = wrap.querySelector('.fs-tile');
+        if (!tile || tile.__wired) return; tile.__wired = true;
+        tile.addEventListener('click', function () { toggleGridFolder(wrap); });
+      });
+    }
+    function toggleGridFolder(wrap) {
+      var group = wrap.parentNode; // .ifg-group
+      var childGrid = group.querySelector(':scope > .ifg-children');
+      if (!childGrid) return;
+      if (!childGrid.hidden) { childGrid.hidden = true; wrap.classList.remove('ifg-open'); return; }
+      if (wrap.getAttribute('data-loaded') === '1') { childGrid.hidden = false; wrap.classList.add('ifg-open'); return; }
+      var path = wrap.getAttribute('data-folder-path');
+      var depth = Number(wrap.getAttribute('data-depth') || '0') + 1;
+      fetchJson('/api/sources/list?path=' + encodeURIComponent(path))
+        .then(function (data) {
+          var entries = (data && data.entries) || [];
+          childGrid.innerHTML = entries.map(function (e) {
+            if (e.kind === 'folder') {
+              return '<div class="ifg-group">' +
+                srcGridTile('', '📁', e.name, 'folder', '', '', e.path, depth) +
+                '<div class="fs-grid ifg-children" hidden></div></div>';
+            }
+            return srcGridTile('', '📄', e.name, 'file', '', '', e.path, depth);
+          }).join('') + (data && data.truncated ? '<div class="src-note">…more not shown</div>' : '');
+          wrap.setAttribute('data-loaded', '1');
+          childGrid.hidden = false;
+          wrap.classList.add('ifg-open');
+          wireSourcesGrid(group);
         })
-        .catch(function () { host.innerHTML = ''; });
+        .catch(function () {});
     }
 
     function wireSourceTree(scope) {
