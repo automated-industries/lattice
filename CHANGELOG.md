@@ -70,6 +70,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **You can now remove a file or folder from Lattice's Files/Sources.** The remove capability existed
+  server-side but had no button; a per-row ✕ (on source roots and ingested files) now wires it up —
+  confirming first, and reassuring you the file stays on your disk. A file that was tracked both as a
+  source root and as an ingested row (which used to appear twice) now shows once, and one ✕ clears both.
+- **The Configure → Files view is now a single grid** (the list/grid toggle is gone), keeping the
+  nested folder structure as expandable tiles, with roomier spacing.
+- **The assistant can read a large uploaded file end-to-end.** Asking it to work from a long file (e.g.
+  to reproduce or restyle an uploaded page) used to loop on a truncated head of the text; a new
+  `read_file_text` tool pages through the file's full extracted text in large windows, so it reads the
+  whole thing.
 - **A document's tables can no longer be modelled twice.** The LLM object extractor is now disabled
   whenever the deterministic structured importer actually ran for the same file (previously the gate
   was by file extension only, so a `.docx` with data tables got both the faithful import and a lossy
