@@ -56,6 +56,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_rows',
   'get_row',
   'get_row_context',
+  'read_file_text',
   'search',
   'lattice_help',
   // Handled by the chat loop itself (it emits a `question` SSE event and ends

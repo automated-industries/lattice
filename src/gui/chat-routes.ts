@@ -13,6 +13,7 @@ import {
   type ContentBlock,
 } from './ai/chat.js';
 import { resolveLlmProvider } from './ai/provider.js';
+import { normalizeUserUrl } from '../sources/url-safety.js';
 import { runIntent, type IntentResult } from './ai/intent.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
@@ -228,6 +229,76 @@ const REFERENCE_INGEST_NOTE =
   're-create, re-save, or re-link that content; just address the request and refer to ' +
   'what was saved if useful.]\n\n';
 
+/** The note when links in the message were fetched + saved: the page CONTENT is on
+ *  hand, so the model must act from it — never ask the user for details the page
+ *  already provides. Failures are named so the model says so instead of guessing. */
+function linkIngestNote(saved: string[], failed: string[]): string {
+  const parts: string[] = [];
+  if (saved.length > 0) {
+    parts.push(
+      `The link${saved.length > 1 ? 's' : ''} in the user's message ` +
+        `(${saved.join(', ')}) ${saved.length > 1 ? 'have' : 'has'} already been fetched, ` +
+        'saved to their Files, and run through the ingestion engine — the page content is ' +
+        'readable with your file tools, and any structured objects it describes were ' +
+        'extracted and linked. Do NOT re-fetch, re-save, or re-create it, and do NOT ask ' +
+        'the user for details the page already provides — read the saved file and act.',
+    );
+  }
+  if (failed.length > 0) {
+    parts.push(
+      `${failed.length > 1 ? 'These links' : 'This link'} could not be fetched: ` +
+        `${failed.join(', ')} — tell the user plainly and work with what you have; ` +
+        'never present guessed page details as fetched.',
+    );
+  }
+  return parts.length > 0 ? `[Note: ${parts.join(' ')}]\n\n` : '';
+}
+
+/**
+ * Every http(s) URL literally present in the user's message — normalized, deduped,
+ * in appearance order. MECHANICAL, never delegated to a model: a shared link is
+ * always detected, so it is always fetched (safety-gated). Trailing sentence /
+ * bracket punctuation is trimmed; anything `normalizeUserUrl` refuses is skipped.
+ */
+export function extractUserUrls(message: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re = /https?:\/\/[^\s<>"']+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(message)) !== null) {
+    const raw = m[0].replace(/[),.;!?\]}>'"]+$/, '');
+    const normalized = normalizeUserUrl(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(raw);
+  }
+  return out;
+}
+
+/**
+ * Everything the USER has typed in this conversation — the current message plus
+ * every user turn's top-level TEXT blocks from the (rehydrated) history. Feeds
+ * `ingest_url`'s "did the user write this?" gate, so a link shared earlier in
+ * the thread stays fetchable. Deliberately excludes `tool_result` blocks (they
+ * ride user-role messages in the wire format but carry file/row content — the
+ * exact SSRF vector the gate exists to block), assistant turns, and anything
+ * nested inside non-text blocks. Exported for regression testing.
+ */
+export function userAuthoredCorpus(message: string, history: LlmMessage[]): string {
+  const texts: string[] = [message];
+  for (const h of history) {
+    if (h.role !== 'user') continue;
+    if (typeof h.content === 'string') {
+      texts.push(h.content);
+      continue;
+    }
+    for (const b of h.content) {
+      if (b.type === 'text') texts.push(b.text);
+    }
+  }
+  return texts.join('\n');
+}
+
 /**
  * Route any REFERENCE MATERIAL in the user's message through the SAME engine a dropped
  * file uses — decided by content TYPE (facts / notes / a pasted document / a link), not
@@ -251,15 +322,6 @@ export async function ingestReferenceMaterial(
   temperature: number,
 ): Promise<string> {
   if (!autoIngestEnabled()) return '';
-  let reference = '';
-  try {
-    reference = (await triageReferenceMaterial(client, message, temperature)).reference;
-  } catch (e) {
-    console.warn('[chat] reference-material triage failed:', (e as Error).message);
-    return '';
-  }
-  const ref = reference.trim();
-  if (!ref) return '';
 
   // source:'ingest' (not 'ai') so the saved-and-linked activity surfaces on the
   // persistent feed exactly like a dropped file, not as a chat-turn activity card.
@@ -270,52 +332,99 @@ export async function ingestReferenceMaterial(
     source: 'ingest',
     onColumnsAdded: columnDescriptionHook(deps.db),
   };
-  try {
-    const { ingestTextAsFile, looksLikeUrl } = await import('./ingest-routes.js');
-    // A bare URL is CRAWLED for its readable text (SSRF + policy guarded), mirroring the
-    // /api/ingest/text route; anything else is saved as text. Both go through enrichment.
-    if (looksLikeUrl(ref)) {
-      const { ingestUrlAsFile } = await import('./ingest-url.js');
-      await ingestUrlAsFile(
-        {
-          db: deps.db,
-          mctx,
-          ...(deps.privateMode ? { privateMode: true } : {}),
-          enrich: {
-            fileJunctions: [],
-            entityDescriptions: {},
-            ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
-            ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
-            ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
-            ...(deps.createObjectJunction
-              ? { createObjectJunction: deps.createObjectJunction }
-              : {}),
+  const enrichDeps = {
+    fileJunctions: [] as FileJunction[],
+    entityDescriptions: {} as Record<string, string>,
+    ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
+    ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
+    ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
+    ...(deps.createObjectJunction ? { createObjectJunction: deps.createObjectJunction } : {}),
+  };
+
+  // ── Links: detected MECHANICALLY from the raw message and ALWAYS fetched ──
+  // (assertSafeUrl SSRF guard + fetch budget inside ingestUrlAsFile). Detection
+  // is never delegated to the triage model — that is exactly where a shared link
+  // used to flake into a "what would you like me to do?" instead of being
+  // visited and parsed into an object. Failures are surfaced in the note, never
+  // silent, so the model tells the user rather than guessing or asking.
+  let urlNote = '';
+  const urls = extractUserUrls(message);
+  let remainder = message;
+  if (urls.length > 0) {
+    const { ingestUrlAsFile } = await import('./ingest-url.js');
+    const budget = new FetchBudget();
+    const saved: string[] = [];
+    const failed: string[] = [];
+    for (const url of urls) {
+      remainder = remainder.split(url).join(' ');
+      try {
+        await ingestUrlAsFile(
+          {
+            db: deps.db,
+            mctx,
+            ...(deps.privateMode ? { privateMode: true } : {}),
+            enrich: enrichDeps,
           },
-        },
-        ref,
-      );
-      return REFERENCE_INGEST_NOTE;
+          url,
+          { budget },
+        );
+        saved.push(url);
+      } catch (e) {
+        console.warn('[chat] link ingest failed:', url, (e as Error).message);
+        failed.push(url);
+        if (budget.remaining === 0) break; // budget exhausted — stop fetching, keep the note honest
+      }
     }
-    await ingestTextAsFile(
-      {
-        db: deps.db,
-        mctx,
-        fileJunctions: [],
-        entityDescriptions: {},
-        ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
-        ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
-        ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
-        ...(deps.createObjectJunction ? { createObjectJunction: deps.createObjectJunction } : {}),
-        ...(deps.privateMode ? { privateMode: true } : {}),
-      },
-      ref,
-      'Pasted note',
-    );
-    return REFERENCE_INGEST_NOTE;
-  } catch (e) {
-    console.warn('[chat] reference-material ingest failed:', (e as Error).message);
-    return '';
+    urlNote = linkIngestNote(saved, failed);
   }
+
+  // ── Text reference material: triaged as before, over the message MINUS the
+  // already-ingested links (so a bare link-share triages to nothing). ──
+  let textNote = '';
+  if (remainder.trim()) {
+    let reference = '';
+    try {
+      reference = (await triageReferenceMaterial(client, remainder, temperature)).reference;
+    } catch (e) {
+      console.warn('[chat] reference-material triage failed:', (e as Error).message);
+      return urlNote;
+    }
+    const ref = reference.trim();
+    if (ref) {
+      try {
+        const { ingestTextAsFile, looksLikeUrl } = await import('./ingest-routes.js');
+        // A triage-returned bare URL (one the extractor's normalizer refused but the
+        // ingest normalizer accepts) still crawls; anything else saves as text.
+        if (looksLikeUrl(ref)) {
+          const { ingestUrlAsFile } = await import('./ingest-url.js');
+          await ingestUrlAsFile(
+            {
+              db: deps.db,
+              mctx,
+              ...(deps.privateMode ? { privateMode: true } : {}),
+              enrich: enrichDeps,
+            },
+            ref,
+          );
+        } else {
+          await ingestTextAsFile(
+            {
+              db: deps.db,
+              mctx,
+              ...enrichDeps,
+              ...(deps.privateMode ? { privateMode: true } : {}),
+            },
+            ref,
+            'Pasted note',
+          );
+        }
+        textNote = REFERENCE_INGEST_NOTE;
+      } catch (e) {
+        console.warn('[chat] reference-material ingest failed:', (e as Error).message);
+      }
+    }
+  }
+  return urlNote + textNote;
 }
 
 /**
@@ -1012,8 +1121,15 @@ export async function dispatchChatRoute(
       softDeletable: ctx.softDeletable,
       onColumnsAdded: columnDescriptionHook(ctx.db),
       aggressiveness: getAggressiveness(),
-      // The user's message this turn — ingest_url only fetches a URL found here.
-      userMessage: message,
+      // ingest_url's "did the user write this?" gate covers the WHOLE
+      // conversation, not just this turn: a link shared two messages ago is
+      // still the user's link — gating on the current message alone made the
+      // assistant refuse it and claim it "cannot scrape" a URL the user
+      // explicitly shared. Only user-AUTHORED text contributes (top-level text
+      // blocks of user turns; never tool_result blocks, model text, or file/row
+      // content), so the SSRF property is unchanged: the model still cannot
+      // fetch a URL it lifted out of anything but the user's own words.
+      userMessage: userAuthoredCorpus(message, history),
       // One shared fetch budget for the whole turn (caps assistant-driven fetches).
       urlFetchBudget: new FetchBudget(),
       ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),

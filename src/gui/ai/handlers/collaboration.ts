@@ -145,7 +145,7 @@ export async function handleCollaboration(deps: HandlerDeps): Promise<GroupResul
       if (!created) {
         return {
           ok: false,
-          error: `Could not create table "${name}" — the name is invalid, reserved, or a table by that name already exists.`,
+          error: `Could not create table "${name}" — the name is invalid, reserved, a table by that name already exists, or it is a placeholder like "table_1"/"sheet2". Choose a specific, meaningful plural name that describes what the rows are (e.g. "invoices", "quarterly_revenue").`,
         };
       }
       // Make the new table usable by later tool calls in this same turn.

@@ -77,7 +77,8 @@ export function configDir(): string {
   return legacy;
 }
 
-function ensureConfigDir(): string {
+/** Ensure + return the machine-local config dir (exported for sibling credential stores). */
+export function ensureConfigDir(): string {
   const dir = configDir();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -653,7 +654,8 @@ function withCredentialLock<T>(fn: () => T): T {
 }
 
 /** Atomically write `data` to `path` via a temp file + rename, then chmod 0600. */
-function writeFileAtomic(path: string, data: string): void {
+/** Atomic same-dir write (exported for sibling credential stores). */
+export function writeFileAtomic(path: string, data: string): void {
   const tmp = `${path}.${String(process.pid)}.${randomBytes(4).toString('hex')}.tmp`;
   writeFileSync(tmp, data, 'utf8');
   if (platform() !== 'win32') {

@@ -206,6 +206,53 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
         ),
       };
     }
+    case 'read_file_text': {
+      // Paged read of ONE file's full extracted_text. get_row/list_rows truncate
+      // a big file body and row-offset paging can't page WITHIN a file, so a
+      // model trying to read a large uploaded file (e.g. to reproduce an HTML
+      // dashboard) would otherwise loop re-reading the same truncated head. This
+      // returns a large deterministic char window + nextOffset so the model can
+      // walk the whole file in a few calls instead.
+      const CHUNK = 60_000;
+      const id = requireString(args.id, 'id');
+      const offset = Math.max(0, typeof args.offset === 'number' ? Math.floor(args.offset) : 0);
+      const row = await ctx.db.get('files', id);
+      if (row === null) return { ok: false, error: 'Row not found' };
+      const framed = frameUntrustedFileContent(
+        'files',
+        redactRow(row, await secretColumnsFor(ctx.db, 'files')),
+      );
+      const text = typeof framed.extracted_text === 'string' ? framed.extracted_text : '';
+      if (text.length === 0) {
+        return {
+          ok: true,
+          result: {
+            id,
+            totalChars: 0,
+            offset: 0,
+            returnedChars: 0,
+            nextOffset: null,
+            text: '',
+            note: 'This file has no extracted text.',
+          },
+        };
+      }
+      const start = Math.min(offset, text.length);
+      const chunk = text.slice(start, start + CHUNK);
+      const end = start + chunk.length;
+      const nextOffset = end < text.length ? end : null;
+      return {
+        ok: true,
+        result: {
+          id,
+          totalChars: text.length,
+          offset: start,
+          returnedChars: chunk.length,
+          nextOffset,
+          text: chunk,
+        },
+      };
+    }
     case 'get_row_context': {
       // Read the row's RENDERED context — the organized, pre-joined markdown
       // Lattice already produced (frontmatter + related entities + combined

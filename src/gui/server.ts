@@ -41,6 +41,8 @@ import {
 } from './schema-ops.js';
 import { dispatchUserConfigRoute } from './userconfig-routes.js';
 import { dispatchDbConfigRoute, redeemInvite } from './dbconfig-routes.js';
+import { dispatchIdentityRoute } from './identity/routes.js';
+import { probeCloud } from '../framework/cloud-connect.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
@@ -1149,7 +1151,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 softDeletable: active.softDeletable,
                 // The assistant can create tables + relationships on request — same
                 // audited, no-reopen primitives the Context Constructor uses.
-                createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+                createEntity: (name, columns) =>
+                  createUserEntity(active, name, columns, sessionId, { rejectAnonymous: true }),
                 addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
                 createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
                 // The files-side linker the shared enrichment engine uses — lets the
@@ -1230,7 +1233,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
                 createObjectJunction: (a, b) => createUserJunction(active, a, b, sessionId),
                 createEntity: (entity, columns) =>
-                  createUserEntity(active, entity, columns, sessionId),
+                  createUserEntity(active, entity, columns, sessionId, { rejectAnonymous: true }),
                 aggressiveness: getAggressiveness(),
 
                 latticeRoot: dirname(active.configPath),
@@ -1263,7 +1266,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 createObjectJunction: (a: string, b: string) =>
                   createUserJunction(active, a, b, sessionId),
                 createEntity: (entity: string, columns: string[]) =>
-                  createUserEntity(active, entity, columns, sessionId),
+                  createUserEntity(active, entity, columns, sessionId, { rejectAnonymous: true }),
                 aggressiveness: getAggressiveness(),
                 latticeRoot: dirname(active.configPath),
                 configPath: active.configPath,
@@ -1376,6 +1379,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             },
           },
           // ── DB Config routes ──
+          // Identity client (user-menu sign-in + membership sync) and the
+          // managed-workspace delegation — plus the loopback receiver the
+          // browser-approved sign-in hands its one-time code back to.
+          {
+            handle: async (req, res) => {
+              return await dispatchIdentityRoute(req, res, {
+                pathname,
+                method,
+                createCloudWorkspace,
+                probeCloud,
+              });
+            },
+          },
           // Project Config "Database" panel — read / save / connect / test.
           // The `swap` callback re-opens the active configPath so the
           // YAML rewrite written by `/save` takes effect.

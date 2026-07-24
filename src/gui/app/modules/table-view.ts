@@ -143,6 +143,21 @@ export const tableViewJs = `    // ───────────────
         var drawer = document.getElementById('settings-drawer');
         if (drawer && !drawer.hidden) closeSettingsDrawer();
       });
+      // The brand logo is ALWAYS "home": close the Configure/History takeover when
+      // it is open, then land on the workspace home. Without this, clicking the
+      // logo with the drawer open was a silent no-op — the hash is usually already
+      // '#/' (closeSettingsDrawer parks it there), so the <a href="#/"> assignment
+      // fires no hashchange and nothing on screen changes.
+      var brand = document.querySelector('header.topbar a.brand');
+      if (brand) brand.addEventListener('click', function (e) {
+        // Preserve open-in-new-tab (cmd/ctrl/shift/middle-click) semantics.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        if (drawerIsOpen()) closeSettingsDrawer();
+        // closeSettingsDrawer may have just replaceState'd a drawer hash to '#/';
+        // only assign when still elsewhere so the same-hash case stays event-free.
+        if ((location.hash || '#/') !== '#/') location.hash = '#/';
+      });
     }
 
 `;

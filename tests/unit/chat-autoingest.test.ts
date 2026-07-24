@@ -29,7 +29,11 @@ vi.mock('../../src/gui/ingest-url.js', async (orig) => {
   return { ...actual, ingestUrlAsFile: ingestUrlSpy };
 });
 
-import { ingestReferenceMaterial } from '../../src/gui/chat-routes.js';
+import {
+  extractUserUrls,
+  ingestReferenceMaterial,
+  userAuthoredCorpus,
+} from '../../src/gui/chat-routes.js';
 import { triageReferenceMaterial } from '../../src/gui/ai/summarize.js';
 
 /** A client whose triage turn returns whatever `scripted.triageJson` holds. */
@@ -149,5 +153,93 @@ describe('triageReferenceMaterial — verbatim classifier', () => {
       'Weekly   sync   with Ada Lovelace\n\non Tuesday.',
     );
     expect(out.reference).toBe('Weekly sync with Ada Lovelace on Tuesday.');
+  });
+});
+
+describe('deterministic link ingestion — a shared URL is ALWAYS fetched', () => {
+  beforeEach(() => {
+    scripted.triageJson = ref('');
+    ingestTextSpy.mockClear();
+    ingestUrlSpy.mockClear();
+    delete process.env.LATTICE_CHAT_AUTOINGEST;
+  });
+
+  it('fetches a pasted link even when the triage model returns nothing', async () => {
+    // The regression: link detection used to ride the LLM triage, which flaked a
+    // bare link-share into a clarifying question. Detection is now mechanical.
+    const url =
+      'https://example.com/building/236_240-west-64-street/2e?from_map=1&utm_campaign=rental_listing&utm_medium=share';
+    scripted.triageJson = ref(''); // triage sees nothing — the URL must still fetch
+    const note = await ingestReferenceMaterial(fakeClient(), url, deps(), 0.5);
+    expect(ingestUrlSpy).toHaveBeenCalledTimes(1);
+    expect(ingestUrlSpy.mock.calls[0]?.[1]).toBe(url);
+    expect(ingestTextSpy).not.toHaveBeenCalled();
+    expect(note).toContain('already been fetched');
+    expect(note).toContain('do NOT ask the user for details');
+  });
+
+  it('fetches the link out of a mixed message and leaves the directive to the model', async () => {
+    const url = 'https://example.com/listing/42';
+    const note = await ingestReferenceMaterial(
+      fakeClient(),
+      `im posting listings i need you to start saving them ${url}`,
+      deps(),
+      0.5,
+    );
+    expect(ingestUrlSpy).toHaveBeenCalledTimes(1);
+    expect(ingestUrlSpy.mock.calls[0]?.[1]).toBe(url);
+    expect(note).toContain('already been fetched');
+  });
+
+  it('a failed fetch is surfaced in the note — never silent, never a guess', async () => {
+    const url = 'https://example.com/paywalled';
+    ingestUrlSpy.mockRejectedValueOnce(new Error('403'));
+    const note = await ingestReferenceMaterial(fakeClient(), url, deps(), 0.5);
+    expect(note).toContain('could not be fetched');
+    expect(note).toContain(url);
+  });
+
+  it('dedupes repeated links and trims trailing punctuation', async () => {
+    const url = 'https://example.com/a';
+    await ingestReferenceMaterial(fakeClient(), `look at ${url}, then ${url}.`, deps(), 0.5);
+    expect(ingestUrlSpy).toHaveBeenCalledTimes(1);
+    expect(ingestUrlSpy.mock.calls[0]?.[1]).toBe(url);
+  });
+});
+
+describe('extractUserUrls — mechanical link detection', () => {
+  it('extracts scheme-prefixed URLs with query strings, trimming sentence punctuation', () => {
+    const urls = extractUserUrls('see https://example.com/x?a=1&b=2, and (https://example.com/y).');
+    expect(urls).toEqual(['https://example.com/x?a=1&b=2', 'https://example.com/y']);
+  });
+
+  it('returns [] for plain text and skips unparseable candidates', () => {
+    expect(extractUserUrls('no links here')).toEqual([]);
+  });
+});
+
+describe('userAuthoredCorpus — the whole-conversation URL gate input', () => {
+  it('includes prior user turns so an earlier link stays fetchable', () => {
+    const corpus = userAuthoredCorpus('add this listing too', [
+      { role: 'user', content: 'save https://example.com/listing/1' },
+      { role: 'assistant', content: 'Saved.' },
+    ]);
+    expect(corpus).toContain('https://example.com/listing/1');
+    expect(corpus).toContain('add this listing too');
+    expect(corpus).not.toContain('Saved.');
+  });
+
+  it('excludes tool_result blocks — file/row content can never smuggle a URL in', () => {
+    const corpus = userAuthoredCorpus('hi', [
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: 'https://attacker.example/evil' },
+          { type: 'text', text: 'my own words https://example.com/mine' },
+        ] as never,
+      },
+    ]);
+    expect(corpus).toContain('https://example.com/mine');
+    expect(corpus).not.toContain('attacker.example');
   });
 });

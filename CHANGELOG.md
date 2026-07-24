@@ -6,7 +6,116 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [5.1.5] — unreleased
+## [5.2.0] — 2026-07-24
+
+### Added
+
+- **Sign in with a workspace identity service — one identity, every launcher.** When a deployment
+  offers an identity service (discovered from a `.well-known` manifest on this project's public
+  website, or pointed at directly with `LATTICE_IDENTITY_URL`), the account menu gains **Sign in**:
+  a browser-approved handshake (loopback hand-back on the same machine, a pasted one-time code as the
+  universal fallback) links the account, with the session bearer stored **encrypted with the same
+  master key as the credential store**. Once signed in, **invited and owned cloud workspaces appear
+  in the switcher on their own** — membership sync obtains each membership's scoped credential over
+  the authenticated channel and materializes one workspace per membership through the same join path
+  token redemption uses. Revoked memberships are surfaced, never silently hidden; signing out during
+  an in-flight sync can never resurrect the cleared session. Self-hosted installs without an identity
+  service are untouched — the token flow remains fully functional.
+- **Managed-workspace mode** (`LATTICE_MANAGED_WORKSPACES_URL`, injected by a hosting layer per
+  session — the same seam pattern as managed model auth): workspace management delegates to the
+  deployment's manager. Inviting is **email-only** ("they'll have access when they sign in" — no
+  token is minted or shown), the members list reflects the manager's records **including pending
+  invites**, Kick performs the manager's full revoke, and creating a workspace is a single name →
+  create flow on both the wizard and first-run onboarding — no kind picker, no Postgres coordinate
+  forms, no token join. The in-GUI token invite endpoint is refused outright in managed sessions, so
+  a hosted session can never mint a member the manager's records don't know about. Sessions without
+  the seam behave exactly as before.
+- **Identity security hardening** (defense-in-depth, from an adversarial auth/RLS review that found no
+  exploitable flaw): a discovered identity-service base is required to be HTTPS (loopback excepted for
+  dev), so a tampered discovery manifest can never downgrade the personal bearer or a scoped credential
+  to cleartext; and in a managed session every in-GUI role-mutating cloud endpoint — not just invite,
+  but also remove-member and secure — is refused, so member management can't drift the tenant's roles
+  out of sync with the manager's records.
+
+- **Tables imported from Word/PowerPoint documents are now named from the document itself.** Embedded
+  tables used to be keyed positionally (`Table 1`, `Table 2`, …), which materialized as meaningless
+  `table_N` tables. Each table is now named by a deterministic ladder: its explicit Word caption
+  (`w:tblCaption`), else the nearest preceding heading (bounded to the text between tables, so a
+  previous table's cell text is never mistaken for a heading), else the slide's title for PowerPoint,
+  else the document's basename. A caption that is itself a placeholder ("Table 1") is rejected and the
+  ladder falls through. Tables that still cannot be named are **folded into one table named after the
+  document** — with the full column union, so no fragment's columns are lost — rather than dropped or
+  numbered. Two adjacent tables with the same columns and name (a page-break split) merge into one,
+  with header spelling canonicalized so differing case never produces half-empty rows.
+- **Default-named sources are named from the file, not refused.** An Excel workbook whose only sheet
+  is `Sheet1`, or a JSON source keyed `table_1`, now imports under a name derived from the file name
+  (`Q3 Budget.xlsx` → `q3_budget`) on both the proposal and the apply path — and a file whose own
+  name is a placeholder (`untitled.docx`, `table.xlsx`) falls to a generic label rather than an
+  anonymous one. Derived names are capped so the resulting identifier always fits PostgreSQL's
+  63-byte limit instead of being silently truncated there.
+- **One shared table-name policy (`isAnonymousName`), enforced everywhere tables are created.** A new
+  pure predicate defines what counts as an anonymous/placeholder table name (`table_1`, `sheet3`,
+  `untitled`, …) and is consulted by the importer, the assistant, and the ingest pipeline:
+  - `materializeImport` runs a **pre-flight over the whole plan**: anonymous entities, dimensions,
+    and detected views are filtered out up front (never a mid-loop throw that could leave a
+    half-built model — a view whose source table was dropped is skipped, not crashed on), the skip is
+    reported through the import progress, and names already registered in the workspace are exempt so
+    existing workspaces keep working. A rejected dimension's values are folded back onto its entities
+    as a plain column, so nothing is ever lost.
+  - The assistant's and ingest's create-table calls reject anonymous names (a rejected tool call with
+    an instructive error, not a prompt rule). The manual create-table route is unaffected — a user may
+    still type any name.
+  - Importing into a workspace that already holds an anonymous-named table no longer merges unrelated
+    data into it on name equality alone — an anonymous target must earn the match on column overlap.
+
+### Fixed
+
+- **You can now remove a file or folder from Lattice's Files/Sources.** The remove capability existed
+  server-side but had no button; a per-row ✕ (on source roots and ingested files) now wires it up —
+  confirming first, and reassuring you the file stays on your disk. A file that was tracked both as a
+  source root and as an ingested row (which used to appear twice) now shows once, and one ✕ clears both.
+- **The Configure → Files view is now a single grid** (the list/grid toggle is gone), keeping the
+  nested folder structure as expandable tiles, with roomier spacing.
+- **The assistant can read a large uploaded file end-to-end.** Asking it to work from a long file (e.g.
+  to reproduce or restyle an uploaded page) used to loop on a truncated head of the text; a new
+  `read_file_text` tool pages through the file's full extracted text in large windows, so it reads the
+  whole thing.
+- **A document's tables can no longer be modelled twice.** The LLM object extractor is now disabled
+  whenever the deterministic structured importer actually ran for the same file (previously the gate
+  was by file extension only, so a `.docx` with data tables got both the faithful import and a lossy
+  hand-authored copy). A prose document the importer declined still gets LLM extraction.
+- **The explicit "import this attachment" path now honors the same table cap as the review flow**, so
+  a pathological file cannot fan out into hundreds of tables through the assistant door.
+- **The upper-left logo is now always "home."** Clicking it with the Configure (or Version history)
+  panel open used to do nothing — the page beneath the panel was usually already on the home route,
+  so the logo's plain link had nothing to navigate. The logo now closes the open panel and lands on
+  the workspace home; cmd/ctrl/middle-click still opens home in a new tab.
+- **A shared link is always fetched and parsed — never met with a question.** Link detection in chat
+  no longer rides the triage model: every URL in your message is found mechanically and fetched
+  before the assistant's turn (same SSRF guards and per-turn fetch budget as before), its page
+  content saved and run through the ingestion engine, with the assistant told to act from the saved
+  content rather than ask you for details the page already provides. A fetch that fails is named
+  plainly instead of being guessed around.
+- **Links from earlier in the conversation stay fetchable.** The assistant's URL-fetch tool used to
+  accept only URLs in the current message, so "save this" after an earlier link share was refused —
+  and the assistant then claimed it couldn't scrape at all. The user-wrote-it gate now spans every
+  user message in the thread (and only user-authored text — file and row content still can't smuggle
+  a URL in).
+- **A new workspace opens onto its Welcome dashboard, not the old landing screen.** The home route
+  now opens the seeded Welcome dashboard (or your first dashboard) whenever one exists; the "Ask
+  your company anything" landing survives only as the true empty-state fallback when there is no
+  dashboard at all to open.
+
+### Changed
+
+- **The left sidebar's table section is now DATA, with three fixed subheads.** What was TABLES (with
+  a LATTICE group plus one group per source) is now **DATA**, holding **TABLES** (your own entities),
+  **CONNECTORS** (every connector's tables, grouped by source), and **DATABASES** (connected
+  databases). Collapse state carries over — expanded/collapsed sections stay as you left them.
+- The import scale guard's dead "many auto-named tables" clause was removed — with the naming ladder
+  and shape gate in place, no `table_N` name can be produced for it to catch.
+
+## [5.1.5] — 2026-07-23
 
 ### Added
 

@@ -11,6 +11,7 @@ import {
 } from '../import/computed-proposals.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import { materializeImport } from '../import/materialize.js';
+import { MAX_IMPORT_TABLES, applySourceNameFallback } from '../import/name-policy.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
 import { getClarifyThreshold } from './assistant-routes.js';
 import { detectImportAsOf } from './import-detect.js';
@@ -93,20 +94,33 @@ async function readStructured(abs: string, name: string): Promise<Record<string,
   // Key the parser on the ORIGINAL name's extension, not `abs`: an uploaded file
   // is staged to an extensionless temp path, so testing `abs` would misroute an
   // `.xlsx` into the JSON branch. The bytes are read from `abs` either way.
-  if (/\.xlsx?$/i.test(name)) return excelToRecords(abs);
-  if (/\.(csv|tsv)$/i.test(name)) return csvToRecords(abs, name);
+  //
+  // Every branch runs through applySourceNameFallback so an anonymous top-level
+  // key (Excel's default `Sheet1`, a JSON `table_1`) is renamed from the FILE
+  // name before inference — without it, the materialize pre-flight would refuse
+  // a default-named workbook outright. The apply route (import-routes
+  // readImportSourceFromFile) applies the same fallback with the same
+  // original_name, so both doors keep naming identically (doors parity).
+  if (/\.xlsx?$/i.test(name)) return applySourceNameFallback(await excelToRecords(abs), name);
+  if (/\.(csv|tsv)$/i.test(name)) return applySourceNameFallback(csvToRecords(abs, name), name);
   // Documents: extract embedded tables (every row) so a .docx/.pptx of tabular data
   // flows through the same deterministic importer as a spreadsheet instead of falling
   // to the model. A doc with no tables → {} → autoImportStructured infers no entities
   // and returns null (kept as a reference file + text-ingested for its prose).
-  if (/\.docx$/i.test(name)) return docxToRecords(abs);
-  if (/\.pptx$/i.test(name)) return pptxToRecords(abs);
-  return JSON.parse(readFileSync(abs, 'utf8')) as Record<string, unknown>;
+  // `name` doubles as the naming-ladder fallback label (rung 4 + the fold); the
+  // fallback pass after it is a no-op safety net for the ladder's output.
+  if (/\.docx$/i.test(name)) return applySourceNameFallback(await docxToRecords(abs, name), name);
+  if (/\.pptx$/i.test(name)) return applySourceNameFallback(await pptxToRecords(abs, name), name);
+  return applySourceNameFallback(
+    JSON.parse(readFileSync(abs, 'utf8')) as Record<string, unknown>,
+    name,
+  );
 }
 
 /** True when a parsed document's extracted tables include at least one SUBSTANTIVE table
- *  (>=2 columns AND >=2 data rows) — a real dataset, not an incidental layout table. */
-function hasSubstantiveDocTable(data: Record<string, unknown>): boolean {
+ *  (>=2 columns AND >=2 data rows) — a real dataset, not an incidental layout table.
+ *  Exported so tests assert against the REAL predicate, not a reimplementation. */
+export function hasSubstantiveDocTable(data: Record<string, unknown>): boolean {
   for (const recs of Object.values(data)) {
     if (Array.isArray(recs) && recs.length >= 2) {
       const first: unknown = recs[0];
@@ -138,18 +152,16 @@ function importScaleGuard(
   if (tableCount >= MAX_SILENT_TABLES) {
     return { trip: true, reason: `${String(tableCount)} tables — review before importing` };
   }
+  // NB: the fold in doc-tables (un-nameable fragments → one combined table) makes
+  // this `thin` clause harder to trip for documents — accepted knowingly: the
+  // naming ladder + shape gate now catch the pathological document case at the
+  // source. (The old `table_\d+` fan-out clause is gone for the same reason —
+  // no `table_N` name can be produced any more, so it was dead code.)
   const thin = plan.entities.filter(
     (e) => (e.rowCount ?? 0) <= 1 || (e.columns?.length ?? 0) <= 1,
   ).length;
   if (plan.entities.length >= 2 && thin > plan.entities.length / 2) {
     return { trip: true, reason: 'mostly empty or template tables — review before importing' };
-  }
-  const fanout = plan.entities.filter((e) => /^table_\d+$/i.test(e.name)).length;
-  if (fanout >= 8) {
-    return {
-      trip: true,
-      reason: 'many auto-named tables from a document — review before importing',
-    };
   }
   if (importWarnings.length > 0) {
     return { trip: true, reason: 'a partial or ambiguous import — review before importing' };
@@ -279,6 +291,19 @@ export async function importDataFaithfully(
   if (inferredPlan.entities.length === 0) return null;
   const schemaMatch = matchSchemaToExisting(existingDataTables(db), inferredPlan);
   const { plan, views } = renameEntities(inferredPlan, inferredViews, schemaMatch.rename);
+  // Same hard table cap as the apply route (shared const): this path commits
+  // immediately with no confirm card, so there is no override — an explicit
+  // user request to import can still not blow the workspace past the cap.
+  const plannedTables =
+    plan.entities.length +
+    plan.dimensions.length +
+    new Set(plan.linkages.map((l) => l.junction).filter(Boolean)).size;
+  if (plannedTables > MAX_IMPORT_TABLES) {
+    throw new Error(
+      `This import would create ${String(plannedTables)} tables, over the safe limit of ` +
+        `${String(MAX_IMPORT_TABLES)}. Import a narrower file, or use the import panel to review it.`,
+    );
+  }
   const result = await materializeImport({ db, configPath }, data, plan, views, {});
   const rows = Object.values(result.rowsByTable).reduce((a, b) => a + b, 0);
   return { tables: Object.keys(result.rowsByTable), rows };

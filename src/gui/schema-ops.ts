@@ -10,6 +10,7 @@ import {
   type MutationCtx,
 } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
+import { isAnonymousName } from '../import/name-policy.js';
 import { getGuiEntities, type FileJunction } from './data.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import type { ActiveDb } from './active-db.js';
@@ -491,7 +492,7 @@ export async function createUserEntity(
   name: string,
   columns: string[],
   sessionId: string,
-  opts?: { normalize?: boolean },
+  opts?: { normalize?: boolean; rejectAnonymous?: boolean },
 ): Promise<string | null> {
   // Normalize to snake_case so a natural name from the model ("People", "Sales
   // Leads") becomes a valid identifier ("people", "sales_leads") instead of a
@@ -530,6 +531,15 @@ export async function createUserEntity(
         const reuse =
           active.validTables.has(entity) && !active.junctionTables.has(entity) ? entity : null;
         return { result: reuse, created: false };
+      }
+      // Ingest + chat callers pass `rejectAnonymous` so a purely positional name
+      // (`table_1`, `sheet3`, the `field`/`f_<n>` fallbacks) never becomes a real
+      // table — the shared name policy enforced as a REFUSED call, not a prompt
+      // rule. Placed AFTER the reuse block so an already-registered table (including
+      // a workspace 5.1.x seeded with `table_N`) is still returned, not refused. The
+      // manual data-model create route leaves it unset, so a user can type any name.
+      if (opts?.rejectAnonymous && isAnonymousName(entity)) {
+        return { result: null, created: false };
       }
       if (await physicalTableExists(active, entity)) return { result: null, created: false };
 

@@ -120,9 +120,13 @@ test('Back/Forward history is per-workspace: a switch never carries the old hash
   await page.locator('#ws-button').click();
   const other = page.locator('#ws-menu button.db-item:not(.active)').first();
   await other.click();
-  // The switch lands the new workspace on ITS OWN home (#/), never the previous
-  // workspace's hash (#/questions).
-  await expect.poll(() => page.evaluate(() => location.hash), { timeout: 15000 }).toBe('#/');
+  // The switch lands the new workspace on ITS OWN home destination — the bare
+  // home, or the dashboard home now redirects to when one exists — never the
+  // previous workspace's hash (#/questions).
+  const HOME_DEST = /^#\/(w\/dash\/.+)?$/;
+  await expect
+    .poll(() => page.evaluate(() => location.hash), { timeout: 15000 })
+    .toMatch(HOME_DEST);
   await expect(page.locator('#ws-name')).not.toHaveText(startName, { timeout: 5000 });
 
   // The new workspace starts with ITS OWN history: the old workspace's
@@ -132,7 +136,7 @@ test('Back/Forward history is per-workspace: a switch never carries the old hash
   await expect(page.locator('#nav-fwd-btn')).toBeDisabled();
   const backBtn = page.locator('#nav-back-btn');
   if (await backBtn.isEnabled()) await backBtn.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
+  await expect.poll(() => page.evaluate(() => location.hash)).toMatch(HOME_DEST);
 });
 
 test('a switch whose reload fails surfaces a loud "Switch failed", never a false success', async ({

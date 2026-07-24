@@ -226,6 +226,7 @@ async function enrichOrFail(
   ctx: IngestContext,
   res: ServerResponse,
   privateMode: boolean,
+  structuredImportRan = false,
 ): Promise<ClassifyMatch[] | null> {
   try {
     return await enrichWithLlm(
@@ -242,6 +243,7 @@ async function enrichOrFail(
       false,
       privateMode,
       ctx.createObjectJunction,
+      structuredImportRan,
     );
   } catch (e) {
     const err = e as Error;
@@ -839,7 +841,21 @@ export async function dispatchIngestRoute(
     // the assistant rail (the `autoImport` proposal in the response below) — no pill.
     let suggestedLinks: ClassifyMatch[] = [];
     if (!result.skip) {
-      const links = await enrichOrFail(mctx, ctx.db, id, result.text, name, ctx, res, forcePrivate);
+      // `autoImport != null` ⇒ the deterministic importer claimed this file (a
+      // silent import or a proposal card) — the LLM extractor must not also
+      // manufacture rows from it. Gate on whether it RAN, not on extension, so a
+      // prose document the importer declined still gets object extraction.
+      const links = await enrichOrFail(
+        mctx,
+        ctx.db,
+        id,
+        result.text,
+        name,
+        ctx,
+        res,
+        forcePrivate,
+        autoImport != null,
+      );
       if (links === null) return true; // enrichment failed — already reported
       suggestedLinks = links;
     }

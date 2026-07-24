@@ -57,6 +57,15 @@ export const dataModelJs = `    // ───────────────
               '<input id="wiz-name" type="text" value="' + escapeHtml(wizState.name) +
               '" placeholder="e.g. my-research, design-system" maxlength="200" />' +
             '</div>';
+          // MANAGED session: every workspace is a cloud workspace provisioned by
+          // the workspace manager — no kind picker, no Postgres coordinates, no
+          // token join (invites arrive by identity). Name it and go.
+          if (state.managedWorkspaces === true) {
+            return '' + nameField +
+              '<p class="hint-xs" style="margin:6px 0 0">' +
+                'Your workspace is created in your team&rsquo;s cloud, private to you until you invite someone.' +
+              '</p>';
+          }
           var cloudBlock = '';
           if (kind === 'cloud') {
             // The SAME structured connection form used by onboarding + Migrate to
@@ -138,14 +147,17 @@ export const dataModelJs = `    // ───────────────
 
         function goNext() {
           // Join a cloud: hand off to the join modal, which collects the scoped
-          // connection credentials and connects directly as a member.
-          if (wizState.kind === 'join') { close(); showJoinTeamModal('project'); return; }
+          // connection credentials and connects directly as a member. Absent in
+          // managed sessions — invites arrive by identity, never by token.
+          if (wizState.kind === 'join' && state.managedWorkspaces !== true) {
+            close(); showJoinTeamModal('project'); return;
+          }
           if (!wizState.name.trim()) { showToast('Workspace name is required'); return; }
           // The display name is free-form (special characters allowed). The server
           // stores it verbatim and derives a safe directory slug from it
           // (toSafeDirName) — so the only constraint here is a sane length.
           if (wizState.name.trim().length > 200) { showToast('Workspace name must be 200 characters or fewer'); return; }
-          if (wizState.kind === 'cloud') {
+          if (wizState.kind === 'cloud' && state.managedWorkspaces !== true) {
             // A cloud is created by migrating this new workspace into a fresh
             // Postgres DB described by the structured connection fields.
             var pg = wizState.pg;
@@ -161,7 +173,9 @@ export const dataModelJs = `    // ───────────────
           var nextBtn = backdrop.querySelector('[data-act="next"]');
           nextBtn.setAttribute('disabled', 'disabled');
           nextBtn.textContent = 'Creating…';
-          var promise = wizState.kind === 'local' ? submitLocal() : submitCloud();
+          var promise = state.managedWorkspaces === true
+            ? submitManaged()
+            : (wizState.kind === 'local' ? submitLocal() : submitCloud());
           promise.then(function () {
             close();
             return reloadEverything();
@@ -171,6 +185,17 @@ export const dataModelJs = `    // ───────────────
             nextBtn.removeAttribute('disabled');
             nextBtn.textContent = 'Create';
             showToast('Create failed: ' + (err && err.message ? err.message : String(err)));
+          });
+        }
+
+        function submitManaged() {
+          // The manager provisions the cloud and this session's identity becomes
+          // its owner — the same creation the deployment's account page performs.
+          gaTrack('workspace_create', { kind: 'managed' }); // coarse enum only, no name
+          return fetchJson('/api/cloud/managed/create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: wizState.name.trim() }),
           });
         }
 
@@ -981,7 +1006,55 @@ export const dataModelJs = `    // ───────────────
       // group). The inline list itself is recovered from latticesql 1.14.0.
       var membersHost = host.querySelector('#db-members-host');
       if (membersHost) {
-        if (info.state === 'cloud-member') {
+        if (state.managedWorkspaces === true) {
+          // MANAGED: the list reflects the manager's membership records —
+          // including INVITED pending rows, which the token flow cannot show —
+          // and Kick delegates to the manager's revoke (full-stack: grants,
+          // role, membership, live sessions).
+          var loadManagedMembers = function () {
+            membersHost.innerHTML = '<div class="hint">Loading members…</div>';
+            fetchJson('/api/cloud/managed/members').then(function (data) {
+              var members = (data && data.members) || [];
+              if (!members.length) {
+                membersHost.innerHTML = '<div class="members-list"><h4>Members</h4><div class="hint">Just you.</div></div>';
+                return;
+              }
+              var rows = members.map(function (m) {
+                var pill = m.role === 'owner' ? 'Owner' : (m.status === 'invited' ? 'Invited' : 'Member');
+                var kick = isOwner && m.role !== 'owner'
+                  ? '<button class="btn destructive" data-kick-membership="' + escapeHtml(String(m.id)) + '">Kick</button>'
+                  : '';
+                return '<div class="member-row">' +
+                  '<span>' + escapeHtml(m.email || '') +
+                    ' <span class="role-tag' + (m.role === 'owner' ? '' : ' role-member') + '">' + pill + '</span>' +
+                  '</span>' + kick + '</div>';
+              }).join('');
+              membersHost.innerHTML = '<div class="members-list"><h4>Members</h4>' + rows + '</div>';
+              membersHost.querySelectorAll('[data-kick-membership]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                  var mid = btn.getAttribute('data-kick-membership');
+                  if (!mid) return;
+                  if (!window.confirm('Remove this member? They lose access immediately.')) return;
+                  withBusy(btn, function () {
+                    return fetchJson('/api/cloud/managed/revoke', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ membershipId: mid }),
+                    }).then(function () {
+                      showToast('Member removed', {});
+                      loadManagedMembers();
+                    }).catch(function (e) {
+                      showToast('Could not remove member: ' + (e && e.message ? e.message : e), {});
+                    });
+                  });
+                });
+              });
+            }).catch(function (e) {
+              membersHost.innerHTML = '<div style="font-size:12px;color:var(--warn)">Could not load members: ' + escapeHtml(e.message) + '</div>';
+            });
+          };
+          loadManagedMembers();
+        } else if (info.state === 'cloud-member') {
           membersHost.innerHTML = '<div class="hint">You are a member of this cloud.</div>';
         } else {
           var loadMembers = function () {
@@ -1255,6 +1328,35 @@ export const dataModelJs = `    // ───────────────
     }
 
     function showInviteMemberModal(info, onInvited) {
+      // MANAGED session: identity is the credential. The manager sends the
+      // invitee an email; when they sign in with that email they have the
+      // workspace. No token is minted or rendered — mintInviteToken simply has
+      // no caller here.
+      if (state.managedWorkspaces === true) {
+        var managedBody =
+          '<div class="field"><label>Invitee email</label>' +
+          '<input name="email" type="email" placeholder="bob@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>' +
+          '<p class="hint u-m-0">' +
+          'They&rsquo;ll get an email and have access the moment they sign in — nothing to paste.' +
+          '</p>';
+        showModal('Invite a member', managedBody, {
+          primaryLabel: 'Send invite',
+          onSubmit: function (scope) {
+            var data = collectFormValues(scope);
+            if (!data.email) throw new Error('an invitee email is required');
+            return fetchJson('/api/cloud/managed/invite', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ email: data.email }),
+            }).then(function () {
+              gaTrack('member_invite', { managed: true }); // event only — never the email
+              showToast('Invite sent to ' + data.email + ' — they\\u2019ll have access when they sign in.');
+              if (typeof onInvited === 'function') onInvited();
+            });
+          },
+        });
+        return;
+      }
       // Owner-only invite: collect the invitee's email; the server provisions a
       // scoped role and returns ONE email-bound token carrying its credential.
       // The invitee redeems it with the same email in "Join a cloud" — no

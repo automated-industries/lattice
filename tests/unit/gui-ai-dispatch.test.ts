@@ -530,4 +530,79 @@ describe('AI function dispatch', () => {
       expect(seen).toEqual({ move_to: 'contacts' });
     });
   });
+
+  describe('read_file_text (single-file paging)', () => {
+    // A files table + one big row, so we can page a body larger than one window.
+    async function seedBigFile(chars: number): Promise<string> {
+      await db.defineLate('files', {
+        columns: {
+          id: 'TEXT PRIMARY KEY',
+          original_name: 'TEXT',
+          extracted_text: 'TEXT',
+          source_json: 'TEXT',
+          deleted_at: 'TEXT',
+        },
+        render: () => '',
+        outputFile: 'files.md',
+      });
+      const id = 'file-1';
+      // Distinct content per 10k block so we can prove windows are contiguous.
+      let body = '';
+      while (body.length < chars) body += `[block@${body.length}]` + 'x'.repeat(9970);
+      body = body.slice(0, chars);
+      await db.insert('files', { id, original_name: 'big.html', extracted_text: body });
+      ctx = { ...ctx, validTables: new Set([...ctx.validTables, 'files']) };
+      return id;
+    }
+
+    it('returns the first window with totalChars and a nextOffset for a big file', async () => {
+      const id = await seedBigFile(150_000);
+      const r = await executeFunction(ctx, 'read_file_text', { id });
+      expect(r.ok).toBe(true);
+      const res = r.result as {
+        totalChars: number;
+        offset: number;
+        returnedChars: number;
+        nextOffset: number | null;
+        text: string;
+      };
+      expect(res.totalChars).toBe(150_000);
+      expect(res.offset).toBe(0);
+      expect(res.returnedChars).toBe(60_000);
+      expect(res.nextOffset).toBe(60_000);
+      expect(res.text.startsWith('[block@0]')).toBe(true);
+    });
+
+    it('pages to the end: following nextOffset covers the whole file exactly once', async () => {
+      const id = await seedBigFile(150_000);
+      let offset: number | null = 0;
+      let assembled = '';
+      let calls = 0;
+      while (offset !== null && calls < 10) {
+        const r = await executeFunction(ctx, 'read_file_text', { id, offset });
+        const res = r.result as { text: string; nextOffset: number | null };
+        assembled += res.text;
+        offset = res.nextOffset;
+        calls++;
+      }
+      expect(calls).toBe(3); // 150k / 60k → 3 windows
+      expect(assembled.length).toBe(150_000);
+      expect(offset).toBeNull();
+    });
+
+    it('a small file returns everything in one window with a null nextOffset', async () => {
+      const id = await seedBigFile(500);
+      const r = await executeFunction(ctx, 'read_file_text', { id });
+      const res = r.result as { returnedChars: number; nextOffset: number | null };
+      expect(res.returnedChars).toBe(500);
+      expect(res.nextOffset).toBeNull();
+    });
+
+    it('errors clearly for a missing file id', async () => {
+      await seedBigFile(500);
+      const r = await executeFunction(ctx, 'read_file_text', { id: 'nope' });
+      expect(r.ok).toBe(false);
+      expect(r.error).toBe('Row not found');
+    });
+  });
 });
