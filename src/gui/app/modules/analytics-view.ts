@@ -72,8 +72,9 @@ export const analyticsViewJs = `
           location.hash = hasWelcome ? '#/w/dash/welcome-lattice' : AN_HOME_HASH;
         });
       }
-      // The brand logo just navigates home (#/) via its href — no view toggle in
-      // the single layout.
+      // The brand logo is wired in wireSettingsDrawer: it always lands on home,
+      // closing the Configure/History takeover first when one is open (the bare
+      // href="#/" alone was a no-op with the drawer open over an unchanged hash).
       // Restore + wire the adjustable Ask Lattice dock width (drag its left edge).
       var savedW = parseInt(window.localStorage.getItem(ASK_DOCK_KEY) || '', 10);
       if (!isNaN(savedW)) applyAskDockWidth(savedW);

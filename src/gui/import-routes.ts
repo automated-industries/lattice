@@ -7,6 +7,7 @@ import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
 import { materializeImport, type ImportMode } from '../import/materialize.js';
+import { MAX_IMPORT_TABLES, applySourceNameFallback } from '../import/name-policy.js';
 import { localPathOf } from './files-routes.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import {
@@ -60,9 +61,6 @@ export interface ImportRouteDeps {
 /** At most this many marginal-link questions are enqueued per import. */
 const MAX_LINK_QUESTIONS = 5;
 
-/** A single import that would create more than this many tables requires an explicit
- *  `override:true` (the confirm card sets it on Apply) — a guard against over-fragmentation. */
-const MAX_IMPORT_TABLES = 50;
 /** The affirmative option — the deferred action runs only on this exact pick. */
 const LINK_YES = 'Yes, connect them';
 const LINK_NO = "No, it's just text";
@@ -143,8 +141,14 @@ export async function readImportSourceFromFile(
   }
   const name = row.original_name ?? '';
   const mime = row.mime ?? '';
+  // Every branch runs through applySourceNameFallback with the row's
+  // original_name — the SAME value import-auto's readStructured uses on the
+  // upload door — so an anonymous top-level key (Excel's default `Sheet1`, a
+  // JSON `table_1`) gets the same file-derived name on both doors (doors
+  // parity), and the materialize pre-flight never refuses a default-named
+  // workbook.
   if (/\.xlsx?$/i.test(name) || mime.includes('spreadsheet') || mime.includes('excel')) {
-    const data = await excelToRecords(path);
+    const data = applySourceNameFallback(await excelToRecords(path), name);
     return {
       data,
       formulaSummary: excelFormulaSummary(path),
@@ -152,16 +156,29 @@ export async function readImportSourceFromFile(
     };
   }
   if (/\.(csv|tsv)$/i.test(name) || mime.includes('csv') || mime.includes('tab-separated')) {
-    return { data: csvToRecords(path, name), formulaSummary: null, importWarnings: [] };
+    return {
+      data: applySourceNameFallback(csvToRecords(path, name), name),
+      formulaSummary: null,
+      importWarnings: [],
+    };
   }
   // Documents: extract embedded tables (every row) so the Apply route materializes a
   // .docx/.pptx the SAME way autoImportStructured proposed it — without this, a silent
   // import of a Word/PowerPoint file fails here with "not valid JSON".
+  // `name` (the row's original_name) doubles as the naming-ladder fallback label.
   if (/\.docx$/i.test(name) || mime.includes('wordprocessingml')) {
-    return { data: await docxToRecords(path), formulaSummary: null, importWarnings: [] };
+    return {
+      data: applySourceNameFallback(await docxToRecords(path, name), name),
+      formulaSummary: null,
+      importWarnings: [],
+    };
   }
   if (/\.pptx$/i.test(name) || mime.includes('presentationml')) {
-    return { data: await pptxToRecords(path), formulaSummary: null, importWarnings: [] };
+    return {
+      data: applySourceNameFallback(await pptxToRecords(path, name), name),
+      formulaSummary: null,
+      importWarnings: [],
+    };
   }
   let parsed: unknown;
   try {
@@ -172,7 +189,11 @@ export async function readImportSourceFromFile(
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw badRequest('Expected a JSON object whose keys are record arrays.');
   }
-  return { data: parsed as Record<string, unknown>, formulaSummary: null, importWarnings: [] };
+  return {
+    data: applySourceNameFallback(parsed as Record<string, unknown>, name),
+    formulaSummary: null,
+    importWarnings: [],
+  };
 }
 
 /** The card's computed opt-in selection, sanitized from the request body. */

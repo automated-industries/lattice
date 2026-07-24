@@ -78,3 +78,21 @@ describe('5.0.1 GUI — workspace-switch flow + middle-pane flash', () => {
     expect(guiAppHtml).toContain('if (currentId && currentId !== id)');
   });
 });
+
+describe('5.2 GUI — the brand logo is always home', () => {
+  it('clicking the logo closes an open Configure/History takeover and lands on home', () => {
+    // The drawer is a full-workspace takeover and the hash beneath it is usually
+    // already '#/' (closeSettingsDrawer parks it there), so the bare <a href="#/">
+    // fired no hashchange and clicking the logo with Configure open did nothing.
+    // The brand now has a real click handler: close the takeover, then go home.
+    expect(guiAppHtml).toContain("document.querySelector('header.topbar a.brand')");
+    expect(guiAppHtml).toContain('if (drawerIsOpen()) closeSettingsDrawer();');
+    // Same-hash clicks must still work (no hashchange can fire), so the hash is
+    // only assigned when actually elsewhere.
+    expect(guiAppHtml).toContain("if ((location.hash || '#/') !== '#/') location.hash = '#/';");
+    // Open-in-new-tab semantics stay intact (modified clicks fall through to the href).
+    expect(guiAppHtml).toContain(
+      'e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0',
+    );
+  });
+});

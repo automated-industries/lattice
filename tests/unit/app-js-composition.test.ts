@@ -587,8 +587,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // mirrors from the IIFE-local ingestProgressState; (c) a files-only send no longer double-
 // renders on reload — appendUserBubble suppresses the text bubble when it equals the joined
 // file names. Length + hash recaptured.
-const ORIGINAL_LENGTH = 789906;
-const ORIGINAL_SHA256 = '2170aca84746aadee4b792a22fae6ad5cb87e3de337d69d7a9880cedfec351dc';
+// 5.2 brand-is-home: the topbar logo gets a real click handler in wireSettingsDrawer —
+// it closes an open Configure/History takeover and lands on the workspace home. The bare
+// <a href="#/"> was a silent no-op with the drawer open, because the hash beneath the
+// takeover is usually already '#/' (closeSettingsDrawer parks it there) so no hashchange
+// could fire. Modified clicks (cmd/ctrl/shift/middle) fall through to the href for
+// open-in-new-tab. Length + hash recaptured.
+const ORIGINAL_LENGTH = 791054;
+const ORIGINAL_SHA256 = '7bb457e0f896e45c0f2ca2d3c3822beac361b68e08fad74ffb7fe28b69ed081d';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

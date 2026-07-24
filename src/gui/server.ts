@@ -1149,7 +1149,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 softDeletable: active.softDeletable,
                 // The assistant can create tables + relationships on request — same
                 // audited, no-reopen primitives the Context Constructor uses.
-                createEntity: (name, columns) => createUserEntity(active, name, columns, sessionId),
+                createEntity: (name, columns) =>
+                  createUserEntity(active, name, columns, sessionId, { rejectAnonymous: true }),
                 addColumn: (table, column) => addUserColumn(active, table, column, sessionId),
                 createJunction: (a, b) => createUserJunction(active, a, b, sessionId),
                 // The files-side linker the shared enrichment engine uses — lets the
@@ -1230,7 +1231,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 createJunction: (otherTable) => createFileJunction(active, otherTable, sessionId),
                 createObjectJunction: (a, b) => createUserJunction(active, a, b, sessionId),
                 createEntity: (entity, columns) =>
-                  createUserEntity(active, entity, columns, sessionId),
+                  createUserEntity(active, entity, columns, sessionId, { rejectAnonymous: true }),
                 aggressiveness: getAggressiveness(),
 
                 latticeRoot: dirname(active.configPath),
@@ -1263,7 +1264,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 createObjectJunction: (a: string, b: string) =>
                   createUserJunction(active, a, b, sessionId),
                 createEntity: (entity: string, columns: string[]) =>
-                  createUserEntity(active, entity, columns, sessionId),
+                  createUserEntity(active, entity, columns, sessionId, { rejectAnonymous: true }),
                 aggressiveness: getAggressiveness(),
                 latticeRoot: dirname(active.configPath),
                 configPath: active.configPath,

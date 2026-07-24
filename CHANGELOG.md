@@ -6,7 +6,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [5.1.5] — unreleased
+## [5.2.0] — unreleased
+
+### Added
+
+- **Tables imported from Word/PowerPoint documents are now named from the document itself.** Embedded
+  tables used to be keyed positionally (`Table 1`, `Table 2`, …), which materialized as meaningless
+  `table_N` tables. Each table is now named by a deterministic ladder: its explicit Word caption
+  (`w:tblCaption`), else the nearest preceding heading (bounded to the text between tables, so a
+  previous table's cell text is never mistaken for a heading), else the slide's title for PowerPoint,
+  else the document's basename. A caption that is itself a placeholder ("Table 1") is rejected and the
+  ladder falls through. Tables that still cannot be named are **folded into one table named after the
+  document** — with the full column union, so no fragment's columns are lost — rather than dropped or
+  numbered. Two adjacent tables with the same columns and name (a page-break split) merge into one,
+  with header spelling canonicalized so differing case never produces half-empty rows.
+- **Default-named sources are named from the file, not refused.** An Excel workbook whose only sheet
+  is `Sheet1`, or a JSON source keyed `table_1`, now imports under a name derived from the file name
+  (`Q3 Budget.xlsx` → `q3_budget`) on both the proposal and the apply path — and a file whose own
+  name is a placeholder (`untitled.docx`, `table.xlsx`) falls to a generic label rather than an
+  anonymous one. Derived names are capped so the resulting identifier always fits PostgreSQL's
+  63-byte limit instead of being silently truncated there.
+- **One shared table-name policy (`isAnonymousName`), enforced everywhere tables are created.** A new
+  pure predicate defines what counts as an anonymous/placeholder table name (`table_1`, `sheet3`,
+  `untitled`, …) and is consulted by the importer, the assistant, and the ingest pipeline:
+  - `materializeImport` runs a **pre-flight over the whole plan**: anonymous entities, dimensions,
+    and detected views are filtered out up front (never a mid-loop throw that could leave a
+    half-built model — a view whose source table was dropped is skipped, not crashed on), the skip is
+    reported through the import progress, and names already registered in the workspace are exempt so
+    existing workspaces keep working. A rejected dimension's values are folded back onto its entities
+    as a plain column, so nothing is ever lost.
+  - The assistant's and ingest's create-table calls reject anonymous names (a rejected tool call with
+    an instructive error, not a prompt rule). The manual create-table route is unaffected — a user may
+    still type any name.
+  - Importing into a workspace that already holds an anonymous-named table no longer merges unrelated
+    data into it on name equality alone — an anonymous target must earn the match on column overlap.
+
+### Fixed
+
+- **A document's tables can no longer be modelled twice.** The LLM object extractor is now disabled
+  whenever the deterministic structured importer actually ran for the same file (previously the gate
+  was by file extension only, so a `.docx` with data tables got both the faithful import and a lossy
+  hand-authored copy). A prose document the importer declined still gets LLM extraction.
+- **The explicit "import this attachment" path now honors the same table cap as the review flow**, so
+  a pathological file cannot fan out into hundreds of tables through the assistant door.
+- **The upper-left logo is now always "home."** Clicking it with the Configure (or Version history)
+  panel open used to do nothing — the page beneath the panel was usually already on the home route,
+  so the logo's plain link had nothing to navigate. The logo now closes the open panel and lands on
+  the workspace home; cmd/ctrl/middle-click still opens home in a new tab.
+
+### Changed
+
+- The import scale guard's dead "many auto-named tables" clause was removed — with the naming ladder
+  and shape gate in place, no `table_N` name can be produced for it to catch.
+
+## [5.1.5] — 2026-07-23
 
 ### Added
 
