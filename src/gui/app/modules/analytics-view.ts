@@ -179,6 +179,21 @@ export const analyticsViewJs = `
       var ready = anDashRows !== null ? Promise.resolve() : renderDashList();
       ready.then(function () {
         var hasDashboards = !!(anDashRows && anDashRows.length);
+        // The Ask-Lattice landing never shows when there is a dashboard to open:
+        // '#/' lands on the seeded Welcome dashboard (or the first dashboard) —
+        // which is what a freshly created workspace opens onto. The landing
+        // survives ONLY as the zero-dashboards fallback (welcome deleted, nothing
+        // built yet), where there is nothing else to open. Gated on the LIVE hash
+        // so the render-beneath-the-Configure-drawer path (renderAnalyticsRoute
+        // called with '#/' while the hash is a drawer route) never redirects.
+        if (hasDashboards && location.hash === AN_HOME_HASH) {
+          var hasWelcome = anDashRows.some(function (r) {
+            return String(r.id) === 'welcome-lattice';
+          });
+          var target = hasWelcome ? 'welcome-lattice' : String(anDashRows[0].id);
+          location.replace('#/w/dash/' + encodeURIComponent(target));
+          return;
+        }
         setContent(host, myGen,
           '<div class="analytics-home">' +
           '<div class="analytics-home-mark" aria-hidden="true">📊</div>' +

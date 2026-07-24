@@ -593,8 +593,17 @@ import { appJs } from '../../src/gui/app/script.js';
 // takeover is usually already '#/' (closeSettingsDrawer parks it there) so no hashchange
 // could fire. Modified clicks (cmd/ctrl/shift/middle) fall through to the href for
 // open-in-new-tab. Length + hash recaptured.
-const ORIGINAL_LENGTH = 791054;
-const ORIGINAL_SHA256 = '7bb457e0f896e45c0f2ca2d3c3822beac361b68e08fad74ffb7fe28b69ed081d';
+// 5.2 DATA sidebar: the left section relabels Tables → Data, and its per-schema groups
+// become three FIXED subheads — TABLES (the lattice schema, keeping the historical
+// nav-schema-lattice group key so persisted collapse state survives), CONNECTORS (all
+// connector schemas merged, ordered by source label), DATABASES (connected databases).
+// Length + hash recaptured.
+// 5.2 welcome-first home: '#/' redirects to the seeded Welcome dashboard (or the first
+// dashboard) whenever one exists — a fresh workspace opens onto Welcome, and the
+// Ask-Lattice landing survives only as the zero-dashboards fallback. Gated on the LIVE
+// hash so the render-beneath-the-Configure-drawer path never redirects. Recaptured.
+const ORIGINAL_LENGTH = 792863;
+const ORIGINAL_SHA256 = 'bd4eec077115ed1e87792ec9a75dc222b5f037197ca5609e48d2e922aa6b08be';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

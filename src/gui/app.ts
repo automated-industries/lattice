@@ -124,9 +124,12 @@ export const guiAppHtml = `<!doctype html>
         </div>
         <div class="section-body" data-group-body="nav-dashboards"><div id="dash-list"></div></div>
       </section>
+      <!-- DATA: every model table under three fixed subheads (TABLES / CONNECTORS /
+           DATABASES, rendered by nav-sections.ts). The group id stays nav-tables so
+           every user's persisted collapse state survives the rename. -->
       <section class="dash-section nav-section" data-section="tables">
         <button class="section-label section-toggle nav-section-head" data-group="nav-tables" type="button" aria-expanded="true">
-          <span class="section-label-text">Tables</span>
+          <span class="section-label-text">Data</span>
         </button>
         <div class="section-body" data-group-body="nav-tables"><div id="nav-tables-list"></div></div>
       </section>

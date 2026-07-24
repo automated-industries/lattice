@@ -53,9 +53,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   panel open used to do nothing — the page beneath the panel was usually already on the home route,
   so the logo's plain link had nothing to navigate. The logo now closes the open panel and lands on
   the workspace home; cmd/ctrl/middle-click still opens home in a new tab.
+- **A shared link is always fetched and parsed — never met with a question.** Link detection in chat
+  no longer rides the triage model: every URL in your message is found mechanically and fetched
+  before the assistant's turn (same SSRF guards and per-turn fetch budget as before), its page
+  content saved and run through the ingestion engine, with the assistant told to act from the saved
+  content rather than ask you for details the page already provides. A fetch that fails is named
+  plainly instead of being guessed around.
+- **Links from earlier in the conversation stay fetchable.** The assistant's URL-fetch tool used to
+  accept only URLs in the current message, so "save this" after an earlier link share was refused —
+  and the assistant then claimed it couldn't scrape at all. The user-wrote-it gate now spans every
+  user message in the thread (and only user-authored text — file and row content still can't smuggle
+  a URL in).
+- **A new workspace opens onto its Welcome dashboard, not the old landing screen.** The home route
+  now opens the seeded Welcome dashboard (or your first dashboard) whenever one exists; the "Ask
+  your company anything" landing survives only as the true empty-state fallback when there is no
+  dashboard at all to open.
 
 ### Changed
 
+- **The left sidebar's table section is now DATA, with three fixed subheads.** What was TABLES (with
+  a LATTICE group plus one group per source) is now **DATA**, holding **TABLES** (your own entities),
+  **CONNECTORS** (every connector's tables, grouped by source), and **DATABASES** (connected
+  databases). Collapse state carries over — expanded/collapsed sections stay as you left them.
 - The import scale guard's dead "many auto-named tables" clause was removed — with the naming ladder
   and shape gate in place, no `table_N` name can be produced for it to catch.
 

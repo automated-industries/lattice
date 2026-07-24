@@ -298,3 +298,29 @@ describe('guiAppHtml', () => {
     expect(guiAppHtml).toContain('mt-edge mt-edge-computes');
   });
 });
+
+describe('5.2 DATA sidebar — three fixed subheads', () => {
+  it('the left section is labeled Data and buckets tables under TABLES / CONNECTORS / DATABASES', () => {
+    // Top-level label (CSS uppercases it to DATA); the group id stays nav-tables so
+    // persisted collapse state survives the relabel.
+    expect(guiAppHtml).toContain('<span class="section-label-text">Data</span>');
+    expect(guiAppHtml).toContain('data-group="nav-tables"');
+    // The three fixed subheads replace the per-schema labels…
+    expect(guiAppHtml).toContain(
+      "{ lattice: 'TABLES', connectors: 'CONNECTORS', databases: 'DATABASES' }",
+    );
+    // …with the lattice bucket keeping its historical group key.
+    expect(guiAppHtml).toContain("'nav-schema-' + g.key");
+    expect(guiAppHtml).toContain("return key.indexOf('conn:') === 0 ? 'connectors' : 'databases'");
+    // The old per-schema label fallback is gone.
+    expect(guiAppHtml).not.toContain("t.schemaLabel || 'LATTICE'");
+  });
+});
+
+describe('5.2 welcome-first home — the landing never shows when a dashboard exists', () => {
+  it("'#/' redirects to the Welcome (or first) dashboard; the landing is the zero-dashboards fallback", () => {
+    expect(guiAppHtml).toContain('hasDashboards && location.hash === AN_HOME_HASH');
+    expect(guiAppHtml).toContain("location.replace('#/w/dash/' + encodeURIComponent(target))");
+    expect(guiAppHtml).toContain("hasWelcome ? 'welcome-lattice' : String(anDashRows[0].id)");
+  });
+});
