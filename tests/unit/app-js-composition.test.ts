@@ -587,8 +587,37 @@ import { appJs } from '../../src/gui/app/script.js';
 // mirrors from the IIFE-local ingestProgressState; (c) a files-only send no longer double-
 // renders on reload — appendUserBubble suppresses the text bubble when it equals the joined
 // file names. Length + hash recaptured.
-const ORIGINAL_LENGTH = 789906;
-const ORIGINAL_SHA256 = '2170aca84746aadee4b792a22fae6ad5cb87e3de337d69d7a9880cedfec351dc';
+// 5.2 brand-is-home: the topbar logo gets a real click handler in wireSettingsDrawer —
+// it closes an open Configure/History takeover and lands on the workspace home. The bare
+// <a href="#/"> was a silent no-op with the drawer open, because the hash beneath the
+// takeover is usually already '#/' (closeSettingsDrawer parks it there) so no hashchange
+// could fire. Modified clicks (cmd/ctrl/shift/middle) fall through to the href for
+// open-in-new-tab. Length + hash recaptured.
+// 5.2 DATA sidebar: the left section relabels Tables → Data, and its per-schema groups
+// become three FIXED subheads — TABLES (the lattice schema, keeping the historical
+// nav-schema-lattice group key so persisted collapse state survives), CONNECTORS (all
+// connector schemas merged, ordered by source label), DATABASES (connected databases).
+// Length + hash recaptured.
+// 5.2 welcome-first home: '#/' redirects to the seeded Welcome dashboard (or the first
+// dashboard) whenever one exists — a fresh workspace opens onto Welcome, and the
+// Ask-Lattice landing survives only as the zero-dashboards fallback. Gated on the LIVE
+// hash so the render-beneath-the-Configure-drawer path never redirects. Recaptured.
+// 5.2 identity + managed workspaces: the account menu gains a provider-generic
+// Sign in / signed-in-as row (identity service discovered server-side; loopback or
+// pasted-code completion; membership sync toast). Managed sessions (the
+// managedWorkspaces seam, cached on state at boot) collapse the new-workspace wizard
+// and virgin onboarding to a single name→create flow (manager-provisioned cloud),
+// replace the token-invite dialog with email-only invite, list the manager's
+// memberships (incl. INVITED pending rows) with Kick→revoke, and drop the token-join
+// affordances. Recaptured.
+// 5.2 Sources panel: a per-row remove (✕) control on source roots + loose ingested
+// files (wired to the root-registration + files-row delete endpoints, with a confirm
+// and a refresh of the open Files surface); a de-dupe so a file that is both a source
+// root and an ingested row shows once and one ✕ clears both; and the Configure → Files
+// tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
+// kept as expandable tile groups. Length + hash recaptured.
+const ORIGINAL_LENGTH = 812551;
+const ORIGINAL_SHA256 = 'bedcf547abfd8c299c0f050958b49e708ffa7e626c9bc7fa9465252fafc242b7';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

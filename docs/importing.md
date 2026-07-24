@@ -40,6 +40,32 @@ When you drop a recognized JSON / `.xlsx` source into the chat:
    inserts the rows + links, persists the schema to the workspace config, and
    builds the detected read-only views.
 
+## Document tables are named from the document (5.2)
+
+A `.docx` / `.pptx` with substantive embedded tables flows through the same
+deterministic importer as a spreadsheet — and its tables are **named from the
+document itself**, never numbered positionally. The first source that yields a
+usable name wins:
+
+1. the table's explicit Word **caption** (`w:tblCaption`);
+2. the nearest **preceding heading** (a styled heading or a short title-shaped
+   line, looked up only between this table and the previous one — an introductory
+   sentence is never taken as a name);
+3. the **slide title**, for PowerPoint;
+4. the **document's file name**, when the document yields a single table.
+
+Anything still un-nameable is **folded into one table named after the document**
+(with the full column union), rather than dropped or numbered. A caption that is
+itself a placeholder ("Table 1") is rejected and the ladder falls through. Two
+adjacent tables with identical columns and the same name — a table split by a
+page break — are merged back into one.
+
+A shared name policy backs this everywhere tables are created: anonymous names
+(`table_1`, `sheet3`, `untitled`, …) are filtered out by a pre-flight in
+`materializeImport` (reported, never a partial write; names already registered in
+the workspace are exempt), and the assistant's create-table calls reject them
+outright with an instructive error.
+
 ## Silent import vs. the inline confirm card
 
 The chat drop chooses a path automatically. **Most drops import silently** — a

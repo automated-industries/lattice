@@ -12,6 +12,7 @@
  */
 
 import { normalizeName } from './infer.js';
+import { isAnonymousName } from './name-policy.js';
 import type { DetectedView, ProposedSchema } from './types.js';
 
 /** Bookkeeping columns the importer adds — excluded from signature comparison. */
@@ -85,8 +86,16 @@ export function matchSchemaToExisting(
     if (sig.size === 0) continue;
     let best: { name: string; overlap: number } | null = null;
     for (const t of ex) {
-      // Same (normalized) name ⇒ definitively the same table, regardless of overlap.
-      if (normalizeName(t.name) === normalizeName(ent.name)) {
+      // Same (normalized) name ⇒ definitively the same table, regardless of overlap —
+      // UNLESS the name is anonymous (`table_3`, `sheet1`). Positional names collide
+      // across unrelated documents, so name equality proves nothing there: a second
+      // document's third table would silently merge into the first's `table_3` with
+      // no column overlap at all. Anonymous-named tables (from 5.1.x workspaces) must
+      // earn the match on column containment like any other candidate.
+      if (
+        normalizeName(t.name) === normalizeName(ent.name) &&
+        !isAnonymousName(normalizeName(t.name))
+      ) {
         best = { name: t.name, overlap: 1 };
         break;
       }

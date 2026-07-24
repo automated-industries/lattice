@@ -85,19 +85,25 @@ export const rowContextJs = `    // ──────────────�
       var el = document.createElement('div');
       el.id = 'virgin-state';
       el.className = 'virgin-state';
+      // MANAGED session: invites arrive by identity, so there is no token-join
+      // affordance — the only action is creating a workspace.
+      var managed = state.managedWorkspaces === true;
       el.innerHTML =
         '<div class="virgin-card">' +
           BRAND_SVG +
           '<h1>Welcome to Lattice</h1>' +
-          '<p>Create a workspace to get started, or join one you were invited to.</p>' +
+          (managed
+            ? '<p>Create a workspace to get started.</p>'
+            : '<p>Create a workspace to get started, or join one you were invited to.</p>') +
           '<div class="virgin-actions">' +
             '<button class="btn primary" id="virgin-create">Create a workspace</button>' +
-            '<button class="btn" id="virgin-join">Join via invite</button>' +
+            (managed ? '' : '<button class="btn" id="virgin-join">Join via invite</button>') +
           '</div>' +
         '</div>';
       document.body.appendChild(el);
       el.querySelector('#virgin-create').addEventListener('click', function () { showOnboardingWizard('create'); });
-      el.querySelector('#virgin-join').addEventListener('click', function () { showOnboardingWizard('join'); });
+      var joinBtn = el.querySelector('#virgin-join');
+      if (joinBtn) joinBtn.addEventListener('click', function () { showOnboardingWizard('join'); });
     }
 
     // Multi-step onboarding modal. mode 'create' | 'join'. Identity-first, with
@@ -139,13 +145,21 @@ export const rowContextJs = `    // ──────────────�
             field('Your name', 'ob-name', 'text', st.name, 'Ada Lovelace') +
             field('Email', 'ob-email', 'email', st.email, 'you@example.com');
         } else if (st.step === 'kind') {
-          body = '<p class="dialog-lead">A local workspace lives on this machine. A cloud workspace is a shared Postgres your team can join.</p>' +
-            '<div class="u-row u-mb-3">' +
-              '<label class="ob-kind"><input type="radio" name="ob-kind" value="local"' + (st.kind === 'local' ? ' checked' : '') + '> Local</label>' +
-              '<label class="ob-kind"><input type="radio" name="ob-kind" value="cloud"' + (st.kind === 'cloud' ? ' checked' : '') + '> Cloud</label>' +
-            '</div>' +
-            field('Workspace name', 'ob-wsname', 'text', st.wsName, 'My Workspace');
-          primary = st.kind === 'cloud' ? 'Next' : 'Create';
+          // MANAGED session: every workspace is a managed cloud — no kind
+          // choice, no Postgres coordinates. Name it and go.
+          if (state.managedWorkspaces === true) {
+            body = '<p class="dialog-lead">Name your workspace — it&rsquo;s created in your team&rsquo;s cloud, private to you until you invite someone.</p>' +
+              field('Workspace name', 'ob-wsname', 'text', st.wsName, 'My Workspace');
+            primary = 'Create';
+          } else {
+            body = '<p class="dialog-lead">A local workspace lives on this machine. A cloud workspace is a shared Postgres your team can join.</p>' +
+              '<div class="u-row u-mb-3">' +
+                '<label class="ob-kind"><input type="radio" name="ob-kind" value="local"' + (st.kind === 'local' ? ' checked' : '') + '> Local</label>' +
+                '<label class="ob-kind"><input type="radio" name="ob-kind" value="cloud"' + (st.kind === 'cloud' ? ' checked' : '') + '> Cloud</label>' +
+              '</div>' +
+              field('Workspace name', 'ob-wsname', 'text', st.wsName, 'My Workspace');
+            primary = st.kind === 'cloud' ? 'Next' : 'Create';
+          }
         } else if (st.step === 'cloud') {
           body = '<p class="dialog-lead">Enter a <strong>fresh, empty</strong> Postgres database. Lattice creates the workspace, installs row-level security, and makes you the owner.</p>' +
             postgresFormHtml({ label: slugifyName(st.wsName) });
@@ -198,9 +212,22 @@ export const rowContextJs = `    // ──────────────�
           return;
         }
         if (st.step === 'kind') {
-          st.kind = (backdrop.querySelector('input[name="ob-kind"]:checked') || {}).value || 'local';
           st.wsName = (backdrop.querySelector('#ob-wsname').value || '').trim() || st.wsName;
           if (!st.wsName) { setMsg('Please name the workspace.'); return; }
+          // MANAGED: the manager provisions the cloud; the identity that owns
+          // this session becomes its owner.
+          if (state.managedWorkspaces === true) {
+            withBusy(okBtn, function () {
+              setMsg('Creating…');
+              return fetchJson('/api/cloud/managed/create', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ name: st.wsName }),
+              }).then(function () { window.location.reload(); })
+                .catch(function (e) { setMsg('Failed: ' + e.message); });
+            });
+            return;
+          }
+          st.kind = (backdrop.querySelector('input[name="ob-kind"]:checked') || {}).value || 'local';
           if (st.kind === 'cloud') { st.step = 'cloud'; render(); return; }
           // Local: create + reload into the new workspace.
           withBusy(okBtn, function () {

@@ -66,7 +66,9 @@ test('the Configure drawer has Files / Connectors / Databases tabs', async ({ pa
   await expect(page.locator('#drawer-body #src-databases-list')).toBeVisible({ timeout: 5000 });
 });
 
-test('a registered folder renders as a tree and lazily expands one level', async ({ page }) => {
+test('the Files tab is a GRID (no list/grid toggle) and a folder lazily expands one level', async ({
+  page,
+}) => {
   // Register the folder via the real API (what the native picker feeds).
   const res = await page.request.post(gui.url + '/api/sources/roots', {
     data: { path: srcDir, kind: 'folder' },
@@ -74,17 +76,77 @@ test('a registered folder renders as a tree and lazily expands one level', async
   expect(res.ok()).toBeTruthy();
 
   await openConfigureTab(page, 'files', '#inputs-files-tree');
-  const tree = page.locator('#inputs-files-tree');
-  const rootFolder = tree.locator('.src-folder').first();
-  await expect(rootFolder).toBeVisible({ timeout: 5000 });
+  const grid = page.locator('#inputs-files-tree');
+  // Grid-only: the retired list/grid toggle is gone.
+  await expect(page.locator('#inputs-files-toggle')).toHaveCount(0);
+  // The folder root renders as an expandable grid group.
+  const folder = grid.locator('.ifg-tile-wrap.ifg-folder').first();
+  await expect(folder).toBeVisible({ timeout: 5000 });
 
-  // Children are NOT loaded until the folder is expanded (lazy).
-  await expect(rootFolder.locator('.src-children .src-name')).toHaveCount(0);
-  await rootFolder.locator('> .src-row').click();
+  // Children are NOT loaded until the folder tile is clicked (lazy).
+  await expect(grid.locator('.ifg-children .fs-tile')).toHaveCount(0);
+  await folder.locator('.fs-tile').click();
   // One level: the 'sub' folder + 'note.txt' file appear; 'deep.txt' does not.
-  await expect(tree.getByText('note.txt', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(tree.getByText('sub', { exact: true })).toBeVisible();
-  await expect(tree.getByText('deep.txt', { exact: true })).toHaveCount(0);
+  await expect(grid.getByText('note.txt', { exact: true })).toBeVisible({ timeout: 5000 });
+  await expect(grid.getByText('sub', { exact: true })).toBeVisible();
+  await expect(grid.getByText('deep.txt', { exact: true })).toHaveCount(0);
+});
+
+test('a file source shows ONCE with a ✕, and removing it clears both root + ingested row', async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  // window.confirm fallback, if showModal ever isn't present.
+  page.on('dialog', (d) => void d.accept());
+
+  const filePath = join(srcDir, 'note.txt');
+  // Register a FILE source → creates BOTH a file-root AND an ingested files row at
+  // the same path (the dual-representation the dedupe collapses).
+  const reg = await page.request.post(gui.url + '/api/sources/roots', {
+    data: { path: filePath, kind: 'file' },
+  });
+  expect(reg.ok()).toBeTruthy();
+
+  await openConfigureTab(page, 'files', '#inputs-files-tree');
+  const grid = page.locator('#inputs-files-tree');
+  // De-dupe: the file appears exactly ONCE (as the root tile), not twice.
+  await expect(grid.getByText('note.txt', { exact: true })).toHaveCount(1);
+  const tile = grid.locator('.ifg-tile-wrap', { hasText: 'note.txt' }).first();
+  const del = tile.locator('.src-del');
+  await expect(del).toHaveCount(1);
+
+  // The root + its twin row are both present before removal.
+  const rootsBefore = await (await page.request.get(gui.url + '/api/sources/roots')).json();
+  expect((rootsBefore.roots || []).some((r: { path: string }) => r.path.endsWith('note.txt'))).toBe(
+    true,
+  );
+
+  // Click ✕ → a confirm modal appears ("Your file stays on your disk"); confirm it.
+  await del.click({ force: true });
+  const modal = page.locator('.modal-backdrop .modal');
+  await expect(modal).toContainText('stays on your disk', { timeout: 5000 });
+  await modal.locator('[data-act="ok"]').click();
+  // Both representations gone (API-confirmed), the tile disappears.
+  await expect(grid.getByText('note.txt', { exact: true })).toHaveCount(0, { timeout: 5000 });
+  const rootsAfter = await (await page.request.get(gui.url + '/api/sources/roots')).json();
+  expect((rootsAfter.roots || []).some((r: { path: string }) => r.path.endsWith('note.txt'))).toBe(
+    false,
+  );
+  // The live files row is soft-deleted (the default query returns live rows only).
+  const rows = await (await page.request.get(gui.url + '/api/tables/files/rows')).json();
+  expect(
+    (rows.rows || []).some(
+      (r: { ref_uri?: string; deleted_at?: string }) =>
+        r.ref_uri && r.ref_uri.endsWith('note.txt') && !r.deleted_at,
+    ),
+  ).toBe(false);
+  // The on-disk file is untouched.
+  const st = await page.request.post(gui.url + '/api/sources/roots', {
+    data: { path: filePath, kind: 'file' },
+  });
+  expect(st.ok()).toBeTruthy(); // re-registerable ⇒ still on disk
+  expect(pageErrors).toEqual([]);
 });
 
 test('the MCP Connectors tab hosts the table + add form inline (no dialog)', async ({ page }) => {

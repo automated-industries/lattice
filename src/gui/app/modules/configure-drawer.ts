@@ -163,37 +163,15 @@ export const configureDrawerJs = `
     }
 
     // ── Inputs tab: Files | Connectors | Databases (existing ids, existing fns) ──
-    var INPUTS_FILES_VIEW_KEY = 'lattice.inputs.files.view';
-    function inputsFilesView() {
-      try { return window.localStorage.getItem(INPUTS_FILES_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
-      catch (e) { return 'list'; }
-    }
-    // Render the Inputs Files as the source tree (list, default) OR a tile grid
-    // (fsTileHtml). Both open a file with #/w/file/<id>.
+    // The Files tab is GRID-ONLY (the old list/grid toggle is retired). The grid keeps
+    // the nested folder structure (folder roots expand to nested tile grids) and
+    // inherits the ✕ remove control + de-dupe from the shared data prep. A stale
+    // "list" preference in storage is ignored — everyone gets the grid.
     function renderInputsFiles(rows) {
       var host = document.getElementById('inputs-files-tree');
       if (!host) return;
-      var view = inputsFilesView();
-      var toggle = document.getElementById('inputs-files-toggle');
-      if (toggle) {
-        toggle.querySelectorAll('[data-view]').forEach(function (b) {
-          b.classList.toggle('on', b.getAttribute('data-view') === view);
-        });
-      }
-      if (view === 'grid' && typeof fsTileHtml === 'function') {
-        host.innerHTML = rows.length
-          ? '<div class="fs-grid">' + rows.map(function (r) {
-              var nm = r.name || r.original_name || 'Untitled';
-              var ic = typeof fileEmoji === 'function' ? fileEmoji(r) : '📄';
-              return fsTileHtml('#/w/file/' + encodeURIComponent(r.id), ic, nm, 'files', '', 'file');
-            }).join('') + '</div>'
-          : '<div class="src-empty">No files yet — add files or a whole folder below.</div>';
-        host.querySelectorAll('.fs-tile[data-href]').forEach(function (t) {
-          t.addEventListener('click', function () { location.hash = t.getAttribute('data-href'); });
-        });
-      } else if (typeof renderSourcesFilesInto === 'function') {
-        renderSourcesFilesInto(host, rows);
-      }
+      if (typeof renderSourcesGridInto === 'function') renderSourcesGridInto(host, rows);
+      else if (typeof renderSourcesFilesInto === 'function') renderSourcesFilesInto(host, rows);
     }
     // Files / Connectors / Databases are now three separate Configure tabs (the tab
     // name IS the heading, so the old .inputs-group-head subheadings are dropped). Each
@@ -202,11 +180,7 @@ export const configureDrawerJs = `
       if (!body) return;
       body.innerHTML =
         '<div class="inputs-group">' +
-        '<div class="inputs-files-bar u-mb-2" style="display:flex;justify-content:flex-end">' +
-        '<span class="inputs-files-toggle" id="inputs-files-toggle">' +
-        '<button type="button" class="ift-btn" data-view="list" title="List view">☰</button>' +
-        '<button type="button" class="ift-btn" data-view="grid" title="Grid view">▦</button></span></div>' +
-        '<div id="inputs-files-tree"></div>' +
+        '<div id="inputs-files-tree" class="inputs-files-grid-host"></div>' +
         '<div class="src-add-row src-add-files-wrap">' +
         '<button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ Add files or folder</button>' +
         '<div class="src-add-menu" id="src-add-files-menu" role="menu" hidden>' +
@@ -223,15 +197,6 @@ export const configureDrawerJs = `
           })
           .catch(function () { renderInputsFiles([]); });
       };
-      var toggle = document.getElementById('inputs-files-toggle');
-      if (toggle) {
-        toggle.querySelectorAll('[data-view]').forEach(function (b) {
-          b.addEventListener('click', function () {
-            try { window.localStorage.setItem(INPUTS_FILES_VIEW_KEY, b.getAttribute('data-view')); } catch (e) {}
-            loadFiles();
-          });
-        });
-      }
       loadFiles();
     }
     function renderConnectorsTab(body) {

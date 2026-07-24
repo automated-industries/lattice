@@ -8,6 +8,7 @@ import { normalizeText } from '../dedup/normalize.js';
 import { parseCellDate } from './asof.js';
 import { LOAD_CHUNK_ROWS, ensureNaturalKeyIndex, seedInChunks } from './bulk-load.js';
 import { normalizeName, sourceRecords } from './infer.js';
+import { checkDimensionName, checkEntityShape } from './name-policy.js';
 import type { DetectedView, InferredEntity, InferredType, ProposedSchema } from './types.js';
 
 /**
@@ -169,10 +170,103 @@ export async function materializeImport(
   const rowsByTable: Record<string, number> = {};
   const links: MaterializeResult['links'] = [];
   const viewResults: MaterializeResult['views'] = [];
-  const byName = new Map<string, InferredEntity>(plan.entities.map((e) => [e.name, e]));
+
+  // ── Pre-flight: validate the WHOLE plan up front, then FILTER — never throw
+  // mid-loop. materializeImport has no enclosing transaction: each entity is both
+  // created and written to the workspace YAML inside the loop, so a throw at entity
+  // 5 of 7 would leave a half-built model + half-written config. So run the shared
+  // shape policy over every entity + dimension here, drop what fails, and report it
+  // through the existing import report. Because names are resolved at the source
+  // (the doc-tables naming ladder + the assistant's rejectAnonymous), this should
+  // drop nothing in normal operation — it is the deterministic backstop. An entity
+  // that maps onto an already-registered table is exempt (a re-import into a
+  // workspace 5.1.x seeded with `table_N` must keep working). Linkages that touch a
+  // dropped table are dropped too, so the link pass never queries a table that was
+  // never created.
+  const requireRows = doContents;
+  const registered = new Set(db.getRegisteredTableNames());
+  const dropped: string[] = [];
+  const entities = plan.entities.filter((e) => {
+    if (registered.has(e.name)) return true;
+    const v = checkEntityShape(e, { requireRows });
+    if (!v.ok && v.reason) dropped.push(v.reason);
+    return v.ok;
+  });
+  const rejectedDims: (typeof plan.dimensions)[number][] = [];
+  const dimensions = plan.dimensions.filter((d) => {
+    if (registered.has(d.name)) return true;
+    const v = checkDimensionName(d);
+    if (!v.ok) rejectedDims.push(d);
+    if (!v.ok && v.reason) dropped.push(v.reason + ' (kept as a plain column)');
+    return v.ok;
+  });
+  // A rejected dimension must not lose its VALUES: the inferrer already stripped
+  // the source column off its entities (it was "consumed" by the dimension), so
+  // simply dropping the dimension would drop the data. Fold it back onto each
+  // contributing entity as a plain text column instead — the exact shape the
+  // entity would have had if the dimension had never been inferred. The per-entity
+  // raw source key is re-resolved by normalized match (spellings can differ per
+  // entity), mirroring how the dimension-values pass reads them.
+  const foldBack = new Map<string, { name: string; sourceKey: string }[]>();
+  for (const dim of rejectedDims) {
+    for (const ename of dim.fromEntities) {
+      const ent = plan.entities.find((e) => e.name === ename);
+      if (!ent || ent.columns.some((c) => c.name === dim.name)) continue;
+      const first = sourceRecords(data, ent)[0];
+      const srcKey = first
+        ? Object.keys(first).find((k) => normalizeName(k) === dim.name)
+        : undefined;
+      if (!srcKey) continue;
+      const list = foldBack.get(ename) ?? [];
+      list.push({ name: dim.name, sourceKey: srcKey });
+      foldBack.set(ename, list);
+    }
+  }
+  const entitiesWithFoldback = entities.map((e) => {
+    const extra = foldBack.get(e.name);
+    return extra
+      ? {
+          ...e,
+          columns: [
+            ...e.columns,
+            ...extra.map((x) => ({ name: x.name, sourceKey: x.sourceKey, type: 'text' as const })),
+          ],
+        }
+      : e;
+  });
+  const validNames = new Set<string>([
+    ...entitiesWithFoldback.map((e) => e.name),
+    ...dimensions.map((d) => d.name),
+  ]);
+  const linkages = plan.linkages.filter(
+    (l) => validNames.has(l.fromEntity) && validNames.has(l.toEntity),
+  );
+  // Views ride the pre-flight too: a view whose master was dropped would make the
+  // CREATE VIEW throw mid-loop (the partial write this pre-flight exists to
+  // prevent), and a view's own name is a table name like any other. Registered
+  // names are exempt for the same re-import reason as entities.
+  const usableViews = views.filter((v) => {
+    const masterOk = validNames.has(v.master) || registered.has(v.master);
+    if (!masterOk) {
+      dropped.push(`view "${v.name}" lost its source table "${v.master}"`);
+      return false;
+    }
+    if (!registered.has(v.name) && !checkDimensionName({ name: v.name }).ok) {
+      dropped.push(`anonymous view name "${v.name}"`);
+      return false;
+    }
+    return true;
+  });
+  if (dropped.length > 0) {
+    await report({
+      phase: 'entities',
+      message: `Skipped ${String(dropped.length)} unusable table(s): ${dropped.join('; ')}`,
+    });
+  }
+  const byName = new Map<string, InferredEntity>(entitiesWithFoldback.map((e) => [e.name, e]));
 
   // ── Entities: create table + seed rows ──────────────────────────────
-  for (const entity of plan.entities) {
+  for (const entity of entitiesWithFoldback) {
     const keyless = entity.naturalKey === null;
     const columns: Record<string, string> = { id: 'TEXT PRIMARY KEY' };
     const fieldTypes: Record<string, string> = {};
@@ -265,7 +359,7 @@ export async function materializeImport(
   }
 
   // ── Dimensions: create table + seed distinct values ─────────────────
-  for (const dim of plan.dimensions) {
+  for (const dim of dimensions) {
     if (!db.getRegisteredTableNames().includes(dim.name)) tablesCreated.push(dim.name);
     await db.defineLate(dim.name, {
       columns: { id: 'TEXT PRIMARY KEY', value: 'TEXT', deleted_at: 'TEXT' },
@@ -353,7 +447,7 @@ export async function materializeImport(
     return map;
   }
 
-  for (const link of plan.linkages) {
+  for (const link of linkages) {
     const from = byName.get(link.fromEntity);
     if (!from) continue;
     const jName = link.junction ?? `${link.fromEntity}_${link.toEntity}`;
@@ -455,7 +549,7 @@ export async function materializeImport(
   // `schema`/`both`. (They also need their master table to exist, which it does
   // after the entity pass above.)
   if (doSchema) {
-    for (const v of views) {
+    for (const v of usableViews) {
       const filt = v.filterValue.replace(/'/g, "''");
       await execSql(db, `DROP VIEW IF EXISTS "${v.name}"`);
       await execSql(

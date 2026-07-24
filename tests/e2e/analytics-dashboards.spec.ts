@@ -49,12 +49,13 @@ test('sidebar lists dashboards; clicking one opens it; re-opening re-routes to t
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/w/dash/' + b);
   await expect(page.locator('.dash-title')).toHaveText('Pipeline');
 
-  // Navigating to the home route shows the hero (no dashboard open).
+  // Navigating to the home route now lands on a dashboard whenever any exists —
+  // the Ask-Lattice landing survives only as the zero-dashboards fallback.
   await page.evaluate(() => {
     window.location.hash = '#/';
   });
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
-  await expect(page.locator('.analytics-home')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/^#\/w\/dash\/.+/);
+  await expect(page.locator('#dash-frame')).toBeVisible();
 });
 
 test('a dashboard on a cloud/team workspace (row carries _access) still opens — regression for the appendChild-of-string crash', async ({
@@ -144,19 +145,24 @@ test('the ⋯ menu renames (sidebar + title follow) and deletes', async ({ page 
   await expect(page.locator('.dash-title')).toHaveText('New Name');
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toContainText('New Name');
 
-  // Delete → list refreshes, home shows. It now confirms first
-  // (guarding against a stray click) — accept the dialog.
+  // Delete → list refreshes and the view leaves the deleted dashboard's route.
+  // (Home now redirects to another dashboard when one exists, so the landing
+  // hash is '#/' only in the zero-dashboards case — assert the departure, not
+  // a specific destination.) It now confirms first — accept the dialog.
   await page.locator('#dash-menu-btn').click();
   page.once('dialog', (d) => void d.accept());
   await page.locator('#dash-menu [data-act="delete"]').click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
+  await expect.poll(() => page.evaluate(() => location.hash)).not.toBe('#/w/dash/' + id);
   await expect(page.locator(`.dash-item[data-dash-id="${id}"]`)).toHaveCount(0);
 });
 
-test('a stale dashboard link lands home', async ({ page }) => {
+test('a stale dashboard link lands on the home destination', async ({ page }) => {
   await page.goto(gui.url + '#/w/dash/no-such-dashboard');
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#/');
-  await expect(page.locator('.analytics-home')).toBeVisible();
+  // Home destination = another dashboard when any exists, else the bare home
+  // with the landing. Either way, never the stale route.
+  await expect
+    .poll(() => page.evaluate(() => location.hash))
+    .toMatch(/^#\/(w\/dash\/(?!no-such-dashboard).+)?$/);
 });
 
 test('the + button opens-or-focuses the Welcome dashboard (never a duplicate route)', async ({

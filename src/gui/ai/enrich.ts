@@ -95,6 +95,20 @@ function buildSchema(db: Lattice): SchemaEntity[] {
 }
 
 /**
+ * True when the deterministic structured importer owns row creation for this
+ * file — tabular by TYPE (spreadsheet/CSV), or the importer actually RAN on it
+ * (a .docx/.pptx with substantive embedded tables). The LLM object extractor
+ * must not also manufacture rows from such a file: two modellers on one
+ * document is the duplication that produced a lossy hand-authored copy beside
+ * the faithful import. Gated on whether the importer ran — not on extension —
+ * so a prose document the importer declined still gets LLM extraction.
+ * Exported pure so the gate itself is unit-testable.
+ */
+export function deterministicRowOwner(name: string, structuredImportRan: boolean): boolean {
+  return /\.(xlsx?|csv|tsv)$/i.test(name) || structuredImportRan;
+}
+
+/**
  * When a Claude token is configured, replace the heuristic description with an
  * LLM summary and surface which existing records the file relates to (as feed
  * notes). Best-effort: any failure logs + leaves the heuristic description.
@@ -132,6 +146,14 @@ export async function enrichWithLlm(
     tableB: string;
     bFk: string;
   } | null>,
+  // True when the deterministic structured importer already ran for THIS file
+  // (autoImportStructured returned a result — silent import or a proposal). The
+  // LLM object extractor must not ALSO manufacture rows from the same file: two
+  // modellers on one document is exactly the duplication that produced a lossy
+  // hand-authored copy beside the faithful import. Gated on whether the importer
+  // actually RAN — not on file extension — so a prose .docx the importer declined
+  // still gets LLM extraction.
+  structuredImportRan = false,
 ): Promise<ClassifyMatch[]> {
   if (!text.trim()) return [];
   let client;
@@ -179,8 +201,8 @@ export async function enrichWithLlm(
   // and two parallel paths creating rows from one file is exactly the duplication to avoid.
   // So for tabular files the extractor is disabled and the importer owns the data. (The
   // other enrichment — a description + auto-linking the file to related records — still runs.)
-  const isSpreadsheet = /\.(xlsx?|csv|tsv)$/i.test(name);
-  const extractGate = !!createEntity && aggressiveness >= 0.4 && !isSpreadsheet;
+  const deterministicOwner = deterministicRowOwner(name, structuredImportRan);
+  const extractGate = !!createEntity && aggressiveness >= 0.4 && !deterministicOwner;
   // buildCatalog READS every user table; a transient DB read failure here must not
   // throw out of this best-effort enricher — that would leave the already-saved file
   // row un-enriched AND make callers (e.g. chat auto-ingest) believe the whole ingest
@@ -325,8 +347,9 @@ export async function enrichWithLlm(
     let createdCount = 0;
     // Same predicate as extractGate above (kept inline so TS narrows createEntity
     // to defined for the createEntity(...) call in the loop) — including the
-    // spreadsheet exclusion, so a workbook never manufactures rows here.
-    if (createEntity && aggressiveness >= 0.4 && !isSpreadsheet) {
+    // deterministic-owner exclusion, so a workbook or an already-imported document
+    // never manufactures rows here.
+    if (createEntity && aggressiveness >= 0.4 && !deterministicOwner) {
       try {
         // Re-throw a rejected extract into this same catch so the old
         // "object extraction failed" warn (and keep links + note fallback) holds.

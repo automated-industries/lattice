@@ -55,6 +55,11 @@ export const bootJs = `    // ────────────────�
         // deployment supplies the credential (managedModelAuth). On a successful
         // connect the wall calls back into continueBoot to resume the normal boot.
         return fetchJson('/api/assistant/config').catch(function () { return {}; }).then(function (cfg) {
+          // Managed-workspaces seam (server-injected): workspace management is
+          // delegated to the deployment's manager — the wizard, invite dialog,
+          // and members list all branch on this. Cached once at boot; a session
+          // without the seam behaves exactly as before.
+          state.managedWorkspaces = !!(cfg && cfg.managedWorkspaces === true);
           if (cfg && cfg.connected === false && cfg.managedModelAuth !== true) {
             showConnectWall(function () { continueBoot(wsBoot); });
             hideAppLoading();
