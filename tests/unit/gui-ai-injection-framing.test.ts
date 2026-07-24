@@ -83,7 +83,10 @@ describe('ingest_url tool + untrusted-content framing', () => {
       { url: 'https://93.184.216.34/secret' },
     );
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/not in their message|explicitly provided/i);
+    // The refusal must explain that the URL wasn't in the user's own messages
+    // (the whole-thread user-authored gate; wording may say "wrote in one of THEIR
+    // messages" / "does not appear there").
+    expect(res.error).toMatch(/their messages?|does not appear|explicitly (wrote|provided)/i);
   });
 
   it('REJECTS when there is no user message at all', async () => {
