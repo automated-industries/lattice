@@ -81,13 +81,23 @@ function capToolInput(input: Record<string, unknown>): Record<string, unknown> {
 // keeping a full 16-loop run well under the window. The note nudges the model to
 // page instead of re-pulling the whole thing.
 const LIVE_TOOL_RESULT_CHARS = 16000;
-function capLiveToolResult(s: string): string {
-  if (s.length <= LIVE_TOOL_RESULT_CHARS) return s;
+// read_file_text is the deliberate "read a whole file" path — it already returns
+// a bounded ~60k-char window with its own nextOffset pager, so re-truncating it to
+// the generic 16k cap would defeat its purpose (and is what made the model loop:
+// it kept re-reading a body it could never fully see). Give it a window-sized cap.
+const LIVE_FILE_READ_CHARS = 64000;
+function capLiveToolResult(s: string, toolName?: string): string {
+  const cap = toolName === 'read_file_text' ? LIVE_FILE_READ_CHARS : LIVE_TOOL_RESULT_CHARS;
+  if (s.length <= cap) return s;
+  // Truncation guidance depends on WHAT was too big: a file body pages by char
+  // offset (read_file_text), a table read pages by rows (list_rows).
+  const how =
+    toolName === 'read_file_text'
+      ? 'call read_file_text again with the returned nextOffset to continue'
+      : "to read one file's full text use read_file_text with an offset; to page table rows use list_rows with a smaller limit + offset, or a narrower filter";
   return (
-    s.slice(0, LIVE_TOOL_RESULT_CHARS) +
-    `\n…[truncated ${String(
-      s.length - LIVE_TOOL_RESULT_CHARS,
-    )} chars — this result was too large to include in full. Read it in smaller pieces: list_rows with a smaller limit + offset, or a narrower filter.]`
+    s.slice(0, cap) +
+    `\n…[truncated ${String(s.length - cap)} chars — this result was too large to include in full. ${how}.]`
   );
 }
 
@@ -775,7 +785,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         // Cap the result that enters THIS turn's prompt (it's re-sent on every
         // later tool-loop iteration), so one big read can't blow the context
         // window. Cross-turn persistence keeps its own (smaller) cap below.
-        const content = capLiveToolResult(rawContent);
+        const content = capLiveToolResult(rawContent, tu.name);
         resultBlocks.push({
           type: 'tool_result',
           tool_use_id: tu.id,

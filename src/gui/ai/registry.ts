@@ -156,6 +156,31 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     args: obj({ table: str('Table name.'), id: str('Primary key of the row.') }, ['table', 'id']),
   },
   {
+    name: 'read_file_text',
+    description:
+      "Read the FULL extracted text of one uploaded file (a `files` row) in large windows. Use this " +
+      "whenever you need a file's complete contents — e.g. to reproduce or restyle an uploaded HTML " +
+      "page, or to read a long document end-to-end. A plain get_row/list_rows read truncates a big " +
+      "file's body, and paging table ROWS does not help read WITHIN one file; this tool is the way to " +
+      "get the whole thing. Returns a window of up to ~60,000 characters starting at `offset`, plus " +
+      "`totalChars` and `nextOffset` — when `nextOffset` is not null, call again with that offset to " +
+      "continue. Read sequentially from offset 0 until nextOffset is null; you then have the entire file.",
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        id: str('Primary key (id) of the `files` row to read.'),
+        offset: {
+          type: 'number',
+          description:
+            'Character offset to start from (default 0). Pass the `nextOffset` from the previous ' +
+            'call to read the next window.',
+        },
+      },
+      ['id'],
+    ),
+  },
+  {
     name: 'search',
     description:
       'Full-text search across the user tables for a query string. Returns ' +
