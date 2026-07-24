@@ -17,7 +17,7 @@
  *   credential POST (Bearer) /:id → { connUrl, role, workspaceName }
  */
 
-import { PUBLIC_SITE_ORIGIN } from '../site-origin.js';
+import { ACCOUNT_HOME_ORIGIN } from '../site-origin.js';
 
 export interface IdentityEndpoints {
   base: string;
@@ -102,7 +102,7 @@ export async function discoverIdentityService(): Promise<IdentityEndpoints | nul
   }
   const manifestUrl =
     process.env.LATTICE_IDENTITY_MANIFEST ??
-    `${PUBLIC_SITE_ORIGIN}/.well-known/lattice-services.json`;
+    `${ACCOUNT_HOME_ORIGIN}/.well-known/lattice-services.json`;
   try {
     const res = await fetch(manifestUrl, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
