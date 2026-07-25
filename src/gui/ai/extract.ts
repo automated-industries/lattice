@@ -67,6 +67,11 @@ const TEXT_EXT = new Set([
   '.yaml',
   '.yml',
   '.xml',
+  // Geo formats are XML/JSON text — ingest their content instead of leaving a
+  // silent bare "skipped" row (KML/GPX are XML; GeoJSON is JSON).
+  '.kml',
+  '.gpx',
+  '.geojson',
   '.toml',
   '.ini',
   '.log',

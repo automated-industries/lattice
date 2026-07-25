@@ -23,13 +23,12 @@ import { DatabaseConnector } from './db-source/connector.js';
  * The built-in connectors, fresh instances per call. The GUI server passes the
  * result to the connectors routes.
  *
- * The generic connector is the bring-your-own-MCP-URL path. The hand-authored,
- * parameterized-tool connectors (Atlassian/Jira+Confluence, Gmail, Google Calendar,
- * Google Drive, Slack, Salesforce) live under `src/connectors/<name>/` and are fully
- * built + tested, but are HELD OUT of this list until each has a live-OAuth spike
- * confirming its real endpoint URL + result-shape mappers (only Atlassian's URL is a
- * real MCP endpoint today; the others are documented placeholders). To enable one,
- * import its factory and add it here — that is the only wiring needed.
+ * There is exactly one: the generic bring-your-own-MCP-URL connector. Any
+ * provider (Atlassian/Jira+Confluence, Gmail, Google Calendar/Drive, Slack,
+ * Salesforce, …) is just another MCP server URL added through it — its endpoint,
+ * scopes, and result shapes are discovered from the server at connect time (see
+ * `prefab/` for the curated one-click entries) rather than hand-authored per
+ * provider. There is no provider-specific connector code to enable.
  */
 export function builtinConnectors(): Connector[] {
   return [genericConnector()];
