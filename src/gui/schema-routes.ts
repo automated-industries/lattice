@@ -387,19 +387,14 @@ export async function handleSchemaRoutes(
       }
     }
     const secret: 0 | 1 = body.secret === true ? 1 : 0;
-    // Consolidated find-or-insert (shared with the set_definition AI tool
-    // and the auto-generators) — applies only the provided fields.
-    await upsertColumnMeta(active.db, tableName, colName, {
-      ...(settingSecret ? { secret } : {}),
-      ...(settingDescription
-        ? { description: typeof body.description === 'string' ? body.description : null }
-        : {}),
-    });
-    // The `_lattice_gui_column_meta.secret` write above is the local
-    // model-context redaction (the assistant never sees a secret value).
-    // On a cloud (Postgres) DB, ALSO enforce it in the database: mask the
-    // column to non-owners via the audience view, so a member's connection
-    // can't read it at all. SQLite is a no-op inside setColumnAudience.
+    // Apply the DATABASE mask FIRST, before persisting the local secret flag.
+    // On a cloud (Postgres) DB, setColumnAudience masks the column to non-owners
+    // via the audience view so a member's connection can't read it; it throws on
+    // failure (propagating to the outer catch). Doing it before the local
+    // `_lattice_gui_column_meta.secret` write means a failed mask never leaves a
+    // column shown-masked to the owner + redacted from the assistant while a
+    // member's connection can still SELECT the real value — fail loud, never a
+    // false "masked" state. SQLite is a no-op inside setColumnAudience.
     if (settingSecret && active.db.getDialect() === 'postgres') {
       const columnNames = Object.keys(active.db.getRegisteredColumns(tableName) ?? {});
       const pkCols = active.db.getPrimaryKey(tableName);
@@ -412,6 +407,16 @@ export async function handleSchemaRoutes(
         pkCols,
       );
     }
+    // Now persist the local model-context redaction (the assistant never sees a
+    // secret value) + description. Consolidated find-or-insert (shared with the
+    // set_definition AI tool and the auto-generators) — applies only the provided
+    // fields. Reaching here means the DB mask (if any) already succeeded.
+    await upsertColumnMeta(active.db, tableName, colName, {
+      ...(settingSecret ? { secret } : {}),
+      ...(settingDescription
+        ? { description: typeof body.description === 'string' ? body.description : null }
+        : {}),
+    });
     sendJson(res, { ok: true });
     return true;
   }

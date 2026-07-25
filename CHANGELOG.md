@@ -6,6 +6,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.2.1] — 2026-07-25
+
+### Security
+
+- **Marking a cloud column secret now masks the database before recording the local flag.** On a
+  Postgres-backed cloud workspace, the "mark secret" action applies the audience mask (so a member's
+  connection can't read the column) _before_ it persists the local redaction flag. If the mask fails,
+  the operation now fails loudly and writes nothing — previously the local flag landed first, so a
+  failed mask could leave a column shown-masked to the owner and hidden from the assistant while a
+  scoped member could still read the real value.
+
+### Fixed
+
+- **The data-model planner's one-click "Merge tables" and "De-duplicate rows" actions are wired.**
+  Applying either proposal from the review panel now runs the real audited operation (dedupe merges
+  duplicates onto the oldest row and re-points links; merge moves rows into the target then removes
+  the source), instead of reporting "not wired in this build yet". Failures surface the error rather
+  than silently doing nothing.
+
+### Added
+
+- **KML, GPX, and GeoJSON files are ingested as text** instead of being skipped as unrecognized
+  binaries, so their contents are searchable and available to the assistant.
+
+### Changed
+
+- **Removed the unused provider-specific connector modules.** The generic MCP connector already
+  covers every provider (each is just an MCP server URL, with curated one-click entries), so the
+  parameterized Atlassian/Gmail/Calendar/Drive/Slack/Salesforce modules — which were built but never
+  wired into the catalog — have been removed. No user-facing change; connecting any of these providers
+  was, and remains, done through the generic connector.
+
 ## [5.2.0] — 2026-07-24
 
 ### Added

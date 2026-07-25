@@ -43,6 +43,24 @@ describe('extract', () => {
     expect(r.language).toBe('typescript');
   });
 
+  it('ingests geo formats (kml/gpx/geojson) as text instead of a silent skip', async () => {
+    // A non-text mime hint (KML's real type) — recognition rides on the
+    // extension, so these must be in TEXT_EXT or they fall through to a bare
+    // "skipped" binary row.
+    const kml = tmpFile(
+      'places.kml',
+      '<?xml version="1.0"?><kml><Placemark><name>Headquarters</name></Placemark></kml>',
+    );
+    const rk = await parseFile(kml, 'application/vnd.google-earth.kml+xml', 'places.kml');
+    expect(rk.skip).toBeUndefined();
+    expect(rk.text).toContain('Headquarters');
+
+    const geojson = tmpFile('area.geojson', '{"type":"Feature","properties":{"label":"Zone A"}}');
+    const rg = await parseFile(geojson, 'application/octet-stream', 'area.geojson');
+    expect(rg.skip).toBeUndefined();
+    expect(rg.text).toContain('Zone A');
+  });
+
   it('skips binary/unsupported types (no text)', async () => {
     const p = tmpFile('blob.bin', 'whatever');
     const r = await parseFile(p, 'application/octet-stream', 'blob.bin');
