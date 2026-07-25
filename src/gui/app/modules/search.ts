@@ -153,7 +153,12 @@ export const searchJs = `    // ────────────────
         el = document.createElement('div');
         el.id = 'ws-switch-overlay';
         el.className = 'ws-switch-overlay';
-        el.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+        // Same loading figure as first-load (BRAND_SVG + accent-ring spinner +
+        // label), so switching a workspace reads identically to booting Lattice.
+        el.innerHTML =
+          BRAND_SVG +
+          '<span class="app-loading-spinner" aria-hidden="true"></span>' +
+          '<div class="app-loading-text">Switching…</div>';
         document.body.appendChild(el);
       }
       return el;

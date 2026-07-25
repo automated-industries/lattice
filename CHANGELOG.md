@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.3.0] — 2026-07-25
+
+### Changed
+
+- **Switching a workspace now looks like first-load.** The workspace-switch overlay renders the same
+  figure as the initial "Lattice loading" screen — the brand mark, the accent-ring spinner, and a
+  "Switching…" label — instead of a bare spinner, so the two transitions read as one consistent moment.
+- **Creating a workspace shows the same progress everywhere.** The in-app "New workspace" wizard now
+  uses the same spinning Create button and phase-narrated status as first-run onboarding, including the
+  previously-silent "Migrating to cloud…" step — so a cloud create tells you what it's doing during the
+  multi-second migrate instead of appearing to hang.
+- **One realtime-motion vocabulary.** A shared set of motion tokens (`--dur-spin`/`--dur-reveal`/
+  `--dur-pulse`/`--ease-reveal`) and primitives (`.lat-spinner` / `.lat-skeleton` / `.lat-pulse`) so
+  "working…" cues — spinners, skeleton shimmers, and pulses — animate consistently across the app; the
+  boot spinner now draws its timing from the shared token. Honors `prefers-reduced-motion`.
+
 ## [5.2.1] — 2026-07-25
 
 ### Security

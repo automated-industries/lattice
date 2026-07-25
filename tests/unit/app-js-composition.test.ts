@@ -616,8 +616,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // root and an ingested row shows once and one ✕ clears both; and the Configure → Files
 // tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
 // kept as expandable tile groups. Length + hash recaptured.
-const ORIGINAL_LENGTH = 812551;
-const ORIGINAL_SHA256 = 'bedcf547abfd8c299c0f050958b49e708ffa7e626c9bc7fa9465252fafc242b7';
+const ORIGINAL_LENGTH = 813509;
+const ORIGINAL_SHA256 = 'b5502539f5a74063bf8399b98f14c35f4ba748229b5ea7c8eeff959c4b14dd07';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

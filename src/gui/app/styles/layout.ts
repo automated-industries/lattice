@@ -63,8 +63,8 @@ export const layoutCss = `    /* ── Layout ───────────
        underneath is hidden until it settles, then it fades out. */
     .ws-switch-overlay {
       position: fixed; inset: 0; z-index: var(--z-veil);
-      display: flex; align-items: center; justify-content: center;
-      background: var(--surface);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+      background: var(--bg);
       opacity: 0; visibility: hidden; transition: opacity 0.16s ease, visibility 0.16s;
     }
     .ws-switch-overlay.show { opacity: 1; visibility: visible; }

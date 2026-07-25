@@ -28,6 +28,7 @@ export const dataModelJs = `    // ───────────────
             '<div class="modal-head" id="wiz-head">New workspace</div>' +
             '<div class="modal-body" id="wiz-body"></div>' +
             '<div class="modal-foot">' +
+              '<div id="wiz-msg" class="hint" style="margin-right:auto"></div>' +
               '<button class="btn" data-act="cancel">Cancel</button>' +
               '<button class="btn primary" data-act="next">Create</button>' +
             '</div>' +
@@ -169,23 +170,35 @@ export const dataModelJs = `    // ───────────────
           submit();
         }
 
+        function setWizMsg(t) {
+          var m = backdrop.querySelector('#wiz-msg');
+          if (m) m.textContent = t || '';
+        }
         function submit() {
           var nextBtn = backdrop.querySelector('[data-act="next"]');
-          nextBtn.setAttribute('disabled', 'disabled');
-          nextBtn.textContent = 'Creating…';
-          var promise = state.managedWorkspaces === true
-            ? submitManaged()
-            : (wizState.kind === 'local' ? submitLocal() : submitCloud());
-          promise.then(function () {
-            close();
-            return reloadEverything();
-          }).then(function () {
-            showToast('Workspace "' + wizState.name + '" created', {});
-          }).catch(function (err) {
-            nextBtn.removeAttribute('disabled');
-            nextBtn.textContent = 'Create';
-            showToast('Create failed: ' + (err && err.message ? err.message : String(err)));
+          var isCloud = state.managedWorkspaces !== true && wizState.kind === 'cloud';
+          // Same phase-narrated create feedback as onboarding: the Create button
+          // spins (withBusy) while #wiz-msg narrates the steps — including the slow
+          // "Migrating to cloud…" phase that used to be silent here.
+          setWizMsg(isCloud ? 'Creating local workspace…' : 'Creating…');
+          var busy = withBusy(nextBtn, function () {
+            var promise = state.managedWorkspaces === true
+              ? submitManaged()
+              : (wizState.kind === 'local' ? submitLocal() : submitCloud());
+            return promise.then(function () {
+              close();
+              return reloadEverything();
+            });
           });
+          if (!busy) return;
+          busy
+            .then(function () {
+              showToast('Workspace "' + wizState.name + '" created', {});
+            })
+            .catch(function (err) {
+              setWizMsg('');
+              showToast('Create failed: ' + (err && err.message ? err.message : String(err)));
+            });
         }
 
         function submitManaged() {
@@ -236,6 +249,7 @@ export const dataModelJs = `    // ───────────────
             body: JSON.stringify({ name: wizState.name.trim() }),
           }).then(function () {
             // The new workspace is now active; migrate it into the cloud.
+            setWizMsg('Migrating to cloud… (this may take a moment)');
             return fetch('/api/dbconfig/migrate-to-cloud', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
