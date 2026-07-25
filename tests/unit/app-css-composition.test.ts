@@ -252,8 +252,8 @@ import { css } from '../../src/gui/app/css.js';
 // tiles, .ifg-group / .ifg-children nested-folder blocks, the tile-corner ✕ overlay);
 // the retired list/grid toggle's .inputs-files-toggle / .ift-btn rules were removed.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 171863;
-const ORIGINAL_SHA256 = 'adc70c339994d26707db29d7b584427b20f1a76bb0da229435dc585c08e58340';
+const ORIGINAL_LENGTH = 174184;
+const ORIGINAL_SHA256 = '733faecaba35f161d32d02ec62d95e711bddac993a076928527fe05709ad8ff8';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

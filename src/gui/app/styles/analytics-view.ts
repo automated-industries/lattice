@@ -201,4 +201,13 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
       font-style: italic; animation: askStatusIn 0.15s ease-out;
     }
     @keyframes askStatusIn { from { opacity: 0; } to { opacity: 1; } }
+    /* Ordered realtime status STRIP (A4): each turn shows "Thinking…" then one
+       row per tool call (prior rows resolve to ✓), as status updates with their
+       own UI — never chat bubbles. */
+    .ask-status.ask-status-strip { display: flex; flex-direction: column; gap: 4px; font-style: normal; }
+    .ask-status-step { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+    .ask-status-step.ask-status-running { color: var(--text); }
+    .ask-status-spin { width: 11px; height: 11px; }
+    .ask-status-ic { flex: none; width: 11px; text-align: center; color: var(--accent); font-weight: 700; }
+    .ask-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
