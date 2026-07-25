@@ -12,8 +12,28 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
       .feed-item, .chat-msg { animation: none; }
       .ask-lattice-panel-title { animation: none !important; }
       .app-loading-spinner { animation: none; }
+      .lat-spinner, .lat-skeleton, .lat-pulse { animation: none; }
       *, *::before, *::after { transition-duration: 0.01ms !important; }
     }
+    /* ── Shared realtime-motion primitives ─────────────────
+       One vocabulary for every "working…" cue — spinner, skeleton shimmer, and
+       pulse — so build-graph, table-load, and file/table creation feedback all
+       read as one system. Durations + easing come from the Motion tokens
+       (styles/tokens.ts); the spinner reuses the shared lattice-spin keyframe. */
+    .lat-spinner {
+      display: inline-block; width: 14px; height: 14px; flex: none;
+      border: 2px solid var(--border-strong); border-top-color: var(--accent);
+      border-radius: 50%; animation: lattice-spin var(--dur-spin) linear infinite;
+    }
+    @keyframes lat-shimmer { 100% { background-position: -200% 0; } }
+    .lat-skeleton {
+      border-radius: var(--r-sm);
+      background: linear-gradient(90deg, var(--surface-2) 25%, var(--row-hover) 37%, var(--surface-2) 63%);
+      background-size: 200% 100%;
+      animation: lat-shimmer var(--dur-pulse) ease-in-out infinite;
+    }
+    @keyframes lat-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+    .lat-pulse { animation: lat-pulse var(--dur-pulse) ease-in-out infinite; }
     /* Pending offline-edit indicator in the top bar. */
     .offline-pill {
       flex: 0 0 auto; padding: 4px 10px;

@@ -133,10 +133,17 @@ export const tokensCss = `
       --z-veil: 8000;
       --z-dropzone: 9000;
 
-      /* Motion — easing stays literal ease; spinner/pulse durations stay bespoke */
+      /* Motion — transition durations + the shared realtime-animation vocabulary
+         (spinner / reveal / pulse) so build-graph, table-load, and creation
+         feedback all read as one system (see styles/realtime.ts primitives). */
       --dur-1: 0.12s;
       --dur-2: 0.18s;
       --dur-3: 0.25s;
+      --dur-spin: 0.7s;
+      --dur-reveal: 0.22s;
+      --dur-pulse: 1.2s;
+      --stagger-step: 40ms;
+      --ease-reveal: cubic-bezier(0.22, 1, 0.36, 1);
 
       /* Fonts — system stacks (no webfont is ever loaded) */
       --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
