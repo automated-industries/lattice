@@ -3,7 +3,8 @@ import { isInternalNativeEntity } from '../../framework/native-entities.js';
 import type { ActiveDb } from '../active-db.js';
 import { getGuiEntities, isJunctionTable, type GuiTableSummary } from '../data.js';
 import { upsertTableMeta } from '../column-descriptions.js';
-import { createUserRelation } from '../schema-ops.js';
+import { createUserRelation, aiDeleteEntity } from '../schema-ops.js';
+import { findTableDuplicates, mergeDuplicates, type DedupServiceCtx } from '../dedup-service.js';
 import { detect } from './detect.js';
 import { buildModelProfile, type IntrospectDb, type StructuralInput } from './introspect.js';
 import { runAutoTier, type ApplyDeps } from './apply.js';
@@ -107,9 +108,13 @@ function introspectDb(active: ActiveDb): IntrospectDb {
  * uses `addRelationship` — a config-only belongsTo relation over the EXISTING FK
  * column (`createUserRelation`), which represents the 1:many FK the planner
  * detected (not an empty m2m junction) and is reversible via the `schema.add_relation`
- * op. The data-rewriting appliers are surfaced for review and are a tracked
- * follow-up (they reuse proven primitives — `mergeDuplicates`, `aiDeleteEntity(move_to)`
- * — but want app-level verification before landing).
+ * op. The two data-rewriting appliers exercised most from PROPOSE review are now
+ * wired to their proven primitives: `dedupRows` → `findTableDuplicates` +
+ * `mergeDuplicates` (soft-deletes duplicates, re-points links onto the survivor,
+ * recoverable from Trash / Undo); `mergeTables` → `aiDeleteEntity({move_to})`
+ * (copies rows into the target then removes the source, rewiring links). The
+ * remaining restructure appliers (rename / extract-dimension / retype) stay
+ * staged pending their own audited primitives.
  */
 export function applyDepsFor(active: ActiveDb, sessionId: string): ApplyDeps {
   const staged = (what: string): Promise<{ ok: boolean; error?: string }> =>
@@ -122,8 +127,37 @@ export function applyDepsFor(active: ActiveDb, sessionId: string): ApplyDeps {
     documentTable: async (table, description) => {
       await upsertTableMeta(active.db, table, { description });
     },
-    mergeTables: () => staged('merge'),
-    dedupRows: () => staged('dedup'),
+    mergeTables: async (source, target) => {
+      const outcome = await aiDeleteEntity(active, source, { move_to: target }, sessionId);
+      // move_to is always supplied, so `needsResolution` is unreachable — but
+      // surface it loudly rather than silently reporting success.
+      if ('needsResolution' in outcome) return { ok: false, error: outcome.message };
+      return outcome.ok ? { ok: true } : { ok: false, error: outcome.error };
+    },
+    dedupRows: async (table) => {
+      const dedupCtx: DedupServiceCtx = {
+        db: active.db,
+        feed: active.feed,
+        softDeletable: active.softDeletable,
+        configPath: active.configPath,
+        outputDir: active.outputDir,
+        ...(sessionId ? { sessionId } : {}),
+      };
+      try {
+        const groups = await findTableDuplicates(dedupCtx, table);
+        for (const g of groups) {
+          const [survivor, ...sources] = g.ids;
+          if (survivor && sources.length > 0) {
+            await mergeDuplicates(dedupCtx, table, survivor, sources);
+          }
+        }
+        return { ok: true };
+      } catch (e) {
+        // The scan-cap refusal and any mutation error surface loudly — the
+        // Apply button reports the message instead of a silent no-op.
+        return { ok: false, error: (e as Error).message };
+      }
+    },
     renameTable: () => staged('rename'),
     extractDimension: () => staged('extract-dimension'),
     retypeColumn: () => staged('retype'),
