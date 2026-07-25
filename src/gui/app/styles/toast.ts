@@ -39,9 +39,10 @@ export const toastCss = `    /* ── Toast / undo banner ───────
     .app-loading-spinner {
       width: 22px; height: 22px; border: 2px solid var(--border-strong);
       border-top-color: var(--accent); border-radius: 50%;
-      animation: lattice-spin 0.7s linear infinite;
+      animation: lattice-spin var(--dur-spin) linear infinite;
     }
-    .app-loading .brand-logo { width: 40px; height: 40px; }
+    .app-loading .brand-logo,
+    .ws-switch-overlay .brand-logo { width: 40px; height: 40px; }
     /* Zero-workspace welcome (Feature B). Full-screen, opaque, above the app
        chrome (topbar 100) but below modals (1000) so the onboarding wizard sits
        on top. The onboarding modal reuses .modal-backdrop. */
