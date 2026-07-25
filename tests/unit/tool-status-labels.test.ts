@@ -27,7 +27,9 @@ function loadStatus(): StatusGlobals {
 
 /** Label of the current running step (what the user is told is happening now). */
 function runningStep(): string {
-  return document.querySelector('#ask-status .ask-status-running .ask-status-label')?.textContent ?? '';
+  return (
+    document.querySelector('#ask-status .ask-status-running .ask-status-label')?.textContent ?? ''
+  );
 }
 function stripText(): string {
   return document.getElementById('ask-status')!.textContent ?? '';
