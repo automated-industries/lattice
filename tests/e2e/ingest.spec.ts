@@ -70,16 +70,16 @@ test('dropping a file stages it for review, then Send ingests it', async ({ page
   await expect(page.locator('.staging-file-name')).toContainText('memo.md');
   await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0);
 
-  // The main composer Send ingests the staged files (no separate tray Send) → the
-  // "Analyzing memo.md…" row appears while the request is in flight…
+  // The main composer Send ingests the staged files (no separate tray Send) →
+  // the activity pill's running indicator appears while the request is in flight
+  // (the ingest now flows through the unified activity-menu background-task
+  // tracker, not a bespoke feed row)…
   await page.locator('#chat-send').click();
   await expect(page.locator('.staging-tray')).toHaveCount(0);
-  const pending = page.locator('.feed-item.feed-pending');
-  await expect(pending).toHaveCount(1);
-  await expect(pending).toContainText('Analyzing memo.md');
+  await expect(page.locator('#activity-running')).toBeVisible();
 
-  // …and is removed once ingest resolves.
-  await expect(page.locator('.feed-item.feed-pending')).toHaveCount(0, { timeout: 5000 });
+  // …and clears once ingest resolves.
+  await expect(page.locator('#activity-running')).toBeHidden({ timeout: 6000 });
 });
 
 test('staged files can be removed with ✕, and nothing ingests until Send', async ({ page }) => {
@@ -144,16 +144,15 @@ test('a multi-file drop stages all, and Send caps concurrent uploads with batch 
 
   await page.locator('#chat-send').click();
 
-  // The batch progress bar appears while the queue drains…
-  const bar = page.locator('.ingest-progress');
-  await expect(bar).toBeVisible();
-  await expect(page.locator('.ingest-progress-label')).toContainText('of ' + FILE_COUNT);
+  // The batch progress shows in the activity-menu background-task tracker while
+  // the queue drains — the pill's running indicator, and a single task
+  // ("Analyzing N of 7 files…") with a progress bar in the popover…
+  await expect(page.locator('#activity-running')).toBeVisible();
+  await page.locator('#activity-pill').click(); // open the popover to inspect the task
+  await expect(page.locator('#bg-tasks .bg-task')).toContainText('of ' + FILE_COUNT);
 
-  // …no more than 3 pending cards on screen at once (the cap is client-side)…
-  expect(await page.locator('.feed-item.feed-pending').count()).toBeLessThanOrEqual(3);
-
-  // …and the bar clears once every file is analyzed.
-  await expect(bar).toHaveCount(0, { timeout: 15000 });
+  // …and the tracker clears once every file is analyzed.
+  await expect(page.locator('#activity-running')).toBeHidden({ timeout: 15000 });
 
   // The connection-budget guarantee: never more than the cap in flight at once.
   expect(maxInFlight).toBeGreaterThan(1);

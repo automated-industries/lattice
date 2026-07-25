@@ -184,6 +184,28 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .activity-feed { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
     .activity-empty { font-size: 13px; padding: 14px 8px; }
 
+    /* Background-task tracker — the ONE place long-running jobs (ingestion, file
+       processing, linkage) show progress, at the top of the activity popover. */
+    .bg-tasks { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .bg-tasks[hidden] { display: none; }
+    .bg-task { display: flex; flex-direction: column; gap: 4px; }
+    .bg-task-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .bg-task-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bg-task-count { flex: none; color: var(--text-muted); font-size: 11px; }
+    .bg-task-spin { width: 12px; height: 12px; }
+    .bg-task-ic { flex: none; width: 14px; text-align: center; font-weight: 700; }
+    .bg-task-ok { color: var(--accent); }
+    .bg-task-fail, .bg-task-failed .bg-task-label { color: var(--danger, #d03b3b); }
+    .bg-task-track { height: 4px; border-radius: var(--r-pill); background: var(--surface-2); overflow: hidden; }
+    .bg-task-fill { height: 100%; background: var(--accent); border-radius: var(--r-pill); transition: width var(--dur-3) ease; }
+    /* Running dot on the activity pill while any background task is active. */
+    .activity-running {
+      position: absolute; bottom: -2px; right: -2px; min-width: 8px; height: 8px;
+      padding: 0 2px; border-radius: var(--r-pill); background: var(--accent); color: var(--btn-text);
+      font-size: 10px; line-height: 8px; font-weight: 700; text-align: center;
+    }
+    .activity-running[hidden] { display: none; }
+
     /* Floating "Ask Lattice" trigger in the top bar */
     .ask-lattice { display: inline-flex; flex: 0 0 auto; }
     .ask-lattice-trigger {

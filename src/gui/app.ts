@@ -77,8 +77,10 @@ export const guiAppHtml = `<!doctype html>
       <button class="history-btn activity-pill" id="activity-pill" title="Recent activity" aria-haspopup="true" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
         <span class="activity-count" id="activity-count" hidden>0</span>
+        <span class="activity-running" id="activity-running" hidden aria-hidden="true"></span>
       </button>
       <div class="activity-popover" id="activity-popover" hidden>
+        <div class="bg-tasks" id="bg-tasks" hidden></div>
         <div class="activity-popover-head">Recent activity</div>
         <div class="activity-feed" id="activity-feed">
           <div class="activity-empty" id="activity-empty">No activity yet. Changes you make appear here.</div>

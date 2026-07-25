@@ -447,7 +447,7 @@ export const onboardingJs = `    // ──────────────�
         // itself via text_delta, so the ack path isn't used there.)
         if (visible) { finalizeBubble(turn.actx); turn.actx = null; anToolStatus(null); var ackb = newAssistantBubble(); setBubbleText(ackb, ev.message); }
       } else if (ev.type === 'assistant_message_start') {
-        if (visible) { finalizeBubble(turn.actx); turn.actx = newAssistantBubble(); }
+        if (visible) { finalizeBubble(turn.actx); turn.actx = newAssistantBubble(); anStatusThinking(); }
         turn.assembled = '';
       } else if (ev.type === 'text_delta') {
         turn.assembled += ev.delta;

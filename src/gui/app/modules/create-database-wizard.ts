@@ -40,38 +40,10 @@ export const createDatabaseWizardJs = `    // ───────────�
     // Append a transient "Analyzing <file>…" row to the feed so the user sees
     // the ingest is processing in the background; returns a disposer. The real
     // create/link feed events stream in over SSE as the server materializes them.
-    function pendingIngestItem(label) {
-      railEmptyGone();
-      var feedEl = document.getElementById('rail-feed');
-      if (!feedEl) return function () {};
-      var item = document.createElement('div');
-      item.className = 'feed-item feed-pending';
-      item.innerHTML =
-        '<div class="feed-icon"><span class="feed-spinner"></span></div>' +
-        '<div class="feed-body"><div class="feed-summary">Analyzing ' + escapeHtml(label) + '…</div></div>' +
-        '<div class="feed-time">0s</div>';
-      // Same bottom-pin rule as renderFeedItem: don't bury a streaming chat
-      // turn's typing bubble beneath this card.
-      var anchor = feedTypingAnchor(feedEl);
-      if (anchor) feedEl.insertBefore(item, anchor); else feedEl.appendChild(item);
-      feedEl.scrollTop = feedEl.scrollHeight;
-      // Live elapsed-time counter while the upload + server-side extraction run.
-      // Previously the time element was left empty (rendered as a stuck "0s")
-      // because nothing tracked or updated it. Tick once a second; the cleanup
-      // returned below clears the interval (and self-clears if the node is gone).
-      var started = Date.now();
-      var timeEl = item.querySelector('.feed-time');
-      var tick = setInterval(function () {
-        if (!item.parentNode || !timeEl) { clearInterval(tick); return; }
-        timeEl.textContent = formatElapsed(Date.now() - started);
-      }, 1000);
-      return function () {
-        clearInterval(tick);
-        if (item.parentNode) item.parentNode.removeChild(item);
-      };
-    }
     function uploadFile(file) {
-      var done = pendingIngestItem(file.name || 'file');
+      // Per-file progress is surfaced by the caller through the unified
+      // activity-menu background-task tracker (a single-file task, or the batch
+      // task in uploadFiles) — no bespoke per-file feed row here.
       // Carry the composer's "Private mode" intent so an upload made while the
       // box is checked is stamped private at insert, instead of inheriting the
       // files-table default (which can be shared-to-everyone on a cloud). Read
@@ -90,8 +62,7 @@ export const createDatabaseWizardJs = `    // ───────────�
         body: file,
       })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); })
-        .finally(function () { done(); });
+        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); });
     }
     // Ingest the given files and RESOLVE with [{id, name}] for each that landed —
     // so the caller (the composer Send) can reference the just-added files in the
@@ -104,15 +75,21 @@ export const createDatabaseWizardJs = `    // ───────────�
       // Single-file drop: open the resulting record once it lands (the dedup
       // survivor if it was a duplicate). Multi-file drops do not navigate.
       if (files.length === 1) {
-        return uploadFile(files[0]).then(function (j) {
+        var only = files[0];
+        // Single-file: an indeterminate task in the unified tracker while the
+        // upload + server-side extraction run.
+        var t1 = bgTask('ingest', { label: 'Analyzing ' + (only.name || 'file') + '…' });
+        return uploadFile(only).then(function (j) {
+          if (!j) { t1.fail('Ingest failed'); return []; }
+          t1.done('Analyzed ' + (only.name || 'file'));
           // A structured source the server flagged as confirmable comes back with
           // an autoImport proposal — render the inline confirm card instead of
           // navigating to the file record. A silent import (autoImport.imported,
           // no reason) or a plain file keeps the open-the-record behavior.
-          if (j && j.autoImport && j.autoImport.reason) handleAutoImport(j.autoImport);
-          else if (!opts.silent && j && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
-          var sid = j && (j.duplicateOf || j.id);
-          return sid ? [{ id: sid, name: files[0].name }] : [];
+          if (j.autoImport && j.autoImport.reason) handleAutoImport(j.autoImport);
+          else if (!opts.silent && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
+          var sid = j.duplicateOf || j.id;
+          return sid ? [{ id: sid, name: only.name }] : [];
         });
       }
       // Multi-file: drain through the bounded-concurrency queue (so a big drop
