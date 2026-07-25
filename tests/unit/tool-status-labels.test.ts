@@ -20,7 +20,7 @@ function loadStatus(): StatusGlobals {
   document.body.innerHTML = '<div id="ask-status" role="status" hidden></div>';
   // The module uses the composed-IIFE global escapeHtml; provide it for the
   // isolated eval (labels are static, so identity is a faithful stub).
-  (globalThis as unknown as { escapeHtml: (s: string) => string }).escapeHtml = (s) => String(s);
+  (globalThis as unknown as { escapeHtml: (s: string) => string }).escapeHtml = (s) => s;
   (0, eval)(analyticsViewJs as string);
   return globalThis as unknown as StatusGlobals;
 }
