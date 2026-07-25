@@ -417,12 +417,50 @@ export const analyticsViewJs = `
       list_databases: 'Switching data sources…', switch_database: 'Switching data sources…',
       create_database: 'Switching data sources…'
     };
-    function anToolStatus(toolName) {
+    // ONE realtime status STRIP (ordered step rows), rendered in #ask-status —
+    // a distinct region below the feed, NOT chat bubbles. A turn shows "Thinking…"
+    // then one row per tool call (each prior row resolves to ✓); it clears when
+    // the answer starts streaming or the turn ends. Capped so a long tool run
+    // can't grow an unbounded strip.
+    var anStatusSteps = [];
+    function anStatusRender() {
       var el = document.getElementById('ask-status');
       if (!el) return;
-      if (!toolName) { el.textContent = ''; el.hidden = true; return; }
-      el.textContent = TOOL_LABELS[toolName] || 'Working on your data…';
+      if (!anStatusSteps.length) {
+        el.hidden = true;
+        el.innerHTML = '';
+        el.classList.remove('ask-status-strip');
+        return;
+      }
+      el.classList.add('ask-status-strip');
+      el.innerHTML = anStatusSteps
+        .map(function (s) {
+          var ic = s.state === 'running'
+            ? '<span class="lat-spinner ask-status-spin" aria-hidden="true"></span>'
+            : '<span class="ask-status-ic" aria-hidden="true">✓</span>';
+          return '<span class="ask-status-step ask-status-' + s.state + '">' + ic +
+            '<span class="ask-status-label">' + escapeHtml(s.label) + '</span></span>';
+        })
+        .join('');
       el.hidden = false;
+    }
+    // Turn started — a "Thinking…" head until a tool or the answer arrives. Only
+    // seeds the head when the strip is empty, so a later round in the same turn
+    // keeps the steps it already accumulated.
+    function anStatusThinking() {
+      if (anStatusSteps.length) return;
+      anStatusSteps = [{ label: 'Thinking…', state: 'running' }];
+      anStatusRender();
+    }
+    function anToolStatus(toolName) {
+      if (!toolName) { anStatusSteps = []; anStatusRender(); return; }
+      // Resolve the current running step, then append the new one.
+      for (var i = 0; i < anStatusSteps.length; i++) {
+        if (anStatusSteps[i].state === 'running') anStatusSteps[i].state = 'done';
+      }
+      anStatusSteps.push({ label: TOOL_LABELS[toolName] || 'Working on your data…', state: 'running' });
+      if (anStatusSteps.length > 5) anStatusSteps = anStatusSteps.slice(-5);
+      anStatusRender();
     }
 
     // Route dispatch for the Analytics side — called by renderRoute after it

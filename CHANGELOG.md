@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.3.1] — 2026-07-25
+
+### Changed
+
+- **One background-task tracker, anchored to the activity menu.** Long-running background jobs now
+  report progress in a single place — the activity popover (with a progress bar) plus a running
+  indicator on the activity pill — instead of scattered surfaces. **All file ingestion** (single-file,
+  multi-file batches, and server-side folder ingests) flows through it; the old sticky in-feed progress
+  bar and the redundant per-file "Analyzing…" feed rows are retired. One consistent, low-clutter signal
+  for "something is working in the background."
+- **The assistant's thinking and tool use is now a realtime status strip, not chat messages.** While a
+  turn runs, a compact strip below the conversation shows an ordered list of steps — a "Thinking…" head,
+  then one plain-language step per tool ("Searching your data…", "Building your dashboard…"), each
+  resolving as it completes — in its own region, never interleaved as chat bubbles. It clears the moment
+  the answer starts streaming.
+
 ## [5.3.0] — 2026-07-25
 
 ### Changed

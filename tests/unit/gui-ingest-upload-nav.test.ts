@@ -38,11 +38,12 @@ function makeApi(uploadResult: Record<string, unknown>): {
       calls.uploadFile++;
       return Promise.resolve(uploadResult);
     },
-    // Multi-file path deps. The progress bar is DOM-bound, so stub it; the
-    // batch runner is exercised for real (extracted below) so the test still
-    // verifies every file is uploaded.
+    // Progress is DOM-bound (single-file → the bgTask tracker; multi-file → the
+    // batch bar), so stub both; the batch runner is exercised for real (extracted
+    // below) so the test still verifies every file is uploaded.
     INGEST_MAX_CONCURRENCY: 3,
     ingestProgress: () => ({ update: () => undefined, done: () => undefined }),
+    bgTask: () => ({ update: () => undefined, done: () => undefined, fail: () => undefined }),
   };
   const code =
     extractFn(guiAppHtml, 'runIngestBatch') +

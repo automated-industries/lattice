@@ -43,6 +43,7 @@ import { connectorsSettingsJs } from './connectors-settings.js';
 import { sourcesJs } from './sources.js';
 import { inputsJs } from './inputs.js';
 import { activityHeaderJs } from './activity-header.js';
+import { bgTasksJs } from './bg-tasks.js';
 import { askLatticeJs } from './ask-lattice.js';
 import { analyticsViewJs } from './analytics-view.js';
 import { questionsJs } from './questions.js';
@@ -88,6 +89,7 @@ export const appJs = [
   // immediately after sourcesJs (the IIFE closes at the end of createDatabaseWizardJs).
   inputsJs,
   activityHeaderJs,
+  bgTasksJs,
   askLatticeJs,
   analyticsViewJs,
   // Clarification-question cards + trigger dot. Uses wrapper-scoped helpers
