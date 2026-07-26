@@ -152,6 +152,13 @@ export interface DispatchCtx {
    */
   htmlAuthor?: (spec: string, currentHtml?: string) => Promise<string>;
   /**
+   * Author a complete markdown document via a focused model sub-call. Supplied by
+   * the chat route, closed over the resolved Claude auth + this turn's schema.
+   * Absent → the `create_artifact` tool's `spec` path reports it's unavailable
+   * (fail loud, never silent).
+   */
+  markdownAuthor?: (spec: string) => Promise<string>;
+  /**
    * Faithfully import an attached spreadsheet (by files id) into real tables — every row,
    * via the deterministic structured importer (never the lossy LLM extractor). Supplied by
    * the chat route, closed over the workspace's file store + config. Resolves to the

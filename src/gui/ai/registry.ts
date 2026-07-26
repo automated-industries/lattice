@@ -281,15 +281,20 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'create_artifact',
     description:
-      'Create a markdown document and save it as a file artifact. Use this whenever the user asks you to create, write, draft, or make a document, note, write-up, summary, report, or file — you author the content as GitHub-flavored markdown and it is saved in the files entity as a markdown artifact, then opened in the viewer for them. Prefer this over create_row on files for any document the user wants to keep. It follows the same sharing rules as any file (private mode → private).',
+      'Create a markdown document and save it as a file artifact. Use this whenever the user asks you to create, write, draft, or make a document, note, write-up, summary, report, or file — you author the content as GitHub-flavored markdown and it is saved in the files entity as a markdown artifact, then opened in the viewer for them. Prefer this over create_row on files for any document the user wants to keep. It follows the same sharing rules as any file (private mode → private). For SHORT documents (< ~2KB), pass the `content` directly. For LONG documents (reports, comprehensive guides, large analyses), pass a `spec` describing what to write instead — a stronger model will author the markdown server-side with its own token budget, avoiding truncation.',
     mutates: true,
     category: 'row',
     args: obj(
       {
         title: str('Short human-readable title for the document (no file extension needed).'),
-        content: str('The full document body, as GitHub-flavored markdown.'),
+        content: str(
+          'Optional: The full document body, as GitHub-flavored markdown. Use for short documents; omit for long documents and pass `spec` instead.',
+        ),
+        spec: str(
+          'Optional: For long documents, a clear description of what markdown to write (content, structure, purpose). Omit for short documents and pass `content` directly. Exactly one of `content` or `spec` is required.',
+        ),
       },
-      ['title', 'content'],
+      ['title'],
     ),
   },
   {

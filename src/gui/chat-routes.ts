@@ -23,6 +23,7 @@ import { runIntent, type IntentResult } from './ai/intent.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
 import { generateHtmlFile } from './ai/html-author.js';
+import { generateMarkdown } from './ai/markdown-author.js';
 import { qaDashboard } from './ai/dashboard-qa.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
@@ -1173,6 +1174,18 @@ export async function dispatchChatRoute(
       });
     };
     dispatch.htmlAuthor = authorHtml;
+    // Markdown authoring for large artifacts (spec path in create_artifact).
+    // Uses the same author model as HTML dashboards for consistency.
+    const authorMarkdown = async (spec: string): Promise<string> => {
+      const schema = await buildSchemaContext(dispatch);
+      return generateMarkdown({
+        client: provider.client,
+        schema,
+        spec,
+        model: authorModel,
+      });
+    };
+    dispatch.markdownAuthor = authorMarkdown;
     // Automatic QA for an authored dashboard: run its data queries + check them against the
     // request, repair via the same author, and report residual issues (see dashboard-qa).
     // On by default; LATTICE_DASHBOARD_QA=false disables it (skips the extra queries + judge
