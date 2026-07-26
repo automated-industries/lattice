@@ -20,6 +20,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   progress indicator, so it now sits with the other header actions at the right edge. Update
   _download_ progress reports in the activity menu with the rest of the background work.
 
+### Added
+
+- **The assistant reuses its instructions between turns.** The unchanging part of the assistant's
+  system prompt is now sent as a cacheable block, so follow-up turns in a conversation re-read it
+  instead of paying to re-send it. Per-turn token usage is also reported on the chat stream.
+- **Long documents are authored directly instead of squeezed through a tool call.** Asking for a
+  large artifact now hands the writing to a dedicated authoring pass rather than trying to carry the
+  whole document inside the request that creates it.
+
 ### Fixed
 
 - **Chat history survives the move to a cloud.** Migrating a local workspace to a cloud copied its
@@ -28,6 +37,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   in the database, invisible to the person who wrote them. The migration now claims ownerless
   history for the account performing it. It only ever fills a missing owner, so a conversation that
   already names its author is never reassigned to someone else.
+- **A dead sign-in is now visible instead of silent.** When a connected Claude account's refresh
+  stops working for good, Lattice shows a reconnect notice rather than carrying on against a
+  credential that is guaranteed to stop working the moment the current one expires. Your connection
+  and credential are left in place — nothing is switched out from under you.
+- **Large documents no longer fail silently, and tool errors are no longer invisible.** Asking for a
+  big document could fail repeatedly while the assistant reported success and nothing was written.
+  The failure is now reported accurately, a request too large to carry is answered with a specific
+  explanation rather than a generic missing-argument error, and tool errors are recorded so they
+  survive a reload instead of vanishing.
+- **Dashboards no longer advertise interactions they don't have.** Generated dashboards could
+  describe "clickable" source citations that had nothing behind them. Citations now carry real
+  hover tooltips, and elements that merely look interactive — a pointer cursor with no actual
+  behavior — have that false affordance removed, with the change reported alongside the other
+  adjustments made when a page is sanitized.
+- **The assistant no longer answers refusals and over-long conversations with a generic error.**
+  A refusal and a conversation that has outgrown its context window are now distinguished from each
+  other and from ordinary failures, so the message explains what actually happened.
 
 ---
 
