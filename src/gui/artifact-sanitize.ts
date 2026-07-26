@@ -154,6 +154,100 @@ export function sanitizeSandboxedHtml(rawHtml: string): ArtifactSanitizeResult {
         describe(tag, label, 'its submit target was removed (the preview has no network access)'),
       );
     }
+
+    // 5) Styled-as-interactive inert elements: detect `cursor: help` or `cursor: pointer`
+    //    on elements that have no `title`, `href`, or event handlers. These create a fake
+    //    affordance (cursor changes to suggest interactivity) but nothing happens on click —
+    //    a usability trap. Neutralize the cursor affordance (remove it from inline styles,
+    //    or override it) while keeping the element + its text intact. Safe because:
+    //    - Elements WITH title/href/handler legitimately use these cursors — we skip them.
+    //    - Only affects presentation (cursor style), never content or structure.
+    const inlineStyle = el.getAttribute('style') ?? '';
+    const hasCursorAffordance = /cursor\s*:\s*(?:help|pointer)/i.test(inlineStyle);
+
+    if (hasCursorAffordance) {
+      const href = el.getAttribute('href');
+      const titleAttr = el.getAttribute('title');
+      const hasHandler = HANDLER_ATTRS.some((attr) => el.hasAttribute(attr));
+
+      if (!href && !titleAttr && !hasHandler) {
+        // Element is styled as interactive but isn't — neutralize the cursor affordance.
+        // Remove the cursor declaration from the inline style.
+        const newStyle = inlineStyle
+          .split(';')
+          .filter((decl) => !/cursor\s*:/i.test(decl))
+          .join(';')
+          .trim();
+
+        if (newStyle) {
+          el.setAttribute('style', newStyle);
+        } else {
+          el.removeAttribute('style');
+        }
+
+        removed.push(
+          describe(
+            tag,
+            label,
+            'its interactive-style cursor affordance was removed — it has no title attribute, link, or event handler, so it cannot actually be interactive',
+          ),
+        );
+      }
+    }
+  }
+
+  // Final pass: scan <style> blocks for class-based cursor rules (e.g. .source-tag { cursor: help; })
+  // and neutralize the cursor affordance on matching elements that lack title/href/handlers.
+  // This is a targeted pass for the common case of utility classes styling multiple elements.
+  const styleElements = Array.from(doc.querySelectorAll('style'));
+  for (const styleEl of styleElements) {
+    const css = styleEl.textContent ?? '';
+    if (!/cursor\s*:\s*(?:help|pointer)/i.test(css)) continue;
+
+    // Simple pattern: match class-based rules like ".classname { ... cursor: help ... }"
+    // Captures the class name without complex CSS selector parsing.
+    const classPattern = /\.([a-z_-][a-z0-9_-]*)\s*\{[^}]*cursor\s*:\s*(?:help|pointer)[^}]*\}/gi;
+    let match: RegExpExecArray | null;
+
+    while ((match = classPattern.exec(css)) !== null) {
+      const className = match[1];
+      if (!className) continue;
+      const selector = `.${className}`;
+
+      // Try to find elements with this class (skip on selector error).
+      try {
+        const matching = doc.querySelectorAll(selector);
+        for (const el of matching) {
+          const href = el.getAttribute('href');
+          const titleAttr = el.getAttribute('title');
+          const hasHandler = HANDLER_ATTRS.some((attr) => el.hasAttribute(attr));
+
+          if (!href && !titleAttr && !hasHandler) {
+            // This element has the cursor affordance class but isn't interactive.
+            // Override the cursor style via inline style (more reliable than trying to edit the CSS).
+            const current = el.getAttribute('style') ?? '';
+            const override = current ? `${current}; cursor: default;` : 'cursor: default;';
+            el.setAttribute('style', override);
+
+            const elTag = el.tagName.toLowerCase();
+            const elText = el.textContent ?? '';
+            const elVal = el.getAttribute('value') ?? '';
+            const elTitle = el.getAttribute('title') ?? '';
+            const elLabel = elText || elVal || elTitle;
+
+            removed.push(
+              describe(
+                elTag,
+                elLabel,
+                'its interactive-style cursor affordance (from a class rule) was overridden — it has no title attribute, link, or event handler',
+              ),
+            );
+          }
+        }
+      } catch {
+        // Invalid selector or other error — skip this rule.
+      }
+    }
   }
 
   if (!removed.length) return { html: rawHtml, removed };
