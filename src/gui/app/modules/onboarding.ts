@@ -485,7 +485,7 @@ export const onboardingJs = `    // ──────────────�
         if (visible) { finalizeBubble(turn.actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); }
         turn.actx = null;
       } else if (ev.type === 'limit') {
-        if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); }
+        if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); if (typeof refreshAuthWarningBlock === 'function') refreshAuthWarningBlock(); }
         turn.actx = null;
       } else if (ev.type === 'error') {
         if (visible) {
@@ -635,6 +635,7 @@ export const onboardingJs = `    // ──────────────�
           if (j && j.error === 'claude_limit') {
             var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + (j.message || 'Claude usage limit reached.'));
             if (typeof refreshLimitBlock === 'function') refreshLimitBlock();
+            if (typeof refreshAuthWarningBlock === 'function') refreshAuthWarningBlock();
           } else {
             var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + ((j && j.error) || ('HTTP ' + r.status)));
           }

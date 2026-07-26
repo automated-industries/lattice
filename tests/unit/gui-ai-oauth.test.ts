@@ -232,4 +232,46 @@ describe('oauth token endpoints (fetch-backed)', () => {
     expect((err as OAuthExchangeError).kind).toBe('http');
     expect((err as Error).message).toMatch(/token exchange failed \(400\)/);
   });
+
+  it('refreshAccessToken flags a terminal failure (400 invalid_grant)', async () => {
+    // RFC 6749 §5.2: token endpoint returns { error: 'invalid_grant', … }
+    // when the refresh token is expired, revoked, or not found.
+    mockFetch(400, { error: 'invalid_grant', error_description: 'refresh token expired' });
+    const err = await refreshAccessToken(cfg, 'rt').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('invalid_grant');
+    expect((err as Error).message).toMatch(/reconnect|expired|revoked/i);
+  });
+
+  it('refreshAccessToken classifies transient network failures as http (not invalid_grant)', async () => {
+    // A 5xx or network timeout is transient; only a 400 + invalid_grant is terminal.
+    mockFetch(500, 'server error');
+    const err = await refreshAccessToken(cfg, 'rt').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('http');
+    expect((err as OAuthExchangeError).status).toBe(500);
+  });
+
+  it('refreshAccessToken classifies a 401 as transient (not invalid_grant)', async () => {
+    // 401 is "not authorized" (server rejected the client creds or token format),
+    // not the terminal "refresh token doesn't exist" (invalid_grant).
+    mockFetch(401, 'unauthorized');
+    const err = await refreshAccessToken(cfg, 'rt').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('http');
+    expect((err as OAuthExchangeError).status).toBe(401);
+  });
+
+  it('refreshAccessToken only classifies 400+invalid_grant as terminal, not other 400 codes', async () => {
+    // A 400 with a different error field (e.g., invalid_request) is not terminal.
+    mockFetch(400, { error: 'invalid_request', error_description: 'missing required param' });
+    const err = await refreshAccessToken(cfg, 'rt').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('http');
+    expect((err as Error).message).toMatch(/token refresh failed \(400\)/);
+  });
+
+  it('refreshAccessToken handles malformed JSON in 400 response gracefully', async () => {
+    // If the 400 response isn't valid JSON, treat it as a generic http error.
+    mockFetch(400, 'not json {invalid}');
+    const err = await refreshAccessToken(cfg, 'rt').catch((e: unknown) => e);
+    expect((err as OAuthExchangeError).kind).toBe('http');
+    expect((err as Error).message).toMatch(/token refresh failed \(400\)/);
+  });
 });
