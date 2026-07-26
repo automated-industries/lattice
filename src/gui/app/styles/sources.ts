@@ -38,7 +38,7 @@ export const sourcesCss = `    /* ── Sources sidebar ───────�
     .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .src-del {
       flex: none; margin-left: auto; border: none; background: none; cursor: pointer;
-      color: var(--text-muted); font-size: 13px; line-height: 1; padding: 2px 5px;
+      color: var(--text-muted); font-size: 13px; line-height: 1; padding: 2px 6px;
       border-radius: var(--r-sm); opacity: 0; transition: opacity .1s;
     }
     .src-row:hover .src-del { opacity: 1; }

@@ -250,7 +250,7 @@ import { css } from '../../src/gui/app/css.js';
 // Files/Sources: per-row remove ("✕") control styling (hover-reveal) added to the
 // sources tree. Length +398.
 const ORIGINAL_LENGTH = 169351;
-const ORIGINAL_SHA256 = 'f052cf9734d7593b71cef5ca705131bb13516130409c0eecb9b34cdc19772eba';
+const ORIGINAL_SHA256 = '969d22f03d909d3aeef058e15e356d7b74017e6457041a8c46715894a4e3f297';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
