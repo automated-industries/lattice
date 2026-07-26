@@ -18,7 +18,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   you can move around the app or keep chatting while background work runs.
 - **The update control moved next to Configure.** "Update available — Upgrade" is an action, not a
   progress indicator, so it now sits with the other header actions at the right edge. Update
-  *download* progress reports in the activity menu with the rest of the background work.
+  _download_ progress reports in the activity menu with the rest of the background work.
+
+### Fixed
+
+- **Chat history survives the move to a cloud.** Migrating a local workspace to a cloud copied its
+  threads and messages across without an owner, and on a cloud the chat read path treats an unowned
+  row as belonging to no one. The conversations arrived intact but permanently unreadable — present
+  in the database, invisible to the person who wrote them. The migration now claims ownerless
+  history for the account performing it. It only ever fills a missing owner, so a conversation that
+  already names its author is never reassigned to someone else.
 
 ---
 
