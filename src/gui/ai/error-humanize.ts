@@ -52,6 +52,22 @@ function cap(s: string): string {
 }
 
 /**
+ * Human-facing text for a model refusal (stop_reason: "refusal").
+ * Distinct from provider errors — the model declined to answer this request.
+ */
+export function humanizeAssistantRefusal(): string {
+  return 'The model declined to answer that request. Try rephrasing it.';
+}
+
+/**
+ * Human-facing text when the model runs out of context window (stop_reason: "model_context_window_exceeded").
+ * Suggests a smaller scope or fresh conversation.
+ */
+export function humanizeContextWindowExceeded(): string {
+  return 'The response got too long for the model to finish. Try a smaller scope or start a fresh conversation.';
+}
+
+/**
  * Human-facing text for an assistant turn failure. Never returns the raw provider
  * error except for the insufficient-credit pass-through described above.
  */

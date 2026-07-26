@@ -38,10 +38,18 @@ export interface ToolUse {
   input: Record<string, unknown>;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+}
+
 export interface TurnResult {
   stopReason: string;
   text: string;
   toolUses: ToolUse[];
+  usage?: TokenUsage;
 }
 
 /** Minimal tool shape passed to the model (decoupled from the GUI tool catalog). */
@@ -92,6 +100,13 @@ interface AnthropicClientConfig {
   baseURL?: string;
 }
 type AnthropicCtor = new (config: AnthropicClientConfig) => AnthropicSdk;
+
+interface AnthropicSystemBlock {
+  type: 'text';
+  text: string;
+  cache_control?: { type: 'ephemeral' };
+}
+
 interface AnthropicSdk {
   messages: {
     stream(params: Record<string, unknown>): AnthropicMessageStream;
@@ -106,6 +121,12 @@ interface AnthropicMessageStream {
       | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
       | { type: string; [k: string]: unknown }
     )[];
+    usage?: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   }>;
 }
 
@@ -157,16 +178,32 @@ export function buildAnthropicConfig(auth: ClaudeAuth): AnthropicClientConfig {
 /**
  * Build the real Anthropic-backed client. Lazy-loads the SDK at call time.
  * Accepts either a raw API key or an OAuth Bearer token (subscription).
+ *
+ * Implements prompt caching by converting the static system prompt into a
+ * cached content block. The entire system prompt is treated as the cached
+ * prefix, with any dynamic/volatile content (timestamps, workspace state)
+ * arriving in the user messages instead, ensuring a stable byte-exact cache.
  */
 export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
   const Anthropic = loadSdk();
   const sdk = new Anthropic(buildAnthropicConfig(auth));
   return {
     async runTurn(params: TurnParams): Promise<TurnResult> {
+      // Build system blocks with cache control on the static prompt.
+      // All runtime dynamics (timestamps, workspace state) must live in messages,
+      // not the cached system, so the cache prefix remains byte-stable.
+      const systemBlocks: AnthropicSystemBlock[] = [
+        {
+          type: 'text',
+          text: params.system,
+          cache_control: { type: 'ephemeral' },
+        },
+      ];
+
       const stream = sdk.messages.stream({
         model: params.model,
         max_tokens: MAX_TOKENS,
-        system: params.system,
+        system: systemBlocks,
         messages: params.messages,
         tools: params.tools,
       });
@@ -183,7 +220,27 @@ export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
           toolUses.push({ id: tu.id, name: tu.name, input: tu.input });
         }
       }
-      return { stopReason: final.stop_reason ?? 'end_turn', text, toolUses };
+
+      // Capture usage metrics for visibility.
+      const usage: TokenUsage | undefined = final.usage
+        ? {
+            inputTokens: final.usage.input_tokens,
+            outputTokens: final.usage.output_tokens,
+            ...(final.usage.cache_read_input_tokens !== undefined
+              ? { cacheReadInputTokens: final.usage.cache_read_input_tokens }
+              : {}),
+            ...(final.usage.cache_creation_input_tokens !== undefined
+              ? { cacheCreationInputTokens: final.usage.cache_creation_input_tokens }
+              : {}),
+          }
+        : undefined;
+
+      return {
+        stopReason: final.stop_reason ?? 'end_turn',
+        text,
+        toolUses,
+        ...(usage ? { usage } : {}),
+      };
     },
   };
 }
