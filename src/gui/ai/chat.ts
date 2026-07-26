@@ -717,11 +717,17 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       // Detect truncated tool_use blocks (missing required args + max_tokens):
       // when a tool call is incomplete due to output limit, return a targeted error
       // guiding the model toward the delegated-authoring path (spec instead of content).
-      function truncationError(toolName: string): string | null {
+      // The args check matters: max_tokens can also clip the TEXT after a complete
+      // tool_use block, so a call that carries content or spec is NOT truncated and
+      // must dispatch normally.
+      function truncationError(toolName: string, input: Record<string, unknown>): string | null {
         if (turn.stopReason !== 'max_tokens') return null;
         // create_artifact: if both content and spec are missing (only title given),
         // the call was truncated mid-content. Steer to spec path.
         if (toolName === 'create_artifact') {
+          const hasContent = typeof input.content === 'string' && input.content.trim().length > 0;
+          const hasSpec = typeof input.spec === 'string' && input.spec.trim().length > 0;
+          if (hasContent || hasSpec) return null;
           return (
             'The tool call was cut off due to output token limit. ' +
             'For large documents, use `spec` (a brief description) instead of `content` — ' +
@@ -751,7 +757,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       let askedUser = false;
       for (const tu of turn.toolUses) {
         // Check for truncation (missing args + max_tokens stop reason).
-        const trunc = truncationError(tu.name);
+        const trunc = truncationError(tu.name, tu.input);
         if (trunc) {
           lastToolError = trunc;
           console.warn(
