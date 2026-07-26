@@ -1,7 +1,8 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// first-run connect wall is now a short WIZARD: choose a backend (Claude account or any
-// OpenAI-compatible endpoint) → enter its details (Connect stays faded until the required
-// fields are filled) → a "Testing your AI" step runs a real model call. On success the app
+// first-run connect wall is now a short WIZARD: choose a backend (a Lattice Cloud account,
+// a Claude account, or any OpenAI-compatible endpoint) → connect it (Connect stays faded
+// until the required fields are filled; the cloud option signs in through the browser) → a
+// "Testing your AI" step runs a real model call. On success the app
 // proceeds to Analytics; on failure it returns to the setup screen with the error. Boot
 // gates on this (boot.ts) BEFORE any workspace loads, and it is suppressed for a managed
 // deployment. One codebase serves both the desktop app and terminal `lattice gui` (the
@@ -32,8 +33,8 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
       wall.setAttribute('aria-label', 'Connect a model to use Lattice');
       document.body.appendChild(wall);
 
-      // step: 'choose' | 'claude' | 'other' | 'testing'. method remembers which setup
-      // screen to return to when the AI test fails. error is shown on that screen.
+      // step: 'choose' | 'cloud' | 'claude' | 'other' | 'testing'. method remembers which
+      // setup screen to return to when the AI test fails. error is shown on that screen.
       var state = { step: 'choose', method: null, error: '' };
 
       function go(step) { state.error = ''; state.step = step; render(); }
@@ -83,6 +84,11 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
         };
         if (state.method === 'other') {
           fetchJson('/api/assistant/provider/openai-compat', { method: 'DELETE' }).then(back, back);
+        } else if (state.method === 'cloud') {
+          // A minted cloud credential that can't answer (no balance / proxy blip) must
+          // not survive onboarding as a "connected" provider that skips the wall next
+          // boot — forget it so the user reconnects a WORKING one, same as "other".
+          fetchJson('/api/assistant/provider/lattice-cloud', { method: 'DELETE' }).then(back, back);
         } else {
           back();
         }
@@ -96,6 +102,7 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
             '<p class="cw-tagline">Your AI Company Insights Platform</p>' +
             '<p class="cw-lead">Choose which model to use to power Lattice (you can change this later):</p>' +
             '<div class="cw-choices">' +
+              '<button type="button" class="cw-choice" data-method="cloud"><strong>Lattice Cloud account</strong><span>Included tokens, no API key</span></button>' +
               '<button type="button" class="cw-choice" data-method="claude"><strong>Claude Account</strong><span>Max, Pro, etc</span></button>' +
               '<button type="button" class="cw-choice" data-method="other"><strong>Other AI Endpoint</strong><span>OpenAI, Claude API, Copilot\\u2026</span></button>' +
             '</div>' +
@@ -187,9 +194,80 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
           '</div>';
       }
 
+      function renderCloud() {
+        wall.innerHTML =
+          '<div class="connect-wall-card">' +
+            '<h1>Lattice Cloud account</h1>' +
+            '<p class="cw-lead">Sign in to your Lattice Cloud account to power Lattice with included, pay-as-you-go model tokens \\u2014 nothing to configure, no API key to manage. Sign-in happens in your browser.</p>' +
+            '<button type="button" class="connect-claude-btn" id="cw-cloud-start"><span>Sign in &amp; connect</span></button>' +
+            '<div class="connect-wall-status" id="cw-status" role="status" aria-live="polite"></div>' +
+            actionsHtml() +
+          '</div>';
+        wireBack();
+        if (state.error) setStatus(state.error, true);
+        var startBtn = document.getElementById('cw-cloud-start');
+        function fail(msg) { setStatus(msg, true); if (startBtn) startBtn.disabled = false; }
+        // Activate the cloud provider for the (now) signed-in account, then run the
+        // shared "Testing your AI" smoke test — identical tail to the Claude/Other paths.
+        function activate() {
+          setStatus('Connecting your account\\u2026');
+          fetchJson('/api/assistant/provider/lattice-cloud', { method: 'POST' })
+            .then(function (r) {
+              if (r && r.ok) { state.step = 'testing'; render(); runTest(); }
+              else { fail((r && r.error) || 'Could not connect your account \\u2014 try signing in again.'); }
+            })
+            .catch(function (err) { fail('Connect failed: ' + ((err && err.message) || 'try again')); });
+        }
+        // After a sign-in attempt, re-check status; activate only if actually linked.
+        function afterSignIn() {
+          fetchJson('/api/identity/status')
+            .then(function (st) {
+              if (st && st.linked) activate();
+              else fail('Sign-in did not complete \\u2014 try again.');
+            })
+            .catch(function () { fail('Sign-in did not complete \\u2014 try again.'); });
+        }
+        function begin() {
+          if (startBtn) startBtn.disabled = true;
+          setStatus('Checking your account\\u2026');
+          fetchJson('/api/identity/status')
+            .then(function (st) {
+              if (st && st.linked) { activate(); return; }
+              if (!st || st.serviceAvailable !== true) {
+                fail('Lattice Cloud sign-in is not available on this deployment.');
+                return;
+              }
+              setStatus('Opening your browser to sign in\\u2026');
+              fetchJson('/api/identity/signin/start', { method: 'POST' })
+                .then(function (r) {
+                  if (!r || !r.verifyUrl) throw new Error('sign-in unavailable');
+                  // Desktop webviews have no tabs — the server-side bridge opens the
+                  // system browser; a plain browser tab just opens the URL.
+                  window.open(r.verifyUrl, '_blank');
+                  var code = window.prompt(
+                    'Finish signing in from your browser. If it shows a code, paste it here \\u2014 otherwise leave this empty and press OK once the browser says you are signed in.'
+                  );
+                  if (code && code.trim()) {
+                    fetchJson('/api/identity/signin/complete', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ code: code.trim() }),
+                    }).then(afterSignIn).catch(function (err) {
+                      fail('Sign-in failed: ' + ((err && err.message) || 'invalid code'));
+                    });
+                  } else { afterSignIn(); }
+                })
+                .catch(function (err) { fail('Sign-in failed: ' + ((err && err.message) || 'try again')); });
+            })
+            .catch(function () { fail('Lattice Cloud sign-in is not available on this deployment.'); });
+        }
+        if (startBtn) startBtn.addEventListener('click', begin);
+      }
+
       function render() {
         if (state.step === 'claude') renderClaude();
         else if (state.step === 'other') renderOther();
+        else if (state.step === 'cloud') renderCloud();
         else if (state.step === 'testing') renderTesting();
         else renderChoose();
       }

@@ -398,6 +398,7 @@ export const analyticsViewJs = `
       list_system_tables: 'Reading your data…', get_system_table_rows: 'Reading your data…',
       get_entity_graph: 'Mapping your relationships…', search: 'Searching your data…',
       get_history: 'Checking recent changes…', lattice_help: 'Checking the Lattice guide…',
+      get_provenance: 'Tracing where this data came from…',
       investigate: 'Checking your dashboard…', create_row: 'Adding a record…',
       update_row: 'Updating your records…', bulk_update: 'Updating your records…',
       delete_row: 'Removing a record…', create_secret: 'Saving a credential…',

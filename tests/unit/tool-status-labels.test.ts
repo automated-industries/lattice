@@ -50,6 +50,8 @@ describe('anToolStatus — ordered per-tool status strip', () => {
     expect(runningStep()).toBe('Updating your records…');
     w.anToolStatus('import_spreadsheet');
     expect(runningStep()).toBe('Importing your spreadsheet…');
+    w.anToolStatus('get_provenance');
+    expect(runningStep()).toBe('Tracing where this data came from…');
   });
 
   it('distinguishes building a new dashboard from editing an existing one', () => {

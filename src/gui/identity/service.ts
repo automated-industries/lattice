@@ -25,6 +25,9 @@ export interface IdentityEndpoints {
   exchange: string;
   workspaces: string;
   account: string;
+  /** Mint a scoped model credential (proxy token + base URL) for the signed-in
+   *  account — powers the "Lattice Cloud account" model option. */
+  modelCredential: string;
 }
 
 export interface StartedSignIn {
@@ -55,19 +58,45 @@ export interface IssuedCredential {
   workspaceName: string;
 }
 
+export interface IssuedModelCredential {
+  /** The hosted metered-proxy base URL (Anthropic-compatible). */
+  proxyBaseUrl: string;
+  /** Short-lived model token; the caller re-mints on expiry. */
+  token: string;
+  /** ISO-8601 expiry. */
+  expiresAt: string;
+}
+
 /** Manifest cache: refetched at most every 5 minutes (mirrors its cache-control). */
 let cachedEndpoints: { at: number; endpoints: IdentityEndpoints } | null = null;
 const MANIFEST_TTL_MS = 5 * 60 * 1000;
 
 /**
- * True when `base` may carry the personal bearer + a scoped Postgres credential.
- * HTTPS is required — those secrets must never ride cleartext — EXCEPT for a
- * loopback base (an operator/dev/test pointing `LATTICE_IDENTITY_URL` at
+ * True when `base` may carry the personal bearer + a scoped Postgres/model
+ * credential. HTTPS is required — those secrets must never ride cleartext — EXCEPT
+ * for a loopback base (an operator/dev/test pointing `LATTICE_IDENTITY_URL` at
  * `http://127.0.0.1:…`), which never leaves the machine.
+ *
+ * Validates the PARSED host, never the raw string: a raw-string/regex check is
+ * fooled by URL userinfo — `http://127.0.0.1:80@evil.com` has host `evil.com` but
+ * "starts with" a loopback literal — which would send the credential to an
+ * arbitrary host. Any embedded credential (`user[:pass]@`) is rejected outright.
  */
 function isTrustedBase(base: string): boolean {
-  if (/^https:\/\//i.test(base)) return true;
-  return /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(base);
+  let u: URL;
+  try {
+    u = new URL(base);
+  } catch {
+    return false;
+  }
+  // "http://127.0.0.1@evil.com" parses to host evil.com — reject any userinfo so a
+  // loopback-looking prefix can never smuggle the real host past the check.
+  if (u.username || u.password) return false;
+  if (u.protocol === 'https:') return true;
+  const host = u.hostname.toLowerCase();
+  const isLoopback =
+    host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1';
+  return u.protocol === 'http:' && isLoopback;
 }
 
 function endpointsFromBase(base: string): IdentityEndpoints {
@@ -78,6 +107,7 @@ function endpointsFromBase(base: string): IdentityEndpoints {
     exchange: `${b}/api/device/exchange`,
     workspaces: `${b}/api/me/workspaces`,
     account: `${b}/account`,
+    modelCredential: `${b}/api/me/model-credential`,
   };
 }
 
@@ -203,6 +233,32 @@ export async function fetchWorkspaceCredential(
     role: out.role ?? 'member',
     workspaceName: out.workspaceName ?? 'Cloud workspace',
   };
+}
+
+/**
+ * Mint a scoped MODEL credential for the signed-in account — the metered-proxy
+ * base URL + a short-lived token the client uses as the Anthropic-wire key. The
+ * token bills the account's Lattice Cloud balance; the client re-mints on expiry.
+ */
+export async function fetchModelCredential(
+  endpoints: IdentityEndpoints,
+  bearer: string,
+): Promise<IssuedModelCredential> {
+  const out = await postJson<{ token?: string; proxyBaseUrl?: string; expiresAt?: string }>(
+    endpoints.modelCredential,
+    {},
+    bearer,
+  );
+  if (!out.token || !out.proxyBaseUrl || !out.expiresAt) {
+    throw new Error('identity service issued no model credential');
+  }
+  // The minted token IS a spendable credential — it's sent to proxyBaseUrl as the
+  // API key. Require the same HTTPS-or-loopback trust the identity base gets, so a
+  // misconfigured/tampered service can't downgrade the money-token to cleartext.
+  if (!isTrustedBase(out.proxyBaseUrl)) {
+    throw new Error('identity service issued a non-HTTPS model proxy URL');
+  }
+  return { token: out.token, proxyBaseUrl: out.proxyBaseUrl, expiresAt: out.expiresAt };
 }
 
 /** A 401 from the service — the stored session is dead; the caller signs out locally. */

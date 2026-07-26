@@ -4,7 +4,12 @@ import { isCloudChat, resolveChatOwnerId } from './chat-identity.js';
 import type { ChatProgressBus } from './chat-progress.js';
 import type { ChatStreamEvent } from './ai/sse.js';
 import { FeedBus } from './feed.js';
-import { getAggressiveness, aggressivenessToTemperature } from './assistant-routes.js';
+import {
+  getAggressiveness,
+  aggressivenessToTemperature,
+  maybeDisconnectExpiredClaude,
+} from './assistant-routes.js';
+import { humanizeAssistantError } from './ai/error-humanize.js';
 import {
   runChat,
   buildSchemaContext,
@@ -1384,7 +1389,15 @@ export async function dispatchChatRoute(
           ...(limit ? { resetAt: new Date(limit.resetAt).toISOString() } : {}),
         });
       } else {
-        publish({ type: 'error', message: (e as Error).message });
+        // Never surface a raw provider error (often a JSON body) to the user. If the
+        // Claude subscription's OAuth token is expired/revoked (a real 401/403), also
+        // DISCONNECT it — the client's turn-end config re-check then re-onboards the
+        // user to reconnect, instead of hitting the same dead-token failure every turn.
+        const disconnected = await maybeDisconnectExpiredClaude(ctx.db, provider.kind, e);
+        const message = disconnected
+          ? 'Your Claude connection expired. Reconnect Claude in Settings → Assistant to keep chatting.'
+          : humanizeAssistantError(e, provider.kind);
+        publish({ type: 'error', message });
       }
       publish({ type: 'done' });
     } finally {

@@ -156,6 +156,27 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     args: obj({ table: str('Table name.'), id: str('Primary key of the row.') }, ['table', 'id']),
   },
   {
+    name: 'get_provenance',
+    description:
+      "Trace where a table's — or a single row's — data came from (its provenance / data " +
+      'traceback). Returns the recorded lineage: source files, connectors, and databases the data ' +
+      'was synced or extracted from; imports and computed/derived tables it was materialized or ' +
+      'calculated from; and AI/learning-loop edits — each with how it feeds the data (the relation), ' +
+      'so multi-step tracebacks are preserved. Call this whenever the user asks where data came ' +
+      'from, whether a value is calculated vs. sourced, or how a record traces back to its origins. ' +
+      'Pass just `table` for the whole table, or `table` + `id` for one row. Report only what it ' +
+      'returns; if nothing is recorded, say so rather than guessing a source.',
+    mutates: false,
+    category: 'read',
+    args: obj(
+      {
+        table: str('Table name to trace.'),
+        id: str('Optional primary key to trace a single row instead of the whole table.'),
+      },
+      ['table'],
+    ),
+  },
+  {
     name: 'read_file_text',
     description:
       'Read the FULL extracted text of one uploaded file (a `files` row) in large windows. Use this ' +

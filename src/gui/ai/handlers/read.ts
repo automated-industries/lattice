@@ -4,6 +4,7 @@ import { searchLatticeDocs } from '../lattice-docs.js';
 import { fullTextSearch } from '../../../search/fts.js';
 import { buildRowContextLocator, readRowContext } from '../../row-context.js';
 import { readManifest } from '../../../lifecycle/manifest.js';
+import { buildProvenanceGraph, summarizeProvenance } from '../../provenance.js';
 import {
   ASSISTANT_HIDDEN_TABLES,
   NOT_HANDLED,
@@ -280,6 +281,28 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
         return { ok: false, error: 'No rendered context for this row yet — use get_row.' };
       }
       return { ok: true, result: { files } };
+    }
+    case 'get_provenance': {
+      // Where did this data come from? Trace an object's (or one row's) recorded
+      // lineage — source files/connectors/DBs, imports/computed derivations, AI
+      // edits — from the SAME substrate the provenance graph draws. The reads run
+      // through the RLS-filtered query path, so a scoped cloud member only ever
+      // sees lineage for rows it may see; requireTable keeps it to the allowlist.
+      const table = requireTable(args.table, ctx.validTables);
+      const rowId = typeof args.id === 'string' && args.id ? args.id : undefined;
+      let row: Row | undefined;
+      if (rowId) {
+        const fetched = await ctx.db.get(table, rowId);
+        if (fetched === null) return { ok: false, error: 'Row not found' };
+        row = fetched; // passed through so the row-scoped path needs zero extra reads
+      }
+      const payload = await buildProvenanceGraph(ctx.db, table, {
+        ...(rowId ? { rowId } : {}),
+        ...(row ? { row } : {}),
+        ...(ctx.configPath ? { configPath: ctx.configPath } : {}),
+        ...(ctx.outputDir ? { outputDir: ctx.outputDir } : {}),
+      });
+      return { ok: true, result: summarizeProvenance(payload, table, rowId) };
     }
     case 'lattice_help': {
       // Answer questions about Lattice ITSELF from the canonical bundled docs —

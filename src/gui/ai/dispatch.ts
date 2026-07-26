@@ -56,6 +56,7 @@ export const DISPATCHABLE: ReadonlySet<string> = new Set([
   'list_rows',
   'get_row',
   'get_row_context',
+  'get_provenance',
   'read_file_text',
   'search',
   'lattice_help',

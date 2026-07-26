@@ -44,6 +44,25 @@ still uses a connected Claude subscription when one is available. Credentials ar
 stored encrypted in the machine-local assistant credential store, never returned
 by any endpoint.
 
+### Connect a Lattice Cloud account (5.4+)
+
+The third option on the first-run connect screen is **Lattice Cloud account**.
+Sign in through your browser and Lattice runs on **pay-as-you-go included
+tokens** billed to your account balance — nothing to configure and no API key to
+paste or rotate. Under the hood, signing in mints a **short-lived, scoped model
+credential** that the assistant uses as the model key; it is re-minted
+automatically when it nears expiry, and **signing the device out immediately
+revokes it** (so the account's model access follows the session). The client
+refuses a model-proxy URL that isn't HTTPS (or loopback), so the credential is
+never sent over cleartext.
+
+When a Lattice Cloud account is active, **Settings → User → Assistant** shows the
+account's **prepaid balance** with an "Add tokens" link and a matching
+**Disconnect** (`POST` / `DELETE /api/assistant/provider/lattice-cloud`) — the
+same one-place model management the Claude and OpenAI-compatible backends have.
+Not available in a managed deployment, where the operator supplies the model
+credential.
+
 ## Chat
 
 The rail runs a Claude tool-calling loop. Sending a message returns immediately
@@ -60,6 +79,23 @@ and the query is submitted as a chat turn, which the assistant answers using its
 `search` (and read) tools rather than a plain text match. The assistant never
 sees the conversation-storage or `secrets` tables (search and `list_entities`
 both exclude them).
+
+### Data provenance / traceback (`get_provenance`) (5.4+)
+
+Ask the assistant where a piece of data came from — "where did this record come
+from?", "is this value calculated or sourced?", "trace this back to its origin" —
+and it calls the read-only **`get_provenance`** tool. That returns the recorded
+lineage for a whole table, or a single row: the **source files, connectors, and
+databases** it was synced or extracted from; the **imports and computed/derived
+tables** it was materialized or calculated from; and any **AI/learning-loop
+edits** — each with _how_ it feeds the data (the relation), so a multi-step
+traceback (a row materialized from an import that was extracted from a file) is
+preserved. It is the same lineage the **provenance graph** on an object's page
+draws (`GET /api/provenance`), surfaced to the model as context so it can explain
+sources in plain language. The reads are RLS-scoped (a cloud member only sees
+lineage for rows they may see), and the tool reports only what's recorded — a
+value entered directly with no external source is described as such, never given
+an invented origin.
 
 When the assistant points you at a specific record — ask it to "link me to" or
 "open" one — it renders a **clickable object pill** inline in its answer

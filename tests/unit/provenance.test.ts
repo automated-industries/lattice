@@ -12,7 +12,15 @@ import {
   type LineageEdge,
 } from '../../src/gui/lineage-store.js';
 import { allAsyncOrSync, runAsyncOrSync } from '../../src/db/adapter.js';
-import { buildProvenanceGraph, labelForSource, relFor } from '../../src/gui/provenance.js';
+import {
+  buildProvenanceGraph,
+  summarizeProvenance,
+  labelForSource,
+  relFor,
+} from '../../src/gui/provenance.js';
+import { executeFunction, DISPATCHABLE, type DispatchCtx } from '../../src/gui/ai/dispatch.js';
+import { getFunction } from '../../src/gui/ai/registry.js';
+import { FeedBus } from '../../src/gui/feed.js';
 
 /**
  * Data-provenance builder: traces an object's sources across the raw / derived
@@ -134,6 +142,113 @@ describe('provenance graph (SQLite)', () => {
     expect(g.edges).toContainEqual(
       expect.objectContaining({ target: 'obj:contracts:c1', relation: 'extracted_from' }),
     );
+  });
+
+  // ── summarizeProvenance: the model-facing traceback the get_provenance tool returns ──
+  it('summarizes a connector RAW source into a model-facing traceback link', async () => {
+    const d = await setup();
+    const cid = await createConnector(d, {
+      connector: 'jira',
+      toolkit: 'jira',
+      displayName: 'Acme Jira',
+    });
+    await d.insert('jira_issues', { issue_key: 'PROJ-1', summary: 'a', _source_connector_id: cid });
+    const summary = summarizeProvenance(
+      await buildProvenanceGraph(d, 'jira_issues'),
+      'jira_issues',
+    );
+    expect(summary.object).toBe('jira_issues');
+    expect(summary.scope).toBe('table');
+    const link = summary.links.find((l) => l.relation === 'synced_from');
+    expect(link).toBeTruthy();
+    expect(link?.from).toContain('Acme Jira');
+    expect(link?.fromTier).toBe('source data');
+    expect(link?.to).toBe('jira_issues');
+    expect(summary.note).toMatch(/recorded data lineage/i);
+  });
+
+  it('summarizes a row-scoped file extraction and preserves the relation', async () => {
+    const d = await setup();
+    await recordLineage(d.adapter, [lineageEdge({})]);
+    const summary = summarizeProvenance(
+      await buildProvenanceGraph(d, 'contracts', { rowId: 'c1' }),
+      'contracts',
+      'c1',
+    );
+    expect(summary.object).toBe('contracts #c1');
+    expect(summary.scope).toBe('row');
+    expect(summary.links).toContainEqual(
+      expect.objectContaining({ relation: 'extracted_from', fromTier: 'source data' }),
+    );
+  });
+
+  it('a hand-entered row traces to "created directly" — never a fabricated external source', async () => {
+    const d = await setup();
+    await d.insert('contracts', { id: 'c9', name: 'hand-entered' });
+    const summary = summarizeProvenance(
+      await buildProvenanceGraph(d, 'contracts', { rowId: 'c9' }),
+      'contracts',
+      'c9',
+    );
+    // It IS provenance — the row was created directly in Lattice (origin tier), not
+    // synced/extracted/materialized from any external file, connector, or import.
+    expect(summary.links.some((l) => l.fromTier === 'origin')).toBe(true);
+    const external = ['synced_from', 'extracted_from', 'materialized_from', 'derived_from'];
+    expect(summary.links.some((l) => external.includes(l.relation))).toBe(false);
+  });
+
+  it('the summary tells the model plainly when a payload has NO lineage at all', () => {
+    // A genuinely empty payload → the note instructs the model not to invent a source.
+    const summary = summarizeProvenance({ nodes: [], edges: [] }, 'contracts', 'zzz');
+    expect(summary.links).toEqual([]);
+    expect(summary.note).toMatch(/no provenance is recorded/i);
+    expect(summary.note).toMatch(/do not invent/i);
+  });
+
+  // ── The get_provenance tool is wired end-to-end (registry → DISPATCHABLE → handler) ──
+  it('exposes get_provenance as a dispatchable read tool the model can call', () => {
+    const fn = getFunction('get_provenance');
+    expect(fn?.mutates).toBe(false);
+    expect(fn?.category).toBe('read');
+    expect(DISPATCHABLE.has('get_provenance')).toBe(true);
+  });
+
+  it('dispatches get_provenance through executeFunction and returns the traceback', async () => {
+    const d = await setup();
+    const cid = await createConnector(d, {
+      connector: 'jira',
+      toolkit: 'jira',
+      displayName: 'Acme Jira',
+    });
+    await d.insert('jira_issues', { issue_key: 'PROJ-1', summary: 'a', _source_connector_id: cid });
+    const ctx: DispatchCtx = {
+      db: d,
+      feed: new FeedBus(),
+      validTables: new Set(['jira_issues', 'contracts']),
+      junctionTables: new Set(),
+      softDeletable: new Set(),
+    };
+    const res = await executeFunction(ctx, 'get_provenance', { table: 'jira_issues' });
+    expect(res.ok).toBe(true);
+    const summary = res.result as { object: string; links: { relation: string; from: string }[] };
+    expect(summary.object).toBe('jira_issues');
+    expect(
+      summary.links.some((l) => l.relation === 'synced_from' && l.from.includes('Acme Jira')),
+    ).toBe(true);
+  });
+
+  it('get_provenance reports a missing row rather than a bogus traceback', async () => {
+    const d = await setup();
+    const ctx: DispatchCtx = {
+      db: d,
+      feed: new FeedBus(),
+      validTables: new Set(['contracts']),
+      junctionTables: new Set(),
+      softDeletable: new Set(),
+    };
+    const res = await executeFunction(ctx, 'get_provenance', { table: 'contracts', id: 'nope' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/not found/i);
   });
 
   it('folds table-level import lineage into the table view but not a single row', async () => {
