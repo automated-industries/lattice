@@ -317,28 +317,23 @@ export const onboardingJs = `    // ──────────────�
     }
     /**
      * A turn ended still showing the typing indicator (no text streamed) — drop
-     * the empty bubble. The turn's data-change activity cards live in the rail
-     * feed independently (not inside the message), so they remain.
+     * the empty bubble. Data changes are reported in the activity menu, not in
+     * the conversation, so there is nothing else to leave behind.
      */
     function finalizeBubble(ctx) {
       if (!ctx || !ctx.bubble || !ctx.bubble.getAttribute('data-typing')) return;
       if (ctx.msg) ctx.msg.remove();
     }
-    /** Replay one persisted assistant turn: its text bubble + the data-change
-     *  activity cards it produced (collapsed, per-turn). Reads aren't persisted
-     *  as events, so a read-only turn with no text renders nothing. createdAt
-     *  stamps the cards' relative time (events carry no ts of their own). */
+    /** Replay one persisted assistant turn: its text bubble, and nothing else.
+     *  Background work — including the data changes a turn made — is reported in
+     *  the activity menu while it happens; the conversation carries only what you
+     *  sent and what the assistant answered. Any events array on an older
+     *  persisted row is ignored, so threads written before that change replay
+     *  cleanly as text. A read-only turn with no text renders nothing. */
     function appendAssistantTurn(turn, createdAt, startedAt) {
       var ctx = newAssistantBubble(startedAt || createdAt);
       if (turn.text) setBubbleText(ctx, turn.text);
       else finalizeBubble(ctx); // no text → drop the empty typing bubble
-      var events = (turn.events || []).map(function (e) {
-        return e.ts ? e : { op: e.op, table: e.table, rowId: e.rowId, summary: e.summary, source: e.source || 'ai', ts: createdAt };
-      });
-      // Task start for the duration timer: the persisted turn-start, else the
-      // message time. Per-event ts (above) gives the run's finish.
-      var startedMs = new Date(startedAt || createdAt || 0).getTime();
-      renderTurnEventCards(railFeedEl(), events, startedMs);
     }
     // ── Async chat transport ──────────────────────────────────────
     // POST /api/chat ACKs 202 {threadId, messageId} and the turn runs as a background

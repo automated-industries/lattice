@@ -263,8 +263,8 @@ import { css } from '../../src/gui/app/css.js';
 // for the Claude reconnect notice.
 // Recaptured ONCE for the combined stylesheet, not per-change — the composed CSS is a
 // single artifact, so a merge of several style changes has its own length + hash.
-const ORIGINAL_LENGTH = 0; // RECAPTURED BELOW — placeholder, replaced after the full merge
-const ORIGINAL_SHA256 = 'RECAPTURE';
+const ORIGINAL_LENGTH = 171742;
+const ORIGINAL_SHA256 = '06d62e61e1b6d673b8b0c2294787a5f2f2ea0856b9deae90d2fc7be21fbb3dbb';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

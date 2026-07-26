@@ -633,8 +633,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // replay renders text only and ignores any `events` array on older persisted rows.
 // Recaptured ONCE for the combined client, not per-change — the composed bundle is a
 // single artifact, so a merge of several client changes has its own length + hash.
-const ORIGINAL_LENGTH = 0; // RECAPTURED BELOW — placeholder, replaced after the full merge
-const ORIGINAL_SHA256 = 'RECAPTURE';
+const ORIGINAL_LENGTH = 817910;
+const ORIGINAL_SHA256 = 'a38128474cd77067bc8f8a2f22bcee596ec3f45e6ba8c2c2107bb1c13e43333f';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
