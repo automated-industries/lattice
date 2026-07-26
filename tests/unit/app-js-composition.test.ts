@@ -616,8 +616,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // root and an ingested row shows once and one ✕ clears both; and the Configure → Files
 // tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
 // kept as expandable tile groups. Length + hash recaptured.
-const ORIGINAL_LENGTH = 821091;
-const ORIGINAL_SHA256 = '456ac2541f2d5e3d6f8e2f1bde4e022070df5c8f71607bb351086305f75a772d';
+// 5.5 one background-progress surface: the assistant's separate status region beside
+// the conversation is retired. Its per-tool labels now re-label a single background
+// task in the activity menu (the same tracker ingestion and imports already use), so
+// "what is running" lives in exactly one place. Length + hash recaptured.
+const ORIGINAL_LENGTH = 820049;
+const ORIGINAL_SHA256 = 'ee4769ac66a8618e9275481576eb5aeb930782c42bfb501fe51dc14bf6235829';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

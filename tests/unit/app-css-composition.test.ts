@@ -252,8 +252,12 @@ import { css } from '../../src/gui/app/css.js';
 // tiles, .ifg-group / .ifg-children nested-folder blocks, the tile-corner ✕ overlay);
 // the retired list/grid toggle's .inputs-files-toggle / .ift-btn rules were removed.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 174184;
-const ORIGINAL_SHA256 = '733faecaba35f161d32d02ec62d95e711bddac993a076928527fe05709ad8ff8';
+// 5.5 one background-progress surface: the .ask-status* rules for the retired
+// assistant status region beside the conversation were removed — that progress now
+// renders as a background task in the activity menu, styled by the existing
+// .bg-task* rules. Length + hash recaptured.
+const ORIGINAL_LENGTH = 173159;
+const ORIGINAL_SHA256 = '9b9a67dc2d580c7217bbec02c5232160da629ce5691e95573a4c81eebe93afd8';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

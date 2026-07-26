@@ -3,12 +3,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { analyticsViewJs } from '../../src/gui/app/modules/analytics-view.js';
 
 /**
- * The assistant working status is ONE ordered STATUS STRIP (5.3.1 / A4), rendered
- * in its own #ask-status region — never chat bubbles. Each tool call appends a
- * step whose label is a plain-language gerund mapped from the fixed registry tool
- * name ("Looking up a URL…", "Searching your data…"), with a generic
+ * The assistant's in-flight work reports through the SAME background-task tracker
+ * every other long-running job uses — one task per turn, in the activity menu,
+ * never a separate region beside the conversation. Each tool call re-labels that
+ * task with a plain-language gerund mapped from the fixed registry tool name
+ * ("Looking up a URL…", "Searching your data…"), with a generic
  * "Working on your data…" fallback for anything unmapped — never the raw name.
- * Prior steps resolve; a null call clears the strip (turn end / answer streaming).
+ * Passing null settles the task (the answer is streaming).
  */
 
 interface StatusGlobals {
@@ -16,71 +17,94 @@ interface StatusGlobals {
   anStatusThinking: () => void;
 }
 
+/** What the tracker was last told, and how the turn's task was settled. */
+let taskId = '';
+let label = '';
+let settled: string | null = null;
+
 function loadStatus(): StatusGlobals {
-  document.body.innerHTML = '<div id="ask-status" role="status" hidden></div>';
-  // The module uses the composed-IIFE global escapeHtml; provide it for the
-  // isolated eval (labels are static, so identity is a faithful stub).
+  taskId = '';
+  label = '';
+  settled = null;
+  // The module uses composed-IIFE globals; provide faithful stubs for the
+  // isolated eval (labels are static, so escapeHtml identity is faithful).
   (globalThis as unknown as { escapeHtml: (s: string) => string }).escapeHtml = (s) => s;
+  (
+    globalThis as unknown as {
+      bgTask: (id: string, opts?: { label?: string }) => Record<string, unknown>;
+    }
+  ).bgTask = (id, opts) => {
+    taskId = id;
+    label = opts?.label ?? '';
+    return {
+      update: () => {},
+      done: (l?: string) => {
+        settled = l ?? '';
+      },
+      fail: () => {},
+    };
+  };
   (0, eval)(analyticsViewJs as string);
   return globalThis as unknown as StatusGlobals;
 }
 
-/** Label of the current running step (what the user is told is happening now). */
-function runningStep(): string {
-  return (
-    document.querySelector('#ask-status .ask-status-running .ask-status-label')?.textContent ?? ''
-  );
-}
-function stripText(): string {
-  return document.getElementById('ask-status')!.textContent ?? '';
-}
-
-describe('anToolStatus — ordered per-tool status strip', () => {
+describe('anToolStatus — per-tool labels on the shared background-task tracker', () => {
   let w: StatusGlobals;
   beforeEach(() => {
     w = loadStatus();
   });
 
-  it('maps each tool to its own specific label (as the current running step)', () => {
+  it('maps each tool to its own specific label', () => {
     w.anToolStatus('ingest_url');
-    expect(runningStep()).toBe('Looking up a URL…');
+    expect(label).toBe('Looking up a URL…');
     w.anToolStatus('search');
-    expect(runningStep()).toBe('Searching your data…');
+    expect(label).toBe('Searching your data…');
     w.anToolStatus('update_row');
-    expect(runningStep()).toBe('Updating your records…');
+    expect(label).toBe('Updating your records…');
     w.anToolStatus('import_spreadsheet');
-    expect(runningStep()).toBe('Importing your spreadsheet…');
+    expect(label).toBe('Importing your spreadsheet…');
     w.anToolStatus('get_provenance');
-    expect(runningStep()).toBe('Tracing where this data came from…');
+    expect(label).toBe('Tracing where this data came from…');
+  });
+
+  it('reports the turn as ONE task, so concurrent jobs stack rather than collide', () => {
+    w.anToolStatus('search');
+    expect(taskId).toBe('assistant');
+    w.anToolStatus('update_row');
+    expect(taskId).toBe('assistant');
   });
 
   it('distinguishes building a new dashboard from editing an existing one', () => {
     w.anToolStatus('create_dashboard');
-    expect(runningStep()).toBe('Building your dashboard…');
+    expect(label).toBe('Building your dashboard…');
     w.anToolStatus('edit_dashboard');
-    expect(runningStep()).toBe('Editing your dashboard…');
+    expect(label).toBe('Editing your dashboard…');
   });
 
   it('falls back to a generic label for an unmapped/connector tool — never the raw name', () => {
     w.anToolStatus('mcp_justworks_query');
-    expect(runningStep()).toBe('Working on your data…');
-    expect(stripText()).not.toContain('mcp_justworks_query');
+    expect(label).toBe('Working on your data…');
+    expect(label).not.toContain('mcp_justworks_query');
   });
 
-  it('shows a Thinking head at turn start, then steps per tool', () => {
+  it('shows a Thinking label at turn start, then re-labels per tool', () => {
     w.anStatusThinking();
-    expect(runningStep()).toBe('Thinking…');
+    expect(label).toBe('Thinking…');
     w.anToolStatus('search');
-    // The head resolves; the tool becomes the running step.
-    expect(runningStep()).toBe('Searching your data…');
-    expect(stripText()).toContain('Thinking…'); // prior step still shown (resolved)
+    expect(label).toBe('Searching your data…');
   });
 
-  it('clears and hides the strip when passed null (turn end / answer starts)', () => {
+  it('keeps one task across rounds — a later Thinking does not open a second', () => {
+    w.anStatusThinking();
     w.anToolStatus('search');
-    expect(document.getElementById('ask-status')!.hidden).toBe(false);
+    w.anStatusThinking(); // a second round within the same turn
+    expect(label).toBe('Searching your data…'); // unchanged: no new task opened
+  });
+
+  it('settles the task when passed null (turn end / answer starts)', () => {
+    w.anToolStatus('search');
+    expect(settled).toBeNull();
     w.anToolStatus(null);
-    expect(stripText()).toBe('');
-    expect(document.getElementById('ask-status')!.hidden).toBe(true);
+    expect(settled).toBe('Finished');
   });
 });

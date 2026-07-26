@@ -418,50 +418,26 @@ export const analyticsViewJs = `
       list_databases: 'Switching data sources…', switch_database: 'Switching data sources…',
       create_database: 'Switching data sources…'
     };
-    // ONE realtime status STRIP (ordered step rows), rendered in #ask-status —
-    // a distinct region below the feed, NOT chat bubbles. A turn shows "Thinking…"
-    // then one row per tool call (each prior row resolves to ✓); it clears when
-    // the answer starts streaming or the turn ends. Capped so a long tool run
-    // can't grow an unbounded strip.
-    var anStatusSteps = [];
-    function anStatusRender() {
-      var el = document.getElementById('ask-status');
-      if (!el) return;
-      if (!anStatusSteps.length) {
-        el.hidden = true;
-        el.innerHTML = '';
-        el.classList.remove('ask-status-strip');
-        return;
-      }
-      el.classList.add('ask-status-strip');
-      el.innerHTML = anStatusSteps
-        .map(function (s) {
-          var ic = s.state === 'running'
-            ? '<span class="lat-spinner ask-status-spin" aria-hidden="true"></span>'
-            : '<span class="ask-status-ic" aria-hidden="true">✓</span>';
-          return '<span class="ask-status-step ask-status-' + s.state + '">' + ic +
-            '<span class="ask-status-label">' + escapeHtml(s.label) + '</span></span>';
-        })
-        .join('');
-      el.hidden = false;
-    }
-    // Turn started — a "Thinking…" head until a tool or the answer arrives. Only
-    // seeds the head when the strip is empty, so a later round in the same turn
-    // keeps the steps it already accumulated.
+    // The assistant's in-flight work reports through the SAME background-task
+    // tracker every other long-running job uses (bgTask, in the activity menu) —
+    // there is no separate status region beside the conversation. The rail shows
+    // the user's messages and the assistant's answers; "what it is doing right
+    // now" belongs with ingestion, imports and renders, in one place.
+    //
+    // One task per turn, keyed 'assistant', re-labelled as each tool starts
+    // (bgTask upserts by id). Passing no tool name settles it: the answer is
+    // streaming, so the work is done.
+    var anTurnTask = null;
     function anStatusThinking() {
-      if (anStatusSteps.length) return;
-      anStatusSteps = [{ label: 'Thinking…', state: 'running' }];
-      anStatusRender();
+      if (anTurnTask) return; // a later round keeps the turn's existing task
+      anTurnTask = bgTask('assistant', { label: 'Thinking…' });
     }
     function anToolStatus(toolName) {
-      if (!toolName) { anStatusSteps = []; anStatusRender(); return; }
-      // Resolve the current running step, then append the new one.
-      for (var i = 0; i < anStatusSteps.length; i++) {
-        if (anStatusSteps[i].state === 'running') anStatusSteps[i].state = 'done';
+      if (!toolName) {
+        if (anTurnTask) { anTurnTask.done('Finished'); anTurnTask = null; }
+        return;
       }
-      anStatusSteps.push({ label: TOOL_LABELS[toolName] || 'Working on your data…', state: 'running' });
-      if (anStatusSteps.length > 5) anStatusSteps = anStatusSteps.slice(-5);
-      anStatusRender();
+      anTurnTask = bgTask('assistant', { label: TOOL_LABELS[toolName] || 'Working on your data…' });
     }
 
     // Route dispatch for the Analytics side — called by renderRoute after it

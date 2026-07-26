@@ -150,7 +150,6 @@ export const guiAppHtml = `<!doctype html>
       <div class="rail-feed" id="rail-feed">
         <div class="rail-empty" id="rail-empty">Ask your company anything.</div>
       </div>
-      <div class="ask-status" id="ask-status" role="status" aria-live="polite" hidden></div>
       <!-- Pending clarification questions (questions client segment): interactive
            cards the user answers or dismisses — above the composer, visually
            distinct from the conversation bubbles. -->

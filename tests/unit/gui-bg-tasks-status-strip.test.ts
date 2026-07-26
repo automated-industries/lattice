@@ -3,12 +3,12 @@ import { appJs } from '../../src/gui/app/script.js';
 import { css } from '../../src/gui/app/css.js';
 
 /**
- * 5.3.1 realtime-feedback unification, tranche 2:
- *  A1 — one activity-menu-anchored background-task tracker absorbs the three
- *       ingestion progress surfaces (sticky feed bar + per-file pending rows +
- *       server folder ingest) into a single tracker with a progress bar.
- *  A4 — bot thinking / tool-usage becomes one ordered realtime STATUS STRIP in
- *       its own region (#ask-status), never chat bubbles.
+ * One background-progress surface: the activity-menu tracker absorbs every
+ * long-running job — ingestion (sticky feed bar + per-file pending rows + server
+ * folder ingest) and the assistant's own in-flight turn — into a single stacking
+ * tracker with a progress bar. There is no separate status region beside the
+ * conversation: the rail carries the user's messages and the assistant's answers,
+ * and nothing else.
  */
 describe('A1 — activity-menu background-task tracker', () => {
   it('defines the bgTask registry + handle API', () => {
@@ -37,19 +37,24 @@ describe('A1 — activity-menu background-task tracker', () => {
   });
 });
 
-describe('A4 — bot thinking / tool-usage status strip', () => {
-  it('renders an ordered step strip, not a single overwriting line', () => {
+describe('assistant turn progress reports through the same tracker', () => {
+  it('drives a background task rather than a separate status region', () => {
     expect(appJs).toContain('function anStatusThinking');
-    expect(appJs).toContain('function anStatusRender');
-    expect(appJs).toContain('anStatusSteps');
-    expect(appJs).toContain("classList.add('ask-status-strip')");
-    expect(css).toContain('.ask-status-strip');
-    expect(css).toContain('.ask-status-step');
+    expect(appJs).toContain('function anToolStatus');
+    expect(appJs).toContain("bgTask('assistant'");
   });
 
-  it('seeds a Thinking head at turn start and steps per tool', () => {
+  it('seeds a Thinking label at turn start and re-labels per tool', () => {
     expect(appJs).toContain("label: 'Thinking…'");
     // the turn-start hook wires it
     expect(appJs).toContain('anStatusThinking()');
+    // each tool call re-labels the same task from the shared label map
+    expect(appJs).toContain('TOOL_LABELS[toolName]');
+  });
+
+  it('leaves no separate status strip beside the conversation', () => {
+    expect(appJs).not.toContain('anStatusSteps');
+    expect(appJs).not.toContain('ask-status');
+    expect(css).not.toContain('.ask-status');
   });
 });
