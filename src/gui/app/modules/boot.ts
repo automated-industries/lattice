@@ -81,6 +81,8 @@ export const bootJs = `    // ────────────────�
       initAccountMenu();
       // Show the usage-limit banner if Claude is already over its limit at boot.
       refreshLimitBlock();
+      // Show the auth-warning banner if Claude OAuth token refresh failed terminally.
+      refreshAuthWarningBlock();
       if (wsBoot && wsBoot.virgin === true) {
         renderVirginState();
         hideAppLoading();

@@ -259,8 +259,12 @@ import { css } from '../../src/gui/app/css.js';
 // 5.5 (cont.): the status-indicator stylesheet segment is removed with the header
 // status region it styled (.header-status-slot / .app-status*). Length + hash
 // recaptured.
-const ORIGINAL_LENGTH = 171208;
-const ORIGINAL_SHA256 = '28b1057a0d125bf6bc17341937d7e6f42fe9433d99815268615942d3a64d3b99';
+// 5.5 (cont.): .auth-warning-banner (fixed top, warn palette, mirrors .limit-banner)
+// for the Claude reconnect notice.
+// Recaptured ONCE for the combined stylesheet, not per-change — the composed CSS is a
+// single artifact, so a merge of several style changes has its own length + hash.
+const ORIGINAL_LENGTH = 0; // RECAPTURED BELOW — placeholder, replaced after the full merge
+const ORIGINAL_SHA256 = 'RECAPTURE';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

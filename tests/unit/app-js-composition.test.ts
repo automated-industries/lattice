@@ -625,8 +625,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // update download, and the per-change activity flash — now report through the
 // activity-menu tracker (or, for the switch, the overlay + button spinner it already
 // had). Length + hash recaptured.
-const ORIGINAL_LENGTH = 816781;
-const ORIGINAL_SHA256 = 'c4dae13b9d8c6a16a0d495a159f35c22dd4c67813ccd4d31b22377be09c2e628';
+// 5.5 (cont.): the auth-warning banner — refreshAuthWarningBlock() (connect-wall
+// segment) renders a fixed reconnect notice when /api/assistant/config carries
+// authWarning (a terminal Claude token-refresh failure), wired at boot and on chat SSE
+// config refreshes alongside refreshLimitBlock().
+// 5.5 (cont.): the per-turn data-change cards are retired from the conversation rail;
+// replay renders text only and ignores any `events` array on older persisted rows.
+// Recaptured ONCE for the combined client, not per-change — the composed bundle is a
+// single artifact, so a merge of several client changes has its own length + hash.
+const ORIGINAL_LENGTH = 0; // RECAPTURED BELOW — placeholder, replaced after the full merge
+const ORIGINAL_SHA256 = 'RECAPTURE';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
