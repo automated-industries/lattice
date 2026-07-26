@@ -170,10 +170,19 @@ describe('guiAppHtml', () => {
     // real `v<version>` at serve time (so the static bundle stays version-free).
     expect(guiAppHtml).toContain('id="app-version"');
     expect(guiAppHtml).toContain('<!--LATTICE_VERSION-->');
-    // The version moved OUT of the header (its old spot is now the status-pill
-    // slot) and into the Settings drawer footer — so it sits AFTER the gear now.
+    // The version moved OUT of the header and into the Settings drawer footer —
+    // so it sits AFTER the gear now.
     expect(guiAppHtml).toContain('class="drawer-version"');
-    expect(guiAppHtml).toContain('id="header-status-slot"');
+    // No transient status region in the header: progress reports in the activity
+    // menu, and the only header status left is the actionable update link.
+    expect(guiAppHtml).not.toContain('id="header-status-slot"');
+    // That update link is an action, so it sits directly left of Configure.
+    expect(guiAppHtml.indexOf('id="app-update-link"')).toBeLessThan(
+      guiAppHtml.indexOf('id="configure-trigger"'),
+    );
+    expect(guiAppHtml.indexOf('id="account"')).toBeLessThan(
+      guiAppHtml.indexOf('id="app-update-link"'),
+    );
     expect(guiAppHtml.indexOf('id="app-version"')).toBeGreaterThan(
       guiAppHtml.indexOf('id="settings-gear"'),
     );

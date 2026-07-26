@@ -47,10 +47,13 @@ describe('Claude disconnect is discoverable in Settings (works on desktop)', () 
   });
 });
 
-describe('topbar status truncates instead of pushing the toggle to a second line', () => {
-  it('caps the status width and ellipsizes the text', () => {
-    expect(css).toContain('.app-status .app-status-text');
+describe('background progress reports in one place', () => {
+  it('has no transient header status region — the activity tracker owns progress', () => {
+    expect(css).not.toContain('.app-status');
+    expect(css).toContain('.bg-task-fill');
+  });
+
+  it('keeps long task labels on one line instead of wrapping the tracker', () => {
     expect(css).toContain('text-overflow: ellipsis');
-    expect(css).toContain('max-width: min(34vw, 340px)');
   });
 });

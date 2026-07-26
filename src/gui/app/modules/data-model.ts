@@ -1617,13 +1617,9 @@ export const dataModelJs = `    // ───────────────
       };
     }
     function renderFeedItem(ev) {
-      // Realtime activity surfaces two ways: a transient TOP-RIGHT status that
-      // flashes as it happens, and a persistent entry in the header activity feed
-      // (the popover next to the version-history clock). The live brain-graph
-      // animation still shows ingests landing on the graph.
-      if (ev && ev.summary && typeof setStatus === 'function') {
-        setStatus({ id: 'activity', kind: 'accent', text: ev.summary, priority: 30, sticky: false, ttl: 4500 });
-      }
+      // Realtime activity lands in ONE place: the activity feed inside the header
+      // popover (next to the version-history clock). The live brain-graph animation
+      // still shows ingests landing on the graph.
       if (ev && (ev.summary || ev.op) && typeof activityFeedEl === 'function') {
         var feed = activityFeedEl();
         if (feed) {

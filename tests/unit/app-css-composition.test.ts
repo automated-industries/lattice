@@ -256,8 +256,11 @@ import { css } from '../../src/gui/app/css.js';
 // assistant status region beside the conversation were removed — that progress now
 // renders as a background task in the activity menu, styled by the existing
 // .bg-task* rules. Length + hash recaptured.
-const ORIGINAL_LENGTH = 173159;
-const ORIGINAL_SHA256 = '9b9a67dc2d580c7217bbec02c5232160da629ce5691e95573a4c81eebe93afd8';
+// 5.5 (cont.): the status-indicator stylesheet segment is removed with the header
+// status region it styled (.header-status-slot / .app-status*). Length + hash
+// recaptured.
+const ORIGINAL_LENGTH = 171208;
+const ORIGINAL_SHA256 = '28b1057a0d125bf6bc17341937d7e6f42fe9433d99815268615942d3a64d3b99';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

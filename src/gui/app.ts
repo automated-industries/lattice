@@ -87,8 +87,6 @@ export const guiAppHtml = `<!doctype html>
         </div>
       </div>
     </div>
-    <span class="header-status-slot" id="header-status-slot"></span>
-    <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
     <!-- Account menu: one status line + one action, set by JS (account-menu.ts)
          from the config. Normal install: "Connected with Claude" + Disconnect
          (connect happens at the first-run wall, never here). Managed/hosted
@@ -103,6 +101,10 @@ export const guiAppHtml = `<!doctype html>
         <button type="button" class="account-menu-item danger" id="account-action">Disconnect Claude</button>
       </div>
     </div>
+    <!-- Update ready → restart. An ACTION, not progress (download progress reports
+         in the activity menu), so it sits with the other header actions, directly
+         left of Configure. -->
+    <a id="app-update-link" href="#" hidden>Update available — Upgrade</a>
     <!-- Single-layout: one Configure button (wrench) toggles the Configure drawer
          (Data Model / Inputs / Workspace / Lattice / User). There is no view flip —
          the Workspace + Ask Lattice dock are always visible. -->

@@ -620,8 +620,13 @@ import { appJs } from '../../src/gui/app/script.js';
 // the conversation is retired. Its per-tool labels now re-label a single background
 // task in the activity menu (the same tracker ingestion and imports already use), so
 // "what is running" lives in exactly one place. Length + hash recaptured.
-const ORIGINAL_LENGTH = 820049;
-const ORIGINAL_SHA256 = 'ee4769ac66a8618e9275481576eb5aeb930782c42bfb501fe51dc14bf6235829';
+// 5.5 (cont.): the transient top-right status indicator is retired with its whole
+// segment. Its five producers — background render, workspace switch, offline queue,
+// update download, and the per-change activity flash — now report through the
+// activity-menu tracker (or, for the switch, the overlay + button spinner it already
+// had). Length + hash recaptured.
+const ORIGINAL_LENGTH = 816781;
+const ORIGINAL_SHA256 = 'c4dae13b9d8c6a16a0d495a159f35c22dd4c67813ccd4d31b22377be09c2e628';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

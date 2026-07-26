@@ -7,10 +7,14 @@ import { guiAppHtml } from '../../src/gui/app.js';
  * Each assertion checks the NEW behavior, so reverting the change makes it fail.
  */
 describe('3.2 GUI regression guards', () => {
-  it('#2 render indicator reads "Rendering NN%…" (initial + dynamic)', () => {
-    // The aggregate header pill shows the dynamic "Rendering N%…" text. (The old
-    // per-node Markdown-tree overlay was retired with the Markdown sidebar section.)
-    expect(guiAppHtml).toContain("'Rendering ' + Math.round(sum / active.length) + '%"); // header pill
+  it('#2 background render reports as a determinate task in the activity menu', () => {
+    // The aggregate render progress is one background task with a real progress
+    // bar, not a separate header pill (that surface is retired) and not a
+    // per-node Markdown-tree overlay (retired with the Markdown sidebar section).
+    expect(guiAppHtml).toContain("bgTask('render'");
+    expect(guiAppHtml).toContain("label: 'Updating your objects…'");
+    // A determinate total is what draws the bar — keep the percentage aggregation.
+    expect(guiAppHtml).toContain('Math.round(sum / active.length)');
   });
 
   it('#3 the top bar gets an explicit stacking context (dropdowns above cards)', () => {

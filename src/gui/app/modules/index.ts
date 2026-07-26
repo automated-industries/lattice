@@ -10,7 +10,6 @@ import { accountMenuJs } from './account-menu.js';
 import { bootJs } from './boot.js';
 import { bootInterstitialJs } from './boot-interstitial.js';
 import { realtimeFeedJs } from './realtime-feed.js';
-import { statusIndicatorJs } from './status-indicator.js';
 import { offlineEditQueueJs } from './offline-edit-queue.js';
 import { eventStreamJs } from './event-stream.js';
 import { ingestProgressStateJs } from './ingest-progress-state.js';
@@ -62,7 +61,6 @@ export const appJs = [
   bootJs,
   bootInterstitialJs,
   realtimeFeedJs,
-  statusIndicatorJs,
   offlineEditQueueJs,
   eventStreamJs,
   ingestProgressStateJs,

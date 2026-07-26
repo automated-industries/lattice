@@ -68,7 +68,7 @@ export const componentsCss = `    /* ── Shared components (alias-first conso
       display: inline-flex; align-items: center; gap: 6px;
       border-radius: var(--r-pill); padding: 2px 10px; font-size: 12px;
     }
-    .app-status, .ask-lattice-trigger, .configure-trigger, .q-opt, .feed-source,
+    .ask-lattice-trigger, .configure-trigger, .q-opt, .feed-source,
     .nav-badge, .mt-tier-count, .offline-pill, .fs-computed-badge,
     .file-preview .artifact-badge, .toast, .activity-count, .cb-chip, .cb-chip-n {
       border-radius: var(--r-pill);

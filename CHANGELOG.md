@@ -16,6 +16,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   strip above the chat, the transient header pill, and the per-change cards inside the conversation
   are retired. The conversation now shows only what you sent and what the assistant answered, and
   you can move around the app or keep chatting while background work runs.
+- **The update control moved next to Configure.** "Update available — Upgrade" is an action, not a
+  progress indicator, so it now sits with the other header actions at the right edge. Update
+  *download* progress reports in the activity menu with the rest of the background work.
 
 ---
 
