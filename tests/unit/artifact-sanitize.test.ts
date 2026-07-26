@@ -211,4 +211,23 @@ describe('sanitizeSandboxedHtml', () => {
     // cursor: help should be gone
     expect(out.html).not.toContain('cursor: help');
   });
+
+  it('leaves an ORPHANED cursor class rule alone (no matching elements, so no rendered affordance)', () => {
+    // Real-world shape: the author defined `.source-tag { cursor: help }` but every badge
+    // element uses a different class — the rule matches nothing, renders no affordance,
+    // and neutralizing/reporting it would be noise. Only rules that actually style an
+    // inert element get overridden.
+    const html = [
+      '<style>',
+      '.source-tag { display: inline-block; font-size: 0.75rem; cursor: help; border: 1px solid #e0e0e0; }',
+      '.source-tag:hover { background: #efefef; }',
+      '</style>',
+      '<span class="source-label">Example Industry Report 2024</span>',
+      '<span class="source-label">Example Market Survey</span>',
+    ].join('\n');
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(0);
+    expect(out.html).toContain('Example Industry Report 2024');
+    expect(out.html).not.toContain('cursor: default');
+  });
 });
