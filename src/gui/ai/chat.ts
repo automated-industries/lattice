@@ -67,6 +67,11 @@ function capToolResult(s: string): string {
     ' chars]'
   );
 }
+/** Truncate error text for persistence (~500 chars). */
+function truncateErrorText(error: string | undefined): string | undefined {
+  if (!error) return undefined;
+  return error.length > 500 ? error.slice(0, 500) + '…' : error;
+}
 /** Drop an oversized tool input from the replay record (ids matter more than inputs). */
 function capToolInput(input: Record<string, unknown>): Record<string, unknown> {
   return JSON.stringify(input).length > MAX_TOOL_INPUT_CHARS ? { _truncated: true } : input;
@@ -419,6 +424,7 @@ export interface RunChatOptions {
    * name, (capped) input, and (capped) result content. The chat route persists
    * these so a later turn is replayed with real tool_use/tool_result blocks —
    * letting the model reference a row id it read earlier instead of guessing.
+   * When isError is true, errorText contains a truncated copy of the error message.
    */
   onToolRecord?: (rec: {
     id: string;
@@ -426,6 +432,7 @@ export interface RunChatOptions {
     input: Record<string, unknown>;
     content: string;
     isError: boolean;
+    errorText?: string;
   }) => void;
 }
 
@@ -757,12 +764,14 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
             content: JSON.stringify({ error: trunc }),
             is_error: true,
           });
+          const truncErr = truncateErrorText(trunc);
           opts.onToolRecord?.({
             id: tu.id,
             name: tu.name,
             input: capToolInput(tu.input),
             content: capToolResult(JSON.stringify({ error: trunc })),
             isError: true,
+            ...(truncErr ? { errorText: truncErr } : {}),
           });
           continue;
         }
@@ -776,8 +785,10 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
           const parsed = parseAskUserInput(tu.input);
           let content: string;
           let isError: boolean;
+          let errorText: string | undefined;
           if ('error' in parsed) {
             lastToolError = parsed.error;
+            errorText = parsed.error;
             content = JSON.stringify({ error: parsed.error });
             isError = true;
           } else {
@@ -799,12 +810,14 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
             content,
             is_error: isError,
           });
+          const askUserErr = errorText ? truncateErrorText(errorText) : undefined;
           opts.onToolRecord?.({
             id: tu.id,
             name: tu.name,
             input: capToolInput(tu.input),
             content,
             isError,
+            ...(askUserErr ? { errorText: askUserErr } : {}),
           });
           continue;
         }
@@ -841,12 +854,14 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         // Record (capped) for cross-turn replay. The content is already secret-
         // redacted by the dispatcher (redactRow before the result is returned),
         // so the masked value is what gets persisted — never a raw secret.
+        const execErr = res.ok ? undefined : truncateErrorText(res.error);
         opts.onToolRecord?.({
           id: tu.id,
           name: tu.name,
           input: capToolInput(tu.input),
           content: capToolResult(rawContent),
           isError: !res.ok,
+          ...(execErr ? { errorText: execErr } : {}),
         });
       }
       // Circuit-breaker: every tool in this round failed. Count consecutive
