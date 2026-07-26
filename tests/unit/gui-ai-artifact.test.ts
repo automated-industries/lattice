@@ -55,7 +55,12 @@ describe('create_artifact tool', () => {
     expect(fn).toBeDefined();
     expect(fn?.mutates).toBe(true);
     expect(fn?.category).toBe('row');
-    expect(fn?.args.required).toEqual(expect.arrayContaining(['title', 'content']));
+    // `content` left required-optional on purpose: exactly one of content|spec is
+    // enforced in the handler (the delegated-authoring split), not the schema.
+    expect(fn?.args.required).toEqual(['title']);
+    expect(Object.keys(fn?.args.properties ?? {})).toEqual(
+      expect.arrayContaining(['title', 'content', 'spec']),
+    );
     expect(DISPATCHABLE.has('create_artifact')).toBe(true);
   });
 

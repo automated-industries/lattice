@@ -230,15 +230,44 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
     case 'create_artifact': {
       // Save an assistant-authored markdown document as a `files` row (flagged
       // artifact_type='markdown', content inline in extracted_text — see
-      // artifactFileRow). It goes through the same createRow path as create_row,
-      // so private mode forces it private atomically and otherwise it follows
-      // the files table default — identical sharing to any other file. The
-      // result carries open:true so the chat route tells the GUI to open it in
-      // the main viewer.
+      // artifactFileRow). Two paths: (1) content (fast, for small documents),
+      // (2) spec (delegated authoring via ctx.markdownAuthor for large documents).
+      // Exactly one of content/spec is required. It goes through the same createRow
+      // path as create_row, so private mode forces it private atomically and
+      // otherwise it follows the files table default — identical sharing to any
+      // other file. The result carries open:true so the chat route tells the GUI
+      // to open it in the main viewer.
       const table = requireTable('files', ctx.validTables);
       const title = requireString(args.title, 'title');
-      const content = requireString(args.content, 'content');
-      const { row } = await artifactFileRow(ctx.db, title, content);
+      const hasContent = typeof args.content === 'string' && args.content.trim().length > 0;
+      const hasSpec = typeof args.spec === 'string' && args.spec.trim().length > 0;
+      if (!hasContent && !hasSpec) {
+        return {
+          ok: false,
+          error:
+            'create_artifact requires either `content` (for short documents) or `spec` (for long documents); exactly one must be provided.',
+        };
+      }
+      if (hasContent && hasSpec) {
+        return {
+          ok: false,
+          error: 'create_artifact requires exactly one of `content` or `spec`, not both.',
+        };
+      }
+      let markdown: string;
+      if (hasContent) {
+        markdown = args.content as string;
+      } else {
+        // spec path: delegate to the authoring sub-call
+        if (!ctx.markdownAuthor) {
+          return {
+            ok: false,
+            error: 'Markdown authoring is unavailable (no model client configured).',
+          };
+        }
+        markdown = await ctx.markdownAuthor(args.spec as string);
+      }
+      const { row } = await artifactFileRow(ctx.db, title, markdown);
       const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
       return { ok: true, result: { id, table: 'files', open: true } };
     }
