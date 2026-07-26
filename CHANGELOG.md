@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased] — 5.5.0
+
+### Changed
+
+- **One place for background progress.** Long-running work — file ingestion, imports, background
+  renders, workspace switches — now reports in a single surface: the activity menu, which stacks
+  every running job with a progress bar and marks each done as it finishes. The separate status
+  strip above the chat, the transient header pill, and the per-change cards inside the conversation
+  are retired. The conversation now shows only what you sent and what the assistant answered, and
+  you can move around the app or keep chatting while background work runs.
+
+---
+
 ## [5.4.0] — 2026-07-26
 
 ### Added
