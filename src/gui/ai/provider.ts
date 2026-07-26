@@ -8,9 +8,11 @@ import { htmlAuthorModelForAuth } from './html-author.js';
 import { noteClaudeError, type ClaudeLimitKind } from './limit-state.js';
 import {
   readOpenAiCompatConfig,
+  readLatticeCloudConfig,
   activeProviderKind,
   type LlmProviderKind,
 } from './provider-config.js';
+import { currentLatticeCloudCredential } from '../identity/model.js';
 
 /**
  * Provider selection for the assistant's LLM backend. The whole app speaks the
@@ -56,13 +58,30 @@ export async function resolveLlmProvider(db: Lattice | null): Promise<ResolvedPr
   // NOT be overridable by a user's connected subscription OR their OpenAI-compatible
   // endpoint (billing/model control belongs to the operator). Force the Anthropic
   // managed-env path only — mirroring resolveClaudeAuth's managed short-circuit.
+  const active = activeProviderKind();
   const order: LlmProviderKind[] = isManagedModelAuth()
     ? ['anthropic']
-    : activeProviderKind() === 'openai_compat'
-      ? ['openai_compat', 'anthropic']
-      : ['anthropic', 'openai_compat'];
+    : active === 'lattice_cloud'
+      ? ['lattice_cloud', 'anthropic']
+      : active === 'openai_compat'
+        ? ['openai_compat', 'anthropic']
+        : ['anthropic', 'openai_compat'];
   for (const kind of order) {
-    if (kind === 'openai_compat') {
+    if (kind === 'lattice_cloud') {
+      // Lattice Cloud account: a short-lived proxy token minted from the signed-in
+      // identity session, spoken over the Anthropic wire against the hosted metered
+      // proxy (which bills the account's balance). Re-minted on expiry; a
+      // missing/failed credential falls through to the next provider.
+      const cred = await currentLatticeCloudCredential();
+      if (cred) {
+        return {
+          client: createAnthropicClient({ apiKey: cred.token, baseURL: cred.proxyBaseUrl }),
+          kind: 'lattice_cloud',
+          authorModel: DEFAULT_MODEL,
+          noteError: (e) => noteClaudeError(e),
+        };
+      }
+    } else if (kind === 'openai_compat') {
       const cfg = readOpenAiCompatConfig();
       if (cfg) {
         // Auto-pick the wire from the ENDPOINT (one config, one calling path): a
@@ -195,13 +214,21 @@ export async function isAnyProviderConfigured(db: Lattice | null): Promise<boole
  * order + endpoint detection otherwise mirror {@link resolveLlmProvider}.
  */
 export async function resolvedProviderKind(db: Lattice | null): Promise<LlmProviderKind | null> {
+  const active = activeProviderKind();
   const order: LlmProviderKind[] = isManagedModelAuth()
     ? ['anthropic']
-    : activeProviderKind() === 'openai_compat'
-      ? ['openai_compat', 'anthropic']
-      : ['anthropic', 'openai_compat'];
+    : active === 'lattice_cloud'
+      ? ['lattice_cloud', 'anthropic']
+      : active === 'openai_compat'
+        ? ['openai_compat', 'anthropic']
+        : ['anthropic', 'openai_compat'];
   for (const kind of order) {
-    if (kind === 'openai_compat') {
+    if (kind === 'lattice_cloud') {
+      // Presence only (this predicate must not re-mint): a stored cloud
+      // credential means the account activated cloud model. Expiry is handled at
+      // use time in resolveLlmProvider.
+      if (readLatticeCloudConfig()) return 'lattice_cloud';
+    } else if (kind === 'openai_compat') {
       const cfg = readOpenAiCompatConfig();
       if (cfg) return isAnthropicEndpoint(cfg.baseUrl) ? 'anthropic' : 'openai_compat';
     } else if (await isClaudeConnected(db)) {

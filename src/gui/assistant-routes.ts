@@ -30,9 +30,14 @@ import {
   readOpenAiCompatConfig,
   setOpenAiCompatConfig,
   clearOpenAiCompatConfig,
+  readLatticeCloudConfig,
+  clearLatticeCloudConfig,
   setActiveProvider,
   activeProviderKind,
+  type LlmProviderKind,
 } from './ai/provider-config.js';
+import { refreshLatticeCloudCredential } from './identity/model.js';
+import { isAuthError } from './ai/error-humanize.js';
 
 const CLAUDE_OAUTH_KIND = 'claude_oauth';
 
@@ -411,6 +416,40 @@ export async function claudeAuthKind(db: Lattice | null): Promise<'oauth' | null
   return null;
 }
 
+/**
+ * When a model call fails with an auth error (401/403) AND the active backend is a
+ * connected Claude subscription (OAuth), DISCONNECT it — deleting the stored token so
+ * `isClaudeConnected` (hence `config.connected`) flips to false. This is the confirmed
+ * signal that the token is dead: `resolveClaudeAuth` deliberately keeps the token on a
+ * refresh *failure* (a transient network blip must not eject a valid subscription), so
+ * only a real 401 from an actual call proves it's expired/revoked. Once disconnected,
+ * the chat's existing "re-check config, re-onboard if disconnected" path prompts the
+ * user to reconnect instead of failing every turn on a dead token. Returns true when it
+ * disconnected.
+ *
+ * Scoped strictly to the OAuth subscription: a managed deployment's operator credential
+ * is never touched; a bring-your-own Claude API key (configured as an OpenAI-compatible
+ * anthropic endpoint — also provider kind 'anthropic') is the user's to manage, not ours
+ * to auto-delete; and a Lattice Cloud account (kind 'lattice_cloud') re-mints its own
+ * short-lived credential rather than disconnecting.
+ */
+export async function maybeDisconnectExpiredClaude(
+  db: Lattice | null,
+  providerKind: LlmProviderKind,
+  err: unknown,
+): Promise<boolean> {
+  if (!isAuthError(err)) return false;
+  if (isManagedModelAuth()) return false; // operator-owned credential, never user-cleared
+  if (providerKind !== 'anthropic') return false; // cloud/openai-compat manage their own auth
+  if (activeProviderKind() === 'openai_compat') return false; // a BYO key, not the OAuth sub
+  if ((await claudeAuthKind(db)) !== 'oauth') return false; // no OAuth subscription stored
+  deleteAssistantCredential(CLAUDE_OAUTH_KIND);
+  console.warn(
+    '[lattice/assistant] Claude subscription auth failed (401/403) — disconnected the expired subscription; the user must reconnect Claude.',
+  );
+  return true;
+}
+
 /** True for a loopback Host header (optionally with a port). Exported for tests. */
 export function isLoopbackHost(host: string): boolean {
   const h = host
@@ -467,25 +506,28 @@ export async function dispatchAssistantRoute(
     // OpenAI-compatible LLM provider (a base-URL + key + model the user connected as
     // an alternative backend). Presence + non-secret fields only — never the API key.
     const openaiCompat = readOpenAiCompatConfig();
+    const latticeCloud = readLatticeCloudConfig();
     const claudeConnected = await isClaudeConnected(db);
-    // Managed-auth prepaid balance (cents), read from the metering proxy that
-    // fronts the model calls. null when not a managed deployment or the proxy
-    // doesn't expose a balance (a plain Anthropic base URL 404s — fail soft).
+    // Prepaid balance (cents) read from the metering proxy — for a managed
+    // deployment (operator env credential) OR a per-user Lattice Cloud account
+    // credential. null when neither applies or the proxy doesn't expose a balance
+    // (a plain Anthropic base URL 404s — fail soft).
     let balanceCents: number | null = null;
     let topUpUrl: string | null = null;
-    if (isManagedModelAuth()) {
+    const balanceProbe: { base: string; key: string } | null = isManagedModelAuth()
+      ? { base: process.env.ANTHROPIC_BASE_URL ?? '', key: process.env.ANTHROPIC_API_KEY ?? '' }
+      : latticeCloud
+        ? { base: latticeCloud.proxyBaseUrl, key: latticeCloud.token }
+        : null;
+    if (balanceProbe?.base && balanceProbe.key) {
       try {
-        const base = (process.env.ANTHROPIC_BASE_URL ?? '').replace(/\/$/, '');
-        const key = process.env.ANTHROPIC_API_KEY;
-        if (base && key) {
-          const r = await fetch(`${base}/v1/balance`, {
-            headers: { authorization: `Bearer ${key}` },
-          });
-          if (r.ok) {
-            const b = (await r.json()) as { balance_cents?: number; top_up_url?: string };
-            balanceCents = typeof b.balance_cents === 'number' ? b.balance_cents : null;
-            topUpUrl = typeof b.top_up_url === 'string' ? b.top_up_url : null;
-          }
+        const r = await fetch(`${balanceProbe.base.replace(/\/$/, '')}/v1/balance`, {
+          headers: { authorization: `Bearer ${balanceProbe.key}` },
+        });
+        if (r.ok) {
+          const b = (await r.json()) as { balance_cents?: number; top_up_url?: string };
+          balanceCents = typeof b.balance_cents === 'number' ? b.balance_cents : null;
+          topUpUrl = typeof b.top_up_url === 'string' ? b.top_up_url : null;
         }
       } catch {
         /* balance unavailable — the GUI simply omits it */
@@ -502,10 +544,14 @@ export async function dispatchAssistantRoute(
       openaiCompat: openaiCompat
         ? { configured: true, model: openaiCompat.model, baseUrl: openaiCompat.baseUrl }
         : { configured: false, model: null, baseUrl: null },
+      // Lattice Cloud account model: presence only (never the token). Configured
+      // once the account signs in and activates cloud model.
+      latticeCloud: { configured: latticeCloud !== null },
       // The single connected/disconnected truth the client wall reads. True in a
       // managed deployment (operator env credential), when a Claude subscription is
-      // connected, OR when an OpenAI-compatible endpoint is configured.
-      connected: claudeConnected || openaiCompat !== null,
+      // connected, when an OpenAI-compatible endpoint is configured, OR when a
+      // Lattice Cloud account model credential is active.
+      connected: claudeConnected || openaiCompat !== null || latticeCloud !== null,
       // Claude usage-limit state (null unless the limit was hit). The chat shows
       // it and the Configure side reads it to block ingest/AI while limited.
       limitState: getClaudeLimitState(),
@@ -623,6 +669,33 @@ export async function dispatchAssistantRoute(
   // provider falls back to Anthropic (a connected Claude subscription still works).
   if (method === 'DELETE' && pathname === '/api/assistant/provider/openai-compat') {
     clearOpenAiCompatConfig();
+    sendJson(res, { ok: true, activeProvider: 'anthropic' });
+    return true;
+  }
+
+  // POST /api/assistant/provider/lattice-cloud — activate the signed-in account's
+  // Lattice Cloud model: mint a scoped proxy credential from the encrypted identity
+  // session and make it the active provider. NO body — the credential is derived
+  // from the session, never supplied by the client. Managed deployments own the
+  // model credential, so this is refused there (like the openai-compat route).
+  if (method === 'POST' && pathname === '/api/assistant/provider/lattice-cloud') {
+    if (isManagedModelAuth()) {
+      sendJson(res, { error: 'The model backend is managed by the operator.' }, 403);
+      return true;
+    }
+    const cfg = await refreshLatticeCloudCredential();
+    if (!cfg) {
+      sendJson(res, { ok: false, error: 'Sign in with your Lattice Cloud account first.' }, 400);
+      return true;
+    }
+    sendJson(res, { ok: true, activeProvider: 'lattice_cloud' });
+    return true;
+  }
+
+  // DELETE /api/assistant/provider/lattice-cloud — stop using the Lattice Cloud
+  // account model; the active provider falls back to Anthropic.
+  if (method === 'DELETE' && pathname === '/api/assistant/provider/lattice-cloud') {
+    clearLatticeCloudConfig();
     sendJson(res, { ok: true, activeProvider: 'anthropic' });
     return true;
   }

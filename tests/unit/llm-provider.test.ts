@@ -14,7 +14,17 @@ import {
   OPENAI_COMPAT_KIND,
   ACTIVE_PROVIDER_KIND,
 } from '../../src/gui/ai/provider.js';
-import { resolveClaudeAuth } from '../../src/gui/assistant-routes.js';
+import {
+  resolveClaudeAuth,
+  claudeAuthKind,
+  maybeDisconnectExpiredClaude,
+} from '../../src/gui/assistant-routes.js';
+import {
+  LATTICE_CLOUD_KIND,
+  readLatticeCloudConfig,
+  setLatticeCloudConfig,
+  clearLatticeCloudConfig,
+} from '../../src/gui/ai/provider-config.js';
 
 /**
  * Provider selection: a user can connect an OpenAI-compatible endpoint as the assistant
@@ -231,5 +241,117 @@ describe('LLM provider selection', () => {
 
   it('resolveVisionAuth returns null when nothing is configured (unchanged default)', async () => {
     expect(await resolveVisionAuth(null)).toBeNull();
+  });
+
+  // ── Lattice Cloud account provider ────────────────────────────────────────
+  // The "Lattice Cloud account" model option: a short-lived proxy credential minted
+  // from the signed-in identity session, stored like any other provider config and
+  // spoken over the Anthropic wire against the hosted metered proxy. These tests pin
+  // the OFFLINE wiring (a stored, unexpired credential resolves without any network);
+  // the mint/refresh network path is covered where the identity service is mocked.
+  const validCloud = () => ({
+    proxyBaseUrl: 'https://proxy.example.com',
+    token: 'lat_test_token',
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+
+  it('reads a stored Lattice Cloud config and rejects an incomplete one', () => {
+    expect(readLatticeCloudConfig()).toBeNull();
+    setAssistantCredential(LATTICE_CLOUD_KIND, JSON.stringify({ proxyBaseUrl: 'https://p' })); // no token/expiry
+    expect(readLatticeCloudConfig()).toBeNull();
+    const cfg = validCloud();
+    setLatticeCloudConfig(cfg);
+    expect(readLatticeCloudConfig()).toEqual(cfg);
+  });
+
+  it('setLatticeCloudConfig flips the active provider to lattice_cloud; clear falls back to anthropic', () => {
+    expect(activeProviderKind()).toBe('anthropic');
+    setLatticeCloudConfig(validCloud());
+    expect(activeProviderKind()).toBe('lattice_cloud');
+    clearLatticeCloudConfig();
+    expect(activeProviderKind()).toBe('anthropic');
+    expect(readLatticeCloudConfig()).toBeNull();
+  });
+
+  it('resolves the Lattice Cloud provider from a stored, unexpired credential (no network)', async () => {
+    setLatticeCloudConfig(validCloud());
+    const p = await resolveLlmProvider(null);
+    expect(p?.kind).toBe('lattice_cloud');
+    expect(typeof p?.client.runTurn).toBe('function');
+  });
+
+  it('resolvedProviderKind reports lattice_cloud by presence, without re-minting', async () => {
+    setLatticeCloudConfig(validCloud());
+    expect(await resolvedProviderKind(null)).toBe('lattice_cloud');
+  });
+
+  it('managed deployment: a stored cloud credential can NOT override the operator env key', async () => {
+    process.env.LATTICE_MANAGED_MODEL_AUTH = '1';
+    process.env.ANTHROPIC_API_KEY = 'operator-key';
+    setLatticeCloudConfig(validCloud());
+    expect((await resolveLlmProvider(null))?.kind).toBe('anthropic'); // managed env wins
+  });
+
+  it('an EXPIRED cloud credential with no signed-in session falls through (no crash, no re-mint)', async () => {
+    // currentLatticeCloudCredential re-mints only from a signed-in session; with none,
+    // refreshLatticeCloudCredential returns null → the resolver falls through rather
+    // than serving a dead token. Nothing else is configured here → null overall.
+    setLatticeCloudConfig({
+      proxyBaseUrl: 'https://proxy.example.com',
+      token: 'lat_stale',
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    expect(await resolveLlmProvider(null)).toBeNull();
+  });
+
+  // ── Expired-Claude auto-disconnect (the reported bug) ─────────────────────
+  // A 401 from a real chat call proves the OAuth token is dead; disconnecting flips
+  // config.connected → false so the GUI re-onboards the user to reconnect, instead of
+  // failing every turn on the same expired token. Scoped strictly to the OAuth sub.
+  const CLAUDE_OAUTH_KIND = 'claude_oauth';
+  const seedOAuth = (): void => {
+    setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify({ access_token: 'sk-oauth' }));
+  };
+  const err = (status: number): Error => Object.assign(new Error('boom'), { status });
+
+  it('disconnects the connected Claude subscription on a 401 from the anthropic wire', async () => {
+    seedOAuth();
+    expect(await claudeAuthKind(null)).toBe('oauth');
+    expect(await maybeDisconnectExpiredClaude(null, 'anthropic', err(401))).toBe(true);
+    expect(await claudeAuthKind(null)).toBeNull(); // token deleted → config.connected flips false
+  });
+
+  it('does NOT disconnect on a non-auth error (transient 500 keeps the subscription)', async () => {
+    seedOAuth();
+    expect(await maybeDisconnectExpiredClaude(null, 'anthropic', err(500))).toBe(false);
+    expect(await claudeAuthKind(null)).toBe('oauth');
+  });
+
+  it('does NOT disconnect a bring-your-own key (active provider openai_compat) on a 401', async () => {
+    // A BYO Claude API key on an anthropic endpoint also resolves as kind 'anthropic',
+    // but it's the user's to manage — never auto-deleted.
+    seedOAuth();
+    setAssistantCredential(ACTIVE_PROVIDER_KIND, 'openai_compat');
+    expect(await maybeDisconnectExpiredClaude(null, 'anthropic', err(401))).toBe(false);
+    expect(await claudeAuthKind(null)).toBe('oauth');
+  });
+
+  it('does NOT disconnect for a non-anthropic provider kind (cloud re-mints its own)', async () => {
+    seedOAuth();
+    expect(await maybeDisconnectExpiredClaude(null, 'lattice_cloud', err(401))).toBe(false);
+    expect(await maybeDisconnectExpiredClaude(null, 'openai_compat', err(401))).toBe(false);
+    expect(await claudeAuthKind(null)).toBe('oauth');
+  });
+
+  it('a managed deployment never disconnects the operator credential', async () => {
+    process.env.LATTICE_MANAGED_MODEL_AUTH = '1';
+    process.env.ANTHROPIC_API_KEY = 'operator-key';
+    seedOAuth();
+    expect(await maybeDisconnectExpiredClaude(null, 'anthropic', err(401))).toBe(false);
+    expect(await claudeAuthKind(null)).toBe('oauth');
+  });
+
+  it('is a no-op when no OAuth subscription is stored', async () => {
+    expect(await maybeDisconnectExpiredClaude(null, 'anthropic', err(401))).toBe(false);
   });
 });

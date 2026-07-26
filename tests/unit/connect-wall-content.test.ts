@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { appJs } from '../../src/gui/app/script.js';
 
 /**
- * First-run connect wall — now a WIZARD: choose a backend (Claude account or any
- * OpenAI-compatible endpoint) → enter its details (Connect stays faded until the required
- * fields are filled) → a "Testing your AI" step runs a real model call before the app
- * proceeds to Analytics. Pinned on the composed client bundle (the wall lives in a
- * template-literal module).
+ * First-run connect wall — now a WIZARD: choose a backend (a Lattice Cloud account, a
+ * Claude account, or any OpenAI-compatible endpoint) → connect it (Connect stays faded
+ * until the required fields are filled; the cloud option signs in through the browser) → a
+ * "Testing your AI" step runs a real model call before the app proceeds to Analytics.
+ * Pinned on the composed client bundle (the wall lives in a template-literal module).
  */
 describe('first-run connect wall (wizard)', () => {
   it('shows the Lattice logo mark, not the grandma emoji', () => {
@@ -15,12 +15,23 @@ describe('first-run connect wall (wizard)', () => {
     expect(appJs).not.toContain('👵');
   });
 
-  it('step 1 offers the two backend choices with the welcome + security copy', () => {
+  it('step 1 offers the three backend choices with the welcome + security copy', () => {
     expect(appJs).toContain('Welcome to Lattice');
     expect(appJs).toContain('Choose which model to use to power Lattice');
+    expect(appJs).toContain('data-method="cloud"');
     expect(appJs).toContain('data-method="claude"');
     expect(appJs).toContain('data-method="other"');
     expect(appJs).toContain('Lattice does not collect or retain your data');
+  });
+
+  it('the Lattice Cloud step signs in via identity then activates the cloud provider', () => {
+    expect(appJs).toContain('Lattice Cloud account');
+    expect(appJs).toContain('id="cw-cloud-start"');
+    expect(appJs).toContain("fetchJson('/api/identity/status')");
+    expect(appJs).toContain("fetchJson('/api/identity/signin/start'");
+    expect(appJs).toContain(
+      "fetchJson('/api/assistant/provider/lattice-cloud', { method: 'POST' })",
+    );
   });
 
   it('uses the black Claude-logo button for the Claude connect step', () => {

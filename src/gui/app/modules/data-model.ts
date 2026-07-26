@@ -347,17 +347,24 @@ export const dataModelJs = `    // ───────────────
             '</div>' +
           '</div>';
         }
-        // Label + disconnect reflect the ACTIVE backend — a Claude subscription or a
-        // connected OpenAI-compatible endpoint.
+        // Label + disconnect reflect the ACTIVE backend — a Lattice Cloud account, a
+        // Claude subscription, or a connected OpenAI-compatible endpoint.
         var asstOai = cfg.openaiCompat;
         var asstOnOpenai = cfg.activeProvider === 'openai_compat' && asstOai && asstOai.configured;
-        var asstConnLabel = asstOnOpenai
-          ? 'Connected to ' + (asstOai.model || 'your model') + ' for the whole app.'
-          : 'Claude is connected for the whole app.';
-        var asstDiscLabel = asstOnOpenai ? 'Disconnect model' : 'Disconnect Claude';
-        var asstDiscEndpoint = asstOnOpenai
-          ? '/api/assistant/provider/openai-compat'
-          : '/api/assistant/oauth';
+        var asstOnCloud = cfg.activeProvider === 'lattice_cloud' && cfg.latticeCloud && cfg.latticeCloud.configured;
+        var asstConnLabel = asstOnCloud
+          ? 'Your Lattice Cloud account powers the whole app.'
+          : asstOnOpenai
+            ? 'Connected to ' + (asstOai.model || 'your model') + ' for the whole app.'
+            : 'Claude is connected for the whole app.';
+        var asstDiscLabel = asstOnCloud
+          ? 'Disconnect Lattice Cloud'
+          : asstOnOpenai ? 'Disconnect model' : 'Disconnect Claude';
+        var asstDiscEndpoint = asstOnCloud
+          ? '/api/assistant/provider/lattice-cloud'
+          : asstOnOpenai
+            ? '/api/assistant/provider/openai-compat'
+            : '/api/assistant/oauth';
         // When an OpenAI-compatible endpoint is active, the panel lets the user EDIT the
         // model details in place. Saving TESTS the endpoint (server-side) and does NOT keep
         // a broken edit — a failure reverts and is shown inline (never sends you back to
@@ -371,8 +378,9 @@ export const dataModelJs = `    // ───────────────
               '<button id="asst-save" class="btn primary">Save &amp; test</button>' +
             '</div>'
           : '';
-        // Managed deployment: show the prepaid token balance + a top-up link here too.
-        var balanceHtml = (cfg.managedModelAuth === true && typeof cfg.balanceCents === 'number')
+        // Show the prepaid token balance + a top-up link for a managed deployment OR a
+        // signed-in Lattice Cloud account (both bill a metered balance via the proxy).
+        var balanceHtml = ((cfg.managedModelAuth === true || asstOnCloud) && typeof cfg.balanceCents === 'number')
           ? '<div style="margin:2px 0 14px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)">' +
               '<strong style="font-size:13px;display:block;margin-bottom:4px">Lattice token balance</strong>' +
               '<span style="font-size:18px;font-weight:700">$' + (cfg.balanceCents / 100).toFixed(2) + '</span>' +

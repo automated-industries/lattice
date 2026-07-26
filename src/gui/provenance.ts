@@ -71,6 +71,100 @@ export interface ProvenancePayload {
   edges: ProvenanceEdge[];
 }
 
+/** One directed step of a lineage traceback, model-facing. `from` is an upstream
+ *  source, `to` is what it fed; a chain of these traces data back to its origins. */
+export interface ProvenanceLink {
+  from: string;
+  relation: string;
+  to: string;
+  /** Tier of the `from` source: source data | derived | computed | AI edit | related | origin. */
+  fromTier?: string;
+  /** Backing table of the `from` source, when it maps to one. */
+  fromTable?: string;
+  /** Object rows this source contributed (grouped table-scoped provenance). */
+  rows?: number;
+}
+
+/** A compact, token-bounded provenance summary the assistant can relay when a user
+ *  asks where an object's data came from. It is the SAME lineage the provenance
+ *  graph draws, flattened to a list of `from --relation--> to` links plus guidance. */
+export interface ProvenanceSummary {
+  /** The object traced: a table, or a single row (`table #id`). */
+  object: string;
+  scope: 'row' | 'table';
+  /** Every recorded lineage step, most-direct sources first. */
+  links: ProvenanceLink[];
+  /** Instruction for the model on how to use this (and to not invent sources). */
+  note: string;
+}
+
+/** Human tier label for a provenance node type (matches the provenance-graph tiers). */
+function tierLabel(type: ProvenanceNodeType): string | undefined {
+  switch (type) {
+    case 'raw':
+      return 'source data';
+    case 'derived':
+      return 'derived';
+    case 'computed':
+      return 'computed';
+    case 'observation':
+      return 'AI edit';
+    case 'related':
+      return 'related record';
+    case 'created':
+      return 'origin';
+    default:
+      return undefined; // 'object' — the center, not a source
+  }
+}
+
+/**
+ * Flatten a {@link ProvenancePayload} into a model-facing {@link ProvenanceSummary}:
+ * a list of `from --relation--> to` links (following the graph, so multi-hop
+ * tracebacks — e.g. a row materialized_from an import that was extracted_from a
+ * file — are preserved), plus a note telling the model to relay the real sources
+ * and never fabricate one when none is recorded.
+ */
+export function summarizeProvenance(
+  payload: ProvenancePayload,
+  table: string,
+  rowId?: string,
+): ProvenanceSummary {
+  const byId = new Map(payload.nodes.map((n) => [n.id, n]));
+  const objectId = rowId ? `obj:${table}:${rowId}` : `table:${table}`;
+  // Direct sources of the object first, then the rest of the chain — so the model
+  // reads the immediate origins before deeper upstream hops.
+  const ordered = [...payload.edges].sort((a, b) =>
+    a.target === objectId ? -1 : b.target === objectId ? 1 : 0,
+  );
+  const links: ProvenanceLink[] = ordered.map((e) => {
+    const src = byId.get(e.source);
+    const tgt = byId.get(e.target);
+    const tier = src ? tierLabel(src.type) : undefined;
+    return {
+      from: src?.label ?? e.source,
+      relation: e.relation,
+      to: tgt?.label ?? e.target,
+      ...(tier ? { fromTier: tier } : {}),
+      ...(src?.table ? { fromTable: src.table } : {}),
+      ...(src?.count !== undefined ? { rows: src.count } : {}),
+    };
+  });
+  const note = links.length
+    ? 'This is the recorded data lineage. Relay it to the user in plain language, naming the specific ' +
+      'files, connectors, databases, imports, or computations it came from and how (the relation). ' +
+      'Do not add sources that are not listed here.'
+    : 'No provenance is recorded for this data — no source files, connectors, databases, computations, ' +
+      'or AI edits are traced to it. It was likely entered or created directly. Tell the user that ' +
+      'plainly; do not invent a source.';
+  return {
+    object: rowId ? `${table} #${rowId}` : table,
+    scope: rowId ? 'row' : 'table',
+    links,
+    note,
+  };
+}
+
 export interface BuildProvenanceOptions {
   /** Scope to a single object row (bounded reads). Omit for the whole table. */
   rowId?: string;

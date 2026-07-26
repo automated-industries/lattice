@@ -2426,11 +2426,15 @@ a **Context Constructor** that turns dropped files and pasted text into linked
 Lattice objects. It is **GUI-only and inert until you configure a credential** —
 the library API is unchanged and fully backwards-compatible.
 
-- **Connect the assistant.** The built-in path is **Connect with Claude** — a
-  subscription OAuth flow (PKCE) in **Settings → User → Assistant**, no env setup
-  required. To bring your own model instead, **Other AI Endpoint** takes a base URL +
-  API key + model (an OpenAI-compatible endpoint, or a Claude-API endpoint — the
-  Anthropic wire is auto-selected for an Anthropic host); the credential is stored
+- **Connect the assistant.** The first-run wall offers **three** ways to power
+  Lattice, all also reachable from **Settings → User → Assistant**: (1) a **Lattice
+  Cloud account** (v5.4+) — sign in through your browser and Lattice runs on
+  pay-as-you-go included tokens billed to your account balance, no API key to manage
+  (the scoped model credential is short-lived and re-minted automatically; signing the
+  device out cuts its access); (2) **Connect with Claude** — a subscription OAuth flow
+  (PKCE), no env setup required; or (3) **Other AI Endpoint** — a base URL + API key +
+  model (an OpenAI-compatible endpoint, or a Claude-API endpoint — the Anthropic wire
+  is auto-selected for an Anthropic host). Bring-your-own credentials are stored
   encrypted in the native `secrets` entity. (The former "paste an Anthropic API key"
   path was retired in 5.0 — a managed deployment supplies the operator key via
   `ANTHROPIC_API_KEY` env instead.)

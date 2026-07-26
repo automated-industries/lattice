@@ -6,6 +6,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.4.0] — 2026-07-26
+
+### Added
+
+- **A third startup model option: "Lattice Cloud account."** The first-run connect wall now offers
+  three ways to power Lattice — a **Lattice Cloud account**, a Claude account, or any
+  OpenAI-compatible endpoint. Choosing the cloud account signs you in through your browser and connects
+  Lattice to pay-as-you-go included tokens billed to your account balance — nothing to configure and no
+  API key to manage. The credential is short-lived and re-minted automatically as needed; signing the
+  device out immediately cuts its model access.
+- **User Settings understands the cloud account.** When a Lattice Cloud account is the active model, the
+  Assistant panel shows your prepaid balance with an "Add tokens" link, labels the connection correctly,
+  and offers a matching disconnect — the same one-place model management the Claude and OpenAI-compatible
+  backends already had.
+- **Ask the assistant where your data came from.** The assistant can now trace an object's — or a single
+  row's — provenance on request: the source files, connectors, and databases it was synced or extracted
+  from; the imports and computed/derived tables it was materialized or calculated from; and any AI edits —
+  each with how it feeds the data, so multi-step tracebacks are preserved. It reads the same lineage the
+  provenance graph draws (a new read-only `get_provenance` tool), and reports only what's recorded — if a
+  value was entered directly with no external source, it says so rather than inventing one.
+
+### Fixed
+
+- **Chat no longer shows raw error payloads, and an expired Claude connection reconnects cleanly.**
+  A failed assistant turn now shows a short, human message (classified by cause) instead of the
+  provider's raw JSON error body. And when a connected Claude subscription's sign-in has actually
+  expired (a real 401), Lattice disconnects it so you're prompted to reconnect — rather than
+  appearing connected and failing every message. An out-of-credit error still renders its
+  "Add more tokens" card unchanged.
+
+### Security
+
+- The client refuses a model-proxy URL that isn't HTTPS (or loopback), so the scoped model credential is
+  never sent over cleartext — including URLs that hide the real host behind userinfo
+  (`http://127.0.0.1@example.com`), which are validated by parsed host, not string prefix.
+
 ## [5.3.1] — 2026-07-25
 
 ### Changed

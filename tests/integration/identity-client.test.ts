@@ -11,7 +11,11 @@ import {
   resolveWorkspacePaths,
 } from '../../src/index.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
-import { discoverIdentityService, resetIdentityDiscovery } from '../../src/gui/identity/service.js';
+import {
+  discoverIdentityService,
+  fetchModelCredential,
+  resetIdentityDiscovery,
+} from '../../src/gui/identity/service.js';
 import { resetPendingSignIn } from '../../src/gui/identity/routes.js';
 import {
   clearIdentitySession,
@@ -68,8 +72,12 @@ function isolateConfig(): string {
 function startIdentityStub(opts?: {
   credentialUrl?: string;
   reject401?: boolean;
-}): Promise<{ base: string; state: { exchanges: number; credentialCalls: number } }> {
-  const state = { exchanges: 0, credentialCalls: 0 };
+  modelProxyUrl?: string;
+}): Promise<{
+  base: string;
+  state: { exchanges: number; credentialCalls: number; modelCredentialCalls: number };
+}> {
+  const state = { exchanges: 0, credentialCalls: 0, modelCredentialCalls: 0 };
   return new Promise((resolve) => {
     const srv = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://x');
@@ -139,6 +147,19 @@ function startIdentityStub(opts?: {
           });
           return;
         }
+        if (url.pathname === '/api/me/model-credential') {
+          if (opts?.reject401) {
+            send(401, { error: 'Unauthorized' });
+            return;
+          }
+          state.modelCredentialCalls++;
+          send(200, {
+            token: 'lat_test_model_token',
+            proxyBaseUrl: opts?.modelProxyUrl ?? 'https://proxy.example',
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          });
+          return;
+        }
         send(404, { error: 'not found' });
       });
     });
@@ -183,6 +204,19 @@ describe('discovery hardening — the bearer + credential never ride cleartext',
     // Loopback http is allowed (dev/tests) — it never leaves the machine.
     process.env.LATTICE_IDENTITY_URL = 'http://127.0.0.1:9999';
     expect((await discoverIdentityService())?.base).toBe('http://127.0.0.1:9999');
+  });
+
+  it('REJECTS a loopback-looking base whose real host is smuggled via userinfo', async () => {
+    // `http://127.0.0.1:80@evil.com` "starts with" a loopback literal but WHATWG URL
+    // parses its host as evil.com — a raw-string/regex gate would be fooled into
+    // sending the bearer + scoped credential to the attacker. The parsed-host check
+    // rejects any userinfo outright.
+    isolateConfig();
+    process.env.LATTICE_IDENTITY_URL = 'http://127.0.0.1:80@evil.com';
+    expect(await discoverIdentityService()).toBeNull();
+    resetIdentityDiscovery();
+    process.env.LATTICE_IDENTITY_URL = 'https://127.0.0.1@evil.com';
+    expect(await discoverIdentityService()).toBeNull();
   });
 });
 
@@ -277,6 +311,55 @@ describe('membership sync', () => {
     });
     expect(result.sessionExpired).toBe(true);
     expect(readIdentitySession()).toBeNull();
+  });
+});
+
+describe('model credential mint (Lattice Cloud account model)', () => {
+  it('mints a scoped model credential (token + https proxy base + expiry)', async () => {
+    isolateConfig();
+    const stub = await startIdentityStub();
+    process.env.LATTICE_IDENTITY_URL = stub.base;
+    const endpoints = await discoverIdentityService();
+    expect(endpoints).not.toBeNull();
+    const cred = await fetchModelCredential(endpoints!, 'lds_test_bearer');
+    expect(cred.token).toBe('lat_test_model_token');
+    expect(cred.proxyBaseUrl).toBe('https://proxy.example');
+    expect(new Date(cred.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(stub.state.modelCredentialCalls).toBe(1);
+  });
+
+  it('REJECTS a non-HTTPS proxy base — the spendable token must never ride cleartext', async () => {
+    // A trusted-but-misconfigured/tampered service handing back an http:// proxy would
+    // send the money-token in cleartext; the client must refuse it (defense in depth,
+    // mirroring the identity-base https gate).
+    isolateConfig();
+    const stub = await startIdentityStub({ modelProxyUrl: 'http://proxy.example' });
+    process.env.LATTICE_IDENTITY_URL = stub.base;
+    const endpoints = await discoverIdentityService();
+    await expect(fetchModelCredential(endpoints!, 'lds_test_bearer')).rejects.toThrow(
+      /non-HTTPS model proxy/i,
+    );
+  });
+
+  it('REJECTS a proxy base whose real host is smuggled via userinfo', async () => {
+    // `http://127.0.0.1:80@evil.com` passes a naive loopback prefix check but resolves
+    // to host evil.com — the money-token would be sent to the attacker. The parsed-host
+    // gate refuses any userinfo.
+    isolateConfig();
+    const stub = await startIdentityStub({ modelProxyUrl: 'http://127.0.0.1:80@evil.com' });
+    process.env.LATTICE_IDENTITY_URL = stub.base;
+    const endpoints = await discoverIdentityService();
+    await expect(fetchModelCredential(endpoints!, 'lds_test_bearer')).rejects.toThrow(
+      /non-HTTPS model proxy/i,
+    );
+  });
+
+  it('surfaces a 401 as an error rather than issuing a dead credential', async () => {
+    isolateConfig();
+    const stub = await startIdentityStub({ reject401: true });
+    process.env.LATTICE_IDENTITY_URL = stub.base;
+    const endpoints = await discoverIdentityService();
+    await expect(fetchModelCredential(endpoints!, 'lds_test_bearer')).rejects.toThrow();
   });
 });
 
