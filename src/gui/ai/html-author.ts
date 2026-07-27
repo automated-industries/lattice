@@ -84,11 +84,20 @@ const HTML_SYSTEM = [
   'When the page is a DASHBOARD — an at-a-glance answer to a question about the data — lead with a compact row of key-number tiles, then charts in a responsive grid, then any supporting detail table, each section clearly titled.',
 ].join('\n');
 
-/** Strip a leading/trailing ``` fence if the model wrapped the document in one. */
-function stripFences(s: string): string {
-  const t = s.trim();
-  const inner = /^```[a-zA-Z]*\s*\n([\s\S]*?)\n```$/.exec(t)?.[1];
-  return inner !== undefined ? inner.trim() : t;
+/**
+ * Strip a leading/trailing ``` fence if the model wrapped the document in one.
+ * The lead and tail are stripped INDEPENDENTLY: an all-or-nothing match would
+ * no-op whenever the closing fence is missing (e.g. truncated output), leaving
+ * the opening fence to render as literal text at the top of the stored page.
+ * Exported for tests.
+ */
+export function stripFences(s: string): string {
+  let t = s.trim();
+  const lead = /^```[a-zA-Z]*[ \t]*\r?\n/.exec(t);
+  if (lead) t = t.slice(lead[0].length);
+  const tail = /\r?\n```$/.exec(t);
+  if (tail) t = t.slice(0, tail.index);
+  return t.trim();
 }
 
 /** True when the text looks like an HTML document, not prose / JSON / markdown. */
@@ -140,6 +149,16 @@ export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> 
       captured += d;
     },
   });
+
+  // Fail loudly if the authoring call hit its output budget mid-token. The
+  // model MUST complete the document before returning — a truncated page is
+  // worse than no page at all (a partial <script> or unterminated attribute
+  // breaks the whole thing and silent failures downstream catch nothing).
+  if (turn.stopReason === 'max_tokens') {
+    throw new Error(
+      'HTML authoring exceeded the output budget and returned an incomplete page. Simplify the request (fewer data sources, smaller dashboards, less detailed charts) or split it into multiple pages.',
+    );
+  }
 
   const html = stripFences(turn.text || captured);
   if (!html || !looksLikeHtml(html)) {
