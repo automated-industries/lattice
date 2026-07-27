@@ -166,11 +166,20 @@ export function dataCleaningRefusal(spec: string, reason: string): string {
   );
 }
 
-/** Strip a leading/trailing ``` fence if the model wrapped the document in one. */
-function stripFences(s: string): string {
-  const t = s.trim();
-  const inner = /^```[a-zA-Z]*\s*\n([\s\S]*?)\n```$/.exec(t)?.[1];
-  return inner !== undefined ? inner.trim() : t;
+/**
+ * Strip a leading/trailing ``` fence if the model wrapped the document in one.
+ * The lead and tail are stripped INDEPENDENTLY: an all-or-nothing match would
+ * no-op whenever the closing fence is missing (e.g. truncated output), leaving
+ * the opening fence to render as literal text at the top of the stored page.
+ * Exported for tests.
+ */
+export function stripFences(s: string): string {
+  let t = s.trim();
+  const lead = /^```[a-zA-Z]*[ \t]*\r?\n/.exec(t);
+  if (lead) t = t.slice(lead[0].length);
+  const tail = /\r?\n```$/.exec(t);
+  if (tail) t = t.slice(0, tail.index);
+  return t.trim();
 }
 
 /** True when the text looks like an HTML document, not prose / JSON / markdown. */

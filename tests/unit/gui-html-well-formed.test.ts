@@ -119,6 +119,20 @@ describe('validateHtmlWellFormed (HTML well-formedness gate)', () => {
     expect(validateHtmlWellFormed(html)).toBeNull();
   });
 
+  it('rejects a full document that opens <html> but never closes </html> (tag-boundary truncation)', () => {
+    // Real corpse shape: zero scripts, truncation landing exactly after a clean
+    // closing tag mid-table — every other check passes it.
+    const html =
+      '<!doctype html><html lang="en"><head><title>T</title></head><body><table><tr><th>Name</th><th>Contract Type</th>';
+    const error = validateHtmlWellFormed(html);
+    expect(error).toBeTruthy();
+    expect(error).toContain('never closes </html>');
+  });
+
+  it('accepts an HTML fragment with no <html> wrapper at all', () => {
+    expect(validateHtmlWellFormed('<div><p>fragment</p></div>')).toBeNull();
+  });
+
   it('rejects a document that ends inside a script tag body', () => {
     // This has an opening <script> but no closing </script>.
     const html = '<!doctype html><html><body><script>console.log(';
