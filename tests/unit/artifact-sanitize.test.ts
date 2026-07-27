@@ -96,4 +96,138 @@ describe('sanitizeSandboxedHtml', () => {
     expect(out.html).toContain('<td>x</td>');
     expect(out.html).not.toContain('onclick');
   });
+
+  it('neutralizes cursor: help affordance on inert elements lacking title', () => {
+    const html =
+      '<span style="cursor: help;">cite</span>' +
+      '<span style="cursor: help;" title="Full Source">cite2</span>' +
+      '<div>normal text</div>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(1); // Only the first span, not the one with title
+    expect(out.removed[0]).toContain('interactive-style cursor affordance');
+    // First span should have no style attribute (it was the only style and got removed)
+    expect(out.html).toContain('<span>cite</span>');
+    // Second span should keep its cursor style (it has title)
+    expect(out.html).toContain('style="cursor: help;"');
+    expect(out.html).toContain('title="Full Source"');
+    expect(out.html).toContain('<span');
+    expect(out.html).toContain('cite');
+  });
+
+  it('preserves cursor: help on elements WITH title attribute (legitimate tooltip)', () => {
+    const html = '<span style="cursor: help;" title="More info">badge</span>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toEqual([]);
+    expect(out.html).toContain('cursor: help');
+    expect(out.html).toContain('title="More info"');
+  });
+
+  it('preserves cursor: pointer on elements WITH href (legitimate link affordance)', () => {
+    const html = '<a href="/page" style="cursor: pointer;">link</a>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toEqual([]);
+    expect(out.html).toContain('cursor: pointer');
+    expect(out.html).toContain('href="/page"');
+  });
+
+  it('preserves cursor: pointer on elements WITH event handlers', () => {
+    const html =
+      '<div style="cursor: pointer;" onclick="this.classList.toggle(\'x\')">clicker</div>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toEqual([]);
+    expect(out.html).toContain('cursor: pointer');
+    expect(out.html).toContain('onclick');
+  });
+
+  it('neutralizes cursor: pointer on inert elements lacking any interactivity', () => {
+    const html = '<div style="cursor: pointer;">not clickable</div>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(1);
+    expect(out.removed[0]).toContain('interactive-style cursor affordance');
+    expect(out.html).not.toContain('cursor: pointer');
+    expect(out.html).toContain('not clickable');
+  });
+
+  it('neutralizes class-based cursor: help rules on inert elements', () => {
+    const html =
+      '<style>.source-tag { cursor: help; color: blue; }</style>' +
+      '<span class="source-tag">cite</span>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(1);
+    expect(out.removed[0]).toContain('interactive-style cursor affordance');
+    // The CSS rule should remain (we override with inline style)
+    expect(out.html).toContain('<style>');
+    expect(out.html).toContain('cursor: help');
+    // The element should have cursor: default inline override
+    expect(out.html).toContain('cursor: default');
+    // The element and its text should survive
+    expect(out.html).toContain('<span class="source-tag"');
+    expect(out.html).toContain('cite');
+  });
+
+  it('preserves class-based cursor rules on elements WITH title', () => {
+    const html =
+      '<style>.source-tag { cursor: help; }</style>' +
+      '<span class="source-tag" title="Full Citation">cite</span>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toEqual([]);
+    expect(out.html).toContain('title="Full Citation"');
+    // No override should be added (element is interactive via title)
+    expect(out.html).not.toContain('cursor: default');
+  });
+
+  it('handles multiple cursor affordances in a single page', () => {
+    const html =
+      '<style>.help-badge { cursor: help; }</style>' +
+      '<span style="cursor: help;">inline 1</span>' +
+      '<span class="help-badge">class 1</span>' +
+      '<span style="cursor: help;" title="has title">inline 2</span>' +
+      '<span class="help-badge" onclick="void">class 2</span>';
+    const out = sanitizeSandboxedHtml(html);
+    // Should remove affordances from: inline 1, class 1 (2 removals)
+    // Should NOT remove from: inline 2 (has title), class 2 (has handler)
+    expect(out.removed.length).toBe(2);
+    expect(out.removed[0]).toContain('interactive-style cursor affordance');
+    expect(out.removed[1]).toContain('interactive-style cursor affordance');
+  });
+
+  it('leaves a clean artifact with cursor affordances and proper title attributes unchanged', () => {
+    const clean =
+      '<style>.badge { cursor: help; }</style>' +
+      '<span class="badge" title="Full source name">cite</span>' +
+      '<span style="cursor: help;" title="Info">info</span>';
+    const out = sanitizeSandboxedHtml(clean);
+    expect(out.removed).toEqual([]);
+    expect(out.html).toBe(clean);
+  });
+
+  it('removes cursor style while preserving other inline styles', () => {
+    const html = '<span style="color: red; cursor: help; font-weight: bold;">text</span>';
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(1);
+    // color and font-weight should remain
+    expect(out.html).toContain('color: red');
+    expect(out.html).toContain('font-weight: bold');
+    // cursor: help should be gone
+    expect(out.html).not.toContain('cursor: help');
+  });
+
+  it('leaves an ORPHANED cursor class rule alone (no matching elements, so no rendered affordance)', () => {
+    // Real-world shape: the author defined `.source-tag { cursor: help }` but every badge
+    // element uses a different class — the rule matches nothing, renders no affordance,
+    // and neutralizing/reporting it would be noise. Only rules that actually style an
+    // inert element get overridden.
+    const html = [
+      '<style>',
+      '.source-tag { display: inline-block; font-size: 0.75rem; cursor: help; border: 1px solid #e0e0e0; }',
+      '.source-tag:hover { background: #efefef; }',
+      '</style>',
+      '<span class="source-label">Example Industry Report 2024</span>',
+      '<span class="source-label">Example Market Survey</span>',
+    ].join('\n');
+    const out = sanitizeSandboxedHtml(html);
+    expect(out.removed).toHaveLength(0);
+    expect(out.html).toContain('Example Industry Report 2024');
+    expect(out.html).not.toContain('cursor: default');
+  });
 });
