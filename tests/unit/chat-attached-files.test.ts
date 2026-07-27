@@ -21,13 +21,19 @@ describe('buildAttachedFilesNote — connects a chat message to its attached fil
     tmpDir = mkdtempSync(join(tmpdir(), 'lattice-attach-'));
     db = new Lattice(join(tmpDir, 'test.db'));
     db.define('files', {
-      columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', original_name: 'TEXT', deleted_at: 'TEXT' },
+      columns: {
+        id: 'TEXT PRIMARY KEY',
+        name: 'TEXT',
+        original_name: 'TEXT',
+        mime: 'TEXT',
+        deleted_at: 'TEXT',
+      },
       render: () => '',
       outputFile: 'files.md',
     });
     await db.init();
-    await db.insert('files', { id: 'f1', name: 'memo.md' });
-    await db.insert('files', { id: 'f2', name: 'screenshot.png' });
+    await db.insert('files', { id: 'f1', name: 'memo.md', mime: 'text/markdown' });
+    await db.insert('files', { id: 'f2', name: 'screenshot.png', mime: 'image/png' });
   });
   afterEach(() => {
     db.close();
@@ -60,5 +66,25 @@ describe('buildAttachedFilesNote — connects a chat message to its attached fil
     expect(note).toContain('memo.md');
     expect(note).not.toContain('ghost');
     expect(note).toContain('this file'); // singular — only the real one survived
+  });
+
+  it('discloses that image files cannot be viewed visually', async () => {
+    const note = await buildAttachedFilesNote(db, [{ id: 'f2' }]);
+    expect(note).toContain('screenshot.png');
+    expect(note).toContain('CANNOT view the visual content of images');
+    expect(note).toContain('extracted text metadata');
+  });
+
+  it('discloses image limitation when mixed with non-image files', async () => {
+    const note = await buildAttachedFilesNote(db, [{ id: 'f1' }, { id: 'f2' }]);
+    expect(note).toContain('memo.md');
+    expect(note).toContain('screenshot.png');
+    expect(note).toContain('CANNOT view the visual content of images');
+  });
+
+  it('does not mention image limitation for text-only files', async () => {
+    const note = await buildAttachedFilesNote(db, [{ id: 'f1' }]);
+    expect(note).toContain('memo.md');
+    expect(note).not.toContain('CANNOT view the visual content');
   });
 });

@@ -616,8 +616,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // root and an ingested row shows once and one ✕ clears both; and the Configure → Files
 // tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
 // kept as expandable tile groups. Length + hash recaptured.
-const ORIGINAL_LENGTH = 821091;
-const ORIGINAL_SHA256 = '456ac2541f2d5e3d6f8e2f1bde4e022070df5c8f71607bb351086305f75a772d';
+// 5.4.1 image paste handler: clipboard paste of images into the chat composer now
+// stages the images for attachment (via stageFiles); text paste continues to work
+// normally. Server-side: buildAttachedFilesNote discloses to the model that image
+// visual content cannot be viewed.
+const ORIGINAL_LENGTH = 822060;
+const ORIGINAL_SHA256 = 'b86c52e8a84670c100515564cc98e1ab4e114f0af11143f55868cd1f6d726ebe';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

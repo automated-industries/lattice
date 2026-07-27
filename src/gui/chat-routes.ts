@@ -166,7 +166,9 @@ function asStr(v: unknown, fallback = ''): string {
  * stale/invisible/invented id is dropped rather than referenced — and the resulting
  * note (empty when nothing valid is attached) is prefixed to the model's turn so it
  * works on exactly those files with its existing file tools. Any file type, any
- * count. Exported for regression testing. Bounded to 25 ids.
+ * count. Exported for regression testing. Bounded to 25 ids. When image files are
+ * attached, discloses to the model that visual content cannot be viewed (extraction
+ * yields text metadata only).
  */
 export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown): Promise<string> {
   const ids = Array.isArray(attachedFiles)
@@ -179,18 +181,23 @@ export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown
     : [];
   if (!ids.length) return '';
   const labels: string[] = [];
+  let hasImages = false;
   for (const id of ids) {
     try {
       const row = (await db.get('files', id)) as {
         id: string;
         name?: string;
         original_name?: string;
+        mime?: string;
       } | null;
       if (row) {
         const display =
           [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0) ??
           'file';
         labels.push(`"${display}" (files id ${row.id})`);
+        if (row.mime?.startsWith('image/')) {
+          hasImages = true;
+        }
       }
     } catch {
       // stale/invisible id — skip rather than invent a reference
@@ -198,11 +205,16 @@ export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown
   }
   if (!labels.length) return '';
   const many = labels.length > 1;
-  return (
+  let note =
     `[The user just attached ${many ? 'these files' : 'this file'} to this message — ` +
-    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. ` +
-    `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`
-  );
+    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. `;
+  if (hasImages) {
+    note +=
+      `Image files are attached — note that you CANNOT view the visual content of images. ` +
+      `You can only work with the file's name, metadata, and any extracted text metadata. `;
+  }
+  note += `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`;
+  return note;
 }
 
 /** Env off-switch for auto-ingesting reference material from chat messages
