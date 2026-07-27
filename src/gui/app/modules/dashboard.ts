@@ -139,6 +139,7 @@ export const dashboardJs = `    // ───────────────
       'get:function(t,id){return __lreq("get",{table:t,id:id});},' +
       'sql:function(q){return __lreq("sql",{sql:q});},' +
       'search:function(q){return __lreq("search",{query:q});},' +
+      'provenance:function(t,id){return __lreq("provenance",{table:t,id:id});},' +
       // Navigation-only, fire-and-forget. The page can ask the host to move the user
       // around the app (open Configure, an add-source flow, or the assistant) — the
       // same things they can do themselves — but NEVER read or write data through it.
@@ -192,6 +193,12 @@ export const dashboardJs = `    // ───────────────
         return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(String(msg.id || '')))
           .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
       }
+      if (op === 'provenance') {
+        var id = String(msg.id || '');
+        if (!id) return Promise.resolve({ ok: false, error: 'missing id' });
+        return fetch('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id) + '/provenance')
+          .then(function (r) { return r.json(); }).then(function (j) { return { ok: true, data: j }; });
+      }
       return Promise.resolve({ ok: false, error: 'unsupported op' });
     }
     // Navigation-ONLY host actions a rendered page may request via window.lattice.act().
@@ -211,6 +218,19 @@ export const dashboardJs = `    // ───────────────
         if (q && typeof sendChat === 'function') { sendChat(q); return; }
         var inp = document.getElementById('chat-input');
         if (inp) { if (q) inp.value = q; inp.focus(); }
+        return;
+      }
+      // Open a specific row's record page: arg is "table:id". Cited sources
+      // and interactive provenance popovers wire this (navigation-only, no data path).
+      if (name === 'open-record') {
+        var parts = String(arg || '').split(':');
+        if (parts.length === 2) {
+          var t = parts[0], id = parts[1];
+          // Apply same table guard as the read broker: no leading _, not in DENY.
+          if (t && t.charAt(0) !== '_' && t !== 'secrets' && t !== 'chat_threads' && t !== 'chat_messages') {
+            if (typeof openSearchHit === 'function') openSearchHit(t, id);
+          }
+        }
         return;
       }
       var addBtn = { 'add-file': 'src-add-files' };

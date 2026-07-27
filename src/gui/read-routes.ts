@@ -33,7 +33,7 @@ import {
   type GuiTableSummary,
 } from './data.js';
 import { fullTextSearch } from '../search/fts.js';
-import { buildProvenanceGraph } from './provenance.js';
+import { buildProvenanceGraph, summarizeProvenance } from './provenance.js';
 import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import { resolveColumnDescription, resolveTableDescription } from './column-descriptions.js';
 import { parseAudit, updateRow, maskEncryptedJson } from './mutations.js';
@@ -55,7 +55,12 @@ import {
 } from './row-context.js';
 import { readManifest } from '../lifecycle/manifest.js';
 import { classifyTier } from './tier-classify.js';
-import { CONTEXT_PATH, ROW_HISTORY_PATH, LAST_EDITED_PATH } from './route-paths.js';
+import {
+  CONTEXT_PATH,
+  ROW_HISTORY_PATH,
+  PROVENANCE_PATH,
+  LAST_EDITED_PATH,
+} from './route-paths.js';
 
 /**
  * Server-process constants the read routes need that are NOT part of the
@@ -1501,6 +1506,49 @@ export async function handleReadRoutes(
       .sort((a, b) => b.ts.localeCompare(a.ts));
     sendJson(res, { history });
     return true;
+  }
+
+  // ── Row provenance: data-lineage traceback (sources → object) ────────
+  // GET /api/tables/:table/rows/:id/provenance → { object, scope, links, note }.
+  // Returns a compact provenance summary (the same lineage the provenance graph
+  // draws, flattened to a list of from --relation--> to links). Reads are bounded
+  // (no whole-table scans) and RLS-filtered (a scoped cloud member only sees
+  // lineage for rows they may see).
+  const provenanceMatch = PROVENANCE_PATH.exec(pathname);
+  if (provenanceMatch && method === 'GET') {
+    const provTable = decodeURIComponent(provenanceMatch[1] ?? '');
+    const provRowId = decodeURIComponent(provenanceMatch[2] ?? '');
+    // Validate table against the same deny rules as the read broker: no leading
+    // underscore (system tables), not in the DENY set (secrets, chat storage).
+    if (
+      !provTable ||
+      provTable.startsWith('_') ||
+      provTable === 'secrets' ||
+      provTable === 'chat_threads' ||
+      provTable === 'chat_messages'
+    ) {
+      sendJson(res, { error: 'forbidden table' }, 403);
+      return true;
+    }
+    try {
+      const row = await active.db.get(provTable, provRowId);
+      if (row === null) {
+        sendJson(res, { error: 'Row not found' }, 404);
+        return true;
+      }
+      const payload = await buildProvenanceGraph(active.db, provTable, {
+        rowId: provRowId,
+        row,
+        ...(active.configPath ? { configPath: active.configPath } : {}),
+        ...(active.outputDir ? { outputDir: active.outputDir } : {}),
+      });
+      const summary = summarizeProvenance(payload, provTable, provRowId);
+      sendJson(res, summary);
+      return true;
+    } catch (err) {
+      sendJson(res, { error: String((err && (err as Error).message) ?? err) }, 500);
+      return true;
+    }
   }
 
   // ── Last-edited-by, per row, for one table ────────────────────────

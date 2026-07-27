@@ -302,7 +302,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
       {
         title: str('Short human-readable title for the dashboard.'),
         spec: str(
-          'A clear, specific description of what the dashboard should contain and which data it should show (tables/columns, the kind of chart or layout, any filters). The fuller the spec, the better the result.',
+          'A clear, specific description of what the dashboard should contain and which data it should show (tables/columns, the kind of chart or layout, any filters). When the dashboard draws on ingested documents, include the source document names AND their files-row ids so citations can be wired as clickable links. The fuller the spec, the better the result.',
         ),
       },
       ['title', 'spec'],
