@@ -13,6 +13,7 @@ import { artifactFileRow } from '../../file-row.js';
 import { dashboardRow, extractSourceTables } from '../../dashboard-row.js';
 import { verifyDashboardBinding, bindingFailureMessage } from '../dashboard-qa.js';
 import { sanitizeSandboxedHtml } from '../../artifact-sanitize.js';
+import { validateHtmlWellFormed } from '../../html-well-formed.js';
 
 /**
  * Surface residual dashboard-QA issues to the user via the activity feed. The tool_result
@@ -336,6 +337,14 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         html = qa.html;
         qaIssues = qa.issues;
       }
+      // Well-formedness gate (always on): reject a page that is structurally mutilated
+      // (e.g. truncated mid-token by the authoring model). Runs on the AUTHORED text —
+      // before any DOM-based pass that re-serializes (a browser-grade parser would
+      // auto-close broken tags and mask the mutilation). A broken shell is never stored.
+      const wellFormedError = validateHtmlWellFormed(html);
+      if (wellFormedError) {
+        return { ok: false, error: wellFormedError };
+      }
       // Strip interactive elements that can only fail inside the strict preview sandbox
       // (print / pop-out / dialog / submit) so the artifact ships with no dead buttons —
       // the sandbox itself stays strict. Runs AFTER QA (which may re-author) so a
@@ -415,6 +424,13 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         const qa = await ctx.qaDashboard(html, intent);
         html = qa.html;
         qaIssues = qa.issues;
+      }
+      // Well-formedness gate (same as create; runs on the AUTHORED text, before any
+      // DOM-based pass that could re-serialize and mask a mutilation): reject a broken
+      // page — the last-good dashboard stays intact rather than being overwritten.
+      const wellFormedError = validateHtmlWellFormed(html);
+      if (wellFormedError) {
+        return { ok: false, error: wellFormedError };
       }
       // Strip preview-sandbox-dead controls (see create_dashboard) from the re-authored
       // page before it replaces the live one.

@@ -377,6 +377,56 @@ describe('create_dashboard / edit_dashboard tools', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/executable html file/i);
   });
+
+  // ── Well-formedness gate: detect truncated/mutilated pages ──────────────────
+  it('rejects a create_dashboard with unbalanced script tags (structurally mutilated)', async () => {
+    const mutilatedCtx = {
+      ...ctx,
+      htmlAuthor: () => {
+        // A truncated page: opening <script> but no closing </script>
+        return Promise.resolve('<!doctype html><html><body><script>async function load() {');
+      },
+    };
+    const res = await executeFunction(mutilatedCtx, 'create_dashboard', {
+      title: 'Broken',
+      spec: 'test',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/Script tag balance|truncated/i);
+    // Verify nothing was stored.
+    const rows = (await db.query('dashboards', {})) as Record<string, unknown>[];
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects an edit_dashboard whose re-authored page is truncated and leaves the last-good page intact', async () => {
+    // Create a valid dashboard first.
+    const created = (
+      (await executeFunction(ctx, 'create_dashboard', { title: 'Page', spec: 'first' })).result as {
+        id: string;
+      }
+    ).id;
+    const before = (await db.get('dashboards', created)) as Record<string, unknown>;
+    const beforeHtml = String(before.html);
+
+    // Now try to edit with a mutilated page.
+    const mutilatedCtx = {
+      ...ctx,
+      activeDashboardId: created,
+      htmlAuthor: () => {
+        // Truncated: ends inside a quoted string
+        return Promise.resolve('<!doctype html><html><body><div title="incomplete string');
+      },
+    };
+    const res = await executeFunction(mutilatedCtx, 'edit_dashboard', {
+      instruction: 'make it worse',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/unclosed|truncated/i);
+
+    // Verify the stored row is unchanged.
+    const after = (await db.get('dashboards', created)) as Record<string, unknown>;
+    expect(String(after.html)).toBe(beforeHtml);
+  });
 });
 
 describe('extractSourceTables', () => {
