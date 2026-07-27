@@ -28,8 +28,74 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Long documents are authored directly instead of squeezed through a tool call.** Asking for a
   large artifact now hands the writing to a dedicated authoring pass rather than trying to carry the
   whole document inside the request that creates it.
+- **Stop a reply that is already running.** The Send button becomes a Stop button while the
+  assistant is working, and stopping actually halts the turn on the server rather than only closing
+  the connection — the reply stops writing to your workspace and stops spending. Whatever it had
+  written is kept and marked as interrupted. If you start typing while a reply is running, the same
+  button becomes Queue instead.
+- **A visible queue you can manage.** Messages sent mid-reply used to appear as dimmed bubbles in
+  the conversation with no way to change your mind. They now sit in a tray above the composer where
+  each one can be removed, or pushed to the front — which stops the current reply and starts that
+  one instead.
+- **FILES is a section of the sidebar again.** Files and folders are browsable as a nested list with
+  an add button, instead of appearing as a table. Folders expand in place. A brand-new workspace now
+  opens with no tables at all rather than two you did not create. Existing data is untouched: both
+  tables stay registered and queryable, they are simply no longer presented as tables to browse.
+- **Click a dashboard chart to see where its data came from.** Charts carry their source binding, and
+  clicking one opens the same provenance panel the record view uses — in place, without leaving the
+  dashboard — with a link through to the underlying table.
+- **Ask the assistant to simplify the data model.** It can now propose a plan — merges, deduplication,
+  dimension extraction, renames, retypes — and show you what each one affects before anything runs,
+  instead of improvising deletions. Proposals you dismiss stay dismissed across restarts.
+- **Search highlights matching objects in the graph.** The graph could already highlight; nothing
+  ever asked it to.
 
 ### Fixed
+
+- **A table can be deleted even when other things link to it.** Deleting a table that anything
+  pointed at was refused with advice to remove the links first — advice that could not be followed,
+  because the link tables are themselves tables with links. There is now a resolution that removes
+  the table together with the links into it, and the link tables a relationship creates on your
+  behalf no longer block the deletion of the thing they belong to. All of it stays reversible.
+- **Sending a message with an attachment no longer looks like it hung.** Your message and its file
+  chips now appear in the conversation the moment you press Send, and the box clears at the same
+  time, instead of everything sitting frozen until the upload finished. If the upload fails, your
+  text and files come back so you can retry — an attachment is never silently dropped.
+- **Attaching several files sends all of them.** A batch where some uploads failed used to proceed
+  with whichever ones happened to succeed, so five attachments could arrive as one, and a
+  files-only message was sent as the literal filename — which is why the assistant sometimes replied
+  to the name of a file rather than its contents. Failed uploads are now named and re-staged, and
+  files are sent as attachments rather than as text.
+- **Timestamps in the conversation move.** Every message read "0s ago" indefinitely; only a reload
+  corrected them, after which they froze again.
+- **The assistant cannot report success for work that failed.** A turn is now reconciled against what
+  its tools actually did before it answers, so a run of failed deletions can no longer be summarized
+  as "done" — and when a destructive step half-completes, what was changed on the way is stated
+  plainly with an offer to undo it. Removing or clearing more than a handful of things now requires
+  confirmation naming each target and its record count.
+- **An empty dashboard is no longer called healthy.** Checking a dashboard verified only that its
+  tables existed and its queries parsed, so one that rendered all zeros passed. A primary query that
+  returns nothing is now a failure, and before building on messy data the assistant surfaces what is
+  ambiguous — duplicate keys, competing spellings of a category — with counts, and asks how you want
+  it defined.
+- **Extracted content is no longer dropped in silence.** When the importer refused to write something
+  it had extracted, the upload still reported a clean result. Refusals are now reported with the
+  result, and the importer no longer aims at read-only mirror tables in the first place.
+- **Sign-in failures explain themselves.** A failed sign-in showed a raw status code on the first
+  screen with no way forward. The message now says what happened and which step failed, and offers
+  the other ways to connect.
+- **Connectors are told apart.** Every connector could show the same self-reported placeholder name.
+  They now resolve to a real label. A server that cannot register a client automatically now offers
+  the recovery that already existed but was reachable only when first connecting.
+- **Ruled tables in PDFs extract correctly.** A column that appeared in the header but in only one
+  row shifted every later cell one place left.
+- **Renaming a table updates everything that referred to it**, including, on a cloud, the view members
+  read through — which previously kept pointing at the old name and made a renamed table unreadable
+  for everyone but the owner.
+- **Changing a column's type verifies the data first.** Values that could not be converted were
+  silently stored as zero on one of the two engines. An unconvertible value is now refused, naming
+  the values, and nothing is rewritten. Type changes and column additions can also be undone from
+  history, which previously failed.
 
 - **Chat history survives the move to a cloud.** Migrating a local workspace to a cloud copied its
   threads and messages across without an owner, and on a cloud the chat read path treats an unowned
