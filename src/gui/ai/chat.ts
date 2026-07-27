@@ -348,10 +348,19 @@ export interface ToolUse {
   input: Record<string, unknown>;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+}
+
 export interface TurnResult {
   stopReason: string;
   text: string;
   toolUses: ToolUse[];
+  /** Token usage for this turn, when the provider reports it. */
+  usage?: TokenUsage;
 }
 
 export interface TurnParams {
@@ -665,6 +674,19 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         }
         throw outcome.err;
       }
+      // Handle distinct stop_reason cases that aren't errors but need special messaging.
+      // Refusal: the model declined to answer this request.
+      // Model context window exceeded: the response ran out of space.
+      if (turn.stopReason === 'refusal') {
+        const { humanizeAssistantRefusal } = await import('./error-humanize.js');
+        yield { type: 'error', message: humanizeAssistantRefusal() };
+        break;
+      }
+      if (turn.stopReason === 'model_context_window_exceeded') {
+        const { humanizeContextWindowExceeded } = await import('./error-humanize.js');
+        yield { type: 'error', message: humanizeContextWindowExceeded() };
+        break;
+      }
       // Deterministic trace links on the ANSWER round (no tool calls): wrap bare
       // occurrences of retrieved-row labels in lattice:// links and re-emit the
       // full round text. The model is asked to link records itself, but emission
@@ -704,6 +726,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
         type: 'assistant_message_end',
         hadTools: roundHadTools,
         ...(dropText ? { dropText: true } : {}),
+        ...(turn.usage ? { usage: turn.usage } : {}),
       };
 
       // Record the assistant turn (text + any tool_use blocks).
@@ -948,10 +971,14 @@ export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
   const sdk = new Anthropic(buildAnthropicConfig(auth));
   return {
     async runTurn(params: TurnParams): Promise<TurnResult> {
+      // The static system prompt is sent as a cache-marked content block so
+      // repeated turns read the prefix from the provider's prompt cache.
+      // Anything volatile (workspace state, timestamps) must arrive in
+      // `messages`, never in `system`, to keep the cached prefix byte-stable.
       const stream = sdk.messages.stream({
         model: params.model,
         max_tokens: params.maxTokens ?? MAX_TOKENS,
-        system: params.system,
+        system: [{ type: 'text', text: params.system, cache_control: { type: 'ephemeral' } }],
         messages: params.messages,
         tools: params.tools,
         ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
@@ -969,7 +996,34 @@ export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
           toolUses.push({ id: tu.id, name: tu.name, input: tu.input });
         }
       }
-      return { stopReason: final.stop_reason ?? 'end_turn', text, toolUses };
+      const u = (
+        final as unknown as {
+          usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_read_input_tokens?: number;
+            cache_creation_input_tokens?: number;
+          };
+        }
+      ).usage;
+      const usage: TokenUsage | undefined = u
+        ? {
+            inputTokens: u.input_tokens ?? 0,
+            outputTokens: u.output_tokens ?? 0,
+            ...(u.cache_read_input_tokens !== undefined
+              ? { cacheReadInputTokens: u.cache_read_input_tokens }
+              : {}),
+            ...(u.cache_creation_input_tokens !== undefined
+              ? { cacheCreationInputTokens: u.cache_creation_input_tokens }
+              : {}),
+          }
+        : undefined;
+      return {
+        stopReason: final.stop_reason ?? 'end_turn',
+        text,
+        toolUses,
+        ...(usage ? { usage } : {}),
+      };
     },
   };
 }
