@@ -310,4 +310,28 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
         }
       }).catch(function () {});
     }
+
+    // ── Claude auth-warning banner ──────────────────────────────────
+    // When a Claude OAuth token refresh fails terminally (invalid_grant), show
+    // a reconnect notice so the user sees the problem BEFORE mid-conversation 401s.
+    // Like the limit banner, this is checked at boot and when config refreshes
+    // (chat SSE frame). Reads /api/assistant/config (which surfaces authWarning).
+    function refreshAuthWarningBlock() {
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        var warning = cfg && cfg.authWarning;
+        var el = document.getElementById('auth-warning-banner');
+        if (warning) {
+          if (!el) {
+            el = document.createElement('div');
+            el.id = 'auth-warning-banner';
+            el.className = 'auth-warning-banner';
+            el.setAttribute('role', 'status');
+            document.body.appendChild(el);
+          }
+          el.textContent = '\\u26A0\\uFE0F ' + (warning.message || 'Your Claude sign-in has expired — reconnect to keep chatting.');
+        } else if (el && el.parentNode) {
+          el.parentNode.removeChild(el);
+        }
+      }).catch(function () {});
+    }
 `;

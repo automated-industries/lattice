@@ -289,9 +289,28 @@ export async function refreshAccessToken(
     throw classifyFetchFailure(err, cfg.tokenUrl);
   }
   if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    // Terminal failure: refresh token is expired/revoked/not found. RFC 6749 §5.2
+    // specifies the `error` field in the response body (e.g. JSON), but wrap in
+    // try/catch since the response might be plain text or malformed.
+    if (res.status === 400) {
+      try {
+        const parsed = JSON.parse(detail) as Record<string, unknown>;
+        if (parsed.error === 'invalid_grant') {
+          throw new OAuthExchangeError(
+            'invalid_grant',
+            'Your Claude sign-in token has expired or been revoked — reconnect your account to chat again.',
+            400,
+          );
+        }
+      } catch (e) {
+        // JSON parse failed or no `error` field — fall through to generic error below
+        if (e instanceof OAuthExchangeError) throw e;
+      }
+    }
     throw new OAuthExchangeError(
       'http',
-      `token refresh failed (${String(res.status)}): ${(await res.text().catch(() => '')).slice(0, 300)}`,
+      `token refresh failed (${String(res.status)}): ${detail.slice(0, 300)}`,
       res.status,
     );
   }

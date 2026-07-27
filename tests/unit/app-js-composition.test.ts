@@ -616,8 +616,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // root and an ingested row shows once and one ✕ clears both; and the Configure → Files
 // tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
 // kept as expandable tile groups. Length + hash recaptured.
-const ORIGINAL_LENGTH = 821091;
-const ORIGINAL_SHA256 = '456ac2541f2d5e3d6f8e2f1bde4e022070df5c8f71607bb351086305f75a772d';
+// 5.4.x auth-warning banner: refreshAuthWarningBlock() (connect-wall segment) renders a
+// fixed reconnect notice when /api/assistant/config carries authWarning (terminal Claude
+// token-refresh failure), wired at boot and on chat SSE config refreshes alongside
+// refreshLimitBlock(). Length + hash recaptured.
+const ORIGINAL_LENGTH = 822544;
+const ORIGINAL_SHA256 = '752ffb2bb2d485e4c3d884625083c92e48ceac3abd3d83a90a517402ca132ceb';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

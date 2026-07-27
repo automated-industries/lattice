@@ -252,8 +252,10 @@ import { css } from '../../src/gui/app/css.js';
 // tiles, .ifg-group / .ifg-children nested-folder blocks, the tile-corner ✕ overlay);
 // the retired list/grid toggle's .inputs-files-toggle / .ift-btn rules were removed.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 174184;
-const ORIGINAL_SHA256 = '733faecaba35f161d32d02ec62d95e711bddac993a076928527fe05709ad8ff8';
+// 5.4.x auth-warning banner: .auth-warning-banner (fixed top, warn palette, mirrors
+// .limit-banner) for the Claude reconnect notice. Length + hash recaptured.
+const ORIGINAL_LENGTH = 174718;
+const ORIGINAL_SHA256 = '26aa9c0a75aaa7036948c4315f04d0f185da4ed3240a3ff5bd1bb70533c7b536';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
