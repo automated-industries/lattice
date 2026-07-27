@@ -1,4 +1,5 @@
 import type { LlmClient } from './chat.js';
+import { authorWithEscalation } from './author-budget.js';
 import { DEFAULT_MODEL } from './chat.js';
 
 /**
@@ -89,16 +90,41 @@ export async function generateMarkdown(req: MarkdownAuthorRequest): Promise<stri
   ];
 
   let captured = '';
-  const turn = await client.runTurn({
-    model: model ?? MARKDOWN_AUTHOR_MODEL,
-    system: MARKDOWN_SYSTEM,
-    messages: [{ role: 'user', content: parts.join('\n\n') }],
-    tools: [],
-    maxTokens: MARKDOWN_MAX_TOKENS,
-    onText: (d) => {
-      captured += d;
+  // Same ladder the HTML author uses: a long document is not a malformed request,
+  // so climb the budget before refusing.
+  const attempt = await authorWithEscalation(
+    MARKDOWN_MAX_TOKENS,
+    async (maxTokens) => {
+      captured = '';
+      const t = await client.runTurn({
+        model: model ?? MARKDOWN_AUTHOR_MODEL,
+        system: MARKDOWN_SYSTEM,
+        messages: [{ role: 'user', content: parts.join('\n\n') }],
+        tools: [],
+        maxTokens,
+        onText: (d) => {
+          captured += d;
+        },
+      });
+      return { result: t, truncated: t.stopReason === 'max_tokens' };
     },
-  });
+    (from, to) => {
+      console.warn(
+        `[markdown-author] document did not fit in ${String(from)} output tokens; retrying at ${String(to)}`,
+      );
+    },
+  );
+  const turn = attempt.result;
+
+  // Every tier ran out mid-token. A document cut mid-sentence stored as though it
+  // were whole is the same failure the HTML path had: it looks like text, passes
+  // every check that inspects text, and silently loses the tail the user asked for.
+  if (attempt.truncated) {
+    throw new Error(
+      'Document authoring exceeded the output budget and returned an incomplete document. ' +
+        'Ask for a shorter document, or split it into sections.',
+    );
+  }
 
   const markdown = (turn.text || captured).trim();
   if (!markdown || !looksLikeMarkdown(markdown)) {

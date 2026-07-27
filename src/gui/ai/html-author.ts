@@ -1,4 +1,5 @@
 import type { LlmClient } from './chat.js';
+import { authorWithEscalation } from './author-budget.js';
 import { DEFAULT_MODEL } from './chat.js';
 
 /**
@@ -217,22 +218,39 @@ export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> 
   }
 
   let captured = '';
-  const turn = await client.runTurn({
-    model: model ?? HTML_AUTHOR_MODEL,
-    system: HTML_SYSTEM,
-    messages: [{ role: 'user', content: parts.join('\n\n') }],
-    tools: [],
-    maxTokens: HTML_MAX_TOKENS,
-    onText: (d) => {
-      captured += d;
+  // Try the normal budget first, then climb if the page did not fit. A large page
+  // is not a malformed request, so exhausting the ceiling should escalate rather
+  // than immediately telling the user to simplify something reasonable.
+  const attempt = await authorWithEscalation(
+    HTML_MAX_TOKENS,
+    async (maxTokens) => {
+      captured = '';
+      const t = await client.runTurn({
+        model: model ?? HTML_AUTHOR_MODEL,
+        system: HTML_SYSTEM,
+        messages: [{ role: 'user', content: parts.join('\n\n') }],
+        tools: [],
+        maxTokens,
+        onText: (d) => {
+          captured += d;
+        },
+      });
+      return { result: t, truncated: t.stopReason === 'max_tokens' };
     },
-  });
+    (from, to) => {
+      console.warn(
+        `[html-author] page did not fit in ${String(from)} output tokens; retrying at ${String(to)}`,
+      );
+    },
+  );
+  const turn = attempt.result;
 
-  // Fail loudly if the authoring call hit its output budget mid-token. The
+  // Every budget tier ran out mid-token. Fail loudly rather than returning the
+  // fragment: a truncated page is worse than no page at all. The
   // model MUST complete the document before returning — a truncated page is
   // worse than no page at all (a partial <script> or unterminated attribute
   // breaks the whole thing and silent failures downstream catch nothing).
-  if (turn.stopReason === 'max_tokens') {
+  if (attempt.truncated) {
     throw new Error(
       'HTML authoring exceeded the output budget and returned an incomplete page. Simplify the request (fewer data sources, smaller dashboards, less detailed charts) or split it into multiple pages.',
     );

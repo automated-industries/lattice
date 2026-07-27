@@ -118,6 +118,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A document too large to author no longer stores as a broken one.** Delegated authoring exists
+  because a whole document cannot fit through a tool call, but the authoring call had its own ceiling
+  and no check on hitting it — so a page cut mid-token was returned as though it were finished. An HTML
+  page severed inside a script block still parses as text, so every check that inspects text passed it,
+  and it stored as a page whose behaviour never ran. Authoring now climbs the output budget when a
+  document does not fit, refuses outright if it still does not, and a deterministic well-formedness
+  check rejects a mutilated page at store time. Refusing an edit leaves the previous page intact.
+
 - **A table can be deleted even when other things link to it.** Deleting a table that anything
   pointed at was refused with advice to remove the links first — advice that could not be followed,
   because the link tables are themselves tables with links. There is now a resolution that removes
