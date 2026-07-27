@@ -141,6 +141,16 @@ export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> 
     },
   });
 
+  // Fail loudly if the authoring call hit its output budget mid-token. The
+  // model MUST complete the document before returning — a truncated page is
+  // worse than no page at all (a partial <script> or unterminated attribute
+  // breaks the whole thing and silent failures downstream catch nothing).
+  if (turn.stopReason === 'max_tokens') {
+    throw new Error(
+      'HTML authoring exceeded the output budget and returned an incomplete page. Simplify the request (fewer data sources, smaller dashboards, less detailed charts) or split it into multiple pages.',
+    );
+  }
+
   const html = stripFences(turn.text || captured);
   if (!html || !looksLikeHtml(html)) {
     throw new Error(

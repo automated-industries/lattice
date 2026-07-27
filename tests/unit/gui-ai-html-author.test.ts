@@ -106,6 +106,23 @@ describe('generateHtmlFile (delegated HTML authoring)', () => {
     ).rejects.toThrow(/HTML/i);
   });
 
+  it('throws when the authoring call hits its output budget (stopReason=max_tokens)', async () => {
+    // A client that signals truncation by returning stopReason='max_tokens'.
+    const truncatingClient: LlmClient = {
+      runTurn(params: TurnParams) {
+        params.onText('<!doctype html><html><body><script>'); // incomplete
+        return Promise.resolve({
+          stopReason: 'max_tokens', // THE KEY: the turn was cut short
+          text: '<!doctype html><html><body><script>',
+          toolUses: [],
+        });
+      },
+    };
+    await expect(
+      generateHtmlFile({ client: truncatingClient, schema: '', spec: 's' }),
+    ).rejects.toThrow(/exceeded the output budget/i);
+  });
+
   // Regression: a dashboard's lattice.sql runs against BOTH SQLite (local/desktop)
   // and Postgres (cloud). A Postgres-only construct (`::` cast, `:name`/`$1` param,
   // date_trunc/to_char) throws "unrecognized token" at render time on a SQLite
