@@ -112,8 +112,8 @@ export const guiAppHtml = `<!doctype html>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg><span class="ask-lattice-label">Configure</span>
     </button>
   </header>
-  <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Tables /
-       Files nav sections, added by nav-sections.ts) │ center Workspace tabs │ the
+  <!-- The single 3-column workspace layout: left sidebar (Dashboards + the Files
+       and Data nav sections; Data is filled in by nav-sections.ts) │ center Workspace tabs │ the
        persistent Ask Lattice dock. The former Inputs sidebar + Model tab strip moved
        into the left sidebar + the Configure drawer; a table's/record's markdown is now
        reached via its "View Markdown" action, not a separate sidebar tree. -->
@@ -128,9 +128,34 @@ export const guiAppHtml = `<!doctype html>
         </div>
         <div class="section-body" data-group-body="nav-dashboards"><div id="dash-list"></div></div>
       </section>
+      <!-- FILES: the single home for everything on disk — a lazy, infinitely
+           nestable tree of registered roots + loose ingested files, rendered into
+           #src-files-tree by sources.ts. It leads the sidebar because on a fresh or
+           file-driven workspace it is the only section with content. The one
+           "＋ Add files or folder" button (and its file/folder menu) is the whole
+           source-root management surface: add here, remove per row with its hover ✕.
+           These ids are resolved BY ID by wireSourcesButtons(), so they must appear
+           exactly once in the document. -->
+      <section class="dash-section nav-section" data-section="files">
+        <button class="section-label section-toggle nav-section-head" data-group="nav-files" type="button" aria-expanded="true">
+          <span class="section-label-text">Files</span>
+        </button>
+        <div class="section-body" data-group-body="nav-files">
+          <div id="src-files-tree"></div>
+          <div class="src-add-row src-add-files-wrap">
+            <button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ Add files or folder</button>
+            <div class="src-add-menu" id="src-add-files-menu" role="menu" hidden>
+              <button type="button" class="src-add-menu-item" data-pick="file" role="menuitem">Add file(s)…</button>
+              <button type="button" class="src-add-menu-item" data-pick="folder" role="menuitem">Add a folder…</button>
+            </div>
+          </div>
+          <div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>
+        </div>
+      </section>
       <!-- DATA: every model table under three fixed subheads (TABLES / CONNECTORS /
            DATABASES, rendered by nav-sections.ts). The group id stays nav-tables so
-           every user's persisted collapse state survives the rename. -->
+           every user's persisted collapse state survives the rename. Files is NOT
+           listed here — it has the section above. -->
       <section class="dash-section nav-section" data-section="tables">
         <button class="section-label section-toggle nav-section-head" data-group="nav-tables" type="button" aria-expanded="true">
           <span class="section-label-text">Data</span>
@@ -174,7 +199,9 @@ export const guiAppHtml = `<!doctype html>
     <div class="drawer-tabs" id="drawer-tabs">
       <button class="drawer-tab" data-tab="datamodel">Data Model</button>
       <button class="drawer-tab" data-tab="graph">Graph</button>
-      <button class="drawer-tab" data-tab="files">Files</button>
+      <!-- No Files tab: the sidebar FILES section is the single file home, so a
+           second file browser here would be a duplicate surface (and a duplicate
+           add-files button id). -->
       <button class="drawer-tab" data-tab="connectors">MCP Connectors</button>
       <button class="drawer-tab" data-tab="databases">Databases</button>
       <button class="drawer-tab" data-tab="database">Workspace</button>

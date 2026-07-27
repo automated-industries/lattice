@@ -227,6 +227,24 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     ),
   },
   {
+    name: 'propose_model_simplification',
+    description:
+      "Analyze how the user's data is structured and return a REVIEWABLE plan for simplifying it. " +
+      'Use this for ANY request to simplify, clean up, tidy, declutter, consolidate, streamline, ' +
+      'normalize, reorganize, or "make sense of" the data model / schema / database / tables / ' +
+      'workspace. It finds tables holding the same thing (merge), duplicate records (deduplicate), ' +
+      'a repeated category that should be its own object (extract), missing links between objects, ' +
+      'undocumented objects, awkward names, and columns stored as text that are really numbers or ' +
+      'dates — each with a plain-language reason and how many records it would affect. ' +
+      'READ-ONLY: it changes NOTHING. Present the proposals to the user and let THEM choose; each ' +
+      'one is applied from the Data Model panel with a single click. NEVER answer a "simplify" ' +
+      'request by calling delete_entity, delete_row, merge_rows or bulk_update — removing the ' +
+      "user's tables or records is not what simplifying means, and it cannot be guessed at.",
+    mutates: false,
+    category: 'read',
+    args: obj({}),
+  },
+  {
     name: 'get_history',
     description: 'Fetch recent audit-log entries, optionally filtered to one table.',
     mutates: false,
@@ -281,7 +299,8 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'create_artifact',
     description:
-      'Create a markdown document and save it as a file artifact. Use this whenever the user asks you to create, write, draft, or make a document, note, write-up, summary, report, or file — you author the content as GitHub-flavored markdown and it is saved in the files entity as a markdown artifact, then opened in the viewer for them. Prefer this over create_row on files for any document the user wants to keep. It follows the same sharing rules as any file (private mode → private). For SHORT documents (< ~2KB), pass the `content` directly. For LONG documents (reports, comprehensive guides, large analyses), pass a `spec` describing what to write instead — a stronger model will author the markdown server-side with its own token budget, avoiding truncation.',
+      'Create a markdown document and save it as a file artifact. Use this whenever the user asks you to create, write, draft, or make a document, note, write-up, summary, report, or file — you author the content as GitHub-flavored markdown and it is saved in the files entity as a markdown artifact, then opened in the viewer for them. Prefer this over create_row on files for any document the user wants to keep. It follows the same sharing rules as any file (private mode → private). For SHORT documents (< ~2KB), pass the `content` directly. For LONG documents (reports, comprehensive guides, large analyses), pass a `spec` describing what to write instead — a stronger model will author the markdown server-side with its own token budget, avoiding truncation.' +
+      'The result carries the stored length, verified by reading the row back; treat a missing or zero length as a failed write, never as saved.',
     mutates: true,
     category: 'row',
     args: obj(
@@ -398,7 +417,8 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
       'seeking about what the data MEANS or IS FOR (e.g. "Is this meant to track suppliers?"), ' +
       'never about storage mechanics. A free-form "Other" answer is always offered alongside your ' +
       "options. If the user's answer teaches you what data means or is for, persist it with " +
-      'set_definition so the knowledge is not lost when the conversation ends.',
+      'set_definition so the knowledge is not lost when the conversation ends.' +
+      'This is also the confirmation channel for a destructive plan: name every target and its record count here before removing or clearing more than one object.',
     mutates: false,
     category: 'read',
     args: obj(
@@ -470,7 +490,8 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
       '`filter` selects the rows (omit it to mean ALL rows in the table). `set` is what to change: ' +
       'a map of field → new value, and/or the special key "visibility" set to "private" or ' +
       '"everyone" to change who can see the matched rows. Only affects rows the user is allowed to ' +
-      'change (the database enforces ownership); the returned count is what actually changed.',
+      'change (the database enforces ownership); the returned count is what actually changed.' +
+      'Removing or clearing more than one object, or more than 25 records, is refused until you have called ask_user with a question naming every target and its record count.',
     mutates: true,
     category: 'row',
     args: obj(
@@ -554,7 +575,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   },
   {
     name: 'delete_row',
-    description: 'Delete a row. Soft-deletes (sets deleted_at) unless hard is true.',
+    description:
+      'Delete a row. Soft-deletes (sets deleted_at) unless hard is true. ' +
+      'Removing or clearing more than one object, or more than 25 records, is refused until you ' +
+      'have called ask_user with a question naming every target and its record count.',
     mutates: true,
     category: 'row',
     args: obj(
@@ -584,7 +608,8 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'unlink',
     description:
-      'Remove a many-to-many link by its junction row (the two foreign-key columns + ids).',
+      'Remove a many-to-many link by its junction row (the two foreign-key columns + ids).' +
+      'Removing or clearing more than one object, or more than 25 records, is refused until you have called ask_user with a question naming every target and its record count.',
     mutates: true,
     category: 'row',
     args: obj(
@@ -639,13 +664,18 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     description:
       'Soft-delete a user table (reversible — the rows are kept and it can be ' +
       'restored from history). Guarded: an EMPTY table is removed immediately; a ' +
-      'NON-EMPTY table is NOT removed until you say what to do with its rows. Two ' +
+      'NON-EMPTY table is NOT removed until you say what to do with its rows. Three ' +
       'paths: move_to=<table> MERGES the rows into another existing table and then ' +
       'removes the emptied source — fully reversible from history, so take this path ' +
       'WITHOUT asking the user first (use it for any merge / consolidate / combine-into ' +
       "request). resolution='delete_data' soft-deletes the rows too (true deletion " +
-      'rather than a move) — for THAT path the tool returns the row count and you ' +
-      'must ask the user before calling again. Never deletes built-in tables.',
+      "rather than a move). resolution='delete_cascade' does that AND removes the rows " +
+      'in other tables that point at this one — take it when the tool reports that other ' +
+      'tables link here (it lists them with their row counts). For BOTH deletion paths ' +
+      'the tool returns what would be removed and you must ask the user before calling ' +
+      'again. File-attachment link tables are removed automatically with the table and ' +
+      'never need a decision of their own. Never deletes built-in tables.' +
+      'Removing or clearing more than one object, or more than 25 records, is refused until you have called ask_user with a question naming every target and its record count.',
     mutates: true,
     category: 'schema',
     args: obj(
@@ -653,9 +683,9 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         name: str('Table to delete.'),
         resolution: {
           type: 'string',
-          enum: ['delete_data'],
+          enum: ['delete_data', 'delete_cascade'],
           description:
-            'True-deletion path for a NON-empty table: "delete_data" soft-deletes its rows too (still reversible from history, but it removes the data instead of moving it — ask the user first). Omit to be told the row count. To MERGE into another table instead of deleting, use move_to (no need to ask first).',
+            'True-deletion path for a NON-empty table (both still reversible from history, but they remove the data instead of moving it — ask the user first). "delete_data" removes only this table\'s own rows, and is refused while other tables link here. "delete_cascade" removes those linked rows too — use it when the tool told you other tables point at this one, and repeat its list of links and row counts to the user before you call it. Omit to be told the row count and which tables link here. To MERGE into another table instead of deleting, use move_to (no need to ask first).',
         },
         move_to: str(
           'Reversible MERGE for a NON-empty table: move its rows into this existing table, then remove the emptied source. Use this for any "merge" / "consolidate" / "combine into" request — it is undoable from history, so do NOT ask the user to confirm first.',

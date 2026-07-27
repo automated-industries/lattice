@@ -13,11 +13,31 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .chat-time { flex-basis: 100%; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
     .chat-msg.user .chat-time { text-align: right; }
     .chat-msg.assistant .chat-time { text-align: left; padding-left: 28px; }
-    /* A follow-up typed mid-turn: dimmed, tagged "queued", sent when the turn ends. */
-    .chat-msg.queued { opacity: 0.6; }
-    .chat-queued-tag {
-      align-self: center; margin: 0 6px; flex: none;
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted);
+    /* A message committed to the feed while its attachment is still being ingested:
+       dimmed until the turn actually goes out. Follow-ups typed mid-turn are NOT
+       bubbles at all — they live in the queue tray above the composer, because a
+       bubble in the conversation reads as something that was already sent. */
+    .chat-msg.pending { opacity: 0.65; }
+    /* The send never happened: say so on the message itself and offer the retry
+       there, rather than leaving a bubble for a message that was never delivered. */
+    .chat-msg.failed .chat-bubble.user {
+      background: color-mix(in srgb, var(--danger, #c0392b) 12%, var(--surface-2));
+      color: var(--text);
+      box-shadow: none;
+    }
+    .chat-send-error {
+      flex-basis: 100%; display: flex; justify-content: flex-end; align-items: center; gap: 8px;
+      margin-top: 4px; font-size: 11px; color: var(--danger, #c0392b);
+    }
+    .chat-retry {
+      flex: none; border: 1px solid color-mix(in srgb, var(--danger, #c0392b) 45%, transparent);
+      background: none; color: var(--danger, #c0392b); cursor: pointer;
+      font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: var(--r-pill, 999px);
+    }
+    .chat-retry:hover { background: color-mix(in srgb, var(--danger, #c0392b) 10%, transparent); }
+    /* A reply the user stopped: terminal, and deliberately not styled as an error. */
+    .chat-stopped {
+      font-size: 11px; color: var(--text-muted); padding: 2px 0 2px 28px;
     }
     /* The assistant speaks with the Lattice mark as its avatar (same grid glyph as the
        brand logo / favicon) so replies read as coming from Lattice. One mark per
@@ -144,6 +164,15 @@ export const chatCss = `    /* ── Chat bubbles + tool pills ─────�
     .rail-composer .composer-send:hover:not(:disabled) { filter: brightness(1.06); box-shadow: var(--shadow-2); }
     .rail-composer .composer-send:active:not(:disabled) { transform: translateY(1px); }
     .rail-composer .composer-send:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+    /* Mid-reply the same button becomes Stop (neutral, with a stop glyph) or Queue
+       (still the accent — it IS a send, just a deferred one). */
+    .rail-composer .composer-send.is-stop {
+      background: var(--surface-2); color: var(--text);
+      border: 1px solid var(--border-strong);
+    }
+    .rail-composer .composer-send.is-stop::before { content: "⏹ "; }
+    .rail-composer .composer-send.is-stop:hover:not(:disabled) { border-color: var(--danger, #c0392b); color: var(--danger, #c0392b); }
+    .rail-composer .composer-send.is-queue::before { content: "＋ "; }
     .rail-composer .composer-setup { font-size: 13px; color: var(--text-muted); text-align: center; }
     .rail-composer .composer-setup a { color: var(--accent); }
     /* Private-mode toggle under the composer row. */

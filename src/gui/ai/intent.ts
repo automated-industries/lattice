@@ -65,6 +65,54 @@ const INTENT_SYSTEM =
   'of needs_more_info / (needs_work is the fallback path) governs handling; if ' +
   'needs_more_info is true it wins.';
 
+/**
+ * A broad "make this simpler" directive aimed at the whole model. On its own it
+ * says nothing about HOW: hide the clutter, fold two objects together, or throw
+ * objects away.
+ */
+const BROAD_TIDY_VERB =
+  /\b(simplif(?:y|ies|ied|ying)|simpler|clean(?:\s|-)?up|cleanup|clean\s+up|tidy(?:\s+up)?|consolidat(?:e|ing|ion)|streamlin(?:e|ing)|de-?clutter|reorgani[sz](?:e|ing)|restructur(?:e|ing)|normali[sz](?:e|ing)|slim\s+down|condense|prune|trim)\b/i;
+
+/** …aimed at the WHOLE model rather than one named thing. */
+const WHOLE_MODEL_SCOPE =
+  /\b(model|schema|database|workspace|tables|objects|entities|structure|everything|all\s+(?:of\s+)?(?:my|the)\s+\w+)\b/i;
+
+/**
+ * The user already said which reading they meant — either explicitly
+ * destructive (which the normal write-confirmation path handles), explicitly
+ * non-destructive, or a named operation. Nothing to disambiguate.
+ */
+const READING_ALREADY_CHOSEN =
+  /\b(delet(?:e|es|ing|ion)|drop(?:s|ping)?|remov(?:e|es|ing|al)|eras(?:e|es|ing)|wip(?:e|es|ing)|purg(?:e|es|ing)|merg(?:e|es|ing)|combin(?:e|es|ing)|de-?dup(?:e|es|ing|licate|licating)?|hid(?:e|es|ing)|collaps(?:e|es|ing)|archiv(?:e|es|ing)|renam(?:e|es|ing)|link(?:s|ing)?|relat(?:e|es|ing))\b/i;
+
+/**
+ * Force a clarifying question when a request's plausible executions include
+ * destroying the user's data.
+ *
+ * "Simplify the model" has at least three readings — hide the clutter, fold
+ * duplicate objects together, or delete objects outright — and only the last is
+ * irreversible in the user's eyes. A confidence score can't separate them,
+ * because the request is not low-confidence: it is confidently ambiguous. So
+ * this gate runs BEFORE (and independently of) the classifier and wins over it.
+ *
+ * Returns the question to ask, or null when the request is scoped, names its
+ * operation, or has nothing to do with reshaping the model.
+ */
+export function destructiveScopeAmbiguity(message: string): string | null {
+  const m = message.trim();
+  if (!m) return null;
+  if (READING_ALREADY_CHOSEN.test(m)) return null;
+  if (!BROAD_TIDY_VERB.test(m)) return null;
+  if (!WHOLE_MODEL_SCOPE.test(m)) return null;
+  return (
+    'Happy to — "simplify" could mean a few different things here, and one of them is not ' +
+    'reversible, so I want to check first. Do you want me to: (1) tidy up how things are ' +
+    'presented, without changing any data; (2) merge objects that are really the same thing and ' +
+    'combine duplicate records; or (3) actually remove objects you no longer need? I can also ' +
+    'just show you what I would change, and you pick.'
+  );
+}
+
 /** Options for {@link runIntent}: light grounding that keeps the call cheap. */
 export interface IntentOptions {
   /** The operator's display name, so the ack can address them naturally. */
@@ -104,6 +152,19 @@ export async function runIntent(
   message: string,
   opts: IntentOptions = {},
 ): Promise<IntentResult> {
+  // A request whose plausible executions include destroying data must ask,
+  // whatever the classifier would have scored it — so this decision is made
+  // deterministically here rather than left to the model's own threshold (and
+  // it costs nothing: the classifier call is skipped entirely).
+  const ambiguity = destructiveScopeAmbiguity(message);
+  if (ambiguity) {
+    return {
+      intent_summary: message.slice(0, 200),
+      ack_message: ambiguity,
+      needs_work: true,
+      needs_more_info: true,
+    };
+  }
   const who = opts.operatorName ? `The user's name is ${opts.operatorName}.\n` : '';
   const tables =
     opts.tableNames && opts.tableNames.length > 0

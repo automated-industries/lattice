@@ -114,6 +114,14 @@ export const appJs = [
   latticeTeamsJs,
   onboardingJs,
   voiceLocalJs,
-  createDatabaseWizardJs,
+  // The inline importer uses wrapper-scoped helpers (bgTask, escapeHtml,
+  // refreshEntities, renderSidebar, renderRoute, state), so like every segment
+  // above it MUST stay INSIDE the main client IIFE — which closes at the end of
+  // createDatabaseWizardJs. It previously sat AFTER that segment, i.e. at true
+  // global scope, where all of those resolved to undefined: rendering the import
+  // card threw on escapeHtml, and the post-import refresh threw inside a
+  // promise chain, so the sidebar and entity list silently never updated after
+  // an import until the page was reloaded.
   inlineImportJs,
+  createDatabaseWizardJs,
 ].join('');

@@ -267,9 +267,50 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         }
         markdown = await ctx.markdownAuthor(args.spec as string);
       }
+      // An authoring sub-call that produced nothing is a FAILURE, not an empty
+      // document to file away silently.
+      if (markdown.trim().length === 0) {
+        return {
+          ok: false,
+          error:
+            `The document "${title}" was NOT saved — the authoring step produced no text. ` +
+            `Tell the user it could not be written; never say it is in their workspace.`,
+        };
+      }
       const { row } = await artifactFileRow(ctx.db, title, markdown);
       const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
-      return { ok: true, result: { id, table: 'files', open: true } };
+      // Verify the write rather than trusting it. The failure this closes is a
+      // document that was never stored while the reply said it was "in your
+      // workspace" — one keyed read, never a scan. When the live `files` schema
+      // carries no text column there is nothing to compare against, so the write
+      // is reported as-authored instead of being flagged on no evidence.
+      const saved = (await ctx.db.get(table, id)) as { extracted_text?: unknown } | null;
+      if (saved === null) {
+        return {
+          ok: false,
+          error:
+            `The document "${title}" was NOT saved — nothing was stored for it. ` +
+            `Tell the user it could not be saved; never say it is in their workspace.`,
+        };
+      }
+      const savedText = saved.extracted_text;
+      if (typeof savedText === 'string' && savedText.length === 0) {
+        return {
+          ok: false,
+          error:
+            `The document "${title}" was NOT saved — its text did not persist. ` +
+            `Tell the user it could not be saved; never say it is in their workspace.`,
+        };
+      }
+      return {
+        ok: true,
+        result: {
+          id,
+          table: 'files',
+          open: true,
+          chars: typeof savedText === 'string' ? savedText.length : markdown.length,
+        },
+      };
     }
     case 'create_dashboard': {
       // Author a live dashboard (a `dashboards` row; the standalone HTML page

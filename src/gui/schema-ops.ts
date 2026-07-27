@@ -11,8 +11,20 @@ import {
 } from './mutations.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { isAnonymousName } from '../import/name-policy.js';
+import { isTableRole, type RoleSource, type TableRole } from '../import/roles.js';
 import { getGuiEntities, type FileJunction } from './data.js';
 import { assertNotComputedSource } from './computed-ops.js';
+import { upsertTableMeta } from './column-descriptions.js';
+import { LINEAGE_TABLE } from './lineage-store.js';
+import { PLAN_STATE_TABLE } from './planner/plan-state.js';
+import type { ShapeOp } from './planner/types.js';
+import {
+  allAsyncOrSync,
+  runAsyncOrSync,
+  introspectColumnsAsyncOrSync,
+  type StorageAdapter,
+} from '../db/adapter.js';
+import type { Lattice } from '../lattice.js';
 import type { ActiveDb } from './active-db.js';
 import { secureNewCloudTable } from '../cloud/setup.js';
 import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
@@ -702,7 +714,11 @@ export async function addUserColumn(
     'schema.add_column',
     table,
     null,
-    { column: col, type: 'text' },
+    // The revert reads `entity` and `fieldDef` off this payload. Recording only
+    // {column,type} left both undefined, so undoing a column add threw instead
+    // of removing the column — the op was written in a shape its own reverse
+    // could not consume.
+    { entity: table, column: col, type: 'text', fieldDef: { type: 'text' } },
     `Added column ${col} to ${table}`,
     sessionId,
   );
@@ -761,17 +777,198 @@ export async function softDeleteUserEntity(
   );
 }
 
-/** How the assistant should handle a NON-empty table it was asked to delete. */
-export type DeleteResolution = 'delete_data' | { move_to: string };
+/**
+ * How the assistant should handle a NON-empty table it was asked to delete.
+ *   • `delete_data`    — remove the table's OWN rows, nothing else.
+ *   • `delete_cascade` — also remove the rows in other tables that point at it.
+ *   • `{ move_to }`    — merge the rows into another table and carry the links across.
+ */
+export type DeleteResolution = 'delete_data' | 'delete_cascade' | { move_to: string };
 
 /** Outcome of {@link aiDeleteEntity}. `needsResolution` ⇒ ask the user first. */
 export type DeleteEntityOutcome =
-  | { ok: true; deleted: string; deletedRows?: number; movedRows?: number; rewiredLinks?: number }
+  | {
+      ok: true;
+      deleted: string;
+      deletedRows?: number;
+      movedRows?: number;
+      rewiredLinks?: number;
+      /** Rows in other tables that pointed here and were removed with it. */
+      cascadedLinkRows?: number;
+      /** Link tables that existed only to express a relationship with the deleted table. */
+      droppedLinkTables?: string[];
+    }
   | { ok: false; error: string }
   | { needsResolution: true; rowCount: number; message: string };
 
 /** Above this row count, the assistant refuses to auto-delete/move data. */
-const AI_DELETE_ROW_CAP = 1000;
+export const AI_DELETE_ROW_CAP = 1000;
+
+/**
+ * One table that links INTO another: the referencing table, the belongsTo
+ * relation's name, and the foreign-key column that holds the reference.
+ *
+ * `owned` marks a link table that exists ONLY to express the relationship — a
+ * strict link table (exactly two foreign keys, no payload of its own) with one
+ * of those keys pointing at the table in question. Those are part of the
+ * relationship rather than independent objects, so they are removed together
+ * with it. That distinction is what makes the table removable at all: a
+ * `files_<table>` link table is created automatically the first time a file is
+ * attached to a record, and it can never be removed on its own — it is itself a
+ * table with links pointing at it, so a "remove the links first" instruction
+ * sends the caller in a circle.
+ */
+export interface InboundLink {
+  table: string;
+  relName: string;
+  foreignKey: string;
+  owned: boolean;
+}
+
+/**
+ * Every belongsTo relation that points at `table`, classified by
+ * {@link InboundLink}. Shared by the assistant's delete tool and the HTTP delete
+ * route so the two guards read the model the same way and cannot drift apart.
+ */
+export function inboundLinksTo(active: ActiveDb, table: string): InboundLink[] {
+  const out: InboundLink[] = [];
+  for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
+    if (t.name === table) continue;
+    for (const [relName, rel] of Object.entries(t.relations)) {
+      if (rel.type === 'belongsTo' && rel.table === table) {
+        // The STRICT link-table set (two foreign keys, no payload) — the same
+        // one every other destructive path uses, never the broader display-only
+        // set, so a first-class object can't be mistaken for plumbing.
+        out.push({
+          table: t.name,
+          relName,
+          foreignKey: rel.foreignKey,
+          owned: active.junctionTables.has(t.name),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Filters selecting the rows of `link.table` that currently point at the table
+ *  being deleted. Applied in SQL — this never loads a table to filter it in JS. */
+function linkRowFilters(
+  active: ActiveDb,
+  link: InboundLink,
+): { col: string; op: 'isNotNull' | 'isNull' }[] {
+  const filters: { col: string; op: 'isNotNull' | 'isNull' }[] = [
+    { col: link.foreignKey, op: 'isNotNull' },
+  ];
+  if (active.softDeletable.has(link.table)) filters.push({ col: 'deleted_at', op: 'isNull' });
+  return filters;
+}
+
+/** How many rows currently point at the table being deleted, counted in SQL. */
+async function countLinkRows(active: ActiveDb, link: InboundLink): Promise<number> {
+  return active.db.count(link.table, { filters: linkRowFilters(active, link) });
+}
+
+/**
+ * "b.a_id (3 rows), notes.a_id (1 row)" — the inventory shown to the caller
+ * before anything is removed, so the decision is made with the row counts in
+ * hand rather than a bare list of column names.
+ */
+export async function describeInboundLinks(
+  active: ActiveDb,
+  links: InboundLink[],
+): Promise<string> {
+  const parts: string[] = [];
+  for (const link of links) {
+    const n = await countLinkRows(active, link);
+    parts.push(`${link.table}.${link.foreignKey} (${String(n)} row${n === 1 ? '' : 's'})`);
+  }
+  return parts.join(', ');
+}
+
+/**
+ * Remove everything the deletion of `owner` takes with it — the link side of the
+ * operation, shared by the assistant's delete tool and the HTTP delete route:
+ *
+ *   • the link tables that exist only to express a relationship with `owner`
+ *     (always, and without a separate decision — see {@link InboundLink});
+ *   • the rows of first-class tables that point at `owner` (only when
+ *     `opts.cascade`).
+ *
+ * Rows go through the shared audited row-delete, so each one is individually
+ * reversible from history and shows up in the activity feed. Link tables are
+ * soft-deleted like any other table, which keeps the physical table and its rows
+ * on disk — so the link table and its contents come back together when the
+ * deletion is reverted, without deleting (and re-inserting) every link row.
+ *
+ * Nothing is written until the whole plan is known to be legal: a computed table
+ * reading from a link table, or a cascade larger than `opts.rowBudget`, is
+ * refused up front rather than partway through.
+ */
+export async function removeInboundLinks(
+  active: ActiveDb,
+  owner: string,
+  inbound: InboundLink[],
+  mctx: MutationCtx,
+  opts: { cascade: boolean; rowBudget: number },
+  sessionId: string,
+): Promise<
+  { ok: true; cascadedLinkRows: number; droppedLinkTables: string[] } | { ok: false; error: string }
+> {
+  const ownedTables = [...new Set(inbound.filter((l) => l.owned).map((l) => l.table))].filter((t) =>
+    active.validTables.has(t),
+  );
+  // Refuse BEFORE any write: a computed table still reading from a link table
+  // would make its removal throw halfway through the deletion.
+  for (const t of ownedTables) {
+    try {
+      assertNotComputedSource(active, t);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+  // Count the cascade in SQL first, so an oversized one is refused with nothing
+  // written rather than leaving the model half-cascaded.
+  const plan: InboundLink[] = [];
+  let total = 0;
+  if (opts.cascade) {
+    for (const link of inbound) {
+      if (link.owned) continue;
+      const count = await countLinkRows(active, link);
+      if (count === 0) continue;
+      plan.push(link);
+      total += count;
+    }
+  }
+  if (total > opts.rowBudget) {
+    return {
+      ok: false,
+      error:
+        `Deleting "${owner}" would also remove ${String(total)} row${total === 1 ? '' : 's'} that link to it — ` +
+        `more than can be removed safely in one step (${String(opts.rowBudget)} left in this operation's budget). ` +
+        `Trim the linked tables first.`,
+    };
+  }
+  let cascadedLinkRows = 0;
+  for (const link of plan) {
+    const rows = (await active.db.query(link.table, {
+      filters: linkRowFilters(active, link),
+      limit: opts.rowBudget,
+    })) as Record<string, unknown>[];
+    for (const r of rows) {
+      // Soft where the table supports it; a table with no deleted_at column
+      // takes the same audited hard delete an ordinary row delete would.
+      await deleteRow(mctx, link.table, String(r.id), false);
+      cascadedLinkRows++;
+    }
+  }
+  const droppedLinkTables: string[] = [];
+  for (const t of ownedTables) {
+    await softDeleteUserEntity(active, t, sessionId, `Removed the ${t} links with ${owner}`);
+    droppedLinkTables.push(t);
+  }
+  return { ok: true, cascadedLinkRows, droppedLinkTables };
+}
 
 /** The GUI-marked secret columns for a table (read-only; empty when the workspace
  *  has no column-meta table). Used by the merge path so it never moves a secret
@@ -824,16 +1021,22 @@ function isAssignableToColumn(v: unknown, sqlType: string | undefined): boolean 
 /**
  * The assistant's guarded, reversible table delete. Safeguards (so the model
  * can't destroy data on a careless request):
- *   • refuses native/built-in tables, tables the operator doesn't own, and
- *     tables another table still links to (inbound FK);
+ *   • refuses native/built-in tables and tables the operator doesn't own;
  *   • EMPTY table → soft-deletes it immediately (reversible);
  *   • NON-empty table with no `resolution` → does NOT delete; returns
  *     `needsResolution` so the assistant asks the user what to do with the data;
  *   • `resolution='delete_data'` → soft-deletes every live row, then the table;
+ *   • `resolution='delete_cascade'` → the same, plus the rows in other tables
+ *     that point at this one;
  *   • `resolution={move_to}` → copies each live row into the target table
  *     (best-effort column mapping), soft-deletes the originals, then the table.
  * Every step goes through the audited mutation primitives, so the whole thing is
  * reversible from history. Never drops the physical table (no hard delete).
+ *
+ * Tables that link INTO this one are handled by {@link removeInboundLinks}: the
+ * link tables that exist only to express a relationship with it go with it
+ * automatically, while a first-class table whose own rows point here still needs
+ * an explicit `delete_cascade` (or a merge) before anything is removed.
  */
 export async function aiDeleteEntity(
   active: ActiveDb,
@@ -863,29 +1066,14 @@ export async function aiDeleteEntity(
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
-  const inbound: { table: string; relName: string; foreignKey: string }[] = [];
-  for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
-    if (t.name === name) continue;
-    for (const [relName, rel] of Object.entries(t.relations)) {
-      if (rel.type === 'belongsTo' && rel.table === name) {
-        inbound.push({ table: t.name, relName, foreignKey: rel.foreignKey });
-      }
-    }
-  }
-  const isMove = resolution !== undefined && resolution !== 'delete_data';
-  // Inbound links block a plain delete (there's nowhere to move them), but a MERGE
-  // rewires them onto the target instead of refusing — the move_to path below
-  // updates each foreign key to the moved rows and repoints its relation.
-  if (inbound.length > 0 && !isMove) {
-    return {
-      ok: false,
-      error: `Cannot delete "${name}" — these links point at it: ${inbound
-        .map((l) => `${l.table}.${l.foreignKey}`)
-        .join(
-          ', ',
-        )}. Merge "${name}" into another table to carry the links across, or remove those links first.`,
-    };
-  }
+  const inbound = inboundLinksTo(active, name);
+  // A link table that exists only to express a relationship with this one is part
+  // of that relationship and goes with it; only a first-class table holding rows
+  // of its own has to be decided about. Without that split the delete is a dead
+  // end, because the link table can't be removed on its own either.
+  const externalLinks = inbound.filter((l) => !l.owned);
+  const isMove = typeof resolution === 'object';
+  const isCascade = resolution === 'delete_cascade';
 
   const mctx: MutationCtx = {
     db: active.db,
@@ -898,11 +1086,53 @@ export async function aiDeleteEntity(
     ? await active.db.count(name, { filters: [{ col: 'deleted_at', op: 'isNull' }] })
     : await active.db.count(name);
 
-  // Empty → safe to remove straight away. (A merge that must also repoint inbound
-  // links falls through to the move_to path even with zero rows.)
-  if (rowCount === 0 && !(isMove && inbound.length > 0)) {
+  // First-class tables still pointing here hold rows of their own, so removing
+  // this table takes their links with it — the caller has to say so explicitly.
+  // A MERGE is the other way through: it rewires each foreign key onto the target
+  // instead of removing anything.
+  if (externalLinks.length > 0 && !isMove && !isCascade) {
+    const inventory = await describeInboundLinks(active, externalLinks);
+    if (resolution === undefined) {
+      return {
+        needsResolution: true,
+        rowCount,
+        message:
+          `"${name}" has ${String(rowCount)} row${rowCount === 1 ? '' : 's'} and other tables still link to it: ` +
+          `${inventory}. Removing it takes those linked rows with it, so this needs a decision first — ask the ` +
+          `user whether to delete "${name}" together with the linked rows listed above (reversible), move its ` +
+          `rows into another table, or cancel. Then call delete_entity again with ` +
+          `resolution="delete_cascade" or resolution={"move_to":"<table>"}.`,
+      };
+    }
+    return {
+      ok: false,
+      error:
+        `Cannot delete "${name}" with resolution="delete_data" — these links point at it: ${inventory}. ` +
+        `Use resolution="delete_cascade" to remove those linked rows along with the table (reversible from ` +
+        `history), or merge "${name}" into another table with move_to to carry the links across.`,
+    };
+  }
+
+  // Empty, with nothing to cascade → remove it (and the link tables it owns)
+  // straight away. A merge that must also repoint inbound links falls through to
+  // the move_to path even with zero rows.
+  const cascadeCount = isCascade ? externalLinks.length : 0;
+  if (rowCount === 0 && cascadeCount === 0 && !(isMove && inbound.length > 0)) {
+    const links = await removeInboundLinks(
+      active,
+      name,
+      inbound,
+      mctx,
+      { cascade: false, rowBudget: AI_DELETE_ROW_CAP },
+      sessionId,
+    );
+    if (!links.ok) return links;
     await softDeleteUserEntity(active, name, sessionId);
-    return { ok: true, deleted: name };
+    return {
+      ok: true,
+      deleted: name,
+      ...(links.droppedLinkTables.length > 0 ? { droppedLinkTables: links.droppedLinkTables } : {}),
+    };
   }
 
   // Non-empty → require an explicit decision about the data first.
@@ -918,8 +1148,8 @@ export async function aiDeleteEntity(
     };
   }
 
-  if (resolution === 'delete_data') {
-    if (!softDeletable) {
+  if (resolution === 'delete_data' || resolution === 'delete_cascade') {
+    if (rowCount > 0 && !softDeletable) {
       return {
         ok: false,
         error: `"${name}" rows can't be soft-deleted (no deleted_at column) — clear them manually first.`,
@@ -931,17 +1161,40 @@ export async function aiDeleteEntity(
         error: `"${name}" has ${String(rowCount)} rows — too many to auto-delete safely (cap ${String(AI_DELETE_ROW_CAP)}). Trim it first.`,
       };
     }
-    const rows = (await active.db.query(name, {
-      filters: [{ col: 'deleted_at', op: 'isNull' }],
-      limit: AI_DELETE_ROW_CAP,
-    })) as Record<string, unknown>[];
+    // Take the link side first: it counts the cascade in SQL and refuses an
+    // oversized one with nothing written, so an over-budget cascade can never
+    // leave this table's own rows already deleted.
+    const links = await removeInboundLinks(
+      active,
+      name,
+      inbound,
+      mctx,
+      { cascade: isCascade, rowBudget: AI_DELETE_ROW_CAP - rowCount },
+      sessionId,
+    );
+    if (!links.ok) return links;
+    // Guarded by rowCount so a table with no deleted_at column — reachable here
+    // only with zero rows, purely to cascade its links — is never queried with a
+    // soft-delete filter it has no column for.
     let deletedRows = 0;
-    for (const r of rows) {
-      await deleteRow(mctx, name, String(r.id), false); // soft delete — reversible
-      deletedRows++;
+    if (rowCount > 0) {
+      const rows = (await active.db.query(name, {
+        filters: [{ col: 'deleted_at', op: 'isNull' }],
+        limit: AI_DELETE_ROW_CAP,
+      })) as Record<string, unknown>[];
+      for (const r of rows) {
+        await deleteRow(mctx, name, String(r.id), false); // soft delete — reversible
+        deletedRows++;
+      }
     }
     await softDeleteUserEntity(active, name, sessionId);
-    return { ok: true, deleted: name, deletedRows };
+    return {
+      ok: true,
+      deleted: name,
+      deletedRows,
+      ...(links.cascadedLinkRows > 0 ? { cascadedLinkRows: links.cascadedLinkRows } : {}),
+      ...(links.droppedLinkTables.length > 0 ? { droppedLinkTables: links.droppedLinkTables } : {}),
+    };
   }
 
   // resolution = { move_to: target }
@@ -1089,4 +1342,701 @@ export async function aiDeleteEntity(
   await softDeleteUserEntity(active, name, sessionId);
   if (inbound.length > 0) syncCanonicalContexts(active); // refresh rollups for the repointed links
   return { ok: true, deleted: name, movedRows, rewiredLinks: inbound.length };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table roles — what a table IS, stored beside the rest of its metadata
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The per-table GUI metadata row (icon, definition — and now the role). */
+const TABLE_META = '_lattice_gui_meta';
+
+/**
+ * The role fields, added to the metadata row rather than to a table of their
+ * own: a role is one more thing we know about a table, exactly like its icon and
+ * its definition, and a second table keyed on the same thing would only need
+ * joining back together at every read.
+ *
+ * `role_source` is what protects a person's answer from being overwritten by the
+ * next inference pass, and `role_set_at` is what lets a stale inferred role be
+ * told apart from a fresh one.
+ */
+const ROLE_COLUMNS: Record<string, string> = {
+  role: 'TEXT',
+  role_source: 'TEXT',
+  grain: 'TEXT',
+  role_set_at: 'TEXT',
+};
+
+/** A role as stored for one table. */
+export interface StoredTableRole {
+  role: TableRole;
+  source: RoleSource;
+  /** What one row means, as recorded when the role was set. */
+  grain: string | null;
+  /** ISO-8601 timestamp of the write. */
+  setAt: string | null;
+}
+
+/**
+ * Add the role fields to the metadata table if they are not there yet — the
+ * same converge-on-use pattern the other bookkeeping stores follow, so a
+ * workspace created before roles existed picks them up on the first write with
+ * no migration and no reopen. Idempotent (`addColumn` introspects first) and it
+ * re-registers the columns on the live schema, so the write that follows can
+ * actually use them. They survive a reopen too: the column cache that gates
+ * reads and writes is built by introspecting the real table, not from the
+ * declaration.
+ */
+export async function ensureRoleColumns(db: Lattice): Promise<void> {
+  for (const [column, type] of Object.entries(ROLE_COLUMNS)) {
+    await db.addColumn(TABLE_META, column, type);
+  }
+}
+
+/**
+ * Every role recorded in this workspace, keyed by table name.
+ *
+ * Deliberately does NOT create the columns: a read must not write. A workspace
+ * where no role has ever been set simply has none, and the planner treats that
+ * as "nothing recorded yet" rather than as an error.
+ */
+export async function readTableRoles(db: Lattice): Promise<Map<string, StoredTableRole>> {
+  const out = new Map<string, StoredTableRole>();
+  const present = await introspectColumnsAsyncOrSync(db.adapter, TABLE_META);
+  if (!Object.keys(ROLE_COLUMNS).every((c) => present.includes(c))) return out;
+  // One row per table, and only the rows that carry a role — bounded by SQL, not
+  // by reading the table and filtering afterwards.
+  const rows = (await db.query(TABLE_META, {
+    filters: [{ col: 'role', op: 'isNotNull' }],
+    limit: 1000,
+  })) as {
+    entity_name?: unknown;
+    role?: unknown;
+    role_source?: unknown;
+    grain?: unknown;
+    role_set_at?: unknown;
+  }[];
+  for (const r of rows) {
+    if (typeof r.entity_name !== 'string' || !isTableRole(r.role)) continue;
+    out.set(r.entity_name, {
+      role: r.role,
+      source: r.role_source === 'user' ? 'user' : 'inferred',
+      grain: typeof r.grain === 'string' ? r.grain : null,
+      setAt: typeof r.role_set_at === 'string' ? r.role_set_at : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Record a table's role, how it was decided, and what one of its rows means.
+ * Leaves every other field of the metadata row (icon, definition) untouched, and
+ * refuses a table the workspace does not have — a role written against a name
+ * nothing answers to is a silent no-op, which is exactly the failure this
+ * module exists to avoid.
+ */
+export async function setTableRole(
+  active: ActiveDb,
+  table: string,
+  role: TableRole,
+  source: RoleSource,
+  grain: string | null,
+): Promise<void> {
+  if (!active.validTables.has(table)) throw new Error(`Unknown table: ${table}`);
+  if (!isTableRole(role)) throw new Error(`"${String(role)}" is not a table role.`);
+  await ensureRoleColumns(active.db);
+  const now = new Date().toISOString();
+  const fields = {
+    role,
+    role_source: source,
+    grain,
+    role_set_at: now,
+    updated_at: now,
+  };
+  const existing = (await active.db.get(TABLE_META, table)) as { entity_name: string } | null;
+  if (existing) await active.db.update(TABLE_META, table, fields);
+  else await active.db.insert(TABLE_META, { entity_name: table, ...fields });
+}
+
+/**
+ * Write a table's definition to BOTH places a definition is read from: the
+ * workspace configuration (which is what the data-model profiler consults, and
+ * therefore what decides whether the table still looks undocumented) and the
+ * browsable metadata row (which is what the interface and the assistant show).
+ *
+ * Splitting those two was a real defect: the documentation proposal read the
+ * configuration and the applier wrote only the metadata row, so applying it
+ * never satisfied the check that produced it and the same proposal came back on
+ * every pass, forever. One writer, both stores.
+ */
+export async function setTableDefinition(
+  active: ActiveDb,
+  table: string,
+  description: string,
+): Promise<void> {
+  if (!active.validTables.has(table)) throw new Error(`Unknown table: ${table}`);
+  const text = description.trim();
+  const doc = loadConfigDoc(active.configPath);
+  if (doc.getIn(['entities', table]) !== undefined) {
+    if (text) doc.setIn(['entities', table, 'description'], text);
+    else doc.deleteIn(['entities', table, 'description']);
+    saveConfigDoc(active.configPath, doc);
+  }
+  await upsertTableMeta(active.db, table, { description: text });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Renaming a table — and everything that names it
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The bookkeeping stores that record a table by NAME, and the columns holding
+ * it. Every one of these is a dangling reference the moment a table is renamed:
+ * metadata and definitions stop being found, the lineage trail breaks, cached
+ * embeddings and graph edges point at nothing, and on a cloud the sharing and
+ * column-visibility policies stop applying to the table they were written for
+ * (which fails OPEN — a renamed table would lose its column masking).
+ *
+ * Deliberately NOT in this list: the audit log. It records what happened, under
+ * the name the table had at the time; rewriting history to match the present
+ * would falsify the record and break the revert payloads stored alongside it.
+ */
+const TABLE_NAME_REFERENCES: readonly { store: string; columns: readonly string[] }[] = [
+  { store: TABLE_META, columns: ['entity_name'] },
+  { store: '_lattice_gui_column_meta', columns: ['table_name'] },
+  { store: LINEAGE_TABLE, columns: ['object_table', 'source_table'] },
+  { store: '_lattice_embeddings', columns: ['table_name'] },
+  { store: '__lattice_edges', columns: ['src_table', 'dst_table'] },
+  { store: '__lattice_computed_state', columns: ['table_name'] },
+  // Cloud only — absent on a local workspace, which the existence check handles.
+  { store: '__lattice_owners', columns: ['table_name'] },
+  { store: '__lattice_row_grants', columns: ['table_name'] },
+  { store: '__lattice_table_shares', columns: ['table_name'] },
+  { store: '__lattice_table_share_grants', columns: ['table_name'] },
+  { store: '__lattice_table_policy', columns: ['table_name'] },
+  { store: '__lattice_column_policy', columns: ['table_name'] },
+];
+
+/** One link table renamed alongside the table it is named after. */
+export interface LinkTableRename {
+  from: string;
+  to: string;
+  /** The foreign-key column named after the renamed table, when it was renamed. */
+  column?: { from: string; to: string };
+  /** The relation whose name was derived from that column, when it was renamed. */
+  relation?: { from: string; to: string };
+}
+
+/** Everything a rename moved besides the table itself. */
+export interface RenameCascade {
+  /**
+   * belongsTo declarations on other tables that pointed at the renamed table,
+   * named as they were FOUND — a link table that this same cascade also renamed
+   * appears under its previous name, and {@link RenameCascade.linkTables} maps it
+   * to the new one.
+   */
+  relations: { table: string; relation: string }[];
+  /** Computed tables whose definition named it (as a base or through a link). */
+  computed: string[];
+  /** Link tables named after it, renamed with it. */
+  linkTables: LinkTableRename[];
+  /** True when the table had a declared entity-context block, moved with it. */
+  contextMoved: boolean;
+  /** Bookkeeping rows repointed, per store + column. */
+  rows: { store: string; column: string; rows: number }[];
+  /** Saved dashboards whose recorded source tables were repointed. */
+  dashboards: number;
+  /** Cloud only: per-table masked views rebuilt under the new name. */
+  maskViews: string[];
+  /** Dismissed proposal fingerprints rewritten so the answers still apply. */
+  proposals: number;
+}
+
+export type RenameOutcome = { ok: true; cascade: RenameCascade } | { ok: false; error: string };
+
+/** Rename a key in place, preserving the order of every other key. */
+function renameKey<T>(obj: Record<string, T>, from: string, to: string): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [k, v] of Object.entries(obj)) out[k === from ? to : k] = v;
+  return out;
+}
+
+/** The machine-derived hidden overview path, rewritten when the name it was
+ *  derived from changes. An author-chosen output path is left alone. */
+function movedOutputFile(outputFile: unknown, from: string, to: string): string | null {
+  return outputFile === `.schema-only/${from}.md` ? `.schema-only/${to}.md` : null;
+}
+
+/**
+ * The link tables whose NAME is built from the table being renamed — `<table>_<other>`,
+ * `<other>_<table>`, `files_<table>`. Their names are derived, not chosen, so they
+ * have to follow: a stale `files_orders` beside a renamed `sales` is not merely
+ * untidy, it makes the next file attachment create a SECOND link table and split
+ * the links across both.
+ */
+function linkTablesNamedAfter(active: ActiveDb, from: string, to: string): LinkTableRename[] {
+  const out: LinkTableRename[] = [];
+  const others = new Set<string>([...active.validTables, 'files']);
+  others.delete(from);
+  for (const junction of active.junctionTables) {
+    for (const other of others) {
+      if (other === junction) continue;
+      if (junction === boundIdentifier(`${from}_${other}`)) {
+        out.push({ from: junction, to: boundIdentifier(`${to}_${other}`) });
+        break;
+      }
+      if (junction === boundIdentifier(`${other}_${from}`)) {
+        out.push({ from: junction, to: boundIdentifier(`${other}_${to}`) });
+        break;
+      }
+    }
+  }
+  return out.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+}
+
+/** Repoint one bookkeeping store's table-name column, skipping a store this
+ *  workspace does not have. Returns how many rows moved. */
+async function repointStore(
+  adapter: StorageAdapter,
+  store: string,
+  column: string,
+  from: string,
+  to: string,
+): Promise<number> {
+  const columns = await introspectColumnsAsyncOrSync(adapter, store);
+  if (!columns.includes(column)) return 0; // this workspace has no such store
+  const rows = (await allAsyncOrSync(
+    adapter,
+    `SELECT COUNT(*) AS n FROM "${store}" WHERE "${column}" = ?`,
+    [from],
+  )) as { n?: unknown }[];
+  const n = Number(rows[0]?.n ?? 0);
+  if (n === 0) return 0;
+  await runAsyncOrSync(adapter, `UPDATE "${store}" SET "${column}" = ? WHERE "${column}" = ?`, [
+    to,
+    from,
+  ]);
+  return n;
+}
+
+/** Repoint the table names a saved dashboard records as its data sources. The
+ *  authored page itself is re-authored by the repair pass the rename triggers;
+ *  this keeps the machine-readable dependency list correct either way. */
+async function repointDashboards(active: ActiveDb, renames: Map<string, string>): Promise<number> {
+  if (!active.db.getRegisteredTableNames().includes('dashboards')) return 0;
+  const rows = (await active.db.query('dashboards', {
+    filters: [{ col: 'source_tables', op: 'isNotNull' }],
+    limit: 500,
+  })) as { id: string; source_tables?: unknown }[];
+  let moved = 0;
+  for (const row of rows) {
+    if (typeof row.source_tables !== 'string' || row.source_tables === '') continue;
+    let sources: unknown;
+    try {
+      sources = JSON.parse(row.source_tables);
+    } catch {
+      continue; // not a list we wrote — leave it exactly as it is
+    }
+    if (!Array.isArray(sources)) continue;
+    const next: unknown[] = [];
+    let changed = false;
+    for (const source of sources as unknown[]) {
+      const target = typeof source === 'string' ? renames.get(source) : undefined;
+      next.push(target ?? source);
+      if (target !== undefined) changed = true;
+    }
+    if (!changed) continue;
+    await active.db.update('dashboards', row.id, { source_tables: JSON.stringify(next) });
+    moved++;
+  }
+  return moved;
+}
+
+/**
+ * Rewrite the dismissed-proposal fingerprints that name the table. A proposal id
+ * is `<kind>:<table>:<column>:<toTable>`, so without this every question the user
+ * already answered ("no, don't merge those") comes back the moment the table is
+ * renamed.
+ */
+async function repointProposals(active: ActiveDb, renames: Map<string, string>): Promise<number> {
+  const adapter = active.db.adapter;
+  const columns = await introspectColumnsAsyncOrSync(adapter, PLAN_STATE_TABLE);
+  if (!columns.includes('op_id')) return 0;
+  let moved = 0;
+  for (const [from, to] of renames) {
+    // Bounded by SQL to the ids that could possibly contain the name; the exact
+    // segment test below is what decides. (`_` is a LIKE wildcard, so this can
+    // over-select — never under-select, which is what matters here.)
+    const rows = (await allAsyncOrSync(
+      adapter,
+      `SELECT "op_id" FROM "${PLAN_STATE_TABLE}" WHERE "op_id" LIKE ?`,
+      [`%${from}%`],
+    )) as { op_id?: unknown }[];
+    for (const row of rows) {
+      const id = typeof row.op_id === 'string' ? row.op_id : '';
+      const parts = id.split(':');
+      if (parts.length < 2) continue;
+      const rewritten = [parts[0], ...parts.slice(1).map((p) => (p === from ? to : p))].join(':');
+      if (rewritten === id) continue;
+      const clash = (await allAsyncOrSync(
+        adapter,
+        `SELECT "op_id" FROM "${PLAN_STATE_TABLE}" WHERE "op_id" = ?`,
+        [rewritten],
+      )) as unknown[];
+      // The rewritten fingerprint may already be stored (both names dismissed at
+      // some point) — the answer is the same either way, so drop the duplicate
+      // rather than fail on the primary key.
+      if (clash.length > 0) {
+        await runAsyncOrSync(adapter, `DELETE FROM "${PLAN_STATE_TABLE}" WHERE "op_id" = ?`, [id]);
+      } else {
+        await runAsyncOrSync(
+          adapter,
+          `UPDATE "${PLAN_STATE_TABLE}" SET "op_id" = ? WHERE "op_id" = ?`,
+          [rewritten, id],
+        );
+      }
+      moved++;
+    }
+  }
+  return moved;
+}
+
+/**
+ * Rename a user table — and move EVERY other place that name is written.
+ *
+ * A rename used to move two things (the physical table, its configuration
+ * entry) and leave the rest of the workspace pointing at a name that no longer
+ * exists. This is the single primitive that moves all of them together:
+ *
+ *   • the configuration entry and the declared entity-context block;
+ *   • every belongsTo relationship other tables declare against it;
+ *   • the link tables NAMED after it, their `<table>_id` key column, and the
+ *     relation whose name was derived from that column;
+ *   • computed-table definitions that read from it (directly, or through a
+ *     link table that was renamed with it);
+ *   • the browsable per-table and per-column metadata rows (icon, definition,
+ *     role);
+ *   • the lineage trail, cached embeddings, graph edges and computed-fill state;
+ *   • on a cloud, the sharing / ownership / column-visibility policies;
+ *   • the source tables saved dashboards record;
+ *   • the fingerprints of proposals the user already dismissed.
+ *
+ * Every cascade is derived from the CURRENT state rather than replayed from a
+ * log, which makes the operation its own inverse: renaming back finds the same
+ * referrers under the new name and moves them home. Recorded as the shared
+ * revertible rename op, with the full inventory of what moved in its payload.
+ *
+ * Refuses — with a message, before writing anything — rather than half-applying.
+ */
+export async function renameUserEntity(
+  active: ActiveDb,
+  from: string,
+  to: string,
+  sessionId: string,
+): Promise<RenameOutcome> {
+  const fail = (error: string): RenameOutcome => ({ ok: false, error });
+  if (!active.validTables.has(from)) return fail(`Unknown table: ${from}`);
+  if (isNativeEntity(from)) return fail(`"${from}" is a built-in table and cannot be renamed.`);
+  if (active.computedTables.has(from)) {
+    return fail(`"${from}" is a computed table — rename it in its definition instead.`);
+  }
+  if (active.junctionTables.has(from)) {
+    return fail(`"${from}" is a relationship table; it is named after the tables it links.`);
+  }
+  const connected = active.db.getConnectedSource(from);
+  if (connected) {
+    return fail(
+      `"${from}" is a live view of a connected external data source, so its name comes from that source. ` +
+        `Rename it there, or disconnect the connector.`,
+    );
+  }
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(to)) return fail(`"${to}" is not a valid table name.`);
+  if (from === to) return fail(`"${from}" is already named that.`);
+  if (isNativeEntity(to)) return fail(`"${to}" is the name of a built-in table.`);
+  if (active.validTables.has(to) || active.db.getRegisteredTableNames().includes(to)) {
+    return fail(`A table called "${to}" already exists.`);
+  }
+
+  return active.db.withSchemaLock(async (): Promise<RenameOutcome> => {
+    if (await physicalTableExists(active, to)) {
+      return fail(`A table called "${to}" already exists.`);
+    }
+    const doc = loadConfigDoc(active.configPath);
+    const entityDef: unknown = doc.getIn(['entities', from]);
+    if (entityDef === undefined) {
+      return fail(`"${from}" is not declared in this workspace's configuration.`);
+    }
+
+    // ── plan the whole cascade before writing anything ──────────────────────
+    const links = linkTablesNamedAfter(active, from, to);
+    for (const link of links) {
+      if (
+        link.to !== link.from &&
+        (active.validTables.has(link.to) || active.db.getRegisteredTableNames().includes(link.to))
+      ) {
+        return fail(
+          `Renaming "${from}" would also rename the link table "${link.from}" to "${link.to}", ` +
+            `which already exists. Remove or rename that table first.`,
+        );
+      }
+    }
+    const config = doc.toJSON() as {
+      entities?: Record<
+        string,
+        {
+          fields?: Record<string, unknown>;
+          relations?: Record<string, { type?: string; table?: string; foreignKey?: string }>;
+          outputFile?: unknown;
+        }
+      >;
+      computed?: Record<
+        string,
+        { base?: string; fields?: Record<string, { kind?: string; via?: string }> }
+      >;
+    };
+    const renames = new Map<string, string>([[from, to]]);
+    for (const link of links) renames.set(link.from, link.to);
+
+    const cascade: RenameCascade = {
+      relations: [],
+      computed: [],
+      linkTables: links,
+      contextMoved: doc.getIn(['entityContexts', from]) !== undefined,
+      rows: [],
+      dashboards: 0,
+      proposals: 0,
+      maskViews: [],
+    };
+
+    // ── configuration: relationships pointing at anything being renamed ─────
+    for (const [table, def] of Object.entries(config.entities ?? {})) {
+      for (const [relName, rel] of Object.entries(def.relations ?? {})) {
+        const moved = rel.table === undefined ? undefined : renames.get(rel.table);
+        if (moved === undefined) continue;
+        doc.setIn(['entities', table, 'relations', relName, 'table'], moved);
+        cascade.relations.push({ table, relation: relName });
+      }
+    }
+
+    // ── configuration: the table itself + its declared context block ────────
+    doc.deleteIn(['entities', from]);
+    doc.setIn(['entities', to], entityDef);
+    const movedOverview = movedOutputFile(config.entities?.[from]?.outputFile, from, to);
+    if (movedOverview) doc.setIn(['entities', to, 'outputFile'], movedOverview);
+    if (cascade.contextMoved) {
+      const ctxDef: unknown = doc.getIn(['entityContexts', from]);
+      doc.deleteIn(['entityContexts', from]);
+      doc.setIn(['entityContexts', to], ctxDef);
+    }
+
+    // ── configuration: link tables named after it ───────────────────────────
+    for (const link of links) {
+      const def = config.entities?.[link.from];
+      if (!def) continue;
+      const relations = def.relations ?? {};
+      // The key column is named after the table by construction; the relation's
+      // own name is that column with the `_id` stripped, so the two move together.
+      const relEntry = Object.entries(relations).find(([, r]) => r.table === from);
+      const oldColumn = relEntry?.[1].foreignKey;
+      // Only a column NAMED after the table follows it; a hand-chosen key column
+      // means something of its own and is left exactly as it is.
+      const newColumn =
+        typeof oldColumn === 'string' && oldColumn === `${from}_id` ? `${to}_id` : null;
+      const oldRelName = relEntry?.[0];
+      const derivedRelName =
+        typeof oldColumn === 'string' && oldColumn.endsWith('_id')
+          ? oldColumn.slice(0, -3)
+          : oldColumn;
+      // ...and the relation name follows only when it was itself derived from
+      // that column (which is how every link table is built).
+      const newRelName =
+        newColumn !== null && oldRelName !== undefined && oldRelName === derivedRelName
+          ? newColumn.slice(0, -3)
+          : null;
+
+      let fields = { ...(def.fields ?? {}) };
+      let nextRelations: Record<string, unknown> = { ...relations };
+      if (newColumn && typeof oldColumn === 'string') {
+        fields = renameKey(fields, oldColumn, newColumn);
+        link.column = { from: oldColumn, to: newColumn };
+        for (const [k, r] of Object.entries(nextRelations)) {
+          const rel = r as { foreignKey?: string };
+          if (rel.foreignKey === oldColumn) nextRelations[k] = { ...rel, foreignKey: newColumn };
+        }
+      }
+      if (newRelName && oldRelName) {
+        nextRelations = renameKey(nextRelations, oldRelName, newRelName);
+        link.relation = { from: oldRelName, to: newRelName };
+      }
+      // This block is rebuilt from the PRE-edit snapshot, so the relation
+      // targets repointed above have to be applied to it again.
+      for (const [k, r] of Object.entries(nextRelations)) {
+        const rel = r as { table?: string };
+        const moved = rel.table === undefined ? undefined : renames.get(rel.table);
+        if (moved !== undefined) nextRelations[k] = { ...rel, table: moved };
+      }
+      const rebuilt: Record<string, unknown> = { ...def, fields, relations: nextRelations };
+      const linkOverview = movedOutputFile(def.outputFile, link.from, link.to);
+      if (linkOverview) rebuilt.outputFile = linkOverview;
+      doc.deleteIn(['entities', link.from]);
+      doc.setIn(['entities', link.to], rebuilt);
+    }
+
+    // ── configuration: computed-table definitions ───────────────────────────
+    for (const [name, def] of Object.entries(config.computed ?? {})) {
+      let touched = false;
+      const movedBase = def.base === undefined ? undefined : renames.get(def.base);
+      if (movedBase !== undefined) {
+        doc.setIn(['computed', name, 'base'], movedBase);
+        touched = true;
+      }
+      for (const [field, spec] of Object.entries(def.fields ?? {})) {
+        if (spec.kind !== 'aggregate' || typeof spec.via !== 'string') continue;
+        const dot = spec.via.indexOf('.');
+        if (dot < 0) continue;
+        const viaTable = spec.via.slice(0, dot);
+        const movedVia = renames.get(viaTable);
+        if (movedVia === undefined) continue;
+        doc.setIn(['computed', name, 'fields', field, 'via'], `${movedVia}${spec.via.slice(dot)}`);
+        touched = true;
+      }
+      if (touched) cascade.computed.push(name);
+    }
+
+    // ── physical rename ─────────────────────────────────────────────────────
+    // Everything that can be checked has been checked above (the target name is
+    // free, every derived link-table name is free, the table is declared), so
+    // the first statement below is the first write. The configuration is saved
+    // only once every rename has succeeded, so a failure here leaves the
+    // workspace describing the state it is actually in.
+    for (const link of links) {
+      if (link.column) {
+        await execSql(
+          active.db,
+          `ALTER TABLE "${link.from}" RENAME COLUMN "${link.column.from}" TO "${link.column.to}"`,
+        );
+      }
+      await execSql(active.db, `ALTER TABLE "${link.from}" RENAME TO "${link.to}"`);
+    }
+    await execSql(active.db, `ALTER TABLE "${from}" RENAME TO "${to}"`);
+    saveConfigDoc(active.configPath, doc);
+
+    // ── re-point the live workspace (no reopen) ─────────────────────────────
+    const parsed = parseConfigFile(active.configPath);
+    for (const [oldName, newName] of renames) {
+      const entry = parsed.tables.find((t) => t.name === newName);
+      if (!entry) return fail(`"${newName}" could not be re-registered after the rename.`);
+      active.db.unregisterTable(oldName);
+      await active.db.defineLate(newName, entry.definition);
+      for (const set of [
+        active.validTables,
+        active.softDeletable,
+        active.junctionTables,
+        active.hiddenLinkTables,
+      ]) {
+        if (set.delete(oldName)) set.add(newName);
+      }
+      active.entityContextByTable.delete(oldName);
+    }
+    // A declared (non-canonical) entity context has to be re-registered under the
+    // new name, or the table renders nothing until the next reopen.
+    const declaredContext = parsed.entityContexts.find((e) => e.table === to);
+    if (declaredContext) {
+      active.db.redefineEntityContext(to, declaredContext.definition);
+      active.entityContextByTable.set(to, declaredContext.definition);
+    }
+    syncCanonicalContexts(active);
+
+    // ── the cloud's per-table masked view ──────────────────────────────────
+    // Members read a table through a view NAMED after it. Postgres keeps the
+    // view attached to the table it selects from, so the view survives the
+    // rename — under the OLD name, where nothing looks for it. Rebuild it under
+    // the new name and drop the stale one, or a renamed table simply stops
+    // being readable by every member of the team.
+    if (active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db))) {
+      for (const [oldName, newName] of renames) {
+        await execSql(active.db, `DROP VIEW IF EXISTS "${oldName}_v"`);
+        const cols = active.db.getRegisteredColumns(newName);
+        const pk = active.db.getPrimaryKey(newName);
+        if (cols && pk.length > 0) {
+          await regenerateAudienceViewFromDb(active.db, newName, Object.keys(cols), pk);
+          cascade.maskViews.push(`${newName}_v`);
+        }
+      }
+    }
+
+    // ── bookkeeping stores that record the name ─────────────────────────────
+    for (const { store, columns } of TABLE_NAME_REFERENCES) {
+      for (const column of columns) {
+        for (const [oldName, newName] of renames) {
+          const rows = await repointStore(active.db.adapter, store, column, oldName, newName);
+          if (rows > 0) cascade.rows.push({ store, column, rows });
+        }
+      }
+    }
+    cascade.dashboards = await repointDashboards(active, renames);
+    cascade.proposals = await repointProposals(active, renames);
+
+    await recordSchemaOp(
+      active,
+      'schema.rename_entity',
+      to,
+      { entity: from, cascade: inverted(cascade) },
+      { entity: to, cascade },
+      `Renamed table ${from} → ${to}`,
+      sessionId,
+    );
+    return { ok: true, cascade };
+  });
+}
+
+/** The same inventory as it stood BEFORE the rename — the `before` half of the
+ *  audit record, so the entry describes both states rather than only the new one. */
+function inverted(cascade: RenameCascade): RenameCascade {
+  return {
+    ...cascade,
+    linkTables: cascade.linkTables.map((l) => ({
+      from: l.to,
+      to: l.from,
+      ...(l.column ? { column: { from: l.column.to, to: l.column.from } } : {}),
+      ...(l.relation ? { relation: { from: l.relation.to, to: l.relation.from } } : {}),
+    })),
+  };
+}
+
+/**
+ * Apply one {@link ShapeOp} — the counterpart of the structural plan applier for
+ * the ops that say what a table IS rather than how it is built. Both arms route
+ * to the primitives above, so an applied shape op is stored (and, for a rename,
+ * audited + revertible) exactly like any other schema change.
+ */
+export async function applyShapeOp(
+  active: ActiveDb,
+  op: ShapeOp,
+  sessionId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  switch (op.kind) {
+    case 'assign_role': {
+      const role = op.evidence.role;
+      if (!isTableRole(role)) {
+        return { ok: false, error: `"${String(role)}" is not a table role.` };
+      }
+      const grain = op.evidence.grain;
+      await setTableRole(
+        active,
+        op.target.table,
+        role,
+        'inferred',
+        typeof grain === 'string' ? grain : null,
+      );
+      return { ok: true };
+    }
+    case 'rename_generic_table': {
+      const to = op.target.toTable;
+      if (!to) return { ok: false, error: 'no name to rename to' };
+      const result = await renameUserEntity(active, op.target.table, to, sessionId);
+      return result.ok ? { ok: true } : { ok: false, error: result.error };
+    }
+  }
 }

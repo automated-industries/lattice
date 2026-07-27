@@ -27,6 +27,45 @@ export const renderProgressJs = `    // ─────────────�
       } catch (_) { return ''; }
     }
 
+    // ── Live relative timestamps ────────────────────────────────────────────
+    // relTime() is a pure formatter, so a label written once is frozen at the value
+    // it had when the node was created — which is why an open conversation used to
+    // read "0s ago" on every message no matter how long it had been sitting there.
+    // Stamping the ISO on the node makes the label RECOMPUTABLE, and one shared
+    // interval rewrites every stamped node. One timer for the whole page, not one
+    // per bubble: the count of stamped nodes grows with the conversation.
+    var REL_TIME_TICK_MS = 30000;
+    var relTimeTimer = null;
+    // Write a relative-time label AND the machine-readable instant it came from, so
+    // the ticker can recompute it later. Always use this instead of assigning
+    // textContent directly — an unstamped label can never be refreshed.
+    function stampRelTime(el, iso) {
+      if (!el) return;
+      var when = iso || new Date().toISOString();
+      el.setAttribute('data-ts', when);
+      el.textContent = relTime(when);
+      try { el.title = new Date(when).toLocaleString(); } catch (_) { /* invalid date → no title */ }
+    }
+    // Recompute every stamped label on the page. Returns how many nodes were
+    // refreshed (the tests assert on it; nothing in the app reads it).
+    function tickRelTimes() {
+      var nodes = document.querySelectorAll('[data-ts]');
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var iso = el.getAttribute('data-ts');
+        if (!iso) continue;
+        var next = relTime(iso);
+        if (next && el.textContent !== next) el.textContent = next;
+      }
+      return nodes.length;
+    }
+    // Start the one shared ticker. Idempotent — calling it again is a no-op, so a
+    // re-boot (workspace switch) can call it without stacking timers.
+    function startRelTimeTicker() {
+      if (relTimeTimer) return;
+      relTimeTimer = setInterval(tickRelTimes, REL_TIME_TICK_MS);
+    }
+
     // Elapsed duration since a start timestamp (ms), for in-progress work like a
     // running upload — no "ago" suffix. Mirrors relTime's unit thresholds.
     function formatElapsed(ms) {

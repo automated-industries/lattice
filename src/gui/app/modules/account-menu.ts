@@ -1,7 +1,10 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
 // header account control is one status line + ONE action, keyed on managed-model-auth:
-//   • Normal install: "Connected with Claude" + a Disconnect action (connect itself
-//     happens at the first-run wall, connect-wall.ts). Shown once connected.
+//   • Normal install: the ACTIVE model source ("Connected with Claude", the cloud
+//     account, or the connected endpoint's model) + a Disconnect action for that
+//     same source (connect itself happens at the first-run wall, connect-wall.ts).
+//     The cloud account additionally shows its remaining balance, or says the
+//     balance could not be read — never a zero standing in for an unknown.
 //   • Managed/hosted deployment: the signed-in identity + an "Account settings"
 //     action that opens the operator's account page (where balance / billing /
 //     sign-out live). The operator owns the model credential — there is nothing to
@@ -33,6 +36,42 @@ export const accountMenuJs = `    // ── Header account menu ─────�
         });
       }
       var onAction = function () {};
+      // Prepaid token balance + a quick top-up link. Used by the managed deployment
+      // and by a per-user cloud account. Honest by construction: a balance we could
+      // not read is shown as unavailable, never as $0.00 — "we do not know" and
+      // "you are out of tokens" send the user to different places.
+      function renderBalanceRow(cfg) {
+        var known = typeof cfg.balanceCents === 'number';
+        if (!known && cfg.balanceUnavailable !== true) return;
+        var bal = document.getElementById('account-menu-balance');
+        if (!bal) {
+          bal = document.createElement('div');
+          bal.id = 'account-menu-balance';
+          bal.style.cssText = 'padding:6px 12px;font-size:12px;color:var(--muted,#8a8a97);border-top:1px solid var(--border,#2a2a35)';
+          if (head.parentNode) head.parentNode.insertBefore(bal, action);
+        }
+        var topUrl = cfg.topUpUrl || cfg.accountUrl || '';
+        var amount = known ? '$' + (cfg.balanceCents / 100).toFixed(2) : 'Balance unavailable';
+        bal.innerHTML = 'Lattice tokens: <strong>' + amount + '</strong>' +
+          (topUrl ? ' · <a href="#" id="account-menu-topup">Add tokens</a>' : '');
+        if (topUrl) {
+          var tu = document.getElementById('account-menu-topup');
+          if (tu) tu.addEventListener('click', function (e) { e.preventDefault(); window.location.assign(topUrl); });
+        }
+      }
+      // After anything that can remove the active model backend (a disconnect, a
+      // sign-out that took the cloud credential with it): re-read the truth from
+      // the server and send the user back to the wall when nothing is connected,
+      // rather than leaving them in an app where every turn would fail.
+      function reflectModelDisconnect() {
+        return fetchJson('/api/assistant/config').then(function (c) {
+          if (c && c.connected) return;
+          wrap.hidden = true;
+          showConnectWall(function () { location.reload(); });
+        }).catch(function (err) {
+          if (typeof showToast === 'function') showToast(connectErrorText(err, 'Could not re-check your model connection \\u2014 reload the page.'), { type: 'error' });
+        });
+      }
       // ── Workspace-identity sign-in (local launchers only) ──
       // When an identity service is reachable and this is NOT a hosted session
       // (which already carries a verified identity), the menu offers Sign in /
@@ -58,20 +97,33 @@ export const accountMenuJs = `    // ── Header account menu ─────�
               e.preventDefault();
               closeMenu();
               if (status.linked) {
-                fetchJson('/api/identity/signout', { method: 'POST' }).then(function () {
-                  if (typeof showToast === 'function') showToast('Signed out.');
+                // Signing this device out also revokes the model credential minted
+                // from the session. The server reports whether the account side
+                // actually confirmed that; an unconfirmed revocation is shown as
+                // the error it is, because a spendable token may still be live.
+                fetchJson('/api/identity/signout', { method: 'POST' }).then(function (r) {
                   renderRow({ linked: false });
+                  if (r && r.modelAccess !== 'revoked') {
+                    if (typeof showToast === 'function') showToast(r.error || "Signed out on this device, but the account service did not confirm that this device's access was revoked.", { type: 'error' });
+                  } else if (typeof showToast === 'function') {
+                    showToast('Signed out \\u2014 this device can no longer spend your account tokens.');
+                  }
+                  return reflectModelDisconnect();
+                }).catch(function (err) {
+                  if (typeof showToast === 'function') showToast(connectErrorText(err, 'Sign-out did not complete. Try again.'), { type: 'error' });
                 });
                 return;
               }
               fetchJson('/api/identity/signin/start', { method: 'POST' }).then(function (r) {
-                if (!r || !r.verifyUrl) throw new Error('sign-in unavailable');
+                if (!r || !r.verifyUrl) throw new Error('Sign-in did not return a sign-in link. Try again shortly.');
                 // Desktop webviews have no tabs — the server-side bridge opens the
                 // system browser; a plain browser tab just opens the URL.
                 window.open(r.verifyUrl, '_blank');
                 showIdentityCodePrompt();
               }).catch(function (err) {
-                if (typeof showToast === 'function') showToast('Sign-in failed: ' + (err && err.message ? err.message : 'try again'), { type: 'error' });
+                // The server humanizes this (cause + failing step, no status code);
+                // connectErrorText is the backstop for a transport-level rejection.
+                if (typeof showToast === 'function') showToast(connectErrorText(err, 'Sign-in did not complete. Try again shortly.'), { type: 'error' });
               });
             };
           }
@@ -101,7 +153,7 @@ export const accountMenuJs = `    // ── Header account menu ─────�
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ code: code.trim() }),
               }).then(done).catch(function (err) {
-                if (typeof showToast === 'function') showToast('Sign-in failed: ' + (err && err.message ? err.message : 'invalid code'), { type: 'error' });
+                if (typeof showToast === 'function') showToast(connectErrorText(err, 'That sign-in code was not accepted \\u2014 start the sign-in again.'), { type: 'error' });
               });
             } else {
               done();
@@ -121,49 +173,47 @@ export const accountMenuJs = `    // ── Header account menu ─────�
               : name ? ('Logged in as ' + name)
               : 'Logged in with your Lattice account';
           }).catch(function () { head.textContent = 'Logged in with your Lattice account'; });
-          // Prepaid token balance + a quick top-up link (managed deployment only).
-          if (typeof cfg.balanceCents === 'number') {
-            var bal = document.getElementById('account-menu-balance');
-            if (!bal) {
-              bal = document.createElement('div');
-              bal.id = 'account-menu-balance';
-              bal.style.cssText = 'padding:6px 12px;font-size:12px;color:var(--muted,#8a8a97);border-top:1px solid var(--border,#2a2a35)';
-              if (head.parentNode) head.parentNode.insertBefore(bal, action);
-            }
-            var amt = '$' + (cfg.balanceCents / 100).toFixed(2);
-            var topUrl = cfg.topUpUrl || cfg.accountUrl || '';
-            bal.innerHTML = 'Lattice tokens: <strong>' + amt + '</strong>' +
-              (topUrl ? ' · <a href="#" id="account-menu-topup">Add tokens</a>' : '');
-            if (topUrl) {
-              var tu = document.getElementById('account-menu-topup');
-              if (tu) tu.addEventListener('click', function (e) { e.preventDefault(); window.location.assign(topUrl); });
-            }
-          }
+          renderBalanceRow(cfg);
           action.textContent = 'Account settings';
           action.classList.remove('danger');
           onAction = function () { if (cfg.accountUrl) window.location.assign(cfg.accountUrl); };
           wrap.hidden = false;
         } else {
-          // Normal install: label + Disconnect reflect the ACTIVE backend — a Claude
-          // subscription or a connected OpenAI-compatible endpoint. Shown once connected.
+          // Normal install: label + Disconnect reflect the ACTIVE backend — the
+          // account's cloud tokens, a Claude subscription, or a connected
+          // OpenAI-compatible endpoint. Shown once one of them is connected.
           var oai = cfg && cfg.openaiCompat;
           var onOpenai = cfg && cfg.activeProvider === 'openai_compat' && oai && oai.configured;
-          head.textContent = onOpenai ? ('Connected to ' + (oai.model || 'your model')) : 'Connected with Claude';
-          action.textContent = onOpenai ? 'Disconnect model' : 'Disconnect Claude';
+          var cloud = cfg && cfg.latticeCloud;
+          var onCloud = cfg && cfg.activeProvider === 'lattice_cloud' && cloud && cloud.configured;
+          head.textContent = onCloud ? 'Connected with your Lattice Cloud account'
+            : onOpenai ? ('Connected to ' + (oai.model || 'your model'))
+            : 'Connected with Claude';
+          // The cloud account is the only source that spends a balance, so it is the
+          // only one with a balance to report.
+          if (onCloud) renderBalanceRow(cfg);
+          action.textContent = onCloud ? 'Disconnect Lattice Cloud'
+            : onOpenai ? 'Disconnect model'
+            : 'Disconnect Claude';
           action.classList.add('danger');
           onAction = function () {
-            var label = onOpenai ? 'this model' : 'Claude';
+            var label = onCloud ? 'your Lattice Cloud account' : onOpenai ? 'this model' : 'Claude';
             if (!window.confirm('Disconnect ' + label + '? You will not be able to use Lattice until a model is connected.')) return;
-            var endpoint = onOpenai ? '/api/assistant/provider/openai-compat' : '/api/assistant/oauth';
+            var endpoint = onCloud ? '/api/assistant/provider/lattice-cloud'
+              : onOpenai ? '/api/assistant/provider/openai-compat'
+              : '/api/assistant/oauth';
             fetchJson(endpoint, { method: 'DELETE' }).then(function () {
               wrap.hidden = true;
               // Back to the wall — and a clean reboot once reconnected.
               showConnectWall(function () { location.reload(); });
             }).catch(function (err) {
-              if (typeof showToast === 'function') showToast('Disconnect failed: ' + (err && err.message ? err.message : 'try again'), { type: 'error' });
+              if (typeof showToast === 'function') showToast('Disconnect failed: ' + connectErrorText(err, 'try again'), { type: 'error' });
             });
           };
-          wrap.hidden = !(cfg && cfg.connected);
+          // A signed-in cloud account that has spent its balance reports
+          // connected:false — and this menu is where its balance and top-up link
+          // live, so keep it reachable instead of hiding the way out.
+          wrap.hidden = !(cfg && (cfg.connected || (cfg.latticeCloud && cfg.latticeCloud.configured)));
         }
       }).catch(function () {});
       btn.addEventListener('click', function (e) {

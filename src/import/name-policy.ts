@@ -153,7 +153,6 @@ export function applySourceNameFallback(
   if (anonymous.length === 0) return data;
   const label = labelFromFilename(originalName);
   const taken = new Set(keys.map((k) => normalizeName(k)));
-  const out: Record<string, unknown> = {};
   const renames = new Map<string, string>();
   for (const k of anonymous) {
     let candidate = label;
@@ -165,7 +164,23 @@ export function applySourceNameFallback(
     taken.add(normalizeName(candidate));
     renames.set(k, candidate);
   }
-  for (const k of keys) {
+  return renameSourceKeys(data, renames);
+}
+
+/**
+ * Rewrite a parsed source's top-level keys through `renames`, preserving the
+ * columnar `<key>` / `<key>Cols` pairing (the dictionary key is renamed in
+ * lock-step) and the file's original key ORDER. Shared by the deterministic
+ * fallback above and the import front door, so however a name was chosen the
+ * source object is rebuilt exactly one way.
+ */
+export function renameSourceKeys(
+  data: Record<string, unknown>,
+  renames: Map<string, string>,
+): Record<string, unknown> {
+  if (renames.size === 0) return data;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(data)) {
     const target = renames.get(k);
     if (target !== undefined) {
       out[target] = data[k];

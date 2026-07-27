@@ -8,9 +8,16 @@ import {
   startSignIn,
   type IdentityEndpoints,
 } from './service.js';
-import { clearIdentitySession, readIdentitySession, writeIdentitySession } from './store.js';
+import { readIdentitySession, writeIdentitySession } from './store.js';
+import { revokeDeviceAccess } from './model.js';
 import { syncMemberships, type MembershipSyncDeps } from './sync.js';
 import { isManagedWorkspaces, managerCall } from './managed.js';
+import {
+  humanizeIdentityError,
+  humanizeIdentityUnavailable,
+  identityStepOf,
+  type IdentityStep,
+} from '../ai/error-humanize.js';
 
 /**
  * GUI-server routes for the identity client (user-menu sign-in, both launchers)
@@ -32,6 +39,36 @@ interface PendingSignIn {
 }
 let pending: PendingSignIn | null = null;
 const PENDING_TTL_MS = 20 * 60 * 1000;
+
+/**
+ * Answer a failed sign-in leg with a sentence a person can act on, plus the machine
+ * -readable step so the caller can react (the first-run wall offers the alternative
+ * backends). The raw failure — endpoint, status, remote body — is logged by the
+ * sign-in client where it is raised and never travels to the browser.
+ *
+ * `purpose: 'model'` marks the call as coming from the first-run wall, where a failed
+ * sign-in is a DEAD END (no workspace exists yet, so the user cannot do anything at
+ * all until a model is connected). That, and only that, gets the escape-hatch clause;
+ * the header menu's sign-in is about workspaces and would only be muddied by it.
+ */
+function sendSignInFailure(
+  res: ServerResponse,
+  err: unknown,
+  step: IdentityStep,
+  purpose: unknown,
+  status: number,
+): void {
+  const suggestAlternatives = purpose === 'model';
+  sendJson(
+    res,
+    {
+      error: humanizeIdentityError(err, { step, suggestAlternatives }),
+      step: identityStepOf(err) ?? step,
+      suggestAlternatives,
+    },
+    status,
+  );
+}
 
 /** Complete a sign-in: exchange the code, persist the session, link identity. */
 async function completeSignIn(code: string): Promise<{ email: string; name: string | null }> {
@@ -90,7 +127,17 @@ export async function dispatchIdentityRoute(
       void syncMemberships(deps).catch(() => undefined);
       sendJson(res, { ok: true, email: who.email });
     } catch (e) {
-      sendJson(res, { ok: false, error: (e as Error).message }, 400);
+      // The approve page in the browser renders this, so it gets the same treatment
+      // as the in-app paths: humanized by cause, step named, no status code.
+      sendJson(
+        res,
+        {
+          ok: false,
+          error: humanizeIdentityError(e, { step: 'exchange' }),
+          step: identityStepOf(e) ?? 'exchange',
+        },
+        400,
+      );
     }
     return true;
   }
@@ -115,9 +162,20 @@ export async function dispatchIdentityRoute(
   }
 
   if (pathname === '/api/identity/signin/start' && method === 'POST') {
+    const body = await readJson(req);
     const endpoints = await discoverIdentityService();
     if (!endpoints) {
-      sendJson(res, { error: 'No identity service is reachable from this machine.' }, 503);
+      const suggestAlternatives = body.purpose === 'model';
+      console.warn('[lattice] identity step "discovery" failed: no service manifest resolved');
+      sendJson(
+        res,
+        {
+          error: humanizeIdentityUnavailable(suggestAlternatives),
+          step: 'discovery',
+          suggestAlternatives,
+        },
+        503,
+      );
       return true;
     }
     // The GUI server's own port is the loopback hand-back target.
@@ -134,7 +192,7 @@ export async function dispatchIdentityRoute(
       };
       sendJson(res, { ok: true, verifyUrl: started.verifyUrl });
     } catch (e) {
-      sendJson(res, { error: (e as Error).message }, 502);
+      sendSignInFailure(res, e, 'start', body.purpose, 502);
     }
     return true;
   }
@@ -146,15 +204,26 @@ export async function dispatchIdentityRoute(
       void syncMemberships(deps).catch(() => undefined);
       sendJson(res, { ok: true, email: who.email, name: who.name });
     } catch (e) {
-      sendJson(res, { error: (e as Error).message }, 400);
+      sendSignInFailure(res, e, 'exchange', body.purpose, 400);
     }
     return true;
   }
 
+  // ── Sign this device out. ──
+  // Signing out is not just "forget the bearer": the account's model credential is
+  // a spendable token minted from this session, so it has to stop working — here
+  // AND at the service, for any copy that already left the machine. The response
+  // says plainly whether the service confirmed the revoke: the device is signed
+  // out either way, but an unconfirmed revocation must not be reported as a
+  // completed one, because a live token would be left drawing on the balance.
   if (pathname === '/api/identity/signout' && method === 'POST') {
-    clearIdentitySession();
     pending = null;
-    sendJson(res, { ok: true });
+    const revocation = await revokeDeviceAccess();
+    sendJson(res, {
+      ok: true,
+      modelAccess: revocation.revoked ? 'revoked' : 'not-confirmed',
+      error: revocation.revoked ? null : revocation.error,
+    });
     return true;
   }
 

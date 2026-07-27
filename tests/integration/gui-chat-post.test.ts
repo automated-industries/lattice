@@ -142,14 +142,29 @@ describe('POST /api/chat', () => {
     process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1'; // background turn fails fast; persistence is synchronous
     const s = await boot();
     seedClaudeOAuth();
+
+    // Attach REAL files. The route now refuses a turn whose attachment ids it
+    // cannot resolve (see the next case), so a fixture with invented ids would
+    // be exercising the refusal rather than the persistence it means to check.
+    const mk = async (name: string): Promise<string> => {
+      const res = await fetch(`${s.url}/api/ingest/text`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: `contents of ${name}`, title: name }),
+      });
+      return ((await res.json()) as { id: string }).id;
+    };
+    const a = await mk('report.pdf');
+    const b = await mk('notes.docx');
+
     const r = await fetch(`${s.url}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         message: 'look at these',
         attachedFiles: [
-          { id: 'f1', name: 'report.pdf' },
-          { id: 'f2', name: 'notes.docx' },
+          { id: a, name: 'report.pdf' },
+          { id: b, name: 'notes.docx' },
         ],
       }),
     });
@@ -168,5 +183,36 @@ describe('POST /api/chat', () => {
     // The reload (GET /messages) returns the attachment names so the client re-renders
     // its chips — they used to be lost because only the message text was persisted.
     expect(user?.files).toEqual(['report.pdf', 'notes.docx']);
+  });
+
+  it('refuses a turn whose attachments cannot be resolved instead of sending it without them', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
+    const s = await boot();
+    seedClaudeOAuth();
+
+    // Ids that resolve to nothing (stale, or deleted between upload and send).
+    // This used to degrade silently into a no-attachments turn: the model was
+    // asked about files it never received, and the user was never told their
+    // attachments had been dropped.
+    const r = await fetch(`${s.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message: 'look at these',
+        attachedFiles: [
+          { id: 'f1', name: 'report.pdf' },
+          { id: 'f2', name: 'notes.docx' },
+        ],
+      }),
+    });
+    expect(r.status).toBe(409);
+    const body = (await r.json()) as { error?: string };
+    expect(body.error).toMatch(/could not be read/i);
+
+    // ...and nothing was persisted, so the composer can restore and retry.
+    const threads = (await fetch(`${s.url}/api/chat/threads`).then((x) => x.json())) as {
+      threads: { id: string }[];
+    };
+    expect(threads.threads).toHaveLength(0);
   });
 });

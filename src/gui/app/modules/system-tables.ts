@@ -121,6 +121,8 @@ export const systemTablesJs = `    // ──────────────
       if (!mount) return;
       dmActiveTable = null;
       if (!tableByName(table)) { mount.innerHTML = '<div class="empty-state">Unknown object: ' + escapeHtml(table) + '</div>'; return; }
+      // Drilling in rebuilt the toolbar — re-place the search field (see above).
+      if (typeof mountGraphSearch === 'function') mountGraphSearch();
       var myGen = ++graphRevealGen;
       var d = displayFor(table);
       var modP = loadForceGraph();
@@ -291,6 +293,9 @@ export const systemTablesJs = `    // ──────────────
     function renderSchemaGraph() {
       var mount = document.getElementById('graph-mount');
       if (!mount) return;
+      // The toolbar was just rebuilt by the view — re-place the search field in it
+      // (and restore its text) so a live search survives the re-render.
+      if (typeof mountGraphSearch === 'function') mountGraphSearch();
       var myGen = ++graphRevealGen; // cancels any prior render's in-flight reveal
       // Load the renderer module IN PARALLEL with the data fetch so the canvas can
       // paint the instant EITHER resolves — neither waits on the other.
@@ -368,6 +373,7 @@ export const systemTablesJs = `    // ──────────────
       // A warm set seeds every node from cache, so the single setData lands instantly.
       if (warm || graphReducedMotion() || allNodes.length <= 8) {
         schemaGraphHandle.setData(allNodes, allEdges);
+        graphSearchReapply();
         return;
       }
       var ordered = allNodes.slice().sort(function (a, b) { return (b.radius || 0) - (a.radius || 0); });
@@ -378,8 +384,88 @@ export const systemTablesJs = `    // ──────────────
         shown = Math.min(shown + step, ordered.length);
         schemaGraphHandle.setData(ordered.slice(0, shown), allEdges);
         if (shown < ordered.length) window.setTimeout(wave, 90);
+        else graphSearchReapply(); // every node is in — safe to light the matches
       }
       wave();
+    }
+
+    // ── Search → graph highlight ──────────────────────────────────────────────
+    // The renderer already owns a highlight mode: setHighlight pulses the matched
+    // nodes (the warm stroke), dims the rest, and frames the matches. Nothing drove
+    // it, so a search lit nothing up. This is the seam — the workspace search
+    // endpoint's hits, mapped onto whichever graph is mounted, handed to that ONE
+    // entry point. No second search implementation, no second highlight mechanism.
+    //
+    // Node identity differs per graph, so the mapping does too:
+    //   'schema'         → nodes ARE tables; a table with any hit lights up.
+    //   'entity:<table>' → nodes are that table's rows; the matching ids light up.
+    var graphSearchGen = 0;    // rising id: only the newest search may paint
+    var graphSearchQuery = ''; // the query the current highlight reflects ('' = none)
+
+    // Node ids in the CURRENTLY MOUNTED graph that a search result touches.
+    function graphSearchNodeIds(result) {
+      var groups = (result && result.groups) || [];
+      var key = currentGraphKey || '';
+      var ids = [];
+      var i, g, h, hits;
+      if (key === 'schema') {
+        for (i = 0; i < groups.length; i++) {
+          g = groups[i];
+          if (g && g.table && g.hits && g.hits.length) ids.push(g.table);
+        }
+        return ids;
+      }
+      if (key.indexOf('entity:') === 0) {
+        var table = key.slice(7);
+        for (i = 0; i < groups.length; i++) {
+          g = groups[i];
+          if (!g || g.table !== table) continue;
+          hits = g.hits || [];
+          for (h = 0; h < hits.length; h++) {
+            if (hits[h] && hits[h].id != null) ids.push(String(hits[h].id));
+          }
+        }
+      }
+      return ids;
+    }
+
+    // Drive the mounted graph's highlight from a query. A blank query CLEARS it
+    // (setHighlight(null) restores every node) and costs no request. Returns a
+    // promise that REJECTS if the search fails — the caller reports it, because a
+    // silently-failed search is indistinguishable from "nothing matched".
+    function graphSearchHighlight(query) {
+      var q = query == null ? '' : String(query).trim();
+      var gen = ++graphSearchGen;
+      graphSearchQuery = q;
+      if (!q) {
+        if (schemaGraphHandle) schemaGraphHandle.setHighlight(null);
+        return Promise.resolve(null);
+      }
+      return fetchJson('/api/search?q=' + encodeURIComponent(q)).then(function (result) {
+        if (gen !== graphSearchGen) return null; // a newer query (or a clear) won
+        if (!schemaGraphHandle) return null;     // the graph was torn down meanwhile
+        var ids = graphSearchNodeIds(result);
+        schemaGraphHandle.setHighlight(ids);
+        return ids;
+      });
+    }
+
+    // Re-apply the active search to a graph that just (re)mounted. The highlight
+    // lives on the renderer handle, and switching Graph/Tables or drilling into an
+    // object builds a NEW handle — without this the field still shows a query while
+    // the graph shows nothing. Node ids differ per graph, so it re-runs the search
+    // rather than replaying the previous id list.
+    function graphSearchReapply() {
+      if (!graphSearchQuery || !schemaGraphHandle) return;
+      // Only re-light where the field that owns the query is on screen. A graph
+      // view without the field would leave the user facing a dimmed graph with
+      // nothing to explain or clear it, so drop the query instead.
+      if (!document.getElementById('graph-search-input')) { graphSearchQuery = ''; return; }
+      graphSearchHighlight(graphSearchQuery).catch(function (err) {
+        if (typeof showToast === 'function') {
+          showToast('Search failed: ' + (err && err.message ? err.message : String(err)), {});
+        }
+      });
     }
 
     // Build {nodes, links} from /api/graph: table nodes (junctions already

@@ -10,12 +10,21 @@ export const ingestProgressStateJs = `
     // Terminal labels are past-tense and honest about a capped run: a server
     // ingest can finish with done < total (per-import limit), so it reports
     // "Ingested N of M files" rather than pretending the whole set landed.
+    //
+    // A single-file job is phrased in the singular. A detached upload publishes
+    // its stages as total:1 frames, and "Ingesting 0 of 1 files…" reads like a
+    // stalled batch rather than one file being worked on.
     function ingestProgressLabel(s) {
+      var one = s.total === 1;
       if (s.terminal) {
-        return s.kind === 'server'
-          ? 'Ingested ' + s.done + ' of ' + s.total + ' files'
-          : 'Analyzed ' + s.total + ' file' + (s.total === 1 ? '' : 's');
+        if (s.kind === 'server') {
+          return one && s.done === 1
+            ? 'Ingested your file'
+            : 'Ingested ' + s.done + ' of ' + s.total + ' files';
+        }
+        return one ? 'Analyzed your file' : 'Analyzed ' + s.total + ' files';
       }
+      if (one) return s.kind === 'server' ? 'Ingesting your file…' : 'Analyzing your file…';
       return (s.kind === 'server' ? 'Ingesting' : 'Analyzing') + ' ' + s.done + ' of ' + s.total + ' files…';
     }
 

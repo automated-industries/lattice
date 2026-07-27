@@ -15,15 +15,17 @@ describe('guiAppHtml', () => {
 
     // Configure lives in a slide-over drawer opened by the single #configure-trigger
     // button (the gear + the Ask/Configure view-toggle pair were retired), with one
-    // tab per page: Data Model / Files / Connectors / Databases / Workspace / User.
-    // (The former single "Inputs" tab is split into Files+Connectors+Databases; the
-    // former "Lattice" tab's Workspaces module is folded into User.)
+    // tab per page: Data Model / Graph / Connectors / Databases / Workspace / User.
+    // (The former single "Inputs" tab was split into Files+Connectors+Databases, and
+    // Files then moved out entirely to its own left-sidebar section; the former
+    // "Lattice" tab's Workspaces module is folded into User.)
     expect(guiAppHtml).toContain('id="configure-trigger"');
     expect(guiAppHtml).not.toContain('id="settings-gear"');
     expect(guiAppHtml).toContain('id="settings-drawer"');
     expect(guiAppHtml).toContain('id="drawer-body"');
     expect(guiAppHtml).toContain('data-tab="datamodel"');
-    expect(guiAppHtml).toContain('data-tab="files"');
+    // No Files tab — the left-sidebar FILES section is the single file home.
+    expect(guiAppHtml).not.toContain('data-tab="files"');
     expect(guiAppHtml).toContain('data-tab="connectors"');
     expect(guiAppHtml).toContain('data-tab="databases"');
     expect(guiAppHtml).toContain('data-tab="database"');

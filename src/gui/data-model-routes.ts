@@ -6,6 +6,7 @@ import { canManageRoles } from '../framework/cloud-connect.js';
 import { denyIfNotCloudOwner } from './schema-routes.js';
 import { applyPlanOp } from './planner/apply.js';
 import { ensurePlan, applyDepsFor, invalidatePlanCache } from './planner/run.js';
+import { recordDismissal } from './planner/plan-state.js';
 import type { AppliedOp } from './planner/types.js';
 
 /**
@@ -109,6 +110,11 @@ export async function handleDataModelRoutes(
       return true;
     }
     dismissed.add(body.id);
+    // Persist immediately rather than relying on the next plan pass to
+    // reconcile: a dismissal the user made is durable state, and a restart
+    // between the click and the next pass would silently resurface a proposal
+    // they had already dismissed.
+    await recordDismissal(active.db, body.id);
     invalidatePlanCache(active.configPath);
     sendJson(res, { ok: true });
     return true;

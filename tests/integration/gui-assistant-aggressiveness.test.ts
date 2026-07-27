@@ -146,7 +146,7 @@ describe('inference aggressiveness', () => {
     ).toBe(true);
   });
 
-  it('high aggressiveness auto-creates a new note when the source fits nothing', async () => {
+  it('high aggressiveness auto-creates a markdown artifact when the source fits nothing', async () => {
     const server = await boot();
     await seedProject(server.url);
     mockState.matches = []; // classifier finds no existing record to link
@@ -163,12 +163,44 @@ describe('inference aggressiveness', () => {
     });
     const { id: fileId } = (await ing.json()) as { id: string };
 
-    // A new native `notes` object was created, linked back to the source file.
+    // The last-resort capture now lands as a markdown artifact in `files`
+    // rather than a `notes` row. The generic note store is retired from view in
+    // this release, so a capture written there would accumulate somewhere the
+    // user can never reach it.
+    const files = (await fetch(`${server.url}/api/tables/files/rows`).then((r) => r.json())) as {
+      rows: Record<string, unknown>[];
+    };
+    const artifacts = files.rows.filter((r) => r.artifact_type === 'markdown');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({ original_name: 'spark.md', mime: 'text/markdown' });
+
+    // Provenance replaces the note's source_file_id column: the captured
+    // document is recorded as extracted from the file that produced it.
+    const artifactId = String(artifacts[0]!.id);
+    const prov = (await fetch(
+      `${server.url}/api/provenance/row?table=files&id=${encodeURIComponent(artifactId)}`,
+    ).then((r) => r.json())) as {
+      nodes?: { id: string }[];
+      edges?: { source: string; target: string; relation: string }[];
+    };
+    // The source file must appear upstream of the artifact — this is what
+    // replaces the note's source_file_id, so if it is missing the capture has
+    // lost its provenance entirely.
+    const sourceNodeId = `src:file:files:${fileId}`;
+    expect((prov.nodes ?? []).map((n) => n.id)).toContain(sourceNodeId);
+    expect(prov.edges ?? []).toContainEqual(
+      expect.objectContaining({
+        source: sourceNodeId,
+        target: `obj:files:${artifactId}`,
+        relation: 'extracted_from',
+      }),
+    );
+
+    // ...and nothing new is written to the retired table.
     const notes = (await fetch(`${server.url}/api/tables/notes/rows`).then((r) => r.json())) as {
       rows: Record<string, unknown>[];
     };
-    expect(notes.rows).toHaveLength(1);
-    expect(notes.rows[0]).toMatchObject({ title: 'spark', source_file_id: fileId });
+    expect(notes.rows).toHaveLength(0);
   });
 
   it('builds a NEW entity + row + link from a document (Context Constructor)', async () => {

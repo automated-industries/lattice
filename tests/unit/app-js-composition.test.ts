@@ -633,8 +633,21 @@ import { appJs } from '../../src/gui/app/script.js';
 // replay renders text only and ignores any `events` array on older persisted rows.
 // Recaptured ONCE for the combined client, not per-change — the composed bundle is a
 // single artifact, so a merge of several client changes has its own length + hash.
-const ORIGINAL_LENGTH = 817910;
-const ORIGINAL_SHA256 = 'a38128474cd77067bc8f8a2f22bcee596ec3f45e6ba8c2c2107bb1c13e43333f';
+// 5.5 (cont.): the composer + chat send path rewrite — server-side Stop with a
+// four-state Send/Stop/Queue action, the queue tray above the composer (remove +
+// force-push) replacing queued bubbles in the feed, the optimistic user bubble that
+// commits before the ingest, structured attachment payloads instead of filenames as
+// the message, and the shared relative-time ticker that keeps stamped labels moving.
+// Also: the FILES sidebar section (restoring the long-orphaned tree renderer to a real
+// mount) with Configure -> Files retired, dashboard chart click-through to provenance
+// via a narrowed broker action, the connector name ladder + DCR recovery affordance,
+// humanized sign-in errors with a route to the other providers, and the graph search
+// highlight. The inline-import segment now composes INSIDE the client IIFE (it ran at
+// global scope, where its helpers were undefined), so its progress reports through the
+// background-task tracker.
+// Recaptured ONCE for the combined client, not per-change.
+const ORIGINAL_LENGTH = 852014;
+const ORIGINAL_SHA256 = '09ee21bc0340d4858108e1931d9042391df03f58597173fc1d78b12fd76fe6b6';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -230,10 +230,14 @@ describe('dashboard QA', () => {
     expect(issues).toEqual([]);
   });
 
-  it('binding gate: an empty (0-row) but well-bound query is NOT a hard issue (stays soft)', async () => {
+  it('binding gate: an empty (0-row) primary query IS a hard issue — a page of zeros is broken', async () => {
+    // Binds perfectly (real table, real column, valid SQL) and shows nothing. Treating
+    // that as a pass is what let an all-zeros dashboard ship as "healthy", so the gate
+    // now fails it — and says what the page would show vs. what the data really holds.
     const html = dash('SELECT * FROM sales WHERE amount > 999999'); // valid, binds to sales, 0 rows
     const issues = await verifyDashboardBinding(db, html, ['sales']);
-    expect(issues).toEqual([]); // 0 rows is a soft QA concern, never a hard binding block
+    expect(issues.some((i) => i.kind === 'no_data')).toBe(true);
+    expect(issues[0]?.detail).toMatch(/sales holds 2 rows/); // the fault is the query, not missing data
   });
 
   it('binding gate: static-checks a query BEYOND the execution cap (a 13th ghost-table query)', async () => {

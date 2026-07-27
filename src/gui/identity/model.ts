@@ -1,8 +1,12 @@
-import { discoverIdentityService, fetchModelCredential } from './service.js';
-import { readIdentitySession } from './store.js';
+import { discoverIdentityService, fetchModelCredential, revokeDeviceSession } from './service.js';
+import { clearIdentitySession, readIdentitySession } from './store.js';
+import { deleteAssistantCredential } from '../../framework/user-config.js';
 import {
   setLatticeCloudConfig,
   readLatticeCloudConfig,
+  clearLatticeCloudConfig,
+  activeProviderKind,
+  LATTICE_CLOUD_KIND,
   type StoredLatticeCloud,
 } from '../ai/provider-config.js';
 
@@ -43,4 +47,61 @@ export async function currentLatticeCloudCredential(): Promise<StoredLatticeClou
   const cfg = readLatticeCloudConfig();
   if (cfg && new Date(cfg.expiresAt).getTime() > Date.now() + 60_000) return cfg;
   return await refreshLatticeCloudCredential();
+}
+
+/**
+ * The outcome of cutting a device's cloud model access. `revoked: false` carries
+ * the reason: the local credential is always destroyed, but the account-side token
+ * is only dead once the service says so, and a caller must not present an
+ * unconfirmed revocation as a completed one.
+ */
+export type ModelAccessRevocation = { revoked: true } | { revoked: false; error: string };
+
+/**
+ * Sign this device out of the account and cut its model access — in this order,
+ * which is the point of the function:
+ *
+ *  1. Capture the session bearer (the only thing that can authorize step 3).
+ *  2. Destroy EVERY local credential — the stored proxy token and the session
+ *     itself — before any network call. After this line the device can neither
+ *     spend nor mint again, even if step 3 hangs or the process is killed.
+ *  3. Ask the service to revoke the session, which invalidates every credential
+ *     minted from it. Without this, a token that already left the machine keeps
+ *     drawing on the account's balance until it happens to expire.
+ *
+ * The active-provider selection is only reset when the cloud account was the
+ * backend in use: signing out of the account service must not silently move a
+ * user off their own endpoint.
+ */
+export async function revokeDeviceAccess(): Promise<ModelAccessRevocation> {
+  const bearer = readIdentitySession()?.token ?? null;
+  if (activeProviderKind() === 'lattice_cloud') clearLatticeCloudConfig();
+  else deleteAssistantCredential(LATTICE_CLOUD_KIND);
+  clearIdentitySession();
+  // No session means nothing was ever minted against one — there is no
+  // account-side credential to revoke, and the local store is already clear.
+  if (!bearer) return { revoked: true };
+  const endpoints = await discoverIdentityService();
+  if (!endpoints) {
+    return {
+      revoked: false,
+      error:
+        'Signed out on this device, but the account service could not be reached to revoke ' +
+        "this device's access. Sign this device out from your account page as well.",
+    };
+  }
+  try {
+    await revokeDeviceSession(endpoints, bearer);
+    return { revoked: true };
+  } catch {
+    // The failure detail (endpoint + status + remote body) is logged where it is
+    // raised. What the caller needs is the fact that a spendable token may still
+    // be live, and what to do about it.
+    return {
+      revoked: false,
+      error:
+        'Signed out on this device, but the account service did not confirm that this ' +
+        "device's access was revoked. Sign this device out from your account page as well.",
+    };
+  }
 }

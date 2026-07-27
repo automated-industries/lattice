@@ -20,7 +20,14 @@ export const connectorsSettingsJs = `
     // SAME catalog id (its pinned URL + curated scopes stay server-authoritative).
     var mcpCatalogId = null;
 
-    function mcpConnStatusChip(status) {
+    // A connection that errored before it ever synced never worked at all, so it reads as
+    // unfinished rather than broken — the fix is to finish authorizing it, not to debug it.
+    function mcpConnStatusChip(c) {
+      var status = c && c.status;
+      if (c && c.setupIncomplete) {
+        return '<span class="db-status"><span class="db-status-dot" style="background:' +
+          'var(--warn, #b8860b)"></span>Setup incomplete</span>';
+      }
       var color = status === 'connected' ? 'var(--accent)'
         : (status === 'error' ? 'var(--danger, #c0392b)' : 'var(--text-muted)');
       return '<span class="db-status"><span class="db-status-dot" style="background:' + color +
@@ -54,10 +61,20 @@ export const connectorsSettingsJs = `
     function paintConnectorsTable(host, connectors) {
       function rowHtml(c) {
         var items = (c.itemCount || 0) + ' ' + (c.itemCount === 1 ? 'item' : 'items');
-        var actions = c.status === 'disconnected'
-          ? '<button class="btn btn-sm primary" data-conn-act="reconnect" data-id="' + escapeHtml(c.id) + '">Reconnect</button>'
-          : '<button class="btn btn-sm" data-conn-act="refresh" data-id="' + escapeHtml(c.id) + '">Refresh</button>' +
-            '<button class="btn btn-sm" data-conn-act="disconnect" data-id="' + escapeHtml(c.id) + '">Disconnect</button>';
+        var id = escapeHtml(c.id);
+        var actions;
+        if (c.status === 'disconnected') {
+          actions = '<button class="btn btn-sm primary" data-conn-act="reconnect" data-id="' + id + '">Reconnect</button>';
+        } else if (c.lastErrorCode === 'client_registration_unsupported') {
+          // The server can only be authorized with a client the user registered by hand. That
+          // recovery already exists on the connect form — offer it HERE too, so the row that
+          // failed carries the action that fixes it instead of dead-ending on a message.
+          actions = '<button class="btn btn-sm primary" data-conn-act="add-client" data-id="' + id + '">Add OAuth client ID</button>' +
+            '<button class="btn btn-sm" data-conn-act="disconnect" data-id="' + id + '">Disconnect</button>';
+        } else {
+          actions = '<button class="btn btn-sm" data-conn-act="refresh" data-id="' + id + '">Refresh</button>' +
+            '<button class="btn btn-sm" data-conn-act="disconnect" data-id="' + id + '">Disconnect</button>';
+        }
         var err = c.lastError
           ? '<tr class="db-err-row"><td colspan="6"><div class="conn-err">' + escapeHtml(c.lastError) + '</div></td></tr>'
           : '';
@@ -65,7 +82,7 @@ export const connectorsSettingsJs = `
           '<td class="db-name">' + escapeHtml(c.displayName || 'MCP server') + '</td>' +
           '<td class="db-mono">' + escapeHtml(c.serverUrl || '—') + '</td>' +
           '<td class="db-num">' + escapeHtml(items) + '</td>' +
-          '<td>' + mcpConnStatusChip(c.status) + '</td>' +
+          '<td>' + mcpConnStatusChip(c) + '</td>' +
           '<td class="db-muted">' + escapeHtml(mcpWhen(c.lastSyncAt)) + '</td>' +
           '<td class="db-actions">' + actions + '</td></tr>' + err;
       }
@@ -97,6 +114,17 @@ export const connectorsSettingsJs = `
             // 422 flips the form into pre-registered-client mode, still this row.
             mcpReconnectId = id;
             submitConnect({ connectorId: id });
+          } else if (act === 'add-client') {
+            // Open the SAME pre-registered-client form the connect path uses, aimed at THIS row:
+            // Connect then re-drives the connect endpoint with the client id and this connectorId,
+            // so the existing row is repointed rather than duplicated.
+            mcpReconnectId = id;
+            mcpCatalogId = null;
+            var fields = document.getElementById('mcp-client-fields');
+            if (fields) fields.hidden = false;
+            var cidInput = document.getElementById('mcp-add-client-id');
+            if (cidInput && cidInput.focus) cidInput.focus();
+            setConnMsg('Enter the OAuth client ID issued by the provider, then click Connect.');
           }
         });
       });

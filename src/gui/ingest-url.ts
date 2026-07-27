@@ -3,7 +3,7 @@ import type { FileJunction } from './data.js';
 import { createRow, type MutationCtx } from './mutations.js';
 import { fileIdentity, requiredFileDefaults } from './file-row.js';
 import { describe } from './ai/extract.js';
-import { enrichWithLlm } from './ai/enrich.js';
+import { enrichWithLlm, type DroppedExtraction } from './ai/enrich.js';
 import { crawlUrl } from '../ai/crawl.js';
 import { assertSafeUrl } from '../sources/url-safety.js';
 import {
@@ -89,6 +89,14 @@ export interface UrlIngestResult {
   charsExtracted: number;
   description: string;
   suggestedLinks: ClassifyMatch[];
+  /**
+   * Extractions the enricher refused to write (e.g. aimed at a read-only
+   * projection or mirror). Carried explicitly: it rides on the enrich result as
+   * a non-index property of an array, and JSON.stringify omits those, so a
+   * caller forwarding the raw value would report a clean ingest while content
+   * was actually dropped.
+   */
+  dropped: DroppedExtraction[];
 }
 
 export async function ingestUrlAsFile(
@@ -195,5 +203,6 @@ export async function ingestUrlAsFile(
     charsExtracted: text.length,
     description,
     suggestedLinks,
+    dropped: (suggestedLinks as Partial<{ dropped: DroppedExtraction[] }>).dropped ?? [],
   };
 }

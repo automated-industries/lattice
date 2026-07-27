@@ -11,12 +11,23 @@ import { createRequire } from 'node:module';
  * AI features compile and run without the SDK installed.
  */
 
+/**
+ * THE default model id — the one place it is written down. Every feature that
+ * means "the model we answer with by default" must import this constant rather
+ * than restating the id, so bumping the default is a one-line change and two
+ * halves of the app can never end up on different models.
+ *
+ * This module is the right home for it: it has no imports of its own beyond
+ * `node:module`, so anything (library AI features, GUI features, the assistant
+ * loop) can depend on it without an import cycle.
+ */
 export const DEFAULT_MODEL = 'claude-haiku-4-5';
 /**
  * Cheapest capable model, pinned for high-volume background passes (e.g. the
- * enrichment fold) where the customer bears the token cost. Kept distinct from
- * {@link DEFAULT_MODEL} so a future default upgrade to a larger model never
- * silently makes the bulk passes expensive.
+ * enrichment fold) where the customer bears the token cost. Deliberately its OWN
+ * literal rather than an alias of {@link DEFAULT_MODEL}: they happen to be equal
+ * today, and writing it as an alias would silently make every bulk pass expensive
+ * the day the default is upgraded to a larger model.
  */
 export const CHEAPEST_MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 2048;

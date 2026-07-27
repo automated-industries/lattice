@@ -263,8 +263,11 @@ import { css } from '../../src/gui/app/css.js';
 // for the Claude reconnect notice.
 // Recaptured ONCE for the combined stylesheet, not per-change — the composed CSS is a
 // single artifact, so a merge of several style changes has its own length + hash.
-const ORIGINAL_LENGTH = 171742;
-const ORIGINAL_SHA256 = '06d62e61e1b6d673b8b0c2294787a5f2f2ea0856b9deae90d2fc7be21fbb3dbb';
+// 5.5 (cont.): queued-bubble styles retired with the queue tray replacing them, the
+// send-error row added, and the dead grid rules for the retired Configure -> Files tab
+// removed. Recaptured ONCE for the combined stylesheet.
+const ORIGINAL_LENGTH = 173774;
+const ORIGINAL_SHA256 = '26045ae28b3f12a5b5592f435063b05777a83ada68035b4accdafc9ccd2a1314';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

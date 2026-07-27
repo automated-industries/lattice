@@ -162,43 +162,11 @@ export const configureDrawerJs = `
       }
     }
 
-    // ── Inputs tab: Files | Connectors | Databases (existing ids, existing fns) ──
-    // The Files tab is GRID-ONLY (the old list/grid toggle is retired). The grid keeps
-    // the nested folder structure (folder roots expand to nested tile grids) and
-    // inherits the ✕ remove control + de-dupe from the shared data prep. A stale
-    // "list" preference in storage is ignored — everyone gets the grid.
-    function renderInputsFiles(rows) {
-      var host = document.getElementById('inputs-files-tree');
-      if (!host) return;
-      if (typeof renderSourcesGridInto === 'function') renderSourcesGridInto(host, rows);
-      else if (typeof renderSourcesFilesInto === 'function') renderSourcesFilesInto(host, rows);
-    }
-    // Files / Connectors / Databases are now three separate Configure tabs (the tab
-    // name IS the heading, so the old .inputs-group-head subheadings are dropped). Each
-    // reuses the same element ids + wiring fns as the former single Inputs tab.
-    function renderFilesTab(body) {
-      if (!body) return;
-      body.innerHTML =
-        '<div class="inputs-group">' +
-        '<div id="inputs-files-tree" class="inputs-files-grid-host"></div>' +
-        '<div class="src-add-row src-add-files-wrap">' +
-        '<button class="src-add" id="src-add-files" type="button" aria-haspopup="menu" aria-expanded="false">＋ Add files or folder</button>' +
-        '<div class="src-add-menu" id="src-add-files-menu" role="menu" hidden>' +
-        '<button type="button" class="src-add-menu-item" data-pick="file" role="menuitem">Add file(s)…</button>' +
-        '<button type="button" class="src-add-menu-item" data-pick="folder" role="menuitem">Add a folder…</button>' +
-        '</div></div>' +
-        '<div class="src-note"><span class="src-note-ic">🔒</span>Secured: files never leave your computer.</div>' +
-        '</div>';
-      if (typeof wireSourcesButtons === 'function') wireSourcesButtons();
-      var loadFiles = function () {
-        fetchJson('/api/tables/files/rows?exclude=' + encodeURIComponent('extracted_text,description'))
-          .then(function (data) {
-            renderInputsFiles(((data && data.rows) || []).filter(function (r) { return !r.deleted_at && !r.artifact_type; }));
-          })
-          .catch(function () { renderInputsFiles([]); });
-      };
-      loadFiles();
-    }
+    // ── Configure input tabs: Connectors | Databases ──────────────────────
+    // There is no Files tab: the left sidebar's FILES section is the single file
+    // home, and a second browser here would duplicate both the surface and the
+    // add-files control ids (which are resolved by id, so one copy would be left
+    // unwired). Source roots are added and removed in that section.
     function renderConnectorsTab(body) {
       if (!body) return;
       // Full-width (the body carries dm-wide for this tab). Inline, no drawer.

@@ -164,8 +164,12 @@ guessing or searching your data.
 
 ## The Context Constructor (file & text ingest)
 
-Drag files onto the rail, click the upload button, or paste text (or a URL). For
-each source:
+Drag files onto the rail, click the upload button, paste text (or a URL), or add
+a file or whole folder from the **Files** section in the left sidebar — the single
+place your sources live. That section is a lazy, nestable tree of the folders you
+have pointed Lattice at plus any loose files you added; expanding a folder lists
+one level at a time, clicking a file opens its record, and the ✕ on a row stops
+Lattice tracking it (your file stays on disk). For each source:
 
 1. **Referenced, not copied.** The source becomes a native `files` row that
    points at the original; bytes are not moved into Lattice.
@@ -182,10 +186,14 @@ each source:
 3. **Summarized** with Claude Haiku (the description fills in).
 4. **Organized.** The text is classified against your existing records, and for
    each match the file is **linked** — **auto-creating the `files_<entity>` junction
-   table when none exists yet**. When a source fits **nothing** (and aggressiveness
-   is high), a new native `notes` object is **created** for it, linked back via
-   `source_file_id`. New objects, enrichment, links, and junctions are all
-   reversible via the version history.
+   table when none exists yet**. When a source fits **nothing** it simply stays a
+   file: it keeps its summary, stays searchable, and stays listed under **Files**,
+   rather than becoming a row in a generic bucket table. (The library-level
+   `organizeSource()` API still supports a fallback object table for callers that
+   want one; the app does not use it, and the legacy native `notes` table is no
+   longer shown in the GUI — existing rows are untouched and still queryable.) New
+   objects, enrichment, links, and junctions are all reversible via the version
+   history.
 
 ### Reading a web link (`ingest_url`)
 
@@ -274,6 +282,29 @@ assistant's schema context (so a good definition improves categorization), and t
 assistant can author or correct one with the **`set_definition`** tool
 (`{ table, column?, description }` — column present ⇒ column definition, absent ⇒
 table definition).
+
+## Simplifying the data model (5.5+)
+
+Ask the assistant to **simplify, clean up, tidy, consolidate, or reorganize** your
+data model and it calls the read-only **`propose_model_simplification`** tool,
+which runs the same deterministic **data-model planner** the Data Model panel
+uses. You get back a reviewable plan: tables that hold the same thing
+(merge), duplicate records (deduplicate), a repeated category that deserves its
+own object (extract), missing links, undocumented objects, awkward names, and
+columns stored as text that are really numbers or dates — each with a
+plain-language reason and **how many records it would affect**.
+
+Two properties make this safe:
+
+- **The tool changes nothing.** It only reports. Applying a proposal stays a
+  deliberate, owner-gated click in the Data Model panel, where every applier runs
+  through the audited, revertible schema primitives.
+- **A broad "simplify" request is asked about, not guessed at.** "Simplify the
+  model" has at least three readings — tidy the presentation, fold duplicate
+  objects together, or remove objects outright — and only the last is
+  irreversible. Any request whose plausible executions include destroying data
+  gets a clarifying question first, regardless of how confident the intake step
+  is. Simplifying never means deleting your tables or records on your behalf.
 
 ## De-duplication
 

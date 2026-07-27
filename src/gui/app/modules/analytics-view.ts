@@ -208,7 +208,11 @@ export const analyticsViewJs = `
           // fires). This is the "New Dashboard" starting point.
           '<form class="analytics-home-prompt" id="an-home-prompt">' +
           '<textarea id="an-home-input" rows="1" placeholder="Describe a dashboard, or ask a question about your data…"></textarea>' +
-          '<button type="submit" class="btn primary" id="an-home-send">Ask Lattice</button>' +
+          // data-composer-input names the textarea this button speaks for, so the
+          // shared composer state machine can tell whether it has content. Without
+          // it this button never joins the machine and stays a plain Send that goes
+          // dead for the whole reply, with no Stop and no Queue.
+          '<button type="submit" class="btn primary" id="an-home-send" data-composer-input="an-home-input">Ask Lattice</button>' +
           '</form>' +
           '</div>');
         var form = host.querySelector('#an-home-prompt');
@@ -218,6 +222,9 @@ export const analyticsViewJs = `
           input.addEventListener('input', function () {
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+            // Typing is what flips this button between Send and Queue while a
+            // reply is streaming.
+            if (typeof updateComposerAction === 'function') updateComposerAction();
           });
           input.addEventListener('keydown', function (e) {
             if (e.key !== 'Enter') return;
@@ -243,8 +250,13 @@ export const analyticsViewJs = `
             // Hand off to the assistant exactly like the dock composer — the
             // reply (and any dashboard it builds) streams into the Ask Lattice dock.
             if (typeof sendChat === 'function') sendChat(q);
+            if (typeof updateComposerAction === 'function') updateComposerAction();
           });
         }
+        // Join the shared composer state machine so this second composer gets the
+        // same Send / Stop / Queue behaviour as the dock one instead of a Send
+        // button that simply goes dead for the duration of a reply.
+        if (typeof registerComposerAction === 'function') registerComposerAction('an-home-send');
       });
     }
 
@@ -271,6 +283,11 @@ export const analyticsViewJs = `
             (row.description ? '<div class="dash-desc muted">' + escapeHtml(String(row.description)) + '</div>' : '') +
             '<div id="record-history" class="dash-history" hidden></div>' +
             '<iframe id="dash-frame" class="html-frame dash-frame" title="' + escapeHtml(String(row.title || 'Dashboard')) + '" sandbox="allow-scripts"></iframe>' +
+            // Click-through target: clicking a chart opens "where did this come
+            // from" HERE, below the canvas, so the dashboard stays on screen. The
+            // panel is filled by the host broker (never by the frame) and starts
+            // empty; leaving for the underlying table is an explicit link inside it.
+            '<div id="dash-source" class="dash-history dash-source" hidden></div>' +
             '</div>');
           // Sharing: the SAME per-row visibility line + grants panel every
           // record page uses — dashboards are ordinary shareable rows.

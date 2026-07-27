@@ -37,6 +37,7 @@ import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
 import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
+import { applyRetypeColumn } from './planner/appliers.js';
 import { buildComputedFillLlm } from './computed-llm.js';
 import { installComputedFieldFill } from './computed-field-fill.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
@@ -1158,6 +1159,8 @@ type FieldPayload = { entity: string; column: string; fieldDef: unknown };
 type LinkPayload = FieldPayload & { relationName?: string; relation?: unknown };
 type RenameEntityPayload = { entity: string };
 type RenameColumnPayload = { entity: string; column: string };
+/** Both sides of a retype entry carry the column's declared type at that point. */
+type RetypeColumnPayload = { entity: string; column: string; type: string };
 
 /**
  * Apply the inverse (revert/undo) or forward (redo) of a schema audit entry:
@@ -1180,6 +1183,31 @@ export async function applySchemaConfig(
   // which the route maps to a 400 like any other non-revertible entry.
   if (isComputedSchemaOp(entry.operation)) {
     await applyComputedSchemaOp(active, entry, direction);
+    return active;
+  }
+  // A column retype is a VALUE REWRITE, not a config diff: it moves the storage
+  // class and canonicalizes every value, so — unlike a rename — it cannot be
+  // replayed by editing the config document. Replay it through its own live
+  // applier instead, exactly as the computed-table ops above do, retyping back
+  // to the type recorded on the other side of the entry. Without this the op
+  // was absent from the switch below and Undo failed outright, making retype the
+  // only schema op the history could not reverse.
+  if (entry.operation === 'schema.retype_column') {
+    const side = direction === 'inverse' ? entry.before_json : entry.after_json;
+    const payload = side ? (JSON.parse(side) as Partial<RetypeColumnPayload>) : null;
+    if (!payload?.entity || !payload.column || typeof payload.type !== 'string') {
+      // Loud, not silent: an entry we cannot reverse must say so rather than
+      // report a success that did nothing.
+      throw new Error('Cannot revert this retype: the recorded change is incomplete');
+    }
+    const outcome = await applyRetypeColumn(
+      active,
+      payload.entity,
+      payload.column,
+      payload.type,
+      '',
+    );
+    if (!outcome.ok) throw new Error(outcome.error);
     return active;
   }
   const before = entry.before_json

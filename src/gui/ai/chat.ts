@@ -3,6 +3,8 @@ import {
   executeFunction,
   DISPATCHABLE,
   ASSISTANT_HIDDEN_TABLES,
+  TurnOutcomeLedger,
+  type ConfirmationEvidence,
   type DispatchCtx,
 } from './dispatch.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
@@ -45,6 +47,33 @@ const MAX_TOOL_LOOPS = 16;
 // the user staring at a hung typing indicator. Surfaces the real last error.
 const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 const MAX_TOKENS = 4096;
+
+/**
+ * The output-token ladder one round climbs when it is cut off mid-tool-call.
+ *
+ * The cap on a model call is a RUNAWAY BRAKE, not a cost control — billing is
+ * on the tokens actually produced, so a higher ceiling costs nothing until it
+ * is used. Pricing it as if it were a budget is what turned it into an
+ * invisible wall: any tool whose arguments scale with the content they carry
+ * (a pasted transcript, a long document, a wide computed definition) has its
+ * tool_use block cut mid-JSON, the incomplete trailing argument is dropped by
+ * the streaming parser, and the call surfaces as a baffling missing-argument
+ * error the model can only blind-retry into.
+ *
+ * So the first rung is the ordinary chat budget — every normal turn is billed
+ * and behaves exactly as before — and the loop climbs ONLY for a round that is
+ * demonstrably cut off inside a tool call (see {@link truncatedToolCall}).
+ * That makes the common case free, the rare case a one-step recovery, and it
+ * needs no per-tool rule: the next big-argument tool is covered the day it
+ * lands.
+ */
+export const OUTPUT_BUDGET_TIERS: readonly number[] = [MAX_TOKENS, 16384, 65536];
+
+/** The budget at a rung of the ladder, clamped to its ends. */
+function budgetAtTier(tier: number): number {
+  const i = Math.min(Math.max(tier, 0), OUTPUT_BUDGET_TIERS.length - 1);
+  return OUTPUT_BUDGET_TIERS[i] ?? MAX_TOKENS;
+}
 
 // Caps for the cross-turn tool-memory record (see onToolRecord, persisted +
 // replayed by chat-routes rehydrateHistory). Result content is re-sent to the
@@ -177,6 +206,7 @@ const BASE_SYSTEM_PROMPT = [
   '- To CONSOLIDATE or MERGE one object into another (the user says "merge X into Y", "combine these", "fold A into B"), call delete_entity with move_to=<target> — it moves ALL of the source rows into the target, then removes the now-empty source, and the whole operation is recorded in version history and fully reversible. Because it is reversible, do NOT ask the user to confirm first, and do NOT end by telling them they can now delete the old object — just perform the merge and then tell them, in plain language, that you combined the two and that it can be restored from history if needed. (resolution=delete_data is a separate true-deletion path; a merge never needs it.) If delete_entity reports the object is too large to merge automatically, or otherwise refuses, do NOT retry the same call — relay the reason to the user in plain language and ask how they want to proceed.',
   '- Your user is NOT technical, and your replies must contain NO database or internal jargon. Do whatever they ask using your own tools — including changing who can see a record (set_visibility / set_definition) — then confirm in plain language. Never tell them to run a command, call a database function, use SQL / an API / the command line, or contact a DBA. Never surface implementation details OR internal names: no SQL, function/tool names, Postgres, RLS, schemas, or migrations, and NEVER say the words "table", "column", "junction", "foreign key", or "system table", and NEVER quote a raw internal table/column name (e.g. files, file_states, state_id) or a row id back to the user. Speak ONLY in terms they recognize: their objects by friendly name (e.g. "your Files" or "a new States list"), the fields and values inside them, files, and who can see them. Describe creating or changing structure as adding/updating an object or linking records — not as creating tables/columns. When you make a record clickable use the [label](lattice://<table>/<id>) link form (the user sees only your label, never the raw table/id). Explain the underlying mechanics only if they explicitly ask. Be concise.',
   '- All structural and data work happens silently, behind the scenes. Talk to the user ONLY about what goes INTO a dashboard and what it SHOWS — the question, the data sources in friendly terms, the numbers and charts. While working, give at most a brief plain acknowledgement ("One moment — putting that together."). Never narrate creating objects, linking, importing, or reorganizing data; when structure work was needed, report only the outcome the user cares about.',
+  '- OUTCOME TRUTH IS NEVER SUPPRESSED. The two rules above silence routine PROCESS narration — how records are organised, linked, imported, reorganised. They never silence an OUTCOME the user is affected by. If something they asked for did NOT happen, or happened but is not a success (nothing was removed, a document was not saved, a page has no data behind it), say so plainly in your final reply, in their own business terms, and offer to undo anything that was already changed. When a turn outcome record appears in your context, every line of it goes into your reply. Never call a turn done, clean, simplified, or complete when that record says otherwise — a quiet reply about work that failed is far worse than a chatty one.',
   '- Do NOT think out loud or narrate your steps between actions. Never send running commentary like "Let me search again", "Now I\'ll link them", "Let me try with explicit ids", "Let me get the third result", or "Let me fix that by adding a slug" — that is your private process and it reads as broken to the user. Produce user-facing prose ONLY as your FINAL reply, after all the tool work for this request is done. Everything before the final reply is silent (the one brief acknowledgement above aside). If a lookup fails or you must retry, do it silently and just deliver the finished result.',
 ].join('\n');
 
@@ -382,6 +412,12 @@ export interface TurnParams {
    * HTML-authoring sub-call passes a larger value here.
    */
   maxTokens?: number;
+  /**
+   * Aborts the in-flight model request. Passed straight to the provider so a stop
+   * cuts the stream mid-token instead of waiting for the turn to finish generating
+   * (and being billed for) tokens nobody will read.
+   */
+  signal?: AbortSignal;
   /** Called with each streamed text delta. */
   onText: (delta: string) => void;
 }
@@ -443,6 +479,15 @@ export interface RunChatOptions {
     isError: boolean;
     errorText?: string;
   }) => void;
+  /**
+   * Stops the turn when the user asks it to. Checked at the ROUND boundary (so the
+   * loop never starts another round) and handed to the model stream (so an abort cuts
+   * mid-token). A tool call already awaited inside the current round still finishes —
+   * that is the honest boundary, and the UI says so rather than claiming otherwise.
+   * When the signal is aborted the loop ends WITHOUT an error event: a user-requested
+   * stop is not a failure. The caller settles the turn as stopped.
+   */
+  signal?: AbortSignal;
 }
 
 /** Tools the model is allowed to call (only those the dispatcher can run). */
@@ -475,6 +520,55 @@ export function parseAskUserInput(input: Record<string, unknown>): AskUserInput 
     return { error: 'options must be an array of 2-4 short strings' };
   }
   return { question, options, allowOther: input.allow_other !== false };
+}
+
+/**
+ * Server-authored context notes are prefixed to the model's copy of the user
+ * message (`[The user is currently viewing …]`). They are NOT something the user
+ * wrote, so they must never count as the user agreeing to anything — strip them
+ * before the message is read as consent. Stripping can only ever REMOVE evidence,
+ * so the destructive gate fails closed if this ever over-matches.
+ */
+function userAuthoredText(message: string): string {
+  let rest = message;
+  for (;;) {
+    const stripped = rest.replace(/^\s*\[[\s\S]*?\]\s*/, '');
+    if (stripped === rest) return rest;
+    rest = stripped;
+  }
+}
+
+/** A reply that reads as "no". Line-anchored so a prefixed note can't trigger it. */
+const DECLINE_RE = /(^|\n)\s*(no|nope|cancel|stop|abort|don'?t|do not|never ?mind)\b/i;
+
+/**
+ * Assemble what the USER has actually seen or written that could authorize a
+ * destructive plan: the most recent question the assistant put to them
+ * (`ask_user`, replayed in history as a tool_use block) plus their own message.
+ *
+ * Nothing else counts. The assistant's own prose does not count — it is the thing
+ * being checked. When the question was not replayed (rehydration is bounded), the
+ * evidence is simply thinner and the gate stays closed, which is the safe way to
+ * be wrong.
+ */
+export function confirmationEvidence(
+  history: LlmMessage[] | undefined,
+  userMessage: string,
+): ConfirmationEvidence {
+  let asked = '';
+  for (const m of history ?? []) {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type !== 'tool_use' || b.name !== 'ask_user') continue;
+      const q = typeof b.input.question === 'string' ? b.input.question : '';
+      const options = Array.isArray(b.input.options)
+        ? b.input.options.filter((o): o is string => typeof o === 'string').join(' ')
+        : '';
+      asked = `${q} ${options}`; // keep the LAST question asked
+    }
+  }
+  const said = userAuthoredText(userMessage);
+  return { text: `${asked}\n${said}`, declined: DECLINE_RE.test(said) };
 }
 
 /** A LOCAL Lattice GUI link to a record: `http://127.0.0.1:4317/#/fs/<table>/<id>`
@@ -522,6 +616,54 @@ export async function resolveReferencedRecords(
     if (r.ok) out.push({ table: ref.table, id: ref.id, data: r.result });
   }
   return out;
+}
+
+/** A tool call the output cap cut off, and which of its arguments never arrived. */
+export interface CutToolCall {
+  id: string;
+  name: string;
+  /** Declared-required arguments absent from the call. Never empty. */
+  missing: string[];
+}
+
+/**
+ * Which tool call — if any — this round was cut off inside.
+ *
+ * Two facts make this precise rather than a guess:
+ *
+ *  1. Only the LAST content block can be cut, so only the last tool call is a
+ *     candidate. An earlier call was finished before the next block began.
+ *  2. The streaming JSON parser DROPS an incomplete trailing property outright
+ *     rather than half-writing it — `{"table":"people","values":{"na` parses to
+ *     `{ table: 'people' }`. So a cut call shows up as one that is missing an
+ *     argument its own schema declares required.
+ *
+ * Both conditions plus a `max_tokens` finish is a truncation. Any one of them
+ * alone is something else and must NOT escalate: `max_tokens` with no tool call
+ * is a long answer that ran out of room; `max_tokens` with a complete call is
+ * the text AFTER a finished tool_use block being clipped; and a missing required
+ * argument on a normal finish is an ordinary model mistake, which the dispatcher
+ * already hands back as a recoverable tool_result error.
+ *
+ * Arguments a tool declares OPTIONAL are deliberately not considered — a model
+ * omits those routinely and legitimately, so reading their absence as damage
+ * would escalate half the tool calls in the workspace.
+ */
+export function truncatedToolCall(
+  turn: Pick<TurnResult, 'stopReason' | 'toolUses'>,
+  tools: AnthropicTool[],
+): CutToolCall | null {
+  if (turn.stopReason !== 'max_tokens') return null;
+  const last = turn.toolUses[turn.toolUses.length - 1];
+  if (!last) return null;
+  const schema = tools.find((t) => t.name === last.name)?.input_schema;
+  // No schema to check against (an unknown tool) — say nothing rather than
+  // guess; the dispatcher reports the unknown tool plainly.
+  if (!schema) return null;
+  const missing = (schema.required ?? []).filter(
+    (arg) => !Object.prototype.hasOwnProperty.call(last.input, arg),
+  );
+  return missing.length > 0 ? { id: last.id, name: last.name, missing } : null;
 }
 
 /**
@@ -589,6 +731,17 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     opts.activeContext?.table === 'dashboards' ? opts.activeContext.id : undefined,
   );
 
+  // What the tools ACTUALLY do this turn. The model never summarizes a turn
+  // without this record in its context, and the user is told the truth on the
+  // stream whether or not the model repeats it.
+  const ledger = new TurnOutcomeLedger({
+    evidence: confirmationEvidence(opts.history, opts.userMessage),
+  });
+  // The reconciliation already handed to the model, so an unchanged record is not
+  // re-injected every round.
+  let injectedRecord = '';
+  let askedUserThisTurn = false;
+
   let loop = 0;
   let consecutiveAllFailed = 0;
   // Collapse consecutive tool-round preambles that restate the same intent
@@ -597,6 +750,9 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   let lastKeptPreamble = '';
   try {
     for (; loop < MAX_TOOL_LOOPS; loop++) {
+      // The user asked to stop. Round boundary is the honest cut point: whatever the
+      // previous round already started has finished, and nothing new begins.
+      if (opts.signal?.aborted) break;
       yield { type: 'assistant_message_start', id: `m${String(loop)}` };
       // Run the turn and STREAM its text deltas LIVE — the token trickles to the
       // browser as the model produces it, instead of being buffered until
@@ -608,79 +764,128 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       // (the outer catch translates it to a friendly message).
       let turn!: TurnResult;
       let emittedAny = false;
-      for (let trims = 0; ; trims++) {
-        // Single-consumer channel: onText pushes each delta; the drain loop below
-        // races the turn settling against the next delta and yields as they arrive.
-        const pending: string[] = [];
-        let wake: (() => void) | null = null;
-        const nudge = (): void => {
-          if (wake) {
-            const w = wake;
-            wake = null;
-            w();
+      // Adaptive output budget for THIS round (see OUTPUT_BUDGET_TIERS). Starts
+      // at the ordinary chat cap and climbs a rung only when the round comes
+      // back cut off inside a tool call — so a normal turn is byte-for-byte the
+      // call it always was, and a round carrying a large argument recovers in
+      // one step instead of dying against an invisible wall.
+      let tier = 0;
+      let escalated = false;
+      // Cut off even on the top rung: there is no budget left to climb, so the
+      // call is handed back below as an explicit error rather than retried
+      // forever (each retry would fail identically).
+      let cutAtCeiling: CutToolCall | null = null;
+      for (;;) {
+        const budget = budgetAtTier(tier);
+        // Only the FIRST attempt streams. An escalated retry re-generates text
+        // the abandoned attempt already put on screen, so its deltas are
+        // swallowed and the round's text is replaced wholesale with a single
+        // text_final once it settles — the user sees one preamble, not two.
+        const streamText = tier === 0;
+        for (let trims = 0; ; trims++) {
+          // Single-consumer channel: onText pushes each delta; the drain loop below
+          // races the turn settling against the next delta and yields as they arrive.
+          const pending: string[] = [];
+          let wake: (() => void) | null = null;
+          const nudge = (): void => {
+            if (wake) {
+              const w = wake;
+              wake = null;
+              w();
+            }
+          };
+          let done = false;
+          // Both success and failure fold into a TAGGED result, so this promise never
+          // rejects (no floating unhandled rejection) and its type is known when awaited
+          // after the loop — dodging the "callback-mutated var" narrowing trap.
+          const attemptP = opts.client
+            .runTurn({
+              model,
+              system,
+              messages,
+              tools,
+              maxTokens: budget,
+              ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+              // Cut the model stream the instant a stop lands, instead of paying for
+              // the rest of a reply the user has already dismissed.
+              ...(opts.signal ? { signal: opts.signal } : {}),
+              onText: (d) => {
+                if (!streamText) return; // escalated retry — replaced via text_final below
+                pending.push(d);
+                nudge();
+              },
+            })
+            .then(
+              (t): { ok: true; turn: TurnResult } | { ok: false; err: unknown } => ({
+                ok: true,
+                turn: t,
+              }),
+              (e: unknown): { ok: true; turn: TurnResult } | { ok: false; err: unknown } => ({
+                ok: false,
+                err: e,
+              }),
+            );
+          void attemptP.then(() => {
+            done = true;
+            nudge();
+          });
+          // `done` is flipped inside the .then callback above; ESLint's flow analysis
+          // can't see that a callback ran, so it wrongly reads `!done` as always-true.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          while (!done || pending.length > 0) {
+            const d = pending.shift();
+            if (d !== undefined) {
+              yield { type: 'text_delta', delta: d };
+              emittedAny = true;
+              continue;
+            }
+            await new Promise<void>((res) => {
+              wake = res;
+            });
           }
-        };
-        let done = false;
-        // Both success and failure fold into a TAGGED result, so this promise never
-        // rejects (no floating unhandled rejection) and its type is known when awaited
-        // after the loop — dodging the "callback-mutated var" narrowing trap.
-        const attemptP = opts.client
-          .runTurn({
-            model,
-            system,
-            messages,
-            tools,
-            ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-            onText: (d) => {
-              pending.push(d);
-              nudge();
-            },
-          })
-          .then(
-            (t): { ok: true; turn: TurnResult } | { ok: false; err: unknown } => ({
-              ok: true,
-              turn: t,
-            }),
-            (e: unknown): { ok: true; turn: TurnResult } | { ok: false; err: unknown } => ({
-              ok: false,
-              err: e,
-            }),
-          );
-        void attemptP.then(() => {
-          done = true;
-          nudge();
-        });
-        // `done` is flipped inside the .then callback above; ESLint's flow analysis
-        // can't see that a callback ran, so it wrongly reads `!done` as always-true.
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        while (!done || pending.length > 0) {
-          const d = pending.shift();
-          if (d !== undefined) {
-            yield { type: 'text_delta', delta: d };
-            emittedAny = true;
+          const outcome = await attemptP; // already settled once the drain loop exits
+          if (outcome.ok) {
+            turn = outcome.turn;
+            break;
+          }
+          // Retry only when NOTHING streamed yet — a real "prompt is too long" 400 is
+          // raised pre-stream (emittedAny false), so this stays a happy-path no-op;
+          // retrying after streaming would double the text. An escalated attempt
+          // streams nothing at all, so it can always be retried safely.
+          if (
+            (!streamText || !emittedAny) &&
+            trims < MAX_CONTEXT_RECOVERY_TRIMS &&
+            isContextLengthError(outcome.err) &&
+            trimOldestToolResult(messages)
+          ) {
             continue;
           }
-          await new Promise<void>((res) => {
-            wake = res;
-          });
+          throw outcome.err;
         }
-        const outcome = await attemptP; // already settled once the drain loop exits
-        if (outcome.ok) {
-          turn = outcome.turn;
+        // The round came back whole — nothing to escalate, which is the path
+        // every ordinary turn takes.
+        const cut = truncatedToolCall(turn, tools);
+        if (!cut) break;
+        if (tier + 1 >= OUTPUT_BUDGET_TIERS.length) {
+          cutAtCeiling = cut;
+          console.warn(
+            `[assistant] ${cut.name} call still cut off at the ${String(budget)}-token output ceiling ` +
+              `(never received: ${cut.missing.join(', ')}); not retrying`,
+          );
           break;
         }
-        // Retry only when NOTHING streamed yet — a real "prompt is too long" 400 is
-        // raised pre-stream (emittedAny false), so this stays a happy-path no-op;
-        // retrying after streaming would double the text.
-        if (
-          !emittedAny &&
-          trims < MAX_CONTEXT_RECOVERY_TRIMS &&
-          isContextLengthError(outcome.err) &&
-          trimOldestToolResult(messages)
-        ) {
-          continue;
-        }
-        throw outcome.err;
+        tier += 1;
+        escalated = true;
+        console.warn(
+          `[assistant] ${cut.name} call cut off at ${String(budget)} output tokens ` +
+            `(never received: ${cut.missing.join(', ')}); retrying this call at ${String(budgetAtTier(tier))}`,
+        );
+      }
+      if (escalated) {
+        // The abandoned attempt's partial preamble is still in the live bubble
+        // and the persisted message. Replace it with what the retry actually
+        // said, so the round reads as one coherent message.
+        yield { type: 'text_final', text: turn.text };
       }
       // Handle distinct stop_reason cases that aren't errors but need special messaging.
       // Refusal: the model declined to answer this request.
@@ -743,18 +948,36 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       // The args check matters: max_tokens can also clip the TEXT after a complete
       // tool_use block, so a call that carries content or spec is NOT truncated and
       // must dispatch normally.
-      function truncationError(toolName: string, input: Record<string, unknown>): string | null {
+      function truncationError(tu: ToolUse): string | null {
         if (turn.stopReason !== 'max_tokens') return null;
         // create_artifact: if both content and spec are missing (only title given),
-        // the call was truncated mid-content. Steer to spec path.
-        if (toolName === 'create_artifact') {
-          const hasContent = typeof input.content === 'string' && input.content.trim().length > 0;
-          const hasSpec = typeof input.spec === 'string' && input.spec.trim().length > 0;
+        // the call was truncated mid-content. Steer to spec path — delegated
+        // authoring is the better answer for a long document regardless of budget
+        // (a focused prompt and its own QA pass), so it is tried before the budget
+        // ladder rather than replaced by it.
+        if (tu.name === 'create_artifact') {
+          const hasContent =
+            typeof tu.input.content === 'string' && tu.input.content.trim().length > 0;
+          const hasSpec = typeof tu.input.spec === 'string' && tu.input.spec.trim().length > 0;
           if (hasContent || hasSpec) return null;
           return (
             'The tool call was cut off due to output token limit. ' +
             'For large documents, use `spec` (a brief description) instead of `content` — ' +
             'the markdown is then authored server-side with its own token budget, avoiding truncation.'
+          );
+        }
+        // The budget ladder already retried this exact call at every rung and it
+        // was still cut off at the top. Re-issuing it verbatim cannot fit either,
+        // so say what is missing and what to do instead — never let the model
+        // blind-retry into a wall it cannot clear.
+        if (cutAtCeiling?.id === tu.id) {
+          return (
+            `The tool call was cut off by the output limit: ${cutAtCeiling.missing.join(', ')} ` +
+            `never arrived, even after retrying at the largest output budget ` +
+            `(${String(budgetAtTier(OUTPUT_BUDGET_TIERS.length - 1))} tokens). ` +
+            'Do NOT re-issue the same call — it cannot fit. Split the work into several ' +
+            'smaller calls, or use a tool that takes a short description of what to write ' +
+            'instead of carrying the full content itself.'
           );
         }
         return null;
@@ -780,7 +1003,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       let askedUser = false;
       for (const tu of turn.toolUses) {
         // Check for truncation (missing args + max_tokens stop reason).
-        const trunc = truncationError(tu.name, tu.input);
+        const trunc = truncationError(tu);
         if (trunc) {
           lastToolError = trunc;
           console.warn(
@@ -828,6 +1051,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
               allowOther: parsed.allowOther,
             };
             askedUser = true;
+            askedUserThisTurn = true;
             turnAllFailed = false;
             content = ASK_USER_RESULT;
             isError = false;
@@ -850,7 +1074,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
           });
           continue;
         }
-        const res = await executeFunction(opts.dispatch, tu.name, tu.input);
+        const res = await executeFunction(opts.dispatch, tu.name, tu.input, ledger);
         if (res.ok) turnAllFailed = false;
         else if (res.error) {
           lastToolError = res.error;
@@ -909,6 +1133,16 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
       } else {
         consecutiveAllFailed = 0;
       }
+      // Reconcile what the tools did against what the answer is about to claim.
+      // The record rides the SAME user turn as the tool results (after them, so the
+      // tool_use ↔ tool_result pairing the API requires is untouched), which puts it
+      // in the model's context before any round that could summarize this turn.
+      // Re-injected only when it changes, so a long turn doesn't restate it every round.
+      const record = ledger.reconciliation();
+      if (record !== null && record !== injectedRecord) {
+        resultBlocks.push({ type: 'text', text: record });
+        injectedRecord = record;
+      }
       messages.push({ role: 'user', content: resultBlocks });
       // A question is on screen — end the turn cleanly. The answer comes back
       // as the next user message (a fresh /api/chat request).
@@ -918,24 +1152,36 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
     // still wanted to call tools but hit the step cap ⇒ the task is likely
     // unfinished. Surface it loudly (never silently truncate) instead of
     // ending with a clean `done` that looks complete.
-    if (loop >= MAX_TOOL_LOOPS) {
+    if (loop >= MAX_TOOL_LOOPS && !opts.signal?.aborted) {
       yield {
         type: 'warn',
         message: `Reached the ${String(MAX_TOOL_LOOPS)}-step limit for one message — the task may be incomplete. Send "continue" and I'll finish the rest.`,
       };
     }
   } catch (e) {
-    // Never surface a raw provider error (e.g. a 400 "prompt is too long" JSON)
-    // to the user. Context-length issues are auto-recovered above; if one still
-    // lands here (trim budget exhausted), translate it to a friendly, actionable
-    // message. The real error is logged loudly for ops (internal guideline).
-    const raw = e instanceof Error ? e.message : String(e);
-    console.error('[chat] turn failed:', raw);
-    const message = isContextLengthError(e)
-      ? 'That request was too large for me to process in one step, even after trimming older context. Try narrowing it, or start a new chat — your data is safe.'
-      : raw;
-    yield { type: 'error', message };
+    // A stop the user asked for is NOT a failure: aborting the model request rejects
+    // the in-flight call, and reporting that rejection as an error would show a
+    // scary message for something they deliberately did. Everything else is a real
+    // error and is still surfaced.
+    if (!opts.signal?.aborted) {
+      // Never surface a raw provider error (e.g. a 400 "prompt is too long" JSON)
+      // to the user. Context-length issues are auto-recovered above; if one still
+      // lands here (trim budget exhausted), translate it to a friendly, actionable
+      // message. The real error is logged loudly for ops (internal guideline).
+      const raw = e instanceof Error ? e.message : String(e);
+      console.error('[chat] turn failed:', raw);
+      const message = isContextLengthError(e)
+        ? 'That request was too large for me to process in one step, even after trimming older context. Try narrowing it, or start a new chat — your data is safe.'
+        : raw;
+      yield { type: 'error', message };
+    }
   }
+  // The truth reaches the user on a channel the model cannot talk past: work that
+  // did NOT happen, and any half-applied change still sitting in their workspace,
+  // in business terms and with the undo offer. Emitted even when the turn ended in
+  // an error or a stop — the changes are just as real either way.
+  const notice = ledger.userNotice({ askedUser: askedUserThisTurn });
+  if (notice !== null) yield { type: 'warn', message: notice };
   yield { type: 'done' };
 }
 
@@ -969,7 +1215,10 @@ interface AnthropicClientConfig {
 type AnthropicCtor = new (config: AnthropicClientConfig) => AnthropicSdk;
 interface AnthropicSdk {
   messages: {
-    stream(params: Record<string, unknown>): AnthropicMessageStream;
+    stream(
+      params: Record<string, unknown>,
+      options?: { signal?: AbortSignal },
+    ): AnthropicMessageStream;
   };
 }
 interface AnthropicMessageStream {
@@ -1042,14 +1291,19 @@ export function createAnthropicClient(auth: ClaudeAuth): LlmClient {
       // repeated turns read the prefix from the provider's prompt cache.
       // Anything volatile (workspace state, timestamps) must arrive in
       // `messages`, never in `system`, to keep the cached prefix byte-stable.
-      const stream = sdk.messages.stream({
-        model: params.model,
-        max_tokens: params.maxTokens ?? MAX_TOKENS,
-        system: [{ type: 'text', text: params.system, cache_control: { type: 'ephemeral' } }],
-        messages: params.messages,
-        tools: params.tools,
-        ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
-      });
+      const stream = sdk.messages.stream(
+        {
+          model: params.model,
+          max_tokens: params.maxTokens ?? MAX_TOKENS,
+          system: [{ type: 'text', text: params.system, cache_control: { type: 'ephemeral' } }],
+          messages: params.messages,
+          tools: params.tools,
+          ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+        },
+        // Request-level abort: a stop cuts the HTTP stream mid-token rather than
+        // letting the provider finish generating a reply nobody will read.
+        params.signal ? { signal: params.signal } : undefined,
+      );
       stream.on('text', (delta) => {
         params.onText(delta);
       });

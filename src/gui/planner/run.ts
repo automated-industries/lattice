@@ -2,13 +2,25 @@ import type { Relation } from '../../types.js';
 import { isInternalNativeEntity } from '../../framework/native-entities.js';
 import type { ActiveDb } from '../active-db.js';
 import { getGuiEntities, isJunctionTable, type GuiTableSummary } from '../data.js';
-import { upsertTableMeta } from '../column-descriptions.js';
-import { createUserRelation, aiDeleteEntity } from '../schema-ops.js';
+import {
+  createUserRelation,
+  createUserEntity,
+  aiDeleteEntity,
+  setTableDefinition,
+} from '../schema-ops.js';
 import { findTableDuplicates, mergeDuplicates, type DedupServiceCtx } from '../dedup-service.js';
 import { detect } from './detect.js';
 import { buildModelProfile, type IntrospectDb, type StructuralInput } from './introspect.js';
 import { runAutoTier, type ApplyDeps } from './apply.js';
-import type { DataModelPlan, NormalizedRelation, TableTier } from './types.js';
+import { applyRenameTable, applyExtractDimension, applyRetypeColumn } from './appliers.js';
+import { syncDismissed, loadDismissed } from './plan-state.js';
+import type {
+  DataModelPlan,
+  ModelProfile,
+  PlanOp,
+  NormalizedRelation,
+  TableTier,
+} from './types.js';
 
 /**
  * The planner orchestrator: introspect → detect → apply the AUTO tier, returning
@@ -58,8 +70,10 @@ function junctionPairOf(summary: GuiTableSummary): { a: string; b: string } | nu
   return a && b ? { a, b } : null;
 }
 
-/** Resolve each GUI table into the structural input the introspect shell consumes. */
-export function buildStructurals(active: ActiveDb): StructuralInput[] {
+/** Resolve each GUI table into the structural input the introspect shell consumes.
+ *  Takes only the read-only slice ({@link PlannerWorkspace}) so a caller that has
+ *  no full workspace handle can still profile the model. */
+export function buildStructurals(active: PlannerWorkspace): StructuralInput[] {
   const gui = getGuiEntities(active.configPath, active.outputDir);
   const connected = new Set(active.db.connectedTables());
   const out: StructuralInput[] = [];
@@ -85,7 +99,7 @@ export function buildStructurals(active: ActiveDb): StructuralInput[] {
 }
 
 /** Adapt the Lattice facade to the narrow bounded-read surface introspect needs. */
-function introspectDb(active: ActiveDb): IntrospectDb {
+function introspectDb(active: PlannerWorkspace): IntrospectDb {
   const db = active.db;
   return {
     getRegisteredTableNames: () => db.getRegisteredTableNames(),
@@ -104,28 +118,36 @@ function introspectDb(active: ActiveDb): IntrospectDb {
 }
 
 /**
- * Wire the plan appliers to the real AUDITED primitives. The AUTO tier only ever
- * uses `addRelationship` — a config-only belongsTo relation over the EXISTING FK
- * column (`createUserRelation`), which represents the 1:many FK the planner
- * detected (not an empty m2m junction) and is reversible via the `schema.add_relation`
- * op. The two data-rewriting appliers exercised most from PROPOSE review are now
- * wired to their proven primitives: `dedupRows` → `findTableDuplicates` +
+ * Wire the plan appliers to the real AUDITED primitives. Every op the review
+ * surface can show is now something it can actually run — a plan the user can
+ * SEE but not APPLY is worse than no plan.
+ *
+ * The AUTO tier only ever uses `addRelationship` — a config-only belongsTo
+ * relation over the EXISTING FK column (`createUserRelation`), which represents
+ * the 1:many FK the planner detected (not an empty m2m junction) and is
+ * reversible via the `schema.add_relation` op. The PROPOSE-tier appliers each
+ * route to their proven primitive: `dedupRows` → `findTableDuplicates` +
  * `mergeDuplicates` (soft-deletes duplicates, re-points links onto the survivor,
  * recoverable from Trash / Undo); `mergeTables` → `aiDeleteEntity({move_to})`
- * (copies rows into the target then removes the source, rewiring links). The
- * remaining restructure appliers (rename / extract-dimension / retype) stay
- * staged pending their own audited primitives.
+ * (copies rows into the target then removes the source, rewiring links);
+ * `renameTable` / `extractDimension` / `retypeColumn` → the restructure
+ * appliers, which compose the same audited create-entity / create-row /
+ * add-column / update-row / add-relation / rename primitives (see
+ * `./appliers.ts`).
  */
 export function applyDepsFor(active: ActiveDb, sessionId: string): ApplyDeps {
-  const staged = (what: string): Promise<{ ok: boolean; error?: string }> =>
-    Promise.resolve({ ok: false, error: `${what} apply is not wired in this build yet` });
   return {
     addRelationship: async (child, column, parent) => {
       const r = await createUserRelation(active, child, column, parent, sessionId);
       return r ? { relationName: r.relationName } : null;
     },
     documentTable: async (table, description) => {
-      await upsertTableMeta(active.db, table, { description });
+      // Write BOTH stores. The detector decides whether a table still needs
+      // documenting by reading the config, while this used to write only the
+      // metadata row — so the read and the write disagreed and the rule
+      // re-proposed the same table forever, no matter how many times it was
+      // applied.
+      await setTableDefinition(active, table, description);
     },
     mergeTables: async (source, target) => {
       const outcome = await aiDeleteEntity(active, source, { move_to: target }, sessionId);
@@ -158,9 +180,13 @@ export function applyDepsFor(active: ActiveDb, sessionId: string): ApplyDeps {
         return { ok: false, error: (e as Error).message };
       }
     },
-    renameTable: () => staged('rename'),
-    extractDimension: () => staged('extract-dimension'),
-    retypeColumn: () => staged('retype'),
+    renameTable: (from, to) => applyRenameTable(active, from, to, sessionId),
+    extractDimension: (table, column, dimTable) =>
+      applyExtractDimension(active, table, column, dimTable, sessionId, (name, columns) =>
+        createUserEntity(active, name, columns, sessionId, { rejectAnonymous: true }),
+      ),
+    retypeColumn: (table, column, toType) =>
+      applyRetypeColumn(active, table, column, toType, sessionId),
   };
 }
 
@@ -201,7 +227,13 @@ export const MAX_PLANNER_TABLES = 150;
 
 export interface EnsurePlanOptions {
   sessionId: string;
-  /** Dismissed proposal fingerprints (never re-surfaced). */
+  /**
+   * Dismissed proposal fingerprints (never re-surfaced). Reconciled with the
+   * workspace's durable plan-state table on every pass — stored fingerprints
+   * are hydrated into this set, and set members not yet stored are written — so
+   * a caller that only tracks dismissals in memory still gets state that
+   * survives a restart. Mutated in place.
+   */
   dismissed?: Set<string>;
   /** Bypass the watermark cache (e.g. a manual refresh). */
   force?: boolean;
@@ -227,6 +259,16 @@ export async function ensurePlan(
   const cached = planCache.get(active.configPath);
   if (!opts.force && cached?.token === before) return cached.plan;
 
+  // Let the workspace's own background schema convergence finish first. It
+  // registers the framework's bookkeeping tables, and on a single-writer engine
+  // its DDL and ours cannot be in flight at the same time. Convergence never
+  // rejects, and the plan should describe the converged schema anyway.
+  await active.converged;
+  // Reconcile the caller's dismissal set with the durable plan-state table
+  // BEFORE detection, so a proposal the user waved off on a previous run is
+  // filtered out of this one too.
+  const dismissed = await syncDismissed(active.db, opts.dismissed ?? new Set<string>());
+
   const structurals = buildStructurals(active);
   // Scale guard: the relationship/merge detection below (detect) is an O(tables^2)
   // SYNCHRONOUS pass, and buildModelProfile's reads only cross microtask boundaries, so on
@@ -241,7 +283,6 @@ export async function ensurePlan(
   }
   const profile = await buildModelProfile(introspectDb(active), structurals);
   const ops = detect(profile);
-  const dismissed = opts.dismissed ?? new Set<string>();
   const auto = ops.filter((o) => o.tier === 'auto' && !dismissed.has(o.id));
   const proposals = ops.filter((o) => o.tier === 'propose' && !dismissed.has(o.id));
   const autoApplied =
@@ -257,6 +298,62 @@ export async function ensurePlan(
 /** Drop a workspace's cached plan (e.g. after a dismiss, or on dispose). */
 export function invalidatePlanCache(configPath: string): void {
   planCache.delete(configPath);
+}
+
+/**
+ * The narrow, READ-ONLY slice of a workspace the profiler needs. An `ActiveDb`
+ * satisfies it structurally; so does the assistant's dispatch context, which is
+ * how a chat turn can ask what the planner would propose without the chat layer
+ * having to carry a whole workspace handle.
+ */
+export interface PlannerWorkspace {
+  db: ActiveDb['db'];
+  configPath: string;
+  outputDir: string;
+  computedTables: Set<string>;
+}
+
+/** A proposal plus the size of the object it would touch. */
+export interface PlanPreviewItem {
+  op: PlanOp;
+  /** Bounded live-row count of the proposal's target table. */
+  rows: number;
+  /** True when the count hit the bounded-read cap (so `rows` is a lower bound). */
+  rowsCapped: boolean;
+}
+
+export interface PlanPreview {
+  proposals: PlanPreviewItem[];
+  /** Tables the profiler intentionally skipped, with why. */
+  skipped: ModelProfile['skipped'];
+}
+
+/**
+ * What the planner WOULD propose, without applying anything.
+ *
+ * Deliberately separate from {@link ensurePlan}: that one applies the AUTO tier
+ * and owns the watermark cache, and a read-only caller must neither mutate the
+ * workspace nor poison that cache with an auto-tier-less plan (which would make
+ * a later pass skip the auto fixes entirely). So this runs its own detection
+ * pass, writes nothing, and caches nothing. Bounded by the same table cap as
+ * the full pass.
+ */
+export async function previewPlan(
+  ws: PlannerWorkspace,
+  opts: { dismissed?: Set<string> } = {},
+): Promise<PlanPreview> {
+  const structurals = buildStructurals(ws);
+  if (structurals.length > MAX_PLANNER_TABLES) return { proposals: [], skipped: [] };
+  const profile = await buildModelProfile(introspectDb(ws), structurals);
+  const dismissed = opts.dismissed ?? new Set(await loadDismissed(ws.db));
+  const sizeOf = new Map(profile.tables.map((t) => [t.name, t]));
+  const proposals: PlanPreviewItem[] = [];
+  for (const op of detect(profile)) {
+    if (op.tier !== 'propose' || dismissed.has(op.id)) continue;
+    const t = sizeOf.get(op.target.table);
+    proposals.push({ op, rows: t?.rowCount ?? 0, rowsCapped: t?.rowCountCapped ?? false });
+  }
+  return { proposals, skipped: profile.skipped };
 }
 
 const PLAN_DEBOUNCE_MS = 4000;

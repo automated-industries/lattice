@@ -93,13 +93,18 @@ describe('reframe review fix #4 — a dismissed Configure drawer does not re-pop
   });
 });
 
-describe('reframe review fix #6 — dashboard add-source opens the right Configure tab', () => {
-  it('opens the matching Files/Connectors/Databases tab (where the src-add-* buttons live), not Data Model', () => {
-    // The single Inputs tab was split into three; each add-source action opens ITS tab.
+describe('reframe review fix #6 — dashboard add-source opens the right add surface', () => {
+  it('opens the matching Connectors/Databases tab, and adds a file in the sidebar', () => {
+    // Connectors + Databases keep their inline add forms in their own Configure tab,
+    // so each action opens ITS tab.
     expect(appJs).toContain('openConfigureDrawer(addTab[name])');
-    expect(appJs).toContain("'add-file': 'files'");
     expect(appJs).toContain("'add-connector': 'connectors'");
     expect(appJs).toContain("'add-database': 'databases'");
+    // Files has no Configure tab any more — the add affordance is the sidebar FILES
+    // section, so add-file expands that section and opens its menu in place.
+    expect(appJs).not.toContain("'add-file': 'files'");
+    expect(appJs).toContain("sidebarGroupCollapsed('nav-files')");
+    expect(appJs).toContain("document.getElementById('src-add-files')");
   });
 });
 

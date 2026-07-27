@@ -545,10 +545,17 @@ export async function dispatchAssistantRoute(
       : latticeCloud
         ? { base: latticeCloud.proxyBaseUrl, key: latticeCloud.token }
         : null;
+    const balanceProbed = Boolean(balanceProbe?.base && balanceProbe.key);
     if (balanceProbe?.base && balanceProbe.key) {
       try {
+        // Bounded on purpose: this response now decides whether the app boots at
+        // all, and it is fetched from a remote proxy. An unbounded wait on a
+        // wedged proxy would hang the boot gate itself with nothing on screen; a
+        // timeout instead yields "balance unknown", which is reported as such and
+        // deliberately does NOT lock the user out.
         const r = await fetch(`${balanceProbe.base.replace(/\/$/, '')}/v1/balance`, {
           headers: { authorization: `Bearer ${balanceProbe.key}` },
+          signal: AbortSignal.timeout(10_000),
         });
         if (r.ok) {
           const b = (await r.json()) as { balance_cents?: number; top_up_url?: string };
@@ -556,9 +563,26 @@ export async function dispatchAssistantRoute(
           topUpUrl = typeof b.top_up_url === 'string' ? b.top_up_url : null;
         }
       } catch {
-        /* balance unavailable — the GUI simply omits it */
+        /* balance unavailable — reported as such below, never shown as zero */
       }
     }
+    // We asked for a balance and got no number back. The GUI must say "unavailable"
+    // instead of formatting the null as $0.00 — "we could not read your balance" and
+    // "you are out of tokens" are different facts and lead to different actions.
+    const balanceUnavailable = balanceProbed && balanceCents === null;
+    // A cloud account with nothing left to spend is NOT a usable backend: every turn
+    // would be refused by the proxy. Treating it as connected boots the app into a
+    // state where all AI work fails, so it counts as not-connected and the client
+    // routes to top-up or another provider.
+    //
+    // Only a balance we actually read counts. An unreadable one is unknown, and
+    // unknown must never lock a paid-up account out of its own app. A managed
+    // deployment is out of scope here: the operator owns that credential, and the
+    // per-user connect flow this unblocks is disabled there anyway.
+    const cloudBalanceExhausted =
+      !isManagedModelAuth() && latticeCloud !== null && balanceCents !== null && balanceCents <= 0;
+    const usableLatticeCloud = latticeCloud !== null && !cloudBalanceExhausted;
+    const connected = claudeConnected || openaiCompat !== null || usableLatticeCloud;
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
@@ -576,8 +600,13 @@ export async function dispatchAssistantRoute(
       // The single connected/disconnected truth the client wall reads. True in a
       // managed deployment (operator env credential), when a Claude subscription is
       // connected, when an OpenAI-compatible endpoint is configured, OR when a
-      // Lattice Cloud account model credential is active.
-      connected: claudeConnected || openaiCompat !== null || latticeCloud !== null,
+      // Lattice Cloud account model credential is active AND has balance left.
+      connected,
+      // Why `connected` is false when a backend IS configured, so the client can
+      // offer the specific way out instead of a generic "connect something".
+      // 'cloud_balance_exhausted' = signed in, no tokens left → top up (or switch).
+      modelAccessBlocked:
+        !connected && cloudBalanceExhausted ? ('cloud_balance_exhausted' as const) : null,
       // Claude usage-limit state (null unless the limit was hit). The chat shows
       // it and the Configure side reads it to block ingest/AI while limited.
       limitState: getClaudeLimitState(),
@@ -608,9 +637,13 @@ export async function dispatchAssistantRoute(
       // normal install). The header account menu's "Account settings" action opens
       // it — that page owns billing / sign-out. Balance is mirrored here for display.
       accountUrl: process.env.LATTICE_ACCOUNT_URL ?? null,
-      // Prepaid token balance for a managed deployment (cents; null otherwise), plus
-      // where to top up. Shown in the account menu + assistant settings.
+      // Prepaid token balance in cents for a managed deployment OR a per-user cloud
+      // account (null when neither applies, or when the read failed — see
+      // `balanceUnavailable`), plus where to top up. Shown in the account menu.
       balanceCents,
+      // True when a balance was asked for and none came back. The GUI says so
+      // rather than rendering the null as a zero.
+      balanceUnavailable,
       topUpUrl,
     });
     return true;

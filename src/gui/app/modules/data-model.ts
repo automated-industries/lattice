@@ -1439,105 +1439,20 @@ export const dataModelJs = `    // ───────────────
       link: '🔗', unlink: '⛓', undo: '↶', redo: '↷', schema: '🛠',
     };
     // Schema mutations reach the client in two shapes: the LIVE feed publishes the
-    // coarse op:'schema', while the persisted audit log / per-thread replay carry
-    // the fine-grained op:'schema.delete_entity' (etc.). Treat both as schema so
-    // they collapse + pick the 🛠 icon identically (regression: backfilled schema
-    // ops showed '•' and never grouped).
+    // coarse op:'schema', while the persisted audit log carries the fine-grained
+    // op:'schema.delete_entity' (etc.). Treat both as schema so they pick the 🛠
+    // icon identically (regression: backfilled schema ops showed '•').
     function isSchemaOp(op) { var o = String(op || ''); return o === 'schema' || o.indexOf('schema.') === 0; }
     function feedIcon(op) { return isSchemaOp(op) ? FEED_ICONS.schema : (FEED_ICONS[op] || '•'); }
-    // Ops whose runs collapse into one counted bubble (bulk row work spams N
-    // near-identical rows otherwise). Undo/redo stay distinct.
-    var GROUPABLE_OPS = { insert: 1, update: 1, delete: 1, link: 1, unlink: 1 };
-    var ROW_VERB = { insert: 'Added', update: 'Updated', delete: 'Removed', link: 'Linked', unlink: 'Unlinked' };
-    var ROW_PREP = { insert: 'to', update: 'in', delete: 'from', link: 'in', unlink: 'in' };
-    // Schema events all arrive as op:'schema'; the specific action lives only in
-    // the summary text. Map that text to a stable sub-action so a bulk run of
-    // "Deleted table X" collapses into one "Deleted 19 tables" pill. Each entry
-    // is [verb, singular, plural].
-    var SCHEMA_GROUP = {
-      'created-table':  ['Created', 'table', 'tables'],
-      'deleted-table':  ['Deleted', 'table', 'tables'],
-      'renamed-table':  ['Renamed', 'table', 'tables'],
-      'added-column':   ['Added', 'column', 'columns'],
-      'renamed-column': ['Renamed', 'column', 'columns'],
-      'added-link':     ['Added', 'link', 'links'],
-      'deleted-link':   ['Deleted', 'link', 'links'],
-      'created-link':   ['Created', 'link table', 'link tables'],
-      'linked-rel':     ['Linked', 'relationship', 'relationships'],
-    };
-    function schemaAction(summary) {
-      var s = String(summary || '');
-      if (/^Created link table/.test(s)) return 'created-link';
-      if (/^Created table/.test(s)) return 'created-table';
-      if (/^Deleted table/.test(s)) return 'deleted-table';
-      if (/^Renamed table/.test(s)) return 'renamed-table';
-      // Two emitters: the generic "Added a column to X" and the specific
-      // "Added column(s) a, b to X" (ingest auto-creates columns). Both group.
-      if (/^Added (a )?column/.test(s)) return 'added-column';
-      if (/^Renamed a column/.test(s)) return 'renamed-column';
-      if (/^Added a link/.test(s)) return 'added-link';
-      if (/^Deleted a link/.test(s)) return 'deleted-link';
-      // Junction-materialization summaries ("Linked files ↔ project",
-      // "Linked authors ↔ books") from materializeJunction — these arrive as a
-      // schema op but matched no rule above, so they used to return null and
-      // spam one ungrouped pill per link. Collapse a run into "Linked N
-      // relationships".
-      if (/^Linked .+ ↔ /.test(s)) return 'linked-rel';
-      return null; // unknown schema op: keep it ungrouped (stay honest)
-    }
-    // Group identical-TYPE events into one counted pill regardless of which
-    // object they touched, so a bulk run (delete N tables, remove rows across M
-    // tables) shows a single bubble instead of overflowing the rail. Keyed by
-    // op+source (+schema sub-action); the table is intentionally NOT in the key.
-    // A group stays "open" for FEED_GROUP_WINDOW_MS after its last hit; later
-    // activity starts a fresh bubble so unrelated edits aren't merged in.
-    function feedGroupKey(ev) {
-      var src = String(ev.source || '');
-      if (isSchemaOp(ev.op)) {
-        var a = schemaAction(ev.summary);
-        return a ? 'schema|' + a + '|' + src : null;
-      }
-      return GROUPABLE_OPS[ev.op] ? String(ev.op) + '|' + src : null;
-    }
-    var feedGroups = {}; // key -> { op, count, tables, tableCount, schemaKey, firstSummary, item, summaryEl, timeEl, last, startMs, endMs, turnId }
-    var FEED_GROUP_WINDOW_MS = 15000;
-    // Assistant-turn scope for live activity-card grouping + duration. While a
-    // turn is active, its same-type events all collapse into one card (no window
-    // expiry); the card's timer measures from feedTurnStartMs to the last event.
+    // Chat-turn markers, set by the composer when a turn opens. They no longer
+    // drive any rendering here: a turn's progress is reported by the background-
+    // task tracker in the activity menu, and its data changes land in the live
+    // activity feed as they happen.
     var feedTurnId = 0;
     var feedTurnActive = false;
     var feedTurnStartMs = 0;
-    function onlyKey(obj) { for (var k in obj) { if (obj.hasOwnProperty(k)) return k; } return ''; }
-    function groupedRowSummary(op, count, tables, tableCount) {
-      var verb = ROW_VERB[op] || String(op || '');
-      var noun = count === 1 ? 'row' : 'rows';
-      var where = '';
-      if (tableCount > 1) { where = ' across ' + tableCount + ' tables'; }
-      else { var only = onlyKey(tables); if (only) where = ' ' + (ROW_PREP[op] || 'in') + ' ' + only; }
-      return verb + ' ' + count + ' ' + noun + where;
-    }
-    function schemaGroupSummary(schemaKey, count, firstSummary) {
-      var g = SCHEMA_GROUP[schemaKey];
-      if (count <= 1 || !g) return firstSummary || '';
-      return g[0] + ' ' + count + ' ' + g[2];
-    }
-    function groupedSummary(g) {
-      return isSchemaOp(g.op)
-        ? schemaGroupSummary(g.schemaKey, g.count, g.firstSummary)
-        : groupedRowSummary(g.op, g.count, g.tables, g.tableCount);
-    }
-    // While a chat turn is streaming, its typing bubble (the not-yet-arrived next
-    // assistant message) must stay last; tool-driven activity cards belong ABOVE
-    // it, not below — otherwise the "typing…" dots land mid-conversation. Returns
-    // the .chat-msg to insert before, or null when nothing is streaming.
-    function feedTypingAnchor(feedEl) {
-      var typing = feedEl.querySelector('.chat-bubble[data-typing="1"]');
-      var msg = typing && typing.closest ? typing.closest('.chat-msg') : null;
-      return (msg && msg.parentNode === feedEl) ? msg : null;
-    }
-    // Build one activity card (the shared full-width pill shape). Used by BOTH
-    // the live feed and the per-thread replay so they look identical. Returns the
-    // element plus the summary/time nodes a group mutates in place.
+    // Build one activity card (the shared full-width pill shape) for the live
+    // activity feed. Returns the element plus its summary/time nodes.
     function makeFeedCard(ev) {
       var item = document.createElement('div');
       item.className = 'feed-item';
@@ -1559,8 +1474,7 @@ export const dataModelJs = `    // ───────────────
       body.appendChild(meta);
       var time = document.createElement('div');
       time.className = 'feed-time';
-      // Duration ("4s" / "4m 2s") is filled in by the caller once the group's
-      // start/end span is known — not a relative "ago".
+      // Stamped by the caller.
       time.textContent = '';
       item.appendChild(icon);
       item.appendChild(body);
@@ -1573,48 +1487,13 @@ export const dataModelJs = `    // ───────────────
         item.setAttribute('role', 'button');
         item.setAttribute('tabindex', '0');
         item.title = 'Open this ' + String(ev.table);
-        // _rowClickOff is set when the card becomes a group — clicks no-op then.
-        var openRow = function () { if (item._rowClickOff) return; openSearchHit(String(ev.table), String(ev.rowId)); };
+        var openRow = function () { openSearchHit(String(ev.table), String(ev.rowId)); };
         item.addEventListener('click', openRow);
         item.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRow(); }
         });
       }
       return { item: item, summaryEl: summary, timeEl: time };
-    }
-    // Fold another event into an existing group card: bump the count, track the
-    // table, refresh the summary, and drop the single-row affordances (a grouped
-    // card stands for many rows, so it's a status, not a clickable button).
-    // The card timer shows the TASK DURATION (start → finish), not a relative
-    // "ago": for a single op it's the time that op took; for a grouped run it's
-    // from the first task's start to the last task's finish. startMs is anchored
-    // to the assistant turn's start (so a one-event card still shows real time);
-    // endMs tracks the latest event in the group.
-    function setGroupTime(g) {
-      if (g.timeEl) g.timeEl.textContent = formatElapsed(Math.max(0, g.endMs - g.startMs));
-    }
-    function applyGroupHit(g, ev, endMs) {
-      g.count += 1;
-      if (ev.table && !g.tables[ev.table]) { g.tables[ev.table] = 1; g.tableCount += 1; }
-      if (typeof endMs === 'number' && endMs > g.endMs) g.endMs = endMs;
-      g.summaryEl.textContent = groupedSummary(g);
-      setGroupTime(g);
-      g.item._rowClickOff = true;
-      g.item.classList.remove('feed-clickable');
-      g.item.removeAttribute('tabindex');
-      g.item.removeAttribute('title');
-      g.item.setAttribute('role', 'status');
-    }
-    function newGroup(ev, card, startMs, endMs) {
-      var tbls = {}; var tc = 0;
-      if (ev.table) { tbls[ev.table] = 1; tc = 1; }
-      return {
-        op: ev.op, count: 1, tables: tbls, tableCount: tc,
-        schemaKey: isSchemaOp(ev.op) ? schemaAction(ev.summary) : null,
-        firstSummary: ev.summary || '',
-        item: card.item, summaryEl: card.summaryEl, timeEl: card.timeEl,
-        startMs: startMs, endMs: endMs,
-      };
     }
     function renderFeedItem(ev) {
       // Realtime activity lands in ONE place: the activity feed inside the header
@@ -1626,33 +1505,15 @@ export const dataModelJs = `    // ───────────────
           var empty = document.getElementById('activity-empty');
           if (empty) empty.remove();
           var card = makeFeedCard(ev);
-          // Single live event: stamp "now" (the duration form is for turn replay).
-          card.timeEl.textContent = 'now';
+          // Stamp rather than write a literal: a hardcoded label is frozen at
+          // the moment it was written, so a card from ten minutes ago still
+          // reads as if it just happened. The shared ticker rewrites every
+          // stamped node on an interval.
+          stampRelTime(card.timeEl, new Date().toISOString());
           feed.insertBefore(card.item, feed.firstChild); // newest first
           while (feed.children.length > 50) feed.removeChild(feed.lastChild); // bounded log
           if (typeof bumpActivityCount === 'function') bumpActivityCount();
         }
-      }
-    }
-    // Replay a persisted assistant turn's data-change events as collapsed activity
-    // cards. Grouping is PER-TURN (self-contained, independent of the live feed's
-    // rolling window) so each turn's bulk run shows one card and stays tied to the
-    // turn that produced it. Reads aren't persisted as events, so only mutations
-    // appear. Appends in order; the caller positions them after the turn's text.
-    function renderTurnEventCards(feedEl, events, startedMs) {
-      if (!feedEl || !events || !events.length) return;
-      var groups = {};
-      for (var i = 0; i < events.length; i++) {
-        var ev = events[i];
-        var evMs = ev.ts ? new Date(ev.ts).getTime() : startedMs;
-        if (typeof evMs !== 'number' || isNaN(evMs)) evMs = startedMs;
-        var startMs = (typeof startedMs === 'number' && !isNaN(startedMs)) ? startedMs : evMs;
-        var key = feedGroupKey(ev);
-        if (key && groups[key]) { applyGroupHit(groups[key], ev, evMs); continue; }
-        var card = makeFeedCard(ev);
-        feedEl.appendChild(card.item);
-        if (key) { var g = newGroup(ev, card, startMs, evMs); groups[key] = g; setGroupTime(g); }
-        else { card.timeEl.textContent = formatElapsed(Math.max(0, evMs - startMs)); }
       }
     }
     // Feed events arrive over the multiplexed /api/stream WebSocket and are

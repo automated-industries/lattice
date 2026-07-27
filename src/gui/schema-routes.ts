@@ -15,6 +15,10 @@ import {
   createUserEntity,
   softDeleteUserEntity,
   aiDeleteEntity,
+  inboundLinksTo,
+  describeInboundLinks,
+  removeInboundLinks,
+  AI_DELETE_ROW_CAP,
 } from './schema-ops.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
@@ -285,13 +289,16 @@ export async function handleSchemaRoutes(
 
   // ── Delete a whole table (the single, explicit table-drop path) ───
   // This is the ONLY DROP TABLE in the GUI. It is deliberately guarded:
-  // owner-gated, never drops a native entity, and REFUSES while any other
-  // table still has a foreign key pointing at it (so a delete can never
-  // leave dangling references / a broken data model — the user removes
-  // those links first). The client gates this behind a type-the-name
-  // confirmation. The old, dangerous DELETE /api/schema/junctions/:name
-  // route (which dropped a "junction" inferred only from FK count, and so
-  // could drop a misclassified first-class entity) has been removed.
+  // owner-gated, never drops a native entity, and REFUSES while a first-class
+  // table still has a foreign key pointing at it (so a delete can never leave
+  // dangling references / a broken data model) unless `?cascade=1` says to take
+  // those rows too. Link tables that exist only to express a relationship with
+  // this entity go with it either way — they are part of the relationship, not
+  // independent objects, and could never be removed on their own. The client
+  // gates this behind a type-the-name confirmation. The old, dangerous
+  // DELETE /api/schema/junctions/:name route (which dropped a "junction"
+  // inferred only from FK count, and so could drop a misclassified first-class
+  // entity) has been removed.
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+$/.test(pathname)) {
     const name = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(name)) {
@@ -323,24 +330,40 @@ export async function handleSchemaRoutes(
     // Owner-gate: dropping a table mutates the owner's config; RLS alone doesn't
     // gate this DDL/config path.
     if (await denyIfNotCloudOwner(active.db, res, 'delete tables')) return true;
-    // Inbound-FK guard: refuse if another table links to this one.
-    const inbound: string[] = [];
-    for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
-      if (t.name === name) continue;
-      for (const rel of Object.values(t.relations)) {
-        if (rel.type === 'belongsTo' && rel.table === name) {
-          inbound.push(`${t.name}.${rel.foreignKey}`);
-        }
-      }
-    }
-    if (inbound.length > 0) {
+    // Inbound-link guard. Classification is shared with the assistant's delete
+    // tool (inboundLinksTo) so the two guards read the model identically and
+    // cannot drift apart.
+    const inbound = inboundLinksTo(active, name);
+    const externalLinks = inbound.filter((l) => !l.owned);
+    const cascadeParam = url.searchParams.get('cascade');
+    const cascade = cascadeParam === '1' || cascadeParam === 'true';
+    if (externalLinks.length > 0 && !cascade) {
       sendJson(
         res,
         {
-          error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Delete those links first.`,
+          error:
+            `Cannot delete "${name}" — these links point at it: ` +
+            `${await describeInboundLinks(active, externalLinks)}. Delete it together with those linked ` +
+            `rows (cascade), or merge "${name}" into another table to carry the links across.`,
         },
         400,
       );
+      return true;
+    }
+    // Remove the link side first — the link tables this entity owns, plus (only
+    // when cascading) the rows that point at it. Audited + reversible, and
+    // refused up front if the cascade is too large, so a refusal never leaves
+    // the model half-deleted.
+    const links = await removeInboundLinks(
+      active,
+      name,
+      inbound,
+      ctx.buildMutationCtx(),
+      { cascade, rowBudget: AI_DELETE_ROW_CAP },
+      sessionId,
+    );
+    if (!links.ok) {
+      sendJson(res, { error: links.error }, 400);
       return true;
     }
     // SOFT delete: remove the entity from the config + live registry
@@ -349,7 +372,11 @@ export async function handleSchemaRoutes(
     // with no snapshot. No reopen (shared with the assistant's delete tool).
     // Physical removal is a separate, API-only `POST /api/schema/purge`.
     await softDeleteUserEntity(active, name, sessionId);
-    sendJson(res, { ok: true });
+    sendJson(res, {
+      ok: true,
+      ...(links.cascadedLinkRows > 0 ? { cascadedLinkRows: links.cascadedLinkRows } : {}),
+      ...(links.droppedLinkTables.length > 0 ? { droppedLinkTables: links.droppedLinkTables } : {}),
+    });
     return true;
   }
 

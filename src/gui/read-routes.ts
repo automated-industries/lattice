@@ -43,6 +43,8 @@ import {
   isNativeEntity,
   isInternalNativeEntity,
   isAnalyticsNativeEntity,
+  isNavHiddenNativeEntity,
+  isLegacyNativeEntity,
   NATIVE_INTERNAL_NAMES,
 } from '../framework/native-entities.js';
 import { countManyPostgres, exactCountMany } from './count-many.js';
@@ -139,8 +141,20 @@ async function enrichEntityTables(
   // Analytics natives (dashboards) live in the Analytics view, not the
   // Configure Objects list — same drop, different reason (they stay shareable
   // and assistant-visible; only the Configure display surfaces exclude them).
+  // Legacy natives (notes) are dropped for a third reason: a generic title/body
+  // bucket is no longer a browsable object anywhere in the GUI. Same mechanism —
+  // the table stays registered + queryable, it just never enters this payload.
+  // Scoped to the FRAMEWORK-shipped table: a workspace whose own config declares
+  // an entity by that name owns it, and hiding the user's own table would be a
+  // silent disappearance, so a config-declared table is never dropped here.
+  // `files` is NOT dropped here: it is soft-hidden further down with a
+  // `navHidden` stamp, because the Data Model panel and the brain graph still
+  // need it for file → data lineage.
   const allTables = [...baseTables, ...registeredExtraTables(db, yamlNames)].filter(
-    (t) => !isInternalNativeEntity(t.name) && !isAnalyticsNativeEntity(t.name),
+    (t) =>
+      !isInternalNativeEntity(t.name) &&
+      !isAnalyticsNativeEntity(t.name) &&
+      !(isLegacyNativeEntity(t.name) && !yamlNames.has(t.name)),
   );
 
   // Postgres: collapse the per-table COUNT(*) fan-out to one query against
@@ -299,6 +313,10 @@ async function enrichEntityTables(
       // the read-only SQL runner refuses (secrets) from the schema-grouped TABLES list.
       if (isHiddenLinkTable(base)) base.linkTable = true;
       if (isSqlProtectedTable(base.name)) base.sqlDenied = true;
+      // Same idiom, one surface narrower: a table with its own dedicated home in
+      // the GUI (files → the sidebar FILES section) is skipped by the table nav
+      // while staying in this payload for the Data Model panel + graph.
+      if (isNavHiddenNativeEntity(base.name)) base.navHidden = true;
       return base;
     }),
   );

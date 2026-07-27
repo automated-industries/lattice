@@ -1,7 +1,7 @@
 import type { Lattice } from '../../lattice.js';
 import type { FileJunction } from '../data.js';
 import { isNativeEntity } from '../../framework/native-entities.js';
-import { STRUCTURAL } from '../file-row.js';
+import { STRUCTURAL, artifactFileRow } from '../file-row.js';
 import { createRow, updateRow, linkRows, type MutationCtx } from '../mutations.js';
 import { recordLineage } from '../lineage-store.js';
 import {
@@ -39,6 +39,49 @@ const LABEL_PREF = ['name', 'title', 'slug', 'label'];
 /** At most this many clarification questions may be enqueued per ingested file. */
 const MAX_QUESTIONS_PER_FILE = 2;
 
+/**
+ * An object the extractor found that the engine could NOT write, and why.
+ *
+ * Returned to the caller so a partial ingest can say so. A refused write that
+ * reaches only the log lets an upload report success while the records it found
+ * are discarded — the user is told everything landed, and nothing did.
+ */
+export interface DroppedExtraction {
+  /** The entity the write was aimed at. */
+  entity: string;
+  /** The extracted object's human-readable label. */
+  label: string;
+  /** Why the write did not happen. */
+  reason: string;
+}
+
+/**
+ * What {@link enrichWithLlm} returns: the classifier's suggested links exactly
+ * as before — so every existing caller reads it unchanged — carrying the
+ * refused extractions on `dropped` for callers that report ingest outcomes.
+ */
+export type EnrichResult = ClassifyMatch[] & { dropped: DroppedExtraction[] };
+
+function enrichResult(matches: ClassifyMatch[], dropped: DroppedExtraction[]): EnrichResult {
+  return Object.assign(matches.slice(), { dropped });
+}
+
+/**
+ * True for a table ingest must never aim a row write at: a computed table (a
+ * live, read-only SQL projection) or a connected mirror (a local copy of an
+ * external source, replaced wholesale on every sync). Both refuse row writes at
+ * the mutation chokepoint, so proposing one as a target can only ever produce a
+ * refused write.
+ *
+ * Applied when BUILDING the candidate catalog + schema, so such a table is never
+ * offered to the model in the first place — rather than leaning on the write
+ * guard to reject each attempt after the fact, which is how a whole document's
+ * worth of extractions came to be aimed at a read-only mirror and thrown away.
+ */
+function isReadOnlyTarget(db: Lattice, name: string): boolean {
+  return db.isComputedTable(name) || db.getConnectedSource(name) !== undefined;
+}
+
 /** True for tables that look like pure many-to-many junctions (only FKs). */
 function isLikelyJunction(cols: Record<string, string>): boolean {
   const meaningful = Object.keys(cols).filter((c) => !STRUCTURAL.has(c));
@@ -53,7 +96,8 @@ function labelColumn(cols: Record<string, string>): string | null {
 
 /**
  * Build a compact catalog of user records for the classifier: each non-native,
- * non-internal, non-junction entity with a sample of its rows (id + a label).
+ * non-internal, non-junction, WRITABLE entity with a sample of its rows
+ * (id + a label).
  */
 async function buildCatalog(
   db: Lattice,
@@ -63,6 +107,7 @@ async function buildCatalog(
   for (const name of db.getRegisteredTableNames()) {
     if (name.startsWith('_lattice_') || name.startsWith('__lattice_')) continue;
     if (isNativeEntity(name)) continue;
+    if (isReadOnlyTarget(db, name)) continue;
     const cols = db.getRegisteredColumns(name);
     if (!cols || isLikelyJunction(cols)) continue;
     const label = labelColumn(cols);
@@ -81,12 +126,17 @@ async function buildCatalog(
   return out;
 }
 
-/** The user's current entity schema (name + columns), for the object extractor. */
+/**
+ * The user's current WRITABLE entity schema (name + columns), for the object
+ * extractor. Read-only tables are excluded: they are the candidate list the
+ * model picks a target from, and a target that refuses writes is not a target.
+ */
 function buildSchema(db: Lattice): SchemaEntity[] {
   const out: SchemaEntity[] = [];
   for (const name of db.getRegisteredTableNames()) {
     if (name.startsWith('_lattice_') || name.startsWith('__lattice_')) continue;
     if (isNativeEntity(name)) continue;
+    if (isReadOnlyTarget(db, name)) continue;
     const cols = db.getRegisteredColumns(name);
     if (!cols || isLikelyJunction(cols)) continue;
     out.push({ table: name, columns: Object.keys(cols).filter((c) => !STRUCTURAL.has(c)) });
@@ -154,8 +204,27 @@ export async function enrichWithLlm(
   // actually RAN — not on file extension — so a prose .docx the importer declined
   // still gets LLM extraction.
   structuredImportRan = false,
-): Promise<ClassifyMatch[]> {
-  if (!text.trim()) return [];
+): Promise<EnrichResult> {
+  // Extractions the engine could not write. Threaded onto every return so a
+  // caller can report a partial ingest instead of a clean one.
+  const dropped: DroppedExtraction[] = [];
+  /**
+   * Record + SURFACE an extraction that could not be written: onto the returned
+   * result AND into the activity feed. Never the console alone — that is exactly
+   * how a refused batch of writes passed as a successful upload.
+   */
+  const dropExtraction = (entity: string, label: string, reason: string): void => {
+    dropped.push({ entity, label, reason });
+    console.error(`[ingest] extracted "${label}" could not be saved to ${entity}: ${reason}`);
+    mctx.feed.publish({
+      table: 'files',
+      op: 'update',
+      rowId: fileId,
+      source: mctx.source,
+      summary: `Couldn't add "${label}" to ${entity}: ${reason}`,
+    });
+  };
+  if (!text.trim()) return enrichResult([], dropped);
   let client;
   try {
     client = await resolveLlmClient(db);
@@ -172,13 +241,13 @@ export async function enrichWithLlm(
       source: mctx.source,
       summary: `Couldn't auto-link "${name}": AI client unavailable`,
     });
-    return [];
+    return enrichResult([], dropped);
   }
   if (!client) {
     // No provider configured → auto-link can't run. Log it (rather than feed-spamming
     // local non-AI users) so "why didn't it link?" is answerable from the log.
     console.warn('[ingest] auto-link skipped — no model provider configured');
-    return [];
+    return enrichResult([], dropped);
   }
   // Force private on derived writes when the source file is private (see the
   // privateMode param doc). undefined ⇒ inherit the table default, as before.
@@ -252,7 +321,7 @@ export async function enrichWithLlm(
       source: mctx.source,
       summary: `Couldn't auto-link "${name}": ${msg}`,
     });
-    return [];
+    return enrichResult([], dropped);
   }
   try {
     const matches = matchesR.value;
@@ -369,7 +438,14 @@ export async function enrichWithLlm(
           });
         }
         const allowNewEntity = aggressiveness >= 0.5;
-        const existing = new Set(db.getRegisteredTableNames().filter((t) => !isNativeEntity(t)));
+        // The reusable targets. Read-only tables are excluded for the same reason
+        // they are kept out of buildSchema: reusing one resolves to a table that
+        // refuses the write.
+        const existing = new Set(
+          db
+            .getRegisteredTableNames()
+            .filter((t) => !isNativeEntity(t) && !isReadOnlyTarget(db, t)),
+        );
         // Ask-when-marginal gate: each extracted object carries the model's 0-1
         // confidence in its target-entity decision. At or above the clarify
         // threshold the object is materialized exactly as before; in
@@ -437,6 +513,20 @@ export async function enrichWithLlm(
             if (entity) existing.add(entity);
           }
           if (!entity) continue;
+          // Backstop for the resolution above. The entity creator hands back an
+          // ALREADY-REGISTERED table of the requested name instead of making a
+          // second one, so a name that happens to match a read-only table can
+          // still arrive here even though it was filtered out of the candidates.
+          // Refuse it, and report the loss rather than letting the write guard
+          // reject it into a log line nobody reads.
+          if (isReadOnlyTarget(db, entity)) {
+            dropExtraction(
+              entity,
+              obj.label,
+              `${entity} is a live, read-only view — records can't be added to it directly`,
+            );
+            continue;
+          }
           // Keep only values that map to real columns on the resolved entity.
           const cols = db.getRegisteredColumns(entity);
           if (!cols) continue;
@@ -490,7 +580,11 @@ export async function enrichWithLlm(
               );
             }
           } catch (e) {
-            console.warn(`[ingest] create ${entity} from document failed:`, (e as Error).message);
+            // The write was refused (a read-only target, a required column the
+            // document didn't supply, a permission error). Report it — a
+            // console-only warn here is what let an upload announce success
+            // while every object it extracted was thrown away.
+            dropExtraction(entity, obj.label, (e as Error).message);
           }
         }
         // Second pass: materialize the relationships the extractor stated for each
@@ -577,39 +671,59 @@ export async function enrichWithLlm(
     }
 
     // Last resort: nothing linked AND nothing created, at high aggressiveness —
-    // capture the source as a native `notes` object so it isn't lost.
+    // capture the source as a markdown DOCUMENT ARTIFACT (a `files` row flagged
+    // artifact_type='markdown') so it isn't lost. Same trigger conditions and the
+    // same captured content as before; only the destination changed. The generic
+    // note store is no longer a browsable surface, so a capture written there
+    // would accumulate somewhere the user can never reach it — the artifact store
+    // is where assistant-authored documents already live. Existing note rows are
+    // untouched and keep working; this path just stops creating new ones.
     if (
       linkedCount === 0 &&
       createdCount === 0 &&
       aggressiveness >= 0.66 &&
       text.trim().length > 0
     ) {
+      const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
+      const body = description.length > 0 ? description : text.slice(0, 2000);
       try {
-        const title = name.replace(/\.[^./\\]+$/, '').trim() || 'Note';
-        const body = description.length > 0 ? description : text.slice(0, 2000);
-        const { id: noteId } = await createRow(
-          mctx,
-          'notes',
+        const artifact = await artifactFileRow(db, title, body);
+        const { id: artifactId } = await createRow(mctx, 'files', artifact.row, forceVis);
+        // Provenance, in place of the note's source_file_id: the captured
+        // document came from this file.
+        await recordLineage(mctx.db.adapter, [
           {
-            id: crypto.randomUUID(),
-            title,
-            body,
-            source_file_id: fileId,
+            objectTable: 'files',
+            objectId: artifactId,
+            sourceKind: 'file',
+            sourceTable: 'files',
+            sourceId: fileId,
+            tier: 'raw',
+            relation: 'extracted_from',
           },
-          forceVis,
-        );
+        ]);
         mctx.feed.publish({
-          table: 'notes',
+          table: 'files',
           op: 'insert',
-          rowId: noteId,
+          rowId: artifactId,
           source: mctx.source,
-          summary: `Captured "${title}" as a note`,
+          summary: `Captured "${title}" as a document`,
         });
       } catch (e) {
-        console.warn('[ingest] auto-create object failed:', (e as Error).message);
+        // This path exists so the content is NOT lost — a failure here means it
+        // was lost, which the user has to be told about.
+        const msg = (e as Error).message;
+        console.error('[ingest] capturing the document failed:', msg);
+        mctx.feed.publish({
+          table: 'files',
+          op: 'update',
+          rowId: fileId,
+          source: mctx.source,
+          summary: `Couldn't capture "${title}" as a document: ${msg}`,
+        });
       }
     }
-    return matches;
+    return enrichResult(matches, dropped);
   } catch (e) {
     // internal guideline: surface — classification failing means zero auto-links; make the
     // reason visible in the feed, not just stderr.
@@ -622,6 +736,6 @@ export async function enrichWithLlm(
       source: mctx.source,
       summary: `Couldn't auto-link "${name}": ${msg}`,
     });
-    return [];
+    return enrichResult([], dropped);
   }
 }

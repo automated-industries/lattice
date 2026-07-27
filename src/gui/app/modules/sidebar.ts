@@ -46,8 +46,12 @@ export const sidebarJs = `    // ───────────────�
       var cards = ents.map(function (e) {
         var disp = displayFor(e.name);
         var count = (e.rowCount != null) ? e.rowCount : 0;
+        // data-ts is what the shared ticker looks for: without it the label is
+        // computed once at render time and then frozen, so a card keeps
+        // claiming the table was updated moments ago long after it was.
         var fresh = e.lastUpdatedAt
-          ? '<div class="card-fresh" title="Last updated ' +
+          ? '<div class="card-fresh" data-ts="' + escapeHtml(String(e.lastUpdatedAt)) +
+              '" title="Last updated ' +
               escapeHtml(String(e.lastUpdatedAt)) + '">' + relTime(e.lastUpdatedAt) + '</div>'
           : '';
         return '<a class="card" data-table="' + escapeHtml(e.name) + '" href="' + cardPrefix + e.name + '"' + titleAttr(tableDesc(e.name)) + '>' +

@@ -109,14 +109,15 @@ describe('chat thread endpoints', () => {
     ]);
   });
 
-  it("replays an assistant turn's persisted data-change events (rail activity cards)", async () => {
+  it('replays a turn written before data changes moved out of the conversation', async () => {
     const server = await boot();
     await insert(server.url, 'chat_threads', { id: 't2', title: 'Cleanup' });
     await insert(server.url, 'chat_messages', {
       thread_id: 't2',
       role: 'assistant',
-      // A turn that deleted two tables, persisted the way runChat now records it:
-      // per-turn `events` (mutations only) drive the collapsed replay cards.
+      // A turn that deleted two tables, persisted the way runChat used to record
+      // it: per-turn `events` alongside the text. Nothing renders those any more,
+      // so the row must still replay — as text — without handing them back.
       content_json: JSON.stringify({
         text: 'Done — removed them.',
         turns: [
@@ -143,16 +144,23 @@ describe('chat thread endpoints', () => {
     )) as {
       messages: {
         role: string;
+        text: string;
         turns?: {
-          events?: { op: string; table: string | null; summary: string }[];
+          text: string;
+          tools?: { name: string }[];
+          events?: unknown[];
           toolCalls?: unknown[];
         }[];
       }[];
     };
     const asst = replay.messages.find((m) => m.role === 'assistant');
-    expect(asst?.turns?.[0]?.events?.length).toBe(2);
-    expect(asst?.turns?.[0]?.events?.[0]?.op).toBe('schema.delete_entity');
-    expect(asst?.turns?.[0]?.events?.[1]?.summary).toBe('Deleted table b');
+    // The conversation reads back in full…
+    expect(asst?.text).toBe('Done — removed them.');
+    expect(asst?.turns?.[0]?.text).toBe('Done — removed them.');
+    expect(asst?.turns?.[0]?.tools?.[0]?.name).toBe('delete_entity');
+    // …and the stored events are dropped rather than returned: they duplicated
+    // what the activity menu already showed while the work happened.
+    expect(asst?.turns?.[0]?.events).toBeUndefined();
     // toolCalls are server-side memory only — stripped from the GUI replay.
     expect(asst?.turns?.[0]?.toolCalls).toBeUndefined();
   });

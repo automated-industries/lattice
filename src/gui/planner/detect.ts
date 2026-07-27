@@ -7,7 +7,9 @@ import {
   dimensionRatio,
   isLowCardinalityDimension,
 } from '../../import/infer-core.js';
-import type { ColumnStat, ModelProfile, PlanOp, PlanTier, TableProfile } from './types.js';
+import { classifyRoles, type TableRole } from '../../import/roles.js';
+import { isGenericTableName } from '../model-contract.js';
+import type { ColumnStat, ModelProfile, PlanOp, PlanTier, ShapeOp, TableProfile } from './types.js';
 
 /**
  * The deterministic data-model rules engine.
@@ -179,6 +181,13 @@ function detectRelationships(profile: ModelProfile, opts: Required<DetectOptions
 // PROPOSE — a table definition is metadata that is not (yet) on the undo stack,
 // so it is surfaced for one-click apply rather than written unattended (making
 // set_definition revertible is a tracked follow-up).
+//
+// IDEMPOTENCE — the read and the write must name the SAME store. `hasDefinition`
+// is resolved from the workspace configuration's `description:`, so the applier
+// has to write there too; a writer that only updated the browsable metadata row
+// left `hasDefinition` false forever and this rule re-proposed the same
+// documentation on every single pass. `setTableDefinition` is the write half and
+// updates both stores together — do not point one half at only one of them.
 function detectDocumentation(profile: ModelProfile): PlanOp[] {
   const ops: PlanOp[] = [];
   const byName = tableByName(profile);
@@ -442,4 +451,127 @@ export function detect(profile: ModelProfile, options: DetectOptions = {}): Plan
   }
   unique.sort(comparePlanOps);
   return unique;
+}
+
+// ── R10: record what a table IS (role) ───────────────────────────────────────
+// The role ladder (`import/roles.ts`) reads only shape, so its verdict is a
+// structural fact like every other rule here. Writing it is metadata — no DDL,
+// no data rewrite, no reference broken — so an UNAMBIGUOUS verdict is AUTO.
+// A verdict the ladder itself flags as a judgement call is not emitted at all:
+// a stored-but-wrong role is worse than an absent one, and a proposal card that
+// asks "is this a fact?" is a question the user cannot answer better than the
+// numbers can.
+//
+// Idempotence comes from `storedRoles`, which the caller reads back from the
+// same metadata the applier writes: a table already carrying a role (whoever set
+// it) is skipped, so the rule converges after one pass and never overwrites a
+// role a person chose.
+
+// ── R11: name a placeholder-named table ──────────────────────────────────────
+// `Sheet1` / `table_2` / `untitled` say nothing about what the table holds. The
+// suggestion is derived deterministically from the table's own key column (the
+// one column whose name a person did choose) — never invented — and the rule
+// stays silent when no such name can be derived, because a rename proposal with
+// nothing to rename TO is not actionable. Reference-breaking → PROPOSE.
+
+/** Key-ish suffixes stripped when deriving a table name from its key column:
+ *  `invoice_no` → `invoice`. Longest first so `_number` wins over `_no`. */
+const KEY_SUFFIXES = ['_number', '_code', '_slug', '_key', '_ref', '_id', '_no'];
+
+/**
+ * A table name derived from a table's own natural key, or null when none can be
+ * derived. Pure + deterministic: strip a key suffix, normalize, and refuse
+ * anything that is itself a placeholder.
+ */
+export function nameFromNaturalKey(naturalKey: string | null): string | null {
+  if (!naturalKey) return null;
+  const normalized = normalizeName(naturalKey);
+  let stem = normalized;
+  for (const suffix of KEY_SUFFIXES) {
+    if (stem.length > suffix.length && stem.endsWith(suffix)) {
+      stem = stem.slice(0, -suffix.length);
+      break;
+    }
+  }
+  if (!/^[a-z][a-z0-9_]*$/.test(stem)) return null;
+  if (isGenericTableName(stem)) return null;
+  // A bare `name`/`title`/`label` key describes the COLUMN, not the table.
+  if (FREETEXT.has(stem) || NEVER_KEY.has(stem)) return null;
+  return stem;
+}
+
+/**
+ * The shape rules: assign an unambiguous role (AUTO) and offer a name for a
+ * placeholder-named table (PROPOSE).
+ *
+ * Pure, like {@link detect}. `storedRoles` is the roles ALREADY recorded for
+ * this workspace (table name → role, or null when none is stored) and is
+ * required rather than optional: the rules are only idempotent when the caller
+ * tells the detector what is already there, and a silently-empty default would
+ * make the AUTO tier re-apply the same assignment on every pass.
+ */
+export function detectShape(
+  profile: ModelProfile,
+  storedRoles: ReadonlyMap<string, TableRole | null>,
+): ShapeOp[] {
+  const ops: ShapeOp[] = [];
+  // Only the tables the planner may restructure are classified: a computed view,
+  // a junction's physical twin, or a connected external mirror has its role
+  // fixed by what it IS, and none of them can carry workspace metadata anyway.
+  const modellable = profile.tables.filter((t) => isRestructurable(t));
+  const verdicts = classifyRoles(modellable);
+
+  for (const t of modellable) {
+    const verdict = verdicts.get(t.name);
+    if (!verdict) continue;
+    if (storedRoles.get(t.name) != null) continue; // already recorded — never overwrite
+    if (!verdict.unambiguous) continue;
+    ops.push({
+      id: opId('assign_role', t.name, '', verdict.role),
+      kind: 'assign_role',
+      class: 'additive',
+      tier: 'auto',
+      target: { table: t.name },
+      rationale: `${t.name} is a ${verdict.role} table — ${verdict.rationale}`,
+      confidence: verdict.confidence,
+      evidence: {
+        role: verdict.role,
+        rule: verdict.rule,
+        grain: verdict.grain,
+        ...verdict.evidence,
+      },
+    });
+  }
+
+  // A suggestion is only offered when the name is free — including of the names
+  // this same pass already proposed, so two placeholder tables keyed the same way
+  // can't both be renamed onto one identifier.
+  const taken = new Set(profile.tables.map((t) => normalizeName(t.name)));
+  for (const t of modellable) {
+    if (!isGenericTableName(t.name)) continue;
+    const suggestion = nameFromNaturalKey(t.naturalKey);
+    if (!suggestion) continue;
+    if (suggestion === t.name || taken.has(suggestion)) continue;
+    taken.add(suggestion);
+    ops.push({
+      id: opId('rename_generic_table', t.name, '', suggestion),
+      kind: 'rename_generic_table',
+      class: 'restructure',
+      tier: 'propose',
+      target: { table: t.name, toTable: suggestion },
+      rationale:
+        `"${t.name}" is a placeholder name that says nothing about the rows — its key column ` +
+        `"${String(t.naturalKey)}" suggests "${suggestion}".`,
+      confidence: 0.8,
+      evidence: { from: t.name, to: suggestion, key: t.naturalKey ?? '' },
+    });
+  }
+
+  ops.sort(
+    (a, b) =>
+      (a.tier === 'auto' ? 0 : 1) - (b.tier === 'auto' ? 0 : 1) ||
+      cmp(a.kind, b.kind) ||
+      cmp(a.target.table, b.target.table),
+  );
+  return ops;
 }

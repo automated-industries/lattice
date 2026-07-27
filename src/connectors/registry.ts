@@ -185,29 +185,78 @@ export async function listConnectors(
   return rows.map(toRecord);
 }
 
-/** Update a connector's backend connection id + mark it connected (re-auth/reuse). */
+/**
+ * Update a connector's backend connection id + mark it connected (re-auth/reuse).
+ *
+ * A reconnect can also re-key the toolkit: an MCP connection's toolkit is per-connection
+ * (`mcp:<connectionRef>`), so a new connectionRef means a new toolkit. Passing it keeps the
+ * registry row, its descriptor, and its typed tables all keyed to the current connection.
+ *
+ * `displayName` re-stamps the label. Pass it when the reconnect resolved a better one than the row
+ * currently holds — a row that was created before a connection ever authenticated can be carrying
+ * a generic placeholder the server reported, and leaving it in place would keep that useless title
+ * forever even after the connection is finally working. Omit it (or pass undefined) to leave the
+ * existing label untouched; it is never cleared.
+ */
 export async function updateConnectorConnection(
   db: Lattice,
   id: string,
   connectionRef: string,
   toolkit?: string,
+  displayName?: string,
 ): Promise<void> {
-  // A reconnect can also re-key the toolkit: an MCP connection's toolkit is per-connection
-  // (`mcp:<connectionRef>`), so a new connectionRef means a new toolkit. Passing it keeps the
-  // registry row, its descriptor, and its typed tables all keyed to the current connection.
+  const sets = [`"composio_connection_id" = ?`];
+  const params: unknown[] = [connectionRef];
   if (toolkit !== undefined) {
-    await runAsyncOrSync(
-      db.adapter,
-      `UPDATE "${CONNECTORS_TABLE}" SET "composio_connection_id" = ?, "toolkit" = ?, "status" = 'connected', "updated_at" = ? WHERE "id" = ?`,
-      [connectionRef, toolkit, new Date().toISOString(), id],
-    );
-    return;
+    sets.push(`"toolkit" = ?`);
+    params.push(toolkit);
   }
+  if (displayName !== undefined) {
+    sets.push(`"display_name" = ?`);
+    params.push(displayName);
+  }
+  // `last_error` is deliberately NOT cleared here: the sync that follows a successful reconnect
+  // clears it on success, and clearing it up front would erase the recorded reason when a caller
+  // uses this to roll a half-applied change back.
+  sets.push(`"status" = 'connected'`, `"updated_at" = ?`);
+  params.push(new Date().toISOString(), id);
   await runAsyncOrSync(
     db.adapter,
-    `UPDATE "${CONNECTORS_TABLE}" SET "composio_connection_id" = ?, "status" = 'connected', "updated_at" = ? WHERE "id" = ?`,
-    [connectionRef, new Date().toISOString(), id],
+    `UPDATE "${CONNECTORS_TABLE}" SET ${sets.join(', ')} WHERE "id" = ?`,
+    params,
   );
+}
+
+/**
+ * Stable code for "this authorization server cannot issue a client on its own". The GUI keys the
+ * recovery affordance on it, so it must not drift.
+ */
+export const CLIENT_REGISTRATION_UNSUPPORTED = 'client_registration_unsupported';
+
+/** The one user-facing sentence for that failure, wherever it is detected. */
+export const CLIENT_REGISTRATION_MESSAGE =
+  'This MCP server requires a pre-registered OAuth client. Enter the client ID (and secret, if it has one) issued by the provider.';
+
+/**
+ * Classify a raw connector failure into a stable code plus the message a member should actually
+ * read. Returns null when the failure is not one of the known, actionable classes.
+ *
+ * This lives here — beside {@link recordSync} — so BOTH paths that can hit the failure share one
+ * classification: the connect request, and a sync that fails long after connect. When only the
+ * connect path knew about it, the very same failure arriving during a sync was persisted as the
+ * client library's raw sentence, which names no fix and leaves the member with a dead end.
+ *
+ * Two shapes mean the same thing: the authorization server publishes no registration endpoint at
+ * all, or it published one and rejected the registration. Both are fixed by supplying a client the
+ * user registered by hand, so both map to one code. Matching the shared phrase covers them without
+ * swallowing unrelated failures. The curated message re-classifies to itself so reading a
+ * previously persisted error yields the same code.
+ */
+export function classifyConnectorFailure(raw: string): { code: string; message: string } | null {
+  if (/dynamic client registration/i.test(raw) || raw === CLIENT_REGISTRATION_MESSAGE) {
+    return { code: CLIENT_REGISTRATION_UNSUPPORTED, message: CLIENT_REGISTRATION_MESSAGE };
+  }
+  return null;
 }
 
 /**
@@ -216,12 +265,37 @@ export async function updateConnectorConnection(
  * another member's data as an existence oracle. Genericize constraint/conflict
  * errors (no value), and bound everything else. The full error is still THROWN by
  * the sync so server logs keep the detail.
+ *
+ * A known, actionable failure is replaced by its curated message FIRST, so the member reads the
+ * fix rather than the client library's wording no matter which path recorded it.
  */
 export function sanitizeConnectorError(raw: string): string {
+  const known = classifyConnectorFailure(raw);
+  if (known) return known.message;
   if (/constraint|unique|duplicate|conflict|violat|primary key|SQLITE_/i.test(raw)) {
     return 'A record could not be written during sync (possible conflict). Try reconnecting.';
   }
   return raw.length > 500 ? raw.slice(0, 500) + '…' : raw;
+}
+
+/**
+ * True when a connection never finished setting up: it recorded an error and has never completed a
+ * sync, so nothing was ever ingested through it. Such a row is NOT a working connection that later
+ * broke — it never worked at all, and presenting it as "connected" (or merely "error") both
+ * misreads its state and, when it is used to decide which services are already wired up, hides the
+ * catalog card that offers the way to finish it.
+ *
+ * Derived rather than stored: it is a reading of the existing lifecycle columns, so no persisted
+ * state can drift out of step with it.
+ */
+export function isSetupIncomplete(rec: {
+  status: ConnectorStatus;
+  lastSyncAt: string | null;
+  lastError: string | null;
+}): boolean {
+  if (rec.status === 'disconnected') return false;
+  if (rec.lastSyncAt) return false;
+  return rec.lastError != null && rec.lastError !== '';
 }
 
 /** Record a sync outcome: success stamps `last_sync_at` + clears the error. */
