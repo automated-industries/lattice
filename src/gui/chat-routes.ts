@@ -23,6 +23,7 @@ import { runIntent, type IntentResult } from './ai/intent.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
 import { generateHtmlFile } from './ai/html-author.js';
+import { generateMarkdown } from './ai/markdown-author.js';
 import { qaDashboard } from './ai/dashboard-qa.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
@@ -710,7 +711,7 @@ interface PersistedTurnEvent {
 /** One assistant turn: its streamed text + the activity it produced, in order. */
 interface PersistedTurn {
   text: string;
-  tools: { name: string; isError: boolean }[];
+  tools: { name: string; isError: boolean; errorText?: string }[];
   /** Data-change events this turn produced (mutations only). Replayed as the
    *  per-thread activity cards in the rail. */
   events?: PersistedTurnEvent[];
@@ -728,6 +729,8 @@ interface PersistedToolCall {
   input: Record<string, unknown>;
   content: string;
   isError: boolean;
+  /** Truncated error text (~500 chars) when isError is true, for thread replay. */
+  errorText?: string;
 }
 
 // Cross-turn rehydration bounds (see rehydrateHistory). Re-sending prior tool
@@ -887,14 +890,35 @@ export async function dispatchChatRoute(
             if (fs.length > 0) files = fs;
           }
           if (Array.isArray(parsed.turns)) {
-            // Strip toolCalls — the GUI only needs text + the data-change events
+            // Strip toolCalls body — the GUI only needs text + the data-change events
             // (replayed as activity cards); raw tool result content stays
-            // server-side (cross-turn replay only).
-            turns = parsed.turns.map((t) => ({
-              text: t.text,
-              tools: t.tools,
-              ...(t.events ? { events: t.events } : {}),
-            }));
+            // server-side (cross-turn replay only). But harvest error text from
+            // toolCalls to display on errored cards so the user knows why.
+            turns = parsed.turns.map((t) => {
+              const toolsWithErrors: { name: string; isError: boolean; errorText?: string }[] = [];
+              if (Array.isArray(t.tools)) {
+                for (let i = 0; i < t.tools.length; i++) {
+                  const tool = t.tools[i];
+                  if (!tool) continue; // skip undefined entries
+                  const tc = Array.isArray(t.toolCalls) ? t.toolCalls[i] : undefined;
+                  if (tc?.errorText) {
+                    // Add errorText from toolCalls to the tool record for GUI display
+                    toolsWithErrors.push({
+                      name: tool.name,
+                      isError: tool.isError,
+                      errorText: tc.errorText,
+                    });
+                  } else {
+                    toolsWithErrors.push(tool);
+                  }
+                }
+              }
+              return {
+                text: t.text,
+                tools: toolsWithErrors,
+                ...(t.events ? { events: t.events } : {}),
+              };
+            });
           }
         } catch {
           /* ignore malformed */
@@ -1173,6 +1197,18 @@ export async function dispatchChatRoute(
       });
     };
     dispatch.htmlAuthor = authorHtml;
+    // Markdown authoring for large artifacts (spec path in create_artifact).
+    // Uses the same author model as HTML dashboards for consistency.
+    const authorMarkdown = async (spec: string): Promise<string> => {
+      const schema = await buildSchemaContext(dispatch);
+      return generateMarkdown({
+        client: provider.client,
+        schema,
+        spec,
+        model: authorModel,
+      });
+    };
+    dispatch.markdownAuthor = authorMarkdown;
     // Automatic QA for an authored dashboard: run its data queries + check them against the
     // request, repair via the same author, and report residual issues (see dashboard-qa).
     // On by default; LATTICE_DASHBOARD_QA=false disables it (skips the extra queries + judge
@@ -1233,12 +1269,23 @@ export async function dispatchChatRoute(
     let checkpointWarned = false;
     const buildCleanTurns = (): PersistedTurn[] =>
       turns
-        .map((t) => ({
-          text: t.text,
-          tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
-          ...(t.events.length > 0 ? { events: t.events } : {}),
-          ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
-        }))
+        .map((t) => {
+          // Harvest error text from toolCalls to include in the tools array for GUI display
+          const toolsWithErrors = t.tools.map((tool, i) => {
+            const toolCall = t.toolCalls[i];
+            return {
+              name: tool.name,
+              isError: tool.isError,
+              ...(toolCall?.errorText ? { errorText: toolCall.errorText } : {}),
+            };
+          });
+          return {
+            text: t.text,
+            tools: toolsWithErrors,
+            ...(t.events.length > 0 ? { events: t.events } : {}),
+            ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
+          };
+        })
         .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
     const checkpoint = async (force: boolean): Promise<void> => {
       if (!threadId) return;
