@@ -38,9 +38,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
+import { readdirSync, readFileSync } from 'node:fs';
 import { openConfig, disposeActive, startGuiServer } from '../../src/gui/server.js';
 import type { ActiveDb, GuiServerHandle } from '../../src/gui/server.js';
 import { renameUserEntity } from '../../src/gui/schema-ops.js';
+import { applyRenameTable } from '../../src/gui/planner/appliers.js';
 import { secureCloud, reconcileCloudMemberAccess } from '../../src/cloud/setup.js';
 import { setColumnAudience } from '../../src/cloud/audience.js';
 import { memberGroupFor } from '../../src/cloud/rls.js';
@@ -200,6 +202,64 @@ describe.skipIf(!PG_URL)('a masked table keeps its masking when it moves', () =>
     expect(policy).toEqual([{ table_name: 'memos', column_name: 'secret' }]);
   }, 180_000);
 
+  it('keeps the masking when the RESTRUCTURE planner is what renames it', async () => {
+    // The data-model planner proposes a "canonical rename" for any table whose
+    // name has whitespace or punctuation in it, and applying that proposal is a
+    // second way for an owner to rename a table. It is the same rename, so it
+    // has to carry the same masking — a rename that moves the table without its
+    // column policy leaves the policy and the view stranded under the old name,
+    // and the table then reads as having no secret columns at all.
+    const dbname = `lattice_rnmp_${randomBytes(4).toString('hex')}`;
+    databases.push(dbname);
+    {
+      const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+      await admin.query(`CREATE DATABASE "${dbname}"`);
+      await admin.end();
+    }
+
+    const ownerCfg = writeOwnerConfig(dbUrl(dbname));
+    const owner = await openConfig(ownerCfg, join(ownerCfg, '..', 'context'), false);
+    actives.push(owner);
+    await owner.converged;
+    await secureCloud(owner.db);
+
+    const cols = Object.keys(owner.db.getRegisteredColumns('journal')!);
+    const pk = owner.db.getPrimaryKey('journal');
+    await setColumnAudience(owner.db, 'journal', 'secret', 'owner', cols, pk);
+
+    const sharedId = await owner.db.insertForcingVisibility(
+      'journal',
+      { body: 'shared note', secret: 'top-secret' },
+      'everyone',
+    );
+
+    const role = `lm_rnm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    const pw = generateMemberPassword();
+    await provisionMemberRole(owner.db, role, pw);
+    await reconcileCloudMemberAccess(owner.db);
+
+    const member = new pg.Pool({ connectionString: dbUrl(dbname, role, pw), max: 1 });
+    pools.push(member);
+    expect(await memberHasTablePriv(owner.db, 'journal', 'SELECT')).toBe(false);
+
+    expect(await applyRenameTable(owner, 'journal', 'memos', 'sess')).toEqual({ ok: true });
+    await reconcileCloudMemberAccess(owner.db);
+
+    // Base SELECT stays revoked, the mask view moved with the table, and the
+    // canonical policy is keyed to the name the table has now.
+    expect(await memberHasTablePriv(owner.db, 'memos', 'SELECT')).toBe(false);
+    await expect(member.query(`SELECT secret FROM "memos"`)).rejects.toThrow(/permission denied/i);
+    expect((await member.query(`SELECT id, body, secret FROM "memos_v"`)).rows).toEqual([
+      { id: sharedId, body: 'shared note', secret: null },
+    ]);
+    const policy = await allAsyncOrSync(
+      owner.db.adapter,
+      `SELECT "table_name", "column_name" FROM "__lattice_column_policy" ORDER BY "table_name"`,
+    );
+    expect(policy).toEqual([{ table_name: 'memos', column_name: 'secret' }]);
+  }, 180_000);
+
   it('refuses rather than un-masking when the policy cannot follow the table', async () => {
     // Defense in depth for the same failure mode: regeneration reads the policy
     // under the NEW name, and an empty read is indistinguishable from "this table
@@ -318,6 +378,80 @@ describe.skipIf(!PG_URL)('a masked table keeps its masking when it moves', () =>
     );
   }, 180_000);
 
+  it('member reconciliation refuses a table whose mask was left under an older name', async () => {
+    // The check above compares two things that are BOTH keyed to the table's
+    // CURRENT name, so it can only see a disagreement that name knows about. A
+    // rename that moved the table and left the whole mask behind — policy AND
+    // view, both under the name it used to have — produces no disagreement at
+    // that name at all: nothing is recorded for the new name, no `<new>_v`
+    // exists, and the table reads as simply unmasked. That is the state every
+    // un-hardened rename left, and workspaces are already in it.
+    //
+    // What the rename could not move is the view's binding: Postgres attaches a
+    // view to the table it selects FROM by identity, so the stale `<old>_v` is
+    // still reading this table under its new name, and resolving it says so.
+    const dbname = `lattice_rnm5_${randomBytes(4).toString('hex')}`;
+    databases.push(dbname);
+    {
+      const admin = new pg.Pool({ connectionString: PG_URL!, max: 1 });
+      await admin.query(`CREATE DATABASE "${dbname}"`);
+      await admin.end();
+    }
+
+    const ownerCfg = writeOwnerConfig(dbUrl(dbname));
+    const role = `lm_rnm_${randomBytes(3).toString('hex')}`;
+    roles.push(role);
+    const pw = generateMemberPassword();
+    {
+      const owner = await openConfig(ownerCfg, join(ownerCfg, '..', 'context'), false);
+      await owner.converged;
+      await secureCloud(owner.db);
+      const cols = Object.keys(owner.db.getRegisteredColumns('journal')!);
+      const pk = owner.db.getPrimaryKey('journal');
+      await setColumnAudience(owner.db, 'journal', 'secret', 'owner', cols, pk);
+      await provisionMemberRole(owner.db, role, pw);
+      await reconcileCloudMemberAccess(owner.db);
+
+      // A rename that carried nothing with it — exactly what the un-hardened
+      // paths did, and what an already-drifted workspace looks like today.
+      await runAsyncOrSync(owner.db.adapter, `ALTER TABLE "journal" RENAME TO "memos"`);
+      await disposeActive(owner);
+    }
+    writeFileSync(
+      ownerCfg,
+      [
+        `db: "${dbUrl(dbname)}"`,
+        '',
+        'entities:',
+        '  memos:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      body: { type: text }',
+        '      secret: { type: text }',
+        '      deleted_at: { type: text }',
+        '    outputFile: memos.md',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const owner = await openConfig(ownerCfg, join(ownerCfg, '..', 'context'), false);
+    actives.push(owner);
+    await owner.converged;
+
+    const report = await reconcileCloudMemberAccess(owner.db);
+
+    // Refused, loudly and by name — never silently downgraded to no masking.
+    expect(report.skipped.map((s) => s.table)).toContain('memos');
+    expect(report.skipped.find((s) => s.table === 'memos')?.reason).toMatch(/journal_v/);
+
+    // ...and the member never gains cleartext read on the secret column.
+    expect(await memberHasTablePriv(owner.db, 'memos', 'SELECT')).toBe(false);
+    const member = new pg.Pool({ connectionString: dbUrl(dbname, role, pw), max: 1 });
+    pools.push(member);
+    await expect(member.query(`SELECT secret FROM "memos"`)).rejects.toThrow(/permission denied/i);
+  }, 180_000);
+
   it('purging a table takes its cloud sharing and column policy with it', async () => {
     // The same "policy keyed by a name" shape, from the other end. Purging drops
     // the table but the policy rows keyed to its name outlive it — and a later
@@ -389,4 +523,63 @@ describe.skipIf(!PG_URL)('a masked table keeps its masking when it moves', () =>
     const view = await probe.query(`SELECT to_regclass('journal_v') AS v`);
     expect(view.rows[0]).toEqual({ v: null });
   }, 180_000);
+});
+
+/**
+ * The structural half of the same fix, and the only part that keeps holding once
+ * this file is no longer being read.
+ *
+ * Renaming a table is not one statement. Everything that decides who may read it
+ * — the per-table sharing, the row grants, the ownership rows, and the per-column
+ * masking spec the `<t>_v` view is generated from — is keyed by the table's NAME,
+ * so a rename that emits a bare `ALTER TABLE ... RENAME` and nothing else strands
+ * all of it under a name the table no longer has. The table then reads as having
+ * no secret columns, and the next member reconciliation grants direct read on it.
+ *
+ * That is not a bug that was fixed once: it was written independently three times,
+ * because renaming LOOKS like one statement. So the guard is on the statement, not
+ * on any one call site. A table-level rename may be emitted only from the shared
+ * primitive that brackets it with the policy carry, or from the internal
+ * bookkeeping migrations that rename `__lattice_*` tables (which carry no policy
+ * because no member ever reads them).
+ *
+ * A new file failing this test is not a formatting nit — it is a fourth rename
+ * path, and it is a data-exposure bug on a hosted workspace. Route it through
+ * `renameTablesCarryingPolicy` instead.
+ */
+describe('a table rename is emitted only where the policy travels with it', () => {
+  const SRC = join(import.meta.dirname, '..', '..', 'src');
+
+  /** Source files that emit a table-level RENAME (never `RENAME COLUMN`). */
+  function filesEmittingTableRename(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        filesEmittingTableRename(full, out);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts')) continue;
+      const text = readFileSync(full, 'utf8');
+      const emits = text
+        .split('\n')
+        .some((line) => /ALTER\s+TABLE.*RENAME\s+TO/i.test(line) && !/RENAME\s+COLUMN/i.test(line));
+      if (emits) out.push(full.slice(SRC.length + 1).replace(/\\/g, '/'));
+    }
+    return out;
+  }
+
+  it('has no rename path outside the shared primitive', () => {
+    expect(filesEmittingTableRename(SRC).sort()).toEqual(
+      [
+        // The shared primitive itself: brackets the DDL with the snapshot + carry.
+        'gui/schema-ops.ts',
+        // Replaying a rename backwards/forwards from the version history. Its DDL
+        // is handed to the shared primitive rather than executed directly.
+        'gui/lifecycle.ts',
+        // Internal bookkeeping tables only — never a user table, never masked.
+        'lifecycle/pre-init.ts',
+        'search/embeddings.ts',
+      ].sort(),
+    );
+  });
 });

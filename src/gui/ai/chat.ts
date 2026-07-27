@@ -563,9 +563,20 @@ const AFFIRM_RE =
   /(^|\n)\s*(yes|yeah|yep|yup|ok|okay|sure|confirm(ed)?|approved?|proceed|go ahead|do it|please do|affirmative|(delete|remove|drop|clear) (it|them|both|all|those|these))\b/i;
 
 /**
- * Assemble the one exchange that can authorize a destructive plan: the most recent
- * question the assistant put to the user (`ask_user`, replayed in history as a
- * tool_use block), and whether their message answers it yes or no.
+ * True when a user-role message is the HUMAN speaking — it carries top-level text.
+ * `tool_result` blocks ride user-role messages in the wire format but are the
+ * system handing results back to itself, never the user taking a turn.
+ */
+function isUserTurn(content: string | ContentBlock[]): boolean {
+  return typeof content === 'string'
+    ? content.trim() !== ''
+    : content.some((b) => b.type === 'text' && b.text.trim() !== '');
+}
+
+/**
+ * Assemble the one exchange that can authorize a destructive plan: the question the
+ * assistant put to the user (`ask_user`, replayed in history as a tool_use block)
+ * that THIS message is the reply to, and whether it answers yes or no.
  *
  * The user's own words are deliberately NOT part of the question text. They name
  * objects constantly — usually while asking about them — and reading a mention as
@@ -573,30 +584,61 @@ const AFFIRM_RE =
  * Customers. The assistant's own prose does not count either: it is the thing being
  * checked. When the question was not replayed (rehydration is bounded), the evidence
  * is simply thinner and the gate stays closed, which is the safe way to be wrong.
+ *
+ * And an answer has to be the reply TO the question — the message that comes
+ * straight back from it. Any user turn in between spends it: the question was asked
+ * of that message and got whatever answer it got, so a later message is answering
+ * something else. Without that bound a removal question stayed answerable for the
+ * rest of the conversation, and any subsequent message that merely opened
+ * affirmatively — a "yes, go ahead" about something else entirely, turns later —
+ * counted as agreement to destroy. The spent question is kept only as
+ * `lastQuestion`, which is read to interpret a REFUSAL and can never grant consent.
  */
 export function confirmationEvidence(
   history: LlmMessage[] | undefined,
   userMessage: string,
 ): ConfirmationEvidence {
   let question = '';
+  let lastQuestion = '';
+  let stale = false;
   for (const m of history ?? []) {
-    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    if (m.role === 'user') {
+      // The user has taken their turn: whatever was open to them is now answered
+      // or passed over, and cannot be answered again by a later message.
+      if (isUserTurn(m.content) && question !== '') {
+        question = '';
+        stale = true;
+      }
+      continue;
+    }
+    if (!Array.isArray(m.content)) continue;
     for (const b of m.content) {
       if (b.type !== 'tool_use' || b.name !== 'ask_user') continue;
-      const q = typeof b.input.question === 'string' ? b.input.question : '';
-      const options = Array.isArray(b.input.options)
-        ? b.input.options.filter((o): o is string => typeof o === 'string').join(' ')
-        : '';
+      // Only a call that PASSED validation was ever rendered — a malformed one is
+      // handed back as a recoverable error and the turn carries on, so the user
+      // never saw it. It still replays here as a tool_use, which would otherwise
+      // let the model put a question into the record without ever putting it to
+      // the user. Same validator that decides whether it is shown.
+      const parsed = parseAskUserInput(b.input);
+      if ('error' in parsed) continue;
       // The options are part of what the user was shown and clicked, so they count
-      // as the question. Keep the LAST question asked.
-      question = `${q} ${options}`.trim();
+      // as the question. Keep the LAST question asked; asking again reopens it.
+      question = `${parsed.question} ${parsed.options.join(' ')}`.trim();
+      lastQuestion = question;
+      stale = false;
     }
   }
   const said = userAuthoredText(userMessage);
   const declined = DECLINE_RE.test(said);
   // A reply carrying both reads as a refusal: "yes to the first, no to the rest"
   // is not agreement to the whole plan.
-  return { question, affirmed: !declined && AFFIRM_RE.test(said), declined };
+  return {
+    question,
+    affirmed: !declined && AFFIRM_RE.test(said),
+    declined,
+    ...(stale ? { stale: true } : {}),
+    ...(lastQuestion ? { lastQuestion } : {}),
+  };
 }
 
 /** A LOCAL Lattice GUI link to a record: `http://127.0.0.1:4317/#/fs/<table>/<id>`

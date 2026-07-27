@@ -35,7 +35,11 @@ import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
 import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
-import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
+import {
+  physicalTableExists,
+  physicalColumnExists,
+  renameTablesCarryingPolicy,
+} from './schema-ops.js';
 import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
 import { applyRetypeColumn } from './planner/appliers.js';
 import { buildComputedFillLlm } from './computed-llm.js';
@@ -1288,6 +1292,15 @@ export async function applySchemaConfig(
   const doc = loadConfigDoc(active.configPath);
   const inv = direction === 'inverse';
   const ddl: string[] = [];
+  /**
+   * Tables this replay renames, old name → new. Undo and redo of a rename move a
+   * table exactly as the forward rename did, so everything keyed to the table's
+   * NAME — on a hosted workspace that includes the per-table sharing, ownership
+   * and column-masking policy — has to travel with it here too. Collected so the
+   * DDL below can be bracketed by the shared carry rather than left as a bare
+   * ALTER TABLE, which strips the masking and hands every member direct read.
+   */
+  const tableRenames = new Map<string, string>();
   const has = (path: string[]): boolean => doc.getIn(path) !== undefined;
 
   /**
@@ -1355,6 +1368,7 @@ export async function applySchemaConfig(
     doc.deleteIn(['entities', from]);
     doc.setIn(['entities', to], def);
     ddl.push(`ALTER TABLE "${from}" RENAME TO "${to}"`);
+    tableRenames.set(from, to);
   };
   const renameColumn = (entity: string, from: string, to: string): void => {
     const def: unknown = doc.getIn(['entities', entity, 'fields', from]);
@@ -1446,8 +1460,24 @@ export async function applySchemaConfig(
   // Run RENAME DDL on the live connection before re-opening, so the physical
   // schema matches the edited config. (Config edits are persisted only after
   // this succeeds; a throw above leaves the on-disk config + `active` intact.)
-  for (const sql of ddl) await execSql(active.db, sql);
-  saveConfigDoc(active.configPath, doc);
+  //
+  // A TABLE rename goes through the shared primitive, which brackets the DDL with
+  // the snapshot + carry that move every name-keyed store — including, on a hosted
+  // workspace, the column-masking policy and the generated masking view. Replaying
+  // a rename backwards is still a rename: a bare ALTER TABLE here leaves the policy
+  // and the view stranded under the name the table no longer has, which reads as
+  // "this table has no secret columns" and grants every member raw SELECT on it.
+  // It REFUSES rather than rebuild a mask from a policy that did not travel, so the
+  // throw propagates (the route reports it) with the masking left standing.
+  if (tableRenames.size > 0) {
+    await renameTablesCarryingPolicy(active.db, tableRenames, async () => {
+      for (const sql of ddl) await execSql(active.db, sql);
+      saveConfigDoc(active.configPath, doc);
+    });
+  } else {
+    for (const sql of ddl) await execSql(active.db, sql);
+    saveConfigDoc(active.configPath, doc);
+  }
   await disposeActive(active);
   const next = await openConfig(active.configPath, active.outputDir, autoRender);
   // Re-render in the background; the caller awaits this reopen (fast) but the

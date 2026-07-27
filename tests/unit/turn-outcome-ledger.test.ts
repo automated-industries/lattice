@@ -35,7 +35,10 @@ describe('turn outcome ledger', () => {
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'lattice-ledger-'));
     db = new Lattice(join(tmpDir, 'test.db'));
-    for (const t of ['contacts', 'deals']) {
+    // `customers` / `customer_invoices` exist so a compound name and a name that is
+    // a WORD of it are both real objects — the shape that let agreeing to one
+    // authorize destroying the other.
+    for (const t of ['contacts', 'deals', 'customers', 'customer_invoices']) {
       db.define(t, {
         columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', owner: 'TEXT', deleted_at: 'TEXT' },
         render: () => '',
@@ -69,6 +72,11 @@ describe('turn outcome ledger', () => {
     }
     for (const id of ['d1', 'd2'])
       await db.insert('deals', { id, name: `Deal ${id}`, owner: 'u1' });
+    // Wide enough that a removal of either needs the user's say-so.
+    for (let i = 0; i < DESTRUCTIVE_ROW_THRESHOLD + 5; i++) {
+      await db.insert('customers', { id: `cu${String(i)}`, name: `Customer ${String(i)}` });
+      await db.insert('customer_invoices', { id: `ci${String(i)}`, name: `Invoice ${String(i)}` });
+    }
 
     deleteOutcome = (name) => ({
       ok: false,
@@ -77,9 +85,15 @@ describe('turn outcome ledger', () => {
     ctx = {
       db,
       feed: new FeedBus(),
-      validTables: new Set(['contacts', 'deals', 'contacts_deals']),
+      validTables: new Set([
+        'contacts',
+        'deals',
+        'contacts_deals',
+        'customers',
+        'customer_invoices',
+      ]),
       junctionTables: new Set(['contacts_deals']),
-      softDeletable: new Set(['contacts', 'deals']),
+      softDeletable: new Set(['contacts', 'deals', 'customers', 'customer_invoices']),
       deleteEntity: (name) => Promise.resolve(deleteOutcome(name)),
     };
   });
@@ -364,6 +378,110 @@ describe('turn outcome ledger', () => {
     expect(await db.countActive('deals')).toBe(2);
   });
 
+  // ── Consent is a REPLY to the question, and covers only the object it named ──
+  //
+  // Two ways an agreement got stretched past what the user actually agreed to: a
+  // question from earlier in the thread stayed live indefinitely, so ANY later
+  // message that opened affirmatively reactivated it; and a target matched a
+  // question by word containment, so a yes to a compound-named object also
+  // unlocked every object whose name was a word of it.
+
+  /** A prior question, then the user's turn that ends it, then unrelated exchange. */
+  const staleQuestionThread = (question: string): LlmMessage[] => [
+    { role: 'user', content: 'simplify my data model' },
+    ...questionAsked(question, ['Yes, remove both', 'No, keep them']),
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'shown' }] },
+    // The user answers with something else entirely — the question's moment passes.
+    { role: 'user', content: 'hold on, what is in them?' },
+    { role: 'assistant', content: 'Contacts has 3 records and Deals has 2.' },
+    { role: 'user', content: 'and how many of those are active?' },
+    { role: 'assistant', content: 'All of them. Want me to add a Notes field to both?' },
+  ];
+
+  it('does not reuse an old question as consent for a destruction now', async () => {
+    // The affirmative answers the assistant's LAST message ("add a Notes field?"),
+    // which is prose, not a question the gate can be answered through. The removal
+    // question was asked, passed by, and cannot be re-answered turns later.
+    const ledger = ledgerFor(
+      'Yes, go ahead',
+      staleQuestionThread('Remove Contacts (3 records) and Deals (2 records)?'),
+    );
+    await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'contacts', resolution: 'delete_data' },
+      ledger,
+    );
+    const second = await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'deals', resolution: 'delete_data' },
+      ledger,
+    );
+    expect(second.error).toContain('REFUSED');
+    expect(second.error).toContain('An old yes never carries forward');
+    expect(await db.countActive('deals')).toBe(2);
+    expect(await db.countActive('contacts')).toBe(3);
+  });
+
+  it('still accepts the answer that comes straight back from the question', async () => {
+    // The control for the freshness rule: nothing between the question and the
+    // reply but the tool_result that carried it, so this must still go through.
+    const ledger = ledgerFor('Yes, remove both', [
+      { role: 'user', content: 'simplify my data model' },
+      ...questionAsked('Remove Contacts (3 records) and Deals (2 records)?', [
+        'Yes, remove both',
+        'No, keep them',
+      ]),
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'shown' }] },
+    ]);
+    const first = await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'contacts', resolution: 'delete_data' },
+      ledger,
+    );
+    const second = await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'deals', resolution: 'delete_data' },
+      ledger,
+    );
+    // They reach the real primitive (which fails on its own terms) — not the gate.
+    expect(first.error).not.toContain('REFUSED');
+    expect(second.error).not.toContain('REFUSED');
+  });
+
+  it('does not let agreeing to a compound-named object unlock one whose name is a word of it', async () => {
+    const ledger = ledgerFor(
+      'Yes, remove them',
+      questionAsked(`Remove Customer Invoices (${String(DESTRUCTIVE_ROW_THRESHOLD + 5)} records)?`),
+    );
+    const r = await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'customers', resolution: 'delete_data' },
+      ledger,
+    );
+    expect(r.error).toContain('REFUSED');
+    expect(r.error).toContain('"customers"');
+    expect(await db.countActive('customers')).toBe(DESTRUCTIVE_ROW_THRESHOLD + 5);
+  });
+
+  it('lets the agreement through for the object the question actually named', async () => {
+    const ledger = ledgerFor(
+      'Yes, remove them',
+      questionAsked(`Remove Customer Invoices (${String(DESTRUCTIVE_ROW_THRESHOLD + 5)} records)?`),
+    );
+    const r = await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'customer_invoices', resolution: 'delete_data' },
+      ledger,
+    );
+    expect(r.error).not.toContain('REFUSED');
+  });
+
   it('stays closed for even a single small removal the user has already said no to', async () => {
     // Splitting a refused plan into one small call at a time is the same plan. A no
     // to "remove Contacts?" is a no to removing any of it, however little at a time.
@@ -551,6 +669,32 @@ describe('turn outcome ledger', () => {
       expect(namedIn('Remove Deals?', 'contacts')).toBe(false);
       expect(namedIn('', 'contacts')).toBe(false);
     });
+
+    it('names an object exactly — never by the words another object is made of', () => {
+      const known = ['customers', 'customer_invoices', 'invoices'];
+      const q = 'Remove Customer Invoices (40 records)?';
+      expect(namedIn(q, 'customer_invoices', known)).toBe(true);
+      // Both of these are DIFFERENT objects that merely share a word with it.
+      expect(namedIn(q, 'customers', known)).toBe(false);
+      expect(namedIn(q, 'invoices', known)).toBe(false);
+      // Naming them for real still counts, even alongside the compound one.
+      const both = 'Remove Customers (12 records) and Customer Invoices (40 records)?';
+      expect(namedIn(both, 'customers', known)).toBe(true);
+      expect(namedIn(both, 'customer_invoices', known)).toBe(true);
+      expect(namedIn(both, 'invoices', known)).toBe(false);
+      // Word order is part of the name: a scramble is not a naming.
+      expect(namedIn('Remove Lines Invoice Q3?', 'q3_invoice_lines', known)).toBe(false);
+    });
+
+    it('names nothing when two real objects read the same to the user', () => {
+      // Whatever the question said, it cannot have singled one of these out — so it
+      // singled out neither, and the gate stays closed for both.
+      const known = ['customer', 'customers'];
+      expect(namedIn('Remove Customers (40 records)?', 'customers', known)).toBe(false);
+      expect(namedIn('Remove Customer (40 records)?', 'customer', known)).toBe(false);
+      // With only one of them present it is unambiguous again.
+      expect(namedIn('Remove Customers (40 records)?', 'customers', ['customers'])).toBe(true);
+    });
   });
 
   describe('confirmation evidence', () => {
@@ -608,6 +752,79 @@ describe('turn outcome ledger', () => {
       expect(confirmationEvidence([], '').affirmed).toBe(false);
       // A yes wrapped around a no is not a yes.
       expect(confirmationEvidence([], 'Yes to the first one\nno to the rest').affirmed).toBe(false);
+    });
+
+    it('ignores a question that was never actually put to the user', () => {
+      // Too few options to render: the call comes back as a recoverable error and
+      // the turn carries on, so the user never saw it. It still replays as a
+      // tool_use — and must not become a question they can be held to.
+      const unshown: LlmMessage[] = [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'q1',
+              name: 'ask_user',
+              input: { question: 'Remove Contacts and Deals?', options: ['Yes'] },
+            },
+          ],
+        },
+        { role: 'assistant', content: 'Ready when you are.' },
+      ];
+      expect(confirmationEvidence(unshown, 'Yes, go ahead').question).toBe('');
+      expect(confirmationEvidence(unshown, 'Yes, go ahead').stale).toBeFalsy();
+    });
+
+    it('drops a question the user has already had their turn after', () => {
+      const asked: LlmMessage[] = [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'q1',
+              name: 'ask_user',
+              input: { question: 'Remove Contacts and Deals?', options: ['Yes', 'No'] },
+            },
+          ],
+        },
+        // The tool_result rides a user-role message but is not the user speaking —
+        // it must NOT count as their turn, or no question could ever be answered.
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'shown' }] },
+      ];
+      expect(confirmationEvidence(asked, 'Yes').question).toContain('Remove Contacts');
+      expect(confirmationEvidence(asked, 'Yes').stale).toBeFalsy();
+
+      const answered: LlmMessage[] = [
+        ...asked,
+        { role: 'user', content: 'what is in them first?' },
+        { role: 'assistant', content: 'Contacts has 3 records. Shall I add a Notes field?' },
+      ];
+      const later = confirmationEvidence(answered, 'Yes');
+      expect(later.question).toBe('');
+      expect(later.stale).toBe(true);
+      expect(later.affirmed).toBe(true); // they DID say yes — just not to that.
+
+      // A newer question replaces the spent one and is answerable again.
+      const reasked: LlmMessage[] = [
+        ...answered,
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'q2',
+              name: 'ask_user',
+              input: { question: 'Remove Deals?', options: ['Yes', 'No'] },
+            },
+          ],
+        },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q2', content: 'shown' }] },
+      ];
+      const fresh = confirmationEvidence(reasked, 'Yes');
+      expect(fresh.question).toContain('Remove Deals');
+      expect(fresh.stale).toBeFalsy();
     });
   });
 });

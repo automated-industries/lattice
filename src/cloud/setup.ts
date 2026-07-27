@@ -165,11 +165,77 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   const computedViews = new Set(db.getComputedTableNames());
   const maskViews = new Set(viewRows.map((r) => r.name).filter((name) => !computedViews.has(name)));
 
+  // Masking evidence STRANDED UNDER A NAME THE TABLE NO LONGER HAS.
+  //
+  // Both checks the grant loop makes — "is there a policy for this table" and "is
+  // there a `<t>_v` view for this table" — are keyed to the table's CURRENT name,
+  // so neither can see a mask left behind by a rename that moved the table without
+  // its policy. Postgres binds a view to the table it selects FROM by identity, not
+  // by name, so the stale `<old>_v` keeps masking the table under its new name
+  // while both reads above come back empty and the table looks unmasked.
+  //
+  // The binding the rename could not break is what makes it findable: resolve each
+  // `_v` view to the table it actually reads, and any view whose name does not
+  // match that table's current name is drift. That is name-independent, so it also
+  // catches workspaces that drifted BEFORE the rename paths were hardened — which
+  // exist in the wild — rather than only renames performed from here on.
+  const viewBaseRows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT v.relname AS view_name, t.relname AS base_name
+       FROM pg_rewrite r
+       JOIN pg_class v ON v.oid = r.ev_class
+       JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass
+       JOIN pg_class t ON t.oid = d.refobjid AND t.relkind = 'r'
+       JOIN pg_namespace n ON n.oid = v.relnamespace
+      WHERE n.nspname = current_schema() AND v.relkind = 'v' AND t.oid <> v.oid
+      GROUP BY 1, 2`,
+  )) as { view_name: string; base_name: string }[];
+  /** Current table name → the mask views reading it under some OTHER name. */
+  const strandedMasks = new Map<string, string[]>();
+  for (const row of viewBaseRows) {
+    if (!row.view_name.endsWith('_v')) continue; // a mask view is always `<t>_v`
+    if (computedViews.has(row.view_name)) continue;
+    if (row.view_name === `${row.base_name}_v`) continue; // named for what it reads
+    const list = strandedMasks.get(row.base_name) ?? [];
+    list.push(row.view_name);
+    strandedMasks.set(row.base_name, list);
+  }
+  // A policy row keyed to a name no table answers to, with no view left to point
+  // at the table it belongs to, cannot be attributed to anything — so it cannot be
+  // acted on, only reported. (The tables it could name are unaffected: whatever
+  // they are, they carry no masking evidence of their own.)
+  const orphanPolicy = [...columnPolicy.keys()].filter(
+    (name) =>
+      !registered.includes(name) &&
+      !maskViews.has(`${name}_v`) &&
+      tableNeedsAudienceView(columnPolicy.get(name) ?? {}),
+  );
+  if (orphanPolicy.length > 0) {
+    console.warn(
+      `[reconcileCloudMemberAccess] column policy recorded for ${orphanPolicy
+        .map((n) => `"${n}"`)
+        .join(', ')}, which no table in this workspace answers to`,
+    );
+  }
+
   for (const table of registered) {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
     const masked = tableNeedsAudienceView(columnPolicy.get(table) ?? {});
+    const stranded = strandedMasks.get(table);
+    if (stranded !== undefined) {
+      const names = stranded.map((v) => `"${v}"`).join(', ');
+      const wasCalled = stranded.map((v) => `"${v.slice(0, -2)}"`).join(', ');
+      const reason =
+        `${names} masks this table, but is named for ${wasCalled} rather than ` +
+        `"${table}" — the masking was left behind under a name this table no longer has. Granting ` +
+        `members direct read would un-mask it, so nothing was granted. This is what a rename that ` +
+        `moved the table without its column policy looks like; rename it back and rename it again.`;
+      skipped.push({ table, reason });
+      console.warn(`[reconcileCloudMemberAccess] refused "${table}": ${reason}`);
+      continue;
+    }
     if (!masked && maskViews.has(`${table}_v`)) {
       const reason =
         `"${table}_v" masks this table, but no column policy is recorded for "${table}" — the two ` +

@@ -3,7 +3,11 @@ import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import { FeedBus, type FeedOp, type FeedSource } from './feed.js';
 import { cloudRlsInstalled } from '../framework/cloud-connect.js';
-import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
+import {
+  regenerateAudienceViewFromDb,
+  loadAllColumnPolicy,
+  isRowAudience,
+} from '../cloud/audience.js';
 
 /**
  * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
@@ -938,6 +942,118 @@ export function maskEncryptedJson(
   } catch {
     return json;
   }
+}
+
+/** Mask for a value the VIEWER is not allowed to read (a secret column's cell). */
+export const SECRET_VALUE_MASK = ENCRYPTED_VALUE_MASK;
+
+/**
+ * Which columns are secret, per table — the audience decision the row read path
+ * already makes, in the shape an audit-image mask needs.
+ *
+ * Two sources, unioned, because neither alone is readable from every connection:
+ *  - `_lattice_gui_column_meta.secret` — the workspace's own per-column flag. A
+ *    cloud MEMBER can read this, and a member's server process is exactly the one
+ *    that must not serve the value.
+ *  - `__lattice_column_policy` — the DB-canonical cloud audience store, the
+ *    source the `<t>_v` masking views are built from. Owner connections only (a
+ *    member has no grant), so it is consulted only when this connection is not a
+ *    scoped member open.
+ *
+ * A workspace with neither (a plain local DB with no secret columns) yields an
+ * empty map, which masks nothing — correct, because nothing is secret there.
+ */
+export async function loadSecretColumns(db: Lattice): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  const add = (table: string, column: string): void => {
+    const cols = out.get(table) ?? new Set<string>();
+    cols.add(column);
+    out.set(table, cols);
+  };
+
+  if (db.getRegisteredTableNames().includes('_lattice_gui_column_meta')) {
+    const rows = (await db.query('_lattice_gui_column_meta', {
+      filters: [{ col: 'secret', op: 'eq', val: 1 }],
+    })) as { table_name?: unknown; column_name?: unknown }[];
+    for (const r of rows) {
+      if (typeof r.table_name === 'string' && typeof r.column_name === 'string') {
+        add(r.table_name, r.column_name);
+      }
+    }
+  }
+
+  if (db.getDialect() === 'postgres' && !db.isCloudMemberOpen()) {
+    for (const [table, cols] of await loadAllColumnPolicy(db)) {
+      for (const [column, audience] of Object.entries(cols)) {
+        if (!isRowAudience(audience)) add(table, column);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Replace the secret columns of a JSON row-snapshot string (a `before_json` /
+ * `after_json` audit image) with {@link SECRET_VALUE_MASK}. Sibling of
+ * {@link maskEncryptedJson}: same shape, different reason — an encrypted column
+ * leaks a credential, a secret column leaks another member's cell. Returns the
+ * input unchanged when there is nothing to mask or the string doesn't parse.
+ */
+export function maskSecretJson(
+  json: string | null,
+  secretCols: ReadonlySet<string>,
+): string | null {
+  if (json === null || secretCols.size === 0) return json;
+  try {
+    // Parsed as `unknown`: an audit image is normally a row object, but a
+    // hand-written or legacy entry can hold an array or a scalar, and indexing
+    // those by column name would be meaningless.
+    const parsed: unknown = JSON.parse(json);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return json;
+    const obj = parsed as Record<string, unknown>;
+    let touched = false;
+    for (const c of secretCols) {
+      if (c in obj && obj[c] != null && obj[c] !== '') {
+        obj[c] = SECRET_VALUE_MASK;
+        touched = true;
+      }
+    }
+    return touched ? JSON.stringify(obj) : json;
+  } catch {
+    return json;
+  }
+}
+
+/**
+ * Mask the secret columns out of audit-log entries at the point they are SERVED.
+ *
+ * The audit trail stores whole before/after row images, which is what makes undo
+ * and redo able to restore a row — so what is STORED must stay complete. What is
+ * RETURNED to a caller must not be: a shared row's audit images carry every
+ * column, including the ones the caller is not allowed to read, so a history read
+ * hands out exactly the values the column mask exists to protect. Copies each
+ * entry; the inputs are untouched, so a replay path reading the same entries
+ * still sees the full image.
+ *
+ * Schema entries (`schema.*`) are left alone: their payloads are data-model
+ * documents (definitions, column lists), not row snapshots, so a column name is
+ * not a value to mask there.
+ */
+export function maskAuditImages(
+  entries: readonly AuditEntry[],
+  secretByTable: ReadonlyMap<string, ReadonlySet<string>>,
+): AuditEntry[] {
+  if (secretByTable.size === 0) return entries.map((e) => ({ ...e }));
+  return entries.map((e) => {
+    if (isSchemaOp(e.operation)) return { ...e };
+    const cols = secretByTable.get(e.table_name);
+    if (!cols || cols.size === 0) return { ...e };
+    return {
+      ...e,
+      before_json: maskSecretJson(e.before_json, cols),
+      after_json: maskSecretJson(e.after_json, cols),
+    };
+  });
 }
 
 /**

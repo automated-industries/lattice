@@ -11,7 +11,12 @@ import type { ActiveDb } from '../active-db.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from '../config-io.js';
 import { assertNotComputedSource } from '../computed-ops.js';
 import { createRow, updateRow, type MutationCtx } from '../mutations.js';
-import { normalizedEntityName, physicalColumnExists, recordSchemaOp } from '../schema-ops.js';
+import {
+  normalizedEntityName,
+  physicalColumnExists,
+  recordSchemaOp,
+  renameUserEntity,
+} from '../schema-ops.js';
 
 /**
  * The three restructure appliers the plan review offers but could not run:
@@ -161,10 +166,16 @@ async function readAllRows(
 // ── canonical_rename ────────────────────────────────────────────────────────
 
 /**
- * Rename a table to a canonical identifier: physical RENAME, the config entry
- * (and its entity context) moved, the live registry re-pointed WITHOUT a reopen,
- * and the shared revertible rename op recorded — so the history page's undo puts
- * it back through the same path the data-model editor's rename uses.
+ * Rename a table to a canonical identifier.
+ *
+ * This is a thin adapter over the workspace's ONE rename primitive, not a second
+ * implementation of it. A rename is never just an `ALTER TABLE ... RENAME`: the
+ * configuration entry, the entity context, the live registry, every bookkeeping
+ * store that records the table BY NAME, and — on a hosted workspace — the
+ * per-table sharing, ownership and column-masking policy all key on that name,
+ * and a rename that moves the table without them silently gives every member
+ * direct read on columns the owner marked secret. Routing through the shared
+ * primitive is what makes that impossible to get wrong from here.
  */
 export async function applyRenameTable(
   active: ActiveDb,
@@ -172,59 +183,8 @@ export async function applyRenameTable(
   to: string,
   sessionId: string,
 ): Promise<ApplyOutcome> {
-  const refusal = refuseUnreshapable(active, from);
-  if (refusal) return fail(refusal);
-  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(to)) return fail(`"${to}" is not a valid table name.`);
-  if (from === to) return fail(`"${from}" is already named that.`);
-  if (active.validTables.has(to) || active.db.getRegisteredTableNames().includes(to)) {
-    return fail(`A table called "${to}" already exists.`);
-  }
-
-  return active.db.withSchemaLock(async (): Promise<ApplyOutcome> => {
-    const doc = loadConfigDoc(active.configPath);
-    const entityDef: unknown = doc.getIn(['entities', from]);
-    if (entityDef === undefined) {
-      return fail(`"${from}" is not declared in this workspace's configuration.`);
-    }
-    await execSql(active.db, `ALTER TABLE "${from}" RENAME TO "${to}"`);
-    doc.deleteIn(['entities', from]);
-    doc.setIn(['entities', to], entityDef);
-    const ctxDef: unknown = doc.getIn(['entityContexts', from]);
-    if (ctxDef !== undefined) {
-      doc.deleteIn(['entityContexts', from]);
-      doc.setIn(['entityContexts', to], ctxDef);
-    }
-    saveConfigDoc(active.configPath, doc);
-
-    // Re-point the live workspace (no reopen): the registry, the allowlists, and
-    // the rendered-context index all key on the table name.
-    const parsed = parseConfigFile(active.configPath);
-    const entry = parsed.tables.find((t) => t.name === to);
-    if (!entry) return fail(`"${to}" could not be re-registered after the rename.`);
-    active.db.unregisterTable(from);
-    await active.db.defineLate(to, entry.definition);
-    for (const set of [
-      active.validTables,
-      active.softDeletable,
-      active.junctionTables,
-      active.hiddenLinkTables,
-    ]) {
-      if (set.delete(from)) set.add(to);
-    }
-    active.entityContextByTable.delete(from);
-    refreshCanonicalContexts(active);
-
-    await recordSchemaOp(
-      active,
-      'schema.rename_entity',
-      to,
-      { entity: from },
-      { entity: to },
-      `Renamed table ${from} → ${to}`,
-      sessionId,
-    );
-    return { ok: true };
-  });
+  const outcome = await renameUserEntity(active, from, to, sessionId);
+  return outcome.ok ? { ok: true } : fail(outcome.error);
 }
 
 // ── extract_dimension ───────────────────────────────────────────────────────

@@ -6,9 +6,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased] — 5.5.0
+## [5.5.0] — 2026-07-27
 
 ### Security
+
+- **Every rename path now carries a table's cloud masking with it.** Renaming a table is performed in
+  three places — the schema route, the data-model planner, and the history undo/redo — and only the
+  first carried the column policy across. Through the other two a renamed table's policy and masking
+  view were left behind under the old name, so the next member reconciliation saw an unmasked table
+  and granted members direct read on columns the owner had marked secret. All three now run through a
+  single primitive that snapshots the masking, moves it, rebuilds the view under the new name, and
+  refuses rather than proceeding if the policy cannot follow. A test fails the build if a fourth
+  rename path is ever added outside it.
+- **Member reconciliation no longer trusts the current name.** It now resolves each masking view to the
+  table it actually reads, so a policy or view stranded under an older name is detected as drift and
+  refused by name instead of being read as "nothing to mask". This also protects workspaces that
+  already drifted under earlier versions.
+- **Marking a column secret accounts for what reads it.** A computed view built over the column kept
+  serving the value after the base table was masked; the operation now handles dependent views or
+  refuses and names them, rather than reporting a column as masked while a path still exposes it.
+- **Change history no longer shows members values they cannot read.** Audit images are masked for the
+  viewer at the point they are served, so a member browsing history cannot see owner-secret columns of
+  a shared row. What is stored is unchanged, so undo and redo still restore completely.
+- **Destructive confirmation must be fresh and exact.** An affirmative reply now only counts as consent
+  when it directly answers the assistant's question, so an older "yes" cannot be reused to authorise a
+  later removal, and target matching is exact — agreeing to remove one table can no longer authorise
+  removing another whose name it contains.
 
 - **A session opens the root it was given, never one found by searching upward.** Root resolution is
   now `--root`, else `LATTICE_ROOT`, else `~/.lattice` — matching what the desktop app has done since

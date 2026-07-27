@@ -220,20 +220,64 @@ function wordsOf(s: string): string[] {
     .map(singular);
 }
 
+/** Every window in `hay` where `needle`'s words appear consecutively, in order. */
+function spansOf(hay: readonly string[], needle: readonly string[]): [number, number][] {
+  const out: [number, number][] = [];
+  if (needle.length === 0 || needle.length > hay.length) return out;
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    let hit = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (hay[i + j] !== needle[j]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) out.push([i, i + needle.length - 1]);
+  }
+  return out;
+}
+
 /**
- * True when `evidence` — the question the USER was actually shown — names `target`.
+ * True when `evidence` — the question the USER was actually shown — names `target`,
+ * and names THAT object rather than some other one it shares words with.
  *
- * Deliberately tolerant: the assistant is required to speak to the user in
- * friendly names, never raw internal ones, so `q3_invoice_lines` has to match a
- * question that said "Q3 Invoice Lines". Matching is on words, singularized, all
- * of which must be present. A target the question never named simply does not
- * match, and the gate stays closed — which is the safe direction.
+ * Tolerant about spelling, strict about identity. The assistant is required to
+ * speak to the user in friendly names, never raw internal ones, so
+ * `q3_invoice_lines` has to match a question that said "Q3 Invoice Lines" — the
+ * comparison is on words, singularized, in order, as an unbroken run.
+ *
+ * `known` is every object that exists, and is what makes the match exact rather
+ * than merely contiguous. Matching on a SUBSET of the question's words let an
+ * agreement to remove a compound-named object authorize removing a different one
+ * whose whole name is a word of it: a yes to "Remove Customer Invoices?" also
+ * unlocked "Customers" and "Invoices", which the user never agreed to and may not
+ * even have realized existed. So a run is only a naming of `target` when no
+ * LONGER real object name covers that same run — when "customer invoice" is
+ * itself an object, the word "customer" inside it is part of that name, not a
+ * separate mention of another one. Naming both for real still matches both.
+ *
+ * A target the question never named does not match and the gate stays closed,
+ * which is the safe direction to be wrong in.
  */
-export function namedIn(evidence: string, target: string): boolean {
-  const words = wordsOf(target);
-  if (words.length === 0) return false;
-  const seen = new Set(wordsOf(evidence));
-  return words.every((w) => seen.has(w));
+export function namedIn(evidence: string, target: string, known: Iterable<string> = []): boolean {
+  const want = wordsOf(target);
+  if (want.length === 0) return false;
+  const said = wordsOf(evidence);
+  const hits = spansOf(said, want);
+  if (hits.length === 0) return false;
+  // Where a longer object's name occupies the question's words. A name can only be
+  // absorbed by a strictly longer one.
+  const covered: [number, number][] = [];
+  for (const other of known) {
+    if (other === target) continue;
+    const w = wordsOf(other);
+    // Two different objects that read the same to the user: the question cannot
+    // have named one of them in particular, so it named neither.
+    if (w.join(' ') === want.join(' ')) return false;
+    if (w.length <= want.length) continue;
+    covered.push(...spansOf(said, w));
+  }
+  return hits.some(([from, to]) => !covered.some(([a, b]) => a <= from && to <= b));
 }
 
 /**
@@ -246,14 +290,32 @@ export function namedIn(evidence: string, target: string): boolean {
  * destroying it, and the assistant's own question supplied the names — so the model
  * could manufacture the evidence that unlocked its own destructive call. Assembled
  * by the chat loop; absent → nothing is confirmed.
+ *
+ * An answer is also a REPLY, never just a later agreement. `question` therefore
+ * carries only a question this message can still be answering — one the user has
+ * not already had a turn after. Left live, a removal question asked much earlier
+ * stayed answerable forever, and any later message that merely opened
+ * affirmatively ("yes, do that" — about something else entirely) reactivated it.
  */
 export interface ConfirmationEvidence {
-  /** The question the assistant last asked, exactly as the user saw it (with its options). */
+  /**
+   * The question this message is answering: the last one the assistant asked, as
+   * the user saw it (with its options), and only while it is still the user's turn
+   * to answer it. Blank once their turn has come and gone.
+   */
   question: string;
   /** True only when the user's reply to that question is an explicit yes. */
   affirmed: boolean;
   /** True when the user's reply reads as a refusal. */
   declined: boolean;
+  /** True when a question WAS asked but the user has since had a turn — see above. */
+  stale?: boolean;
+  /**
+   * The last question asked at any point, live or spent. Read ONLY to understand a
+   * refusal ("they are saying no, and this is what they were last asked about"),
+   * which can only ever close the gate further — never to grant consent.
+   */
+  lastQuestion?: string;
 }
 
 /**
@@ -607,31 +669,46 @@ export class TurnOutcomeLedger {
   }
 
   /**
-   * Has the user AGREED to destroying `target`? Only an affirmative answer to a
+   * Has the user AGREED to destroying `target`? Only an affirmative REPLY to a
    * question the assistant asked about removing that exact thing counts. Not a
-   * mention of it, not the question on its own, and not the absence of a refusal:
-   * silence, a change of subject, and an ambiguous reply are all "no answer yet".
+   * mention of it, not the question on its own, not an agreement given after their
+   * turn to answer it had passed, and not the absence of a refusal: silence, a
+   * change of subject, and an ambiguous reply are all "no answer yet".
+   *
+   * `known` is every object that exists, so the question has to have named THIS
+   * one — not one whose name merely contains its words.
    */
-  private consented(target: string): boolean {
+  private consented(target: string, known: Iterable<string>): boolean {
     const { question, affirmed, declined } = this.evidence;
     if (declined || !affirmed || question === '') return false;
     if (!asksToDestroy(question)) return false;
-    return namedIn(question, target);
+    return namedIn(question, target, known);
   }
 
-  /** True when the user was asked about removing THIS object and answered no. */
-  private refusedTarget(target: string): boolean {
-    const { question, declined } = this.evidence;
-    return declined && question !== '' && asksToDestroy(question) && namedIn(question, target);
+  /**
+   * True when the user was asked about removing THIS object and answered no. Read
+   * against the last question asked at any point: a refusal only ever closes the
+   * gate, so an older question can be honoured here without loosening anything.
+   */
+  private refusedTarget(target: string, known: Iterable<string>): boolean {
+    const { question, lastQuestion, declined } = this.evidence;
+    const asked = lastQuestion ?? question;
+    return declined && asked !== '' && asksToDestroy(asked) && namedIn(asked, target, known);
   }
 
   /** Why the plan is not confirmed, in the terms the model has to act on. */
   private consentGap(unconfirmed: readonly string[]): string {
-    const { question, affirmed, declined } = this.evidence;
+    const { question, affirmed, declined, stale } = this.evidence;
     if (declined) {
       return `The user's last message reads as a refusal, so treat this plan as declined until they say otherwise.`;
     }
-    if (question === '') return `The user has not been asked about this at all.`;
+    if (question === '') {
+      return stale === true
+        ? `A question was put to the user earlier in this conversation, but they have taken a turn ` +
+            `since — that moment has passed and their agreement now is to whatever was last said, not ` +
+            `to that. An old yes never carries forward; ask again, now.`
+        : `The user has not been asked about this at all.`;
+    }
     if (!affirmed) {
       return (
         `The user was asked, but their reply was not a clear yes. An unrelated, ambiguous, or ` +
@@ -676,10 +753,10 @@ export class TurnOutcomeLedger {
     // small call at a time is the same plan, and the size screen would wave every
     // one of those through. Narrow on purpose — it only applies when they were
     // asked about removing THIS object and said no.
-    const refused = this.refusedTarget(intent.target);
+    const refused = this.refusedTarget(intent.target, ctx.validTables);
     if (!multiTarget && !wide && !refused) return null;
 
-    const unconfirmed = [...targets.keys()].filter((t) => !this.consented(t));
+    const unconfirmed = [...targets.keys()].filter((t) => !this.consented(t, ctx.validTables));
     if (unconfirmed.length === 0) return null;
 
     const already = [...this.touched].map(([t, n]) => `"${t}" (${String(n)} record(s))`);

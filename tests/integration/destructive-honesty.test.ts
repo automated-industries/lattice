@@ -163,7 +163,9 @@ describe('destructive turns cannot report success they did not earn', () => {
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'lattice-honesty-'));
     db = new Lattice(join(tmpDir, 'test.db'));
-    for (const t of ['contacts', 'deals']) {
+    // `customers` alongside `customer_invoices`: a compound name and a real object
+    // whose whole name is a word of it.
+    for (const t of ['contacts', 'deals', 'customers', 'customer_invoices']) {
       db.define(t, {
         columns: { id: 'TEXT PRIMARY KEY', name: 'TEXT', owner: 'TEXT', deleted_at: 'TEXT' },
         render: () => '',
@@ -190,14 +192,18 @@ describe('destructive turns cannot report success they did not earn', () => {
     }
     for (const id of ['d1', 'd2'])
       await db.insert('deals', { id, name: `Deal ${id}`, owner: 'u1' });
+    for (let i = 0; i < 30; i++) {
+      await db.insert('customers', { id: `cu${String(i)}`, name: `Customer ${String(i)}` });
+      await db.insert('customer_invoices', { id: `ci${String(i)}`, name: `Invoice ${String(i)}` });
+    }
 
     toolRecords = [];
     dispatch = {
       db,
       feed: new FeedBus(),
-      validTables: new Set(['contacts', 'deals']),
+      validTables: new Set(['contacts', 'deals', 'customers', 'customer_invoices']),
       junctionTables: new Set(),
-      softDeletable: new Set(['contacts', 'deals']),
+      softDeletable: new Set(['contacts', 'deals', 'customers', 'customer_invoices']),
       // The delete primitive, stubbed to FAIL — exactly the session's shape.
       deleteEntity: (name) =>
         Promise.resolve({ ok: false, error: `"${name}" is still referenced by other records` }),
@@ -454,6 +460,127 @@ describe('destructive turns cannot report success they did not earn', () => {
     expect(refusal).toBeDefined();
     expect(errorOf(refusal)).toContain('not a clear yes');
     expect(await db.countActive('deals')).toBe(2);
+  });
+
+  /** The question, and the tool_result that carried it to the user. */
+  const questionTurn = (question: string, options: string[], id = 'q1'): LlmMessage[] => [
+    {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id, name: 'ask_user', input: { question, options } }],
+    },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'shown' }] },
+  ];
+
+  /** A round that tries to remove `name`, then an answer round. */
+  const removalScript = (...names: string[]): ReturnType<typeof scriptedClient> =>
+    scriptedClient([
+      {
+        text: '',
+        toolUses: names.map((name, i) => ({
+          id: `tu${String(i + 1)}`,
+          name: 'delete_entity',
+          input: { name, resolution: 'delete_data' },
+        })),
+      },
+      { text: 'I have not removed anything.' },
+    ]);
+
+  it('does not carry a yes from an earlier exchange into a destruction now', async () => {
+    // The question was asked, ANSWERED, and the conversation moved on. A later
+    // message that merely opens affirmatively is agreeing to whatever was last
+    // said — never to a removal proposed turns ago.
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'simplify my data model' },
+      ...questionTurn('Remove Contacts (3 records) and Deals (2 records)?', [
+        'Yes, remove both',
+        'No, keep them',
+      ]),
+      { role: 'user', content: 'Yes, remove both' },
+      { role: 'assistant', content: 'Neither could be removed — they are still referenced.' },
+      { role: 'user', content: 'what is referencing them?' },
+      { role: 'assistant', content: 'Each other. Shall I take a look at the links instead?' },
+    ];
+    const { client } = removalScript('contacts', 'deals');
+
+    await collect(
+      runChat({ client, dispatch, history, userMessage: 'Yes, go ahead', onToolRecord: record }),
+    );
+
+    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
+    expect(refusal).toBeDefined();
+    expect(errorOf(refusal)).toContain('An old yes never carries forward');
+    expect(await db.countActive('contacts')).toBe(3);
+    expect(await db.countActive('deals')).toBe(2);
+  });
+
+  it('does not let its own retelling of the user stand in for a question', async () => {
+    // The assistant's prose is the thing being checked, so quoting the user back at
+    // them — destructive verbs, object names and all — supplies no evidence.
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'have a look at my model' },
+      {
+        role: 'assistant',
+        content:
+          'You asked me to delete Contacts (3 records) and Deals (2 records). Ready when you are.',
+      },
+    ];
+    const { client } = removalScript('contacts', 'deals');
+
+    await collect(
+      runChat({ client, dispatch, history, userMessage: 'Yes, go ahead', onToolRecord: record }),
+    );
+
+    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
+    expect(refusal).toBeDefined();
+    expect(errorOf(refusal)).toContain('has not been asked');
+    expect(await db.countActive('contacts')).toBe(3);
+    expect(await db.countActive('deals')).toBe(2);
+  });
+
+  it('confines a yes to the object the question named, not others sharing its words', async () => {
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'clear out the old billing data' },
+      ...questionTurn('Remove Customer Invoices (30 records)?', ['Yes, remove them', 'No']),
+    ];
+    // Round 1 removes what they agreed to; round 2 reaches for a DIFFERENT object
+    // whose whole name is a word of that one.
+    const { client } = scriptedClient([
+      {
+        text: '',
+        toolUses: [
+          {
+            id: 'tu1',
+            name: 'delete_entity',
+            input: { name: 'customer_invoices', resolution: 'delete_data' },
+          },
+        ],
+      },
+      {
+        text: '',
+        toolUses: [
+          {
+            id: 'tu2',
+            name: 'delete_entity',
+            input: { name: 'customers', resolution: 'delete_data' },
+          },
+        ],
+      },
+      { text: 'I could not remove those.' },
+    ]);
+
+    await collect(
+      runChat({ client, dispatch, history, userMessage: 'Yes, remove them', onToolRecord: record }),
+    );
+
+    const calls = toolRecords.filter((r) => r.name === 'delete_entity');
+    expect(calls).toHaveLength(2);
+    // What they agreed to reached the real primitive…
+    expect(calls[0]?.content).not.toContain('REFUSED');
+    expect(calls[0]?.content).toContain('still referenced by other records');
+    // …and what they did not was refused, by name.
+    expect(calls[1]?.content).toContain('REFUSED');
+    expect(errorOf(calls[1])).toContain('"customers"');
+    expect(await db.countActive('customers')).toBe(30);
   });
 
   it('still tells the user what it already changed when they stop the turn', async () => {

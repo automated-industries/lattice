@@ -1798,6 +1798,128 @@ async function repointProposals(active: ActiveDb, renames: Map<string, string>):
 }
 
 /**
+ * Refusal raised from inside {@link renameTablesCarryingPolicy} when a rename
+ * cannot be completed safely. Distinct from a programming error so callers can
+ * report the message to the user instead of letting it escape as a crash.
+ */
+export class RenameRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RenameRefused';
+  }
+}
+
+/**
+ * What renaming a table has to know about it BEFORE it moves: whether the cloud
+ * masks any of its columns, and the shape needed to rebuild that mask afterwards.
+ *
+ * Both are read while the table still answers to its old name. Which columns are
+ * secret is canonical in the column policy, keyed BY NAME — so once the table has
+ * moved, an empty policy read under the new name is indistinguishable from "this
+ * table has no secret columns", and acting on that hands every member raw read.
+ * The column list and primary key are captured here too so the mask can be
+ * rebuilt without depending on the live registry having been re-pointed yet
+ * (a rename never changes either one).
+ */
+interface TableNamePolicySnapshot {
+  onCloud: boolean;
+  masked: Set<string>;
+  shape: Map<string, { columns: string[]; pk: readonly string[] }>;
+}
+
+/** Everything {@link renameTablesCarryingPolicy} moved besides the tables. */
+export interface TableNamePolicyMove {
+  /** Bookkeeping rows re-pointed, per store + column. */
+  rows: { store: string; column: string; rows: number }[];
+  /** Cloud only: per-table masking views rebuilt under the new name. */
+  maskViews: string[];
+}
+
+/**
+ * Rename tables and carry EVERYTHING keyed to their names with them — the ONE
+ * primitive any rename must go through.
+ *
+ * `move` performs the physical `ALTER TABLE ... RENAME` (plus whatever the
+ * caller needs to keep in step with it: the configuration document, the live
+ * registry). It is bracketed, so it is not possible to run it without the
+ * snapshot in front and the carry behind:
+ *
+ *   before — record which of the tables the cloud masks, and their shape;
+ *   move   — the caller's physical rename;
+ *   after  — re-point every name-keyed bookkeeping store, then rebuild each
+ *            masking view under the new name and drop the stale one.
+ *
+ * The order after `move` is load-bearing. The cloud's column policy is one of
+ * those stores and the masking view is generated FROM it, so rebuilding the view
+ * first would read the policy under a name it has not been moved to yet, find
+ * nothing, conclude the table has no secret columns — and both drop the view and
+ * grant the member group raw SELECT on the base table.
+ *
+ * Throws {@link RenameRefused} rather than resolving that ambiguity in the
+ * direction that exposes data: for a table that WAS masked, an empty policy read
+ * under the new name means the policy failed to travel, not that the owner
+ * un-masked it. The mask is left standing under the old view.
+ */
+export async function renameTablesCarryingPolicy(
+  db: Lattice,
+  renames: ReadonlyMap<string, string>,
+  move: () => Promise<void>,
+): Promise<TableNamePolicyMove> {
+  const snapshot: TableNamePolicySnapshot = {
+    onCloud: db.getDialect() === 'postgres' && (await cloudRlsInstalled(db)),
+    masked: new Set<string>(),
+    shape: new Map(),
+  };
+  for (const name of renames.keys()) {
+    const cols = db.getRegisteredColumns(name);
+    if (cols) snapshot.shape.set(name, { columns: Object.keys(cols), pk: db.getPrimaryKey(name) });
+    if (snapshot.onCloud && tableNeedsAudienceView(await loadColumnPolicy(db, name))) {
+      snapshot.masked.add(name);
+    }
+  }
+
+  await move();
+
+  const moved: TableNamePolicyMove = { rows: [], maskViews: [] };
+  for (const { store, columns } of TABLE_NAME_REFERENCES) {
+    for (const column of columns) {
+      for (const [oldName, newName] of renames) {
+        const rows = await repointStore(db.adapter, store, column, oldName, newName);
+        if (rows > 0) moved.rows.push({ store, column, rows });
+      }
+    }
+  }
+  if (!snapshot.onCloud) return moved;
+
+  // Members read a table through a view NAMED after it. Postgres binds a view to
+  // the table it selects from by identity, so the view survives the rename —
+  // under the OLD name, where nothing looks for it. Rebuild it under the new name
+  // and drop the stale one, or a renamed table simply stops being readable by
+  // every member of the team, and the stranded view + policy become the drift
+  // that member reconciliation has to refuse.
+  for (const [oldName, newName] of renames) {
+    if (snapshot.masked.has(oldName)) {
+      const carried = await loadColumnPolicy(db, newName);
+      if (!tableNeedsAudienceView(carried)) {
+        throw new RenameRefused(
+          `"${oldName}" has columns marked secret, and that column policy did not follow it to ` +
+            `"${newName}". Rebuilding the masking view from an empty policy would give every member ` +
+            `direct read on those columns, so the rename stopped before doing that. The table is now ` +
+            `called "${newName}" and its columns are still masked; reopen the workspace and try again.`,
+        );
+      }
+    }
+    await execSql(db, `DROP VIEW IF EXISTS "${oldName.replace(/"/g, '""')}_v"`);
+    const shape = snapshot.shape.get(oldName);
+    if (shape && shape.pk.length > 0) {
+      await regenerateAudienceViewFromDb(db, newName, shape.columns, shape.pk);
+      if (snapshot.masked.has(oldName)) moved.maskViews.push(`${newName}_v`);
+    }
+  }
+  return moved;
+}
+
+/**
  * Rename a user table — and move EVERY other place that name is written.
  *
  * A rename used to move two things (the physical table, its configuration
@@ -1999,117 +2121,67 @@ export async function renameUserEntity(
       if (touched) cascade.computed.push(name);
     }
 
-    // ── what was masked, recorded BEFORE anything moves ─────────────────────
-    // On a cloud, which columns are secret is canonical in the column policy,
-    // keyed by table name. Read which of the tables about to move are masked
-    // while they still answer to their old names, so the cascade can prove
-    // afterwards that the masking travelled with them — an empty policy read
-    // under the new name is otherwise indistinguishable from "this table has no
-    // secret columns", and acting on that hands every member raw read.
-    const onCloud = active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db));
-    const maskedBefore = new Set<string>();
-    if (onCloud) {
-      for (const name of renames.keys()) {
-        if (tableNeedsAudienceView(await loadColumnPolicy(active.db, name))) maskedBefore.add(name);
-      }
-    }
-
-    // ── physical rename ─────────────────────────────────────────────────────
+    // ── the rename itself, bracketed by the policy carry ────────────────────
     // Everything that can be checked has been checked above (the target name is
     // free, every derived link-table name is free, the table is declared), so
-    // the first statement below is the first write. The configuration is saved
-    // only once every rename has succeeded, so a failure here leaves the
-    // workspace describing the state it is actually in.
-    for (const link of links) {
-      if (link.column) {
-        await execSql(
-          active.db,
-          `ALTER TABLE "${link.from}" RENAME COLUMN "${link.column.from}" TO "${link.column.to}"`,
-        );
-      }
-      await execSql(active.db, `ALTER TABLE "${link.from}" RENAME TO "${link.to}"`);
-    }
-    await execSql(active.db, `ALTER TABLE "${from}" RENAME TO "${to}"`);
-    saveConfigDoc(active.configPath, doc);
-
-    // ── re-point the live workspace (no reopen) ─────────────────────────────
-    const parsed = parseConfigFile(active.configPath);
-    for (const [oldName, newName] of renames) {
-      const entry = parsed.tables.find((t) => t.name === newName);
-      if (!entry) return fail(`"${newName}" could not be re-registered after the rename.`);
-      active.db.unregisterTable(oldName);
-      await active.db.defineLate(newName, entry.definition);
-      for (const set of [
-        active.validTables,
-        active.softDeletable,
-        active.junctionTables,
-        active.hiddenLinkTables,
-      ]) {
-        if (set.delete(oldName)) set.add(newName);
-      }
-      active.entityContextByTable.delete(oldName);
-    }
-    // A declared (non-canonical) entity context has to be re-registered under the
-    // new name, or the table renders nothing until the next reopen.
-    const declaredContext = parsed.entityContexts.find((e) => e.table === to);
-    if (declaredContext) {
-      active.db.redefineEntityContext(to, declaredContext.definition);
-      active.entityContextByTable.set(to, declaredContext.definition);
-    }
-    syncCanonicalContexts(active);
-
-    // ── bookkeeping stores that record the name ─────────────────────────────
-    // This runs BEFORE the masked view is rebuilt, and the order is load-bearing:
-    // the cloud's column policy is one of these stores, and the view is generated
-    // FROM that policy. Rebuilding the view first reads the policy under a name
-    // it hasn't been moved to yet, finds nothing, concludes the table has no
-    // secret columns — and both drops the view and grants members raw SELECT on
-    // the base table.
-    for (const { store, columns } of TABLE_NAME_REFERENCES) {
-      for (const column of columns) {
-        for (const [oldName, newName] of renames) {
-          const rows = await repointStore(active.db.adapter, store, column, oldName, newName);
-          if (rows > 0) cascade.rows.push({ store, column, rows });
-        }
-      }
-    }
-    cascade.dashboards = await repointDashboards(active, renames);
-    cascade.proposals = await repointProposals(active, renames);
-
-    // ── the cloud's per-table masked view ──────────────────────────────────
-    // Members read a table through a view NAMED after it. Postgres keeps the
-    // view attached to the table it selects from, so the view survives the
-    // rename — under the OLD name, where nothing looks for it. Rebuild it under
-    // the new name and drop the stale one, or a renamed table simply stops
-    // being readable by every member of the team.
-    if (onCloud) {
-      for (const [oldName, newName] of renames) {
-        // Regeneration reads the column policy and treats an empty read as "no
-        // secret columns here" — which drops the mask and opens the base table
-        // to every member. For a table that WAS masked, an empty read means the
-        // policy failed to travel, not that the owner un-masked it. Stop, with
-        // the mask still standing under the old view, rather than resolve that
-        // ambiguity in the direction that exposes data.
-        if (maskedBefore.has(oldName)) {
-          const carried = await loadColumnPolicy(active.db, newName);
-          if (!tableNeedsAudienceView(carried)) {
-            return fail(
-              `"${oldName}" has columns marked secret, and that column policy did not follow it to ` +
-                `"${newName}". Rebuilding the masking view from an empty policy would give every member ` +
-                `direct read on those columns, so the rename stopped before doing that. The table is now ` +
-                `called "${newName}" and its columns are still masked; reopen the workspace and try again.`,
+    // the first statement inside the closure is the first write. The
+    // configuration is saved only once every rename has succeeded, so a failure
+    // there leaves the workspace describing the state it is actually in.
+    //
+    // The physical rename goes through the one primitive that also carries every
+    // name-keyed store and the cloud's masking views with it — never a bare
+    // ALTER TABLE, which is what strips a table's column masking.
+    let move: TableNamePolicyMove;
+    try {
+      move = await renameTablesCarryingPolicy(active.db, renames, async () => {
+        for (const link of links) {
+          if (link.column) {
+            await execSql(
+              active.db,
+              `ALTER TABLE "${link.from}" RENAME COLUMN "${link.column.from}" TO "${link.column.to}"`,
             );
           }
+          await execSql(active.db, `ALTER TABLE "${link.from}" RENAME TO "${link.to}"`);
         }
-        await execSql(active.db, `DROP VIEW IF EXISTS "${oldName}_v"`);
-        const cols = active.db.getRegisteredColumns(newName);
-        const pk = active.db.getPrimaryKey(newName);
-        if (cols && pk.length > 0) {
-          await regenerateAudienceViewFromDb(active.db, newName, Object.keys(cols), pk);
-          if (maskedBefore.has(oldName)) cascade.maskViews.push(`${newName}_v`);
+        await execSql(active.db, `ALTER TABLE "${from}" RENAME TO "${to}"`);
+        saveConfigDoc(active.configPath, doc);
+
+        // ── re-point the live workspace (no reopen) ─────────────────────────
+        const parsed = parseConfigFile(active.configPath);
+        for (const [oldName, newName] of renames) {
+          const entry = parsed.tables.find((t) => t.name === newName);
+          if (!entry) {
+            throw new RenameRefused(`"${newName}" could not be re-registered after the rename.`);
+          }
+          active.db.unregisterTable(oldName);
+          await active.db.defineLate(newName, entry.definition);
+          for (const set of [
+            active.validTables,
+            active.softDeletable,
+            active.junctionTables,
+            active.hiddenLinkTables,
+          ]) {
+            if (set.delete(oldName)) set.add(newName);
+          }
+          active.entityContextByTable.delete(oldName);
         }
-      }
+        // A declared (non-canonical) entity context has to be re-registered under
+        // the new name, or the table renders nothing until the next reopen.
+        const declaredContext = parsed.entityContexts.find((e) => e.table === to);
+        if (declaredContext) {
+          active.db.redefineEntityContext(to, declaredContext.definition);
+          active.entityContextByTable.set(to, declaredContext.definition);
+        }
+        syncCanonicalContexts(active);
+      });
+    } catch (e) {
+      if (e instanceof RenameRefused) return fail(e.message);
+      throw e;
     }
+    cascade.rows = move.rows;
+    cascade.maskViews = move.maskViews;
+    cascade.dashboards = await repointDashboards(active, renames);
+    cascade.proposals = await repointProposals(active, renames);
 
     await recordSchemaOp(
       active,
