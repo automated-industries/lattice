@@ -84,11 +84,13 @@ GitHub Release.
 
 ### Code signing (maintainers)
 
-Builds are **ad-hoc (unsigned) by default** — contributors need no certificates,
-and the unsigned `.pkg` still installs to `/Applications` (with the macOS
-"unidentified developer" prompt on first launch). Real signing activates only
-when credentials are supplied through the environment; no identity, team, or key
-value is hardcoded anywhere in the repo.
+Builds **from source** are **ad-hoc (unsigned) by default** — contributors need
+no certificates, and the unsigned `.pkg` still installs to `/Applications` (with
+the macOS "unidentified developer" prompt on first launch). Real signing activates
+only when credentials are supplied through the environment; no identity, team, or
+key value is hardcoded anywhere in the repo. (The macOS installers published on
+[latticesql.com/install](https://latticesql.com/install) are built by the release
+workflow **with** those credentials, so they are signed, notarized and stapled.)
 
 To produce a signed + notarized macOS build locally, export before running
 `npm run desktop:build:mac:pkg`:
@@ -127,4 +129,12 @@ unsigned artifacts):
   the desktop build — both are native addons that do not load under Deno. Vector
   search falls back to an in-process scan; image-dependent features are disabled.
   Use the npm/Node build if you need them.
-- The build is large (it embeds its runtime + dependencies) and currently unsigned.
+- The build is large — it embeds its runtime + dependencies.
+- **The Windows `.msi` is unsigned.** There is no Authenticode certificate in the
+  release pipeline, so Windows SmartScreen shows an "unrecognized app" warning on
+  first run (choose **More info → Run anyway**). The released macOS artifacts are
+  not affected: the `.app`, `.pkg` and `.dmg` published on
+  [latticesql.com/install](https://latticesql.com/install) are Developer ID
+  signed, notarized by Apple, and stapled.
+- Builds you make yourself are a separate case — see _Code signing_ above. They
+  are ad-hoc (unsigned) unless you supply your own credentials, on both OSes.

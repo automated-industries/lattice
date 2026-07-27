@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
@@ -13,6 +13,60 @@ import {
   type TurnParams,
 } from '../../src/gui/ai/chat.js';
 import type { ChatStreamEvent } from '../../src/gui/ai/sse.js';
+import { seedClaudeOAuth } from '../helpers/claude-auth.js';
+
+/**
+ * The model client the SERVER-side turn runs against (the last describe block).
+ * Round 1 clears records; round 2 hangs until the user stops it.
+ */
+let serverRounds = 0;
+let reachedSecondRound: Promise<void>;
+let markSecondRound: () => void;
+const stoppableClient: LlmClient = {
+  runTurn(params: TurnParams): Promise<TurnResult> {
+    serverRounds++;
+    if (serverRounds === 1) {
+      return Promise.resolve({
+        stopReason: 'tool_use',
+        text: '',
+        toolUses: [
+          { id: 'tu1', name: 'bulk_update', input: { table: 'contacts', set: { owner: null } } },
+        ],
+      });
+    }
+    params.onText('Next I will remove ');
+    markSecondRound();
+    return new Promise<TurnResult>((_resolve, reject) => {
+      params.signal?.addEventListener('abort', () => {
+        reject(new Error('Request was aborted.'));
+      });
+    });
+  },
+};
+
+vi.mock('../../src/gui/ai/provider.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/gui/ai/provider.js')>();
+  return {
+    ...mod,
+    resolveLlmProvider: () =>
+      Promise.resolve({
+        client: stoppableClient,
+        kind: 'anthropic' as const,
+        authorModel: 'test-model',
+        noteError: () => 'other' as const,
+      }),
+  };
+});
+
+// The fast intent pass would otherwise call the model too; force it to the tool loop.
+vi.mock('../../src/gui/ai/intent.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/gui/ai/intent.js')>();
+  return {
+    ...mod,
+    runIntent: () =>
+      Promise.resolve({ needs_work: true, needs_more_info: false, ack_message: 'Working on it…' }),
+  };
+});
 
 /**
  * A destructive turn may not end in a success narrative.
@@ -317,6 +371,141 @@ describe('destructive turns cannot report success they did not earn', () => {
     }
   });
 
+  it('does not let the user asking ABOUT objects unlock destroying them', async () => {
+    const { client } = scriptedClient([
+      {
+        text: '',
+        toolUses: [
+          {
+            id: 'tu1',
+            name: 'delete_entity',
+            input: { name: 'contacts', resolution: 'delete_data' },
+          },
+          { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
+        ],
+      },
+      { text: 'I have not removed anything.' },
+    ]);
+
+    await collect(
+      runChat({
+        client,
+        dispatch,
+        // The user NAMED both — while asking a question about them. A mention is
+        // not permission, and the assistant may not read it as one.
+        userMessage: 'what is the difference between contacts and deals here?',
+        onToolRecord: record,
+      }),
+    );
+
+    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
+    expect(refusal).toBeDefined();
+    expect(errorOf(refusal)).toContain('has not been asked');
+    expect(await db.countActive('deals')).toBe(2);
+  });
+
+  it('does not let its own question stand in for the user answering it', async () => {
+    // The assistant asked, naming every target — and the user replied with
+    // something else entirely. Anything short of a yes leaves the gate closed.
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'simplify my data model' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'q1',
+            name: 'ask_user',
+            input: {
+              question: 'Remove Contacts (3 records) and Deals (2 records)?',
+              options: ['Yes, remove both', 'No, keep them'],
+            },
+          },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'shown' }] },
+    ];
+    const { client } = scriptedClient([
+      {
+        text: '',
+        toolUses: [
+          {
+            id: 'tu1',
+            name: 'delete_entity',
+            input: { name: 'contacts', resolution: 'delete_data' },
+          },
+          { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
+        ],
+      },
+      { text: 'Still waiting on you.' },
+    ]);
+
+    await collect(
+      runChat({
+        client,
+        dispatch,
+        history,
+        userMessage: 'hold on, what is in them?',
+        onToolRecord: record,
+      }),
+    );
+
+    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
+    expect(refusal).toBeDefined();
+    expect(errorOf(refusal)).toContain('not a clear yes');
+    expect(await db.countActive('deals')).toBe(2);
+  });
+
+  it('still tells the user what it already changed when they stop the turn', async () => {
+    // The turn clears 3 records to prepare a removal, and the user stops it before
+    // the removal happens — the moment they most need to hear what already landed.
+    const controller = new AbortController();
+    let round = 0;
+    const client: LlmClient = {
+      runTurn(params: TurnParams) {
+        round++;
+        if (round === 1) {
+          return Promise.resolve({
+            stopReason: 'tool_use',
+            text: '',
+            toolUses: [
+              {
+                id: 'tu1',
+                name: 'bulk_update',
+                input: { table: 'contacts', set: { owner: null } },
+              },
+            ],
+          });
+        }
+        // The user hits stop while this round is generating: the request aborts.
+        params.onText('Next I will ');
+        controller.abort();
+        return Promise.reject(new Error('Request was aborted.'));
+      },
+    };
+
+    const events = await collect(
+      runChat({
+        client,
+        dispatch,
+        userMessage: 'clean this up',
+        signal: controller.signal,
+        onToolRecord: record,
+      }),
+    );
+
+    // Stopping is not a failure — but it is not silence either.
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    const warn = events.find((e) => e.type === 'warn');
+    expect(warn).toBeDefined();
+    const message = warn?.type === 'warn' ? warn.message : '';
+    expect(message).toContain('3 record(s) in Contacts');
+    expect(message).toContain('still in place');
+    expect(message).toContain('undo');
+    expect(message).not.toMatch(/\btable\b|\bcolumn\b|bulk_update/i);
+    expect(events[events.length - 1]?.type).toBe('done');
+  });
+
   it('reports the failures in a MIXED round, which the all-failed circuit breaker never sees', async () => {
     const { client, contexts } = scriptedClient([
       {
@@ -399,5 +588,114 @@ describe('destructive turns cannot report success they did not earn', () => {
     const finalContext = finalContextText(contexts);
     expect(finalContext).toContain('keep suppressing routine process narration');
     expect(finalContext).toContain('That suppression NEVER applies to the lines above');
+  });
+});
+
+/**
+ * Stopping is where the truth is easiest to lose. The browser releases the reply
+ * the instant the stop is acked, so anything the job says afterwards lands on a
+ * bubble nobody is listening to — and the user who stopped BECAUSE something
+ * looked wrong is told nothing about what already changed. The saved reply is the
+ * one channel that survives the stop, so the notice has to be part of it.
+ */
+describe('a stopped reply still carries what already changed', () => {
+  const dirs: string[] = [];
+  const savedEnv: Record<string, string | undefined> = {};
+  const servers: { close: () => Promise<void> }[] = [];
+
+  beforeEach(() => {
+    const cfgDir = mkdtempSync(join(tmpdir(), 'lattice-honesty-cfg-'));
+    dirs.push(cfgDir);
+    for (const k of ['LATTICE_CONFIG_DIR', 'LATTICE_ENCRYPTION_KEY', 'LATTICE_CHAT_AUTOINGEST']) {
+      savedEnv[k] = process.env[k];
+    }
+    process.env.LATTICE_CONFIG_DIR = cfgDir;
+    process.env.LATTICE_ENCRYPTION_KEY = 'honesty-test-key';
+    // Reference-material auto-ingest would make its own model call before the turn.
+    process.env.LATTICE_CHAT_AUTOINGEST = 'false';
+    seedClaudeOAuth();
+    serverRounds = 0;
+    reachedSecondRound = new Promise<void>((resolve) => {
+      markSecondRound = resolve;
+    });
+  });
+
+  afterEach(async () => {
+    for (const s of servers.splice(0)) await s.close();
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) Reflect.deleteProperty(process.env, k);
+      else process.env[k] = v;
+    }
+  });
+
+  it('saves the outcome notice onto the stopped reply, where the user can still read it', async () => {
+    const { startGuiServer } = await import('../../src/gui/server.js');
+    const root = mkdtempSync(join(tmpdir(), 'lattice-honesty-srv-'));
+    dirs.push(root);
+    const configPath = join(root, 'lattice.config.yml');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./data/test.db',
+        '',
+        'entities:',
+        '  contacts:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '      owner: { type: text }',
+        '    render: default-list',
+        '    outputFile: contacts.md',
+        '',
+      ].join('\n'),
+    );
+    const server = await startGuiServer({
+      configPath,
+      outputDir: join(root, 'context'),
+      port: 0,
+      openBrowser: false,
+    });
+    servers.push(server);
+
+    for (const name of ['Ada', 'Grace', 'Alan']) {
+      await fetch(`${server.url}/api/tables/contacts/rows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, owner: 'u1' }),
+      });
+    }
+
+    const ack = (await fetch(`${server.url}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'clean this up' }),
+    }).then((r) => r.json())) as { threadId: string; messageId: string };
+
+    // Round 2 is generating, so the clearing call has already landed.
+    await reachedSecondRound;
+    const stop = await fetch(
+      `${server.url}/api/chat/messages/${encodeURIComponent(ack.messageId)}/stop`,
+      { method: 'POST' },
+    );
+    expect(stop.status).toBe(202);
+
+    let row: { text: string; status?: string } | null = null;
+    for (let i = 0; i < 100 && !row; i++) {
+      const msgs = (await fetch(`${server.url}/api/chat/threads/${ack.threadId}/messages`).then(
+        (r) => r.json(),
+      )) as {
+        messages: { id: string; text: string; status?: string }[];
+      };
+      const m = msgs.messages.find((x) => x.id === ack.messageId);
+      if (m?.status === 'stopped') row = m;
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(row, 'the assistant row to settle as stopped').not.toBeNull();
+    // Whatever streamed before the stop is kept…
+    expect(row?.text).toContain('Next I will remove');
+    // …and so is the truth about what the stopped turn had already done.
+    expect(row?.text).toContain('3 record(s) in Contacts');
+    expect(row?.text).toContain('undo');
   });
 });

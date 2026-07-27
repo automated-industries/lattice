@@ -14,6 +14,9 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice status`](#lattice-status)
   - [`lattice watch`](#lattice-watch)
   - [`lattice gui`](#lattice-gui)
+    - [Which root gets opened](#which-root-gets-opened)
+    - [Serving on a network](#serving-on-a-network---host----allow-remote)
+- [Cloud](#cloud)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -246,12 +249,16 @@ lattice gui [options]
 
 **Options:**
 
-| Option            | Short | Default                | Description                                           |
-| ----------------- | ----- | ---------------------- | ----------------------------------------------------- |
-| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                          |
-| `--output <dir>`  | –     | `./context`            | Output directory (used by the relationship graph)     |
-| `--port <number>` | –     | `4317`                 | Localhost port; auto-increments when the port is busy |
-| `--no-open`       | –     | off                    | Print the URL without opening a browser               |
+| Option            | Short | Default                | Description                                                   |
+| ----------------- | ----- | ---------------------- | ------------------------------------------------------------- |
+| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                                  |
+| `--output <dir>`  | –     | `./context`            | Output directory (used by the relationship graph)             |
+| `--port <number>` | –     | `4317`                 | Localhost port; auto-increments when the port is busy         |
+| `--no-open`       | –     | off                    | Print the URL without opening a browser                       |
+| `--root <dir>`    | –     | `~/.lattice`           | The `.lattice` root to open (see _Which root gets opened_)    |
+| `--host <addr>`   | –     | `127.0.0.1`            | Bind address. Anything non-loopback is a network exposure     |
+| `--allow-remote`  | –     | off                    | Permit a non-loopback bind (also requires `--root` + a `y`)   |
+| `--yes`           | `-y`  | off                    | Accept the exposure disclosure without being asked (scripted) |
 
 **Example:**
 
@@ -263,6 +270,61 @@ lattice gui --config ./lattice.config.yml
 Lattice GUI listening at http://127.0.0.1:4317
 Press Ctrl+C to stop.
 ```
+
+#### Which root gets opened
+
+A session opens the root you **name** — `--root <dir>`, or the `LATTICE_ROOT`
+environment variable — and otherwise `~/.lattice`. It does **not** search upward
+from the current directory for a `.lattice/.config`.
+
+That search used to be the default, and it meant the workspace you got depended
+on where your shell happened to be: run the GUI inside a checkout that still held
+a `.lattice` from some earlier experiment and you would open _that_ registry's
+workspaces, including any cloud workspace and its stored credentials, without
+having asked for it.
+
+A root inside a project still works — name it:
+
+```sh
+lattice gui --root ./.lattice
+```
+
+If a root does exist above your current directory, Lattice says so once at
+startup and names it, so a habit built on the old behaviour doesn't quietly land
+you in an empty workspace. It is a notice, not a prompt.
+
+#### Serving on a network (`--host` / `--allow-remote`)
+
+The GUI's data routes are **unauthenticated**. On the loopback that is a
+reasonable trade; on any other address it publishes read, write and delete access
+to everything in the open workspace. So a non-loopback bind requires all three of:
+
+1. `--allow-remote`,
+2. an explicitly named `--root` (Lattice will not guess which data to publish),
+3. a typed `y` at the confirmation.
+
+Before asking, it prints exactly what is about to be served — the resolved root,
+the workspace name and kind, its config path, the address, and the fact that
+there is no login. If the workspace is a **cloud** workspace it says so
+prominently: the data at risk then belongs to everyone on that shared database,
+not only to you.
+
+```
+About to serve Lattice on a NON-LOOPBACK address.
+  Address:   http://0.0.0.0:4317/
+  Root:      /home/you/.lattice
+  Workspace: "Field Notes" (local)
+  Config:    /home/you/.lattice/Workspaces/Field Notes/workspace.yml
+
+This server is UNAUTHENTICATED. There is no login: anyone who can reach
+0.0.0.0:4317 can read, change and delete everything in that workspace.
+
+Serve this workspace on the network? [y/N]
+```
+
+`--yes` skips the question for scripted use. It never skips the disclosure, and
+it is never the default — a piped invocation with no terminal is refused rather
+than treated as consent.
 
 **Views:**
 
@@ -290,7 +352,9 @@ Press Ctrl+C to stop.
 - **Data Model** (inside Database Settings) — an entity-level graph plus a side
   panel for adding / removing junction-table links between rows.
 
-**HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
+**HTTP surface** (all routes scoped to `http://<host>:<port>/api`, where `<host>`
+is `127.0.0.1` unless you deliberately bind elsewhere — see _Serving on a
+network_ above):
 
 | Route                      | Method | Lattice call                  |
 | -------------------------- | ------ | ----------------------------- |
@@ -307,8 +371,12 @@ Press Ctrl+C to stop.
 
 Junction tables (any table with exactly two `belongsTo` relations) are hidden
 from the Objects sidebar and the dashboard; link/unlink lives on the Data Model
-page. The server only binds to `127.0.0.1` and does not implement auth — it's
-intended for local development against a config you trust.
+page. **These routes implement no authentication at all.** The server binds to
+`127.0.0.1` by default, which is what makes that acceptable: it's intended for
+local development against a config you trust. Binding anywhere else publishes
+read, write and delete access to everyone who can reach the address, which is why
+`--host` requires `--allow-remote`, a named `--root`, and a typed confirmation
+(see _Serving on a network_ above, and [security.md](security.md)).
 
 **Internal tables added on first open.** Opening a database with `lattice gui`
 creates three additive bookkeeping tables prefixed with `_lattice_gui_`:

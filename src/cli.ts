@@ -9,11 +9,18 @@ import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { detectInstallContext } from './update-context.js';
 import { startGuiServer, openUrl } from './gui/server.js';
+import {
+  bindWithExposureGate,
+  remoteBindRefusal,
+  RemoteBindRefused,
+  type BindTarget,
+  type ExposureIo,
+} from './gui/remote-exposure.js';
 import { isLoopbackHost } from './gui/origin-guard.js';
 import { probeRunningGui } from './gui/probe-running.js';
 import { superviseGui } from './gui/supervisor.js';
-import { ensureRootForGui } from './framework/gui-bootstrap.js';
-import { ensureLatticeRoot, findLatticeRoot, rootConfigDir } from './framework/lattice-root.js';
+import { ensureRootForGui, type GuiBootstrap } from './framework/gui-bootstrap.js';
+import { ensureRootAt, resolveSessionRoot, rootConfigDir } from './framework/lattice-root.js';
 import {
   addWorkspace,
   getActiveWorkspace,
@@ -62,6 +69,11 @@ interface ParsedArgs {
   host: string;
   /** --allow-remote — required to bind the unauthenticated GUI to a non-loopback host. */
   allowRemote: boolean;
+  /**
+   * --yes / -y — accept the remote-exposure disclosure without being asked, for
+   * scripted use. Opt-in only: the disclosure is still printed.
+   */
+  assumeYes: boolean;
   /** --name <display> — workspace / user display name (workspace create, gui). */
   displayName?: string | undefined;
   /** --json — emit machine-readable JSON instead of formatted text (doctor). */
@@ -99,6 +111,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let autoUpdate = true;
   let host = '127.0.0.1';
   let allowRemote = false;
+  let assumeYes = false;
   let subcommand: string | undefined;
   let displayName: string | undefined;
   let root: string | undefined;
@@ -188,6 +201,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       host = argv[i] ?? host;
     } else if (arg === '--allow-remote') {
       allowRemote = true;
+    } else if (arg === '--yes' || arg === '--assume-yes' || arg === '-y') {
+      assumeYes = true;
     } else if (arg === '--name' && i + 1 < argv.length) {
       i++;
       displayName = argv[i];
@@ -235,6 +250,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     autoUpdate: autoUpdate && process.env.LATTICE_NO_AUTO_UPDATE !== '1',
     host,
     allowRemote,
+    assumeYes,
     displayName,
     root,
     json,
@@ -309,9 +325,16 @@ function printHelp(): void {
       '  --port <number>        Localhost port (default: 4317; auto-increments if busy)',
       '  --no-open              Do not open the browser automatically',
       '  --no-auto-update       Pin to the current version (disable the GUI auto-update)',
+      '  --host <addr>          Bind address (default: 127.0.0.1). Anything else is a',
+      '                         network exposure: see --allow-remote',
+      '  --allow-remote         Permit a non-loopback bind. The server is UNAUTHENTICATED,',
+      '                         so this also requires --root and a typed confirmation',
+      '  --yes, -y              Accept the exposure disclosure without being asked',
+      '                         (scripted use; the disclosure is still printed)',
       '',
-      'Options (init / workspace):',
-      '  --root <dir>           The .lattice root location (default: discovered or ./.lattice)',
+      'Options (init / workspace / gui):',
+      '  --root <dir>           The .lattice root to use (default: ~/.lattice). A root is',
+      '                         never picked up by searching upward from the current dir',
       '  --name <display>       Workspace display name (init default workspace / workspace create)',
       '',
       'Options (global):',
@@ -797,14 +820,26 @@ async function runGui(args: ParsedArgs): Promise<void> {
     detectInstallContext().installable
   ) {
     try {
+      // The supervisor respawns the server unattended after every background
+      // update, so a network exposure has to be agreed to HERE — once, while
+      // someone is still at the terminal. The respawned child inherits that
+      // decision (see `assumeYes` below) instead of asking a terminal nobody is
+      // watching. A loopback bind skips this entirely: nothing is published, so
+      // there is nothing to agree to.
+      if (!isLoopbackHost(args.host)) {
+        if (args.root) process.env.LATTICE_ROOT = args.root;
+        assertBindAllowed(args);
+        await bindWithExposureGate(bindTargetFor(args, port), exposureIo(), () =>
+          Promise.resolve(),
+        );
+      }
       await superviseGui({
         cliPath: process.argv[1] ?? '',
         childArgs: process.argv.slice(2),
         currentVersion: getVersion(),
       });
     } catch (e) {
-      console.error(`Error: ${(e as Error).message}`);
-      process.exit(1);
+      exitOnGuiFailure(e);
     }
     return;
   }
@@ -816,45 +851,39 @@ async function runGui(args: ParsedArgs): Promise<void> {
     // single switchable workspace. There is no "database mode" fallback — that
     // duality was the source of the inconsistent header/settings lists.
     if (args.root) process.env.LATTICE_ROOT = args.root;
-    // The GUI's data routes are UNAUTHENTICATED — safe only on the loopback. Binding
-    // to a non-loopback host exposes read/write/delete + the connector SSRF surface
-    // to the whole network, so require an explicit opt-in rather than a warning that
-    // is easy to miss. (The same-origin/Host guard still applies either way.)
-    if (!isLoopbackHost(args.host) && !args.allowRemote) {
-      console.error(
-        `Refusing to bind the GUI to non-loopback host "${args.host}": its data routes are ` +
-          `UNAUTHENTICATED and would be reachable from the network. Re-run with --allow-remote ` +
-          `if that is genuinely intended (and only behind your own network controls).`,
-      );
-      process.exit(1);
-    }
-    const boot = ensureRootForGui({
-      startDir: args.root ?? process.cwd(),
-      configPath: resolve(args.config),
-      explicitConfig: args.config !== './lattice.config.yml',
-    });
+    // Refuse a disallowed bind BEFORE resolving or creating anything, so a
+    // refusal leaves nothing behind. The gate below re-checks — this is an early
+    // out, not the decision.
+    assertBindAllowed(args);
+    const target = bindTargetFor(args, port);
+    const boot = target.boot;
     console.log(
       boot.workspaceId
         ? `Lattice GUI: opening workspace "${boot.displayName}".`
         : 'Lattice GUI: no workspace yet — opening the welcome screen.',
     );
-    const handle = await startGuiServer({
-      configPath: boot.configPath,
-      outputDir: boot.contextDir,
-      latticeRoot: boot.root,
-      port,
-      // Honored only after the --allow-remote gate above; defaults to loopback.
-      host: args.host,
-      openBrowser: !args.noOpen,
-      autoRender: true,
-      version: getVersion(),
-      guiAssetsDir: getGuiAssetsDir(),
-      // Master switch: --no-auto-update (or LATTICE_NO_AUTO_UPDATE=1) pins the version.
-      autoUpdate: args.autoUpdate,
-      // Only a supervised child polls + relaunches: exiting to apply an update is
-      // safe solely when the supervisor is there to respawn it.
-      selfUpdate: process.env.LATTICE_GUI_SUPERVISED === '1',
-    });
+    // Everything above the loopback is a publication. The gate refuses a bind
+    // whose root nobody named, states which root + workspace is about to be
+    // served, and does not reach the socket until that is confirmed.
+    const handle = await bindWithExposureGate(target, exposureIo(), () =>
+      startGuiServer({
+        configPath: boot.configPath,
+        outputDir: boot.contextDir,
+        latticeRoot: boot.root,
+        port,
+        // Honored only after the exposure gate above; defaults to loopback.
+        host: args.host,
+        openBrowser: !args.noOpen,
+        autoRender: true,
+        version: getVersion(),
+        guiAssetsDir: getGuiAssetsDir(),
+        // Master switch: --no-auto-update (or LATTICE_NO_AUTO_UPDATE=1) pins the version.
+        autoUpdate: args.autoUpdate,
+        // Only a supervised child polls + relaunches: exiting to apply an update is
+        // safe solely when the supervisor is there to respawn it.
+        selfUpdate: process.env.LATTICE_GUI_SUPERVISED === '1',
+      }),
+    );
     console.log(`Lattice GUI listening at ${handle.url}`);
     console.log('Press Ctrl+C to stop.');
 
@@ -865,8 +894,96 @@ async function runGui(args: ParsedArgs): Promise<void> {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } catch (e) {
-    console.error(`Error: ${(e as Error).message}`);
+    exitOnGuiFailure(e);
+  }
+}
+
+/** A `BindTarget` plus the bootstrap it was derived from (the caller needs both). */
+type GuiBindTarget = BindTarget & { boot: GuiBootstrap };
+
+/**
+ * Throw if this bind is disallowed outright — no `--allow-remote`, or a root
+ * nobody named. Cheap and side-effect-free, so it can run before any root is
+ * resolved or created: a refused `lattice gui` should leave the disk untouched.
+ */
+function assertBindAllowed(args: ParsedArgs): void {
+  const why = remoteBindRefusal({
+    host: args.host,
+    allowRemote: args.allowRemote,
+    rootSource: resolveSessionRoot({ explicitRoot: args.root }).source,
+  });
+  if (why) throw new RemoteBindRefused(why);
+}
+
+/**
+ * Resolve the session root, bootstrap it, and describe exactly what a bind would
+ * publish. Both the pre-supervision confirmation and the real bind build their
+ * target here, so the two can never describe different things.
+ */
+function bindTargetFor(args: ParsedArgs, port: number): GuiBindTarget {
+  const session = resolveSessionRoot({ explicitRoot: args.root });
+  const boot = ensureRootForGui({
+    startDir: args.root ?? process.cwd(),
+    configPath: resolve(args.config),
+    explicitConfig: args.config !== './lattice.config.yml',
+    ...(args.root !== undefined ? { root: args.root } : {}),
+  });
+  const activeWs = boot.workspaceId
+    ? listWorkspaces(boot.root).find((w) => w.id === boot.workspaceId)
+    : undefined;
+  return {
+    boot,
+    host: args.host,
+    port,
+    allowRemote: args.allowRemote,
+    // A supervised child does not re-ask: the supervisor that spawned it already
+    // put the disclosure in front of a person. (Setting the variable by hand
+    // grants nothing — anyone who can do that can pass --yes.)
+    assumeYes: args.assumeYes || process.env.LATTICE_GUI_SUPERVISED === '1',
+    rootSource: session.source,
+    root: boot.root,
+    workspace: activeWs
+      ? {
+          displayName: activeWs.displayName,
+          kind: activeWs.kind,
+          configPath: boot.configPath,
+        }
+      : null,
+  };
+}
+
+/** Disclosure goes to stderr so stdout stays parseable; the prompt needs a terminal. */
+function exposureIo(): ExposureIo {
+  return {
+    log: (line: string) => {
+      console.error(line);
+    },
+    ...(process.stdin.isTTY ? { prompt: askTerminal } : {}),
+  };
+}
+
+/**
+ * Report a GUI startup failure and exit non-zero. A refused exposure is an
+ * operator decision, not a crash, so it prints its reason plainly — without the
+ * "Error:" prefix that would read like a bug.
+ */
+function exitOnGuiFailure(e: unknown): never {
+  if (e instanceof RemoteBindRefused) {
+    console.error(e.message);
     process.exit(1);
+  }
+  console.error(`Error: ${(e as Error).message}`);
+  process.exit(1);
+}
+
+/** Ask a question on the terminal and resolve with the raw answer. */
+async function askTerminal(question: string): Promise<string> {
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return await rl.question(question);
+  } finally {
+    rl.close();
   }
 }
 
@@ -876,7 +993,10 @@ async function runGui(args: ParsedArgs): Promise<void> {
 
 async function runInit(args: ParsedArgs): Promise<void> {
   if (args.root) process.env.LATTICE_ROOT = args.root;
-  const root = ensureLatticeRoot(args.root ?? process.cwd());
+  // The home root unless one was named — the same root `lattice gui` will open.
+  // Creating a root wherever the shell happened to be is how a checkout ends up
+  // holding a registry that a later, unrelated session picks up.
+  const root = ensureRootAt(resolveSessionRoot({ explicitRoot: args.root }).root);
 
   const migrated = importLegacyUserConfig(root);
   if (migrated.migrated) {
@@ -905,9 +1025,16 @@ async function runInit(args: ParsedArgs): Promise<void> {
 
 async function runWorkspace(args: ParsedArgs): Promise<void> {
   if (args.root) process.env.LATTICE_ROOT = args.root;
-  const root = findLatticeRoot(args.root ?? process.cwd());
-  if (!root) {
-    console.error('No .lattice root found. Run `lattice init` first.');
+  const session = resolveSessionRoot({ explicitRoot: args.root });
+  const root = session.root;
+  if (!existsSync(rootConfigDir(root))) {
+    console.error(`No .lattice root at ${root}. Run \`lattice init\` first.`);
+    if (session.shadowed) {
+      console.error(
+        `(A root does exist above this directory at ${session.shadowed}; ` +
+          `pass --root ${session.shadowed} to use it.)`,
+      );
+    }
     process.exitCode = 1;
     return;
   }

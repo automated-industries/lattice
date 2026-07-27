@@ -646,8 +646,11 @@ import { appJs } from '../../src/gui/app/script.js';
 // global scope, where its helpers were undefined), so its progress reports through the
 // background-task tracker.
 // Recaptured ONCE for the combined client, not per-change.
-const ORIGINAL_LENGTH = 852014;
-const ORIGINAL_SHA256 = '09ee21bc0340d4858108e1931d9042391df03f58597173fc1d78b12fd76fe6b6';
+// 5.5 (cont.): a Stop pressed before the send is acknowledged is no longer a
+// click that does nothing — the intent is held and applied the moment the turn is
+// identified, so an alarmed user's press is never dropped into the ack window.
+const ORIGINAL_LENGTH = 856224;
+const ORIGINAL_SHA256 = 'e2fce6316bd6fa2196d2513b06a417aecd2114dd631d6c937ff8e781668ed594';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

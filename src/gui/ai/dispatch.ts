@@ -156,11 +156,17 @@ export interface OutcomeFact {
   provisional?: boolean;
 }
 
+/** How the turn itself ended, for facts that only exist because of how it ended. */
+export interface TurnContext {
+  /** True once the user has stopped the turn — it will not get to finish its plan. */
+  stopped: boolean;
+}
+
 /** One axis of "what is the answer about to claim, and is it true". */
 export interface ClaimVerifier {
   axis: string;
   /** Pure over the turn's attempts — no I/O, so it can run after every round. */
-  facts(attempts: readonly ToolAttempt[]): OutcomeFact[];
+  facts(attempts: readonly ToolAttempt[], turn: TurnContext): OutcomeFact[];
 }
 
 /** Records above this count make a single removal/clear need the user's say-so. */
@@ -215,12 +221,12 @@ function wordsOf(s: string): string[] {
 }
 
 /**
- * True when `evidence` — text the USER actually saw or wrote — names `target`.
+ * True when `evidence` — the question the USER was actually shown — names `target`.
  *
  * Deliberately tolerant: the assistant is required to speak to the user in
  * friendly names, never raw internal ones, so `q3_invoice_lines` has to match a
  * question that said "Q3 Invoice Lines". Matching is on words, singularized, all
- * of which must be present. A target the user was never shown simply does not
+ * of which must be present. A target the question never named simply does not
  * match, and the gate stays closed — which is the safe direction.
  */
 export function namedIn(evidence: string, target: string): boolean {
@@ -231,13 +237,35 @@ export function namedIn(evidence: string, target: string): boolean {
 }
 
 /**
- * What the user has been shown (or has said) that could count as consent for a
- * destructive plan, plus whether their latest message reads as a refusal.
- * Assembled by the chat loop from the conversation; absent → nothing is confirmed.
+ * The one exchange that can authorize destruction: a question the assistant put to
+ * the user, and their answer to it.
+ *
+ * Consent is an ANSWER, never a word that happened to appear. Matching the target's
+ * name anywhere in the conversation made two forgeries possible: a user MENTIONING
+ * an object (usually while asking about it) satisfied the confirmation for
+ * destroying it, and the assistant's own question supplied the names — so the model
+ * could manufacture the evidence that unlocked its own destructive call. Assembled
+ * by the chat loop; absent → nothing is confirmed.
  */
 export interface ConfirmationEvidence {
-  text: string;
+  /** The question the assistant last asked, exactly as the user saw it (with its options). */
+  question: string;
+  /** True only when the user's reply to that question is an explicit yes. */
+  affirmed: boolean;
+  /** True when the user's reply reads as a refusal. */
   declined: boolean;
+}
+
+/**
+ * True when a question is asking the user to agree to a REMOVAL, rather than merely
+ * mentioning the thing. A yes to "add a field to Contacts and Deals?" names both
+ * objects but agrees to nothing destructive, so the question has to be about
+ * destruction before an answer to it can unlock any.
+ */
+export function asksToDestroy(question: string): boolean {
+  return /\b(remove|removing|delete|deleting|drop|dropping|clear|clearing|wipe|wiping|erase|erasing|unlink|unlinking|discard|discarding|purge|purging)\b/i.test(
+    question,
+  );
 }
 
 /** Bounded, SQL-side count of live records in a table. Never throws. */
@@ -360,7 +388,7 @@ function firstLine(error: string | undefined): string {
  */
 const destructiveVerifier: ClaimVerifier = {
   axis: 'destructive',
-  facts(attempts) {
+  facts(attempts, turn) {
     const out: OutcomeFact[] = [];
     for (const a of attempts) {
       if (!a.ok && a.destructive) {
@@ -392,14 +420,20 @@ const destructiveVerifier: ClaimVerifier = {
         });
       }
     }
-    if (out.length === 0) return out;
-    // Half-applied plan: something was destroyed to enable a removal that then
-    // did not happen. That residue is the damage the user must hear about.
+    // Residue: destructive work that DID land and is still applied. Two ways a turn
+    // gets here — a removal it was preparing for then failed, or the user stopped
+    // the turn part-way. The stop case is the one most likely to go untold, and the
+    // one where it matters most: they stopped BECAUSE something looked wrong, and
+    // the turn never reaches an answer that could have explained itself.
+    const halfApplied = out.length > 0;
+    if (!halfApplied && !turn.stopped) return out;
     const done = attempts.filter(
       (a) =>
         a.ok &&
         a.destructive &&
-        (a.destructive.kind === 'unlink' || a.destructive.kind === 'clear'),
+        // Interrupted: everything already destroyed counts, not only the
+        // unlink/clear groundwork of a removal that was still to come.
+        (turn.stopped || a.destructive.kind === 'unlink' || a.destructive.kind === 'clear'),
     );
     if (done.length > 0) {
       const rows = done.reduce((n, a) => n + affectedRows(a), 0);
@@ -409,13 +443,18 @@ const destructiveVerifier: ClaimVerifier = {
         axis: 'destructive',
         kind: 'residue',
         key: 'destructive:residue',
-        statement:
-          `${String(rows)} record(s) across ${String(objects.length)} object(s) (${objects.join(', ')}) ` +
-          `WERE unlinked/cleared to make that removal possible, and those changes are still applied. ` +
-          `The workspace is now half-changed: links gone, objects still present.`,
-        userStatement:
-          `${String(rows)} record(s) in ${names} were already unlinked to prepare for that, and those ` +
-          `changes are still in place — so those records are now disconnected.`,
+        statement: turn.stopped
+          ? `The turn was STOPPED part-way. ${String(rows)} record(s) across ` +
+            `${String(objects.length)} object(s) (${objects.join(', ')}) had ALREADY been changed ` +
+            `by then, and those changes are still applied.`
+          : `${String(rows)} record(s) across ${String(objects.length)} object(s) (${objects.join(', ')}) ` +
+            `WERE unlinked/cleared to make that removal possible, and those changes are still applied. ` +
+            `The workspace is now half-changed: links gone, objects still present.`,
+        userStatement: turn.stopped
+          ? `${String(rows)} record(s) in ${names} had already been changed when you stopped, and ` +
+            `those changes are still in place.`
+          : `${String(rows)} record(s) in ${names} were already unlinked to prepare for that, and those ` +
+            `changes are still in place — so those records are now disconnected.`,
         undo: 'Offer to undo them; every change this turn can be reversed from version history.',
       });
     }
@@ -524,7 +563,9 @@ export interface TurnOutcomeLedgerOptions {
  * One instance per assistant turn. The chat loop hands it to every
  * {@link executeFunction} call, injects {@link reconciliation} into the model's
  * context before the answer round, and emits {@link userNotice} on the stream so
- * the truth reaches the user even if the answer never mentions it.
+ * the truth reaches the user even if the answer never mentions it. A turn the user
+ * STOPS never reaches an answer at all — {@link markStopped} is what makes the
+ * notice cover it, since that is the turn most likely to leave changes behind.
  */
 export class TurnOutcomeLedger {
   private readonly attempts: ToolAttempt[] = [];
@@ -534,10 +575,24 @@ export class TurnOutcomeLedger {
   /** Destructive targets already acted on this turn → records at stake, for the
    *  refusal text. Its size is the plan's size so far. */
   private readonly touched = new Map<string, number>();
-  private destroyedRows = 0;
+  /**
+   * Records this turn's destructive calls have put at stake, accumulated across the
+   * WHOLE turn — every call that ran, whether or not it landed. Counting only what
+   * succeeded measured the damage done rather than the plan attempted, so a plan
+   * split into single-target calls (or one re-attempted after it failed) could keep
+   * slipping under the threshold round after round and never need an answer.
+   */
+  private plannedRows = 0;
+  /** Set when the user stops the turn, so the notice can report the interruption. */
+  private stopped = false;
 
   constructor(opts: TurnOutcomeLedgerOptions = {}) {
-    this.evidence = opts.evidence ?? { text: '', declined: false };
+    this.evidence = opts.evidence ?? { question: '', affirmed: false, declined: false };
+  }
+
+  /** The user stopped this turn: whatever already landed is now the whole story. */
+  markStopped(): void {
+    this.stopped = true;
   }
 
   get counts(): { attempted: number; succeeded: number; failed: number } {
@@ -552,10 +607,56 @@ export class TurnOutcomeLedger {
   }
 
   /**
+   * Has the user AGREED to destroying `target`? Only an affirmative answer to a
+   * question the assistant asked about removing that exact thing counts. Not a
+   * mention of it, not the question on its own, and not the absence of a refusal:
+   * silence, a change of subject, and an ambiguous reply are all "no answer yet".
+   */
+  private consented(target: string): boolean {
+    const { question, affirmed, declined } = this.evidence;
+    if (declined || !affirmed || question === '') return false;
+    if (!asksToDestroy(question)) return false;
+    return namedIn(question, target);
+  }
+
+  /** True when the user was asked about removing THIS object and answered no. */
+  private refusedTarget(target: string): boolean {
+    const { question, declined } = this.evidence;
+    return declined && question !== '' && asksToDestroy(question) && namedIn(question, target);
+  }
+
+  /** Why the plan is not confirmed, in the terms the model has to act on. */
+  private consentGap(unconfirmed: readonly string[]): string {
+    const { question, affirmed, declined } = this.evidence;
+    if (declined) {
+      return `The user's last message reads as a refusal, so treat this plan as declined until they say otherwise.`;
+    }
+    if (question === '') return `The user has not been asked about this at all.`;
+    if (!affirmed) {
+      return (
+        `The user was asked, but their reply was not a clear yes. An unrelated, ambiguous, or ` +
+        `absent answer is NOT consent — only an explicit yes is.`
+      );
+    }
+    if (!asksToDestroy(question)) {
+      return (
+        `The question they agreed to was not about removing anything, so their answer does not ` +
+        `cover this.`
+      );
+    }
+    return (
+      `Their answer only covers what that question named; ` +
+      `${unconfirmed.map((t) => `"${t}"`).join(', ')} was not part of it.`
+    );
+  }
+
+  /**
    * PRE-FLIGHT GATE. Returns an instructive refusal when this call is part of a
-   * multi-target destructive plan (or a single wide one) the user has not been
-   * asked about — otherwise null. Enforced as a rejected tool call, not as a
-   * prompt rule, because a prompt rule is exactly what failed here.
+   * destructive plan the user has not agreed to — one that spans more than one
+   * object, one that has grown wider than the unasked threshold ACROSS the turn,
+   * or one they have already refused (at any size) — otherwise null. Enforced as a
+   * rejected tool call, not as a prompt rule, because a prompt rule is exactly what
+   * failed here.
    */
   async gateDestructive(
     ctx: DispatchCtx,
@@ -568,31 +669,37 @@ export class TurnOutcomeLedger {
 
     const targets = new Map(this.touched);
     targets.set(intent.target, Math.max(targets.get(intent.target) ?? 0, intent.rows));
-    const totalRows = this.destroyedRows + intent.rows;
+    const totalRows = this.plannedRows + intent.rows;
     const multiTarget = targets.size > 1;
     const wide = totalRows > DESTRUCTIVE_ROW_THRESHOLD || intent.rowsUnknown === true;
-    if (!multiTarget && !wide) return null;
+    // A plan the user has REFUSED is gated at any size: chipping away at it one
+    // small call at a time is the same plan, and the size screen would wave every
+    // one of those through. Narrow on purpose — it only applies when they were
+    // asked about removing THIS object and said no.
+    const refused = this.refusedTarget(intent.target);
+    if (!multiTarget && !wide && !refused) return null;
 
-    const unnamed = [...targets.keys()].filter((t) => !namedIn(this.evidence.text, t));
-    if (!this.evidence.declined && unnamed.length === 0) return null;
+    const unconfirmed = [...targets.keys()].filter((t) => !this.consented(t));
+    if (unconfirmed.length === 0) return null;
 
     const already = [...this.touched].map(([t, n]) => `"${t}" (${String(n)} record(s))`);
     const reason = multiTarget
       ? `it removes from more than one object: ${[...targets]
           .map(([t, n]) => `"${t}" (${String(n)} record(s))`)
           .join(', ')}`
-      : `it affects ${intent.rowsUnknown === true ? 'an unknown number of' : String(totalRows)} records, more than the ${String(DESTRUCTIVE_ROW_THRESHOLD)} this can do unasked`;
+      : wide
+        ? `this turn's destructive work now reaches ${intent.rowsUnknown === true ? 'an unknown number of' : String(totalRows)} records in total, more than the ${String(DESTRUCTIVE_ROW_THRESHOLD)} this can do unasked`
+        : `the user was asked about removing "${intent.target}" and said no — size does not make it allowed`;
     return (
       `REFUSED — nothing was changed by this call. This is part of a destructive plan the user has ` +
       `not agreed to: ${reason}.\n` +
       `About to: ${intent.detail}.\n` +
       (already.length > 0 ? `Already acted on this turn: ${already.join(', ')}.\n` : '') +
-      (this.evidence.declined
-        ? `The user's last message reads as a refusal, so treat this plan as declined until they say otherwise.\n`
-        : '') +
+      `${this.consentGap(unconfirmed)}\n` +
       `Call ask_user FIRST. The question must name every one of these — by the name the user sees, ` +
-      `with its record count — and ask whether to go ahead. Retry only after they answer. Do not ` +
-      `retry this call before asking, and never describe any of it as done.`
+      `with its record count — and ask plainly whether to remove them. Their next message has to be ` +
+      `an explicit yes to THAT question; anything else leaves this refused. Retry only after they ` +
+      `answer. Do not retry this call before asking, and never describe any of it as done.`
     );
   }
 
@@ -622,18 +729,20 @@ export class TurnOutcomeLedger {
     };
     this.attempts.push(attempt);
     if (intent) {
-      // The target counts toward the plan's size whether or not the call landed —
-      // an attempted removal is still part of the plan the user must agree to.
+      // The target AND its records count toward the plan's size whether or not the
+      // call landed — an attempted removal is still part of the plan the user must
+      // agree to, and a failed one is usually about to be retried.
       this.touched.set(intent.target, Math.max(this.touched.get(intent.target) ?? 0, intent.rows));
-      if (res.ok) this.destroyedRows += affectedRows(attempt);
+      this.plannedRows += Math.max(intent.rows, res.ok ? affectedRows(attempt) : 0);
     }
   }
 
   /** Every fact the registered axes can prove about this turn, deduped by key. */
   facts(): OutcomeFact[] {
     const byKey = new Map<string, OutcomeFact>();
+    const turn: TurnContext = { stopped: this.stopped };
     for (const v of CLAIM_VERIFIERS) {
-      for (const f of v.facts(this.attempts)) byKey.set(f.key, f);
+      for (const f of v.facts(this.attempts, turn)) byKey.set(f.key, f);
     }
     return [...byKey.values()];
   }

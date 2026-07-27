@@ -455,6 +455,16 @@ export const onboardingJs = `    // ──────────────�
           btn.textContent = 'Send';
           btn.title = ingesting ? 'Adding your files…' : 'Send';
           btn.disabled = true;
+        } else if (stopPending() && !content) {
+          // A Stop the user already pressed that has not been delivered yet: the turn
+          // is still being identified (see stopActiveTurn). It goes out on its own, so
+          // the button reports that instead of looking armed for a press that would
+          // add nothing.
+          btn.setAttribute('data-action', 'stopping');
+          btn.classList.add('is-stop');
+          btn.textContent = 'Stopping…';
+          btn.title = 'Stopping this reply';
+          btn.disabled = true;
         } else if (chatBusy && !content) {
           btn.setAttribute('data-action', 'stop');
           btn.classList.add('is-stop');
@@ -492,9 +502,66 @@ export const onboardingJs = `    // ──────────────�
     // the work continues server-side as a background job streaming over the socket. So
     // abandoning a fetch here would stop nothing — the job would keep calling the model
     // and keep writing to the workspace. Stopping has to be a request of its own.
+    //
+    // That ack is also what NAMES the turn, and the button becomes a Stop the moment
+    // the send leaves — so there is a window where the turn is already running but no
+    // messageId has come back to address a stop to. A press there must not evaporate
+    // (it is exactly when an alarmed user reaches for Stop), so the intent is
+    // REMEMBERED and delivered the instant the ack binds the turn:
+    //   pendingSendCount — /api/chat POSTs that have not resolved yet
+    //   stopRequested    — a Stop pressed while only such a send existed
+    //   stopWaiters      — the callers awaiting that stop; they settle on its REAL
+    //                      outcome, never on a promise that stopped nothing.
+    var pendingSendCount = 0;
+    var stopRequested = false;
+    var stopWaiters = [];
+    // True while a requested stop has not been delivered/settled — the composer button
+    // shows this state rather than a live-looking Stop.
+    function stopPending() { return stopRequested || stopWaiters.length > 0; }
+    function settleStopWaiters(err) {
+      var waiters = stopWaiters;
+      stopWaiters = [];
+      updateComposerAction();
+      for (var i = 0; i < waiters.length; i++) {
+        if (err) waiters[i].reject(err); else waiters[i].resolve();
+      }
+    }
+    // The ack named the turn: deliver the Stop the user already pressed.
+    function deliverRememberedStop() {
+      if (!stopRequested) return;
+      stopRequested = false;
+      stopActiveTurn().then(
+        function () { settleStopWaiters(null); },
+        function (e) { settleStopWaiters(e); }
+      );
+    }
+    // A send POST has resolved — with an ack, a refusal, or a network error. If a Stop
+    // is STILL remembered at that point, no turn was ever opened for it to name (the
+    // send was refused, or its turn had already finished), so there is genuinely
+    // nothing running: clear the intent rather than leaving the button on 'Stopping…'
+    // forever, and settle the callers.
+    function sendSettled() {
+      if (pendingSendCount > 0) pendingSendCount -= 1;
+      if (!stopRequested) { updateComposerAction(); return; }
+      if (pendingSendCount > 0 || Object.keys(chatTurns).length) return;
+      stopRequested = false;
+      settleStopWaiters(null);
+    }
     function stopActiveTurn() {
       var ids = Object.keys(chatTurns);
-      if (!ids.length) return Promise.resolve();
+      if (!ids.length) {
+        // Nothing bound yet. If a send is still in flight, its turn IS running on the
+        // server and its ack is on the way — remember the request instead of handing
+        // back a resolved promise for a stop that never happened.
+        if (pendingSendCount > 0) {
+          stopRequested = true;
+          updateComposerAction();
+          return new Promise(function (resolve, reject) {
+            stopWaiters.push({ resolve: resolve, reject: reject });
+          });
+        }
+        return Promise.resolve();
+      }
       var reqs = [];
       for (var i = 0; i < ids.length; i++) {
         (function (mid) {
@@ -906,6 +973,9 @@ export const onboardingJs = `    // ──────────────�
       // adds on this turn stay private to the current user.
       var privEl = document.getElementById('chat-private');
       var privateMode = !!(privEl && privEl.checked);
+      // Counted from here until the response settles: until it does, this turn cannot
+      // be named, and a Stop pressed meanwhile is held rather than dropped.
+      pendingSendCount += 1;
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
@@ -923,6 +993,9 @@ export const onboardingJs = `    // ──────────────�
             // buffered from before this resolved) paint the reply. The composer stays busy
             // until the turn's 'done' event fires (finalizeChatTurn).
             bindChatTurn({ messageId: mid, threadId: threadId || currentThreadId, actx: null, assembled: '', pendingOpen: null, done: false });
+            // A Stop pressed while this send was in flight had no message to name;
+            // now it does, so it goes out immediately.
+            deliverRememberedStop();
             return undefined;
           });
         }
@@ -951,6 +1024,11 @@ export const onboardingJs = `    // ──────────────�
             if (cfg && cfg.connected === false) reonboardOnAiFailure();
           }).catch(function () { /* ignore */ });
         }
+      }).then(function () {
+        // Runs on every outcome (the catch above resolves): this send is no longer
+        // in flight, so a Stop still waiting on it has to be settled one way or the
+        // other rather than left pending forever.
+        sendSettled();
       });
     }
     var recState = 'idle';

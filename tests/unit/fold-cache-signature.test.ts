@@ -195,13 +195,28 @@ describe('fold cache — the signature is built from every viewer discriminator'
   });
 
   it('pins the separators as characters a row id or source id cannot contain', () => {
-    // The separators are what make the flattening injective, and they are
-    // invisible in an editor — spelling them by code point here means swapping one
-    // for an empty or printable string fails loudly instead of reading as a no-op.
+    // The separators are what make the flattening injective. They are written as
+    // ESCAPES rather than raw bytes on purpose: a literal control byte makes git
+    // classify the file as binary, which renders every change to it as an empty
+    // diff and hides it from the repo's own text-based scans. Spelling them by
+    // code point here means swapping one for an empty or printable string fails
+    // loudly instead of reading as a no-op.
     const src = read('../../src/cloud/fold-cache.ts');
-    const betweenSources = String.fromCharCode(1);
-    const betweenHalves = String.fromCharCode(0);
-    expect(src).toContain("join('" + betweenSources + "')");
-    expect(src).toContain('${rowId}' + betweenHalves + '${viewerSignature(viewer)}');
+    expect(src).toContain("join('\\u0001')");
+    expect(src).toContain('${rowId}\\u0000${viewerSignature(viewer)}');
+    // ...and the source must stay plain text, or the protection above is moot.
+    expect(src).not.toContain(String.fromCharCode(0));
+    expect(src).not.toContain(String.fromCharCode(1));
+  });
+
+  it('actually separates with the control characters at RUNTIME', () => {
+    // The source check above is about reviewability; this is the behaviour it
+    // stands for. Two source sets that would flatten together under a printable
+    // or empty separator must still land in different cache entries.
+    const cache = new FoldCache();
+    const observations = [derived('derived-from-ab', 'ab')];
+    cache.get('t', 'r', ground, observations, viewer('ab', 'c'));
+    cache.get('t', 'r', ground, observations, viewer('a', 'bc'));
+    expect(cache.size).toBe(2);
   });
 });

@@ -113,12 +113,34 @@ one tool call. It falls back to direct row tools when a record hasn't been rende
 yet.
 
 **Deleting a table is guarded + reversible.** The `delete_entity` tool refuses
-built-in tables, tables another table links to, and tables you don't own. An
-**empty** table is soft-deleted immediately; a **non-empty** one is **not**
-deleted until you decide what happens to the data — the tool reports the row
-count and the assistant asks, then you choose `delete_data` (soft-delete the rows
-too) or `move_to` another table. The physical table + rows are kept (no hard
-drop), so the whole thing is revertible from version history.
+built-in tables, computed views (remove the definition instead), a table still
+mirrored by a connected source (disconnect the connector instead), a table a
+computed table reads from, and tables you don't own. An **empty** table is
+soft-deleted immediately; a **non-empty** one is **not** deleted until you decide
+what happens to the data — the tool reports the row count and the assistant asks,
+then you choose one of three resolutions:
+
+- `delete_data` — soft-delete this table's own rows, then the table.
+- `delete_cascade` — the same, **plus** the rows in other tables that point at
+  this one. This is the path when something still links here: the tool names
+  those tables with their live row counts first, and the assistant repeats that
+  inventory to you before taking it.
+- `move_to: <table>` — merge the rows into another existing table (carrying the
+  inbound links across) and remove the emptied source.
+
+`delete_data` is refused while a first-class table still links here, and says so
+with the same inventory — the choice is between cascading and merging, never a
+dead end. **A link table created on a relationship's behalf does not block the
+delete of the thing it belongs to**: a strict link table (exactly two foreign
+keys and no payload of its own — for example the `files_<table>` table created
+the first time you attach a file to a record) is part of the relationship rather
+than an object in its own right, so it is removed together with the table and
+never needs a decision of its own.
+
+Auto-deletion is capped (1000 rows, shared between the table's own rows and the
+cascade) — anything larger is refused up front, with nothing written, rather than
+half-applied. The physical table + rows are kept (no hard drop), so the whole
+thing is revertible from version history.
 
 **Adding a field to an existing table.** The `add_column` tool lets the assistant
 add a single column to an existing table on request ("add a priority field to
@@ -128,13 +150,21 @@ members see the new field immediately.
 
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
 use the thread switcher to revisit them. A new thread is **named from a short AI
-summary** of its first exchange (e.g. "Adding New Notes About Cheese"). The
-assistant's **data changes are saved with each turn and replayed as activity
-cards** when you reopen the conversation — collapsed by type (e.g. "Deleted 19
-tables", "Removed 49 rows across 9 tables"), with the operation's icon. Reads
-(list / get / search) change nothing, so they produce no card; only data changes
-appear. The activity feed is scoped to the open conversation rather than a global
-workspace log.
+summary** of its first exchange (e.g. "Adding New Notes About Cheese").
+
+**The conversation carries messages and answers, nothing else (5.5).** The rail
+holds what you sent and what the assistant replied — there are no per-turn
+data-change cards inside it, live or on replay. Everything else reports in **one**
+place: the **activity menu** in the header (the pill next to the version-history
+clock). A running turn drives a single **background task** there, re-labelled in
+plain language as each tool starts ("Reading your data…", "Updating your data
+model…") and settled the moment the answer begins streaming — the same tracker
+ingestion, imports and renders use, so concurrent work is one list rather than
+several competing indicators. The data changes themselves stream into that menu's
+activity feed as they happen, alongside your own edits. Reopening an older thread
+replays its text; any activity events a previous version of Lattice persisted with
+the turn are ignored rather than re-rendered, so nothing is missing and nothing is
+duplicated.
 
 The assistant **remembers what it read across turns.** Earlier tool calls and
 their results (including row ids) are replayed into the model's context, so a

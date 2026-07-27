@@ -8,6 +8,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased] — 5.5.0
 
+### Security
+
+- **A session opens the root it was given, never one found by searching upward.** Root resolution is
+  now `--root`, else `LATTICE_ROOT`, else `~/.lattice` — matching what the desktop app has done since
+  4.3.0. A `.lattice` directory left inside a project could previously be adopted by any later,
+  unrelated run, along with its registry, its cloud workspaces, and the key material needed to reach
+  them. A project-local root still works when named; when one exists above the working directory
+  Lattice names it once at startup so the change is visible rather than silent.
+- **Binding the GUI to a non-loopback address is now deliberate.** It requires `--allow-remote`, an
+  explicitly named `--root`, and a typed confirmation of a disclosure naming the resolved root, the
+  workspace (called out prominently when it is a cloud workspace), the address, and the fact that the
+  server has no login. `--yes` is the non-interactive escape: it skips the question, never the
+  disclosure, and a piped invocation with no terminal is refused rather than treated as consent. None
+  of this is authentication — the server still has none — it only ensures an exposure is intentional
+  and that you know which data you are exposing.
+- **Deleting a cloud workspace purges its stored credentials.** Removing one previously forgot the
+  registry pointer but left that root's credential, S3 configuration and bearer token on disk, so the
+  machine stayed silently able to reconnect. Other workspaces' credentials and the root's shared
+  material are untouched, the remote database is not touched, and a purge that cannot complete fails
+  loudly rather than reporting a clean delete.
+- **Renaming a table no longer strips its cloud column masking.** A rename left the column policy
+  keyed to the old name, so the masking view was rebuilt as though the table had no secret columns and
+  members were re-granted direct read on the base table — while the interface continued to show the
+  column as masked. Renames now repoint the policy before rebuilding, refuse rather than un-mask if
+  the policy cannot follow the table, and member reconciliation refuses by name instead of silently
+  granting when a masking view and its policy disagree.
+- **Removing a table takes its cloud sharing with it.** A masked table could not be removed at all,
+  and the sharing, row visibility and column masking attached to its name outlived it — so a later
+  table created with the same name inherited them.
+- **Destructive confirmation can no longer be satisfied by the assistant itself.** Consent was matched
+  against the whole conversation, so merely mentioning a table could authorise destroying it, and the
+  assistant's own question supplied the names it needed. Consent now requires that the assistant asked
+  to remove something, that the question named the target, and that the reply was an explicit
+  affirmative; silence, an unrelated reply and an ambiguous one all leave it closed. The threshold
+  measures everything a turn attempted, so a plan split across several calls still trips it.
+
+### Breaking
+
+- **`FoldCache.get()` and `invalidateRow()` take a required `table` argument.** The cache keyed on row
+  id alone, and a single-column primary key serializes to its bare value — so row `1` of two different
+  tables shared one entry and one row's compiled view could be served for the other. Callers must pass
+  the table the row belongs to.
+
 ### Changed
 
 - **One place for background progress.** Long-running work — file ingestion, imports, background

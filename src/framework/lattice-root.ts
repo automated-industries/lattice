@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { platform } from 'node:os';
-import { dirname, join, parse as parsePath } from 'node:path';
+import { homedir, platform } from 'node:os';
+import { dirname, join, parse as parsePath, resolve as resolvePath } from 'node:path';
 
 /**
  * The single `.lattice` root: one folder that holds everything Lattice needs
@@ -21,11 +21,16 @@ import { dirname, join, parse as parsePath } from 'node:path';
  *           ├── Data/                database.db, backups, blobs/<sha256> (owned bytes)
  *           └── Context/             rendered SQL→markdown bridge (mirrors the DB)
  *
- * Resolution order (see {@link findLatticeRoot}):
- *   1. `LATTICE_ROOT` env override — used verbatim.
- *   2. Walk up from the start directory for a `.lattice/` whose `.config/` exists.
- *   3. No root found → the default *create* location is `<cwd>/.lattice` (NOT homedir);
- *      creation only happens through an explicit `ensureLatticeRoot()` call.
+ * There are two different questions about roots, and they must not be confused:
+ *
+ *   - "Which root owns THIS path?" — answered by {@link findLatticeRoot} /
+ *     {@link discoverLatticeRootUpward}: search upward from a concrete anchor
+ *     (a config file's directory). Correct when you already hold the path.
+ *   - "Which root should THIS SESSION serve?" — answered by
+ *     {@link resolveSessionRoot}: the named root, or the home root. It never
+ *     searches upward, because a session that adopts whatever root happens to
+ *     sit above its working directory is one stray leftover away from opening —
+ *     and serving — data nobody asked for.
  */
 
 /** Directory name of the root folder. */
@@ -41,20 +46,14 @@ function isRoot(dir: string): boolean {
 }
 
 /**
- * Discover the `.lattice` root without creating anything.
- *
- *   1. `LATTICE_ROOT` (verbatim) if set and non-empty.
- *   2. Walk up from `startDir` (default `cwd`): the first ancestor containing a
- *      `.lattice/` directory whose `.config/` marker exists wins.
+ * Search UPWARD from `startDir` for a `.lattice/` whose `.config/` marker
+ * exists. Ignores every override — this is the raw filesystem question ("which
+ * root owns this path?"), used when the caller already holds a concrete anchor
+ * such as a config file's directory.
  *
  * @returns the absolute path to the `.lattice` directory, or `null` if none.
  */
-export function findLatticeRoot(startDir: string = process.cwd()): string | null {
-  const override = process.env.LATTICE_ROOT;
-  if (override && override.trim().length > 0) {
-    return override;
-  }
-
+export function discoverLatticeRootUpward(startDir: string = process.cwd()): string | null {
   let dir = startDir;
   const { root: fsRoot } = parsePath(dir);
   // Walk up until the filesystem root, inclusive.
@@ -66,6 +65,79 @@ export function findLatticeRoot(startDir: string = process.cwd()): string | null
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/**
+ * Discover the `.lattice` root that owns `startDir`, without creating anything.
+ *
+ *   1. `LATTICE_ROOT` (verbatim) if set and non-empty.
+ *   2. {@link discoverLatticeRootUpward} from `startDir` (default `cwd`).
+ *
+ * NOTE for callers picking a root for a *session*: use {@link resolveSessionRoot}
+ * instead. This function answers "which root owns this path", and a session's
+ * working directory is not a statement about which data it should serve.
+ *
+ * @returns the absolute path to the `.lattice` directory, or `null` if none.
+ */
+export function findLatticeRoot(startDir: string = process.cwd()): string | null {
+  const override = process.env.LATTICE_ROOT;
+  if (override && override.trim().length > 0) {
+    return override;
+  }
+  return discoverLatticeRootUpward(startDir);
+}
+
+/** `<home>/.lattice` — the root every session uses unless another is named. */
+export function homeLatticeRoot(): string {
+  return join(homedir(), ROOT_DIRNAME);
+}
+
+/** How a session's root was chosen. `'home'` means it was inferred, not named. */
+export type SessionRootSource = 'explicit' | 'env' | 'home';
+
+export interface SessionRoot {
+  /** Absolute path to the `.lattice` directory this session will use. */
+  root: string;
+  /** Where {@link root} came from. */
+  source: SessionRootSource;
+  /**
+   * A DIFFERENT root that an upward search from the start directory would have
+   * adopted, or `null`. Non-null only when the home default was used — i.e. only
+   * when the answer actually changed — so callers can say once, out loud, which
+   * root is no longer being picked up. Never a reason to block.
+   */
+  shadowed: string | null;
+}
+
+/**
+ * Pick the root for a SESSION (a GUI server, a CLI command, an `openWorkspace`).
+ *
+ *   1. An explicitly named root (`--root`) — used verbatim.
+ *   2. `LATTICE_ROOT` — used verbatim.
+ *   3. `<home>/.lattice`.
+ *
+ * Deliberately NOT in that list: searching upward from the working directory. A
+ * session picked that way serves whatever root happens to sit above where it was
+ * launched, which can be a leftover belonging to entirely different data. A
+ * repo-local root is still perfectly reachable — by naming it.
+ */
+export function resolveSessionRoot(
+  opts: { explicitRoot?: string | undefined; startDir?: string | undefined } = {},
+): SessionRoot {
+  const explicit = opts.explicitRoot;
+  if (explicit !== undefined && explicit.trim().length > 0) {
+    return { root: explicit, source: 'explicit', shadowed: null };
+  }
+  const override = process.env.LATTICE_ROOT;
+  if (override && override.trim().length > 0) {
+    return { root: override, source: 'env', shadowed: null };
+  }
+  const root = homeLatticeRoot();
+  // Only the home fallback changes what an upward search would have produced,
+  // so it is the only case that has anything to report.
+  const upward = discoverLatticeRootUpward(opts.startDir ?? process.cwd());
+  const shadowed = upward !== null && resolvePath(upward) !== resolvePath(root) ? upward : null;
+  return { root, source: 'home', shadowed };
 }
 
 /**
@@ -92,7 +164,15 @@ function chmod0700(dir: string): void {
  * @returns the absolute path to the `.lattice` directory.
  */
 export function ensureLatticeRoot(startDir: string = process.cwd()): string {
-  const root = resolveLatticeRoot(startDir);
+  return ensureRootAt(resolveLatticeRoot(startDir));
+}
+
+/**
+ * Ensure the root at EXACTLY `root` exists (with its `.config/` marker and
+ * `Workspaces/`). No discovery, no fallback — the caller has already decided
+ * which root it means, which is what {@link resolveSessionRoot} produces.
+ */
+export function ensureRootAt(root: string): string {
   if (!existsSync(root)) {
     mkdirSync(root, { recursive: true });
     chmod0700(root);

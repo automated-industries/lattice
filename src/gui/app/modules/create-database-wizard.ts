@@ -401,7 +401,11 @@ export const createDatabaseWizardJs = `    // ───────────�
           });
           sendBtn.addEventListener('click', function () {
             // One button, whichever state it is currently in.
-            if (sendBtn.getAttribute('data-action') === 'stop') {
+            var action = sendBtn.getAttribute('data-action');
+            // A stop already asked for and not yet delivered — the button says so and
+            // is disabled. Never fall through to a send from this state.
+            if (action === 'stopping') return;
+            if (action === 'stop') {
               stopActiveTurn().then(null, function () {
                 // stopActiveTurn already showed the failure; nothing further to do
                 // here beyond not treating the turn as ended.

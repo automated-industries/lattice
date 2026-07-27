@@ -2186,7 +2186,7 @@ CREATE TABLE IF NOT EXISTS "ticket" (
 
 ## CLI — `lattice gui` (v1.11+)
 
-Start a local-only browser GUI for exploring and editing the data in a Lattice database. The server binds to `127.0.0.1` and delegates straight to the same `Lattice` CRUD methods you call from code — no separate state, no schema duplication.
+Start a local browser GUI for exploring and editing the data in a Lattice database. The server binds to `127.0.0.1` by default and delegates straight to the same `Lattice` CRUD methods you call from code — no separate state, no schema duplication. (Binding to any other address is possible but gated — see [docs/cli.md](docs/cli.md) § _Serving on a network_.)
 
 ```bash
 npx lattice gui
@@ -2236,12 +2236,23 @@ Postgres URL with no root.
 
 ### Assistant sidebar (v2.0+)
 
-The GUI has a fixed right sidebar with a live **activity feed** — every change
-(yours, the assistant's, or an ingest) streams in as it happens, collapsed by
-type so a bulk run shows a single card ("Deleted 19 tables", "Removed 49 rows
-across 9 tables") instead of a wall of near-identical rows. The feed is scoped to
-the open conversation: the assistant's data changes are saved with each turn and
-replayed as those cards when you reopen the chat. When the assistant references a record, it emits an inline object-link pill — a clickable chip that opens that row in the mode-aware navigator.
+The GUI has a fixed right sidebar holding the **conversation** — your messages
+and the assistant's answers, and nothing else. **In 5.5 the per-turn data-change
+cards were removed from it** (live and on replay): a turn no longer reports its
+progress or its edits inside the chat.
+
+Both now report in **one** place, the **activity menu** in the header (the pill
+beside the version-history clock). Its **background-task tracker** carries every
+long-running job — a running assistant turn, an ingest, an import, a render — as
+one row each, re-labelled in plain language as the work moves on and settled when
+it finishes. Its **activity feed** logs every change as it happens (yours, the
+assistant's, or an ingest), newest first, each card a shortcut to the row it
+touched. Reopening an older conversation replays its text; activity events an
+earlier version of Lattice persisted alongside a turn are ignored rather than
+re-rendered.
+
+When the assistant references a record, it emits an inline object-link pill — a
+clickable chip that opens that row in the mode-aware navigator.
 
 Connect the **AI assistant** in **User Settings → Assistant** to ask questions
 about your data or instruct edits in natural language. The assistant calls the
@@ -2330,7 +2341,7 @@ Opening a database with `lattice gui` is **additive** but mutates the schema: on
 
 These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entities`, the dashboard, and rendered context output. They are not part of your declared schema and do not affect any `Lattice` API calls. **No fictional / demo rows are ever inserted** — your existing data is what the GUI shows.
 
-**HTTP surface** (all routes scoped to `http://127.0.0.1:<port>/api`):
+**HTTP surface** (all routes scoped to `http://<host>:<port>/api`, `<host>` being `127.0.0.1` unless you deliberately bind elsewhere):
 
 | Route                      | Method | Lattice call                                                |
 | -------------------------- | ------ | ----------------------------------------------------------- |
@@ -2349,7 +2360,7 @@ These tables are prefixed with `_lattice_gui_` and are hidden from `/api/entitie
 
 On a cloud, you connect as your own scoped Postgres role and **Row-Level Security filters every read and write at the database level** — a row another member hasn't shared with you simply isn't returned by `/tables/:table/rows`, because Postgres itself excludes it. The GUI shows exactly what RLS lets your role see; there is no application-layer allowlist to keep in sync. See [docs/cloud.md](docs/cloud.md).
 
-The server only binds to `127.0.0.1` and has no authentication. See [SECURITY.md](./SECURITY.md) for the threat model — do not expose this port to a non-loopback interface.
+The server has **no authentication**, which is why it binds to `127.0.0.1` by default. See [SECURITY.md](./SECURITY.md) for the threat model. Serving it on any other address publishes read, write and delete access to everything in the open workspace, so `lattice gui --host <non-loopback>` additionally requires `--allow-remote`, an explicitly named `--root`, and a typed confirmation of a disclosure naming the exact workspace — and it is still not a substitute for your own network controls. See [docs/cli.md](docs/cli.md) and [docs/security.md](docs/security.md).
 
 **Native `secrets` and `files` entities (v1.12+).** Every Lattice opened by `lattice gui` automatically registers two framework-shipped tables before `init()`:
 

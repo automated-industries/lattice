@@ -19,6 +19,8 @@ import {
   describeInboundLinks,
   removeInboundLinks,
   AI_DELETE_ROW_CAP,
+  renameUserEntity,
+  purgeUserEntity,
 } from './schema-ops.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
@@ -552,30 +554,31 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Entity already exists: ${newName}` }, 400);
       return true;
     }
-    await execSql(active.db, `ALTER TABLE "${oldName}" RENAME TO "${newName}"`);
-    const doc = loadConfigDoc(active.configPath);
-    const entity: unknown = doc.getIn(['entities', oldName]);
-    doc.deleteIn(['entities', oldName]);
-    doc.setIn(['entities', newName], entity);
-    // Also rename in entityContexts if present.
-    if (doc.getIn(['entityContexts', oldName])) {
-      const entCtx: unknown = doc.getIn(['entityContexts', oldName]);
-      doc.deleteIn(['entityContexts', oldName]);
-      doc.setIn(['entityContexts', newName], entCtx);
+    // Rename through the shared cascade primitive rather than a bare ALTER.
+    // A table name is stored in many places — other tables' relations, the link
+    // tables named after it, computed definitions, per-table and per-column
+    // metadata, lineage, dashboards, and on a cloud the column policy and the
+    // masking view members read through. Renaming only the table and the config
+    // left every one of those pointing at a name that no longer exists.
+    //
+    // The cloud policy is the one that mattered most: the reopen below triggers
+    // member-access reconciliation, which rebuilds the masking view from the
+    // column policy. With the policy still keyed to the OLD name the rebuild
+    // found nothing to mask, took the no-masking-needed branch, and re-granted
+    // members raw SELECT — so every member silently gained cleartext read on
+    // columns the owner had marked secret, while the GUI still showed them as
+    // masked. The primitive repoints the policy and regenerates the view as part
+    // of the rename, and refuses before writing anything rather than
+    // half-applying. It records the revertible rename op itself, with the
+    // inventory of what moved.
+    const renamed = await renameUserEntity(active, oldName, newName, sessionId);
+    if (!renamed.ok) {
+      sendJson(res, { error: renamed.error }, 400);
+      return true;
     }
-    saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
-    await recordSchemaOp(
-      active,
-      'schema.rename_entity',
-      newName,
-      { entity: oldName },
-      { entity: newName },
-      `Renamed table ${oldName} → ${newName}`,
-      sessionId,
-    );
-    sendJson(res, { ok: true });
+    sendJson(res, { ok: true, cascade: renamed.cascade });
     return true;
   }
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
@@ -1002,7 +1005,11 @@ export async function handleSchemaRoutes(
         return true;
       }
       try {
-        await execSql(active.db, `DROP TABLE IF EXISTS "${name}"`);
+        // Takes the masking view and the name-keyed cloud policy with it — the
+        // view because the table cannot be dropped while it depends on it, the
+        // policy because the next table to take this name would otherwise
+        // inherit this one's sharing, defaults and column masking.
+        await purgeUserEntity(active, name);
       } catch (err) {
         sendJson(
           res,

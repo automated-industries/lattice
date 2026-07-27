@@ -7,8 +7,7 @@ opt-in: a bare `new Lattice(path)` is unaffected and pays no overhead.
 
 ## The `.lattice` root
 
-A root is the first ancestor directory containing `.lattice/.config/`, or the
-path in the `LATTICE_ROOT` environment variable. Layout:
+A root is a directory containing a `.lattice/.config/` marker. Layout:
 
 ```
 .lattice/
@@ -21,8 +20,39 @@ path in the `LATTICE_ROOT` environment variable. Layout:
         └── workspace.yml    # this workspace's config
 ```
 
-- `ensureLatticeRoot(startDir?)` — resolve (creating if needed) the root.
+- `ensureLatticeRoot(startDir?)` — resolve (creating if needed) the root that owns
+  `startDir`, searching upward from it. That is a question about a **path**, not
+  about a session — see _Which root a session uses_ below before reaching for it.
 - The root marker is the `.config/` directory; there is no manifest file.
+
+### Which root a session uses
+
+A **session** — `lattice gui`, `lattice init`, `lattice workspace`, the desktop
+app, `Lattice.openWorkspace()` — uses, in order:
+
+1. the root it was given (`--root <dir>`, or `openWorkspace({ root })`),
+2. `LATTICE_ROOT`,
+3. `~/.lattice`.
+
+It does **not** search upward from the working directory. That search made the
+data a session opened a function of where the process happened to start: a
+`.lattice` left in a checkout months earlier would be picked up by any later,
+unrelated run — along with its registry, its cloud workspaces, and the key
+material needed to reach them. A project-local root is still perfectly usable;
+it just has to be named:
+
+```sh
+lattice gui --root ./.lattice
+```
+
+When a root does exist above the working directory but is not the one being
+opened, Lattice names it once at startup so the change in behaviour is visible
+rather than silent.
+
+Searching upward is still the right question when you hold a concrete path (for
+example, "which root owns this config file?"). The exported `findLatticeRoot(dir)`
+and `ensureLatticeRoot(dir)` answer that; they are not how a session decides what
+to serve.
 
 ## Workspaces
 

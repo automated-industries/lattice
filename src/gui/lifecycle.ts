@@ -1162,6 +1162,77 @@ type RenameColumnPayload = { entity: string; column: string };
 /** Both sides of a retype entry carry the column's declared type at that point. */
 type RetypeColumnPayload = { entity: string; column: string; type: string };
 
+/** How far back the rename chain is followed when explaining a stale entry.
+ *  A bounded read: this runs only on the refusal path, never on an open. */
+const RENAME_LOOKUP_LIMIT = 500;
+
+/**
+ * The name `entity` goes by NOW — followed through every rename recorded at or
+ * after `entry` — or null when nothing renamed it away.
+ *
+ * A rename entry records the old name on one side and the new name on the
+ * other, so the chain (`orders` → `purchase_orders` → `sales_orders`) is walked
+ * forward from the entry's own point in history to the name the table carries
+ * today. Undone renames are skipped: they no longer describe the workspace.
+ */
+async function renamedNameFor(
+  active: ActiveDb,
+  entry: AuditEntry,
+  entity: string,
+): Promise<string | null> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = (await active.db.query('_lattice_gui_audit', {
+      filters: [
+        { col: 'operation', op: 'eq', val: 'schema.rename_entity' },
+        { col: 'undone', op: 'eq', val: 0 },
+        { col: 'ts', op: 'gte', val: entry.ts },
+      ],
+      orderBy: 'ts',
+      orderDir: 'desc',
+      limit: RENAME_LOOKUP_LIMIT,
+    })) as Record<string, unknown>[];
+  } catch {
+    // This only ENRICHES a refusal that is thrown either way (an unreadable
+    // history costs the caller the rename detail, never the refusal itself), so
+    // a failed lookup degrades to the plain explanation rather than replacing
+    // the real reason with a history-read error.
+    return null;
+  }
+  let current = entity;
+  // Oldest first, so a chain of renames is followed in the order it happened.
+  for (const row of rows.reverse()) {
+    const from = typeof row.before_json === 'string' ? row.before_json : null;
+    const to = typeof row.after_json === 'string' ? row.after_json : null;
+    if (from === null || to === null) continue;
+    try {
+      const oldName = (JSON.parse(from) as { entity?: unknown }).entity;
+      const newName = (JSON.parse(to) as { entity?: unknown }).entity;
+      if (typeof oldName !== 'string' || typeof newName !== 'string') continue;
+      if (oldName === current) current = newName;
+    } catch {
+      continue; // an unparseable image is one link of the chain, not the answer
+    }
+  }
+  return current === entity ? null : current;
+}
+
+/** Plain-words name for what a schema entry did, for a message a person reads. */
+function describeSchemaEntry(entry: AuditEntry, entity: string, column?: string): string {
+  const phrases: Record<string, string> = {
+    'schema.add_column': 'adding the field',
+    'schema.add_link': 'adding the link',
+    'schema.delete_link': 'removing the link',
+    'schema.add_relation': 'adding the relationship',
+    'schema.rename_column': 'renaming the field',
+    'schema.rename_entity': 'renaming the table',
+  };
+  const phrase = phrases[entry.operation] ?? 'this change';
+  return column !== undefined && column !== ''
+    ? `${phrase} "${column}" on "${entity}"`
+    : `${phrase} "${entity}"`;
+}
+
 /**
  * Apply the inverse (revert/undo) or forward (redo) of a schema audit entry:
  * a config edit (+ RENAME DDL for renames) followed by a re-open. NEVER a
@@ -1218,6 +1289,32 @@ export async function applySchemaConfig(
   const inv = direction === 'inverse';
   const ddl: string[] = [];
   const has = (path: string[]): boolean => doc.getIn(path) !== undefined;
+
+  /**
+   * The table an entry edits has to still be in the configuration under the name
+   * the entry recorded. History is a stack, and the entries UNDER a rename
+   * describe the table by its old name — reverting one of those directly cannot
+   * work, and the config edit would otherwise be attempted anyway and fail with
+   * the document parser's own complaint ("Expected YAML collection at orders"),
+   * which names neither the change the user clicked nor the rename in the way.
+   * Refusing is correct; this is the refusal in words a person can act on.
+   */
+  const requireDeclaredEntity = async (entity: string, column?: string): Promise<void> => {
+    if (has(['entities', entity])) return;
+    const verb = inv ? 'undo' : 'redo';
+    const what = describeSchemaEntry(entry, entity, column);
+    const renamedTo = await renamedNameFor(active, entry, entity);
+    if (renamedTo !== null) {
+      throw new Error(
+        `Cannot ${verb} ${what}: "${entity}" has since been renamed to "${renamedTo}", so this change ` +
+          `no longer matches the workspace. Undo the rename first, then ${verb} this change.`,
+      );
+    }
+    throw new Error(
+      `Cannot ${verb} ${what}: "${entity}" is no longer part of this workspace, so this change no ` +
+        `longer matches it. Undo the changes made after it first.`,
+    );
+  };
 
   const reAddEntity = async (name: string, def: unknown): Promise<void> => {
     if (has(['entities', name])) {
@@ -1285,12 +1382,14 @@ export async function applySchemaConfig(
     }
     case 'schema.add_column': {
       const p = after as unknown as FieldPayload;
+      await requireDeclaredEntity(p.entity, p.column);
       if (inv) removeField(p.entity, p.column);
       else await reAddField(p.entity, p.column, p.fieldDef);
       break;
     }
     case 'schema.add_link': {
       const p = after as unknown as LinkPayload;
+      await requireDeclaredEntity(p.entity, p.column);
       if (inv) {
         removeField(p.entity, p.column);
         removeRelation(p.entity, p.relationName);
@@ -1302,6 +1401,7 @@ export async function applySchemaConfig(
     }
     case 'schema.delete_link': {
       const p = before as unknown as LinkPayload;
+      await requireDeclaredEntity(p.entity, p.column);
       if (inv) {
         await reAddField(p.entity, p.column, p.fieldDef);
         addRelation(p.entity, p.relationName, p.relation);
@@ -1316,6 +1416,7 @@ export async function applySchemaConfig(
       // link fix). The column is real data, so only the RELATION is added/removed
       // — never the field (unlike add_link, which owns the FK column it created).
       const p = after as unknown as { entity: string; relationName?: string; relation?: unknown };
+      await requireDeclaredEntity(p.entity, p.relationName);
       if (inv) removeRelation(p.entity, p.relationName);
       else addRelation(p.entity, p.relationName, p.relation);
       break;
@@ -1323,6 +1424,9 @@ export async function applySchemaConfig(
     case 'schema.rename_entity': {
       const oldN = (before as unknown as RenameEntityPayload).entity;
       const newN = (after as unknown as RenameEntityPayload).entity;
+      // The side this direction renames FROM is the one that has to still be
+      // there — a table renamed again since is the same stale-entry refusal.
+      await requireDeclaredEntity(inv ? newN : oldN);
       if (inv) renameEntity(newN, oldN);
       else renameEntity(oldN, newN);
       break;
@@ -1330,6 +1434,7 @@ export async function applySchemaConfig(
     case 'schema.rename_column': {
       const oldC = (before as unknown as RenameColumnPayload).column;
       const a = after as unknown as RenameColumnPayload;
+      await requireDeclaredEntity(a.entity, inv ? a.column : oldC);
       if (inv) renameColumn(a.entity, a.column, oldC);
       else renameColumn(a.entity, oldC, a.column);
       break;

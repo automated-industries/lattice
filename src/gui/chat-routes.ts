@@ -1424,6 +1424,26 @@ export async function dispatchChatRoute(
           };
         })
         .filter((t) => t.text.length > 0 || t.tools.length > 0);
+    // The turn's deterministic outcome notice, held until the turn settles.
+    let outcomeNotice = '';
+    /**
+     * Keep the outcome notice ON the saved reply. A stopped reply is released the
+     * instant the stop is acked — the browser marks it stopped and unbinds it — so
+     * a frame published afterwards lands on a bubble nobody is listening to. That
+     * is precisely the turn whose truth matters most: the user stopped part-way
+     * through destructive work, usually BECAUSE something looked wrong, and the
+     * model never gets an answer round to tell them what already changed. The saved
+     * message is the one channel that survives, so the notice becomes part of it.
+     * Idempotent — appended once, however the turn settles.
+     */
+    const keepOutcomeNotice = (): void => {
+      if (!outcomeNotice) return;
+      assistantText += (assistantText.trim() ? '\n\n' : '') + outcomeNotice;
+      const cur = turns[turns.length - 1];
+      if (cur) cur.text += (cur.text.trim() ? '\n\n' : '') + outcomeNotice;
+      else turns.push({ text: outcomeNotice, tools: [], toolCalls: [] });
+      outcomeNotice = '';
+    };
     const checkpoint = async (force: boolean): Promise<void> => {
       if (!threadId) return;
       const now = Date.now();
@@ -1513,6 +1533,11 @@ export async function dispatchChatRoute(
         onToolRecord: (rec) => {
           turns[turns.length - 1]?.toolCalls.push(rec);
         },
+        // What the tools actually did, in the user's terms. Streamed too; held here
+        // so a stopped turn can still carry it on the saved reply.
+        onOutcomeNotice: (notice) => {
+          outcomeNotice = notice;
+        },
         // Stop: checked at each round boundary and handed to the model stream, so the
         // turn stops for real instead of running on invisibly after the user gave up.
         signal: abortSignal,
@@ -1569,6 +1594,7 @@ export async function dispatchChatRoute(
       // A STOPPED turn proves nothing about the model, so leave the limit state alone.
       if (stopRequested()) {
         streamStatus = 'stopped';
+        keepOutcomeNotice();
       } else {
         clearClaudeLimit();
         streamStatus = 'done';
@@ -1579,6 +1605,7 @@ export async function dispatchChatRoute(
       // (the checkpoint below keeps whatever text had already streamed) and end.
       if (stopRequested()) {
         streamStatus = 'stopped';
+        keepOutcomeNotice();
         publish({ type: 'done' });
         await checkpoint(true);
         ctx.chatCancel.release(assistantMsgId);

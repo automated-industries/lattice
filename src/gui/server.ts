@@ -399,13 +399,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // on close. The request handler reads it for `/api/update/status`.
   let updateService: UpdateService | null = null;
 
-  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so the
-  // header switcher can list + switch workspaces — and so a bad active workspace
-  // can fall through to a working one at boot. `null` ⇒ opened on a plain config
-  // (switcher hidden); in the virgin state the root comes from the options.
+  // The `.lattice` root whose registry backs the header switcher — and the
+  // fall-through when a bad active workspace can't open. `null` ⇒ opened on a
+  // plain config (switcher hidden).
+  //
+  // The root the LAUNCHER resolved wins. Deriving it from the boot config's
+  // directory instead would re-open the hole the launcher just closed: an
+  // adopted-in-place config living inside a checkout that also contains a
+  // leftover `.lattice` would make the server serve THAT registry — a different
+  // set of workspaces than the one the session was started for. Searching upward
+  // stays only as the fallback for embedders that pass no root at all.
   const latticeRoot =
-    (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null) ??
-    (options.latticeRoot ? resolve(options.latticeRoot) : null);
+    (options.latticeRoot ? resolve(options.latticeRoot) : null) ??
+    (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null);
 
   // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
   // (zero-workspace) state until the first workspace is created or joined. The
@@ -1411,6 +1417,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return await dispatchDbConfigRoute(req, res, {
                 db: active.db,
                 configPath: active.configPath,
+                // Registry writes (migrate-to-cloud, rename) go to the root this
+                // session is serving — never one found above the active config.
+                latticeRoot,
                 pathname,
                 method,
                 convergeWarnings: active.convergeWarnings,

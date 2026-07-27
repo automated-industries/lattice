@@ -11,6 +11,7 @@ import {
   removeInboundLinks,
 } from '../../src/gui/schema-ops.js';
 import {
+  createRow,
   revertEntry,
   parseAudit,
   type AuditEntry,
@@ -154,6 +155,26 @@ describe('inboundLinksTo', () => {
     // `b` carries its own data, so it is not owned by the relationship.
     expect(byTable.get('b')?.owned).toBe(false);
     expect(byTable.get('b')?.foreignKey).toBe('a_id');
+  });
+
+  it('a link table that has since gained a payload column is no longer owned', async () => {
+    const active = await boot();
+    await seed(active);
+
+    // A write carrying a field the link table does not have creates that column
+    // (the auto-column path every write goes through). From that moment the
+    // table holds data of its own, which lives nowhere else.
+    await createRow(mctxFor(active), 'files_a', {
+      id: 'j3',
+      file_id: 'f3',
+      a_id: 'a1',
+      note: 'signed copy',
+    });
+
+    const byTable = new Map(inboundLinksTo(active, 'a').map((l) => [l.table, l]));
+    // Classified from the shape it has NOW, not from the shape it was created
+    // with — otherwise the deletion of `a` would take this data with it.
+    expect(byTable.get('files_a')?.owned).toBe(false);
   });
 });
 
@@ -318,6 +339,52 @@ describe('delete_cascade', () => {
     // Nothing was removed — not the rows, and not the link table.
     expect(await active.db.count('b', { filters: [{ col: 'deleted_at', op: 'isNull' }] })).toBe(3);
     expect(active.validTables.has('files_a')).toBe(true);
+  });
+
+  it('never sweeps away a link table that has gained data of its own', async () => {
+    // The silent-loss shape: `c`'s only inbound link is its own link table, so
+    // the delete used to go through with no decision at all — taking the link
+    // table with it. Once that table carries a column of its own it is a
+    // first-class object, and removing it has to be asked about like any other.
+    const active = await boot();
+    const junction = await createFileJunction(active, 'c', 'sess');
+    expect(junction?.junction).toBe('files_c');
+    await createRow(mctxFor(active), 'files_c', {
+      id: 'j1',
+      file_id: 'f1',
+      c_id: 'c1',
+      note: 'signed copy',
+    });
+
+    const out = await aiDeleteEntity(active, 'c', undefined, 'sess');
+    expect(out).toMatchObject({ needsResolution: true });
+    if (!('needsResolution' in out)) throw new Error('expected a resolution round-trip');
+    // Named in the confirmation, with its row count — never removed silently.
+    expect(out.message).toContain('files_c');
+    expect(out.message).toContain('1 row');
+    // And nothing was touched while the question is outstanding.
+    expect(active.validTables.has('c')).toBe(true);
+    expect(active.validTables.has('files_c')).toBe(true);
+    expect(await active.db.count('files_c')).toBe(1);
+  });
+
+  it('a cascade over a link table with data removes its rows but keeps the table', async () => {
+    const active = await boot();
+    const junction = await createFileJunction(active, 'c', 'sess');
+    expect(junction?.junction).toBe('files_c');
+    await createRow(mctxFor(active), 'files_c', {
+      id: 'j1',
+      file_id: 'f1',
+      c_id: 'c1',
+      note: 'signed copy',
+    });
+
+    const out = await aiDeleteEntity(active, 'c', 'delete_cascade', 'sess');
+    expect(out).toMatchObject({ ok: true, deleted: 'c', cascadedLinkRows: 1 });
+    if (!('ok' in out) || !out.ok) throw new Error('expected the cascade to go through');
+    // It is not plumbing any more, so it is not dropped along with `c`.
+    expect(out.droppedLinkTables).toBeUndefined();
+    expect(active.validTables.has('files_c')).toBe(true);
   });
 
   it('behaves like delete_data when nothing links to the table', async () => {

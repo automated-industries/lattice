@@ -232,6 +232,41 @@ describe('data-model planner appliers (wired to real primitives)', () => {
     expect(r.error).toBeTruthy();
   });
 
+  it('extractDimension leaves nothing behind when it refuses', async () => {
+    const active = await boot();
+    await active.db.insert('orders', { id: 'o1', code: 'A-1', status: 'new', qty: '1' });
+    // The source table already carries the column the extraction would add, so
+    // the extraction cannot go through.
+    await active.db.addColumn('orders', 'statuses_id', 'TEXT');
+
+    const r = await applyDepsFor(active, 'sess').extractDimension('orders', 'status', 'statuses');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/statuses_id/);
+
+    // Refused BEFORE the first write: no table the user never asked for, in the
+    // registry, the allowlist, or the configuration.
+    expect(active.validTables.has('statuses')).toBe(false);
+    expect(active.db.getRegisteredTableNames()).not.toContain('statuses');
+    expect(readFileSync(active.configPath, 'utf8')).not.toMatch(/^ {2}statuses:/m);
+    // …and nothing recorded in history either, so there is nothing to undo.
+    const ops = (await active.db.query('_lattice_gui_audit', {
+      filters: [{ col: 'operation', op: 'eq', val: 'schema.create_entity' }],
+    })) as Record<string, unknown>[];
+    expect(ops).toHaveLength(0);
+  });
+
+  it('extractDimension writes no category rows into a reused table when it refuses', async () => {
+    const active = await boot();
+    await active.db.insert('orders', { id: 'o1', code: 'A-1', status: 'new', qty: '1' });
+    // `people` already exists, so the extraction would reuse it — and the refusal
+    // must land before any category row is inserted into the user's table.
+    await active.db.addColumn('orders', 'people_id', 'TEXT');
+
+    const r = await applyDepsFor(active, 'sess').extractDimension('orders', 'status', 'people');
+    expect(r.ok).toBe(false);
+    expect(await active.db.count('people')).toBe(0);
+  });
+
   // ── retype_column ─────────────────────────────────────────────────────────
   it('retypeColumn is wired: it retypes TEXT → integer, keeps values, and reverts', async () => {
     const active = await boot();
@@ -295,6 +330,29 @@ describe('data-model planner appliers (wired to real primitives)', () => {
       'ALTER TABLE "orders" DROP COLUMN "qty"',
       'ALTER TABLE "orders" RENAME COLUMN "qty_lattice_retype" TO "qty"',
     ]);
+  });
+
+  it('retypeSql restates NOT NULL + DEFAULT on the SQLite replacement column', () => {
+    // ADD COLUMN starts from a bare type: without restating them, the rebuild
+    // drops the column's own constraints on the floor.
+    expect(
+      retypeSql('sqlite', 'stock', 'level', 'INTEGER', 'level_lattice_retype', {
+        notNull: true,
+        defaultSql: '0',
+      })[0],
+    ).toBe('ALTER TABLE "stock" ADD COLUMN "level_lattice_retype" INTEGER NOT NULL DEFAULT 0');
+    expect(
+      retypeSql('sqlite', 'stock', 'level', 'TEXT', 'level_lattice_retype', {
+        defaultSql: "'n/a'",
+      })[0],
+    ).toBe(`ALTER TABLE "stock" ADD COLUMN "level_lattice_retype" TEXT DEFAULT 'n/a'`);
+    // Postgres alters in place, so the constraints never leave the column.
+    expect(
+      retypeSql('postgres', 'stock', 'level', 'INTEGER', 'level_lattice_retype', {
+        notNull: true,
+        defaultSql: '0',
+      }),
+    ).toEqual(['ALTER TABLE "stock" ALTER COLUMN "level" TYPE INTEGER USING ("level"::INTEGER)']);
   });
 
   it('retypeSql builds the same shapes for a TEXT target (the reverse direction)', () => {

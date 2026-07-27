@@ -248,7 +248,7 @@ export async function buildSchemaContext(d: DispatchCtx): Promise<string> {
       column_name: string;
       description?: string | null;
     }[]) {
-      if (m.description) colDesc.set(`${m.table_name} ${m.column_name}`, m.description);
+      if (m.description) colDesc.set(`${m.table_name}\u0000${m.column_name}`, m.description);
     }
   } catch {
     /* member without access — skip */
@@ -285,7 +285,7 @@ export async function buildSchemaContext(d: DispatchCtx): Promise<string> {
     // keep the context tight). Indented under the table line.
     const annotated = colNames
       .map((c) => {
-        const cd = colDesc.get(`${t} ${c}`);
+        const cd = colDesc.get(`${t}\u0000${c}`);
         return cd ? `    · ${c}: ${cd}` : null;
       })
       .filter((x): x is string => x != null);
@@ -480,6 +480,17 @@ export interface RunChatOptions {
     errorText?: string;
   }) => void;
   /**
+   * The turn's deterministic outcome notice (what did NOT happen, and what already
+   * changed and is still applied), handed to the caller as well as streamed.
+   *
+   * The stream alone is not delivery: a STOPPED turn is settled and released the
+   * moment the stop is acked, so anything published afterwards reaches nobody —
+   * and the user who stopped part-way through destructive work is exactly the one
+   * who needs to hear what already landed. The caller keeps this on the saved
+   * reply, which survives the stop.
+   */
+  onOutcomeNotice?: (notice: string) => void;
+  /**
    * Stops the turn when the user asks it to. Checked at the ROUND boundary (so the
    * loop never starts another round) and handed to the model stream (so an abort cuts
    * mid-token). A tool call already awaited inside the current round still finishes —
@@ -542,20 +553,32 @@ function userAuthoredText(message: string): string {
 const DECLINE_RE = /(^|\n)\s*(no|nope|cancel|stop|abort|don'?t|do not|never ?mind)\b/i;
 
 /**
- * Assemble what the USER has actually seen or written that could authorize a
- * destructive plan: the most recent question the assistant put to them
- * (`ask_user`, replayed in history as a tool_use block) plus their own message.
+ * A reply that reads as an explicit "yes". Line-anchored like the decline pattern,
+ * and deliberately a SHORT list of unambiguous agreements: everything it does not
+ * match is treated as "not answered yet", which leaves the destructive gate closed.
+ * Being wrong in that direction costs one extra question; being wrong in the other
+ * costs the user their data.
+ */
+const AFFIRM_RE =
+  /(^|\n)\s*(yes|yeah|yep|yup|ok|okay|sure|confirm(ed)?|approved?|proceed|go ahead|do it|please do|affirmative|(delete|remove|drop|clear) (it|them|both|all|those|these))\b/i;
+
+/**
+ * Assemble the one exchange that can authorize a destructive plan: the most recent
+ * question the assistant put to the user (`ask_user`, replayed in history as a
+ * tool_use block), and whether their message answers it yes or no.
  *
- * Nothing else counts. The assistant's own prose does not count — it is the thing
- * being checked. When the question was not replayed (rehydration is bounded), the
- * evidence is simply thinner and the gate stays closed, which is the safe way to
- * be wrong.
+ * The user's own words are deliberately NOT part of the question text. They name
+ * objects constantly — usually while asking about them — and reading a mention as
+ * an answer let "what's in Customers?" satisfy the confirmation for destroying
+ * Customers. The assistant's own prose does not count either: it is the thing being
+ * checked. When the question was not replayed (rehydration is bounded), the evidence
+ * is simply thinner and the gate stays closed, which is the safe way to be wrong.
  */
 export function confirmationEvidence(
   history: LlmMessage[] | undefined,
   userMessage: string,
 ): ConfirmationEvidence {
-  let asked = '';
+  let question = '';
   for (const m of history ?? []) {
     if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
     for (const b of m.content) {
@@ -564,11 +587,16 @@ export function confirmationEvidence(
       const options = Array.isArray(b.input.options)
         ? b.input.options.filter((o): o is string => typeof o === 'string').join(' ')
         : '';
-      asked = `${q} ${options}`; // keep the LAST question asked
+      // The options are part of what the user was shown and clicked, so they count
+      // as the question. Keep the LAST question asked.
+      question = `${q} ${options}`.trim();
     }
   }
   const said = userAuthoredText(userMessage);
-  return { text: `${asked}\n${said}`, declined: DECLINE_RE.test(said) };
+  const declined = DECLINE_RE.test(said);
+  // A reply carrying both reads as a refusal: "yes to the first, no to the rest"
+  // is not agreement to the whole plan.
+  return { question, affirmed: !declined && AFFIRM_RE.test(said), declined };
 }
 
 /** A LOCAL Lattice GUI link to a record: `http://127.0.0.1:4317/#/fs/<table>/<id>`
@@ -1180,8 +1208,16 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // did NOT happen, and any half-applied change still sitting in their workspace,
   // in business terms and with the undo offer. Emitted even when the turn ended in
   // an error or a stop — the changes are just as real either way.
+  //
+  // A stopped turn never reaches an answer that could explain itself, so the ledger
+  // is told the turn was cut short: everything destructive that already landed is
+  // now the whole story, and it is reported as such.
+  if (opts.signal?.aborted === true) ledger.markStopped();
   const notice = ledger.userNotice({ askedUser: askedUserThisTurn });
-  if (notice !== null) yield { type: 'warn', message: notice };
+  if (notice !== null) {
+    opts.onOutcomeNotice?.(notice);
+    yield { type: 'warn', message: notice };
+  }
   yield { type: 'done' };
 }
 

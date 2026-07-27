@@ -146,11 +146,39 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // on a runtime-masked table — re-exposing the column the owner hid. One query for all.
   const columnPolicy = await loadAllColumnPolicy(db);
 
+  // The masking views that actually EXIST. A `<t>_v` view is physical evidence
+  // that `<t>` is masked, and it is evidence the policy read above cannot forge:
+  // the two are written by the same operation, so they disagree only when
+  // something moved one without the other — a rename or a restore that carried
+  // the table but not its column policy. Resolving that disagreement by taking
+  // the unmasked branch below would GRANT members raw SELECT on the base table,
+  // silently un-masking every column the owner marked secret. So when the view
+  // says masked and the policy says otherwise, this refuses the table, names it,
+  // and leaves the mask exactly as it stands. Computed tables are views too and
+  // one could be named `<t>_v` legitimately, so they are excluded.
+  const viewRows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT c.relname AS name FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relkind = 'v'`,
+  )) as { name: string }[];
+  const computedViews = new Set(db.getComputedTableNames());
+  const maskViews = new Set(viewRows.map((r) => r.name).filter((name) => !computedViews.has(name)));
+
   for (const table of registered) {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
     const masked = tableNeedsAudienceView(columnPolicy.get(table) ?? {});
+    if (!masked && maskViews.has(`${table}_v`)) {
+      const reason =
+        `"${table}_v" masks this table, but no column policy is recorded for "${table}" — the two ` +
+        `disagree, and granting members direct read would un-mask it, so nothing was granted. This is ` +
+        `what a rename or restore that moved the table without its column policy looks like.`;
+      skipped.push({ table, reason });
+      console.warn(`[reconcileCloudMemberAccess] refused "${table}": ${reason}`);
+      continue;
+    }
     await tryTable(table, async () => {
       // One round-trip per table (the masked case batches its 2 GRANTs) — the
       // per-table tryTable wrapper still isolates a failure to this table + records

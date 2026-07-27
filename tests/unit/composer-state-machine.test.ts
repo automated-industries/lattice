@@ -140,6 +140,68 @@ function installFetch(): void {
   );
 }
 
+interface DeferredChat {
+  /** Deliver the 202 the send has been waiting on. */
+  ack: (messageId: string) => void;
+  /** Refuse the send before any turn is started. */
+  refuse: (error: string) => void;
+}
+
+/**
+ * Like installFetch, except the chat POST is HELD: its response is delivered only
+ * when the test says so. That gap — the send is away, the turn is running on the
+ * server, but no messageId has come back yet — is the window this file's last
+ * describe block is about.
+ */
+function installHeldChatFetch(): DeferredChat {
+  calls = [];
+  let settle: ((r: unknown) => void) | null = null;
+  (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(
+    (url: string, init?: { method?: string; body?: string }) => {
+      calls.push({
+        url,
+        method: init?.method ?? 'GET',
+        ...(init?.body ? { body: init.body } : {}),
+      });
+      if (url.endsWith('/stop')) {
+        return Promise.resolve({
+          ok: true,
+          status: 202,
+          headers: { get: () => null },
+          json: () => Promise.resolve({ stopped: true }),
+        });
+      }
+      return new Promise((resolve) => {
+        settle = resolve;
+      });
+    },
+  );
+  const deliver = (r: unknown): void => {
+    const s = settle as unknown as ((v: unknown) => void) | null;
+    if (!s) throw new Error('no chat POST is in flight');
+    settle = null;
+    s(r);
+  };
+  return {
+    ack: (messageId) => {
+      deliver({
+        ok: true,
+        status: 202,
+        headers: { get: (h: string) => (h === 'x-thread-id' ? 'thread-1' : null) },
+        json: () => Promise.resolve({ threadId: 'thread-1', messageId }),
+      });
+    },
+    refuse: (error) => {
+      deliver({
+        ok: false,
+        status: 400,
+        headers: { get: () => null },
+        json: () => Promise.resolve({ error }),
+      });
+    },
+  };
+}
+
 const chatPosts = (): FetchCall[] => calls.filter((c) => c.url === '/api/chat');
 const stopPosts = (): FetchCall[] => calls.filter((c) => c.url.endsWith('/stop'));
 
@@ -374,5 +436,99 @@ describe('submitting text + attachments commits the composer before the upload',
     expect(c.toasts().join(' ')).toContain('b.csv');
     const bubble = document.querySelector('#rail-feed .chat-msg.user');
     expect(bubble?.classList.contains('failed')).toBe(true);
+  });
+});
+
+/**
+ * Stop between send and ack. The turn does not run inside the POST that starts it:
+ * that request acks 202 with the messageId, and the work continues server-side. So
+ * for the moment between "the button flipped to Stop" and "the ack named the turn"
+ * there is nothing a stop request can address — which is exactly when an alarmed
+ * user reaches for Stop. The press must not evaporate.
+ */
+describe('Stop pressed before the send is acknowledged', () => {
+  let c: Client;
+  let chat: DeferredChat;
+  let btn: HTMLButtonElement;
+  let input: HTMLTextAreaElement;
+
+  beforeEach(async () => {
+    document.body.innerHTML = shell();
+    installFetch();
+    c = loadClient();
+    c.renderComposer();
+    await flush();
+    chat = installHeldChatFetch(); // swap in the holding fetch AFTER the composer renders
+    btn = document.getElementById('chat-send') as HTMLButtonElement;
+    input = document.getElementById('chat-input') as HTMLTextAreaElement;
+    input.value = 'go do the big thing';
+    input.dispatchEvent(new Event('input'));
+    btn.click(); // send — the POST is now held
+    await flush();
+    expect(chatPosts().length).toBe(1);
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis as unknown as Record<string, unknown>, 'fetch');
+  });
+
+  it('is remembered and delivered the moment the ack names the turn', async () => {
+    expect(c.isBusy()).toBe(true);
+    btn.click(); // Stop, in the window
+    await flush();
+    // Nothing to address it to yet — but the press is not lost, and the control does
+    // not sit there looking armed as though a second press would achieve something.
+    expect(stopPosts().length).toBe(0);
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toContain('Stopping');
+
+    chat.ack('msg-late');
+    await flush();
+    // The intent survived the race: the turn is actually stopped.
+    expect(stopPosts().map((s) => s.url)).toEqual(['/api/chat/messages/msg-late/stop']);
+    expect(stopPosts()[0]?.method).toBe('POST');
+    expect(document.querySelector('#rail-feed .chat-stopped')).not.toBeNull();
+    expect(c.isBusy()).toBe(false);
+    expect(btn.getAttribute('data-action')).toBe('send');
+  });
+
+  it('never leaves the press as a click that did nothing', async () => {
+    btn.click();
+    await flush();
+    // The press either goes out now or is visibly pending — never neither.
+    const pressRegistered = stopPosts().length > 0 || btn.disabled;
+    expect(pressRegistered).toBe(true);
+    btn.click(); // a second press on the pending control adds no message and no send
+    await flush();
+    expect(chatPosts().length).toBe(1);
+  });
+
+  it('clears the pending Stop when the send never opened a turn at all', async () => {
+    btn.click();
+    await flush();
+    expect(btn.textContent).toContain('Stopping');
+    chat.refuse('claude_unreachable');
+    await flush();
+    // There is nothing running to stop, so the composer comes back — it must not sit
+    // on a permanent "Stopping…" that can never resolve.
+    expect(stopPosts().length).toBe(0);
+    expect(c.isBusy()).toBe(false);
+    expect(btn.getAttribute('data-action')).toBe('send');
+    expect(btn.textContent).toContain('Send');
+  });
+
+  it('holds a "send now" queue item until the stop it waits on has really landed', async () => {
+    c.enqueueChat('actually do this instead', undefined);
+    document.querySelector<HTMLButtonElement>('.chat-queue-push')!.click();
+    await flush();
+    // The turn cannot be named yet, so nothing may jump ahead of it.
+    expect(stopPosts().length).toBe(0);
+    expect(chatPosts().length).toBe(1);
+
+    chat.ack('msg-late');
+    await flush();
+    // Stop first, then the item — in that order, not into the middle of a live turn.
+    expect(stopPosts().length).toBe(1);
+    expect(chatPosts().length).toBe(2);
+    expect(c.queueLength()).toBe(0);
   });
 });

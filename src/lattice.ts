@@ -85,7 +85,7 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
-import { resolveLatticeRoot } from './framework/lattice-root.js';
+import { resolveSessionRoot } from './framework/lattice-root.js';
 import {
   getActiveWorkspace,
   getWorkspace,
@@ -476,9 +476,10 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   /**
-   * Open a workspace under a `.lattice` root. Resolves the root (the
-   * `LATTICE_ROOT` env override or a `.lattice/.config` found by walking up
-   * from the cwd), looks up the active or named workspace, applies the
+   * Open a workspace under a `.lattice` root. Resolves the root (`opts.root`,
+   * else the `LATTICE_ROOT` env override, else the home root — never by
+   * searching upward from the cwd, which would open whichever root happened to
+   * sit above the process), looks up the active or named workspace, applies the
    * canonical DB-aligned `Context/` layout for any table lacking an explicit
    * entity context, runs `init()`, and — by default — enables auto-render and
    * renders once so the `Context/` tree exists immediately (no "run lattice
@@ -492,7 +493,7 @@ export class Lattice {
       autoRender?: boolean;
     } = {},
   ): Promise<Lattice> {
-    const root = opts.root ?? resolveLatticeRoot();
+    const root = resolveSessionRoot({ explicitRoot: opts.root }).root;
     const ws: WorkspaceRecord | null = opts.workspaceId
       ? getWorkspace(root, opts.workspaceId)
       : getActiveWorkspace(root);

@@ -12,7 +12,12 @@ import {
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { isAnonymousName } from '../import/name-policy.js';
 import { isTableRole, type RoleSource, type TableRole } from '../import/roles.js';
-import { getGuiEntities, type FileJunction } from './data.js';
+import {
+  getGuiEntities,
+  isJunctionTable,
+  type FileJunction,
+  type GuiTableSummary,
+} from './data.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import { upsertTableMeta } from './column-descriptions.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
@@ -27,7 +32,11 @@ import {
 import type { Lattice } from '../lattice.js';
 import type { ActiveDb } from './active-db.js';
 import { secureNewCloudTable } from '../cloud/setup.js';
-import { regenerateAudienceViewFromDb } from '../cloud/audience.js';
+import {
+  loadColumnPolicy,
+  regenerateAudienceViewFromDb,
+  tableNeedsAudienceView,
+} from '../cloud/audience.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 
 /**
@@ -492,6 +501,25 @@ export async function createUserRelation(
 }
 
 /**
+ * The identifier a natural name becomes when it is created as an entity
+ * ("People" → `people`, "Sales Leads" → `sales_leads`), or null when nothing
+ * usable is left of it.
+ *
+ * Exported because a caller that has to answer its refusals BEFORE the table is
+ * created needs to know the name the create will land on — sharing this one
+ * function is what keeps the predicted name and the created name from ever
+ * disagreeing.
+ */
+export function normalizedEntityName(name: string): string | null {
+  const entity = name
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+  return /^[a-z][a-z0-9_]*$/.test(entity) ? entity : null;
+}
+
+/**
  * Create (or return) a user entity the Context Constructor inferred from an
  * ingested document. Registered on the live DB via `defineLate` (no reopen),
  * persisted to config, and recorded as a revertible `schema.create_entity` op.
@@ -513,16 +541,8 @@ export async function createUserEntity(
   // (`normalize:false`) — it already validated and the user may want a
   // capitalized table name, so the typed name is preserved.
   const normalize = opts?.normalize !== false;
-  const entity = normalize
-    ? name
-        .trim()
-        .toLowerCase()
-        .replace(/[\s-]+/g, '_')
-        .replace(/[^a-z0-9_]/g, '')
-    : name.trim();
-  const valid = normalize
-    ? /^[a-z][a-z0-9_]*$/.test(entity)
-    : /^[a-zA-Z][a-zA-Z0-9_]*$/.test(entity);
+  const entity = normalize ? (normalizedEntityName(name) ?? '') : name.trim();
+  const valid = normalize ? entity !== '' : /^[a-zA-Z][a-zA-Z0-9_]*$/.test(entity);
   if (!valid) return null;
   if (entity === 'files' || isNativeEntity(entity)) return null;
   // Serialize the whole check-then-CREATE behind the schema lock. A parallel folder
@@ -826,6 +846,33 @@ export interface InboundLink {
 }
 
 /**
+ * Is `t` STILL nothing but a link between two tables, as it stands right now?
+ *
+ * Registration as a link table happens ONCE, when the table is created — but a
+ * table can ACQUIRE a payload column afterwards (any write carrying a field the
+ * table lacks adds it), and from that moment it holds data of its own that lives
+ * nowhere else. Deciding ownership from the registration alone would keep
+ * sweeping such a table away with either side it links, silently, without ever
+ * naming it — so ownership is decided from the table's CURRENT shape instead,
+ * using the same strict two-keys-no-payload rule as every other destructive
+ * path.
+ *
+ * The declared columns are unioned with the live registry because an auto-added
+ * column reaches the registry immediately but the configuration only when the
+ * explicit add-column path writes it — reading either one alone would miss it.
+ * Registration still gates the answer, so this can only ever NARROW what counts
+ * as plumbing, never promote a first-class table into it.
+ */
+function stillOnlyALink(active: ActiveDb, t: GuiTableSummary): boolean {
+  if (!active.junctionTables.has(t.name)) return false;
+  // No live registry for it (not registered on this workspace) — the declared
+  // shape is then all there is to judge by.
+  const registered = active.db.getRegisteredColumns(t.name);
+  const columns = registered ? [...new Set([...t.columns, ...Object.keys(registered)])] : t.columns;
+  return isJunctionTable({ ...t, columns });
+}
+
+/**
  * Every belongsTo relation that points at `table`, classified by
  * {@link InboundLink}. Shared by the assistant's delete tool and the HTTP delete
  * route so the two guards read the model the same way and cannot drift apart.
@@ -843,7 +890,7 @@ export function inboundLinksTo(active: ActiveDb, table: string): InboundLink[] {
           table: t.name,
           relName,
           foreignKey: rel.foreignKey,
-          owned: active.junctionTables.has(t.name),
+          owned: stillOnlyALink(active, t),
         });
       }
     }
@@ -1518,6 +1565,54 @@ const TABLE_NAME_REFERENCES: readonly { store: string; columns: readonly string[
   { store: '__lattice_column_policy', columns: ['table_name'] },
 ];
 
+/**
+ * The cloud bookkeeping that decides who may read a table, keyed by its NAME:
+ * per-row ownership and grants, the standing table-level share, the per-table
+ * defaults, and the per-column masking policy.
+ *
+ * A rename MOVES these (they still describe the same table under a new name).
+ * A purge must DELETE them — the table they describe is gone, and a name is all
+ * that binds them to it, so the next table to take that name inherits the lot.
+ */
+const CLOUD_NAME_KEYED_POLICY: readonly string[] = [
+  '__lattice_owners',
+  '__lattice_row_grants',
+  '__lattice_table_shares',
+  '__lattice_table_share_grants',
+  '__lattice_table_policy',
+  '__lattice_column_policy',
+];
+
+/**
+ * Physically remove a soft-deleted table, along with the rendered artifact that
+ * masks it and everything the cloud recorded ABOUT it by name.
+ *
+ * Two things make this more than a `DROP TABLE`. The cell-masking view generated
+ * for a table with a secret column DEPENDS on that table, so a plain drop is
+ * refused by the database outright — a masked table could not be purged at all.
+ * And the sharing, per-table defaults, row grants and column policy are keyed by
+ * NAME rather than by the table's identity: left behind, the next table created
+ * with that name starts life shared with the whole team, stamping its new rows
+ * with a dead table's default visibility, and masked by a policy nobody wrote
+ * for it.
+ *
+ * Throws on failure, so a half-purged table can never be reported as a success.
+ */
+export async function purgeUserEntity(active: ActiveDb, table: string): Promise<void> {
+  const q = table.replace(/"/g, '""');
+  const onCloud = active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db));
+  if (onCloud) await execSql(active.db, `DROP VIEW IF EXISTS "${q}_v"`);
+  await execSql(active.db, `DROP TABLE IF EXISTS "${q}"`);
+  if (!onCloud) return;
+  for (const store of CLOUD_NAME_KEYED_POLICY) {
+    const columns = await introspectColumnsAsyncOrSync(active.db.adapter, store);
+    if (!columns.includes('table_name')) continue; // this workspace has no such store
+    await runAsyncOrSync(active.db.adapter, `DELETE FROM "${store}" WHERE "table_name" = ?`, [
+      table,
+    ]);
+  }
+}
+
 /** One link table renamed alongside the table it is named after. */
 export interface LinkTableRename {
   from: string;
@@ -1904,6 +1999,21 @@ export async function renameUserEntity(
       if (touched) cascade.computed.push(name);
     }
 
+    // ── what was masked, recorded BEFORE anything moves ─────────────────────
+    // On a cloud, which columns are secret is canonical in the column policy,
+    // keyed by table name. Read which of the tables about to move are masked
+    // while they still answer to their old names, so the cascade can prove
+    // afterwards that the masking travelled with them — an empty policy read
+    // under the new name is otherwise indistinguishable from "this table has no
+    // secret columns", and acting on that hands every member raw read.
+    const onCloud = active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db));
+    const maskedBefore = new Set<string>();
+    if (onCloud) {
+      for (const name of renames.keys()) {
+        if (tableNeedsAudienceView(await loadColumnPolicy(active.db, name))) maskedBefore.add(name);
+      }
+    }
+
     // ── physical rename ─────────────────────────────────────────────────────
     // Everything that can be checked has been checked above (the target name is
     // free, every derived link-table name is free, the table is declared), so
@@ -1948,25 +2058,13 @@ export async function renameUserEntity(
     }
     syncCanonicalContexts(active);
 
-    // ── the cloud's per-table masked view ──────────────────────────────────
-    // Members read a table through a view NAMED after it. Postgres keeps the
-    // view attached to the table it selects from, so the view survives the
-    // rename — under the OLD name, where nothing looks for it. Rebuild it under
-    // the new name and drop the stale one, or a renamed table simply stops
-    // being readable by every member of the team.
-    if (active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db))) {
-      for (const [oldName, newName] of renames) {
-        await execSql(active.db, `DROP VIEW IF EXISTS "${oldName}_v"`);
-        const cols = active.db.getRegisteredColumns(newName);
-        const pk = active.db.getPrimaryKey(newName);
-        if (cols && pk.length > 0) {
-          await regenerateAudienceViewFromDb(active.db, newName, Object.keys(cols), pk);
-          cascade.maskViews.push(`${newName}_v`);
-        }
-      }
-    }
-
     // ── bookkeeping stores that record the name ─────────────────────────────
+    // This runs BEFORE the masked view is rebuilt, and the order is load-bearing:
+    // the cloud's column policy is one of these stores, and the view is generated
+    // FROM that policy. Rebuilding the view first reads the policy under a name
+    // it hasn't been moved to yet, finds nothing, concludes the table has no
+    // secret columns — and both drops the view and grants members raw SELECT on
+    // the base table.
     for (const { store, columns } of TABLE_NAME_REFERENCES) {
       for (const column of columns) {
         for (const [oldName, newName] of renames) {
@@ -1977,6 +2075,41 @@ export async function renameUserEntity(
     }
     cascade.dashboards = await repointDashboards(active, renames);
     cascade.proposals = await repointProposals(active, renames);
+
+    // ── the cloud's per-table masked view ──────────────────────────────────
+    // Members read a table through a view NAMED after it. Postgres keeps the
+    // view attached to the table it selects from, so the view survives the
+    // rename — under the OLD name, where nothing looks for it. Rebuild it under
+    // the new name and drop the stale one, or a renamed table simply stops
+    // being readable by every member of the team.
+    if (onCloud) {
+      for (const [oldName, newName] of renames) {
+        // Regeneration reads the column policy and treats an empty read as "no
+        // secret columns here" — which drops the mask and opens the base table
+        // to every member. For a table that WAS masked, an empty read means the
+        // policy failed to travel, not that the owner un-masked it. Stop, with
+        // the mask still standing under the old view, rather than resolve that
+        // ambiguity in the direction that exposes data.
+        if (maskedBefore.has(oldName)) {
+          const carried = await loadColumnPolicy(active.db, newName);
+          if (!tableNeedsAudienceView(carried)) {
+            return fail(
+              `"${oldName}" has columns marked secret, and that column policy did not follow it to ` +
+                `"${newName}". Rebuilding the masking view from an empty policy would give every member ` +
+                `direct read on those columns, so the rename stopped before doing that. The table is now ` +
+                `called "${newName}" and its columns are still masked; reopen the workspace and try again.`,
+            );
+          }
+        }
+        await execSql(active.db, `DROP VIEW IF EXISTS "${oldName}_v"`);
+        const cols = active.db.getRegisteredColumns(newName);
+        const pk = active.db.getPrimaryKey(newName);
+        if (cols && pk.length > 0) {
+          await regenerateAudienceViewFromDb(active.db, newName, Object.keys(cols), pk);
+          if (maskedBefore.has(oldName)) cascade.maskViews.push(`${newName}_v`);
+        }
+      }
+    }
 
     await recordSchemaOp(
       active,
