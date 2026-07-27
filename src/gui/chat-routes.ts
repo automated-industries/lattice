@@ -214,13 +214,17 @@ export async function resolveAttachedFiles(
   const labels: string[] = [];
   const resolvedIds: string[] = [];
   const missingIds: string[] = [];
+  // There is no vision path yet, so an attached image resolves to a row the model
+  // can name but cannot see into. Track that so the note can say so outright.
+  let hasImages = false;
   for (const id of suppliedIds) {
-    let row: { id: string; name?: string; original_name?: string } | null = null;
+    let row: { id: string; name?: string; original_name?: string; mime?: string } | null = null;
     try {
       row = (await db.get('files', id)) as {
         id: string;
         name?: string;
         original_name?: string;
+        mime?: string;
       } | null;
     } catch (e) {
       console.warn('[chat] could not read attached file', id, (e as Error).message);
@@ -233,13 +237,23 @@ export async function resolveAttachedFiles(
       [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0) ?? 'file';
     labels.push(`"${display}" (files id ${row.id})`);
     resolvedIds.push(row.id);
+    if (row.mime?.startsWith('image/')) hasImages = true;
   }
   if (!labels.length) return { suppliedIds, resolvedIds, missingIds, note: '' };
   const many = labels.length > 1;
   let note =
     `[The user just attached ${many ? 'these files' : 'this file'} to this message — ` +
-    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. ` +
-    `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`;
+    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. `;
+  if (hasImages) {
+    // Say it plainly rather than letting the model infer it can see the picture:
+    // an attached image reaches it as a name and whatever text was extracted, and
+    // a confident description of an image nobody looked at is exactly the kind of
+    // invented answer the rest of this release exists to prevent.
+    note +=
+      'Image files are attached — note that you CANNOT view the visual content of images. ' +
+      "You can only work with the file's name, metadata, and any extracted text metadata. ";
+  }
+  note += `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`;
   if (missingIds.length > 0) {
     // Partial resolution: name the shortfall so the model says so instead of quietly
     // answering as if every attachment had been read.

@@ -649,8 +649,12 @@ import { appJs } from '../../src/gui/app/script.js';
 // 5.5 (cont.): a Stop pressed before the send is acknowledged is no longer a
 // click that does nothing — the intent is held and applied the moment the turn is
 // identified, so an alarmed user's press is never dropped into the ack window.
-const ORIGINAL_LENGTH = 856224;
-const ORIGINAL_SHA256 = 'e2fce6316bd6fa2196d2513b06a417aecd2114dd631d6c937ff8e781668ed594';
+// 5.5 (cont.): the composer accepts a pasted image, routing it into the same
+// staging flow a picked file uses (text paste is untouched). Recaptured once for
+// the combined client — both the stop-before-ack change and the paste handler
+// move these bytes, so the pin is taken after the merge, not per branch.
+const ORIGINAL_LENGTH = 857193;
+const ORIGINAL_SHA256 = '71a1dac883d008083a9d10562a781b774575dd3c76e8cb34a97a5dbcb406f836';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the
