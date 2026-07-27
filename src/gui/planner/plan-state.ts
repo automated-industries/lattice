@@ -48,11 +48,29 @@ function canPersist(db: Lattice): boolean {
   return !db.isCloudMemberOpen();
 }
 
-/** Register the plan-state table on the live DB if it isn't already. */
+/**
+ * Register the plan-state table on the live DB if it isn't already.
+ *
+ * Returns false when the table cannot be registered YET. A late definition is
+ * only legal once the database has finished initializing, and the planner can
+ * run against a workspace that is still coming up (the debounced trigger fires
+ * off the same open). That is a not-ready condition, not a failure: dismissals
+ * simply are not persisted on that pass, and the next pass reconciles in both
+ * directions and picks them up. Letting it throw instead aborted the WHOLE
+ * planner pass, so a workspace got no plan at all.
+ *
+ * Narrow on purpose — every other failure propagates.
+ */
 async function ensureTable(db: Lattice): Promise<boolean> {
   if (!canPersist(db)) return false;
   if (db.getRegisteredTableNames().includes(PLAN_STATE_TABLE)) return true;
-  await db.defineLate(PLAN_STATE_TABLE, PLAN_STATE_DEF);
+  try {
+    await db.defineLate(PLAN_STATE_TABLE, PLAN_STATE_DEF);
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg.includes('must be called after init')) return false;
+    throw e;
+  }
   return true;
 }
 

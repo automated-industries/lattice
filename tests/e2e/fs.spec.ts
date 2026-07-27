@@ -132,6 +132,9 @@ test('the sidebar opens a table workspace; the collection lists rows; a row open
   // The single-layout sidebar Tables section carries a nav item per table; clicking
   // one opens that table's Workspace tab (#/w/table/<name>) — the replacement for
   // the old two-view Objects-nav link that pointed at #/fs/….
+  // The nav sections are a single-open accordion and FILES leads, so TABLES is
+  // collapsed on load — open it before reaching for a table's nav item.
+  await page.locator('[data-group="nav-tables"]').click();
   const navItem = page.locator('.nav-table-item[data-table="authors"]');
   await expect(navItem).toBeVisible({ timeout: 5000 });
   await navItem.click();
@@ -222,6 +225,9 @@ test('object navigation always targets the workspace (single view)', async ({ pa
   await page.goto(`${gui.url}#/`);
   await expect(page.locator('nav.dash-sidebar')).toBeVisible();
 
+  // The nav sections are a single-open accordion and FILES leads, so TABLES is
+  // collapsed on load — open it before reaching for a table's nav item.
+  await page.locator('[data-group="nav-tables"]').click();
   const navItem = page.locator('.nav-table-item[data-table="authors"]');
   await expect(navItem).toBeVisible({ timeout: 5000 });
   await navItem.click();

@@ -134,12 +134,15 @@ async function mountStreamingThread(
   await expect(page.locator('#chat-input')).toBeVisible();
 }
 
-test('reload rebinds a FRESH in-flight turn as live (composer stays locked)', async ({ page }) => {
+test('reload rebinds a FRESH in-flight turn as live (the action offers Stop)', async ({ page }) => {
   await mountStreamingThread(page, gui.url, new Date().toISOString());
-  // The saved partial shows, and the composer is disabled — the turn is bound as live and
-  // its remaining chat-progress frames will finalize it.
+  // The saved partial shows, and the turn is bound as live: its remaining
+  // chat-progress frames will finalize it. A live turn no longer leaves a dead
+  // Send button — the action becomes Stop, which actually cancels it server-side.
   await expect(page.locator('.chat-bubble.assistant')).toContainText('Working on it so far');
-  await expect(page.locator('#chat-send')).toBeDisabled();
+  const action = page.locator('#chat-send');
+  await expect(action).toHaveAttribute('data-action', 'stop');
+  await expect(action).toBeEnabled();
 });
 
 test('reload renders a STALE orphaned turn as interrupted (composer stays free)', async ({
@@ -148,8 +151,13 @@ test('reload renders a STALE orphaned turn as interrupted (composer stays free)'
   // startedAt well beyond the freshness window → the owning process is presumed dead.
   await mountStreamingThread(page, gui.url, '2020-01-01T00:00:01.000Z');
   await expect(page.locator('.chat-bubble.assistant')).toContainText('Working on it so far');
-  // Not bound, not locked — the user can send again immediately.
-  await expect(page.locator('#chat-send')).toBeEnabled();
+  // Not bound: the action is Send, not Stop. It is inert only because there is
+  // nothing typed yet — typing arms it, which is what "the user can send again
+  // immediately" means under the four-state action.
+  const action = page.locator('#chat-send');
+  await expect(action).toHaveAttribute('data-action', 'send');
+  await page.locator('#chat-input').fill('anything');
+  await expect(action).toBeEnabled();
 });
 
 test('a follow-up typed mid-turn is queued and sent when the turn finishes', async ({ page }) => {
@@ -189,21 +197,29 @@ test('a follow-up typed mid-turn is queued and sent when the turn finishes', asy
   await input.fill('turn one');
   await input.press('Enter');
   await expect(page.locator('.chat-bubble.assistant')).toContainText('First reply');
-  await expect(page.locator('#chat-send')).toBeDisabled();
+  // Mid-turn with an empty composer the action is Stop, not a dead Send.
+  await expect(page.locator('#chat-send')).toHaveAttribute('data-action', 'stop');
 
-  // Type a follow-up mid-stream → it queues (dimmed placeholder), the composer
-  // clears, and NO second POST fires yet. (Pre-fix the message was dropped.)
+  // Type a follow-up mid-stream → typing flips the action to Queue, and sending
+  // it parks the message in the tray ABOVE the composer rather than as a dimmed
+  // bubble inside the conversation. The composer clears and NO second POST fires
+  // yet. (Before any of this, the message was simply dropped.)
   await input.fill('follow up while busy');
+  await expect(page.locator('#chat-send')).toHaveAttribute('data-action', 'queue');
   await input.press('Enter');
-  await expect(page.locator('.chat-msg.queued')).toHaveCount(1);
-  await expect(page.locator('.chat-msg.queued')).toContainText('follow up while busy');
+  await expect(page.locator('#chat-queue-tray .chat-queue-item')).toHaveCount(1);
+  await expect(page.locator('#chat-queue-tray .chat-queue-item')).toContainText(
+    'follow up while busy',
+  );
+  // The conversation itself stays free of queue placeholders.
+  await expect(page.locator('.chat-msg.queued')).toHaveCount(0);
   await expect(input).toHaveValue('');
   expect(posts).toBe(1);
 
-  // Finish turn 1 → the queued follow-up flushes as turn 2.
+  // Finish turn 1 → the queued follow-up flushes as turn 2 and leaves the tray.
   send('m1', { type: 'done' });
   await expect.poll(() => posts).toBe(2);
-  await expect(page.locator('.chat-msg.queued')).toHaveCount(0);
+  await expect(page.locator('#chat-queue-tray .chat-queue-item')).toHaveCount(0);
   await expect(page.locator('.chat-bubble.assistant').last()).toContainText('Second reply');
   expect(bodies[1]).toContain('follow up while busy');
 });
