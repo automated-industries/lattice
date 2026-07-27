@@ -339,6 +339,26 @@ export const createDatabaseWizardJs = `    // ───────────�
             }
             if (!e.shiftKey) { e.preventDefault(); submitComposer(); }
           });
+          // Paste handler for images: extract images from clipboard and stage them
+          // (text paste is unaffected, allowing normal text paste to coexist with
+          // attached images). Unnamed clipboard images get a timestamp-based name.
+          input.addEventListener('paste', function (e) {
+            var dt = e.clipboardData;
+            if (!dt || !dt.items) return; // no clipboard data
+            var imagesToStage = [];
+            for (var i = 0; i < dt.items.length; i++) {
+              var item = dt.items[i];
+              if (item.kind === 'file' && item.type.startsWith('image/')) {
+                var f = item.getAsFile();
+                if (f) imagesToStage.push(f);
+              }
+            }
+            // Only prevent default if we found images — text paste still works normally
+            if (imagesToStage.length > 0) {
+              e.preventDefault();
+              stageFiles(imagesToStage);
+            }
+          });
           sendBtn.addEventListener('click', function () { submitComposer(); });
           var micBtn = document.getElementById('chat-mic');
           if (micBtn) {
