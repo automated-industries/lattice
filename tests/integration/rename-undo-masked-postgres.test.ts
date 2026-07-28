@@ -149,7 +149,17 @@ async function policyKeys(db: Lattice): Promise<string[]> {
   return rows.map((r) => `${r.table_name}.${r.column_name}`);
 }
 
-/** Every masking view standing in the schema. */
+/**
+ * Every `<t>_v` read view standing in the schema.
+ *
+ * Under the fail-closed model EVERY member-readable table has one: it is the
+ * member's only read path, not a marker that something on that table is masked.
+ * So the list is no longer expected to hold exactly the masked tables — what a
+ * rename has to get right is which NAME each view stands under. The view must
+ * follow the table to the name it has now, and nothing may be left behind under
+ * the name it used to have (a stranded view keeps masking the table under a name
+ * every name-keyed lookup comes back empty for).
+ */
 async function maskViews(db: Lattice): Promise<string[]> {
   const rows = (await allAsyncOrSync(
     db.adapter,
@@ -227,7 +237,11 @@ describe.skipIf(!PG_URL)('undoing and redoing a rename keeps the masking with th
       /permission denied/i,
     );
     expect(await policyKeys(owner.db)).toEqual(['journal.secret']);
-    expect(await maskViews(owner.db)).toEqual(['journal_v']);
+    // The read view moved back with the table: it stands under the name the table
+    // answers to NOW, and nothing is stranded under the one it just left.
+    const undoneViews = await maskViews(owner.db);
+    expect(undoneViews).toContain('journal_v');
+    expect(undoneViews).not.toContain('memos_v');
 
     // ...and the member can still read the table, with the secret cell masked.
     expect((await member.query(`SELECT id, body, secret FROM "journal_v"`)).rows).toEqual([
@@ -246,7 +260,9 @@ describe.skipIf(!PG_URL)('undoing and redoing a rename keeps the masking with th
 
     expect(owner.db.getRegisteredTableNames()).toContain('memos');
     expect(await policyKeys(owner.db)).toEqual(['memos.secret']);
-    expect(await maskViews(owner.db)).toEqual(['memos_v']);
+    const redoneViews = await maskViews(owner.db);
+    expect(redoneViews).toContain('memos_v');
+    expect(redoneViews).not.toContain('journal_v');
     expect(await memberHasTablePriv(owner.db, 'memos', 'SELECT')).toBe(false);
     await expect(member.query(`SELECT secret FROM "memos"`)).rejects.toThrow(/permission denied/i);
     expect((await member.query(`SELECT id, body, secret FROM "memos_v"`)).rows).toEqual([

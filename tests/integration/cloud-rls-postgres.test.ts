@@ -113,30 +113,58 @@ describe.skipIf(!PG_URL)(
       await A.query(`INSERT INTO memo (a,b,body) VALUES ('x','1','priv'),('x','2','shared-all')`);
       await A.query(`SELECT lattice_set_row_visibility('memo',$1,'everyone')`, [`x${SEP}2`]);
 
-      // 4) Bob sees ONLY the rows shared to him — never alice's private rows.
-      const bobNotes = (await B.query<{ id: string }>(`SELECT id FROM notes ORDER BY id`)).rows.map(
-        (r) => r.id,
-      );
+      // 4) A member holds NO table-level SELECT on a base table — reads go through
+      //    "<t>_v". Asserted explicitly rather than relied on: every read below uses
+      //    the view, and without this the suite would still pass if base reads
+      //    quietly became possible again, which is the regression that shipped three
+      //    times running.
+      //
+      //    Note precisely what is withheld, because the distinction is the whole
+      //    design. Members hold COLUMN-level SELECT on the columns this table does
+      //    not mask (writes need it — `INSERT … ON CONFLICT DO UPDATE` requires
+      //    SELECT on every column in its SET list, so withholding it broke every
+      //    member upsert and with it connector sync). Those columns are row-scoped
+      //    regardless: the base table carries FORCE ROW LEVEL SECURITY with the same
+      //    visibility predicate the view applies.
+      //
+      //    What a member never holds is TABLE-level SELECT, and never holds any
+      //    grant on a MASKED column — see the masked-table suites, which assert the
+      //    denial and the NULL cell directly. Table-level is the bit that would
+      //    silently re-open every future column the moment one is marked secret.
+      const tablePriv = (
+        await B.query<{ ok: boolean }>(`SELECT has_table_privilege('notes','SELECT') AS ok`)
+      ).rows[0];
+      expect(tablePriv?.ok).toBe(false);
+
+      //    Bob sees ONLY the rows shared to him — never alice's private rows.
+      const bobNotes = (
+        await B.query<{ id: string }>(`SELECT id FROM notes_v ORDER BY id`)
+      ).rows.map((r) => r.id);
       expect(bobNotes).toEqual(['n2', 'n3']);
-      const bobMemo = (await B.query<{ a: string; b: string }>(`SELECT a,b FROM memo ORDER BY a,b`))
-        .rows;
+      const bobMemo = (
+        await B.query<{ a: string; b: string }>(`SELECT a,b FROM memo_v ORDER BY a,b`)
+      ).rows;
       expect(bobMemo).toEqual([{ a: 'x', b: '2' }]);
 
       // 4b) Search inherits RLS via the base-table LIKE path (the fallback a
       //     member hits with no access to the FTS index): bob's search for
       //     alice's private text 'priv' surfaces nothing; alice finds her own row.
       const bobSearch = (
-        await B.query<{ id: string }>(`SELECT id FROM notes WHERE CAST(body AS TEXT) LIKE '%priv%'`)
+        await B.query<{ id: string }>(
+          `SELECT id FROM notes_v WHERE CAST(body AS TEXT) LIKE '%priv%'`,
+        )
       ).rows.map((r) => r.id);
       expect(bobSearch).toEqual([]);
       const aliceSearch = (
-        await A.query<{ id: string }>(`SELECT id FROM notes WHERE CAST(body AS TEXT) LIKE '%priv%'`)
+        await A.query<{ id: string }>(
+          `SELECT id FROM notes_v WHERE CAST(body AS TEXT) LIKE '%priv%'`,
+        )
       ).rows.map((r) => r.id);
       expect(aliceSearch).toEqual(['n1']);
 
       // Alice sees all of her own.
       const aliceNotes = (
-        await A.query<{ id: string }>(`SELECT id FROM notes ORDER BY id`)
+        await A.query<{ id: string }>(`SELECT id FROM notes_v ORDER BY id`)
       ).rows.map((r) => r.id);
       expect(aliceNotes).toEqual(['n1', 'n2', 'n3']);
 
@@ -163,7 +191,7 @@ describe.skipIf(!PG_URL)(
       await expect(B.query(`SET ROLE "${alice}"`)).rejects.toThrow(/permission denied|cannot/i);
 
       // 8) Alice's private row survived every attack, still private.
-      const n1 = (await A.query<{ body: string }>(`SELECT body FROM notes WHERE id='n1'`)).rows;
+      const n1 = (await A.query<{ body: string }>(`SELECT body FROM notes_v WHERE id='n1'`)).rows;
       expect(n1).toEqual([{ body: 'priv' }]);
 
       // 9) Every member write is recorded in the change feed (which drives realtime
@@ -224,13 +252,13 @@ describe.skipIf(!PG_URL)(
       // owner's private rows. Without the backfill they'd be invisible to
       // everyone (no ownership record); with it they belong to the owner.
       const C = memberPool(schema, carol, carolPw);
-      expect((await C.query<{ id: string }>(`SELECT id FROM docs`)).rows).toEqual([]);
+      expect((await C.query<{ id: string }>(`SELECT id FROM docs_v`)).rows).toEqual([]);
 
       // The owner shares d1 → carol now sees exactly d1, still not d2.
       const owner = new pg.Pool({ connectionString: url, max: 1 });
       pools.push(owner);
       await owner.query(`SELECT lattice_set_row_visibility('docs','d1','everyone')`);
-      const seen = (await C.query<{ id: string }>(`SELECT id FROM docs ORDER BY id`)).rows.map(
+      const seen = (await C.query<{ id: string }>(`SELECT id FROM docs_v ORDER BY id`)).rows.map(
         (r) => r.id,
       );
       expect(seen).toEqual(['d1']);
@@ -347,9 +375,9 @@ describe.skipIf(!PG_URL)(
       // Eve (a fresh member) sees none of the pre-existing rows — secureCloud made
       // the owner the owner of them (private by default) — until one is shared.
       const E = memberPool(schema, eve, evePw);
-      expect((await E.query(`SELECT id FROM docs`)).rows).toEqual([]);
+      expect((await E.query(`SELECT id FROM docs_v`)).rows).toEqual([]);
       await ownerPool.query(`SELECT lattice_set_row_visibility('docs','d1','everyone')`);
-      expect((await E.query(`SELECT id FROM docs ORDER BY id`)).rows.map((r) => r.id)).toEqual([
+      expect((await E.query(`SELECT id FROM docs_v ORDER BY id`)).rows.map((r) => r.id)).toEqual([
         'd1',
       ]);
     });

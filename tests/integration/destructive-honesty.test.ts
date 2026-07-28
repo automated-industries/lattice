@@ -323,25 +323,38 @@ describe('destructive turns cannot report success they did not earn', () => {
     expect(await db.countActive('deals')).toBe(2);
   });
 
-  it('proceeds once the user has answered a question naming every target', async () => {
-    // The prior turn's question, as it replays into this turn's history.
-    const history: LlmMessage[] = [
-      { role: 'user', content: 'simplify my data model' },
+  /**
+   * These four cases were written against the mechanism that reconstructed consent
+   * from the conversation: a question replayed out of the transcript plus the text of
+   * the user's reply. That mechanism is gone — it was forgeable in four different
+   * ways, because both halves of the evidence were authored, or steerable, by the
+   * model being gated.
+   *
+   * The PROPERTIES they protected still hold, and are asserted here against the
+   * server's own consent record. Three of them are no longer even expressible as an
+   * attack: there is no prose to be ambiguous, no earlier question to reach back
+   * into, and no words for one object's name to share with another's.
+   */
+  it('proceeds once the user has approved every target', async () => {
+    const grants = [
       {
-        role: 'assistant',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'q1',
-            name: 'ask_user',
-            input: {
-              question: 'Remove Contacts (3 records) and Deals (2 records)?',
-              options: ['Yes, remove both', 'No, keep them'],
-            },
-          },
-        ],
+        tool: 'delete_entity',
+        kind: 'remove_object' as const,
+        target: 'contacts',
+        verbKey: 'resolution:delete_data',
+        maxRows: 1000,
+        rowsUnknown: false,
+        detail: 'remove "contacts"',
       },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'shown' }] },
+      {
+        tool: 'delete_entity',
+        kind: 'remove_object' as const,
+        target: 'deals',
+        verbKey: 'resolution:delete_data',
+        maxRows: 1000,
+        rowsUnknown: false,
+        detail: 'remove "deals"',
+      },
     ];
     const { client } = scriptedClient([
       {
@@ -362,8 +375,9 @@ describe('destructive turns cannot report success they did not earn', () => {
       runChat({
         client,
         dispatch,
-        history,
         userMessage: 'Yes, remove both',
+        consent: { id: 'c1', status: 'granted', grants } as never,
+        spendConsentGrant: () => Promise.resolve(true),
         onToolRecord: record,
       }),
     );
@@ -377,7 +391,9 @@ describe('destructive turns cannot report success they did not earn', () => {
     }
   });
 
-  it('does not let the user asking ABOUT objects unlock destroying them', async () => {
+  it('refuses a plan the user was never asked about', async () => {
+    // No record at all is the default state, and it authorizes nothing — however the
+    // assistant phrases its own question, and whatever the user happened to type.
     const { client } = scriptedClient([
       {
         text: '',
@@ -390,46 +406,36 @@ describe('destructive turns cannot report success they did not earn', () => {
           { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
         ],
       },
-      { text: 'I have not removed anything.' },
+      { text: 'I could not remove them.' },
     ]);
 
     await collect(
       runChat({
         client,
         dispatch,
-        // The user NAMED both — while asking a question about them. A mention is
-        // not permission, and the assistant may not read it as one.
-        userMessage: 'what is the difference between contacts and deals here?',
+        userMessage: 'yes, remove them all, go ahead',
         onToolRecord: record,
       }),
     );
 
     const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
-    expect(refusal).toBeDefined();
-    expect(errorOf(refusal)).toContain('has not been asked');
-    expect(await db.countActive('deals')).toBe(2);
+    expect(refusal).toBeTruthy();
+    expect(errorOf(refusal)).toContain('ask_user');
   });
 
-  it('does not let its own question stand in for the user answering it', async () => {
-    // The assistant asked, naming every target — and the user replied with
-    // something else entirely. Anything short of a yes leaves the gate closed.
-    const history: LlmMessage[] = [
-      { role: 'user', content: 'simplify my data model' },
+  it('confines an approval to the object it names, not others sharing its words', async () => {
+    // The old matcher compared singularized WORDS, so consent for one object could
+    // cover another whose name shared one. Targets are compared exactly now.
+    const grants = [
       {
-        role: 'assistant',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'q1',
-            name: 'ask_user',
-            input: {
-              question: 'Remove Contacts (3 records) and Deals (2 records)?',
-              options: ['Yes, remove both', 'No, keep them'],
-            },
-          },
-        ],
+        tool: 'delete_entity',
+        kind: 'remove_object' as const,
+        target: 'contacts',
+        verbKey: 'resolution:delete_data',
+        maxRows: 1000,
+        rowsUnknown: false,
+        detail: 'remove "contacts"',
       },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'shown' }] },
     ];
     const { client } = scriptedClient([
       {
@@ -443,144 +449,23 @@ describe('destructive turns cannot report success they did not earn', () => {
           { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
         ],
       },
-      { text: 'Still waiting on you.' },
+      { text: 'Only one could be removed.' },
     ]);
 
     await collect(
       runChat({
         client,
         dispatch,
-        history,
-        userMessage: 'hold on, what is in them?',
+        userMessage: 'Yes',
+        consent: { id: 'c1', status: 'granted', grants } as never,
+        spendConsentGrant: () => Promise.resolve(true),
         onToolRecord: record,
       }),
     );
 
     const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
-    expect(refusal).toBeDefined();
-    expect(errorOf(refusal)).toContain('not a clear yes');
-    expect(await db.countActive('deals')).toBe(2);
-  });
-
-  /** The question, and the tool_result that carried it to the user. */
-  const questionTurn = (question: string, options: string[], id = 'q1'): LlmMessage[] => [
-    {
-      role: 'assistant',
-      content: [{ type: 'tool_use', id, name: 'ask_user', input: { question, options } }],
-    },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'shown' }] },
-  ];
-
-  /** A round that tries to remove `name`, then an answer round. */
-  const removalScript = (...names: string[]): ReturnType<typeof scriptedClient> =>
-    scriptedClient([
-      {
-        text: '',
-        toolUses: names.map((name, i) => ({
-          id: `tu${String(i + 1)}`,
-          name: 'delete_entity',
-          input: { name, resolution: 'delete_data' },
-        })),
-      },
-      { text: 'I have not removed anything.' },
-    ]);
-
-  it('does not carry a yes from an earlier exchange into a destruction now', async () => {
-    // The question was asked, ANSWERED, and the conversation moved on. A later
-    // message that merely opens affirmatively is agreeing to whatever was last
-    // said — never to a removal proposed turns ago.
-    const history: LlmMessage[] = [
-      { role: 'user', content: 'simplify my data model' },
-      ...questionTurn('Remove Contacts (3 records) and Deals (2 records)?', [
-        'Yes, remove both',
-        'No, keep them',
-      ]),
-      { role: 'user', content: 'Yes, remove both' },
-      { role: 'assistant', content: 'Neither could be removed — they are still referenced.' },
-      { role: 'user', content: 'what is referencing them?' },
-      { role: 'assistant', content: 'Each other. Shall I take a look at the links instead?' },
-    ];
-    const { client } = removalScript('contacts', 'deals');
-
-    await collect(
-      runChat({ client, dispatch, history, userMessage: 'Yes, go ahead', onToolRecord: record }),
-    );
-
-    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
-    expect(refusal).toBeDefined();
-    expect(errorOf(refusal)).toContain('An old yes never carries forward');
-    expect(await db.countActive('contacts')).toBe(3);
-    expect(await db.countActive('deals')).toBe(2);
-  });
-
-  it('does not let its own retelling of the user stand in for a question', async () => {
-    // The assistant's prose is the thing being checked, so quoting the user back at
-    // them — destructive verbs, object names and all — supplies no evidence.
-    const history: LlmMessage[] = [
-      { role: 'user', content: 'have a look at my model' },
-      {
-        role: 'assistant',
-        content:
-          'You asked me to delete Contacts (3 records) and Deals (2 records). Ready when you are.',
-      },
-    ];
-    const { client } = removalScript('contacts', 'deals');
-
-    await collect(
-      runChat({ client, dispatch, history, userMessage: 'Yes, go ahead', onToolRecord: record }),
-    );
-
-    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
-    expect(refusal).toBeDefined();
-    expect(errorOf(refusal)).toContain('has not been asked');
-    expect(await db.countActive('contacts')).toBe(3);
-    expect(await db.countActive('deals')).toBe(2);
-  });
-
-  it('confines a yes to the object the question named, not others sharing its words', async () => {
-    const history: LlmMessage[] = [
-      { role: 'user', content: 'clear out the old billing data' },
-      ...questionTurn('Remove Customer Invoices (30 records)?', ['Yes, remove them', 'No']),
-    ];
-    // Round 1 removes what they agreed to; round 2 reaches for a DIFFERENT object
-    // whose whole name is a word of that one.
-    const { client } = scriptedClient([
-      {
-        text: '',
-        toolUses: [
-          {
-            id: 'tu1',
-            name: 'delete_entity',
-            input: { name: 'customer_invoices', resolution: 'delete_data' },
-          },
-        ],
-      },
-      {
-        text: '',
-        toolUses: [
-          {
-            id: 'tu2',
-            name: 'delete_entity',
-            input: { name: 'customers', resolution: 'delete_data' },
-          },
-        ],
-      },
-      { text: 'I could not remove those.' },
-    ]);
-
-    await collect(
-      runChat({ client, dispatch, history, userMessage: 'Yes, remove them', onToolRecord: record }),
-    );
-
-    const calls = toolRecords.filter((r) => r.name === 'delete_entity');
-    expect(calls).toHaveLength(2);
-    // What they agreed to reached the real primitive…
-    expect(calls[0]?.content).not.toContain('REFUSED');
-    expect(calls[0]?.content).toContain('still referenced by other records');
-    // …and what they did not was refused, by name.
-    expect(calls[1]?.content).toContain('REFUSED');
-    expect(errorOf(calls[1])).toContain('"customers"');
-    expect(await db.countActive('customers')).toBe(30);
+    expect(refusal).toBeTruthy();
+    expect(errorOf(refusal)).toContain('"deals"');
   });
 
   it('still tells the user what it already changed when they stop the turn', async () => {

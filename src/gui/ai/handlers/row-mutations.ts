@@ -668,6 +668,18 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         softDeletable: ctx.softDeletable,
         configPath: ctx.configPath ?? '',
         outputDir: ctx.outputDir ?? '',
+        // Sourced from `mctx`, which already carries the GUI session, so this can
+        // never drift from the session every other assistant write is stamped with.
+        // Two things break without it, and the second is the worse one:
+        //   1. the merge's soft-deletes land outside the session-scoped undo stack,
+        //      so `undo` reports "Nothing to undo" straight after a 400-row merge —
+        //      the ledger's "you can undo this" offer becomes a false promise;
+        //   2. `appendAudit` opens with `purgeRedoStack(db, sessionId)`, and
+        //      `sessionUndoneFilters` DROPS the session filter entirely when the id
+        //      is undefined — so every audited step of an unstamped merge issues a
+        //      GLOBAL redo-stack DELETE, discarding other sessions' (and on a cloud,
+        //      other members') redo history.
+        ...(mctx.sessionId ? { sessionId: mctx.sessionId } : {}),
       };
       const threshold = fuzzy ? aggressivenessToThreshold(ctx.aggressiveness ?? 0) : undefined;
       const groups = await findTableDuplicates(svc, table, {
@@ -706,6 +718,9 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         softDeletable: ctx.softDeletable,
         configPath: ctx.configPath ?? '',
         outputDir: ctx.outputDir ?? '',
+        // See the `dedup` case above: sourced from `mctx` so undo can see the merge,
+        // and so the audit append cannot issue a global redo-stack purge.
+        ...(mctx.sessionId ? { sessionId: mctx.sessionId } : {}),
       };
       const r = await mergeDuplicates(svc, table, survivorId, duplicateIds);
       return {

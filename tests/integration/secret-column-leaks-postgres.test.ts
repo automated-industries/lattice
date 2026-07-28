@@ -233,12 +233,19 @@ describe.skipIf(!PG_URL)('secret columns — every member-reachable path', () =>
       `SELECT "column_name" FROM "__lattice_column_policy" WHERE "table_name" = 'notes'`,
     );
     expect(policy).toEqual([]);
-    // ...and no masking view was created, so nothing reports the column masked.
-    const maskView = await allAsyncOrSync(
+    // ...and nothing reports the column masked. The view's EXISTENCE is no longer
+    // the signal: every member-readable table now has a `<t>_v` read view whether
+    // or not anything on it is masked, because that view is the member's only read
+    // path. What says "masked" is the view masking the column — so the check is on
+    // the definition, which must still project `secret` straight through, exactly
+    // as it did before the refusal.
+    const maskView = (await allAsyncOrSync(
       owner.db.adapter,
-      `SELECT to_regclass('"notes_v"') AS reg`,
-    );
-    expect((maskView as { reg: string | null }[])[0]!.reg).toBeNull();
+      `SELECT pg_get_viewdef('"notes_v"'::regclass, true) AS def`,
+    )) as { def: string }[];
+    const viewDef = maskView[0]!.def;
+    expect(viewDef).toMatch(/\bsecret\b/); // still projected...
+    expect(viewDef).not.toMatch(/CASE\s+WHEN/i); // ...and not behind a mask guard
   }, 120_000);
 
   it('masks secret columns out of audit images served to a viewer', async () => {

@@ -21,6 +21,9 @@ import {
   AI_DELETE_ROW_CAP,
   renameUserEntity,
   purgeUserEntity,
+  renameUserColumn,
+  dropColumnCarryingPolicy,
+  RenameRefused,
 } from './schema-ops.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
@@ -662,6 +665,17 @@ export async function handleSchemaRoutes(
     method === 'POST' &&
     /^\/api\/schema\/entities\/[^/]+\/columns\/[^/]+\/rename$/.test(pathname)
   ) {
+    // Owner-only, like every other schema mutation in this file — renaming a table
+    // (:515) and changing a table's columns (:588) are both gated, and this route
+    // changes the shape of the shared schema exactly as they do. It was the single
+    // schema-mutation route without the check.
+    //
+    // Postgres would refuse the DDL for a scoped member anyway, so this is not the
+    // only thing between a member and the owner's schema. But relying on that means
+    // the refusal arrives as a raw privilege error from inside a multi-step carry,
+    // after the config edit has already been considered. An explicit gate refuses in
+    // one place, before anything is touched, and says why.
+    if (await denyIfNotCloudOwner(active.db, res, 'rename a column')) return true;
     const parts = pathname.split('/');
     const entityName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[6] ?? '');
@@ -714,16 +728,32 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Column "${newCol}" already exists on ${entityName}` }, 400);
       return true;
     }
-    await execSql(
-      active.db,
-      `ALTER TABLE "${entityName}" RENAME COLUMN "${colName}" TO "${newCol}"`,
-    );
-    const renamedFields: Record<string, unknown> = {};
-    for (const k of Object.keys(fieldsObj)) {
-      renamedFields[k === colName ? newCol : k] = fieldsObj[k];
+    // The rename goes through the one primitive that carries every COLUMN-name-
+    // keyed store with it — never a bare rename statement of its own. On a
+    // hosted workspace the per-column masking policy is keyed by (table,
+    // column), so a bare rename strands the mask under a name the table no
+    // longer has a column for, and the next rebuild of the member read view
+    // serves the renamed column in cleartext to the whole team.
+    //
+    // The carry has to run while THIS `active` is still open — the reopen below
+    // disposes it — so the configuration write is bracketed with the DDL and the
+    // reopen stays outside.
+    try {
+      await renameUserColumn(active, entityName, colName, newCol, () => {
+        const renamedFields: Record<string, unknown> = {};
+        for (const k of Object.keys(fieldsObj)) {
+          renamedFields[k === colName ? newCol : k] = fieldsObj[k];
+        }
+        doc.setIn(['entities', entityName, 'fields'], renamedFields);
+        saveConfigDoc(active.configPath, doc);
+      });
+    } catch (err) {
+      if (err instanceof RenameRefused) {
+        sendJson(res, { error: err.message }, 400);
+        return true;
+      }
+      throw err;
     }
-    doc.setIn(['entities', entityName, 'fields'], renamedFields);
-    saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
     await recordSchemaOp(
@@ -1069,7 +1099,12 @@ export async function handleSchemaRoutes(
       return true;
     }
     try {
-      await execSql(active.db, `ALTER TABLE "${name}" DROP COLUMN "${column}"`);
+      // Not a bare DROP COLUMN: on a hosted workspace the member read view
+      // depends on the column (so the drop is refused outright without taking
+      // the view down first), and the column's masking policy is keyed by its
+      // name (so left behind, the next column given that name inherits a mask
+      // nobody wrote for it).
+      await dropColumnCarryingPolicy(active.db, name, column);
     } catch (err) {
       sendJson(
         res,

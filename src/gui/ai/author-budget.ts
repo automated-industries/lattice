@@ -31,10 +31,32 @@ export interface AuthorAttempt<T> {
   truncated: boolean;
 }
 
-/** Budget tiers an authoring call may climb, smallest first. */
-export function authorBudgetLadder(startingBudget: number): number[] {
-  const higher = OUTPUT_BUDGET_TIERS.filter((t) => t > startingBudget);
-  return [startingBudget, ...higher];
+/**
+ * A rung is only worth taking if it buys meaningfully more room. Re-generating a
+ * whole document costs a full model call, so climbing from 16000 to 16384 — 2.4%
+ * more — spends that call to almost certainly truncate again. Anything that
+ * overran the first budget by a real amount needs a real increase.
+ */
+const MIN_ESCALATION_RATIO = 1.25;
+
+/**
+ * Budget tiers an authoring call may climb, smallest first.
+ *
+ * `maxOutputTokens` is the model's hard ceiling. Rungs above it are dropped rather
+ * than attempted, because exceeding it is not a truncation the caller can recover
+ * from — the provider rejects the request outright, and the careful refusal this
+ * module exists to produce is replaced by a raw HTTP 400. Passing no ceiling keeps
+ * the historical behaviour for callers that genuinely have none.
+ */
+export function authorBudgetLadder(startingBudget: number, maxOutputTokens?: number): number[] {
+  const ceiling = maxOutputTokens ?? Number.POSITIVE_INFINITY;
+  const ladder = [startingBudget];
+  for (const t of OUTPUT_BUDGET_TIERS) {
+    const last = ladder[ladder.length - 1] ?? startingBudget;
+    if (t > ceiling) continue;
+    if (t >= last * MIN_ESCALATION_RATIO) ladder.push(t);
+  }
+  return ladder;
 }
 
 /**
@@ -47,8 +69,9 @@ export async function authorWithEscalation<T>(
   startingBudget: number,
   attempt: (budget: number) => Promise<AuthorAttempt<T>>,
   onEscalate?: (from: number, to: number) => void,
+  maxOutputTokens?: number,
 ): Promise<AuthorAttempt<T>> {
-  const ladder = authorBudgetLadder(startingBudget);
+  const ladder = authorBudgetLadder(startingBudget, maxOutputTokens);
   let last: AuthorAttempt<T> | null = null;
   for (let i = 0; i < ladder.length; i++) {
     const budget = ladder[i] ?? startingBudget;

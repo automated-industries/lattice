@@ -36,7 +36,15 @@ import { fullTextSearch } from '../search/fts.js';
 import { buildProvenanceGraph } from './provenance.js';
 import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import { resolveColumnDescription, resolveTableDescription } from './column-descriptions.js';
-import { parseAudit, updateRow, maskEncryptedJson } from './mutations.js';
+import {
+  parseAudit,
+  updateRow,
+  maskEncryptedJson,
+  maskAuditImagesForViewer,
+  maskSecretJson,
+  loadSecretColumns,
+} from './mutations.js';
+import { maskedColumnsForTables } from '../cloud/audience.js';
 import { deriveUpdatesFromFile } from '../reverse-sync/default-reverse-sync.js';
 import {
   listNativeBindings,
@@ -728,6 +736,11 @@ export async function handleReadRoutes(
     const result = await fullTextSearch(active.db.adapter, tables, {
       query: q,
       limitPerTable: limit,
+      // Search reads whatever relation this viewer is allowed to read. A member has
+      // no SELECT on any base table, and a per-table failure here is swallowed so one
+      // bad table cannot kill the whole search — so without this, search returned
+      // EMPTY for members instead of erroring, and looked like "no results".
+      readRelation: (t) => active.db.memberReadRelation(t),
     });
     sendJson(res, result);
     return true;
@@ -906,6 +919,14 @@ export async function handleReadRoutes(
           after_json: maskEncryptedJson(e.after_json, enc),
         };
       });
+    // ...and, for a cloud MEMBER, the owner-secret columns too. This is a DIFFERENT
+    // protection from the pass above: that one hides framework-encrypted credentials
+    // from everyone, this one hides another member's cells from this viewer. Runs
+    // second so the encrypted pass stays unconditional — the secret pass skips
+    // `schema.*` entries (their payloads are definitions, not row snapshots) and
+    // folding the two together would silently stop masking credentials on those.
+    // No-ops with zero queries for an owner or a local workspace.
+    entries = await maskAuditImagesForViewer(active.db, entries);
     // Stack gates (↶/↷) are SESSION-SCOPED to match the session-scoped
     // undo/redo *actions* (POST /api/history/undo|redo filter on
     // session_id). The history LIST above stays global (everyone's
@@ -1035,28 +1056,46 @@ export async function handleReadRoutes(
         Promise.resolve([])
       );
     })()) as Record<string, unknown>[];
-    // The audit table is the ONE system table that holds row SNAPSHOTS (before_json/after_json,
-    // captured via db.get, which DECRYPTS encrypted columns). Apply the SAME credential mask +
-    // secrets-drop as GET /api/history so this sibling route can't leak cleartext secrets.
+    // System tables that hold row SNAPSHOTS get the same treatment as GET /api/history:
+    // those payloads are `db.get` images, which DECRYPT encrypted columns, so serving
+    // them raw hands back cleartext credentials — and, to a cloud member, another
+    // member's secret cells.
+    //
+    // Driven by a MAP rather than a special case for the audit table, because the
+    // audit table was special-cased and `__lattice_changelog` — listed by the sibling
+    // route, carrying whole `changes` / `previous` row images — got nothing at all,
+    // twelve lines away. Naming the snapshot-bearing tables in one place is what stops
+    // the next one being forgotten the same way.
+    const SNAPSHOT_COLUMNS: Record<string, readonly string[]> = {
+      _lattice_gui_audit: ['before_json', 'after_json'],
+      __lattice_changelog: ['changes', 'previous'],
+    };
     let rows = rowsResult;
-    if (sysTable === '_lattice_gui_audit') {
+    const snapshotCols = SNAPSHOT_COLUMNS[sysTable];
+    if (snapshotCols) {
+      const secretByTable = await loadSecretColumns(active.db);
+      const viewGuarded = await maskedColumnsForTables(active.db, [
+        ...new Set(rows.map((r) => (typeof r.table_name === 'string' ? r.table_name : ''))),
+      ]);
       rows = rows
         .filter((r) => r.table_name !== 'secrets')
         .map((r) => {
-          const enc = active.db.getEncryptedColumns(
-            typeof r.table_name === 'string' ? r.table_name : '',
-          );
-          return {
-            ...r,
-            before_json: maskEncryptedJson(
-              typeof r.before_json === 'string' ? r.before_json : null,
-              enc,
-            ),
-            after_json: maskEncryptedJson(
-              typeof r.after_json === 'string' ? r.after_json : null,
-              enc,
-            ),
-          };
+          const table = typeof r.table_name === 'string' ? r.table_name : '';
+          const enc = active.db.getEncryptedColumns(table);
+          const secret = new Set([
+            ...(secretByTable.get(table) ?? []),
+            ...(viewGuarded.get(table) ?? []),
+          ]);
+          const out: Record<string, unknown> = { ...r };
+          for (const col of snapshotCols) {
+            const raw = typeof r[col] === 'string' ? r[col] : null;
+            const encMasked = maskEncryptedJson(raw, enc);
+            out[col] =
+              secret.size > 0 && active.db.isCloudMemberOpen()
+                ? maskSecretJson(encMasked, secret)
+                : encMasked;
+          }
+          return out;
         });
     }
     sendJson(res, { rows });

@@ -377,6 +377,9 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
       const result = await fullTextSearch(ctx.db.adapter, tables, {
         query,
         limitPerTable: limit,
+        // Same reason as the HTTP search route: a member reads through `<t>_v`, and a
+        // swallowed per-table denial would turn that into a silent empty result.
+        readRelation: (t) => ctx.db.memberReadRelation(t),
       });
       return { ok: true, result };
     }

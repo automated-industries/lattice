@@ -39,6 +39,7 @@ import {
   physicalTableExists,
   physicalColumnExists,
   renameTablesCarryingPolicy,
+  renameColumnsCarryingPolicy,
 } from './schema-ops.js';
 import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
 import { applyRetypeColumn } from './planner/appliers.js';
@@ -386,9 +387,15 @@ export async function openConfig(
   // projection (what get_row_context then serves). Owner / SQLite leave the
   // resolver at identity. Set before any render is started.
   if (memberOpen) {
-    if (maskedReadViews.size > 0) {
-      db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
-    }
+    // NOTE: the read relation itself is installed by `Lattice.init` for every member
+    // open, from the live catalog — so it covers tables this open never enumerated
+    // (native entities, connector tables, anything created since). Re-installing it
+    // from `maskedReadViews` here would REPLACE that complete map with this one,
+    // which is built from a narrower snapshot, and every table missing from it would
+    // fall back to a base-table read the member has no privilege for. That is exactly
+    // how `dashboards` became unreadable to the member sharing their own dashboard.
+    // `maskedReadViews` stays — other call sites still consult it — it just no longer
+    // overrides the resolver.
     // Overlay this member's visible derived enrichments onto the rendered rows.
     db.enableRenderFold();
   }
@@ -1301,6 +1308,16 @@ export async function applySchemaConfig(
    * ALTER TABLE, which strips the masking and hands every member direct read.
    */
   const tableRenames = new Map<string, string>();
+  /**
+   * Columns this replay renames, per table, old name → new. A column name is
+   * keyed exactly as a table name is: on a hosted workspace the per-column
+   * masking policy is `(table, column)`, so replaying a column rename with a
+   * bare ALTER TABLE strands the mask under a name the table no longer has a
+   * column for — and the next rebuild of the member read view serves the
+   * renamed column in cleartext. Collected so the DDL below is bracketed by the
+   * shared carry, exactly as a table rename is.
+   */
+  const columnRenames = new Map<string, Map<string, string>>();
   const has = (path: string[]): boolean => doc.getIn(path) !== undefined;
 
   /**
@@ -1378,6 +1395,9 @@ export async function applySchemaConfig(
     doc.deleteIn(['entities', entity, 'fields', from]);
     doc.setIn(['entities', entity, 'fields', to], def);
     ddl.push(`ALTER TABLE "${entity}" RENAME COLUMN "${from}" TO "${to}"`);
+    const forTable = columnRenames.get(entity) ?? new Map<string, string>();
+    forTable.set(from, to);
+    columnRenames.set(entity, forTable);
   };
 
   switch (entry.operation) {
@@ -1469,14 +1489,33 @@ export async function applySchemaConfig(
   // "this table has no secret columns" and grants every member raw SELECT on it.
   // It REFUSES rather than rebuild a mask from a policy that did not travel, so the
   // throw propagates (the route reports it) with the masking left standing.
-  if (tableRenames.size > 0) {
-    await renameTablesCarryingPolicy(active.db, tableRenames, async () => {
-      for (const sql of ddl) await execSql(active.db, sql);
-      saveConfigDoc(active.configPath, doc);
-    });
-  } else {
+  const runDdl = async (): Promise<void> => {
     for (const sql of ddl) await execSql(active.db, sql);
     saveConfigDoc(active.configPath, doc);
+  };
+  if (tableRenames.size > 0) {
+    // A replay that renames a table can also rename that table's columns (the
+    // link-table key column), so both carries go through the one primitive —
+    // keyed there by the table's NEW name.
+    const byNewName = new Map<string, ReadonlyMap<string, string>>();
+    for (const [table, cols] of columnRenames)
+      byNewName.set(tableRenames.get(table) ?? table, cols);
+    await renameTablesCarryingPolicy(active.db, tableRenames, runDdl, byNewName);
+  } else if (columnRenames.size > 0) {
+    // One carry per table, composed innermost-first: every snapshot is taken
+    // before any DDL runs, and every carry after all of it. A replay only ever
+    // renames columns on ONE table today, but composing rather than special-
+    // casing that means a second table can never silently take the bare path.
+    let run = runDdl;
+    for (const [table, cols] of columnRenames) {
+      const inner = run;
+      run = async (): Promise<void> => {
+        await renameColumnsCarryingPolicy(active.db, table, cols, inner);
+      };
+    }
+    await run();
+  } else {
+    await runDdl();
   }
   await disposeActive(active);
   const next = await openConfig(active.configPath, active.outputDir, autoRender);

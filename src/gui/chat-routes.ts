@@ -18,6 +18,12 @@ import {
   type LlmMessage,
   type ContentBlock,
 } from './ai/chat.js';
+import {
+  expirePendingForThread,
+  resolveConsent,
+  spendGrant,
+  type ConsentRecord,
+} from './ai/consent-store.js';
 import { resolveLlmProvider } from './ai/provider.js';
 import { normalizeUserUrl } from '../sources/url-safety.js';
 import { runIntent, type IntentResult } from './ai/intent.js';
@@ -196,6 +202,38 @@ export interface AttachedFilesResolution {
  * some did, so the assistant tells the user rather than answering about files it never
  * read. Exported for regression testing.
  */
+/**
+ * Make a value safe to interpolate into a server-authored context note.
+ *
+ * A note is a short bracketed sentence the server writes ABOUT the turn ("the user
+ * is viewing the dashboard X", "they attached Y"). Several of the values that go
+ * into one are model-WRITABLE — a dashboard title the assistant chose, a file name
+ * it gave an artifact it created — so anything they can contain, the model can
+ * contain. Brackets and newlines are the two characters that used to matter: a `]`
+ * closed the note early for whatever parsed it next, and a newline let the rest be
+ * read as a fresh line of the user's own words.
+ *
+ * The structural fix (notes travel as their own content blocks, never concatenated
+ * onto the user's message) is what stops a note BECOMING the message. This is the
+ * other half: it stops a note CONTAINING a fabricated bracket for whatever reads it
+ * next — a log line, a prompt template, a future consumer nobody has written yet.
+ * Both, deliberately: either alone leaves the class open.
+ */
+export function noteValue(value: unknown, fallback = 'untitled'): string {
+  const raw = typeof value === 'string' ? value : '';
+  const cleaned = raw
+    // Control characters, including every newline and tab, become spaces.
+    // eslint-disable-next-line no-control-regex -- deliberate: strip C0/C1 controls
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    // The note's own delimiters. Removed rather than escaped: there is no escape
+    // convention a downstream reader is guaranteed to honour.
+    .replace(/[[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned === '') return fallback;
+  return cleaned.length > 80 ? `${cleaned.slice(0, 79).trimEnd()}…` : cleaned;
+}
+
 export async function resolveAttachedFiles(
   db: Lattice,
   attachedFiles: unknown,
@@ -233,9 +271,14 @@ export async function resolveAttachedFiles(
       missingIds.push(id);
       continue;
     }
-    const display =
-      [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0) ?? 'file';
-    labels.push(`"${display}" (files id ${row.id})`);
+    // A file's name is MODEL-WRITABLE (an artifact or ingested file it created names
+    // itself), and this label goes straight into a bracketed context note — so it is
+    // sanitized like any other note value, never interpolated raw.
+    const display = noteValue(
+      [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0),
+      'file',
+    );
+    labels.push(`"${display}" (files id ${noteValue(row.id, 'unknown')})`);
     resolvedIds.push(row.id);
     if (row.mime?.startsWith('image/')) hasImages = true;
   }
@@ -529,8 +572,13 @@ export function parseActiveContext(
  * view context was sent. For a dashboard it names the page and points at the
  * `investigate` tool, so the model diagnoses a complaint itself instead of
  * interrogating the user for details it can find.
+ *
+ * Every interpolated value is passed through {@link noteValue} first. The dashboard
+ * title in particular is model-writable — the assistant names the pages it creates —
+ * so an unsanitized title could close the note's bracket and have the rest read as
+ * something else. Exported so that property is directly testable.
  */
-async function describeActiveView(
+export async function describeActiveView(
   db: Lattice,
   active: { table: string; id: string } | undefined,
 ): Promise<{ note: string; label: string }> {
@@ -539,7 +587,8 @@ async function describeActiveView(
     const d = (await db.get('dashboards', active.id).catch(() => null)) as {
       title?: string;
     } | null;
-    const name = d?.title ? `"${d.title}"` : 'the one on screen';
+    const title = noteValue(d?.title, '');
+    const name = title ? `"${title}"` : 'the one on screen';
     return {
       label: `the dashboard ${name}`,
       note:
@@ -549,7 +598,7 @@ async function describeActiveView(
         `them what is wrong.]\n\n`,
     };
   }
-  const label = `the ${active.table} record "${active.id}"`;
+  const label = `the ${noteValue(active.table, 'record')} record "${noteValue(active.id, 'unknown')}"`;
   return {
     label,
     note: `[The user is currently viewing ${label} — "this" / "it" refers to it.]\n\n`,
@@ -1092,6 +1141,16 @@ export async function dispatchChatRoute(
   // model. `attachedLabel` is now only ever used as a thread-title placeholder.
   const message = rawMessage;
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
+  // The consent question this message answers, and WHICH option was clicked. The id
+  // is a handle the server minted; the index is the only thing that carries meaning,
+  // and only the server knows which index affirms. A send that carries no index at
+  // all (a typed reply, a files-only send) explicitly declines: -1 is never an
+  // option the user was shown.
+  const answeredQuestionId = typeof body.questionId === 'string' ? body.questionId : '';
+  const answeredOptionIndex =
+    typeof body.optionIndex === 'number' && Number.isInteger(body.optionIndex)
+      ? body.optionIndex
+      : -1;
 
   // Fail CLOSED: on a cloud we must know who this is before creating or reading
   // any chat row — otherwise a thread would land with a NULL owner (world-
@@ -1263,6 +1322,10 @@ export async function dispatchChatRoute(
     ctx.chatCancel.release(assistantMsgId);
   };
 
+  // The consent record this message answered, once the orchestrator has resolved it.
+  // Assigned there and read here; the loop is only ever enqueued afterwards, so the
+  // ordering holds. `granted` is the ONLY status that authorizes anything.
+  let resolvedConsent: ConsentRecord | null = null;
   // The heavy agentic tool loop — runs on the per-workspace FIFO (serialized) only when the
   // intent pass says the request needs data work. Defined here (not enqueued yet) so the
   // intent orchestrator below can decide whether to run it.
@@ -1522,16 +1585,18 @@ export async function dispatchChatRoute(
         client,
         dispatch,
         history,
-        // Prefix the active-view + attached-files + auto-ingest notes (if any) so the model
-        // knows what's on screen and connects the request to what was just added; the
-        // dispatch + tools still see the real message.
-        userMessage:
-          activeView.note +
-          attachedNote +
-          ingestNote +
-          ingestInProgressNote +
-          filesOnlyDirective +
-          message,
+        // The user's OWN words — nothing else. The active-view / attached-files /
+        // auto-ingest notes travel as SEPARATE content blocks ahead of it (see
+        // RunChatOptions.contextNotes), so no value interpolated into a note can end
+        // up inside what is later read as the user's message.
+        userMessage: message,
+        contextNotes: [
+          activeView.note,
+          attachedNote,
+          ingestNote,
+          ingestInProgressNote,
+          filesOnlyDirective,
+        ],
         temperature,
         // Give the assistant the operator's name so it addresses them and
         // resolves "me"/"my" without asking for a name it already has.
@@ -1541,6 +1606,21 @@ export async function dispatchChatRoute(
         // training cutoff. turnStartedAt is the instant this turn began.
         nowIso: turnStartedAt,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        // Scope for any consent record this turn mints (an `ask_user` naming the
+        // destructive calls it intends to run), and the record this turn's message
+        // already granted — which the destructive gate now reads INSTEAD of
+        // re-deriving consent from the conversation text.
+        consentScope: { threadId, ownerUserId, askedMsgId: assistantMsgId },
+        ...((rec: ConsentRecord | null) =>
+          rec
+            ? {
+                consent: rec,
+                // The route owns the database handle, so it owns spending. The ledger
+                // asks; a false answer means the call is refused rather than run on a
+                // grant we could not durably mark used.
+                spendConsentGrant: (i: number, by: string) => spendGrant(ctx.db, rec.id, i, by),
+              }
+            : {})(resolvedConsent),
         ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
         ...(activeContext ? { activeContext } : {}),
         // Capture each executed tool call (capped) for cross-turn replay memory.
@@ -1708,6 +1788,40 @@ export async function dispatchChatRoute(
       acked = true;
       publish({ type: 'ack', message: text });
     };
+    // ── Consent, before anything else can act on this message ──
+    // (a) The conversation has moved on, so every question still open in this thread
+    // is over — whatever it asked was asked of a moment that has passed. Done
+    // SERVER-side, keyed on nothing the client sends, because the bypass this closes
+    // is exactly a send that carries no user text to go stale (a files-only turn).
+    // The one exception is the question THIS message is answering, and only when an
+    // actual option index came back: a reply with no index is a decline, and a
+    // declined question has no reason to stay answerable.
+    //
+    // Skipped entirely on a scoped cloud MEMBER connection: a member cannot mint a
+    // consent record at all (mintConsent refuses them outright), so there is never
+    // one of theirs to sweep, and an owner's record is scoped to the owner and could
+    // not be answered from here anyway. Running it would only fail against the
+    // bookkeeping table a member has no rights to and log a warning on every send.
+    const memberConnection = ctx.db.isCloudMemberOpen();
+    const spareId = answeredQuestionId && answeredOptionIndex >= 0 ? answeredQuestionId : undefined;
+    if (!memberConnection) await expirePendingForThread(ctx.db, threadId, spareId);
+    // (b) Now read the answer, if there is one. Scoped to this thread AND this user:
+    // the id is a bearer token, and the scope is what stops one conversation (or one
+    // member of a shared workspace) spending another's consent. Fails closed — an
+    // unknown, stale, expired, foreign, or already-answered record grants nothing.
+    if (answeredQuestionId && !memberConnection) {
+      const resolution = await resolveConsent(ctx.db, answeredQuestionId, answeredOptionIndex, {
+        threadId,
+        ownerUserId,
+      });
+      if (resolution.status === 'granted' && resolution.record) {
+        resolvedConsent = resolution.record;
+      } else if (resolution.reason) {
+        console.warn(`[chat] consent not granted: ${resolution.reason}`);
+      }
+    }
+    /** True when this message carries a live, server-recorded yes. */
+    const consentGranted = (): boolean => resolvedConsent !== null;
     // Files attached, nothing typed. There is no message for the intent pass to classify
     // — running it on the file NAME is precisely what made the assistant ask "what would
     // you like me to do with report.xlsx?" instead of opening it. Acknowledge from the
@@ -1772,12 +1886,27 @@ export async function dispatchChatRoute(
       /\b(edit|change|update|modify|revise|adjust|fix|tweak|rename|redo|make (it|that|this)|do (it|that|this)|go ahead|yes,? (do|go|please))\b/i.test(
         message,
       );
-    if (!turnHasAttachments && intent?.needs_more_info && !looksLikeEditOfOpen) {
+    // A message carrying a live, server-recorded YES must reach the tool loop. The
+    // intent pass sees only the text — and the text of an answer to a confirmation is
+    // a bare "Yes, go ahead", which reads as trivial small-talk with no work in it. So
+    // it gets classified `!needs_work` and answered inline, and the tool loop that was
+    // waiting on that yes never runs. Today that is a UX bug (the user says yes and
+    // nothing happens). Once consent is spend-on-answer it would be worse: the record
+    // is answered and consumed, and the act it authorized never happens — leaving the
+    // user believing they approved something that then silently did not occur, and a
+    // spent grant that cannot authorize the retry.
+    const grantedThisTurn = consentGranted();
+    if (
+      !turnHasAttachments &&
+      !grantedThisTurn &&
+      intent?.needs_more_info &&
+      !looksLikeEditOfOpen
+    ) {
       // Ambiguous — the ack_message is a clarifying question; end the turn awaiting a reply.
       await finishWithAnswer(intent.ack_message, 'done');
       return;
     }
-    if (!turnHasAttachments && intent && !intent.needs_work) {
+    if (!turnHasAttachments && !grantedThisTurn && intent && !intent.needs_work) {
       // Trivial / general — the ack_message IS the complete answer; skip the tool loop.
       // An inline answer bypasses the tool loop's trace-link pass, so run it here
       // against the thread's established links — an answer-from-memory must stay

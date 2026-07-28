@@ -6,6 +6,7 @@ import { cloudRlsInstalled } from '../framework/cloud-connect.js';
 import {
   regenerateAudienceViewFromDb,
   loadAllColumnPolicy,
+  maskedColumnsForTables,
   isRowAudience,
 } from '../cloud/audience.js';
 
@@ -1057,10 +1058,79 @@ export function maskAuditImages(
 }
 
 /**
- * An audit entry with its row-snapshot images dropped. The undo/redo/revert HTTP echoes only
- * need table_name / row_id / operation to refresh the UI; the before_json / after_json images are
- * captured via `db.get` (which DECRYPTS encrypted columns), so echoing them raw would leak
- * cleartext secrets — the same leak `GET /api/history` masks. Drop them at the echo instead.
+ * Mask the secret columns out of audit images for the VIEWER on this connection.
+ *
+ * The one function the serve paths call. It exists because
+ * {@link maskAuditImages} was written, tested, and then never wired to anything —
+ * so a cloud member's version-history read went on returning owner-secret columns
+ * in cleartext while a docstring two functions down asserted the gap was closed. A
+ * mask nobody calls is not a mask, and a unit test of the helper cannot tell you
+ * whether anyone calls it.
+ *
+ * Three parts, because the obvious wiring is not sufficient:
+ *
+ *  1. The precise mask, from the columns the member's own read views actually
+ *     guard. NOT from {@link loadSecretColumns} alone: its column-policy arm is
+ *     skipped for a member (the policy table is owner-only), so on the very
+ *     connection this protects it would resolve to just the
+ *     `_lattice_gui_column_meta.secret` flag — which is only written by the GUI's
+ *     "mark secret" toggle and is absent for a config-declared audience, a direct
+ *     `setColumnAudience`, or a computed column that INHERITS masking. That wiring
+ *     would look green and still ship the leak.
+ *  2. A fail-closed backstop: if a table has a member read view at all but we could
+ *     not determine which columns it guards, the images are DROPPED rather than
+ *     served. Undo/redo/revert still work — they re-read the row from the database,
+ *     so the serve-time mask never touches what is stored.
+ *  3. Nothing at all for an owner or a local SQLite workspace: they can read these
+ *     columns directly, so masking them would be noise, and the short-circuit runs
+ *     before any query so neither pays for this.
+ */
+export async function maskAuditImagesForViewer(
+  db: Lattice,
+  entries: readonly AuditEntry[],
+): Promise<AuditEntry[]> {
+  if (entries.length === 0) return [];
+  if (!db.isCloudMemberOpen()) return entries.map((e) => ({ ...e }));
+
+  const tables = [...new Set(entries.map((e) => e.table_name).filter(Boolean))];
+  const guarded = await maskedColumnsForTables(db, tables);
+  const flagged = await loadSecretColumns(db);
+  const secretByTable = new Map<string, Set<string>>();
+  for (const t of tables) {
+    const cols = new Set<string>([...(guarded.get(t) ?? []), ...(flagged.get(t) ?? [])]);
+    if (cols.size > 0) secretByTable.set(t, cols);
+  }
+
+  const masked = maskAuditImages(entries, secretByTable);
+
+  // Backstop: a table we KNOW is served through a read view, but whose guarded
+  // columns we could not read, is served with no images rather than raw ones.
+  const readViews = db.memberReadViewTables();
+  if (readViews.size === 0) return masked;
+  return masked.map((e) =>
+    readViews.has(e.table_name) && !secretByTable.has(e.table_name)
+      ? auditEntryWithoutImages(e)
+      : e,
+  );
+}
+
+/**
+ * An audit entry with its row-snapshot images dropped.
+ *
+ * The undo/redo/revert HTTP echoes only need table_name / row_id / operation to
+ * refresh the UI, and the before_json / after_json images are `db.get` snapshots —
+ * which DECRYPT encrypted columns — so echoing them raw would hand back cleartext.
+ * These paths have no use for the images at all, so they drop them wholesale rather
+ * than mask them; that is strictly simpler than being careful.
+ *
+ * Also the fail-closed fallback for {@link maskAuditImagesForViewer}: when a table
+ * is known to be served through a member read view but the guarded column set
+ * cannot be determined, the images are dropped rather than served unmasked.
+ *
+ * (An earlier version of this comment claimed `GET /api/history` already masked
+ * "the same leak". It did not — the mask existed but was wired to nothing. It is
+ * wired now; the claim was the kind that survives review precisely because it
+ * sounds like a statement of fact about neighbouring code.)
  */
 export function auditEntryWithoutImages(e: AuditEntry): AuditEntry {
   return { ...e, before_json: null, after_json: null };

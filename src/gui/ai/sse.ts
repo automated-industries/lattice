@@ -23,7 +23,26 @@ export type ChatStreamEvent =
   // The model called ask_user: show this multiple-choice question inline in the
   // chat and end the turn — the user's pick (or free-form reply) arrives as the
   // next chat message. Never persisted to the question store; in-turn only.
-  | { type: 'question'; question: string; options: string[]; allowOther: boolean }
+  //
+  // `id` + `consent` are present ONLY for a CONSENT question — one where the model
+  // named the destructive calls an affirmative answer would authorize, and the
+  // server wrote them down before the card was composed. For those, the card the
+  // user sees is the SERVER's: `consent.headline` and `consent.lines` are derived
+  // from the pre-flight classifier, and `question`/`options` carry the same
+  // server-composed text so a client that ignores `consent` still shows something
+  // the server wrote rather than the model's. The model's own question and options
+  // are discarded — never shown, never stored. `id` is the durable record's handle:
+  // the client sends it back with the INDEX of the option that was clicked, and the
+  // server decides what that index means. A client that drops `id` degrades to "no
+  // consent", which costs one more question and grants nothing.
+  | {
+      type: 'question';
+      question: string;
+      options: string[];
+      allowOther: boolean;
+      id?: string;
+      consent?: { headline: string; lines: string[]; affirmIndex: number };
+    }
   // Ends one round. `hadTools` is true when this round called tools — its streamed
   // text was pre-tool preamble ("Let me search…"), NOT the answer, so the client
   // reaps that round's bubble and the route drops it from the persisted message.

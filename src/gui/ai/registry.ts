@@ -433,6 +433,22 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
           type: 'boolean',
           description: 'Offer a free-form "Other" answer. Default true.',
         },
+        confirm: {
+          type: 'array',
+          description:
+            'ONLY for a destructive confirmation: the exact calls you intend to run if the user ' +
+            'says yes. Up to 4. Each item is {"tool": "<tool name>", "args": {…}} — the literal ' +
+            'tool name and the literal arguments you would pass, identical to the call you will ' +
+            'retry afterwards. When you supply this, the confirmation the user sees is composed ' +
+            'from these calls (your `question` and `options` are not shown), so put the real ' +
+            'arguments here and nothing else. Omit it entirely for an ordinary question.',
+          items: {
+            type: 'object',
+            description:
+              'One intended call: {"tool": "delete_entity" | "delete_row" | "unlink" | ' +
+              '"bulk_update" | "merge_rows" | "dedup", "args": { …the exact arguments… }}.',
+          },
+        },
       },
       ['question', 'options'],
     ),

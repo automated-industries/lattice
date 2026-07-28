@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer, type Server } from 'node:http';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { seedClaudeOAuth } from '../helpers/claude-auth.js';
+import { Lattice } from '../../src/lattice.js';
+import { loadConsent, mintConsent, type ConsentGrant } from '../../src/gui/ai/consent-store.js';
 
 /**
  * POST /api/chat — the assistant chat stream. Claude access is OAuth-only, and a
@@ -48,10 +51,14 @@ afterEach(async () => {
   }
 });
 
+/** The workspace DB file behind the last {@link boot} — for asserting server state. */
+let lastDbPath = '';
+
 async function boot(): Promise<GuiServerHandle> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-chatpost-'));
   dirs.push(root);
   mkdirSync(join(root, 'data'), { recursive: true });
+  lastDbPath = join(root, 'data', 'test.db');
   const configPath = join(root, 'lattice.config.yml');
   writeFileSync(
     configPath,
@@ -77,6 +84,143 @@ async function boot(): Promise<GuiServerHandle> {
   });
   servers.push(server);
   return server;
+}
+
+/**
+ * A stub Anthropic Messages endpoint that answers every call with one canned text
+ * turn, streamed in the SDK's SSE shape, and counts the calls it received.
+ *
+ * The point of counting: the two routes through a chat turn are told apart by HOW
+ * MANY model calls they make. The intent short-circuit answers inline after exactly
+ * ONE call (the intent pass itself); the heavy tool loop makes that call and then at
+ * least one more. Pointing at a dead endpoint — as the older cases here do — cannot
+ * distinguish them, because a failed intent pass falls through to the loop anyway.
+ */
+async function startModelStub(replyText: string): Promise<{
+  url: string;
+  calls: () => number;
+  close: () => Promise<void>;
+}> {
+  let calls = 0;
+  const frame = (event: string, data: unknown): string =>
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const server: Server = createServer((req, res) => {
+    calls++;
+    // Drain the request body before replying (the SDK sends one).
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+      });
+      res.write(
+        frame('message_start', {
+          type: 'message_start',
+          message: {
+            id: 'msg_stub',
+            type: 'message',
+            role: 'assistant',
+            model: 'stub',
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        }),
+      );
+      res.write(
+        frame('content_block_start', {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      );
+      res.write(
+        frame('content_block_delta', {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: replyText },
+        }),
+      );
+      res.write(frame('content_block_stop', { type: 'content_block_stop', index: 0 }));
+      res.write(
+        frame('message_delta', {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 5 },
+        }),
+      );
+      res.write(frame('message_stop', { type: 'message_stop' }));
+      res.end();
+    });
+  });
+  // Await LISTENING before reading the port: address() is null until then, and a
+  // stub advertised on port 0 fails as an opaque "Connection error" in the SDK.
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  return {
+    url: `http://127.0.0.1:${String(port)}`,
+    calls: () => calls,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections?.();
+        server.close(() => {
+          resolve();
+        });
+      }),
+  };
+}
+
+/** The intent pass's reply that routes a turn to the INLINE answer (no tool loop). */
+const INLINE_INTENT = [
+  '```json',
+  JSON.stringify({
+    intent_summary: 'acknowledgement',
+    ack_message: 'Glad to hear it.',
+    needs_work: false,
+    needs_more_info: false,
+  }),
+  '```',
+].join('\n');
+
+/** Open a second connection to the booted workspace's DB, for direct assertions. */
+async function openWorkspaceDb(): Promise<Lattice> {
+  const db = new Lattice(lastDbPath);
+  await db.init();
+  return db;
+}
+
+/** A grant the server would have derived for removing `table`. */
+function grantFor(table: string): ConsentGrant {
+  return {
+    tool: 'delete_entity',
+    kind: 'remove_object',
+    target: table,
+    verbKey: 'resolution:delete_data',
+    maxRows: 40,
+    rowsUnknown: false,
+    detail: `remove "${table}" (40 record(s))`,
+  };
+}
+
+/** Send one chat turn and wait for the route to accept it. */
+async function post(s: GuiServerHandle, body: Record<string, unknown>): Promise<Response> {
+  return fetch(`${s.url}/api/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Poll until `check` passes or the budget runs out. The turn runs in the background. */
+async function until(check: () => Promise<boolean>, ms = 5000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (await check()) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 describe('POST /api/chat', () => {
@@ -214,5 +358,161 @@ describe('POST /api/chat', () => {
       threads: { id: string }[];
     };
     expect(threads.threads).toHaveLength(0);
+  });
+});
+
+/**
+ * DURABLE CONSENT AT THE ROUTE.
+ *
+ * Three properties, each closing a way the previous transcript-derived consent could
+ * be bypassed or misread:
+ *
+ *  - STALENESS IS SERVER-ENFORCED. Every send expires the questions still open in
+ *    the thread. Keyed on nothing the client sends, because the bypass it closes is
+ *    precisely a send that carries no user text to go stale — a files-only turn used
+ *    to leave an open destructive question live behind it.
+ *  - A BARE "YES" WITH NO HANDLE GRANTS NOTHING. Agreement has to be an answer to a
+ *    question the server wrote down, not a word that appeared in a message.
+ *  - A GRANTED RECORD REACHES THE TOOL LOOP. The text of an answer to a confirmation
+ *    is "Yes, go ahead", which the fast intent pass reads as small talk with no work
+ *    in it — so it would be answered inline and the act the user just approved would
+ *    never run.
+ */
+describe('POST /api/chat — durable consent', () => {
+  let stub: { url: string; calls: () => number; close: () => Promise<void> } | null = null;
+
+  afterEach(async () => {
+    await stub?.close();
+    stub = null;
+  });
+
+  /** Start a thread and return its id (the turn itself is allowed to fail). */
+  async function startThread(s: GuiServerHandle): Promise<string> {
+    const r = await post(s, { message: 'hello' });
+    expect(r.status).toBe(202);
+    return ((await r.json()) as { threadId: string }).threadId;
+  }
+
+  it('a files-only turn EXPIRES a pending consent record (the staleness bypass)', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
+    const s = await boot();
+    seedClaudeOAuth();
+    const threadId = await startThread(s);
+
+    // A real file to attach, so the turn carries an attachment and NO text — the
+    // shape that used to slip past the staleness rule entirely.
+    const fileId = (
+      (await fetch(`${s.url}/api/ingest/text`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'contents', title: 'notes.txt' }),
+      }).then((x) => x.json())) as { id: string }
+    ).id;
+
+    const db = await openWorkspaceDb();
+    try {
+      const id = await mintConsent(db, {
+        threadId,
+        ownerUserId: null,
+        grants: [grantFor('notes')],
+        affirmIndex: 0,
+        optionCount: 2,
+        ttlMs: 60_000,
+      });
+      expect((await loadConsent(db, id))?.status).toBe('pending');
+
+      const r = await post(s, {
+        message: '',
+        threadId,
+        attachedFiles: [{ id: fileId, name: 'notes.txt' }],
+      });
+      expect(r.status).toBe(202);
+
+      expect(await until(async () => (await loadConsent(db, id))?.status === 'expired')).toBe(true);
+      // Expired ⇒ nothing it described can ever be authorized.
+      expect((await loadConsent(db, id))?.status).toBe('expired');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a later bare "yes" with no questionId grants nothing', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
+    const s = await boot();
+    seedClaudeOAuth();
+    const threadId = await startThread(s);
+
+    const db = await openWorkspaceDb();
+    try {
+      const id = await mintConsent(db, {
+        threadId,
+        ownerUserId: null,
+        grants: [grantFor('notes')],
+        affirmIndex: 0,
+        optionCount: 2,
+        ttlMs: 60_000,
+      });
+
+      // The word, with none of the machinery: no handle, no index.
+      const r = await post(s, { message: 'yes, go ahead', threadId });
+      expect(r.status).toBe(202);
+
+      expect(await until(async () => (await loadConsent(db, id))?.status !== 'pending')).toBe(true);
+      const after = await loadConsent(db, id);
+      expect(after?.status).toBe('expired'); // swept, never granted
+      expect(after?.answerIndex).toBeNull();
+      expect(after?.grants.every((g) => g.spentAt === undefined)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a granted record bypasses the intent short-circuit and reaches the tool loop', async () => {
+    stub = await startModelStub(INLINE_INTENT);
+    process.env.ANTHROPIC_BASE_URL = stub.url;
+    const s = await boot();
+    seedClaudeOAuth();
+    const threadId = await startThread(s);
+    await until(async () => Promise.resolve(stub!.calls() >= 1));
+
+    const db = await openWorkspaceDb();
+    try {
+      // BASELINE FIRST: the same message with no consent handle. The stub always
+      // answers "needs_work: false", so this is answered inline — exactly ONE model
+      // call. Run before the record is minted, because this send would (correctly)
+      // sweep it: a message that answers nothing ends every open question.
+      const before = stub.calls();
+      expect((await post(s, { message: 'Yes, go ahead', threadId })).status).toBe(202);
+      await until(async () => Promise.resolve(stub!.calls() > before));
+      await new Promise((r) => setTimeout(r, 300)); // let any further calls land
+      expect(stub.calls() - before).toBe(1);
+
+      const id = await mintConsent(db, {
+        threadId,
+        ownerUserId: null,
+        grants: [grantFor('notes')],
+        affirmIndex: 0,
+        optionCount: 2,
+        ttlMs: 60_000,
+      });
+
+      // NOW with the handle + the affirming index. Same text, same classification —
+      // but the recorded yes routes it to the tool loop, which calls the model again.
+      const mark = stub.calls();
+      const r = await post(s, {
+        message: 'Yes, go ahead',
+        threadId,
+        questionId: id,
+        optionIndex: 0,
+      });
+      expect(r.status).toBe(202);
+      expect(await until(async () => Promise.resolve(stub!.calls() - mark >= 2))).toBe(true);
+
+      // ...and the answer really was recorded as a grant, not merely observed.
+      expect((await loadConsent(db, id))?.status).toBe('granted');
+      expect((await loadConsent(db, id))?.answerIndex).toBe(0);
+    } finally {
+      db.close();
+    }
   });
 });

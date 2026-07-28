@@ -41,6 +41,7 @@ export {
   isWriteConflict,
 } from './handlers/row-mutations.js';
 import { parseBulkFilters } from './handlers/row-mutations.js';
+import type { ConsentGrant } from './consent-store.js';
 
 /**
  * Registry function names the dispatcher can execute. This is the data-and-
@@ -176,12 +177,25 @@ const DESTRUCTIVE_COUNT_CAP = 5000;
 /** A `spec`-authored document shorter than this was very likely never really written. */
 const MIN_AUTHORED_ARTIFACT_CHARS = 200;
 
-/** Tools that remove or clear data. Adding one here is the whole registration. */
-const REMOVAL_TOOLS: ReadonlySet<string> = new Set([
+/**
+ * Tools that remove or clear data. Adding one here is the whole registration.
+ *
+ * Exported so the consent-minting path can refuse to write a grant for a tool that
+ * is not gated at all — a grant naming a non-destructive call would be a record of
+ * consent to something the gate never asks about, which is worse than useless.
+ */
+export const REMOVAL_TOOLS: ReadonlySet<string> = new Set([
   'delete_entity',
   'delete_row',
   'unlink',
   'bulk_update',
+  // Both consolidate rows by SOFT-DELETING the ones that lose. Recoverable, but
+  // still a removal from the user's point of view: the rows stop being there, and
+  // `dedup` in particular decides for itself which ones. They were ungated, so a
+  // single `dedup` call could collapse an arbitrary number of records with no
+  // confirmation of any kind.
+  'merge_rows',
+  'dedup',
 ]);
 
 export interface DestructiveIntent {
@@ -196,6 +210,48 @@ export interface DestructiveIntent {
   detail: string;
 }
 
+/**
+ * The ACT a destructive call performs on its target, as a short server-derived key.
+ *
+ * Naming the target is not enough to describe what was agreed to. "Remove the Q3
+ * Invoices object but keep its records" and "remove it and everything in it" name
+ * the same object and differ only in one argument — so consent recorded against the
+ * target alone let the second be executed under agreement to the first. The verb key
+ * is derived by THIS function at both ends (when the question is put, and when the
+ * call is retried), so a retry that changed the argument no longer matches the grant.
+ *
+ * Pure, and deliberately coarse: it captures the arguments that change WHAT IS LOST,
+ * nothing else. Tools whose destruction has no such argument key to `''` — their
+ * identity is carried by the grant's `tool` field, which is compared alongside.
+ */
+export function verbKey(tool: string, args: Record<string, unknown>): string {
+  switch (tool) {
+    case 'delete_entity': {
+      const r = args.resolution;
+      return `resolution:${r === 'delete_data' || r === 'delete_cascade' ? r : 'none'}`;
+    }
+    case 'delete_row':
+      // A hard delete is unrecoverable; a soft one is in the trash. Not the same act.
+      return `hard:${args.hard === true ? 'true' : 'false'}`;
+    case 'bulk_update': {
+      // Only the CLEARED columns matter — setting real values is not destruction.
+      // Sorted so argument order cannot change the key.
+      const set =
+        args.set && typeof args.set === 'object' ? (args.set as Record<string, unknown>) : {};
+      const cleared = Object.keys(set)
+        .filter((k) => set[k] === null || set[k] === '')
+        .sort();
+      return `clear:${cleared.join(',')}`;
+    }
+    case 'unlink':
+    case 'merge_rows':
+    case 'dedup':
+      return '';
+    default:
+      return '';
+  }
+}
+
 /** Title-ish form of a raw object name, for text the USER reads (`q3_lines` → `Q3 Lines`). */
 function friendly(name: string): string {
   return (
@@ -203,130 +259,6 @@ function friendly(name: string): string {
       .replace(/[_-]+/g, ' ')
       .trim()
       .replace(/\b[a-z]/g, (c) => c.toUpperCase()) || name
-  );
-}
-
-function singular(word: string): string {
-  return word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
-}
-
-function wordsOf(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(singular);
-}
-
-/** Every window in `hay` where `needle`'s words appear consecutively, in order. */
-function spansOf(hay: readonly string[], needle: readonly string[]): [number, number][] {
-  const out: [number, number][] = [];
-  if (needle.length === 0 || needle.length > hay.length) return out;
-  for (let i = 0; i + needle.length <= hay.length; i++) {
-    let hit = true;
-    for (let j = 0; j < needle.length; j++) {
-      if (hay[i + j] !== needle[j]) {
-        hit = false;
-        break;
-      }
-    }
-    if (hit) out.push([i, i + needle.length - 1]);
-  }
-  return out;
-}
-
-/**
- * True when `evidence` — the question the USER was actually shown — names `target`,
- * and names THAT object rather than some other one it shares words with.
- *
- * Tolerant about spelling, strict about identity. The assistant is required to
- * speak to the user in friendly names, never raw internal ones, so
- * `q3_invoice_lines` has to match a question that said "Q3 Invoice Lines" — the
- * comparison is on words, singularized, in order, as an unbroken run.
- *
- * `known` is every object that exists, and is what makes the match exact rather
- * than merely contiguous. Matching on a SUBSET of the question's words let an
- * agreement to remove a compound-named object authorize removing a different one
- * whose whole name is a word of it: a yes to "Remove Customer Invoices?" also
- * unlocked "Customers" and "Invoices", which the user never agreed to and may not
- * even have realized existed. So a run is only a naming of `target` when no
- * LONGER real object name covers that same run — when "customer invoice" is
- * itself an object, the word "customer" inside it is part of that name, not a
- * separate mention of another one. Naming both for real still matches both.
- *
- * A target the question never named does not match and the gate stays closed,
- * which is the safe direction to be wrong in.
- */
-export function namedIn(evidence: string, target: string, known: Iterable<string> = []): boolean {
-  const want = wordsOf(target);
-  if (want.length === 0) return false;
-  const said = wordsOf(evidence);
-  const hits = spansOf(said, want);
-  if (hits.length === 0) return false;
-  // Where a longer object's name occupies the question's words. A name can only be
-  // absorbed by a strictly longer one.
-  const covered: [number, number][] = [];
-  for (const other of known) {
-    if (other === target) continue;
-    const w = wordsOf(other);
-    // Two different objects that read the same to the user: the question cannot
-    // have named one of them in particular, so it named neither.
-    if (w.join(' ') === want.join(' ')) return false;
-    if (w.length <= want.length) continue;
-    covered.push(...spansOf(said, w));
-  }
-  return hits.some(([from, to]) => !covered.some(([a, b]) => a <= from && to <= b));
-}
-
-/**
- * The one exchange that can authorize destruction: a question the assistant put to
- * the user, and their answer to it.
- *
- * Consent is an ANSWER, never a word that happened to appear. Matching the target's
- * name anywhere in the conversation made two forgeries possible: a user MENTIONING
- * an object (usually while asking about it) satisfied the confirmation for
- * destroying it, and the assistant's own question supplied the names — so the model
- * could manufacture the evidence that unlocked its own destructive call. Assembled
- * by the chat loop; absent → nothing is confirmed.
- *
- * An answer is also a REPLY, never just a later agreement. `question` therefore
- * carries only a question this message can still be answering — one the user has
- * not already had a turn after. Left live, a removal question asked much earlier
- * stayed answerable forever, and any later message that merely opened
- * affirmatively ("yes, do that" — about something else entirely) reactivated it.
- */
-export interface ConfirmationEvidence {
-  /**
-   * The question this message is answering: the last one the assistant asked, as
-   * the user saw it (with its options), and only while it is still the user's turn
-   * to answer it. Blank once their turn has come and gone.
-   */
-  question: string;
-  /** True only when the user's reply to that question is an explicit yes. */
-  affirmed: boolean;
-  /** True when the user's reply reads as a refusal. */
-  declined: boolean;
-  /** True when a question WAS asked but the user has since had a turn — see above. */
-  stale?: boolean;
-  /**
-   * The last question asked at any point, live or spent. Read ONLY to understand a
-   * refusal ("they are saying no, and this is what they were last asked about"),
-   * which can only ever close the gate further — never to grant consent.
-   */
-  lastQuestion?: string;
-}
-
-/**
- * True when a question is asking the user to agree to a REMOVAL, rather than merely
- * mentioning the thing. A yes to "add a field to Contacts and Deals?" names both
- * objects but agrees to nothing destructive, so the question has to be about
- * destruction before an answer to it can unlock any.
- */
-export function asksToDestroy(question: string): boolean {
-  return /\b(remove|removing|delete|deleting|drop|dropping|clear|clearing|wipe|wiping|erase|erasing|unlink|unlinking|discard|discarding|purge|purging)\b/i.test(
-    question,
   );
 }
 
@@ -356,8 +288,13 @@ async function countRows(
  * Returns null for anything that destroys nothing — including a `delete_entity`
  * with no resolution on a non-empty object (that call only reports what is in the
  * way) and a `move_to` merge (reversible by design, and the model is told so).
+ *
+ * Exported so a consent record is minted from THE SAME classification the gate
+ * runs, never from the model's description of its own plan. Two derivations of
+ * "what this call destroys" would be two chances to disagree, and the disagreement
+ * would land in favour of whichever one the user was shown.
  */
-async function destructiveIntent(
+export async function destructiveIntent(
   ctx: DispatchCtx,
   name: string,
   args: Record<string, unknown>,
@@ -394,6 +331,46 @@ async function destructiveIntent(
     const target = typeof args.table === 'string' ? args.table : '';
     if (!target) return null;
     return { kind: 'unlink', target, rows: 1, detail: `remove 1 link from "${target}"` };
+  }
+  if (name === 'merge_rows') {
+    // Exact and free: the call names the rows it will collapse, so the blast radius
+    // is the length of that list — no pre-flight query needed at all.
+    const target = typeof args.table === 'string' ? args.table : '';
+    const ids = Array.isArray(args.duplicate_ids) ? args.duplicate_ids : null;
+    // A malformed call destroys nothing (the handler rejects it) — that error is the
+    // handler's to report verbatim, not the gate's to pre-empt with a confirmation.
+    if (!target || !ids || ids.length === 0) return null;
+    return {
+      kind: 'delete_records',
+      target,
+      rows: ids.length,
+      detail:
+        `merge ${String(ids.length)} record(s) into 1 in "${target}" — the merged-away ` +
+        `records are moved to the trash (recoverable)`,
+    };
+  }
+  if (name === 'dedup') {
+    // The duplicate scan is NOT run here. `findTableDuplicates` reads up to
+    // DEDUP_MAX_SCAN_ROWS (50k) rows and is the expensive half of the call —
+    // running it pre-flight would double the cost of every dedup, and on a cloud
+    // that cost is egress. The live row count is already a true upper bound: a
+    // table with N live rows can lose at most N-1 to merging (every group keeps
+    // its survivor). Bounded, SQL-side, and never smaller than the real answer.
+    const target = typeof args.table === 'string' ? args.table : '';
+    if (!target) return null;
+    const rows = await countRows(ctx, target);
+    const most = rows.n > 0 ? rows.n - 1 : 0;
+    return {
+      kind: 'delete_records',
+      target,
+      rows: most,
+      ...(rows.unknown ? { rowsUnknown: true } : {}),
+      detail:
+        `merge duplicate records in "${target}" (` +
+        (rows.unknown ? 'record count unknown' : `up to ${String(most)} record(s)`) +
+        `, chosen by the duplicate scan — the merged-away records are moved to the ` +
+        `trash (recoverable))`,
+    };
   }
   // bulk_update is destructive only when it CLEARS values — the "unlink 40 rows
   // to make a delete possible" move. Setting real values is an ordinary edit.
@@ -454,16 +431,28 @@ const destructiveVerifier: ClaimVerifier = {
     const out: OutcomeFact[] = [];
     for (const a of attempts) {
       if (!a.ok && a.destructive) {
+        // A merge destroys by CONSOLIDATING, not by removing the object — reporting
+        // "X was not removed" for a refused merge would describe an act nobody asked
+        // for. Same fact, stated in the terms of the call that was actually made.
+        const merging = a.name === 'merge_rows' || a.name === 'dedup';
         out.push({
           axis: 'destructive',
           kind: 'not_done',
           key: `destructive:not_done:${a.name}:${a.destructive.target}`,
-          statement: a.refused
-            ? `"${a.destructive.target}" was NOT removed — the call was refused until the user confirms.`
-            : `"${a.destructive.target}" was NOT removed. The call failed: ${firstLine(a.error)}`,
-          userStatement: a.refused
-            ? `${friendly(a.destructive.target)} has not been removed — I need your go-ahead first.`
-            : `${friendly(a.destructive.target)} could not be removed, so it is still there.`,
+          statement: merging
+            ? a.refused
+              ? `NOTHING in "${a.destructive.target}" was merged — the call was refused until the user confirms.`
+              : `NOTHING in "${a.destructive.target}" was merged. The call failed: ${firstLine(a.error)}`
+            : a.refused
+              ? `"${a.destructive.target}" was NOT removed — the call was refused until the user confirms.`
+              : `"${a.destructive.target}" was NOT removed. The call failed: ${firstLine(a.error)}`,
+          userStatement: merging
+            ? a.refused
+              ? `Nothing in ${friendly(a.destructive.target)} has been combined — I need your go-ahead first.`
+              : `Nothing in ${friendly(a.destructive.target)} could be combined, so it is unchanged.`
+            : a.refused
+              ? `${friendly(a.destructive.target)} has not been removed — I need your go-ahead first.`
+              : `${friendly(a.destructive.target)} could not be removed, so it is still there.`,
           ...(a.refused ? { provisional: true } : {}),
         });
       } else if (a.ok && a.name === 'delete_entity' && isNeedsResolution(a.result)) {
@@ -612,9 +601,39 @@ export const CLAIM_VERIFIERS: readonly ClaimVerifier[] = [
   dashboardVerifier,
 ];
 
+/**
+ * The consent this turn may spend, as the server recorded it.
+ *
+ * This replaced a `ConfirmationEvidence` assembled by re-reading the conversation:
+ * the question came from a replayed `ask_user` block and the answer from the text of
+ * the user's message. Both halves are authored — or steerable — by the model being
+ * gated, which is what made consent forgeable four different ways: options the user
+ * never chose counted as part of the question, a dashboard title could inject an
+ * affirmation into what was read as the user's own words, a singularized word match
+ * let "that duplicate contact" authorize the whole Contacts table, and an
+ * attachment-only turn left an old question answerable.
+ *
+ * None of those depend on a mistake in the matching. They follow from deriving
+ * authority from a channel the model can write to. So the ledger no longer reads
+ * text at all: it is handed grants the SERVER computed from its own pre-flight
+ * classification, and it may only spend them.
+ */
+export interface TurnConsent {
+  /** Whether the user affirmed the question this record was minted for. */
+  status: 'granted' | 'declined';
+  /** What the server authorized, computed by `destructiveIntent` at mint time. */
+  grants: readonly ConsentGrant[];
+  /**
+   * Durably mark one grant spent. MUST return false if it was already spent or the
+   * write did not land — the call is allowed only when this returns true, so a
+   * crash mid-plan cannot leave a grant reusable.
+   */
+  spend: (grantIndex: number, by: string) => Promise<boolean>;
+}
+
 export interface TurnOutcomeLedgerOptions {
-  /** What the user has been shown/said that could confirm a destructive plan. */
-  evidence?: ConfirmationEvidence;
+  /** The server's record of what the user authorized, if anything. */
+  consent?: TurnConsent | undefined;
 }
 
 /**
@@ -631,7 +650,18 @@ export interface TurnOutcomeLedgerOptions {
  */
 export class TurnOutcomeLedger {
   private readonly attempts: ToolAttempt[] = [];
-  private readonly evidence: ConfirmationEvidence;
+  /** The server's record of what the user authorized this turn, if anything. */
+  private readonly consent: TurnConsent | undefined;
+  /** Targets a grant has been SPENT on this turn — the only thing that counts as
+   *  consented. Tracked here because a multi-target plan gates on the whole set. */
+  private readonly spentTargets = new Set<string>();
+  /** Args of the call currently being gated, so verbKey is derived from the real
+   *  arguments rather than re-parsed from anything. */
+  private currentArgs: Record<string, unknown> | undefined;
+  /** The shape of each destructive target seen this turn, so a plan that only
+   *  becomes gate-worthy on a LATER call can still be matched against what the user
+   *  approved for the earlier one. */
+  private readonly seen = new Map<string, { rows: number; unknown: boolean; verb: string }>();
   /** Pre-flight classifications, keyed by the (unique) args object of the call. */
   private readonly intents = new WeakMap<object, DestructiveIntent>();
   /** Destructive targets already acted on this turn → records at stake, for the
@@ -649,7 +679,7 @@ export class TurnOutcomeLedger {
   private stopped = false;
 
   constructor(opts: TurnOutcomeLedgerOptions = {}) {
-    this.evidence = opts.evidence ?? { question: '', affirmed: false, declined: false };
+    this.consent = opts.consent;
   }
 
   /** The user stopped this turn: whatever already landed is now the whole story. */
@@ -678,11 +708,45 @@ export class TurnOutcomeLedger {
    * `known` is every object that exists, so the question has to have named THIS
    * one — not one whose name merely contains its words.
    */
-  private consented(target: string, known: Iterable<string>): boolean {
-    const { question, affirmed, declined } = this.evidence;
-    if (declined || !affirmed || question === '') return false;
-    if (!asksToDestroy(question)) return false;
-    return namedIn(question, target, known);
+  private consented(target: string): boolean {
+    return this.spentTargets.has(target);
+  }
+
+  /**
+   * Find a grant that authorizes exactly this call, and spend it.
+   *
+   * Every part of the comparison is an identifier or a number the SERVER derived, so
+   * there is nothing here for the model to phrase its way past:
+   *
+   *  - `target` is compared EXACTLY. The old matcher compared singularized words, so
+   *    a question about "that duplicate contact" named the whole `contacts` table.
+   *  - `verbKey` must match, so agreeing to remove an object but keep its data does
+   *    not authorize a cascade.
+   *  - `rows` must be within the bound the user was shown. The count is measured at
+   *    mint time and the table can grow before the call lands; they consented to an
+   *    upper bound, and exceeding it means asking again. An unknown count can never
+   *    satisfy a bound.
+   *
+   * Spending is durable and happens BEFORE the destructive call runs — a grant that
+   * cannot be marked spent does not authorize anything, so a crash mid-plan cannot
+   * leave it reusable.
+   */
+  private async spendFor(target: string): Promise<boolean> {
+    const consent = this.consent;
+    const shape = this.seen.get(target);
+    if (consent?.status !== 'granted' || !shape) return false;
+    const i = consent.grants.findIndex(
+      (g) =>
+        !g.spentAt &&
+        g.target === target &&
+        g.verbKey === shape.verb &&
+        !shape.unknown &&
+        shape.rows <= g.maxRows,
+    );
+    if (i === -1) return false;
+    if (!(await consent.spend(i, target))) return false;
+    this.spentTargets.add(target);
+    return true;
   }
 
   /**
@@ -690,40 +754,44 @@ export class TurnOutcomeLedger {
    * against the last question asked at any point: a refusal only ever closes the
    * gate, so an older question can be honoured here without loosening anything.
    */
-  private refusedTarget(target: string, known: Iterable<string>): boolean {
-    const { question, lastQuestion, declined } = this.evidence;
-    const asked = lastQuestion ?? question;
-    return declined && asked !== '' && asksToDestroy(asked) && namedIn(asked, target, known);
+  private refusedTarget(target: string): boolean {
+    const consent = this.consent;
+    if (consent?.status !== 'declined') return false;
+    return consent.grants.some((g) => g.target === target);
   }
 
-  /** Why the plan is not confirmed, in the terms the model has to act on. */
+  /**
+   * Why the plan is not confirmed, in the terms the model has to act on.
+   *
+   * Each branch names the ONE thing that would change the outcome. Vague refusals
+   * are how a model ends up looping: it re-asks the same question, gets refused
+   * again, and the user watches it fail twice.
+   */
   private consentGap(unconfirmed: readonly string[]): string {
-    const { question, affirmed, declined, stale } = this.evidence;
-    if (declined) {
-      return `The user's last message reads as a refusal, so treat this plan as declined until they say otherwise.`;
-    }
-    if (question === '') {
-      return stale === true
-        ? `A question was put to the user earlier in this conversation, but they have taken a turn ` +
-            `since — that moment has passed and their agreement now is to whatever was last said, not ` +
-            `to that. An old yes never carries forward; ask again, now.`
-        : `The user has not been asked about this at all.`;
-    }
-    if (!affirmed) {
+    const consent = this.consent;
+    const names = unconfirmed.map((t) => `"${t}"`).join(', ');
+    if (!consent) {
       return (
-        `The user was asked, but their reply was not a clear yes. An unrelated, ambiguous, or ` +
-        `absent answer is NOT consent — only an explicit yes is.`
+        `The user has not been asked about this. Ask with ask_user, and pass the calls you intend ` +
+        `to make as its "confirm" argument — that is what records their answer. A question asked ` +
+        `without it cannot authorize anything, however it is worded.`
       );
     }
-    if (!asksToDestroy(question)) {
+    if (consent.status === 'declined') {
+      return `The user was asked and said no, so treat this plan as declined until they raise it again.`;
+    }
+    const unspent = consent.grants.filter((g) => !g.spentAt);
+    if (unspent.length === 0) {
       return (
-        `The question they agreed to was not about removing anything, so their answer does not ` +
-        `cover this.`
+        `What the user agreed to has already been carried out. Doing it again needs a fresh ` +
+        `question — consent covers one act, not a standing permission.`
       );
     }
     return (
-      `Their answer only covers what that question named; ` +
-      `${unconfirmed.map((t) => `"${t}"`).join(', ')} was not part of it.`
+      `What the user agreed to does not cover this: ${names}. They approved ` +
+      `${unspent.map((g) => `"${g.target}" (${g.detail})`).join('; ')}. ` +
+      `Ask again with a "confirm" that matches what you actually intend to do — including the ` +
+      `same removal kind and no more records than you named.`
     );
   }
 
@@ -743,6 +811,12 @@ export class TurnOutcomeLedger {
     const intent = await destructiveIntent(ctx, name, args);
     if (!intent) return null;
     this.intents.set(args, intent);
+    this.currentArgs = args;
+    this.seen.set(intent.target, {
+      rows: intent.rows,
+      unknown: intent.rowsUnknown === true,
+      verb: verbKey(name, args),
+    });
 
     const targets = new Map(this.touched);
     targets.set(intent.target, Math.max(targets.get(intent.target) ?? 0, intent.rows));
@@ -753,10 +827,26 @@ export class TurnOutcomeLedger {
     // small call at a time is the same plan, and the size screen would wave every
     // one of those through. Narrow on purpose — it only applies when they were
     // asked about removing THIS object and said no.
-    const refused = this.refusedTarget(intent.target, ctx.validTables);
+    const refused = this.refusedTarget(intent.target);
     if (!multiTarget && !wide && !refused) return null;
 
-    const unconfirmed = [...targets.keys()].filter((t) => !this.consented(t, ctx.validTables));
+    // Spend a grant for every target in the plan that does not have one yet.
+    //
+    // Every target is resolved here, not just the current call's, because a plan can
+    // become gate-worthy only on a LATER call: two single-object removals are each
+    // below the threshold and pass individually, and it is the second one that makes
+    // it multi-target. The first was allowed without spending anything, so unless its
+    // grant is claimed now it would read as unapproved and refuse a plan the user
+    // did approve.
+    const unconfirmed: string[] = [];
+    if (!refused) {
+      for (const t of targets.keys()) {
+        if (this.consented(t)) continue;
+        if (!(await this.spendFor(t))) unconfirmed.push(t);
+      }
+    } else {
+      unconfirmed.push(...[...targets.keys()].filter((t) => !this.consented(t)));
+    }
     if (unconfirmed.length === 0) return null;
 
     const already = [...this.touched].map(([t, n]) => `"${t}" (${String(n)} record(s))`);

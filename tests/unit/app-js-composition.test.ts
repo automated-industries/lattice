@@ -653,8 +653,19 @@ import { appJs } from '../../src/gui/app/script.js';
 // staging flow a picked file uses (text paste is untouched). Recaptured once for
 // the combined client — both the stop-before-ack change and the paste handler
 // move these bytes, so the pin is taken after the merge, not per branch.
-const ORIGINAL_LENGTH = 857193;
-const ORIGINAL_SHA256 = '71a1dac883d008083a9d10562a781b774575dd3c76e8cb34a97a5dbcb406f836';
+// 5.5 (cont.): durable consent on the wire. buildQuestionCard's onAnswer now
+// receives the clicked option's INDEX as a third argument (-1 for a free-form
+// answer) — a display string cannot identify an option, and the server is what
+// decides which index means yes; the two store-backed callers ignore it. The card
+// also renders an optional server-composed detail list. renderChatQuestion honours
+// a consent question (server headline + lines + two options, no free-form box),
+// remembers its id, and answers with the index. sendChat/enqueueChat/flushChatQueue
+// carry questionId + optionIndex end to end — including through the send queue,
+// where an answer that waited on chatBusy would otherwise lose its id — and EVERY
+// send attaches any open consent id with index -1, so a typed reply or a files-only
+// send explicitly declines instead of leaving a recorded question live. Recaptured.
+const ORIGINAL_LENGTH = 862527;
+const ORIGINAL_SHA256 = '5c4ea2bb0cd8d447241fe69f6876be28a56e119939167834bcc315b571a0420b';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

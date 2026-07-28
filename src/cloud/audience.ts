@@ -3,6 +3,7 @@ import type { Migration } from '../types.js';
 import type { ComputedTableDef } from '../config/types.js';
 import { computedTableOrder } from '../schema/computed-table.js';
 import { memberGroupFor, pkSqlExpr } from './rls.js';
+import { dmlKeyGrantSql } from './member-access.js';
 import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 
 /**
@@ -150,7 +151,38 @@ export function audienceViewSql(
     `CREATE OR REPLACE VIEW ${view} AS SELECT ${selectCols.join(', ')} FROM ${base}` +
       ` WHERE lattice_row_visible(${lit}, ${pkSqlExpr(pkCols, '')});`,
     `GRANT SELECT ON ${view} TO ${group};`,
+    // Clears table-level AND every column-level SELECT, so the grant below starts
+    // from a clean slate and a column that has just become masked loses its old
+    // column grant rather than keeping it.
     `REVOKE SELECT ON ${base} FROM ${group};`,
+    // Column-level SELECT on exactly the columns this view does NOT mask.
+    //
+    // Withholding everything broke writes in a way the WHERE-clause reasoning
+    // missed: `INSERT ... ON CONFLICT DO UPDATE` — which is what `Lattice.upsert`
+    // emits, and what every connector sync runs — requires SELECT on each column in
+    // its SET list, not just the conflict key. So members could insert and update
+    // but never upsert, and connector sync was broken for every member on every
+    // table.
+    //
+    // Granting these is not a second read path around the mask: the base table
+    // carries FORCE ROW LEVEL SECURITY with the same row-visibility predicate the
+    // view applies, so these columns are row-scoped either way, and the masked ones
+    // are not in this list at all. The list comes from the SAME spec the view is
+    // built from — including any mask recovered from the standing view — so the
+    // grant and the mask cannot disagree.
+    ...(() => {
+      const readable = columns.filter((c) => isRowAudience(columnAudience[c] ?? ''));
+      if (readable.length === 0) return [];
+      return [`GRANT SELECT (${readable.map(quoteIdent).join(', ')}) ON ${base} TO ${group};`];
+    })(),
+    // Taking base SELECT away also takes away the member's ability to WRITE: an
+    // UPDATE/DELETE needs SELECT on every column its WHERE clause names, so the
+    // revoke above turns `UPDATE … WHERE "id" = ?` into `permission denied` before
+    // it reaches the UPDATE. The key grant therefore belongs HERE, welded to the
+    // revoke — the two are one operation, and any path that performs one without
+    // the other leaves the workspace half-broken. (Reconcile emits it too; it is
+    // idempotent.)
+    `${dmlKeyGrantSql(table, group)};`,
   ].join('\n');
 }
 
@@ -291,31 +323,244 @@ export async function seedColumnPolicyFromYaml(
   );
 }
 
-/** Regenerate a table's cell-masking view FROM the DB column-policy (not YAML). If
- *  the table now has no audience columns, drop the view and restore base SELECT to
- *  members; otherwise (re)create the masked view and revoke base SELECT. Runs the
- *  DDL directly (not via db.migrate) so it always reflects the current spec. */
-export async function regenerateAudienceViewFromDb(
+/**
+ * The table's ACTUAL columns, in ordinal order, straight from the catalog.
+ *
+ * The view has to project what the table physically has, not what the config
+ * declares. While only carefully-declared tables were masked those two agreed
+ * closely enough; once EVERY table gets a member read view — introspected,
+ * connector-synced, discovered, drifted — they routinely disagree, and each
+ * direction is a bug: a declared-but-absent column makes `CREATE VIEW` fail, and
+ * a physical-but-undeclared column silently vanishes from the member's read.
+ * This also puts the TypeScript generator on the same footing as the plpgsql one,
+ * which already reads `information_schema`.
+ */
+/**
+ * Columns the table's CURRENT member read view masks, read out of the view's own
+ * stored definition.
+ *
+ * This is the one record of what was masked that a restore of
+ * `__lattice_column_policy` cannot quietly erase, which is what makes it worth
+ * parsing SQL for. A masked column is emitted as
+ * `CASE WHEN lattice_is_owner(...) THEN col END AS col`, so every `END AS <col>` in
+ * the projection names a guarded column. Postgres normalises the definition it
+ * stores, so this matches the shape it hands back rather than the shape we wrote.
+ *
+ * Returns empty when there is no view, when the definition cannot be read, or on a
+ * shape it does not recognise — all of which mean "no evidence", never "not masked".
+ * Evidence only ever ADDS masking here, so failing to find it cannot open anything;
+ * it only fails to rescue.
+ */
+/**
+ * Masked columns for SEVERAL tables at once, from their view definitions.
+ *
+ * The member-facing companion to {@link viewMaskedColumns}. A scoped member cannot
+ * read `__lattice_column_policy` at all (it is owner-only), so any serve-time mask
+ * that derives from the policy silently degrades to "nothing is secret" on exactly
+ * the connection the mask exists to protect. The view definitions are readable by
+ * anyone who can see the view, and they are the same artifact the mask is enforced
+ * by — so they cannot disagree with it.
+ *
+ * Bounded on purpose: it asks only about the tables handed in, so a hot serve path
+ * pays for the tables in the page it is returning, not for the whole catalog.
+ */
+export async function maskedColumnsForTables(
+  db: Lattice,
+  tables: readonly string[],
+): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  if (db.getDialect() !== 'postgres' || tables.length === 0) return out;
+  const wanted = [...new Set(tables)];
+  const byView = new Map(wanted.map((t) => [`${t}_v`, t]));
+  try {
+    const rows = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT c.relname AS view, pg_get_viewdef(c.oid, true) AS def
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND c.relkind = 'v'
+          AND c.relname IN (${wanted.map(() => '?').join(', ')})`,
+      wanted.map((t) => `${t}_v`),
+    )) as { view?: unknown; def?: unknown }[];
+    for (const r of rows) {
+      const table = typeof r.view === 'string' ? byView.get(r.view) : undefined;
+      const def = typeof r.def === 'string' ? r.def : '';
+      if (!table || !def) continue;
+      const cols = new Set<string>();
+      const re = /\bEND\s+AS\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/gi;
+      for (let m = re.exec(def); m !== null; m = re.exec(def)) if (m[1]) cols.add(m[1]);
+      if (cols.size > 0) out.set(table, cols);
+    }
+  } catch {
+    /* no evidence — the caller decides how to fail closed */
+  }
+  return out;
+}
+
+async function viewMaskedColumns(db: Lattice, table: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const rows = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT pg_get_viewdef(c.oid, true) AS def
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND c.relkind = 'v' AND c.relname = ?`,
+      [`${table}_v`],
+    )) as { def?: unknown }[];
+    const def = typeof rows[0]?.def === 'string' ? rows[0].def : '';
+    if (!def) return out;
+    const re = /\bEND\s+AS\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/gi;
+    for (let m = re.exec(def); m !== null; m = re.exec(def)) if (m[1]) out.add(m[1]);
+  } catch {
+    /* no evidence available — the caller falls back to the policy alone */
+  }
+  return out;
+}
+
+async function physicalColumns(db: Lattice, table: string): Promise<string[]> {
+  const rows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT "column_name" AS name FROM "information_schema"."columns"
+      WHERE "table_schema" = current_schema() AND "table_name" = ?
+      ORDER BY "ordinal_position"`,
+    [table],
+  )) as { name: string }[];
+  return rows.map((r) => r.name);
+}
+
+/**
+ * (Re)build the relation a cloud MEMBER reads `table` through, from the DB column
+ * policy (not YAML), and make the base table's columns unreachable to members.
+ *
+ * EVERY member-readable table gets a view — masking where the policy says so, a
+ * plain pass-through where it does not. There is deliberately no "this table isn't
+ * masked, give members the base table" branch any more, and that absence is the
+ * entire security property:
+ *
+ *   The old branch decided by looking the policy up BY NAME. A policy stranded by
+ *   a rename — the table's, or one of its columns' — reads back empty, which is
+ *   indistinguishable from "nothing is masked here". So the branch granted members
+ *   raw base SELECT on a table whose columns the owner had marked secret, and every
+ *   masking leak we have had traces to that one statement. With one branch, a
+ *   stranded policy can at worst produce a STALE VIEW: wrong, reportable, and
+ *   fixable — never cleartext.
+ *
+ * `columns` is only a fallback; the projection prefers the catalog (see
+ * {@link physicalColumns}). Runs the DDL directly rather than through `db.migrate`
+ * so it always reflects the current spec.
+ *
+ * `recreate` forces DROP + CREATE. `CREATE OR REPLACE VIEW` cannot rename, drop or
+ * reorder a view's columns (SQLSTATE 42P16), so a column rename / drop / retype
+ * must take that path; it is also used as an automatic fallback when a REPLACE
+ * turns out to be illegal. Dropping is bracketed by a rebuild of any computed view
+ * that depends on this one — without it, `DROP VIEW` raises a bare "cannot drop ...
+ * because other objects depend on it" halfway through an otherwise valid rename.
+ */
+export async function regenerateMemberReadView(
   db: Lattice,
   table: string,
   columns: readonly string[],
   pkCols: readonly string[],
+  opts: { recreate?: boolean; unmask?: readonly string[] } = {},
 ): Promise<void> {
   if (db.getDialect() !== 'postgres') return;
+  // No primary key ⇒ no row-visibility expression ⇒ no honest view. Members get no
+  // read path at all, which is the fail-closed answer; reconcile reports it rather
+  // than leaving it silent.
   if (pkCols.length === 0) return;
   const group = await memberGroupFor(db);
   const spec = propagateComputedFieldAudiences(db, table, await loadColumnPolicy(db, table));
-  const view = quoteIdent(`${table}_v`);
-  const base = quoteIdent(table);
-  if (!tableNeedsAudienceView(spec)) {
-    await runAsyncOrSync(
-      db.adapter,
-      `DROP VIEW IF EXISTS ${view};\nGRANT SELECT ON ${base} TO ${group};`,
+  const physical = await physicalColumns(db, table);
+  const cols = physical.length > 0 ? physical : columns;
+
+  // A view is never rebuilt LESS restrictive than the one already standing.
+  //
+  // Revoking base SELECT stopped members reading around the mask, but it left the
+  // view itself derived solely from `__lattice_column_policy` — and that policy is
+  // losable. Drop those rows (a partial restore does exactly this) and the rebuild
+  // reads back "nothing is masked here", regenerates `<t>_v` as a plain pass-through,
+  // and hands members the column in cleartext. Measured, and silent: no rename, no
+  // name mismatch, nothing for a drift check to notice.
+  //
+  // So the standing view's own definition is treated as evidence in its own right.
+  // Postgres stores it, a restore of the policy table cannot erase it, and it says
+  // exactly which columns were guarded. Only a caller deliberately changing an
+  // audience may reduce masking, and it says so via `unmask`; every other path —
+  // reconcile, rename, add-column, retype — may preserve or increase it, never relax.
+  const unmask = new Set(opts.unmask ?? []);
+  const standing = await viewMaskedColumns(db, table);
+  const preserved: string[] = [];
+  for (const col of standing) {
+    if (unmask.has(col) || !cols.includes(col)) continue;
+    if (isRowAudience(spec[col])) {
+      spec[col] = 'owner';
+      preserved.push(col);
+    }
+  }
+  if (preserved.length > 0) {
+    console.warn(
+      `[lattice] "${table}": the column policy no longer records ${preserved
+        .map((c) => `"${c}"`)
+        .join(
+          ', ',
+        )} as masked, but the standing view masks ${preserved.length === 1 ? 'it' : 'them'}. ` +
+        `Keeping the mask and re-recording the policy — un-masking a column is never inferred from ` +
+        `missing policy, only from an explicit change.`,
     );
+    // Make the recovered mask durable so the next rebuild does not depend on the
+    // view surviving. A failure here is surfaced, not swallowed: the view is still
+    // built correctly, only the write-back is missing, and the same recovery runs
+    // again next time.
+    for (const col of preserved) {
+      try {
+        await runAsyncOrSync(db.adapter, `SELECT lattice_set_column_audience(?, ?, ?)`, [
+          table,
+          col,
+          'owner',
+        ]);
+      } catch (e) {
+        console.warn(
+          `[lattice] could not re-record the recovered mask for "${table}"."${col}": ${(e as Error).message}`,
+        );
+      }
+    }
+  }
+
+  const sql = audienceViewSql(table, cols, pkCols, spec, group);
+
+  const dropAndCreate = async (): Promise<void> => {
+    const dependents = await directViewDependents(db, table);
+    await runAsyncOrSync(db.adapter, `DROP VIEW IF EXISTS ${quoteIdent(`${table}_v`)}`);
+    await runAsyncOrSync(db.adapter, sql);
+    // Re-point anything that was reading the old view. Only worth the pass if
+    // something actually depended on it.
+    if (dependents.length > 0) await rebuildComputedDependents(db);
+  };
+
+  if (opts.recreate) {
+    await dropAndCreate();
     return;
   }
-  await runAsyncOrSync(db.adapter, audienceViewSql(table, columns, pkCols, spec, group));
+  try {
+    await runAsyncOrSync(db.adapter, sql);
+  } catch (e) {
+    const msg = (e as Error).message;
+    // 42P16 — the existing view's column set/names differ, so REPLACE is illegal.
+    // Recreating is correct here and keeps the caller from having to know which
+    // schema edits change a view's shape.
+    if (/42P16|cannot change name of view column|cannot drop columns from view/i.test(msg)) {
+      await dropAndCreate();
+      return;
+    }
+    throw e;
+  }
 }
+
+/**
+ * Prior name for {@link regenerateMemberReadView}, kept so the published export
+ * surface stays additive. The behaviour changed in 5.5 — it no longer has an
+ * "unmasked" branch — so prefer the new name, which says what it now does.
+ */
+export const regenerateAudienceViewFromDb = regenerateMemberReadView;
 
 // ── Mask-bypassing dependents ────────────────────────────────────────────────
 // A Postgres view executes with its OWNER's rights, so a view that reads a table
@@ -466,7 +711,10 @@ export async function setColumnAudience(
 
   if (clearing) {
     if (maskViewDependents.length > 0) await rebuildComputedDependents(db);
-    await regenerateAudienceViewFromDb(db, table, columns, pkCols);
+    // The ONE path allowed to make a view less restrictive. The rebuild otherwise
+    // preserves any mask the standing view carries, precisely so a LOST policy can
+    // never read as "unmask this" — so a deliberate un-masking has to say so.
+    await regenerateMemberReadView(db, table, columns, pkCols, { unmask: [column] });
     return;
   }
 

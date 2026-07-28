@@ -752,9 +752,9 @@ RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $fn$
 DECLARE
   v_type      text;
   v_view      text := p_table || '_v';
-  v_has_view  boolean;
   v_pk_expr   text;
   v_select    text;
+  v_preserved text[];
 BEGIN
   -- Never alter internal bookkeeping tables (names start with "_"). The GUI only
   -- ever calls this for a user entity table; rejecting the rest is defense-in-depth
@@ -785,22 +785,22 @@ BEGIN
 
   EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS %I %s', p_table, p_column, v_type);
 
-  -- If the table is cell-masked (a "<table>_v" view exists, because some column has
-  -- an audience), the view selects an explicit column list — so a new column is
-  -- invisible to members until the view is regenerated. Rebuild it the same way the
-  -- owner path (audienceViewSql / regenerateAudienceViewFromDb) does: pass every
-  -- column through except those with an 'owner' audience in __lattice_column_policy
-  -- (CASE WHEN lattice_is_owner(...) THEN col END), re-apply row visibility with
-  -- WHERE lattice_row_visible(table, pk), and keep the member SELECT grant on the
-  -- view. Unmasked tables need no regen — the member group's table-level base grant
-  -- already covers the new column.
-  SELECT EXISTS (
-    SELECT 1 FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = current_schema() AND c.relname = v_view AND c.relkind = 'v'
-  ) INTO v_has_view;
-
-  IF v_has_view THEN
+  -- The member read view selects an EXPLICIT column list, so a newly added column
+  -- is invisible to members until the view is rebuilt. Rebuild it the same way the
+  -- owner path (audienceViewSql / regenerateMemberReadView) does: pass every column
+  -- through except those with an 'owner' audience in __lattice_column_policy
+  -- (CASE WHEN lattice_is_owner(...) THEN col END), and re-apply row visibility with
+  -- WHERE lattice_row_visible(table, pk).
+  --
+  -- This runs UNCONDITIONALLY now. It used to be skipped when no "<table>_v" existed,
+  -- on the reasoning that "unmasked tables need no regen — the member group's
+  -- table-level base grant already covers the new column". That grant no longer
+  -- exists: members hold no table-level SELECT on any base table, so a table without
+  -- a view is a table a member cannot read at all. The join to __lattice_column_policy
+  -- below still decides which columns get wrapped, but it no longer decides ACCESS —
+  -- so a policy that is stale or stranded under an older name now costs a stale view,
+  -- never a cleartext leak.
+  BEGIN
     -- Canonical pk expression: CAST("col" AS TEXT) joined by TAB (chr(9)) — the
     -- same serialization the RLS policies + audienceViewSql use.
     SELECT string_agg(format('CAST(%I AS TEXT)', a.attname), ' || chr(9) || '
@@ -815,10 +815,38 @@ BEGIN
       RAISE EXCEPTION 'lattice: cannot regenerate mask view for "%": no primary key', p_table;
     END IF;
 
-    -- Build the masked SELECT list in column order, applying the per-column policy.
+    -- Columns the STANDING view already guards, read out of its own definition.
+    --
+    -- This rebuild must never be able to LOOSEN masking, and the policy alone
+    -- cannot tell it that. Two masks are missing from the policy by design or by
+    -- accident:
+    --
+    --   * an inherited one — a computed column deriving from a masked source is
+    --     masked in the generated view but is NOT recorded as a policy row, so a
+    --     policy-only rebuild un-masks it on a perfectly healthy workspace; and
+    --   * a stranded one — a policy left under a name the table no longer has
+    --     reads back empty, exactly as it does everywhere else.
+    --
+    -- Either way a member adding a field would silently republish the column in
+    -- clear. The stranded case is the worse of the two: this statement REPLACES the
+    -- view, so an un-masked rebuild destroys the last surviving record of what was
+    -- secret, and no later owner reconcile can recover it. The exposure becomes
+    -- permanent, caused by an ordinary member action.
+    --
+    -- So the view's own guards are carried forward. Mirrors what the owner-side
+    -- rebuild does in TypeScript; the two must not disagree about this, because the
+    -- member path is the one that can run with no owner connected.
+    SELECT COALESCE(array_agg(m[1]), ARRAY[]::text[])
+      INTO v_preserved
+      FROM regexp_matches(
+             COALESCE(pg_get_viewdef(to_regclass(quote_ident(v_view)), true), ''),
+             'END AS ([a-zA-Z_][a-zA-Z0-9_]*)', 'g') AS m;
+
+    -- Build the masked SELECT list in column order: masked when the policy says so,
+    -- OR when the view already guarded it. Union only — never a reduction.
     SELECT string_agg(
              CASE
-               WHEN cp."audience" = 'owner'
+               WHEN cp."audience" = 'owner' OR cols.column_name = ANY(v_preserved)
                  THEN format('CASE WHEN lattice_is_owner(%L, %s) THEN %I END AS %I',
                              p_table, v_pk_expr, cols.column_name, cols.column_name)
                ELSE format('%I', cols.column_name)
@@ -835,7 +863,21 @@ BEGIN
       'CREATE OR REPLACE VIEW %I AS SELECT %s FROM %I WHERE lattice_row_visible(%L, %s)',
       v_view, v_select, p_table, p_table, v_pk_expr);
     EXECUTE format('GRANT SELECT ON %I TO ${group}', v_view);
-  END IF;
+    -- Belt and braces: the member's own path can never leave base SELECT standing.
+    -- Idempotent, and cheap.
+    EXECUTE format('REVOKE SELECT ON %I FROM ${group}', p_table);
+  EXCEPTION
+    WHEN invalid_object_definition THEN
+      -- CREATE OR REPLACE VIEW cannot change a view's column set or names, so a
+      -- REPLACE fails when the existing view is STALE (built before a rename or a
+      -- column drop). Fail loudly and tell the owner what heals it. Deliberately NOT
+      -- a DROP + CREATE here: this function is SECURITY DEFINER and member-callable,
+      -- and dropping a view a member cannot recreate — whose computed dependents it
+      -- also cannot rebuild — is a far larger blast radius than a clear error.
+      RAISE EXCEPTION
+        'lattice: the member read view for "%" is stale and cannot be replaced in place; reopen the workspace as the owner to rebuild it',
+        p_table;
+  END;
 END $fn$;
 GRANT EXECUTE ON FUNCTION lattice_member_add_column(text, text, text) TO ${group};
 
@@ -1042,7 +1084,17 @@ END $fn$;
 
 ALTER TABLE ${q} ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ${q} FORCE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${group};
+-- Writes only. A member's READ goes through the "<t>_v" view, never the base
+-- table, so granting base SELECT here would hand back exactly what the masking
+-- view exists to withhold — for every table, on every new-table path.
+--
+-- Deliberately NO matching REVOKE here either: this SQL re-runs for every existing
+-- table when the version key below is bumped, and at that moment a pre-5.5 table
+-- has no view yet. Revoking here would blind members until the next reconcile.
+-- The revoke belongs with the pass that BUILDS the replacement (see
+-- grantMemberTableAccessSql / reconcileCloudMemberAccess). This statement's job is
+-- simply to stop handing it out.
+GRANT INSERT, UPDATE, DELETE ON ${q} TO ${group};
 
 DROP POLICY IF EXISTS "lattice_sel" ON ${q};
 CREATE POLICY "lattice_sel" ON ${q} FOR SELECT USING (lattice_row_visible(${lit}, ${pkRow}));
@@ -1111,12 +1163,19 @@ export async function ownPolyfillsByGroup(db: Lattice): Promise<void> {
  * the whole history. Idempotent → converges on every owner open. No-op off Postgres
  * or when the table doesn't exist yet.
  *
- * KNOWN LIMITATION: for a SHARED row that has owner-only / secret columns, the
- * before/after JSON is NOT column-masked, so a member the row is shared with could
- * read those columns' values out of the history. A follow-up (column-masking the
- * audit JSON to match the row's `<table>_v` mask view) is needed to close that gap.
- * This is still strictly more private than the previous no-RLS state, which exposed
- * every row's raw history to every member regardless of visibility.
+ * COLUMN masking of the audit images is NOT done here, and cannot be: this policy
+ * decides which audit ROWS a member may see, and the secret columns live inside the
+ * `before_json` / `after_json` payloads of rows they are legitimately allowed to
+ * see. That gap — a member reading an owner-secret column out of a shared row's
+ * history — is closed at SERVE time instead, by `maskAuditImagesForViewer`
+ * (src/gui/mutations.ts), which every path that returns audit images now calls.
+ *
+ * The stored images stay complete, deliberately: undo, redo and revert restore a
+ * row FROM them, so masking at rest would break recovery. The consequence worth
+ * stating plainly is that anything reading `_lattice_gui_audit` OUTSIDE those serve
+ * paths still sees raw images by design. `tests/unit/security-helpers-wired-guard.test.ts`
+ * is what keeps the set of serve paths from silently becoming empty again — which is
+ * exactly what happened when the mask was written and never wired.
  */
 export async function enableGuiAuditRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
@@ -1302,10 +1361,26 @@ export async function enableRlsForTable(
   const schema = await cloudSchema(db);
   const group = await memberGroupFor(db);
   const migration: Migration = {
-    version: `internal:cloud-rls:table:${table}:v3`,
+    version: `internal:cloud-rls:table:${table}:v4`,
     sql: pinDefinerSearchPath(tableRlsSql(table, pkCols, group), schema),
   };
   await db.migrate([migration]);
+
+  // Securing a table has to leave it USABLE by a member, not merely locked down.
+  // The SQL above deliberately grants writes only, so without this the table has
+  // no member read path at all — every caller would have to remember to build the
+  // view itself, and the ones that forgot (the connector ACL pass, and any library
+  // caller using this primitive directly) would hand members a table they can write
+  // to and cannot read. Making the view part of "secure this table" is what keeps
+  // the two halves from drifting apart.
+  //
+  // Imported lazily: `audience.ts` depends on this module for the member group and
+  // pk expression, so a top-level import here would close a cycle. Resolving it at
+  // call time keeps module initialisation order irrelevant.
+  const { regenerateMemberReadView } = await import('./audience.js');
+  await regenerateMemberReadView(db, table, Object.keys(db.getRegisteredColumns(table) ?? {}), [
+    ...pkCols,
+  ]);
 }
 
 /**

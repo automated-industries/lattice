@@ -324,14 +324,24 @@ describe.skipIf(!PG_URL)('a masked table keeps its masking when it moves', () =>
     }
   }, 180_000);
 
-  it('member reconciliation refuses a table whose mask view and column policy disagree', async () => {
-    // The reopen after a rename reconciles member access, and it decides whether
-    // a table is masked by reading the column policy — the same read the rename
-    // does. A policy keyed to a name nothing answers to reads as empty, which
-    // reconciliation used to take as "this table has no secret columns" and act
-    // on by granting members raw SELECT on the base table. The masking view is
-    // standing evidence to the contrary; when the two disagree, reconciliation
-    // must refuse the table and say so, not open it.
+  it('member reconciliation PRESERVES a mask whose column policy has gone missing', async () => {
+    // The policy is not a reliable record of what is secret. Re-key it, restore an
+    // older copy of the table, or simply lose the rows, and every name-keyed lookup
+    // reads back "nothing is masked here" — indistinguishable from a table that
+    // genuinely has no secret columns.
+    //
+    // Revoking base SELECT alone does NOT save you here, and that is the trap this
+    // test exists to hold shut. With the old grant gone, the rebuild still derives
+    // the view from the policy — so a lost policy regenerates `<t>_v` as a plain
+    // pass-through and hands members the column in cleartext through the view
+    // instead of the base table. The leak moves; it does not close. Measured
+    // exactly that way: the member's read of `secret` went from NULL to the value.
+    //
+    // So the standing view's own definition is treated as evidence. Postgres stores
+    // it, restoring the policy table cannot erase it, and it names precisely which
+    // columns were guarded. A rebuild may preserve or tighten masking; only an
+    // explicit audience change may relax it. Missing policy is never read as consent
+    // to un-mask.
     const dbname = `lattice_rnm3_${randomBytes(4).toString('hex')}`;
     databases.push(dbname);
     {
@@ -365,31 +375,64 @@ describe.skipIf(!PG_URL)('a masked table keeps its masking when it moves', () =>
 
     const report = await reconcileCloudMemberAccess(owner.db);
 
-    // Refused, loudly and by name — never silently downgraded to no masking.
-    expect(report.skipped.map((s) => s.table)).toContain('journal');
-    expect(report.skipped.find((s) => s.table === 'journal')?.reason).toMatch(/polic/i);
+    void report;
 
-    // ...and the column stays unreachable off the base table.
+    // The rebuilt view still GUARDS the column — this is the assertion that fails
+    // if masking is ever re-derived from the policy alone.
+    const def = (
+      (await allAsyncOrSync(
+        owner.db.adapter,
+        `SELECT pg_get_viewdef(c.oid, true) AS def
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = current_schema() AND c.relkind = 'v' AND c.relname = 'journal_v'`,
+      )) as { def?: string }[]
+    )[0]?.def;
+    expect(def).toBeTruthy();
+    expect(def).toMatch(/lattice_is_owner\('journal'/i);
+
+    // ...the base table stays closed...
     expect(await memberHasTablePriv(owner.db, 'journal', 'SELECT')).toBe(false);
     const member = new pg.Pool({ connectionString: dbUrl(dbname, role, pw), max: 1 });
     pools.push(member);
     await expect(member.query(`SELECT secret FROM "journal"`)).rejects.toThrow(
       /permission denied/i,
     );
+
+    // ...and the value the member CAN reach, through the view, is still masked.
+    // Asserted on the value rather than on privileges, because privilege bits are
+    // exactly what missed this: they were all correct while the view served the
+    // secret in cleartext.
+    const seen = await member.query<{ secret: string | null }>(`SELECT secret FROM "journal_v"`);
+    for (const r of seen.rows) expect(r.secret).toBeNull();
+
+    // The recovered mask is written back, so the next rebuild does not depend on
+    // the view surviving.
+    const policy = (await allAsyncOrSync(
+      owner.db.adapter,
+      `SELECT "column_name" FROM "__lattice_column_policy" WHERE "table_name" = 'journal'`,
+    )) as { column_name: string }[];
+    expect(policy.map((r) => r.column_name)).toContain('secret');
   }, 180_000);
 
-  it('member reconciliation refuses a table whose mask was left under an older name', async () => {
-    // The check above compares two things that are BOTH keyed to the table's
-    // CURRENT name, so it can only see a disagreement that name knows about. A
-    // rename that moved the table and left the whole mask behind — policy AND
-    // view, both under the name it used to have — produces no disagreement at
-    // that name at all: nothing is recorded for the new name, no `<new>_v`
-    // exists, and the table reads as simply unmasked. That is the state every
-    // un-hardened rename left, and workspaces are already in it.
+  it('member reconciliation REPAIRS a table whose mask was left under an older name', async () => {
+    // A rename that moved the table and left the whole mask behind — policy AND
+    // view, both under the name it used to have — records nothing for the new
+    // name and leaves no `<new>_v`, so every name-keyed lookup comes back empty
+    // and the table reads as simply unmasked. That is the state every un-hardened
+    // rename left, and workspaces are already in it.
     //
     // What the rename could not move is the view's binding: Postgres attaches a
     // view to the table it selects FROM by identity, so the stale `<old>_v` is
     // still reading this table under its new name, and resolving it says so.
+    //
+    // Reconciliation used to REFUSE such a table — withhold new grants and leave
+    // the mask exactly as it stood. That never un-leaked anything: it declined to
+    // make things worse while the exposure already standing stayed standing. It
+    // now REPAIRS instead: re-attach the stranded policy to the name the table has
+    // now, drop the stale view, rebuild `<new>_v` from the recovered policy, and
+    // re-issue the grants. The repair is still REPORTED in `skipped[]` — an owner
+    // has to know a rename damaged their masking, not least because a renamed
+    // COLUMN cannot be recovered from the view alone.
     const dbname = `lattice_rnm5_${randomBytes(4).toString('hex')}`;
     databases.push(dbname);
     {
@@ -437,19 +480,72 @@ describe.skipIf(!PG_URL)('a masked table keeps its masking when it moves', () =>
 
     const owner = await openConfig(ownerCfg, join(ownerCfg, '..', 'context'), false);
     actives.push(owner);
+    // The open's own convergence reconciles member access, so the repair happens
+    // THERE — it is the first pass to see the drift. Its report is surfaced on the
+    // workspace as `convergeWarnings`, which is what an owner is shown.
     await owner.converged;
 
-    const report = await reconcileCloudMemberAccess(owner.db);
+    // Reported, loudly and by name — never silently, because a rename that also
+    // renamed a COLUMN leaves masking the view cannot recover.
+    const repaired = owner.convergeWarnings.find((w) => w.table === 'memos');
+    expect(repaired?.reason).toMatch(/journal_v/);
+    expect(repaired?.reason).toMatch(/re-attached|rebuilt/i);
 
-    // Refused, loudly and by name — never silently downgraded to no masking.
-    expect(report.skipped.map((s) => s.table)).toContain('memos');
-    expect(report.skipped.find((s) => s.table === 'memos')?.reason).toMatch(/journal_v/);
+    // The stale view is gone — nothing is left masking this table under a name it
+    // no longer answers to.
+    const stale = (await getAsyncOrSync(
+      owner.db.adapter,
+      `SELECT to_regclass('journal_v') AS reg`,
+    )) as { reg?: unknown } | undefined;
+    expect(stale?.reg ?? null).toBeNull();
 
-    // ...and the member never gains cleartext read on the secret column.
-    expect(await memberHasTablePriv(owner.db, 'memos', 'SELECT')).toBe(false);
+    // The policy was re-attached to the name the table has NOW, so every
+    // name-keyed lookup finds it again.
+    const policy = await allAsyncOrSync(
+      owner.db.adapter,
+      `SELECT "table_name", "column_name" FROM "__lattice_column_policy" ORDER BY "table_name"`,
+    );
+    expect(policy).toEqual([{ table_name: 'memos', column_name: 'secret' }]);
+
+    // ...and the view rebuilt under the new name MASKS the recovered column: the
+    // secret is behind the owner-audience guard, keyed to the name the table has
+    // now, while the ordinary columns pass through.
+    //
+    // Asserted on the view's definition rather than on a masked row, because a
+    // bare `ALTER TABLE … RENAME` strands more than the column policy: the
+    // per-table RLS trigger still stamps ownership under the OLD name, so every
+    // row in this workspace is visible to nobody (fail-closed, and out of this
+    // repair's scope — the hardened rename path carries the trigger, which the
+    // first test in this file proves). With no visible row, a "the secret reads
+    // NULL" assertion would pass on an empty result whether the mask worked or
+    // not. The definition is the honest evidence here.
+    const viewDef = (
+      (await allAsyncOrSync(
+        owner.db.adapter,
+        `SELECT pg_get_viewdef('memos_v'::regclass, true) AS def`,
+      )) as { def: string }[]
+    )[0]!.def;
+    expect(viewDef).toMatch(/lattice_is_owner\('memos'/); // the guard, under the CURRENT name
+    expect(viewDef).toMatch(/THEN secret/); // ...and it is the secret column it guards
+    expect(viewDef).toMatch(/FROM memos\b/); // reading the table, not a stale name
+
+    // The member holds the read path the repair rebuilt — the view is granted and
+    // queryable, so the repair restored access rather than merely locking up.
     const member = new pg.Pool({ connectionString: dbUrl(dbname, role, pw), max: 1 });
     pools.push(member);
+    expect(await memberHasTablePriv(owner.db, 'memos_v', 'SELECT')).toBe(true);
+    await expect(member.query(`SELECT id, body, secret FROM "memos_v"`)).resolves.toBeTruthy();
+
+    // The base table stays closed throughout — the repair restores the READ PATH,
+    // never base SELECT. (Asserted on the secret column: a member keeps
+    // column-level SELECT on the primary key so its own writes can name a row.)
+    expect(await memberHasTablePriv(owner.db, 'memos', 'SELECT')).toBe(false);
     await expect(member.query(`SELECT secret FROM "memos"`)).rejects.toThrow(/permission denied/i);
+
+    // Repairing is idempotent: the settled state has nothing left to report.
+    const again = await reconcileCloudMemberAccess(owner.db);
+    expect(again.skipped).toEqual([]);
+    expect(await memberHasTablePriv(owner.db, 'memos', 'SELECT')).toBe(false);
   }, 180_000);
 
   it('purging a table takes its cloud sharing and column policy with it', async () => {

@@ -1,6 +1,6 @@
 import type { LlmClient } from './chat.js';
 import { authorWithEscalation } from './author-budget.js';
-import { DEFAULT_MODEL } from './chat.js';
+import { DEFAULT_MODEL, maxOutputTokensFor } from './chat.js';
 
 /**
  * Author a complete, standalone HTML file via a focused model sub-call.
@@ -242,6 +242,9 @@ export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> 
         `[html-author] page did not fit in ${String(from)} output tokens; retrying at ${String(to)}`,
       );
     },
+    // The model's hard ceiling: a rung above it is rejected as a bad REQUEST, which
+    // would replace the explanatory refusal below with a raw provider error.
+    maxOutputTokensFor(model ?? HTML_AUTHOR_MODEL),
   );
   const turn = attempt.result;
 

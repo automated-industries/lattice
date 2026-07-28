@@ -242,6 +242,7 @@ exports[`public API surface (additive-only) > exports only grow — no removal/r
   "referenceUrl",
   "refreshEmbeddings",
   "regenerateAudienceViewFromDb",
+  "regenerateMemberReadView",
   "registerComputedTables",
   "registerNativeEntities",
   "registryPath",

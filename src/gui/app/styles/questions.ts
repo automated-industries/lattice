@@ -62,6 +62,12 @@ export const questionsCss = `    /* ── Clarification-question cards + trigge
     /* In-turn ask_user card: sits in the conversation flow like an assistant
        bubble (the wrapper carries the Lattice avatar), sized like one too. */
     .chat-msg.q-inline .q-card { max-width: 85%; }
+    /* Consent card: one line per change the server will make if the answer is
+       yes. Every line is server-composed text, listed plainly so the scale of
+       what is being agreed to is readable at a glance. */
+    .q-lines { margin: 8px 0 0; padding-left: 18px; }
+    .q-lines li { font-size: 13px; line-height: 1.5; color: var(--text); }
+    .chat-msg.q-consent .q-card { border-color: var(--danger); }
     /* Notification dot on the Ask trigger while questions wait off-screen
        (i.e. the Analytics view — where the cards live — is not showing). */
     .ask-lattice-trigger { position: relative; }

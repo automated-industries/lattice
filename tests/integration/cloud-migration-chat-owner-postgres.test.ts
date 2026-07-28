@@ -250,13 +250,21 @@ describe.skipIf(!PG_URL)('migrating chat history to a cloud', () => {
          VALUES ('m-mine','t-mine','assistant','{"text":"my own answer"}',session_user)`,
       );
 
+      // Every read below goes through `<t>_v`, because that is the only read a
+      // member has: a member writes to the base table but holds no table-level
+      // SELECT on it, so reads are granted on the view instead. Reading through
+      // the view is therefore the strong form of this test, not a concession —
+      // it exercises the per-author isolation on the path a member actually
+      // takes, rather than settling for the blanket "permission denied" that a
+      // base-table read would now return whoever owned the row.
+      //
       // Unqualified reads return the member's own chat and nothing else.
       const threads = await member.query<{ id: string }>(
-        'SELECT id FROM "chat_threads" ORDER BY id',
+        'SELECT id FROM "chat_threads_v" ORDER BY id',
       );
       expect(threads.rows.map((r) => r.id)).toEqual(['t-mine']);
       const messages = await member.query<{ id: string }>(
-        'SELECT id FROM "chat_messages" ORDER BY id',
+        'SELECT id FROM "chat_messages_v" ORDER BY id',
       );
       expect(messages.rows.map((r) => r.id)).toEqual(['m-mine']);
 
@@ -264,19 +272,27 @@ describe.skipIf(!PG_URL)('migrating chat history to a cloud', () => {
       // title nor the assistant's answer, which is the payload that has to stay
       // secret even from someone who already knows the id.
       const byId = await member.query<{ title: string }>(
-        `SELECT title FROM "chat_threads" WHERE id = 't-private'`,
+        `SELECT title FROM "chat_threads_v" WHERE id = 't-private'`,
       );
       expect(byId.rows).toEqual([]);
       const body = await member.query<{ content_json: string }>(
-        `SELECT content_json FROM "chat_messages" WHERE id = 'm-private'`,
+        `SELECT content_json FROM "chat_messages_v" WHERE id = 'm-private'`,
       );
       expect(body.rows).toEqual([]);
 
       // Nor does an aggregate leak the existence of the migrated conversation.
       const counted = await member.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM "chat_messages"`,
+        `SELECT count(*)::int AS n FROM "chat_messages_v"`,
       );
       expect(counted.rows[0]?.n).toBe(1);
+
+      // And the base table stays closed, so the view is not merely the path this
+      // test chose — it is the only one. Asserted on a NON-key column: a member
+      // keeps column-level SELECT on the primary key so its own UPDATE/DELETE can
+      // name a row, so `SELECT id FROM …` legitimately succeeds.
+      await expect(member.query(`SELECT title FROM "chat_threads"`)).rejects.toThrow(
+        /permission denied/i,
+      );
     } finally {
       await member.end();
     }

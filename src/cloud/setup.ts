@@ -14,6 +14,7 @@ import { installCloudSettings } from './settings.js';
 import {
   seedColumnPolicyFromYaml,
   regenerateAudienceViewFromDb,
+  regenerateMemberReadView,
   tableNeedsAudienceView,
   loadAllColumnPolicy,
 } from './audience.js';
@@ -38,7 +39,7 @@ const PRIVATE_ONLY_TABLES: readonly string[] = [...NATIVE_INTERNAL_NAMES, 'secre
  * Converge per-table member ACCESS on a cloud — ungated and with NO data-row
  * scans (so it is safe to run on every owner open, not just the one-time secure
  * cutover). It self-heals two drift classes the version-gated per-table securing
- * (`enableRlsForTable`, recorded as `internal:cloud-rls:table:<t>:v3`) cannot:
+ * (`enableRlsForTable`, recorded as `internal:cloud-rls:table:<t>:v4`) cannot:
  *
  *  1. PRIVACY — force `never_share` on {@link PRIVATE_ONLY_TABLES}. The assistant's
  *     `chat_threads`/`chat_messages` are per-author private; without this a bulk
@@ -222,35 +223,66 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
-    const masked = tableNeedsAudienceView(columnPolicy.get(table) ?? {});
-    const stranded = strandedMasks.get(table);
-    if (stranded !== undefined) {
-      const names = stranded.map((v) => `"${v}"`).join(', ');
-      const wasCalled = stranded.map((v) => `"${v.slice(0, -2)}"`).join(', ');
-      const reason =
-        `${names} masks this table, but is named for ${wasCalled} rather than ` +
-        `"${table}" — the masking was left behind under a name this table no longer has. Granting ` +
-        `members direct read would un-mask it, so nothing was granted. This is what a rename that ` +
-        `moved the table without its column policy looks like; rename it back and rename it again.`;
-      skipped.push({ table, reason });
-      console.warn(`[reconcileCloudMemberAccess] refused "${table}": ${reason}`);
-      continue;
-    }
-    if (!masked && maskViews.has(`${table}_v`)) {
-      const reason =
-        `"${table}_v" masks this table, but no column policy is recorded for "${table}" — the two ` +
-        `disagree, and granting members direct read would un-mask it, so nothing was granted. This is ` +
-        `what a rename or restore that moved the table without its column policy looks like.`;
-      skipped.push({ table, reason });
-      console.warn(`[reconcileCloudMemberAccess] refused "${table}": ${reason}`);
-      continue;
-    }
+    // Repair, then replace, then revoke — as ONE fault-isolated unit.
+    //
+    // Ordering is the safety property, not a detail. Step (c) takes base SELECT
+    // away; step (b) builds the thing that replaces it. Keeping them in a single
+    // `tryTable` means a failure in (b) skips (c) as well, so a table only ever
+    // loses its old read path once the new one exists. Between (b) and (c) a member
+    // transiently holds BOTH — never neither.
+    //
+    // This is also what upgrades a workspace that is leaking right now. Earlier
+    // versions granted members raw base SELECT whenever the column policy read back
+    // empty, which is what a rename left behind. The two guards that used to sit
+    // here only REFUSED such a table — they withheld new grants while the exposure
+    // already standing stayed exactly as it was. Refusing does not un-leak anything;
+    // revoking does.
     await tryTable(table, async () => {
-      // One round-trip per table (the masked case batches its 2 GRANTs) — the
-      // per-table tryTable wrapper still isolates a failure to this table + records
-      // it in skipped[], so batching changes only the round-trip count, not the
-      // fault isolation or reporting.
-      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }, group));
+      // (a) A mask stranded under a name the table no longer answers to. The
+      // evidence is `pg_rewrite`, which binds a view to the table it actually reads
+      // by identity — so it is trustworthy even though every name-keyed lookup has
+      // already come back empty.
+      const stranded = strandedMasks.get(table) ?? [];
+      for (const staleView of stranded) {
+        const oldName = staleView.slice(0, -2);
+        // Re-attach the policy the rename failed to carry. Gated on the CURRENT
+        // name having no policy at all, so this can never overwrite a deliberate one.
+        const here = columnPolicy.get(table) ?? {};
+        if (Object.keys(here).length === 0 && (columnPolicy.get(oldName) ?? null) !== null) {
+          await runAsyncOrSync(
+            db.adapter,
+            `UPDATE "__lattice_column_policy" SET "table_name" = ? WHERE "table_name" = ?`,
+            [table, oldName],
+          );
+          columnPolicy.set(table, columnPolicy.get(oldName) ?? {});
+          columnPolicy.delete(oldName);
+        }
+        await runAsyncOrSync(
+          db.adapter,
+          `DROP VIEW IF EXISTS "${staleView.replace(/"/g, '""')}" CASCADE`,
+        );
+        const reason =
+          `"${staleView}" was masking this table under the name "${oldName}", which it no longer ` +
+          `has — the masking was left behind by a rename that moved the table without its column ` +
+          `policy. The policy was re-attached to "${table}" and the stale view rebuilt. If a COLUMN ` +
+          `was also renamed, its masking cannot be recovered from the view alone; re-mark it.`;
+        skipped.push({ table, reason });
+        console.warn(`[reconcileCloudMemberAccess] repaired "${table}": ${reason}`);
+      }
+
+      // (b) The relation members read this table through. Always built — masking
+      // where the policy says so, pass-through where it does not.
+      await regenerateMemberReadView(
+        db,
+        table,
+        Object.keys(db.getRegisteredColumns(table) ?? {}),
+        db.getPrimaryKey(table),
+        stranded.length > 0 ? { recreate: true } : {},
+      );
+
+      // (c) Writes on the base, reads on the view, base SELECT revoked. One
+      // round-trip; `tryTable` still isolates a failure to this table and records it.
+      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, undefined, group));
     });
   }
 

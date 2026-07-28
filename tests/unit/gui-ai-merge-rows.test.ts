@@ -69,6 +69,12 @@ describe('merge_rows tool — targeted, reference-safe consolidation', () => {
         before_json: 'TEXT',
         after_json: 'TEXT',
         undone: 'INTEGER NOT NULL DEFAULT 0',
+        // `buildAuditRow` ALWAYS writes these two. Omitting them here makes every
+        // session-scoped filter match zero rows, so an undo test would pass while
+        // reporting nothing to undo — green for the wrong reason, which is the exact
+        // failure shape these tests exist to catch.
+        session_id: 'TEXT',
+        source: 'TEXT',
       },
       render: () => '',
       outputFile: '.lattice-gui/audit.md',
@@ -83,6 +89,7 @@ describe('merge_rows tool — targeted, reference-safe consolidation', () => {
       softDeletable: new Set(['companies', 'files']),
       configPath,
       outputDir,
+      sessionId: 'sess-1',
     };
   });
 
@@ -152,5 +159,46 @@ describe('merge_rows tool — targeted, reference-safe consolidation', () => {
       duplicate_ids: [],
     });
     expect(res.ok).toBe(false);
+  });
+
+  /**
+   * The merge writes through the audit log, so it must be stamped with the SAME GUI
+   * session as every other assistant write. Unstamped, two things go wrong, and the
+   * ledger's "you can undo these changes" offer is a false promise either way:
+   *
+   *   1. `undoLast` filters by session, so it cannot SEE the merge — the assistant's
+   *      own `undo`, immediately after its own `merge_rows`, answers "Nothing to undo".
+   *   2. Worse: `appendAudit` opens with `purgeRedoStack(db, sessionId)`, and
+   *      `sessionUndoneFilters` omits the session filter entirely when the id is
+   *      undefined — so every audited step of an unstamped merge issues a GLOBAL redo
+   *      DELETE, destroying redo history belonging to other sessions (and, on a cloud,
+   *      other members).
+   */
+  it('stamps the merge with the caller session, so undo can see it', async () => {
+    await db.insert('companies', { id: 'c1', name: 'Acme', created_at: '2026-01-01T00:00:00Z' });
+    await db.insert('companies', {
+      id: 'c2',
+      name: 'Acme Inc',
+      created_at: '2026-01-02T00:00:00Z',
+    });
+
+    const merged = await executeFunction(ctx, 'merge_rows', {
+      table: 'companies',
+      survivor_id: 'c1',
+      duplicate_ids: ['c2'],
+    });
+    expect(merged.ok).toBe(true);
+    expect((await db.get('companies', 'c2'))?.deleted_at).toBeTruthy();
+
+    // Every audit row the merge wrote carries the session — this is what both the
+    // undo filter and the redo purge key on.
+    const audit = (await db.query('_lattice_gui_audit', {})) as { session_id?: unknown }[];
+    expect(audit.length).toBeGreaterThan(0);
+    expect(audit.every((a) => a.session_id === 'sess-1')).toBe(true);
+
+    // ...so the assistant's own undo finds it rather than reporting nothing to undo.
+    const undone = await executeFunction(ctx, 'undo', {});
+    expect(undone.ok).toBe(true);
+    expect((await db.get('companies', 'c2'))?.deleted_at).toBeFalsy();
   });
 });

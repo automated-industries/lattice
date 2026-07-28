@@ -1,6 +1,6 @@
 import type { LlmClient } from './chat.js';
 import { authorWithEscalation } from './author-budget.js';
-import { DEFAULT_MODEL } from './chat.js';
+import { DEFAULT_MODEL, maxOutputTokensFor } from './chat.js';
 
 /**
  * Author a complete markdown document via a focused model sub-call.
@@ -113,6 +113,9 @@ export async function generateMarkdown(req: MarkdownAuthorRequest): Promise<stri
         `[markdown-author] document did not fit in ${String(from)} output tokens; retrying at ${String(to)}`,
       );
     },
+    // The model's hard ceiling: a rung above it is rejected as a bad REQUEST, which
+    // would replace the explanatory refusal below with a raw provider error.
+    maxOutputTokensFor(model),
   );
   const turn = attempt.result;
 

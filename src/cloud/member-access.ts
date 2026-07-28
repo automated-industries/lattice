@@ -99,21 +99,95 @@ function quoteIdent(table: string): string {
 }
 
 /**
- * The ONE place that emits a user-table member grant. `masked` ⇒ the member reads
- * the cell-masking view and keeps DML on the base (base SELECT stays revoked by
- * the audience-view SQL); otherwise full DML + SELECT on the base.
+ * The ONE place that emits a user-table member grant — and, as of 5.5, it has ONE
+ * branch.
+ *
+ * A member reads through `<t>_v` and writes to the base. Table-level SELECT on the
+ * base is never granted to a member, for any table, under any condition.
+ *
+ * There used to be a second branch: "this table isn't masked, so grant members
+ * SELECT on the base." It decided masked-ness by looking the column policy up BY
+ * NAME, and a policy stranded by a rename reads back empty — indistinguishable
+ * from "nothing is masked here". So the branch handed members raw SELECT on a
+ * table whose columns the owner had marked secret. Every masking leak we have had
+ * came out of that one statement, and it was patched three times, path by path,
+ * while the branch itself stayed. Removing the branch is what makes the class of
+ * bug unreachable rather than fixed-again: with no unmasked path, a wrong or
+ * stranded policy can at worst leave a STALE VIEW — visibly wrong, never cleartext.
+ *
+ * The `masked` flag is accepted and ignored, so existing callers keep compiling;
+ * it no longer selects anything.
  */
 export function grantMemberTableAccessSql(
   table: string,
-  opts: { masked: boolean },
+  _opts: { masked?: boolean } | undefined,
   group: string,
 ): string[] {
   const q = quoteIdent(table);
-  if (opts.masked) {
-    const v = quoteIdent(`${table}_v`);
-    return [`GRANT SELECT ON ${v} TO ${group}`, `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${group}`];
-  }
-  return [`GRANT SELECT, INSERT, UPDATE, DELETE ON ${q} TO ${group}`];
+  const v = `${table}_v`.replace(/'/g, "''");
+  return [
+    `GRANT INSERT, UPDATE, DELETE ON ${q} TO ${group}`,
+    // Unconditional, and the whole point of the change.
+    `REVOKE SELECT ON ${q} FROM ${group}`,
+    // ...which would make the table read-only for members without this (Postgres
+    // needs SELECT on the columns an UPDATE/DELETE names in its WHERE clause).
+    dmlKeyGrantSql(table, group),
+    // Guarded: reconcile runs against clouds whose views don't exist yet (every
+    // pre-5.5 workspace), and it is the same pass that builds them. A missing view
+    // must not abort the table's grants — the read simply arrives once the view does.
+    `DO $LATTICE_VGRANT$ BEGIN
+       IF to_regclass('${v}') IS NOT NULL THEN
+         EXECUTE 'GRANT SELECT ON ${quoteIdent(`${table}_v`)} TO ${group}';
+       END IF;
+     END $LATTICE_VGRANT$`,
+  ];
+}
+
+/**
+ * Column-level `SELECT` on the few columns a member's own WRITES have to name.
+ *
+ * Revoking base `SELECT` is what keeps a masked column unreadable — but Postgres
+ * also requires `SELECT` on every column an `UPDATE`/`DELETE` mentions in its
+ * `WHERE` clause. So `UPDATE "notes" SET "body" = ? WHERE "id" = ?` was
+ * `permission denied for table notes` for a member: it never reached the UPDATE,
+ * it failed on reading its own key. A member could read a masked table and not
+ * edit it, and no test caught that because the masked-table tests asserted
+ * privilege BITS and never performed a real member write.
+ *
+ * The allowlist is derived from `pg_index` plus one fixed literal — deliberately
+ * NEVER from `__lattice_column_policy`. That is the whole point: a policy that is
+ * missing, stale, or stranded under an old name cannot widen this set, so the one
+ * failure mode that produced every masking leak has no path in here. Row filtering
+ * is untouched — the base table still has FORCE ROW LEVEL SECURITY, so even these
+ * columns are row-scoped.
+ *
+ * Table-level `has_table_privilege(..., 'SELECT')` stays FALSE under column-only
+ * grants, so the "a member holds SELECT on zero base tables" invariant is exactly
+ * as strong as it reads.
+ *
+ * Emitted as an anonymous `DO` block so it stays parameterless and can ride the
+ * same batched round-trip as the other grants (see {@link grantMemberTableAccessBatchSql}).
+ */
+export function dmlKeyGrantSql(table: string, group: string): string {
+  const lit = `'${table.replace(/'/g, "''")}'`;
+  return `DO $LATTICE_DMLKEY$
+DECLARE c text;
+BEGIN
+  FOR c IN
+    SELECT a.attname FROM pg_index i
+      JOIN pg_class t     ON t.oid = i.indrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(i.indkey)
+     WHERE n.nspname = current_schema() AND t.relname = ${lit} AND i.indisprimary
+    UNION
+    SELECT 'deleted_at' WHERE EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = ${lit} AND column_name = 'deleted_at')
+  LOOP
+    EXECUTE format('GRANT SELECT (%I) ON %I TO ${group}', c, ${lit});
+  END LOOP;
+END $LATTICE_DMLKEY$`;
 }
 
 /**
@@ -131,7 +205,7 @@ export function grantMemberTableAccessSql(
  */
 export function grantMemberTableAccessBatchSql(
   table: string,
-  opts: { masked: boolean },
+  opts: { masked?: boolean } | undefined,
   group: string,
 ): string {
   return grantMemberTableAccessSql(table, opts, group).join('; ');

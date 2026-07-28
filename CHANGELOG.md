@@ -18,20 +18,52 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   single primitive that snapshots the masking, moves it, rebuilds the view under the new name, and
   refuses rather than proceeding if the policy cannot follow. A test fails the build if a fourth
   rename path is ever added outside it.
-- **Member reconciliation no longer trusts the current name.** It now resolves each masking view to the
-  table it actually reads, so a policy or view stranded under an older name is detected as drift and
-  refused by name instead of being read as "nothing to mask". This also protects workspaces that
-  already drifted under earlier versions.
+- **A member is never granted direct read on a table.** Previously a table with no recorded secret
+  columns was granted members direct read of the base table, and "no recorded secret columns" is what a
+  lost or mislaid column policy looks like — so a bookkeeping slip became a data exposure. Reads now
+  always go through a per-table view, whether or not anything is masked, and direct read is withheld
+  unconditionally. A policy that goes missing can now at worst produce a stale view, which is visible
+  and repairable, instead of cleartext. Members keep the column-level access their own writes need.
+- **A mask is never rebuilt looser than the one already in place.** The view itself is treated as the
+  record of what was masked, so restoring a database without its column policy, or losing those rows
+  any other way, no longer regenerates the view without its masking. Recovered masking is written back,
+  and only an explicit change to a column's audience can relax it.
+- **Member reconciliation repairs drift instead of refusing it.** It resolves each masking view to the
+  table it actually reads, so masking stranded under an older name is detected even though every
+  name-based lookup comes back empty — and it is then re-attached and rebuilt, with the repair
+  reported. Refusing only withheld new access; it left an existing exposure standing. This is what
+  upgrades workspaces that drifted under earlier versions.
+- **A renamed column keeps its masking.** Renaming a column moved the column but not the record of it
+  being secret, so the next rebuild of the view served it in the clear. Column renames and drops now
+  carry that record with them, and a test fails the build if a rename path is added that does not.
 - **Marking a column secret accounts for what reads it.** A computed view built over the column kept
   serving the value after the base table was masked; the operation now handles dependent views or
   refuses and names them, rather than reporting a column as masked while a path still exposes it.
 - **Change history no longer shows members values they cannot read.** Audit images are masked for the
   viewer at the point they are served, so a member browsing history cannot see owner-secret columns of
   a shared row. What is stored is unchanged, so undo and redo still restore completely.
-- **Destructive confirmation must be fresh and exact.** An affirmative reply now only counts as consent
-  when it directly answers the assistant's question, so an older "yes" cannot be reused to authorise a
-  later removal, and target matching is exact — agreeing to remove one table can no longer authorise
-  removing another whose name it contains.
+- **Confirming a destructive action is now recorded, not inferred from the conversation.** Consent was
+  previously reconstructed each turn by re-reading the transcript: the question came from the
+  assistant's own earlier message and the answer from the text of yours. Both are things the assistant
+  writes or can steer, so agreement could be manufactured — an option you never chose counted as part
+  of the question, a document title could put an affirmation into what was read as your words, and
+  agreeing to remove one duplicate record could be read as agreeing to remove the whole list.
+
+  When the assistant asks to remove something, the service now records what it would do — which
+  objects, which kind of removal, and how many records — and writes the question you see itself. Your
+  answer is matched to that record. Approval covers exactly what it names: not an object with a
+  similar name, not a wider removal than the one described, not more records than you were shown, and
+  not a second time. On a shared workspace, removals of this size are confirmed by the workspace
+  owner.
+
+- **Bulk merges are treated as removals.** Deduplicating a table and merging rows remove data, often a
+  great deal of it, and were not covered by the confirmation gate at all. They are now, counted by how
+  many rows they can remove. They are also recorded against the session that asked for them, so the
+  assistant's own undo can see them — and so a merge no longer discards other people's redo history.
+- **A member adding a field can no longer un-mask a column.** Adding a field rebuilds the view members
+  read a table through, and that rebuild was driven only by the record of which columns are secret —
+  which does not cover a column that inherits its masking, and is empty when that record has been lost.
+  A rebuild can now only ever tighten masking, never relax it.
 
 - **A session opens the root it was given, never one found by searching upward.** Root resolution is
   now `--root`, else `LATTICE_ROOT`, else `~/.lattice` — matching what the desktop app has done since
@@ -118,6 +150,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **A member can edit a table whose columns are masked.** Masking withheld direct read of the base
+  table, and an update has to name the row it is changing — so a member could read such a table and not
+  edit it, and syncing a connector failed outright. Members now hold exactly the column-level access
+  their own writes require, which is deliberately derived from the table's structure rather than from
+  the masking policy, so a policy problem can never widen it.
+- **Search works for members again.** Both search tiers read the underlying table directly, which a
+  member is not permitted to do, and a per-table failure is skipped so one bad table cannot break a
+  whole search — so search quietly returned nothing at all rather than reporting a problem. It now
+  reads what the member is allowed to read.
+- **Sharing a dashboard works for the member who owns it.** The share cascade read the underlying table
+  directly instead of through the member's read path, so it failed for the very people it was for.
+- **Renaming a column is now restricted to the workspace owner**, like every other change to a
+  workspace's shape. It was the one that was not.
+- **Authoring no longer asks a model for more room than it accepts.** The largest retry exceeded the
+  output ceiling of the default model, so the last attempt was rejected outright and replaced a clear
+  explanation with a raw provider error. Retries are capped to each model's ceiling, and a retry that
+  would buy almost no extra room is skipped rather than spending a whole regeneration on it.
 - **A document too large to author no longer stores as a broken one.** Delegated authoring exists
   because a whole document cannot fit through a tool call, but the authoring call had its own ceiling
   and no check on hitting it — so a page cut mid-token was returned as though it were finished. An HTML
