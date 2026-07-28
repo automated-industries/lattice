@@ -222,13 +222,21 @@ export const dashboardJs = `    // ───────────────
       }
       // Open a specific row's record page: arg is "table:id". Cited sources
       // and interactive provenance popovers wire this (navigation-only, no data path).
+      // If currently viewing a dashboard (#/w/dash/*), open the record in a side-by-side
+      // panel; otherwise replace the view entirely (existing behavior).
       if (name === 'open-record') {
         var parts = String(arg || '').split(':');
         if (parts.length === 2) {
           var t = parts[0], id = parts[1];
           // Apply same table guard as the read broker: no leading _, not in DENY.
           if (t && t.charAt(0) !== '_' && t !== 'secrets' && t !== 'chat_threads' && t !== 'chat_messages') {
-            if (typeof openSearchHit === 'function') openSearchHit(t, id);
+            // Dashboard view: #/w/dash/* renders the dashboard in a side-by-side layout.
+            var isDashboardView = /^#\\/w\\/dash\\//.test(location.hash);
+            if (isDashboardView && typeof openDashboardRecordPanel === 'function') {
+              openDashboardRecordPanel(t, id);
+            } else if (typeof openSearchHit === 'function') {
+              openSearchHit(t, id);
+            }
           }
         }
         return;
@@ -444,6 +452,72 @@ export const dashboardJs = `    // ───────────────
           })
           .catch(function (e) { showToast('Open failed: ' + e.message, {}); });
       });
+    }
+
+    // ── Side-by-side record panel for dashboard citations ─────────────────────
+    // When a dashboard citation is clicked, open the linked record/file in a panel
+    // alongside the dashboard (rather than replacing the dashboard view). The panel
+    // reflows the layout (flex row, ~40% width) and offers a close control to restore
+    // full width. Reuses renderFilePreview and existing record renderers.
+    var dashboardPanelState = null; // { table, id, row } to survive re-renders
+    function openDashboardRecordPanel(table, id) {
+      var panelHost = document.getElementById('dashboard-record-panel');
+      var panelInner = document.getElementById('dashboard-panel-content');
+      if (!panelHost || !panelInner) return; // Panel DOM not yet mounted
+      dashboardPanelState = { table: table, id: id, row: null };
+      // Fetch the row and render it in the panel
+      fetchJson('/api/tables/' + encodeURIComponent(table) + '/rows/' + encodeURIComponent(id))
+        .then(function (row) {
+          if (!row) {
+            showToast('Row not found', {});
+            return;
+          }
+          dashboardPanelState.row = row;
+          var html = '';
+          html += '<div class="panel-header">' +
+            '<div class="panel-title">' + escapeHtml(fsDisplayName(row)) + '</div>' +
+            '<button class="panel-close" aria-label="Close panel" title="Close">✕</button>' +
+            '</div>';
+          html += '<div class="panel-scroll">';
+          // Render the file preview if it's a file row; otherwise render as a record
+          if (table === 'files') {
+            html += '<div id="file-preview" class="file-preview"></div>';
+          } else {
+            html += '<div class="record-fields">';
+            var cols = (state.entities && state.entities.tables) || [];
+            var tableMeta = cols.find(function (t) { return t.name === table; });
+            if (tableMeta && tableMeta.columns) {
+              tableMeta.columns.forEach(function (col) {
+                if (!fsIsReadonly(table, col)) {
+                  var val = fsValInner(table, row, col);
+                  html += '<div class="record-field">' +
+                    '<div class="record-label">' + escapeHtml(fieldLabel(col)) + '</div>' +
+                    '<div class="record-value">' + val + '</div>' +
+                    '</div>';
+                }
+              });
+            }
+            html += '</div>';
+          }
+          html += '</div>';
+          panelInner.innerHTML = html;
+          panelHost.classList.add('open');
+          // Wire the close button
+          var closeBtn = panelInner.querySelector('.panel-close');
+          if (closeBtn) closeBtn.addEventListener('click', closeDashboardRecordPanel);
+          // If it's a file, render the preview
+          if (table === 'files') {
+            renderFilePreview(row);
+          }
+        })
+        .catch(function (e) { showToast('Failed to load record: ' + e.message, {}); });
+    }
+    function closeDashboardRecordPanel() {
+      var panelHost = document.getElementById('dashboard-record-panel');
+      if (panelHost) {
+        panelHost.classList.remove('open');
+        dashboardPanelState = null;
+      }
     }
 
     // Detail-view row visibility line (2.2). Owner: status + everyone/private
