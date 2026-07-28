@@ -101,8 +101,6 @@ test('a file source shows ONCE with a ✕, and removing it clears both root + in
 }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
-  // window.confirm fallback, if showModal ever isn't present.
-  page.on('dialog', (d) => void d.accept());
 
   const filePath = join(srcDir, 'note.txt');
   // Register a FILE source → creates BOTH a file-root AND an ingested files row at
@@ -127,11 +125,9 @@ test('a file source shows ONCE with a ✕, and removing it clears both root + in
     true,
   );
 
-  // Click ✕ → a confirm modal appears ("Your file stays on your disk"); confirm it.
+  // Click ✕ → the removal just happens (no confirm modal); an Undo toast appears.
   await del.click({ force: true });
-  const modal = page.locator('.modal-backdrop .modal');
-  await expect(modal).toContainText('stays on your disk', { timeout: 5000 });
-  await modal.locator('[data-act="ok"]').click();
+  await expect(page.locator('.toast')).toContainText('Removed', { timeout: 5000 });
   // Both representations gone (API-confirmed), the node disappears.
   await expect(tree.getByText('note.txt', { exact: true })).toHaveCount(0, { timeout: 5000 });
   const rootsAfter = await (await page.request.get(gui.url + '/api/sources/roots')).json();

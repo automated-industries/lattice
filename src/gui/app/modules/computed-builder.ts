@@ -623,10 +623,8 @@ export const computedBuilderJs = `
     // Delete the view (refused by the server while other computed tables are
     // built on it — that refusal lands in the error strip verbatim).
     function cbDelete() {
-      // Confirm before the irreversible-looking DELETE (the after-the-fact undo
-      // toast still applies, but a stray click shouldn't remove the view).
-      if (typeof confirm === 'function' &&
-          !confirm('Remove ' + cbS.name + '? You can undo this from history.')) return;
+      // The delete is recorded and reversible — the success toast says "undo from
+      // history", so it just happens (no prompt).
       cbClearError();
       cbS.busy = true;
       cbSyncStatus();

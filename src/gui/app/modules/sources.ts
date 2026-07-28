@@ -122,26 +122,32 @@ export const sourcesJs = `
     // its root registration; an ingested files-row (a loose file, or a root's twin) →
     // soft-delete the row; a file that is both → clear both. Refreshes the sidebar
     // FILES section on success (the only surface that lists sources).
-    function removeSource(name, rootId, fileId) {
-      var doDelete = function () {
-        var ps = [];
-        if (rootId) ps.push(fetch('/api/sources/roots/' + encodeURIComponent(rootId), { method: 'DELETE' }));
-        if (fileId) ps.push(fetch('/api/tables/files/rows/' + encodeURIComponent(fileId), { method: 'DELETE' }));
-        return Promise.all(ps).then(function () {
-          if (typeof renderSources === 'function') renderSources();
-        });
-      };
-      if (typeof showModal === 'function') {
-        showModal('Remove from Lattice',
-          '<p>Remove <strong>' + escapeHtml(name) + '</strong> from Lattice?</p>' +
-          '<p class="hint">Your file stays on your disk — this only stops Lattice from tracking it.</p>',
-          { primaryLabel: 'Remove', primaryClass: 'destructive', onSubmit: doDelete });
-      } else if (window.confirm('Remove "' + name + '" from Lattice? Your file stays on your disk.')) {
-        doDelete();
-      }
+    function removeSource(name, rootId, fileId, path, kind) {
+      var ps = [];
+      if (rootId) ps.push(fetch('/api/sources/roots/' + encodeURIComponent(rootId), { method: 'DELETE' }));
+      if (fileId) ps.push(fetch('/api/tables/files/rows/' + encodeURIComponent(fileId), { method: 'DELETE' }));
+      // Undo re-adds the source — the file on disk was never touched. A registered
+      // root is re-registered by its path (which re-ingests, restoring its files
+      // row too); a loose ingested file with no root is restored from history.
+      var undoAdd = (rootId && path)
+        ? function () {
+            fetchJson('/api/sources/roots', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ path: path, kind: kind === 'folder' ? 'folder' : 'file' }),
+            }).then(function () {
+              if (typeof renderSources === 'function') renderSources();
+              showToast('Re-added "' + name + '"', {});
+            }).catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
+          }
+        : undoLast;
+      Promise.all(ps).then(function () {
+        if (typeof renderSources === 'function') renderSources();
+        showToast('Removed "' + name + '" from Lattice', { undo: undoAdd });
+      }).catch(function (err) { showToast('Remove failed: ' + err.message, {}); });
     }
     // Wire the ✕ controls in a scope — stop the click from bubbling to the row's
-    // open/expand handler; read the name from the sibling label for the confirm.
+    // open/expand handler; read the name from the sibling label, and the path +
+    // kind from the enclosing node so Undo can re-add the removed source.
     function wireSourceRemoval(scope) {
       scope.querySelectorAll('.src-del').forEach(function (btn) {
         if (btn.__wired) return; btn.__wired = true;
@@ -149,7 +155,10 @@ export const sourcesJs = `
           e.stopPropagation();
           var nameEl = btn.parentNode.querySelector('.src-name') || (btn.closest ? btn.closest('.fs-tile-wrap') : null);
           var nm = nameEl && nameEl.textContent ? nameEl.textContent : (btn.getAttribute('data-name') || 'this item');
-          removeSource(nm, btn.getAttribute('data-root-id'), btn.getAttribute('data-file-id'));
+          var node = btn.closest ? btn.closest('.src-node') : null;
+          var path = node ? node.getAttribute('data-path') : '';
+          var kind = node && node.classList && node.classList.contains('src-folder') ? 'folder' : 'file';
+          removeSource(nm, btn.getAttribute('data-root-id'), btn.getAttribute('data-file-id'), path, kind);
         });
       });
     }

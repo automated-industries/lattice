@@ -197,8 +197,8 @@ export const accountMenuJs = `    // ── Header account menu ─────�
             : 'Disconnect Claude';
           action.classList.add('danger');
           onAction = function () {
-            var label = onCloud ? 'your Lattice Cloud account' : onOpenai ? 'this model' : 'Claude';
-            if (!window.confirm('Disconnect ' + label + '? You will not be able to use Lattice until a model is connected.')) return;
+            // No confirm: the connect wall shown right after IS the recovery —
+            // reconnecting a model returns you to where you were.
             var endpoint = onCloud ? '/api/assistant/provider/lattice-cloud'
               : onOpenai ? '/api/assistant/provider/openai-compat'
               : '/api/assistant/oauth';

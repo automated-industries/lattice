@@ -725,8 +725,17 @@ import { appJs } from '../../src/gui/app/script.js';
 // reason instead of a silent no-op. The stale "irreversible from the GUI" /
 // "cannot be undone" copy on those confirmations is corrected to say the change
 // can be undone right after. Length + hash recaptured.
-const ORIGINAL_LENGTH = 858058;
-const ORIGINAL_SHA256 = '2249e28c3f8201c8a347a24310e3200a89f5c362e32b262bfca1a848706bfa08';
+// 5.6 undo-first UX: now that reversible actions carry a one-click Undo, the
+// confirmations on them are removed — the schema danger-zone type-the-name /
+// delete-link / rename prompts, plus the disconnect-model, forget-cloud,
+// remove-computed-view, remove-dashboard, remove-file-source, disconnect-database,
+// and dismiss-question confirms. Each action now just happens and shows a visible
+// Undo (or relies on the reconnect / history path); the oversized-cascade refusal
+// on a table delete is kept (it prevents a half-applied delete). First run also
+// auto-creates a default local workspace instead of the Create-vs-Join wall (Join
+// via invite stays in the workspace menu). Length + hash recaptured.
+const ORIGINAL_LENGTH = 860435;
+const ORIGINAL_SHA256 = '1adefe936320198d3d094ae8d2184cef0b36b6e935d4d84e92b7e41c2aac262c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -958,13 +958,11 @@ export const systemTablesJs = `    // ──────────────
 
     /** Wire up the edit-entity controls in the Data Model side panel. */
     function wireEntityEditPanel(panel, tableName) {
-      // Rename entity — a light confirm on a structural change, but it is
-      // recorded in the version history and the success toast offers a one-click
-      // undo, so it is reversible.
+      // Rename entity — the change is recorded in the version history and the
+      // success toast offers a one-click undo, so it just happens (no prompt).
       panel.querySelector('#dm-rename-btn').addEventListener('click', function () {
         var to = panel.querySelector('#dm-rename-input').value.trim();
         if (!to || to === tableName) return;
-        if (!confirm('Rename entity "' + tableName + '" to "' + to + '"? You can undo it right after.')) return;
         fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/rename', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1112,8 +1110,6 @@ export const systemTablesJs = `    // ──────────────
         btn.addEventListener('click', function () {
           var lk = dmLinksNow[Number(btn.getAttribute('data-link'))];
           if (!lk) return;
-          if (!confirm('Delete the link between "' + tableName + '" and "' + lk.other +
-            '"? It is removed from both tables. You can undo it right after.')) return;
           var url = lk.kind === 'junction'
             ? '/api/schema/entities/' + encodeURIComponent(lk.delTable)
             : '/api/schema/entities/' + encodeURIComponent(lk.delTable) +
@@ -1127,55 +1123,23 @@ export const systemTablesJs = `    // ──────────────
           });
         });
       });
-      // Delete the whole table — the single, explicit table-drop path. Gated
-      // behind a type-the-name confirmation; the server additionally refuses
-      // while another table links to this one (no broken data models).
+      // Delete the whole table — the single, explicit table-drop path. The
+      // server soft-deletes the table and records a revertible op, so the delete
+      // just happens and the success toast offers a one-click undo. The server
+      // still refuses up front (naming the reason) while another table links to
+      // this one, or when the cascade would be too large — that refusal surfaces
+      // loudly here instead of leaving a half-applied delete.
       var delTable = panel.querySelector('#dm-delete-table');
       if (delTable) delTable.addEventListener('click', function () {
-        // The name is shown with text-transform:none so the user types the
-        // real case; the match is case-insensitive anyway so the label's
-        // uppercase styling can't trip them up.
-        var nameTag = '<code style="text-transform:none;font-weight:600">' +
-          escapeHtml(tableName) + '</code>';
-        var matches = function (v) {
-          return (v || '').trim().toLowerCase() === tableName.toLowerCase();
-        };
-        showModal('Delete table "' + tableName + '"',
-          '<p class="u-m-0 u-mb-2">This removes the table ' + nameTag +
-            ' and its rows from your workspace. You can undo it right after.</p>' +
-          '<p class="hint u-m-0 u-mb-3">' +
-            'You can\\'t delete a table while another table links to it — delete those links first ' +
-            '(they show in this table\\'s Links section).</p>' +
-          '<div class="field"><label>Type ' + nameTag +
-            ' to confirm</label><input id="dm-del-confirm" autocomplete="off" ' +
-            'autocapitalize="off" autocorrect="off" spellcheck="false" /></div>',
-        {
-          primaryLabel: 'Delete table',
-          primaryClass: 'danger',
-          onBody: function (bd) {
-            var ok = bd.querySelector('[data-act="ok"]');
-            var inp = bd.querySelector('#dm-del-confirm');
-            if (ok) ok.disabled = true;
-            if (inp) {
-              inp.addEventListener('input', function () {
-                if (ok) ok.disabled = !matches(inp.value);
-              });
-              inp.focus();
-            }
-          },
-          onSubmit: function (bd) {
-            if (!matches(bd.querySelector('#dm-del-confirm').value)) {
-              throw new Error('Name does not match');
-            }
-            return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName), {
-              method: 'DELETE',
-            }).then(function (resp) {
-              gaTrack('table_delete', {}); // event only — never the table name
-              return dmRefreshPanel(null, true).then(function () { return resp; });
-            }).then(function (resp) {
-              showToast('Table "' + tableName + '" deleted', { undo: schemaUndoFn(resp && resp.undoId) });
-            });
-          },
+        withBusy(delTable, function () {
+          return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName), {
+            method: 'DELETE',
+          }).then(function (resp) {
+            gaTrack('table_delete', {}); // event only — never the table name
+            return dmRefreshPanel(null, true).then(function () { return resp; });
+          }).then(function (resp) {
+            showToast('Table "' + tableName + '" deleted', { undo: schemaUndoFn(resp && resp.undoId) });
+          }).catch(function (err) { showToast('Delete table failed: ' + err.message, {}); });
         });
       });
     }

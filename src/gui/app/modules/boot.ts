@@ -118,11 +118,48 @@ export const bootJs = `    // ────────────────�
       // Show the auth-warning banner if Claude OAuth token refresh failed terminally.
       refreshAuthWarningBlock();
       if (wsBoot && wsBoot.virgin === true) {
-        renderVirginState();
-        hideAppLoading();
-        return undefined;
+        // First run: don't make the user pick Create-vs-Join before they can even
+        // see the app. Auto-create a default local workspace (deletable, so it is
+        // safe to make for them) and drop them straight in. Joining a team by
+        // invite stays available from the workspace menu (+ New workspace…).
+        // Managed deployments provision workspaces through their manager, so they
+        // keep the welcome screen (its single Create action, no either/or).
+        if (state.managedWorkspaces === true) {
+          renderVirginState();
+          hideAppLoading();
+          return undefined;
+        }
+        return autoCreateFirstWorkspace();
       }
       return bootWorkspace();
+    }
+
+    // First-run convenience: create a default local workspace and reload into it,
+    // so the app opens straight onto a usable workspace instead of a Create-vs-Join
+    // wall. Named from the user's identity when we have one, else a friendly
+    // default. Falls back to the welcome screen (never a blank app) if the create
+    // fails — visible + recoverable, never a silent dead end.
+    function autoCreateFirstWorkspace() {
+      return fetchJson('/api/userconfig/identity').catch(function () { return null; }).then(function (idn) {
+        var who = (idn && idn.display_name) || '';
+        var name = who ? who + "'s Workspace" : 'My Workspace';
+        return fetch('/api/workspaces/create', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: name }),
+        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
+          .then(function (res) {
+            if (!res.ok || !res.body || res.body.error) {
+              throw new Error((res.body && res.body.error) || ('HTTP ' + res.status));
+            }
+            // The server switched into the new workspace; reload re-runs init()
+            // into the normal layout.
+            location.reload();
+          });
+      }).catch(function (err) {
+        if (typeof showToast === 'function') showToast('Could not create your workspace: ' + err.message, {});
+        renderVirginState();
+        hideAppLoading();
+      });
     }
 
     // Self-heal a degraded boot. reloadEverything refetches the load-bearing reads

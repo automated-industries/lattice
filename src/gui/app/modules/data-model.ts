@@ -429,7 +429,7 @@ export const dataModelJs = `    // ───────────────
         if (disc) {
           if (!(cfg.connected && cfg.managedModelAuth !== true)) disc.style.display = 'none';
           disc.addEventListener('click', function () {
-            if (!window.confirm(asstDiscLabel + '? You will not be able to use Lattice until a model is connected.')) return;
+            // No confirm: the connect wall shown right after IS the recovery.
             disc.disabled = true;
             fetchJson(asstDiscEndpoint, { method: 'DELETE' }).then(function () {
               // Back to the first-run wall; reconnect reboots cleanly.
@@ -647,11 +647,25 @@ export const dataModelJs = `    // ───────────────
               '<button class="btn destructive" id="db-forget-btn">Forget this cloud</button>' +
             '</div>';
           host.querySelector('#db-forget-btn').addEventListener('click', function () {
-            if (!confirm('Forget "' + cloudLabel + '" on this device and switch back to a local workspace?')) return;
             var fbtn = host.querySelector('#db-forget-btn');
+            // Forgetting only switches this client to a local workspace and never
+            // mutates the cloud, so the cloud is still in the local registry. Undo
+            // just switches back to it — the pointer stays recoverable in-session.
+            var cloudId = currentId;
             withBusy(fbtn, function () {
               return switchAway()
-                .then(function () { showToast('Forgot the cloud connection', {}); })
+                .then(function () {
+                  showToast('Forgot the cloud connection', {
+                    undo: function () {
+                      fetchJson('/api/workspaces/switch', {
+                        method: 'POST', headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ id: cloudId }),
+                      }).then(function () { return reloadEverything(); })
+                        .then(function () { showToast('Reconnected to "' + cloudLabel + '"', {}); })
+                        .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
+                    },
+                  });
+                })
                 .catch(function (e) { showToast('Failed: ' + e.message); });
             });
           });

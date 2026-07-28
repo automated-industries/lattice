@@ -191,18 +191,39 @@ export const inputsJs = `
       else done();
     }
 
+    // Re-open the connect form pre-filled with a disconnected connection's
+    // (non-secret) parts so Undo brings the connection back. The external database
+    // is never mutated by a disconnect; only the password — which Lattice never
+    // stores client-side — is retyped to reconnect.
+    function reopenConnectForm(parts) {
+      dbEditId = null;
+      dbEditPrefill = parts || {};
+      ++dbEditSeq;
+      renderDbForm();
+      var f = document.getElementById('db-host');
+      if (f) { f.scrollIntoView({ block: 'nearest' }); f.focus(); }
+      showToast('Re-enter the password to reconnect ' + ((parts && parts.displayName) || 'the database'), {});
+    }
+
     function disconnectDbSource(id) {
       if (!id) return;
-      if (!window.confirm('Disconnect this database? Its imported tables will be removed.')) return;
-      fetch('/api/db-sources/' + encodeURIComponent(id), { method: 'DELETE' })
-        .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
-        .then(function (res) {
-          if (!res.ok) { showToast('Disconnect failed: ' + (res.body.error || 'unknown'), {}); return; }
-          showToast('Database disconnected.', {});
-          // If the row being edited was just removed, drop back to add mode.
-          if (dbEditId === id) { dbEditId = null; dbEditPrefill = {}; ++dbEditSeq; renderDbForm(); }
-          refreshAfterDbImport();
-        })
-        .catch(function (e) { showToast('Disconnect failed: ' + (e && e.message ? e.message : e), {}); });
+      // Remember the (non-secret) connection parts BEFORE disconnecting so Undo can
+      // re-open the connect form pre-filled. A missing/older row just yields no
+      // prefill — the Undo still opens a blank connect form rather than nothing.
+      fetchJson('/api/db-sources/' + encodeURIComponent(id) + '/connection')
+        .then(function (d) { return (d && d.connection) || {}; })
+        .catch(function () { return {}; })
+        .then(function (parts) {
+          fetch('/api/db-sources/' + encodeURIComponent(id), { method: 'DELETE' })
+            .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+            .then(function (res) {
+              if (!res.ok) { showToast('Disconnect failed: ' + (res.body.error || 'unknown'), {}); return; }
+              // If the row being edited was just removed, drop back to add mode.
+              if (dbEditId === id) { dbEditId = null; dbEditPrefill = {}; ++dbEditSeq; renderDbForm(); }
+              refreshAfterDbImport();
+              showToast('Database disconnected', { undo: function () { reopenConnectForm(parts); } });
+            })
+            .catch(function (e) { showToast('Disconnect failed: ' + (e && e.message ? e.message : e), {}); });
+        });
     }
 `;
