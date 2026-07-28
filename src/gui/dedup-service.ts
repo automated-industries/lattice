@@ -3,7 +3,14 @@ import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
 import type { FeedBus } from './feed.js';
 import { deleteRow, linkRows, unlinkRows, type MutationCtx } from './mutations.js';
-import { findDuplicateGroups, type DedupItem, type DedupGroup } from '../dedup/index.js';
+import {
+  findDuplicateGroups,
+  MAX_FUZZY_TEXT_CHARS,
+  type DedupItem,
+  type DedupGroup,
+  type DedupScanResult,
+  type DedupScanStats,
+} from '../dedup/index.js';
 import { keyFromColumns, normalizeText } from '../dedup/normalize.js';
 import { DEFAULT_NEAR_THRESHOLD } from '../dedup/match.js';
 import { tableJunctions } from './data.js';
@@ -22,10 +29,60 @@ export interface DedupServiceCtx {
   configPath: string;
   outputDir: string;
   sessionId?: string | undefined;
+  /**
+   * Operation-group id threaded onto every audit entry the merge writes (see
+   * MutationCtx.opGroup) so a whole merge/dedup pass is undoable as one action.
+   */
+  opGroup?: string | undefined;
 }
 
 /** Active-row ceiling above which the explicit dedup scan refuses to run (loudly) rather than truncating — truncating would silently miss duplicates. Tunable. */
 export const DEDUP_MAX_SCAN_ROWS = 50_000;
+
+/**
+ * Leading normalized-text characters used as the fuzzy candidate-block key for
+ * files. Two documents whose extracted text differs inside this prefix are never
+ * fuzzy-compared — that is the whole point of blocking (candidate generation
+ * must not be all-pairs), and it is what keeps the scan off the quadratic path.
+ */
+const FILE_BLOCK_PREFIX_CHARS = 10;
+
+/**
+ * Bounded-scan tuning accepted by the scan entry points and passed through to
+ * the core grouping module. All optional; production callers use the defaults.
+ */
+export interface DedupScanTuning {
+  maxPairsPerBlock?: number;
+  timeBudgetMs?: number;
+  yieldEvery?: number;
+  now?: () => number;
+  onYield?: () => Promise<void>;
+}
+
+/** Spread-safe pick of the tuning fields (exactOptionalPropertyTypes-friendly). */
+function tuningOf(opts: DedupScanTuning): DedupScanTuning {
+  return {
+    ...(opts.maxPairsPerBlock !== undefined ? { maxPairsPerBlock: opts.maxPairsPerBlock } : {}),
+    ...(opts.timeBudgetMs !== undefined ? { timeBudgetMs: opts.timeBudgetMs } : {}),
+    ...(opts.yieldEvery !== undefined ? { yieldEvery: opts.yieldEvery } : {}),
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+    ...(opts.onYield !== undefined ? { onYield: opts.onYield } : {}),
+  };
+}
+
+/** Sum two scan accounts; complete only when both passes were complete. */
+function combineScans(a: DedupScanStats, b: DedupScanStats): DedupScanStats {
+  const complete = a.complete && b.complete;
+  const reason = a.reason ?? b.reason;
+  return {
+    complete,
+    pairsCompared: a.pairsCompared + b.pairsCompared,
+    pairsSkipped: a.pairsSkipped + b.pairsSkipped,
+    blocksTruncated: a.blocksTruncated + b.blocksTruncated,
+    rowsInTruncatedBlocks: a.rowsInTruncatedBlocks + b.rowsInTruncatedBlocks,
+    ...(complete || reason === undefined ? {} : { reason }),
+  };
+}
 
 const get = (r: Row, k: string): unknown => (r as Record<string, unknown>)[k];
 /** A row cell coerced to a string ('' when absent / non-string). */
@@ -47,8 +104,22 @@ function defaultKeyColumns(cols: string[]): string[] {
  * Content-duplicate groups for the `files` entity: byte-identical first (sha256),
  * then identical extracted text, then — when `fuzzy` — near-identical extracted
  * text. Groups are disjoint (a row grouped by sha isn't re-grouped by text).
+ *
+ * Fuzzy blocking is deliberate here: the exact-grouping key keeps its `txt:`
+ * namespace tag (so a text key can never collide with a `sha:` key), but the
+ * BLOCK key and the comparison text are built from the normalized content
+ * itself. An earlier version blocked on the first characters of the tagged key,
+ * so every text row shared the constant `txt:` prefix, the blocking degenerated
+ * into ONE all-pairs block, and a 1,200-file fuzzy scan pinned the server's only
+ * thread for ~104 seconds. The block key is now a content prefix plus a length
+ * band (floor(log2(length))), so wildly different-length documents never pair.
  */
-function fileContentGroups(rows: Row[], fuzzy: boolean, threshold?: number): DedupGroup[] {
+async function fileContentGroups(
+  rows: Row[],
+  fuzzy: boolean,
+  threshold?: number,
+  tuning: DedupScanTuning = {},
+): Promise<DedupScanResult> {
   const shaItems: DedupItem[] = rows
     .filter((r) => get(r, 'sha256'))
     .map((r) => ({
@@ -56,9 +127,9 @@ function fileContentGroups(rows: Row[], fuzzy: boolean, threshold?: number): Ded
       key: 'sha:' + String(get(r, 'sha256')),
       createdAt: cellStrOrNull(get(r, 'created_at')),
     }));
-  const shaGroups = findDuplicateGroups(shaItems, { fuzzy: false });
+  const sha = await findDuplicateGroups(shaItems, { fuzzy: false });
   const grouped = new Set<string>();
-  shaGroups.forEach((g) => {
+  sha.groups.forEach((g) => {
     g.ids.forEach((id) => grouped.add(id));
   });
 
@@ -70,29 +141,51 @@ function fileContentGroups(rows: Row[], fuzzy: boolean, threshold?: number): Ded
     })
     .map((r) => {
       const norm = normalizeText(get(r, 'extracted_text'));
-      // Fuzzy compares keys directly (bounded slice keeps it cheap); exact hashes.
+      // Fuzzy keeps the bounded-slice key for exact-identical grouping; exact hashes.
       const key = fuzzy
         ? 'txt:' + norm.slice(0, 2000)
         : 'txt:' + createHash('sha256').update(norm).digest('hex');
-      return { id: String(get(r, 'id')), key, createdAt: cellStrOrNull(get(r, 'created_at')) };
+      const base: DedupItem = {
+        id: String(get(r, 'id')),
+        key,
+        createdAt: cellStrOrNull(get(r, 'created_at')),
+      };
+      if (!fuzzy) return base;
+      const lengthBand = Math.floor(Math.log2(Math.max(1, norm.length)));
+      return {
+        ...base,
+        fuzzyText: norm.slice(0, MAX_FUZZY_TEXT_CHARS),
+        blockKey:
+          'txt\u0000' + String(lengthBand) + '\u0000' + norm.slice(0, FILE_BLOCK_PREFIX_CHARS),
+      };
     });
-  const txtGroups = findDuplicateGroups(txtItems, {
+  const txt = await findDuplicateGroups(txtItems, {
     fuzzy,
     ...(threshold !== undefined ? { threshold } : {}),
+    ...tuningOf(tuning),
   });
-  return [...shaGroups, ...txtGroups];
+  return { groups: [...sha.groups, ...txt.groups], scan: combineScans(sha.scan, txt.scan) };
 }
 
 /**
- * Find duplicate groups in `table`. `files` groups by content (sha → text →
- * fuzzy text); any other table groups by its key columns. This loads the table
- * — it is an EXPLICIT operation (the assistant `dedup` tool), not a hot path.
+ * Scan `table` for duplicate groups and report HOW MUCH of the candidate space
+ * was examined. `files` groups by content (sha → text → fuzzy text); any other
+ * table groups by its key columns. This loads the table — it is an EXPLICIT
+ * operation (the assistant `dedup` tool), not a hot path — but the fuzzy pass
+ * is bounded (pair caps + time budget) and yields to the event loop, so it can
+ * also be used to cheaply COUNT the real size of a prospective cleanup without
+ * mutating anything: sum `ids.length - 1` over the returned groups, and trust
+ * that count as exhaustive only when `scan.complete` is true.
  */
-export async function findTableDuplicates(
+export async function scanTableDuplicates(
   ctx: DedupServiceCtx,
   table: string,
-  opts: { fuzzy?: boolean; threshold?: number; keyColumns?: string[] } = {},
-): Promise<DedupGroup[]> {
+  opts: {
+    fuzzy?: boolean;
+    threshold?: number;
+    keyColumns?: string[];
+  } & DedupScanTuning = {},
+): Promise<DedupScanResult> {
   // One column lookup, reused by the count guard, the read's soft-delete
   // filter, and the key-column selection below (hoisted above the files branch).
   const cols = ctx.db.getRegisteredColumns(table);
@@ -122,9 +215,22 @@ export async function findTableDuplicates(
     table,
     hasDeletedAt ? { filters: [{ col: 'deleted_at', op: 'isNull' }] } : {},
   );
-  if (table === 'files') return fileContentGroups(rows, opts.fuzzy ?? false, opts.threshold);
+  if (table === 'files') {
+    return fileContentGroups(rows, opts.fuzzy ?? false, opts.threshold, tuningOf(opts));
+  }
   const keyCols = opts.keyColumns ?? defaultKeyColumns(cols ? Object.keys(cols) : []);
-  if (keyCols.length === 0) return [];
+  if (keyCols.length === 0) {
+    return {
+      groups: [],
+      scan: {
+        complete: true,
+        pairsCompared: 0,
+        pairsSkipped: 0,
+        blocksTruncated: 0,
+        rowsInTruncatedBlocks: 0,
+      },
+    };
+  }
   const items: DedupItem[] = rows
     .map((r) => ({
       id: String(get(r, 'id')),
@@ -135,7 +241,36 @@ export async function findTableDuplicates(
   return findDuplicateGroups(items, {
     fuzzy: opts.fuzzy ?? false,
     ...(opts.threshold !== undefined ? { threshold: opts.threshold } : {}),
+    ...tuningOf(opts),
   });
+}
+
+/**
+ * Groups-only wrapper over {@link scanTableDuplicates} for callers that cannot
+ * represent a partial answer (the planner's exact-only pass). If the scan did
+ * NOT examine every candidate pair it THROWS rather than returning groups that
+ * silently under-count — a truncated scan handed over as a plain array would
+ * read as "these are all the duplicates". Exact-only scans never truncate.
+ */
+export async function findTableDuplicates(
+  ctx: DedupServiceCtx,
+  table: string,
+  opts: {
+    fuzzy?: boolean;
+    threshold?: number;
+    keyColumns?: string[];
+  } & DedupScanTuning = {},
+): Promise<DedupGroup[]> {
+  const { groups, scan } = await scanTableDuplicates(ctx, table, opts);
+  if (!scan.complete) {
+    throw new Error(
+      `duplicate scan of "${table}" was truncated (${scan.reason ?? 'bounded'}): ` +
+        `${String(scan.pairsSkipped)} candidate comparison(s) across ` +
+        `${String(scan.rowsInTruncatedBlocks)} row(s) were not examined. ` +
+        `Use scanTableDuplicates to receive the partial result with its scan report.`,
+    );
+  }
+  return groups;
 }
 
 /**
@@ -208,6 +343,7 @@ export async function mergeDuplicates(
     softDeletable: ctx.softDeletable,
     source: 'system',
     ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    ...(ctx.opGroup ? { opGroup: ctx.opGroup } : {}),
   };
   const junctions = tableJunctions(table, ctx.configPath, ctx.outputDir);
   let relinked = 0;

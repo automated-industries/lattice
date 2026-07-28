@@ -160,13 +160,11 @@ jobs:
           # never claim a version the shipped binary can't reach (which would make every
           # client re-download an update it can never finish applying). Also assert the
           # tag matches, so a mistagged release fails loudly instead of publishing
-          # download URLs that point at a different version than the manifest.
+          # download URLs that point at a different version than the manifest. The
+          # assertion lives in scripts/assert-release-version.mjs so the unit suite
+          # (tests/unit/assert-release-version.test.ts) can pin its semantics.
+          node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
           VERSION="$(node -p "require('./package.json').version")"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::package.json version ($VERSION) does not match tag ($TAG_VERSION); refusing to publish a mismatched manifest"
-            exit 1
-          fi
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
           node scripts/gen-desktop-manifest.mjs "$VERSION" "$BASE" \
             darwin=dist-desktop/Lattice.dmg darwin-pkg=dist-desktop/Lattice.pkg \

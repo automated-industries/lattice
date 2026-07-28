@@ -6,9 +6,12 @@
 // SQL-protected tables (sqlDenied) and tables with their own dedicated home
 // (navHidden — files, which has its own sidebar section) are excluded. Clicking a table opens its
 // Workspace tab (#/w/table/<name>). Collapse state reuses the shared
-// .section-toggle[data-group] idiom (sources.ts). Must stay INSIDE the client
-// IIFE (uses state/escapeHtml/displayFor/sidebarGroupKey/
-// setSidebarGroupCollapsed/applySidebarGroupState/wireSidebarGroupToggles).
+// .section-toggle[data-group] idiom (sources.ts). All three subheads render even
+// when their buckets are empty — an empty bucket shows an empty state + add
+// affordance instead of the section collapsing to a bare line. Must stay INSIDE
+// the client IIFE (uses state/escapeHtml/displayFor/sidebarGroupKey/
+// setSidebarGroupCollapsed/applySidebarGroupState/wireSidebarGroupToggles/
+// sidebarGroupCollapsed/toggleSidebarGroup/openConfigureDrawer).
 // Function declarations hoist, so call order is free.
 export const navSectionsJs = `
     // DATA — every model table under three FIXED subheads, read from the in-memory
@@ -21,8 +24,8 @@ export const navSectionsJs = `
       var host = document.getElementById('nav-tables-list');
       if (!host) return;
       // Hide EMPTY connector / external-DB tables (0 live rows = never synced = noise),
-      // and — because a subhead only forms around the tables that survive this filter —
-      // a source whose tables are all empty drops out entirely (header and all).
+      // so a source whose tables are all empty contributes nothing to its bucket —
+      // though the bucket's SUBHEAD still renders (with its empty state) below.
       // The user's OWN entities (TABLES subhead, i.e. no connector schemaKey) always
       // show, even when empty, so a table they just created still appears. rowCount
       // null = unknown → keep, so a counting hiccup never hides real data.
@@ -43,12 +46,34 @@ export const navSectionsJs = `
         return key.indexOf('conn:') === 0 ? 'connectors' : 'databases';
       }
       var LABELS = { lattice: 'TABLES', connectors: 'CONNECTORS', databases: 'DATABASES' };
+      // ALL THREE subheads always render. An empty bucket keeps its group and
+      // shows an empty state + add affordance instead of vanishing, so a fresh
+      // workspace still lays out where data can come from — the old behavior
+      // replaced the whole section body with a single bare "No tables yet." line.
       var groups = {};
-      tables.forEach(function (t) {
-        var key = bucketOf(t);
-        if (!groups[key]) groups[key] = { key: key, label: LABELS[key], tables: [] };
-        groups[key].tables.push(t);
+      ['lattice', 'connectors', 'databases'].forEach(function (k) {
+        groups[k] = { key: k, label: LABELS[k], tables: [] };
       });
+      tables.forEach(function (t) {
+        groups[bucketOf(t)].tables.push(t);
+      });
+      // Empty-state body for a bucket with no tables: a short line + the add
+      // affordance. Files are added from the FILES section's own menu; the
+      // connector / database add forms live inline in their Configure tabs, so
+      // opening the tab IS the add surface (same routing the dashboard broker's
+      // add actions use).
+      function navEmptyBucketHtml(key) {
+        if (key === 'connectors') {
+          return '<div class="nav-empty">No connectors yet.</div>' +
+            '<button type="button" class="nav-add-item" data-nav-add="connectors">＋ Add a connector</button>';
+        }
+        if (key === 'databases') {
+          return '<div class="nav-empty">No databases yet.</div>' +
+            '<button type="button" class="nav-add-item" data-nav-add="databases">＋ Connect a database</button>';
+        }
+        return '<div class="nav-empty">No tables yet.</div>' +
+          '<button type="button" class="nav-add-item" data-nav-add="files">＋ Add files</button>';
+      }
       // Within a merged bucket, order by source label first so each connector's /
       // database's tables stay contiguous under the shared subhead.
       Object.keys(groups).forEach(function (k) {
@@ -75,12 +100,13 @@ export const navSectionsJs = `
             '<span class="nav-item-ic">' + (d.icon || '🗂️') + '</span>' +
             '<span class="nav-item-name">' + escapeHtml(d.label) + '</span></button>';
         }).join('');
+        if (!items) items = navEmptyBucketHtml(g.key);
         return '<div class="nav-schema">' +
           '<button type="button" class="section-label section-toggle nav-schema-head" data-group="' + gkey + '" aria-expanded="true">' +
           '<span class="section-caret">▾</span><span class="nav-schema-label">' + escapeHtml(g.label) + '</span></button>' +
           '<div class="section-body" data-group-body="' + gkey + '">' + items + '</div></div>';
       }).join('');
-      host.innerHTML = html || '<div class="nav-empty">No tables yet.</div>';
+      host.innerHTML = html;
       // Seed CONNECTORS/DATABASES collapsed on first sight (no stored preference yet);
       // TABLES stays open. Then apply the (possibly stored) collapse state + caret.
       rendered.forEach(function (r) {
@@ -97,6 +123,24 @@ export const navSectionsJs = `
         if (b.__wired) return; b.__wired = true;
         b.addEventListener('click', function () {
           location.hash = '#/w/table/' + encodeURIComponent(b.getAttribute('data-table'));
+        });
+      });
+      // Empty-bucket add affordances. Never a navigation: files opens the FILES
+      // section's add menu in place; the other two open the matching Configure tab.
+      host.querySelectorAll('.nav-add-item').forEach(function (b) {
+        if (b.__wired) return; b.__wired = true;
+        b.addEventListener('click', function () {
+          var kind = b.getAttribute('data-nav-add');
+          if (kind === 'files') {
+            if (typeof sidebarGroupCollapsed === 'function' && typeof toggleSidebarGroup === 'function' &&
+                sidebarGroupCollapsed('nav-files')) {
+              toggleSidebarGroup('nav-files');
+            }
+            var fb = document.getElementById('src-add-files');
+            if (fb) fb.click();
+            return;
+          }
+          if (typeof openConfigureDrawer === 'function') openConfigureDrawer(kind);
         });
       });
       // Wire the schema-header toggles (idempotent; independent open/close since the

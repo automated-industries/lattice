@@ -32,14 +32,16 @@ export const tabsCss = `    /* ── Column headers (Inputs · Model · Outputs
     .brain-graph.entity-graph #graph-mount { flex: 1 1 auto; height: auto; min-height: 0; }
     .graph-crumbs { flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--border); }
     /* Loading spinner shown until the graph has settled + centred (no off-centre
-       flash / jump). Covers the mount; removed the moment the graph is revealed. */
+       flash / jump). Covers the mount; removed the moment the graph is revealed.
+       The ring itself is the shared .lat-spinner primitive (styles/realtime.ts);
+       .graph-spinner only scales/recolors it for the graph mount, so every call
+       site renders class="lat-spinner graph-spinner". These overrides win by
+       composition order (realtime.ts composes earlier — see styles/index.ts). */
     .graph-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2; }
     .graph-spinner {
-      width: 28px; height: 28px; border-radius: 50%;
+      width: 28px; height: 28px;
       border: 3px solid var(--border); border-top-color: var(--accent);
-      animation: graphSpin 0.8s linear infinite;
     }
-    @keyframes graphSpin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { .graph-spinner { animation: none; } }
 
     /* ── Settings → Data Model entity list ─────────────────── */

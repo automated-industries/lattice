@@ -65,9 +65,8 @@ export const connectWallCss = `    /* ── First-run connect wall ────
     .cw-spinner {
       width: 34px; height: 34px; margin: 4px auto 14px; border-radius: 50%;
       border: 3px solid var(--border); border-top-color: var(--accent);
-      animation: cw-spin .8s linear infinite;
+      animation: lattice-spin var(--dur-spin) linear infinite;
     }
-    @keyframes cw-spin { to { transform: rotate(360deg); } }
 
     /* ── Usage-limit banner (app-wide) ──────────────────── */
     .limit-banner {

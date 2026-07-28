@@ -21,7 +21,7 @@ export const toastCss = `    /* ── Toast / undo banner ───────
     .spinner {
       display: inline-block; width: 12px; height: 12px; margin-right: 6px;
       vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent;
-      border-radius: 50%; animation: lattice-spin 0.6s linear infinite;
+      border-radius: 50%; animation: lattice-spin var(--dur-spin) linear infinite;
     }
     /* Global boot interstitial — paints from the static shell on frame 1, masking
        the half-rendered shell (incl. the placeholder "workspace" label) until

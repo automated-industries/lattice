@@ -43,7 +43,9 @@ export const markdownJs = `    // ───────────────�
             '</div>';
           return;
         }
-        mount.innerHTML = data.entries.map(historyEntryHtml).join('');
+        mount.innerHTML = groupHistoryEntries(data.entries).map(function (item) {
+          return item.kind === 'group' ? historyGroupHtml(item) : historyEntryHtml(item.entry);
+        }).join('');
 
         mount.querySelectorAll('button.history-revert').forEach(function (btn) {
           btn.addEventListener('click', function () {
@@ -58,6 +60,29 @@ export const markdownJs = `    // ───────────────�
               .catch(function (err) { showToast('Revert failed: ' + err.message, {}); });
           });
         });
+
+        mount.querySelectorAll('button.history-undo-group').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var gid = btn.getAttribute('data-group');
+            gaTrack('history_action', { action: 'undo_group' });
+            btn.disabled = true;
+            fetchJson('/api/history/undo-group/' + encodeURIComponent(gid), { method: 'POST' })
+              .then(function (r) {
+                return afterMutation().then(function () { return r; });
+              })
+              .then(function (r) {
+                renderHistory(document.getElementById('content'));
+                var n = r && r.undone ? r.undone : 0;
+                showToast('Change undone' + (n ? ' (' + n + ' record' + (n === 1 ? '' : 's') + ')' : ''), {});
+              })
+              .catch(function (err) {
+                // A 409 means a row in the group was edited since — the server
+                // refused the whole undo and changed nothing. Surface it as-is.
+                btn.disabled = false;
+                showToast('Undo failed: ' + err.message, {});
+              });
+          });
+        });
       }).catch(function (err) {
         document.getElementById('history-list').innerHTML =
           '<div class="muted" style="padding:24px;">Failed to load: ' + escapeHtml(err.message) + '</div>';
@@ -65,6 +90,77 @@ export const markdownJs = `    // ───────────────�
     }
 
     function isSchemaHistoryOp(op) { return String(op).indexOf('schema.') === 0; }
+
+    /**
+     * Collapse audit entries that share an operation-group id (all the rows one
+     * bulk operation touched) into a single renderable group. Returns render
+     * items in feed order: { kind: 'entry', entry } for standalone changes,
+     * { kind: 'group', id, entries } for a 2+ group positioned where its newest
+     * entry sits. A "group" holding a single visible entry degrades to a plain
+     * entry — one record changed is not a bulk operation. Pure (no DOM), so it
+     * is testable in isolation.
+     */
+    function groupHistoryEntries(entries) {
+      var byGroup = {};
+      var order = [];
+      var i;
+      for (i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        var g = e.op_group;
+        if (!g) { order.push({ kind: 'entry', entry: e }); continue; }
+        if (!byGroup[g]) {
+          byGroup[g] = { kind: 'group', id: g, entries: [] };
+          order.push(byGroup[g]);
+        }
+        byGroup[g].entries.push(e);
+      }
+      return order.map(function (item) {
+        if (item.kind === 'group' && item.entries.length === 1) {
+          return { kind: 'entry', entry: item.entries[0] };
+        }
+        return item;
+      });
+    }
+
+    /**
+     * One card for a whole bulk operation: what happened, how many records, and
+     * a single "Undo this change" control that reverses the entire group
+     * all-or-nothing on the server.
+     */
+    function historyGroupHtml(g) {
+      var entries = g.entries;
+      var newest = entries[0];
+      var liveCount = entries.filter(function (e) { return !e.undone; }).length;
+      var tables = [];
+      var counts = {};
+      entries.forEach(function (e) {
+        if (tables.indexOf(e.table_name) === -1) tables.push(e.table_name);
+        counts[e.operation] = (counts[e.operation] || 0) + 1;
+      });
+      var n = entries.length;
+      var verb = 'Changed';
+      if (counts.update === n) verb = 'Updated';
+      else if (counts.insert === n) verb = 'Added';
+      else if (counts.delete === n) verb = 'Removed';
+      var tableLabels = tables.map(function (t) { return displayFor(t).label; });
+      var summary = verb + ' ' + n + ' record' + (n === 1 ? '' : 's') +
+        ' in <span class="history-table">' + tableLabels.map(escapeHtml).join(', ') + '</span>' +
+        ' <span class="muted">in one operation</span>';
+      var partial = liveCount > 0 && liveCount < n
+        ? '<div class="hint-xs u-mt-2">' + liveCount + ' of ' + n + ' still applied</div>'
+        : '';
+      var actions = liveCount === 0
+        ? '<span class="hint-xs">undone</span>'
+        : '<button class="btn danger history-undo-group" data-group="' + escapeHtml(g.id) + '">Undo this change</button>';
+      return '<div class="history-entry' + (liveCount === 0 ? ' is-undone' : '') + '">' +
+        '<div class="history-meta">' +
+          '<div><span class="history-op op-bulk">bulk</span></div>' +
+          '<div class="u-mt-2">' + escapeHtml(formatTs(newest.ts)) + '</div>' +
+        '</div>' +
+        '<div class="history-summary">' + summary + partial + '</div>' +
+        '<div class="history-actions">' + actions + '</div>' +
+      '</div>';
+    }
 
     /** One-line description for a schema/data-model history entry. */
     function schemaEntryLabel(e) {

@@ -249,3 +249,139 @@ describe('excelToRecords — multi-block sheets', () => {
     ]);
   });
 });
+
+/** Write a one-sheet workbook via direct cell writes + explicit merged ranges (the
+ *  grouped-header shapes need mergeCells, which the grid helper cannot express). */
+async function writeMergedSheet(
+  sheet: string,
+  build: (ws: import('exceljs').Worksheet) => void,
+): Promise<string> {
+  const ExcelJS = await import('exceljs');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(sheet);
+  build(ws);
+  const dir = mkdtempSync(join(tmpdir(), 'lattice-xlsx-'));
+  dirs.push(dir);
+  const path = join(dir, 'merged.xlsx');
+  await wb.xlsx.writeFile(path);
+  return path;
+}
+
+describe('excelToRecords — grouped (two-row) headers', () => {
+  it('combines a merged band row + label row into human-readable column names', async () => {
+    // The classic grouped layout: a full-width merged title, then a BAND row of merged
+    // period labels (Q1 over two columns, Q2 over two columns) with a vertical "Region"
+    // stub merged through both header rows, then the label row, then data. A human reads
+    // the columns as "Q1 Revenue", "Q1 Costs", ... — the importer must too. Column F has
+    // a label but no band above it: its name stays the plain label.
+    const path = await writeMergedSheet('Quarters', (ws) => {
+      ws.mergeCells('A1:E1');
+      ws.getCell('A1').value = 'Acme Quarterly Report'; // title, NOT a band
+      ws.mergeCells('A2:A3'); // vertical stub: one label spanning both header rows
+      ws.getCell('A2').value = 'Region';
+      ws.mergeCells('B2:C2');
+      ws.getCell('B2').value = 'Q1';
+      ws.mergeCells('D2:E2');
+      ws.getCell('D2').value = 'Q2';
+      ws.getCell('B3').value = 'Revenue';
+      ws.getCell('C3').value = 'Costs';
+      ws.getCell('D3').value = 'Revenue';
+      ws.getCell('E3').value = 'Costs';
+      ws.getCell('F3').value = 'Notes'; // label-only column (no band above)
+      const data: unknown[][] = [
+        ['East', 10, 5, 12, 6, 'ok'],
+        ['West', 20, 7, 22, 8, 'meh'],
+      ];
+      data.forEach((row, i) => {
+        row.forEach((v, j) => {
+          ws.getCell(4 + i, 1 + j).value = v as import('exceljs').CellValue;
+        });
+      });
+    });
+    const rows = (await excelToRecords(path)).Quarters!;
+    // Exact records: band+label combined names, the vertical stub collapsed to its single
+    // label (never "Region Region"), no duplicate-suffix names ("Revenue 2"), no title text.
+    expect(rows).toEqual([
+      {
+        Region: 'East',
+        'Q1 Revenue': 10,
+        'Q1 Costs': 5,
+        'Q2 Revenue': 12,
+        'Q2 Costs': 6,
+        Notes: 'ok',
+      },
+      {
+        Region: 'West',
+        'Q1 Revenue': 20,
+        'Q1 Costs': 7,
+        'Q2 Revenue': 22,
+        'Q2 Costs': 8,
+        Notes: 'meh',
+      },
+    ]);
+  });
+
+  it('does not mistake a merged full-width title for a band (or a header)', async () => {
+    // A single merged cell spanning the table is a TITLE: exceljs proxies its value into
+    // every covered cell, so by raw cell counts the row looks dense — but it carries ONE
+    // value and must be skipped, with the real single-row header used as-is beneath it.
+    const path = await writeMergedSheet('Sales', (ws) => {
+      ws.mergeCells('A1:C1');
+      ws.getCell('A1').value = 'Sales Report';
+      ws.getCell('A2').value = 'Code';
+      ws.getCell('B2').value = 'Name';
+      ws.getCell('C2').value = 'Amount';
+      ws.getCell('A3').value = 'X';
+      ws.getCell('B3').value = 'Xco';
+      ws.getCell('C3').value = 9;
+      ws.getCell('A4').value = 'Y';
+      ws.getCell('B4').value = 'Yco';
+      ws.getCell('C4').value = 4;
+    });
+    const rows = (await excelToRecords(path)).Sales!;
+    expect(rows).toEqual([
+      { Code: 'X', Name: 'Xco', Amount: 9 },
+      { Code: 'Y', Name: 'Yco', Amount: 4 },
+    ]);
+    // The title text never leaks into a column name.
+    for (const key of Object.keys(rows[0]!)) expect(key).not.toMatch(/sales report/i);
+  });
+
+  it('leaves single-row-header sheets without merges exactly as before', async () => {
+    // No merges anywhere → the pre-grouped-header detection path runs unchanged.
+    const path = await writeGridSheet('Plain', [
+      ['Code', 'Name', 'Amount'],
+      ['A', 'Alpha', 10],
+      ['B', 'Beta', 20],
+    ]);
+    expect((await excelToRecords(path)).Plain).toEqual([
+      { Code: 'A', Name: 'Alpha', Amount: 10 },
+      { Code: 'B', Name: 'Beta', Amount: 20 },
+    ]);
+  });
+
+  it('keeps a cosmetic merged header cell on a single-row header out of the band path', async () => {
+    // A merged header cell with plain DATA (not a second label row) beneath it is not a
+    // grouped header: only one cell is filled under the merge span per row, so the band
+    // rule does not fire and the row imports as an ordinary (proxied) single-row header.
+    const path = await writeMergedSheet('Wide', (ws) => {
+      ws.mergeCells('A1:B1'); // cosmetic width merge over ONE logical column
+      ws.getCell('A1').value = 'Fund';
+      ws.getCell('C1').value = 'Vintage';
+      ws.getCell('D1').value = 'Size';
+      ws.getCell('A2').value = 'Alpha';
+      ws.getCell('C2').value = 2022;
+      ws.getCell('D2').value = 100;
+      ws.getCell('A3').value = 'Beta';
+      ws.getCell('C3').value = 2018;
+      ws.getCell('D3').value = 250;
+    });
+    const rows = (await excelToRecords(path)).Wide!;
+    // Row 1 stays the header (the merge proxies "Fund" into A and B — the de-dup suffix
+    // is the long-standing single-row behavior); row 2 is DATA, not a label row.
+    expect(rows).toEqual([
+      { Fund: 'Alpha', Vintage: 2022, Size: 100 },
+      { Fund: 'Beta', Vintage: 2018, Size: 250 },
+    ]);
+  });
+});

@@ -276,8 +276,24 @@ import { css } from '../../src/gui/app/css.js';
 // (.dash-frame-wrap flex row + wrap, .panel-header/.panel-close/.panel-scroll,
 // .record-fields/.record-field) for the open-record citation click-through, plus
 // the full-width .dash-source row under the now-flex wrap. Length + hash recaptured.
-const ORIGINAL_LENGTH = 176035;
-const ORIGINAL_SHA256 = '023448148a27618e30d6420ee72423338b3939b35a7ca0299b18566cf5b45cd0';
+// 5.6 bulk undo: the .op-bulk history pill for the version-history card that
+// collapses one bulk operation's entries into a single row. Recaptured.
+// 5.6 header update-pill placement: a VISIBLE #app-update-link takes over the
+// header's flexible gap (margin-left: auto) and the adjacent .configure-trigger
+// drops its own auto margin for that case, so the pill sits at the far right
+// immediately left of Configure instead of stranded mid-header. Hidden state
+// unchanged. Recaptured.
+// 5.6 empty-bucket subheads: the .nav-add-item add affordance rendered inside an
+// empty TABLES / CONNECTORS / DATABASES group body (muted table-item-shaped
+// button + hover), next to the existing .nav-empty line. Recaptured.
+// 5.6 motion vocabulary + final recapture: the bespoke per-surface spinner
+// keyframes (feed, connect wall, inline import, graph) are retired for the one
+// shared lattice-spin keyframe + --dur-spin duration token + .lat-spinner
+// primitive (reduced-motion kill switch included). This recapture covers the
+// merged 5.6 stylesheet: bulk-undo history pill, update-pill placement,
+// empty-bucket nav subheads, and the motion vocabulary. Recaptured.
+const ORIGINAL_LENGTH = 177243;
+const ORIGINAL_SHA256 = '5b7a76042e3818a175ae8fb4aafc104ea6c493c5717b86fd416fe3e40f41ed08';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

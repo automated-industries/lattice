@@ -72,6 +72,7 @@ export const topbarCss = `    /* ── Top bar ──────────�
     .history-op.op-delete { background: color-mix(in srgb, var(--hue-orange) 12%, transparent); color: var(--warn); }
     .history-op.op-link, .history-op.op-unlink { background: color-mix(in srgb, var(--hue-cyan) 15%, transparent); color: var(--signal); }
     .history-op.op-schema { background: color-mix(in srgb, var(--hue-violet) 15%, transparent); color: var(--hue-violet-deep); }
+    .history-op.op-bulk { background: color-mix(in srgb, var(--hue-cyan) 15%, transparent); color: var(--signal); }
     .history-summary { flex: 1; font-size: 14px; }
     .history-summary .history-table { font-weight: 600; }
     .history-diff {

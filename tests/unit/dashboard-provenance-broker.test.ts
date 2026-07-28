@@ -387,7 +387,10 @@ describe('dashboard → data-source click-through (broker action, jsdom)', () =>
       expect(names).toContain('showSource');
       // Every branch is one of the known intents (navigation, plus the validated
       // source panel). A name outside this vocabulary means the boundary widened.
-      const known = ['analytics', 'ask', 'configure', 'add-file', 'showSource'];
+      // 'open-record' is the citation click-through action (navigation-only, routed
+      // through openSearchHit / the side-by-side record panel) added with the clickable
+      // dashboard citations — still a fixed literal, still not derived from the frame.
+      const known = ['analytics', 'ask', 'configure', 'add-file', 'showSource', 'open-record'];
       expect(names.filter((n) => !known.includes(n))).toEqual([]);
       // The action path still runs no data read of its own — showSource goes
       // through the validated panel, never the frame's data bridge.

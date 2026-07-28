@@ -5,9 +5,8 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .feed-spinner {
       display: inline-block; width: 12px; height: 12px; border-radius: 50%;
       border: 2px solid var(--border-strong); border-top-color: var(--accent);
-      animation: feedSpin 0.7s linear infinite; vertical-align: middle;
+      animation: lattice-spin var(--dur-spin) linear infinite; vertical-align: middle;
     }
-    @keyframes feedSpin { to { transform: rotate(360deg); } }
     /* Batch-upload progress bar — pinned to the top of the feed while a
        multi-file drop drains through the bounded-concurrency queue. */
     .ingest-progress {

@@ -8,6 +8,7 @@ import { FeedBus, type FeedEvent } from '../../src/gui/feed.js';
 import {
   aggressivenessToThreshold,
   findTableDuplicates,
+  scanTableDuplicates,
   findExactFileDupesOf,
   mergeDuplicates,
   DEDUP_MAX_SCAN_ROWS,
@@ -399,6 +400,135 @@ describe('dedup service (real config, SQLite)', () => {
         threshold: aggressivenessToThreshold(1),
       });
       expect(fuzzy.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('bounded fuzzy scan (scan honesty + blocking)', () => {
+    async function addFile(
+      id: string,
+      sha: string,
+      text: string,
+      createdAt: string,
+    ): Promise<void> {
+      await db.insert('files', {
+        id,
+        original_name: id + '.txt',
+        mime: 'text/plain',
+        sha256: sha,
+        extracted_text: text,
+        extraction_status: 'extracted',
+        created_at: createdAt,
+      });
+    }
+
+    it('files with distinct leading content are never pairwise-compared (the txt-tag block regression)', async () => {
+      // Regression for the degenerate blocking that once put EVERY text row in
+      // one candidate block (a constant key-namespace prefix ate the whole
+      // block key) and froze the server: rows whose extracted text diverges in
+      // its first characters must land in different blocks, so a fuzzy scan of
+      // all-distinct documents scores ZERO pairs instead of n·(n−1)/2.
+      for (let i = 0; i < 40; i++) {
+        const n = String(i).padStart(3, '0');
+        await addFile(
+          `f${n}`,
+          createHash('sha256').update(`bytes-${n}`).digest('hex'),
+          `${n} entirely distinct document body number ${n} with its own content`,
+          `2026-01-01T00:${n.slice(1)}:00Z`,
+        );
+      }
+      const { groups, scan } = await scanTableDuplicates(ctx, 'files', {
+        fuzzy: true,
+        threshold: aggressivenessToThreshold(1),
+      });
+      expect(groups).toHaveLength(0);
+      expect(scan.complete).toBe(true);
+      expect(scan.pairsCompared).toBe(0);
+      expect(scan.pairsSkipped).toBe(0);
+    });
+
+    it('near-identical prefix-sharing docs still group, and the scan reports complete', async () => {
+      const base = 'The quarterly revenue report shows strong growth across all regions.';
+      await addFile(
+        'g1',
+        createHash('sha256').update('g1').digest('hex'),
+        base,
+        '2026-01-01T00:00:00Z',
+      );
+      await addFile(
+        'g2',
+        createHash('sha256').update('g2').digest('hex'),
+        base + ' Minor addendum at the end.',
+        '2026-01-02T00:00:00Z',
+      );
+      const { groups, scan } = await scanTableDuplicates(ctx, 'files', {
+        fuzzy: true,
+        threshold: aggressivenessToThreshold(1),
+      });
+      expect(groups.length).toBeGreaterThanOrEqual(1);
+      expect(groups[0]?.ids.slice().sort()).toEqual(['g1', 'g2']);
+      expect(scan.complete).toBe(true);
+    });
+
+    it('wildly different-length docs sharing a leading slice land in different length bands', async () => {
+      // The block key carries a length band precisely so a 260-char note and a
+      // 6,000-char report that happen to share their opening words are never
+      // candidate-paired (the capped comparison text alone could not tell them apart).
+      const opening = 'shared opening words for both documents ';
+      const short = opening + 'x'.repeat(220);
+      const long = opening + 'y '.repeat(3000);
+      await addFile(
+        'h1',
+        createHash('sha256').update('h1').digest('hex'),
+        short,
+        '2026-01-01T00:00:00Z',
+      );
+      await addFile(
+        'h2',
+        createHash('sha256').update('h2').digest('hex'),
+        long,
+        '2026-01-02T00:00:00Z',
+      );
+      const { groups, scan } = await scanTableDuplicates(ctx, 'files', {
+        fuzzy: true,
+        threshold: aggressivenessToThreshold(1),
+      });
+      expect(groups).toHaveLength(0);
+      expect(scan.pairsCompared).toBe(0);
+      expect(scan.complete).toBe(true);
+    });
+
+    it('scanTableDuplicates reports an honest partial result when the pair cap trips', async () => {
+      // 8 names sharing a 16+ char prefix defeat the refinement split, so a
+      // tiny per-block cap must truncate — and SAY so. 8·7/2 = 28 pairs total.
+      for (let i = 0; i < 8; i++) {
+        await db.insert('things', {
+          id: `p${String(i)}`,
+          name: `shared prefix zz tail ${i.toString(36).repeat(4)}`,
+          created_at: `2026-01-01T00:00:0${String(i)}Z`,
+        });
+      }
+      const { scan } = await scanTableDuplicates(ctx, 'things', {
+        fuzzy: true,
+        maxPairsPerBlock: 5,
+      });
+      expect(scan.complete).toBe(false);
+      expect(scan.reason).toBe('pair_cap');
+      expect(scan.pairsCompared).toBe(5);
+      expect(scan.pairsSkipped).toBe(23);
+      expect(scan.rowsInTruncatedBlocks).toBe(8);
+    });
+
+    it('findTableDuplicates throws loudly on a truncated scan instead of returning a partial array', async () => {
+      for (let i = 0; i < 8; i++) {
+        await db.insert('things', {
+          id: `q${String(i)}`,
+          name: `shared prefix qq tail ${i.toString(36).repeat(4)}`,
+          created_at: `2026-01-01T00:00:0${String(i)}Z`,
+        });
+      }
+      await expect(
+        findTableDuplicates(ctx, 'things', { fuzzy: true, maxPairsPerBlock: 5 }),
+      ).rejects.toThrow(/truncated/);
     });
   });
 });

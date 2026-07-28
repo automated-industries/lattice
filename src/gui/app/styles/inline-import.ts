@@ -56,7 +56,6 @@ export const inlineImportCss = `
     .imp-card-line.imp-spin::after {
       content: ''; display: inline-block; width: 10px; height: 10px; margin-left: 8px;
       border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
-      vertical-align: -1px; animation: imp-spin-kf 0.7s linear infinite;
+      vertical-align: -1px; animation: lattice-spin var(--dur-spin) linear infinite;
     }
-    @keyframes imp-spin-kf { to { transform: rotate(360deg); } }
 `;

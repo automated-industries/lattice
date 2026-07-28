@@ -205,6 +205,12 @@ export async function openConfig(
       // on the live feed event); powers the provenance "observation" tier
       // (rows last touched by the `ai` actor).
       source: 'TEXT',
+      // Operation-group id: one id shared by every entry a single logical
+      // operation wrote (e.g. one assistant tool execution updating N rows), so
+      // the whole change can be undone as one action and the history UI can
+      // collapse it into a single card. Nullable + additive — added
+      // idempotently by the schema reconcile; null for standalone edits.
+      op_group: 'TEXT',
     },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
@@ -378,6 +384,12 @@ export async function openConfig(
     await runAsyncOrSync(
       db.adapter,
       `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_row_idx" ON "_lattice_gui_audit" ("table_name", "row_id")`,
+    );
+    // Group undo loads a whole operation group by id (`WHERE op_group = ?`);
+    // without this the lookup is a sequential scan of a lifetime-of-the-DB log.
+    await runAsyncOrSync(
+      db.adapter,
+      `CREATE INDEX IF NOT EXISTS "_lattice_gui_audit_group_idx" ON "_lattice_gui_audit" ("op_group")`,
     );
   }
 

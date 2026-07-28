@@ -86,7 +86,7 @@ export const systemTablesJs = `    // ──────────────
       // centred; the force renderer keeps its own spinner once it takes over the mount.
       content.innerHTML =
         '<div class="brain-graph"><div id="graph-mount">' +
-          '<div class="graph-loading"><div class="graph-spinner"></div></div>' +
+          '<div class="graph-loading"><div class="lat-spinner graph-spinner"></div></div>' +
         '</div></div>';
       renderSchemaGraph();
     }
@@ -110,7 +110,7 @@ export const systemTablesJs = `    // ──────────────
             '<span class="folders-crumb-sep">/</span>' +
             '<span class="folders-crumb-cur">' + d.icon + ' ' + escapeHtml(d.label) + '</span>' +
           '</div>' +
-          '<div id="graph-mount"><div class="graph-loading"><div class="graph-spinner"></div></div></div>' +
+          '<div id="graph-mount"><div class="graph-loading"><div class="lat-spinner graph-spinner"></div></div></div>' +
         '</div>';
       renderEntityGraphInto(document.getElementById('graph-mount'), table, {});
     }

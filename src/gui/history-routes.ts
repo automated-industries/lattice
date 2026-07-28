@@ -7,8 +7,10 @@ import {
   undoLast,
   redoLast,
   revertEntry,
+  undoGroup,
   auditEntryWithoutImages,
   type AuditEntry,
+  type GroupUndoResult,
 } from './mutations.js';
 import { applySchemaConfig } from './lifecycle.js';
 import { emitDdlEnvelope } from './schema-ops.js';
@@ -138,6 +140,56 @@ export async function handleHistoryRoutes(
       return true;
     }
     sendJson(res, { ok: true, entry: auditEntryWithoutImages(entry) });
+    return true;
+  }
+  if (method === 'POST' && pathname.startsWith('/api/history/undo-group/')) {
+    // Undo one whole operation group (every row a single bulk operation
+    // touched) as ONE all-or-nothing action. Like the per-entry Revert below,
+    // this is global (not session-scoped): the target is named explicitly by
+    // its group id, and undoGroup pre-checks every row before touching any —
+    // a row edited since the operation fails the whole undo loudly (409).
+    const groupId = decodeURIComponent(pathname.slice('/api/history/undo-group/'.length));
+    if (!groupId) {
+      sendJson(res, { error: 'Missing operation-group id' }, 400);
+      return true;
+    }
+    let result: GroupUndoResult;
+    try {
+      result = await undoGroup(ctx.buildMutationCtx(), groupId);
+    } catch (err) {
+      // A mid-flight failure (rolled back or partial) — undoGroup's message
+      // carries the exact counts; surface it verbatim, never as a success.
+      sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 500);
+      return true;
+    }
+    if (!result.ok) {
+      if (result.reason === 'conflict') {
+        const detail = result.conflicts
+          .map((c) => `${c.table}${c.rowId ? ` #${c.rowId}` : ''}: ${c.reason}`)
+          .join('; ');
+        sendJson(
+          res,
+          {
+            error: `This change can't be undone as a whole — ${detail}. Nothing was changed.`,
+            conflicts: result.conflicts,
+          },
+          409,
+        );
+        return true;
+      }
+      sendJson(
+        res,
+        {
+          error:
+            result.reason === 'not_found'
+              ? 'No changes recorded under this operation group'
+              : 'This change group is already undone',
+        },
+        result.reason === 'not_found' ? 404 : 400,
+      );
+      return true;
+    }
+    sendJson(res, { ok: true, undone: result.undone, tables: result.tables });
     return true;
   }
   if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {

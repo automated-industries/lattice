@@ -61,63 +61,21 @@ function publishSandboxNote(mctx: MutationCtx, rowId: string, removed: string[])
 import { FetchBudget } from '../../../ai/fetch-policy.js';
 import { normalizeUserUrl } from '../../../sources/url-safety.js';
 import {
-  findTableDuplicates,
+  scanTableDuplicates,
   mergeDuplicates,
   aggressivenessToThreshold,
   type DedupServiceCtx,
 } from '../../dedup-service.js';
 import { setRowVisibility, rowAccessSummaries } from '../../../cloud/members.js';
+import { bulkSelection } from '../../change-preview.js';
 import { requireString, requireTable } from './helpers.js';
 import { NOT_HANDLED, type HandlerDeps, type GroupResult } from './types.js';
 
-const BULK_FILTER_OPS = new Set([
-  'eq',
-  'ne',
-  'gt',
-  'gte',
-  'lt',
-  'lte',
-  'like',
-  'in',
-  'isNull',
-  'isNotNull',
-]);
-
-/**
- * Validate + normalize a bulk_update `filter` arg into the {col, op, val} shape
- * `db.query` accepts. Strict: an unknown column or op is a recoverable tool error
- * (so the model can correct it), NEVER a silently-wrong match that would touch the
- * wrong rows. `undefined`/omitted → no clauses → matches every row (by design).
- */
-export function parseBulkFilters(
-  raw: unknown,
-  table: string,
-  db: Lattice,
-): { col: string; op: string; val?: unknown }[] {
-  if (raw == null) return [];
-  if (!Array.isArray(raw)) throw new Error('filter must be an array of {col, op, val} clauses');
-  const cols = db.getRegisteredColumns(table) ?? {};
-  const out: { col: string; op: string; val?: unknown }[] = [];
-  for (const clause of raw) {
-    if (!clause || typeof clause !== 'object') {
-      throw new Error('each filter clause must be an object {col, op, val}');
-    }
-    const c = clause as { col?: unknown; op?: unknown; val?: unknown };
-    // `c.col in cols` is not "is this a column": every plain object inherits
-    // `constructor`, `toString`, `hasOwnProperty` and the rest, so all of them passed
-    // validation and were handed to the query builder as real column names.
-    if (typeof c.col !== 'string' || !Object.prototype.hasOwnProperty.call(cols, c.col)) {
-      throw new Error(`filter references unknown column "${String(c.col)}" on "${table}"`);
-    }
-    if (typeof c.op !== 'string' || !BULK_FILTER_OPS.has(c.op)) {
-      throw new Error(`filter has invalid op "${String(c.op)}"`);
-    }
-    const needsVal = c.op !== 'isNull' && c.op !== 'isNotNull';
-    if (needsVal && !('val' in c)) throw new Error(`filter op "${c.op}" requires a val`);
-    out.push(needsVal ? { col: c.col, op: c.op, val: c.val } : { col: c.col, op: c.op });
-  }
-  return out;
-}
+// Bulk filter validation + target selection live in change-preview.ts, shared
+// with the read-only change-preview route so what a preview lists and what
+// bulk_update then touches come from the same code. Re-exported here for the
+// existing importers (dispatch classification, the read handler).
+export { parseBulkFilters } from '../../change-preview.js';
 
 /**
  * Validate + normalize an `unlink` / `link` `values` arg into the {col, val} pairs the
@@ -719,9 +677,18 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         //      GLOBAL redo-stack DELETE, discarding other sessions' (and on a cloud,
         //      other members') redo history.
         ...(mctx.sessionId ? { sessionId: mctx.sessionId } : {}),
+        // Same operation-group id as every other write of THIS tool execution,
+        // so the whole dedup pass is one undoable action in the history.
+        ...(mctx.opGroup ? { opGroup: mctx.opGroup } : {}),
       };
       const threshold = fuzzy ? aggressivenessToThreshold(ctx.aggressiveness ?? 0) : undefined;
-      const groups = await findTableDuplicates(svc, table, {
+      // The bounded scan: capped pairs per candidate block + an overall time
+      // budget, yielding to the event loop as it goes, so a large fuzzy pass can
+      // no longer pin the server's only thread. When a cap trips, the scan
+      // result says so — and so does the tool result below, because merging the
+      // groups that WERE found while presenting the pass as exhaustive would be
+      // a silent truncation.
+      const { groups, scan } = await scanTableDuplicates(svc, table, {
         fuzzy,
         ...(threshold !== undefined ? { threshold } : {}),
       });
@@ -734,7 +701,25 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         merged += r.merged;
         groupsMerged += 1;
       }
-      return { ok: true, result: { table, duplicateGroups: groupsMerged, rowsMerged: merged } };
+      return {
+        ok: true,
+        result: {
+          table,
+          duplicateGroups: groupsMerged,
+          rowsMerged: merged,
+          scanComplete: scan.complete,
+          ...(scan.complete
+            ? {}
+            : {
+                scanNote:
+                  `The duplicate scan did not cover everything: ` +
+                  `${String(scan.pairsSkipped)} candidate comparison(s) across ` +
+                  `${String(scan.rowsInTruncatedBlocks)} record(s) were skipped ` +
+                  `(${scan.reason === 'time_budget' ? 'time budget reached' : 'per-block comparison cap reached'}). ` +
+                  `Unscanned records may still contain duplicates — tell the user this pass was partial.`,
+              }),
+        },
+      };
     }
     case 'merge_rows': {
       // Targeted, reference-safe consolidation: relink every junction edge from the
@@ -760,6 +745,8 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         // See the `dedup` case above: sourced from `mctx` so undo can see the merge,
         // and so the audit append cannot issue a global redo-stack purge.
         ...(mctx.sessionId ? { sessionId: mctx.sessionId } : {}),
+        // One operation-group id for the whole merge — undoable as one action.
+        ...(mctx.opGroup ? { opGroup: mctx.opGroup } : {}),
       };
       const r = await mergeDuplicates(svc, table, survivorId, duplicateIds);
       return {
@@ -793,9 +780,9 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         return { ok: false, error: 'set object is required (the change to apply)' };
       }
       const set = { ...(args.set as Record<string, unknown>) };
-      const filters = parseBulkFilters(args.filter, table, ctx.db);
-      // Never silently include trashed rows in a bulk change.
-      if (ctx.softDeletable.has(table)) filters.push({ col: 'deleted_at', op: 'isNull' });
+      // Shared selection (validated filters + trashed-row guard + pk ordering) —
+      // the same function the change-preview route resolves its rows with.
+      const { pkCol, filters } = bulkSelection(ctx.db, table, args.filter, ctx.softDeletable);
 
       // Split the change into a visibility request (special key) + column writes.
       let visibility: 'private' | 'everyone' | undefined;
@@ -814,7 +801,6 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
 
       // Identify the matching rows ONCE. On a cloud this read runs as the
       // member's role, so RLS already scopes it to rows the member can see.
-      const pkCol = ctx.db.getPrimaryKey(table)[0] ?? 'id';
       const opts: Parameters<typeof ctx.db.query>[1] = { orderBy: pkCol, orderDir: 'asc' };
       opts.filters = filters as NonNullable<typeof opts.filters>;
       const matched: Row[] = await ctx.db.query(table, opts);

@@ -114,6 +114,13 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-item-ic { flex: 0 0 auto; }
     .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .nav-empty { font-size: 12px; padding: 8px 12px; }
+    /* Add affordance inside an empty subhead group (empty bucket / fresh workspace). */
+    .nav-add-item {
+      width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+      padding: 2px 10px 6px 14px; border: 0; border-radius: var(--r-sm); background: none;
+      color: var(--text-muted); font-size: 12px; cursor: pointer;
+    }
+    .nav-add-item:hover { background: var(--surface-2); color: var(--text); }
     #nav-tables-list { padding-bottom: 6px; }
 
     /* ── Column headers (identical style to the Configure view) ── */

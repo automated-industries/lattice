@@ -160,9 +160,12 @@ describe('F-5 — the entities payload split', () => {
     // …and no other table is nav-hidden.
     expect(payload.tables.filter((t) => t.navHidden).map((t) => t.name)).toEqual(['files']);
 
-    // The left nav renders ZERO table entries on a fresh workspace — every table
+    // The left nav renders ZERO table ENTRIES on a fresh workspace — every table
     // the payload still carries is excluded by one of the three nav stamps
-    // (mirrors renderNavTables' filter in nav-sections.ts).
+    // (mirrors renderNavTables' filter in nav-sections.ts). The TABLES /
+    // CONNECTORS / DATABASES subheads still render, each with its empty state +
+    // add affordance (pinned in nav-empty-subheads.test.ts) — the section no
+    // longer collapses to a single bare "No tables yet." line.
     const navVisible = payload.tables.filter((t) => !t.linkTable && !t.sqlDenied && !t.navHidden);
     expect(navVisible.map((t) => t.name)).toEqual([]);
   });

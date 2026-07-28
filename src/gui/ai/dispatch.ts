@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getFunction } from './registry.js';
 import type { MutationCtx } from '../mutations.js';
 import { handleRead } from './handlers/read.js';
@@ -1464,6 +1465,11 @@ async function runFunction(
     // the user can undo what they asked the assistant to do.
     ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     ...(ctx.onColumnsAdded ? { onColumnsAdded: ctx.onColumnsAdded } : {}),
+    // One operation-group id per tool execution: every audit entry this single
+    // call writes shares it, so a multi-row change (bulk_update, dedup,
+    // merge_rows) is undoable as ONE action and renders as one history card.
+    // Read-only tools simply never write an entry carrying it.
+    opGroup: randomUUID(),
   };
 
   try {

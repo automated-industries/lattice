@@ -690,8 +690,26 @@ import { appJs } from '../../src/gui/app/script.js';
 // action added ALONGSIDE the retained showSource + sidebar add-file handlers; both the
 // dash-source provenance row and the side-by-side record panel mount under a wrapping
 // .dash-frame-wrap). Recaptured once for the merged client.
-const ORIGINAL_LENGTH = 862351;
-const ORIGINAL_SHA256 = 'fffe2bfc98ca41a824a6b538bb9ba37b4fc5175a89d0949ae6e50d3b037048a4';
+// 5.6 bulk undo: the version-history page collapses audit entries sharing an
+// operation-group id (all the rows one bulk operation wrote) into a single card
+// — what happened, how many records — with one "Undo this change" control that
+// posts to the whole-group undo endpoint (all-or-nothing server-side; a 409
+// conflict is surfaced verbatim, never a silent partial undo). Pure grouping
+// helper (groupHistoryEntries) + group card renderer (historyGroupHtml) +
+// endpoint wiring in renderHistory. Recaptured.
+// 5.6 empty-bucket subheads: renderNavTables always renders all three DATA
+// subheads (TABLES / CONNECTORS / DATABASES) — an empty bucket keeps its group
+// and shows an empty-state line + add affordance (files → the FILES section's
+// add menu; connectors / databases → the matching Configure tab) instead of the
+// whole section body collapsing to a single bare "No tables yet." line on a
+// fresh workspace. Recaptured.
+// 5.6 motion vocabulary + final recapture: spinner call sites now render the
+// shared .lat-spinner primitive (the graph loading ring composes it alongside
+// .graph-spinner), so one keyframe + duration token drives every ring. This
+// recapture covers the merged 5.6 client: bulk-undo affordance, update-pill
+// placement, empty-bucket nav subheads, and the motion vocabulary. Recaptured.
+const ORIGINAL_LENGTH = 869047;
+const ORIGINAL_SHA256 = '136d9344d516269b72e40b5c9449c9f3ebd0f37ab31286c2bec9bcb1cda978b9';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

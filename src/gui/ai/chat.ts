@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { DEFAULT_MODEL } from '../../ai/llm-client.js';
 import {
   executeFunction,
   DISPATCHABLE,
@@ -35,7 +36,15 @@ import { resolveTableDescription } from '../column-descriptions.js';
  * fake client, so the loop compiles and runs without the SDK installed.
  */
 
-export const DEFAULT_MODEL = 'claude-haiku-4-5';
+/**
+ * The default model id, re-exported for the GUI features that reach for it via
+ * the chat loop. The literal lives in ONE place — src/ai/llm-client.ts —
+ * because a second copy here can silently drift and split the app across two
+ * models. llm-client.ts imports nothing of its own, so depending on it from
+ * here can never form an import cycle (unlike importing FROM this module,
+ * which the dispatcher and its handlers sit under).
+ */
+export { DEFAULT_MODEL };
 // Tool-loop + output budget. Sized for multi-step agentic work — e.g. "create
 // one row per line of an attached CSV" needs many tool rounds, and each turn
 // may emit several tool_use blocks, so a 2048-token cap truncated bulk work.
