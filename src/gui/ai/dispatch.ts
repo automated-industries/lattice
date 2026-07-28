@@ -827,9 +827,9 @@ async function classifyDestructive(
     // loop for 104 SECONDS. A 50ms heartbeat fired zero times across it. For that whole
     // stretch every HTTP request, every WebSocket and SSE stream, every other user's
     // session, and the Stop button are dead — and the call is then REFUSED anyway,
-    // because 1,200 duplicates is far over the threshold. The bound refuses that exact
-    // call instantly off a bounded `COUNT(*)`, which is what keeps the quadratic path
-    // unreachable from the gate at any table size.
+    // because a table that size is over the threshold on any reading of it. The bound
+    // refuses that exact call instantly off a bounded `COUNT(*)`, which is what keeps
+    // the quadratic path unreachable from the gate at any table size.
     //
     // WHAT THE BOUND COSTS, stated plainly so nobody rediscovers it as a surprise: a
     // table over DESTRUCTIVE_ROW_THRESHOLD is refused even when only a handful of its
