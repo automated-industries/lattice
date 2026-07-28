@@ -27,6 +27,27 @@ import { join } from 'node:path';
  * member and asserts the secret value is absent from the response body; that one
  * catches dead code inherently because it never names the helper at all. This is
  * the cheap sibling that runs without Postgres and names the rule out loud.
+ *
+ * WHAT THIS FILE CANNOT DO, stated so nobody trusts it further than it goes.
+ * It proves a symbol is REFERENCED. It cannot prove a symbol is REACHED. Those come
+ * apart whenever a control is guarded by a state the production wiring never builds:
+ * the destructive gate's "the user was asked and said no" branch was fully wired —
+ * called from `gateDestructive`, which is called from `executeFunction`, which the
+ * chat loop calls on every tool call — and still could not run, because the chat
+ * route only ever handed the ledger a GRANTED consent record, so the declined status
+ * the branch keys on was never constructed. Every reference this file counts was
+ * real; the branch was dead anyway.
+ *
+ * That gap is not closable here without real dataflow analysis. A grep for the
+ * literal 'declined' passes (the store genuinely produces it) — the defect was that
+ * the consumer dropped it, which is a flow property, not a text property. A stricter
+ * text rule would fire on ordinary code, and this file's whole value is that it never
+ * does. So the guard for the reachability class is behavioural and lives elsewhere:
+ * drive the REAL entry point into the state, and assert the control acted. See
+ * tests/integration/consent-decline-reaches-gate.test.ts, which answers a consent
+ * question with the non-affirming option through POST /api/chat and then checks the
+ * records are still there. When a security control keys on a STATE, that is the shape
+ * of test it needs; a call-site count is not a substitute for one.
  */
 const SRC = join(import.meta.dirname, '..', '..', 'src');
 

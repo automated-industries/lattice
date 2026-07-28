@@ -20,9 +20,12 @@ import {
 } from './ai/chat.js';
 import {
   expirePendingForThread,
+  declinePendingForThread,
   resolveConsent,
+  refusalsForThread,
   spendGrant,
   type ConsentRecord,
+  type ThreadRefusals,
 } from './ai/consent-store.js';
 import { resolveLlmProvider } from './ai/provider.js';
 import { normalizeUserUrl } from '../sources/url-safety.js';
@@ -1325,7 +1328,23 @@ export async function dispatchChatRoute(
   // The consent record this message answered, once the orchestrator has resolved it.
   // Assigned there and read here; the loop is only ever enqueued afterwards, so the
   // ordering holds. `granted` is the ONLY status that authorizes anything.
+  //
+  // A DECLINE is carried too, and that is load-bearing rather than tidy. The gate's
+  // "they were asked about this exact object and said no" branch reads the record's
+  // status, so keeping a decline here meant `TurnConsent.status === 'declined'` was
+  // never constructible and every consumer of it was dead code: the refusal branch,
+  // the "asked and said no" explanation, and — the part that matters — the rule that
+  // a REFUSED plan is gated at ANY size. Without it, a user who said no was still
+  // exposed to the same plan carried out a few records at a time, each call under
+  // the unasked threshold and therefore never gated at all. Nothing about carrying it
+  // grants anything: `spendGrant` refuses a record that is not `granted`, so a
+  // declined record can only ever close the gate.
   let resolvedConsent: ConsentRecord | null = null;
+  // What this conversation has refused — and what it has since been asked about again
+  // and approved — as recorded across ALL of its turns. Populated by the orchestrator
+  // below alongside `resolvedConsent`, and read here for the same reason: the loop is
+  // only enqueued afterwards.
+  let refusals: ThreadRefusals = { targets: new Set<string>(), grantedActs: new Set<string>() };
   // The heavy agentic tool loop — runs on the per-workspace FIFO (serialized) only when the
   // intent pass says the request needs data work. Defined here (not enqueued yet) so the
   // intent orchestrator below can decide whether to run it.
@@ -1608,16 +1627,25 @@ export async function dispatchChatRoute(
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         // Scope for any consent record this turn mints (an `ask_user` naming the
         // destructive calls it intends to run), and the record this turn's message
-        // already granted — which the destructive gate now reads INSTEAD of
-        // re-deriving consent from the conversation text.
+        // ANSWERED — which the destructive gate now reads INSTEAD of re-deriving
+        // consent from the conversation text. Both answers travel: a yes to be spent,
+        // a no so the plan it named stays refused however small the next call is.
         consentScope: { threadId, ownerUserId, askedMsgId: assistantMsgId },
+        // ...and everything this conversation has refused in ANY turn, so a plan the
+        // user said no to stays refused after they type their next message — plus the
+        // acts it has since been asked about again and approved, which are the only
+        // thing that lifts one.
+        refusals,
         ...((rec: ConsentRecord | null) =>
           rec
             ? {
                 consent: rec,
                 // The route owns the database handle, so it owns spending. The ledger
                 // asks; a false answer means the call is refused rather than run on a
-                // grant we could not durably mark used.
+                // grant we could not durably mark used. Left wired for a declined
+                // record too — `spendGrant` refuses anything that is not `granted`, so
+                // a decline spends nothing, and an unwired callback would have been a
+                // second, silent reason a call failed.
                 spendConsentGrant: (i: number, by: string) => spendGrant(ctx.db, rec.id, i, by),
               }
             : {})(resolvedConsent),
@@ -1789,39 +1817,87 @@ export async function dispatchChatRoute(
       publish({ type: 'ack', message: text });
     };
     // ── Consent, before anything else can act on this message ──
-    // (a) The conversation has moved on, so every question still open in this thread
-    // is over — whatever it asked was asked of a moment that has passed. Done
-    // SERVER-side, keyed on nothing the client sends, because the bypass this closes
-    // is exactly a send that carries no user text to go stale (a files-only turn).
-    // The one exception is the question THIS message is answering, and only when an
-    // actual option index came back: a reply with no index is a decline, and a
-    // declined question has no reason to stay answerable.
     //
     // Skipped entirely on a scoped cloud MEMBER connection: a member cannot mint a
     // consent record at all (mintConsent refuses them outright), so there is never
-    // one of theirs to sweep, and an owner's record is scoped to the owner and could
-    // not be answered from here anyway. Running it would only fail against the
+    // one of theirs to read or sweep, and an owner's record is scoped to the owner and
+    // could not be answered from here anyway. Running it would only fail against the
     // bookkeeping table a member has no rights to and log a warning on every send.
     const memberConnection = ctx.db.isCloudMemberOpen();
-    const spareId = answeredQuestionId && answeredOptionIndex >= 0 ? answeredQuestionId : undefined;
-    if (!memberConnection) await expirePendingForThread(ctx.db, threadId, spareId);
-    // (b) Now read the answer, if there is one. Scoped to this thread AND this user:
-    // the id is a bearer token, and the scope is what stops one conversation (or one
-    // member of a shared workspace) spending another's consent. Fails closed — an
-    // unknown, stale, expired, foreign, or already-answered record grants nothing.
+    // (a) ANSWER FIRST. Scoped to this thread AND this user: the id is a bearer token,
+    // and the scope is what stops one conversation (or one member of a shared
+    // workspace) spending another's consent. Fails closed — an unknown, foreign, or
+    // already-answered record carries nothing; anything else that reaches a live
+    // record of theirs is either the affirming click or a NO.
+    //
+    // This used to run SECOND, after the staleness sweep below, and the ordering was
+    // the whole bug: the sweep spared the answered record only when a non-negative
+    // option index came back, so a TYPED reply (index -1, which is what the client
+    // sends for any free-text or files-only message) had its record stamped `expired`
+    // before anything could read it as the refusal it was. Answering first needs no
+    // exception at all — a record this resolves is no longer `pending`, so the sweep's
+    // own predicate excludes it.
     if (answeredQuestionId && !memberConnection) {
       const resolution = await resolveConsent(ctx.db, answeredQuestionId, answeredOptionIndex, {
         threadId,
         ownerUserId,
       });
-      if (resolution.status === 'granted' && resolution.record) {
+      // Both real ANSWERS are carried: a yes so it can be spent, a no so the gate can
+      // refuse the plan it named at any size. `rejected` is not an answer at all
+      // (unknown / foreign / already-answered / expired) and carries nothing.
+      if (
+        (resolution.status === 'granted' || resolution.status === 'declined') &&
+        resolution.record
+      ) {
         resolvedConsent = resolution.record;
-      } else if (resolution.reason) {
+      }
+      if (resolution.status !== 'granted' && resolution.reason) {
         console.warn(`[chat] consent not granted: ${resolution.reason}`);
       }
     }
-    /** True when this message carries a live, server-recorded yes. */
-    const consentGranted = (): boolean => resolvedConsent !== null;
+    // (a2) A message arrived and NOTHING answered an open card. The card is still the
+    // last thing this conversation asked, and the user has now replied to it with
+    // something that is not the affirming click — which is exactly what the typed-
+    // decline path already means by a refusal. It only ever ran when the CLIENT
+    // attached the open card's id, and that id is ephemeral in-memory browser state: a
+    // reload or a stream reconnect between the card and the next message loses it, the
+    // record stayed `pending`, the sweep below stamped it `expired`, and the gate read
+    // "never asked" rather than "asked and said no" — so the refused plan was runnable
+    // again on the very next turn. The store can answer "is there a live unanswered
+    // card here?" on its own, so it does, and the client is no longer load-bearing.
+    //
+    // Only when nothing was resolved above: a real answer (yes or no) already settled
+    // the card it named, and any straggler is the sweep's business. A `rejected`
+    // answer (unknown / foreign / already-answered id) settles nothing, so it falls
+    // through to here — which is the fail-closed reading of a lost or wrong id.
+    if (!memberConnection && !resolvedConsent) {
+      const closed = await declinePendingForThread(ctx.db, { threadId, ownerUserId });
+      // Carried like any other decline so this turn's gate can say "asked and said no"
+      // rather than "never asked". Grants nothing: `spendGrant` refuses any record
+      // that is not `granted`.
+      resolvedConsent = closed[closed.length - 1] ?? null;
+    }
+    // (b) The conversation has moved on, so every question STILL open in this thread
+    // is over — whatever it asked was asked of a moment that has passed. Done
+    // SERVER-side, keyed on nothing the client sends, because the bypass this closes
+    // is exactly a send that carries no user text to go stale (a files-only turn).
+    // No exception list: the record just answered is no longer pending.
+    if (!memberConnection) await expirePendingForThread(ctx.db, threadId);
+    // (c) Everything this CONVERSATION has refused, including the answer just
+    // recorded. Read from the store rather than from the request, because the request
+    // only carries a question id on the turn that answers one — so a refusal enforced
+    // from (a) alone survived exactly one turn, and the next message re-ran the plan
+    // the user had just declined. Additive: it can only ever close the gate.
+    if (!memberConnection) {
+      refusals = await refusalsForThread(ctx.db, { threadId, ownerUserId });
+    }
+    /**
+     * True when this message carries a live, server-recorded YES.
+     *
+     * Deliberately reads the STATUS rather than "a record was resolved": a decline is
+     * also a resolved record now, and it must not open any of the doors a yes opens.
+     */
+    const consentGranted = (): boolean => resolvedConsent?.status === 'granted';
     // Files attached, nothing typed. There is no message for the intent pass to classify
     // — running it on the file NAME is precisely what made the assistant ask "what would
     // you like me to do with report.xlsx?" instead of opening it. Acknowledge from the

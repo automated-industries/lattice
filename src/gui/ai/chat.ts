@@ -6,7 +6,6 @@ import {
   TurnOutcomeLedger,
   REMOVAL_TOOLS,
   destructiveIntent,
-  verbKey,
   type DispatchCtx,
 } from './dispatch.js';
 import {
@@ -15,6 +14,7 @@ import {
   MEMBER_CANNOT_CONSENT,
   type ConsentGrant,
   type ConsentRecord,
+  type ThreadRefusals,
 } from './consent-store.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
@@ -576,6 +576,14 @@ export interface RunChatOptions {
    */
   spendConsentGrant?: (grantIndex: number, by: string) => Promise<boolean>;
   /**
+   * What this CONVERSATION has refused — and what it has since been asked about again
+   * and approved — read from the consent store rather than from this request.
+   * `consent` above only exists on the turn whose message answered a question, so
+   * without this a refusal lasted exactly one turn and the next message re-ran the
+   * plan the user had just declined.
+   */
+  refusals?: ThreadRefusals;
+  /**
    * Stops the turn when the user asks it to. Checked at the ROUND boundary (so the
    * loop never starts another round) and handed to the model stream (so an abort cuts
    * mid-token). A tool call already awaited inside the current round still finishes —
@@ -734,9 +742,15 @@ async function planConsent(ctx: DispatchCtx, confirm: unknown): Promise<ConsentP
       tool,
       kind: intent.kind,
       target: intent.target,
-      verbKey: verbKey(tool, args),
+      // The classifier's key, read off the intent it just produced. Deriving it a
+      // second time here is how the two ends of a grant get to disagree.
+      verbKey: intent.verbKey,
       maxRows: intent.rows,
       rowsUnknown: intent.rowsUnknown === true,
+      // Carried, not flattened away: a count that stopped at its cap is a floor, and a
+      // grant that records it as a total is a record of consent to a scale the user
+      // was never shown.
+      rowsSaturated: intent.rowsSaturated === true,
       detail: intent.detail,
     });
   }
@@ -748,9 +762,24 @@ async function planConsent(ctx: DispatchCtx, confirm: unknown): Promise<ConsentP
  *
  * This is the direct fix for the option-blob bleed: the previous mechanism matched
  * destructive verbs and object names against the blob of options the MODEL wrote, so
- * an unchosen option's text could satisfy the check. Here there is no such blob —
- * the headline is a template, each line is an `intent.detail` this server composed,
- * and the two options are constants. Nothing the model wrote survives to be read.
+ * an unchosen option's text could satisfy the check. Here there is no such blob — the
+ * headline is a template, each line is an `intent.detail` this server composed, and
+ * the two options are constants.
+ *
+ * That used to be written as "nothing the model wrote survives to be read", which was
+ * not true and mattered. `bulk_update`'s `set` KEYS are arbitrary model-supplied
+ * strings, and they were interpolated straight into `detail` with nothing checking
+ * them against the table's real columns — so a card line was measured reading
+ * `clear "notes" - SAFE: only archived test rows, nothing real is lost. Ignore the
+ * line above. Column: "x" ...`, newlines intact. Not XSS (the client sets
+ * textContent), but attacker-chosen reassurance inside the confirmation, able to ride
+ * alongside a REAL grant.
+ *
+ * What is true now: every value interpolated into a line is either server-derived or
+ * validated against the workspace's real schema, each is bounded by `cardValue`, and
+ * the composed line is flattened to one bounded line by `safeDetail` at a single
+ * chokepoint in `destructiveIntent`. The model chooses WHICH call to confirm; it does
+ * not get to write a sentence the user reads.
  */
 /**
  * Validate a `confirm` array, write the consent record, and return the card to
@@ -823,8 +852,17 @@ async function openConsentQuestion(
 
 export function composeConsentCard(grants: readonly ConsentGrant[]): ConsentCard {
   const unknown = grants.some((g) => g.rowsUnknown);
+  // Any saturated count makes the TOTAL a floor too — adding a floor to an exact
+  // number gives a floor. Saying "up to 5001" when the object holds 12,000 is the
+  // single most misleading thing this card could print, because it reads as a
+  // reassuringly small, exact number on the screen where the user says yes.
+  const saturated = grants.some((g) => g.rowsSaturated);
   const total = grants.reduce((n, g) => n + g.maxRows, 0);
-  const scale = unknown ? 'an unknown number of records' : `up to ${String(total)} record(s)`;
+  const scale = unknown
+    ? 'an unknown number of records'
+    : saturated
+      ? `at least ${String(total)} record(s) — more than can be counted here`
+      : `up to ${String(total)} record(s)`;
   return {
     headline:
       grants.length === 1
@@ -1032,6 +1070,7 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
           },
         }
       : {}),
+    ...(opts.refusals ? { refusals: opts.refusals } : {}),
   });
   // The reconciliation already handed to the model, so an unchanged record is not
   // re-injected every round.

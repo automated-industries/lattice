@@ -103,7 +103,10 @@ export function parseBulkFilters(
       throw new Error('each filter clause must be an object {col, op, val}');
     }
     const c = clause as { col?: unknown; op?: unknown; val?: unknown };
-    if (typeof c.col !== 'string' || !(c.col in cols)) {
+    // `c.col in cols` is not "is this a column": every plain object inherits
+    // `constructor`, `toString`, `hasOwnProperty` and the rest, so all of them passed
+    // validation and were handed to the query builder as real column names.
+    if (typeof c.col !== 'string' || !Object.prototype.hasOwnProperty.call(cols, c.col)) {
       throw new Error(`filter references unknown column "${String(c.col)}" on "${table}"`);
     }
     if (typeof c.op !== 'string' || !BULK_FILTER_OPS.has(c.op)) {
@@ -112,6 +115,42 @@ export function parseBulkFilters(
     const needsVal = c.op !== 'isNull' && c.op !== 'isNotNull';
     if (needsVal && !('val' in c)) throw new Error(`filter op "${c.op}" requires a val`);
     out.push(needsVal ? { col: c.col, op: c.op, val: c.val } : { col: c.col, op: c.op });
+  }
+  return out;
+}
+
+/**
+ * Validate + normalize an `unlink` / `link` `values` arg into the {col, val} pairs the
+ * junction row is identified by.
+ *
+ * `db.unlink` builds `DELETE FROM "<t>" WHERE "<key>" = ? AND …` straight from these
+ * keys, so every one of them lands in a SQL IDENTIFIER position — and, unlike
+ * `db.link`, nothing filters them to the table's schema first. This is the same class
+ * already closed for `bulk_update`'s filter and its `set` keys, and the same
+ * `hasOwnProperty` check: `key in cols` is true for `constructor`, `toString` and every
+ * other Object.prototype name, so those all passed as real columns.
+ *
+ * Strict, like `parseBulkFilters`: an unknown column is a recoverable tool error the
+ * model can correct, never a statement handed to the database to reject (or not).
+ * A table with NO registered column set is the one case that cannot be checked —
+ * `cols` is then empty, so every key is rejected, which is the fail-closed direction
+ * and matches what `parseBulkFilters` already does for such a table.
+ */
+export function parseJunctionValues(
+  raw: unknown,
+  table: string,
+  db: Lattice,
+): { col: string; val: unknown }[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('values object (the junction row) is required');
+  }
+  const cols = db.getRegisteredColumns(table) ?? {};
+  const out: { col: string; val: unknown }[] = [];
+  for (const [col, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Object.prototype.hasOwnProperty.call(cols, col)) {
+      throw new Error(`values references unknown column "${col}" on "${table}"`);
+    }
+    out.push({ col, val });
   }
   return out;
 }
@@ -846,10 +885,13 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
     case 'link':
     case 'unlink': {
       const table = requireTable(args.table, ctx.junctionTables);
-      if (!args.values || typeof args.values !== 'object') {
-        throw new Error('values object (the junction row) is required');
-      }
-      const values = args.values as Row;
+      // Validated against the junction's REAL columns before anything reaches the
+      // statement builder — `db.unlink` puts these keys in an identifier position and
+      // does not filter them to the schema itself. Rebuilt from the validated pairs
+      // rather than passed through, so only checked keys ever travel on.
+      const values = Object.fromEntries(
+        parseJunctionValues(args.values, table, ctx.db).map((c) => [c.col, c.val]),
+      ) as Row;
       if (name === 'link') await linkRows(mctx, table, values);
       else await unlinkRows(mctx, table, values);
       return { ok: true, result: { ok: true } };

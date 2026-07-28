@@ -345,16 +345,22 @@ export async function searchByEmbedding(
     const row = live.get(r.pk);
     if (!row) continue;
     const result: SearchResult = { row, score: r.score };
-    if (r.chunkIndex > 0 || r.content !== null) {
+    // The stored chunk content is NOT column-masked — it is the row's embedded
+    // fields concatenated verbatim, masked ones included — so for a cloud member it
+    // would echo an owner-audience field's cleartext (the row object is masked via
+    // <table>_v, but the raw chunk is not). Re-derive from the already-masked row so
+    // masked fields drop out; owners / local callers keep the exact matched chunk.
+    //
+    // Derived BEFORE the branch on purpose. This used to require r.content to be
+    // non-null first, i.e. it depended on the database having handed the cleartext
+    // over so the app could decline to use it. The definer function a member reads
+    // through now withholds that column entirely (cloud/rls.ts), which is where the
+    // property belongs; deriving here keeps the member's matchedContent exactly what
+    // it was rather than making it disappear as a side effect.
+    const matched = isCloudMember ? concatRowText(row, config.fields) : r.content;
+    if (r.chunkIndex > 0 || matched !== null) {
       result.chunkIndex = r.chunkIndex;
-      if (r.content !== null) {
-        // The stored chunk content is NOT column-masked, so for a cloud member it
-        // could echo an owner-audience field's cleartext (the row object is masked
-        // via <table>_v, but the raw chunk is not). Re-derive matchedContent from
-        // the already-masked row so masked fields drop out; owners/local callers
-        // keep the exact matched chunk.
-        result.matchedContent = isCloudMember ? concatRowText(row, config.fields) : r.content;
-      }
+      if (matched !== null) result.matchedContent = matched;
     }
     results.push(result);
     if (results.length >= k) break;

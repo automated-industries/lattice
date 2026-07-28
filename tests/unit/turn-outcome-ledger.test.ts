@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
@@ -81,6 +81,45 @@ describe('turn outcome ledger', () => {
       ok: false,
       error: `"${name}" is still referenced by other records`,
     });
+    // A REAL config on disk, with the junction's two relations declared. A
+    // `delete_cascade` destroys in OTHER objects too, and the classifier counts that
+    // collateral from the workspace's declared relations — with no config there is no
+    // relation model to read, which fails CLOSED (an uncountable cascade, gated at any
+    // size). The server always supplies one; so does this.
+    const configPath = join(tmpDir, 'lattice.config.yml');
+    const outputDir = join(tmpDir, 'context');
+    const entity = (name: string, extra: string[] = []): string[] => [
+      `  ${name}:`,
+      '    fields:',
+      '      id: { type: uuid, primaryKey: true }',
+      '      name: { type: text }',
+      '      owner: { type: text }',
+      '      deleted_at: { type: text }',
+      ...extra,
+      `    outputFile: ${name}.md`,
+    ];
+    writeFileSync(
+      configPath,
+      [
+        'db: ./test.db',
+        '',
+        'entities:',
+        ...entity('contacts'),
+        ...entity('deals'),
+        ...entity('customers'),
+        ...entity('customer_invoices'),
+        '  contacts_deals:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      contact_id: { type: uuid }',
+        '      deal_id: { type: uuid }',
+        '    relations:',
+        '      contact: { type: belongsTo, table: contacts, foreignKey: contact_id }',
+        '      deal: { type: belongsTo, table: deals, foreignKey: deal_id }',
+        '    outputFile: contacts_deals.md',
+        '',
+      ].join('\n'),
+    );
     ctx = {
       db,
       feed: new FeedBus(),
@@ -93,6 +132,8 @@ describe('turn outcome ledger', () => {
       ]),
       junctionTables: new Set(['contacts_deals']),
       softDeletable: new Set(['contacts', 'deals', 'customers', 'customer_invoices']),
+      configPath,
+      outputDir,
       deleteEntity: (name) => Promise.resolve(deleteOutcome(name)),
     };
   });
@@ -121,6 +162,7 @@ describe('turn outcome ledger', () => {
     verbKey: verbKey(tool, args),
     maxRows: 10_000,
     rowsUnknown: false,
+    rowsSaturated: false,
     detail: `remove "${target}"`,
     ...over,
   });

@@ -68,6 +68,9 @@ afterEach(async () => {
   await admin.end();
 });
 
+/** The member connection string behind the last {@link memberGuiOnMaskedCloud}. */
+let lastMemberUrl = '';
+
 /** A member GUI on a cloud where `notes.secret_note` is masked and `n1` is shared. */
 async function memberGuiOnMaskedCloud(): Promise<GuiServerHandle> {
   const dbname = `lattice_mw_${randomBytes(4).toString('hex')}`;
@@ -125,12 +128,13 @@ async function memberGuiOnMaskedCloud(): Promise<GuiServerHandle> {
   await ownerGui.whenConverged();
   await ownerGui.close();
 
+  lastMemberUrl = dbUrl(dbname, role, pw);
   const tmp = mkdtempSync(join(tmpdir(), `mw-member-${randomBytes(3).toString('hex')}-`));
   dirs.push(tmp);
   const root = join(tmp, '.lattice');
   const ws = addWorkspace(root, {
     displayName: 'Masked Cloud',
-    db: dbUrl(dbname, role, pw),
+    db: lastMemberUrl,
     makeActive: true,
   });
   const paths = resolveWorkspacePaths(root, ws);
@@ -207,5 +211,65 @@ describe.skipIf(!PG_URL)('a member can WRITE to a table it reads through a maski
 
     // ...and finding it must not hand back the masked column.
     expect(JSON.stringify(body)).not.toContain('EYES ONLY');
+  });
+
+  /**
+   * The converged state, pinned so it is a DECISION and not an accident.
+   *
+   * After an owner reconcile a member holds column `SELECT` on the write keys and
+   * nothing else: it edits and soft-deletes through the base, reads through the view,
+   * and cannot read an unmasked column off the base at all. That last part is what the
+   * per-author chat isolation leans on (see cloud-migration-chat-owner-postgres), so it
+   * is not a detail to be traded away for convenience.
+   *
+   * The COST of pinning it is real and is recorded rather than hidden: with only the
+   * write keys granted, `INSERT ... ON CONFLICT DO UPDATE` — what `Lattice.upsert` and
+   * every connector sync emit — stays denied for members, because Postgres wants
+   * `SELECT` on each column read in the DO UPDATE expressions. Measured: the upsert
+   * comes back "permission denied for table notes". Widening the grant to every
+   * unmasked column fixes the upsert and re-opens the base read path in the same
+   * stroke; which of those matters more is a product decision about members and
+   * connector sync, so this test states the current answer instead of quietly changing
+   * it. If the decision flips, this test is the one to update — deliberately.
+   */
+  it('leaves a member the write keys and no base read, at the cost of upsert', async () => {
+    const gui = await memberGuiOnMaskedCloud(); // the owner open inside runs the reconcile
+    const member = new pg.Pool({ connectionString: lastMemberUrl, max: 1 });
+    try {
+      // Editing and soft-deleting work — the keys are granted.
+      await expect(
+        member.query(`UPDATE "notes" SET "body" = 'edited' WHERE "id" = 'n1'`),
+      ).resolves.toBeTruthy();
+      await expect(
+        member.query(`UPDATE "notes" SET "deleted_at" = NULL WHERE "id" = 'n1'`),
+      ).resolves.toBeTruthy();
+
+      // No base read of an unmasked column, and none of the masked one either.
+      for (const col of ['body', 'secret_note']) {
+        await expect(member.query(`SELECT "${col}" FROM "notes"`)).rejects.toThrow(
+          /permission denied/i,
+        );
+      }
+
+      // The view is the read path, and it still masks.
+      const via = await member.query<{ body: string; secret_note: unknown }>(
+        `SELECT "body", "secret_note" FROM "notes_v"`,
+      );
+      expect(via.rows[0]?.body).toBe('edited');
+      expect(via.rows[0]?.secret_note ?? null).toBeNull();
+
+      // The documented cost, asserted so it cannot change without someone noticing.
+      await expect(
+        member.query(
+          `INSERT INTO "notes" ("id","body") VALUES ('n1','x')
+             ON CONFLICT ("id") DO UPDATE SET "body" = EXCLUDED."body"`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
+
+      // And the member's GUI is not otherwise degraded — the row read still works.
+      expect((await fetch(`${gui.url}/api/tables/notes/rows`)).status).toBe(200);
+    } finally {
+      await member.end();
+    }
   });
 });

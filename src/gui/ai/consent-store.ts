@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Lattice } from '../../lattice.js';
 import type { StorageAdapter } from '../../db/adapter.js';
-import { runAsyncOrSync, getAsyncOrSync } from '../../db/adapter.js';
+import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
 
 /**
  * DURABLE CONSENT RECORDS — the server's own memory of what the user agreed to.
@@ -70,6 +70,16 @@ export interface ConsentGrant {
   maxRows: number;
   /** True when the count could not be established (treated as wide, never as 0). */
   rowsUnknown: boolean;
+  /**
+   * True when `maxRows` is a FLOOR rather than a total — the pre-flight count hit its
+   * cap and stopped. Persisted because the number alone cannot say so, and a grant
+   * that records "5001" indistinguishably for a 5,001-row table and a 5,000,000-row
+   * one is a record of consent to something the user was never shown. The card renders
+   * it as "at least"; the bound itself still compares numerically, which stays correct
+   * in both directions (a saturated call can only be covered by a saturated grant,
+   * because no unsaturated count can reach the cap).
+   */
+  rowsSaturated: boolean;
   /** Server-composed phrase naming the exact target + count, for the audit trail. */
   detail: string;
   /** ISO timestamp the grant was consumed. Present ⇒ spent ⇒ never usable again. */
@@ -211,6 +221,7 @@ function normalizeGrant(g: ConsentGrant): ConsentGrant {
     verbKey: text(g.verbKey),
     maxRows: count(g.maxRows),
     rowsUnknown: flag(g.rowsUnknown),
+    rowsSaturated: flag(g.rowsSaturated),
     detail: text(g.detail),
   };
   const spentAt = text(g.spentAt);
@@ -414,23 +425,42 @@ export async function resolveConsent(
     await markExpired(db, id, now);
     return rejected('the question expired before it was answered');
   }
-  if (
-    !Number.isInteger(optionIndex) ||
-    optionIndex < 0 ||
-    optionIndex >= Math.max(record.optionCount, 0)
-  ) {
-    return rejected('not one of the options the user was shown');
-  }
 
-  const status: 'granted' | 'declined' =
-    optionIndex === record.affirmIndex ? 'granted' : 'declined';
+  // GRANTED requires the affirming option, exactly. EVERYTHING ELSE that reaches a
+  // live record of this user's own conversation is a DECLINE.
+  //
+  // An out-of-range index used to be `rejected` instead — "not one of the options the
+  // user was shown" — and that sentence was true but the conclusion was wrong. The
+  // client attaches the open question's id to EVERY send, with index -1 whenever the
+  // user typed a reply or sent files rather than clicking, and its own comment says
+  // that explicitly declines. Server-side the -1 was rejected, so the record never
+  // became `declined`, the gate saw "never asked" instead of "asked and said no", and
+  // the plan the user had just refused in words RAN. Measured on one fixture with
+  // only the option index differing: a clicked no left the records intact; a typed no
+  // left them empty.
+  //
+  // `rejected` is kept for what it actually means — an answer that cannot be
+  // attributed to this record AT ALL (unknown id, another conversation, another user,
+  // already answered, expired). Those are decided above. Past that point the user
+  // really did respond to this question, and anything other than the affirming click
+  // is a no. Reading it that way can only ever CLOSE the gate: `spendGrant` refuses
+  // any record that is not `granted`.
+  const affirmed =
+    Number.isInteger(optionIndex) &&
+    optionIndex >= 0 &&
+    optionIndex < Math.max(record.optionCount, 0) &&
+    optionIndex === record.affirmIndex;
+  const status: 'granted' | 'declined' = affirmed ? 'granted' : 'declined';
+  // The column is an INTEGER; a non-integer index is recorded as the sentinel rather
+  // than written through, so the stored answer always round-trips through decodeRow.
+  const storedIndex = Number.isInteger(optionIndex) ? Math.trunc(optionIndex) : -1;
   try {
     await runAsyncOrSync(
       db.adapter,
       `UPDATE "${CONSENT_TABLE}"
           SET "status" = ?, "answered_at" = ?, "answer_index" = ?
         WHERE "id" = ? AND "status" = 'pending'`,
-      [status, now.toISOString(), optionIndex, id],
+      [status, now.toISOString(), storedIndex, id],
     );
   } catch (e) {
     console.warn(
@@ -441,12 +471,19 @@ export async function resolveConsent(
   // Read back rather than trust the write: the adapter surface has no portable
   // row-count, and a CAS that silently matched nothing must not read as consent.
   const after = await loadConsent(db, id);
-  if (after?.status !== status || after.answerIndex !== optionIndex) {
+  if (after?.status !== status || after.answerIndex !== storedIndex) {
     return rejected('the answer could not be recorded');
   }
   return status === 'granted'
     ? { status, record: after }
-    : { status, reason: 'the user chose an option that is not the affirmative one', record: after };
+    : {
+        status,
+        reason:
+          storedIndex < 0
+            ? 'the user replied without choosing the affirmative option'
+            : 'the user chose an option that is not the affirmative one',
+        record: after,
+      };
 }
 
 /** Stamp a record expired. Best-effort bookkeeping — the read path already refuses it. */
@@ -508,6 +545,197 @@ export async function expirePendingForThread(
     );
     return 0;
   }
+}
+
+/**
+ * How many answered consent records one thread's refusal history reads. Bounded, and
+ * ordered newest-first so the cap can only ever drop the OLDEST answers — which the
+ * newer ones already override.
+ */
+const REFUSAL_SCAN_LIMIT = 200;
+
+/**
+ * How many still-open cards one send may sweep. One is the norm (a turn may only mint
+ * one, and every send sweeps), so this is a bound on a pathological store, not a
+ * working limit.
+ */
+const PENDING_SCAN_LIMIT = 50;
+
+/**
+ * Answer every still-open card in this thread with a NO, because the user's next
+ * message arrived without one.
+ *
+ * The typed-decline path — "a reply that is not the affirming click is a refusal" —
+ * only ran when the CLIENT attached the open card's id to the send. That id is
+ * ephemeral in-memory state in the browser: a page reload, a stream reconnect, or a
+ * client that simply loses it between rendering the card and the next message all
+ * drop it. The record then stayed `pending`, the staleness sweep stamped it `expired`,
+ * and the gate read "never asked" instead of "asked and said no" — so the plan the
+ * user had just walked away from was runnable again on the next turn.
+ *
+ * So the store answers the question itself: it knows which cards are live for this
+ * thread and this user without being told. A message that reaches here carrying no
+ * affirmative answer IS the answer — the same reading the client's own `-1` index
+ * already meant, now independent of the client remembering to send it.
+ *
+ * EXPIRED records are left to the sweep rather than declined: expiry means nobody
+ * answered in time, which grants nothing either way, and turning it into a durable
+ * refusal would let an abandoned tab bind an object the user never actually refused.
+ *
+ * Returns the records that really became `declined`, newest last. Never throws: an
+ * unreadable store declines nothing, and the record stays `pending` for the sweep.
+ */
+export async function declinePendingForThread(
+  db: Lattice,
+  scope: ConsentScope,
+): Promise<ConsentRecord[]> {
+  const out: ConsentRecord[] = [];
+  if (!scope.threadId) return out;
+  try {
+    await ensureConsentTable(db.adapter);
+    const rows = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT "id" FROM "${CONSENT_TABLE}"
+        WHERE "thread_id" = ?
+          AND ${scope.ownerUserId == null ? '"owner_user_id" IS NULL' : '"owner_user_id" = ?'}
+          AND "status" = 'pending'
+        ORDER BY "created_at" ASC, "id" ASC
+        LIMIT ${String(PENDING_SCAN_LIMIT)}`,
+      scope.ownerUserId == null ? [scope.threadId] : [scope.threadId, scope.ownerUserId],
+    )) as unknown as { id?: unknown }[];
+    for (const row of rows) {
+      const id = text(row.id);
+      if (!id) continue;
+      // -1 is the same sentinel a typed reply carries: an answer that is not the
+      // affirming click. Routed through resolveConsent so it takes exactly the same
+      // compare-and-set, read-back and scope checks as a clicked answer — there is no
+      // second way to write an answer into this table.
+      const resolution = await resolveConsent(db, id, -1, scope);
+      if (resolution.status === 'declined' && resolution.record) out.push(resolution.record);
+    }
+  } catch (e) {
+    console.warn(
+      `[assistant] could not close open confirmations for thread "${scope.threadId}": ${(e as Error).message}`,
+    );
+  }
+  return out;
+}
+
+/**
+ * ONE act, as the refusal history keys it: the object, the tool, and the verb.
+ *
+ * The same triple the gate compares a grant on, so "what the user answered about" and
+ * "what this call does" are the same identity in both directions. The separator is a
+ * unit separator, which cannot occur in a table name, a tool name or a `verbKey`.
+ */
+export function consentActKey(target: string, tool: string, verb: string): string {
+  return `${target}␟${tool}␟${verb}`;
+}
+
+/** What a conversation's answered consent records say about what it may still do. */
+export interface ThreadRefusals {
+  /**
+   * Objects carrying a STANDING refusal: some act on them was refused and has not
+   * since been re-approved. The gate refuses ANY act on these at any size.
+   */
+  targets: ReadonlySet<string>;
+  /**
+   * Acts ({@link consentActKey}) whose LATEST answer in this conversation was yes.
+   * These are the exception to the line above: the user really was asked about this
+   * exact act and really did say yes, so a standing refusal about a DIFFERENT act on
+   * the same object must not block it.
+   */
+  grantedActs: ReadonlySet<string>;
+}
+
+/**
+ * What this conversation has refused, and what it has since re-approved.
+ *
+ * The gate's rule — a plan the user REFUSED is gated at any size, because chipping
+ * away at it one small call at a time is the same plan — was enforced from a single
+ * record: the one the CURRENT request answered. The client only sends a question id
+ * on the turn that answers it, so a refusal lasted exactly one turn. Measured: turn 2
+ * clicked no and the gate held; turn 3 said "ok then" and the identical plan ran and
+ * destroyed the records, while the stored record still read `declined`.
+ *
+ * So the refusal is read from the STORE instead of from the request. The rule used to
+ * be "last answer per TARGET wins", and that was too coarse in the one direction that
+ * matters: a later yes about a SMALL act on an object silently revoked an earlier no
+ * about a completely different and far larger one. Saying no to "delete Invoices and
+ * everything pointing at it" and then yes to "delete this one invoice row" lifted the
+ * refusal on the whole object.
+ *
+ * So the verdict is tracked per ACT (object + tool + verb). A refusal stands for the
+ * object until the user is asked AGAIN about the act they refused; a yes lifts only
+ * the act it actually answered. Both halves are needed: without the per-act yes, a
+ * refusal would make the object unusable for the rest of the conversation (its own
+ * kind of broken), and without the object-level standing refusal, the plan could be
+ * chipped away by any act that had never been named.
+ *
+ * Scoped to the thread AND the owner, like every other read here. Never throws: an
+ * unreadable store yields no refusals and no lifted acts, and the gate's other rules
+ * (size, multi-target, an unspendable grant) still stand.
+ */
+export async function refusalsForThread(db: Lattice, scope: ConsentScope): Promise<ThreadRefusals> {
+  const targets = new Set<string>();
+  const grantedActs = new Set<string>();
+  if (!scope.threadId) return { targets, grantedActs };
+  try {
+    await ensureConsentTable(db.adapter);
+    const rows = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT "status","grants_json","answered_at","created_at" FROM "${CONSENT_TABLE}"
+        WHERE "thread_id" = ?
+          AND ${scope.ownerUserId == null ? '"owner_user_id" IS NULL' : '"owner_user_id" = ?'}
+          AND "status" IN ('granted','declined')
+        ORDER BY "answered_at" DESC, "created_at" DESC, "id" DESC
+        LIMIT ${String(REFUSAL_SCAN_LIMIT)}`,
+      scope.ownerUserId == null ? [scope.threadId] : [scope.threadId, scope.ownerUserId],
+    )) as unknown as Pick<ConsentRow, 'status' | 'grants_json' | 'answered_at' | 'created_at'>[];
+    // Newest first, so the first verdict seen for an act is its latest one — as far as
+    // the stored timestamps can tell. `id DESC` is only there to make the SQL ordering
+    // total; it decides NOTHING, because an id tie is resolved by the fail-closed rule
+    // below rather than by which random UUID happened to sort higher.
+    const decided = new Map<string, { target: string; stamp: string; declined: boolean }>();
+    for (const row of rows) {
+      const status = decodeStatus(text(row.status));
+      const grants = decodeGrants(text(row.grants_json));
+      if (!status || !grants) continue;
+      // What the store can actually order two answers by. Anything past this is a TIE,
+      // not a later answer — see the tie rule below.
+      const stamp = `${text(row.answered_at)}␟${text(row.created_at)}`;
+      for (const g of grants) {
+        const target = text(g.target);
+        if (!target) continue;
+        const act = consentActKey(target, text(g.tool), text(g.verbKey));
+        const prev = decided.get(act);
+        // Rows arrive newest-first, so a DIFFERENT stamp here is strictly older and
+        // has been superseded.
+        if (prev && prev.stamp !== stamp) continue;
+        decided.set(act, {
+          target,
+          stamp,
+          // THE TIE RULE, and it is fail-closed on purpose. Two answers to the same act
+          // can land in the same millisecond, and the stored timestamps then cannot say
+          // which came last. The ordering used to break that tie on `id DESC` — a
+          // RANDOM UUID — so which answer counted as the latest was decided by a coin
+          // flip, and a refusal could be lifted (or not) differently on two runs of the
+          // identical conversation. When the store cannot tell, the refusal wins: a no
+          // that might be the user's last word must not be discarded on a tiebreak.
+          declined: (prev?.declined ?? false) || status === 'declined',
+        });
+      }
+    }
+    for (const [act, v] of decided) {
+      if (v.declined) targets.add(v.target);
+      else grantedActs.add(act);
+    }
+  } catch (e) {
+    console.warn(
+      `[assistant] could not read refusals for thread "${scope.threadId}": ${(e as Error).message}`,
+    );
+  }
+  return { targets, grantedActs };
 }
 
 /**

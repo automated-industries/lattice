@@ -5,6 +5,8 @@
  * here rather than as a production GUI degradation.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   MEMBER_READABLE_BOOKKEEPING,
   OWNER_ONLY_BOOKKEEPING,
@@ -90,6 +92,80 @@ describe('member-access registry', () => {
     // ...and NEVER from the column policy — a stranded policy must not be able to
     // widen what a member can read.
     expect(dml).not.toContain('__lattice_column_policy');
+  });
+
+  it('the plpgsql and TypeScript view-mask readers recover the SAME columns', () => {
+    // Two places recover "which columns does the standing view guard" out of
+    // pg_get_viewdef: the TypeScript rebuild (viewMaskedColumns, cloud/audience.ts)
+    // and the plpgsql member add-column path (cloud/rls.ts), which is the one that
+    // runs with NO owner connected. They disagreed once already — the plpgsql one was
+    // case-sensitive, required an unquoted name, and matched a single literal space —
+    // and because Postgres QUOTES any identifier that is not all-lowercase, that
+    // disagreement republished a mixed-case masked column in clear.
+    //
+    // Compared by BEHAVIOUR rather than by text, because they are written in different
+    // languages and a byte comparison would either be impossible or would pass on two
+    // patterns that happen to look alike. Whatever they are, they must accept the same
+    // definitions — that is the property, and it is the one that broke.
+    const src = (rel: string): string =>
+      readFileSync(join(import.meta.dirname, '..', '..', 'src', rel), 'utf8');
+
+    // Lift each reader's pattern out of the source it actually ships in.
+    const tsLiteral = /const re = (\/.*\/[gimsuy]*);/.exec(src('cloud/audience.ts'))?.[1];
+    expect(tsLiteral, 'the TypeScript reader in cloud/audience.ts has moved').toBeTruthy();
+    // EVERY plpgsql reader, not the first one. There is more than one now
+    // (`lattice_member_add_column` recovers the guarded column NAMES;
+    // `lattice_table_has_masked_column` asks whether there are any), and lifting only
+    // the first match quietly stopped testing whichever one moved later in the file —
+    // which is precisely how two readers of the same artifact drift apart.
+    const pgLiterals = [...src('cloud/rls.ts').matchAll(/'(END AS\[\[:space:\]\][^']*)'/g)].map(
+      (m) => m[1]!,
+    );
+    expect(
+      pgLiterals.length,
+      'the plpgsql view-mask readers in cloud/rls.ts have moved',
+    ).toBeGreaterThanOrEqual(2);
+
+    const tsBody = /^\/(.*)\/([gimsuy]*)$/.exec(tsLiteral ?? '');
+    const tsRe = new RegExp(tsBody?.[1] ?? '', tsBody?.[2] ?? '');
+    // POSIX ERE → JS: the two spellings of "any whitespace" and "optional".
+    const pgRes = pgLiterals.map(
+      (lit) => new RegExp(lit.replace(/\[\[:space:\]\]/g, '\\s').replace(/\{0,1\}/g, '?'), 'gi'),
+    );
+
+    const names = (re: RegExp, def: string): string[] => {
+      const out: string[] = [];
+      const r = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+      for (let m = r.exec(def); m !== null; m = r.exec(def)) if (m[1]) out.push(m[1]);
+      return out;
+    };
+
+    const defs: [string, string[]][] = [
+      // What Postgres stores for a lowercase masked column.
+      [
+        'SELECT CASE WHEN lattice_is_owner(...) THEN j.secret ELSE NULL::text END AS secret',
+        ['secret'],
+      ],
+      // ...and for one that is not all-lowercase, which it quotes. This is the case
+      // that leaked.
+      [
+        'SELECT CASE WHEN lattice_is_owner(...) THEN j."secretNote" ELSE NULL::text END AS "secretNote"',
+        ['secretNote'],
+      ],
+      // Postgres reflows the definition it stores, so the gap can be a newline.
+      ['CASE WHEN x THEN j.a ELSE NULL::text END AS\n    "mixedCase",\n  j.body', ['mixedCase']],
+      // Several in one definition, in order.
+      ['... END AS a, j.body, ... END AS "B2"', ['a', 'B2']],
+      // Nothing guarded: an unmasked pass-through view must yield no columns at all,
+      // or every rebuild would "preserve" masks that were never there.
+      ['SELECT j.id, j.body FROM journal j WHERE lattice_row_visible(...)', []],
+    ];
+    for (const [def, expected] of defs) {
+      expect(names(tsRe, def), `TypeScript reader on: ${def}`).toEqual(expected);
+      for (const [i, pgRe] of pgRes.entries()) {
+        expect(names(pgRe, def), `plpgsql reader #${String(i)} on: ${def}`).toEqual(expected);
+      }
+    }
   });
 
   it('grantMemberTableAccessBatchSql: joins the statements into one multi-statement string', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
@@ -97,12 +97,41 @@ describe('ask_user with confirm — the server mints the record and composes the
     await db.init();
     for (let i = 0; i < 40; i++) await db.insert('people', { id: `p${String(i)}`, name: 'x' });
     for (let i = 0; i < 5; i++) await db.insert('orders', { id: `o${String(i)}`, label: 'y' });
+    // A REAL config on disk. `delete_cascade` destroys in OTHER objects too, and the
+    // classifier counts that collateral from the workspace's declared relations — with
+    // no config there is no relation model to read, which fails CLOSED (an uncountable
+    // cascade, gated at any size). The server always supplies one; so does this.
+    const configPath = join(tmpDir, 'lattice.config.yml');
+    const outputDir = join(tmpDir, 'context');
+    writeFileSync(
+      configPath,
+      [
+        'db: ./test.db',
+        '',
+        'entities:',
+        '  people:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      name: { type: text }',
+        '      deleted_at: { type: text }',
+        '    outputFile: people.md',
+        '  orders:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      label: { type: text }',
+        '      deleted_at: { type: text }',
+        '    outputFile: orders.md',
+        '',
+      ].join('\n'),
+    );
     dispatch = {
       db,
       feed: new FeedBus(),
       validTables: new Set(['people', 'orders']),
       junctionTables: new Set(),
       softDeletable: new Set(['people', 'orders']),
+      configPath,
+      outputDir,
     };
   });
 

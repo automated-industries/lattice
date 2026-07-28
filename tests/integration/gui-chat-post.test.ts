@@ -6,7 +6,13 @@ import { createServer, type Server } from 'node:http';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 import { Lattice } from '../../src/lattice.js';
-import { loadConsent, mintConsent, type ConsentGrant } from '../../src/gui/ai/consent-store.js';
+import {
+  loadConsent,
+  mintConsent,
+  resolveConsent,
+  spendGrant,
+  type ConsentGrant,
+} from '../../src/gui/ai/consent-store.js';
 
 /**
  * POST /api/chat — the assistant chat stream. Claude access is OAuth-only, and a
@@ -200,6 +206,7 @@ function grantFor(table: string): ConsentGrant {
     verbKey: 'resolution:delete_data',
     maxRows: 40,
     rowsUnknown: false,
+    rowsSaturated: false,
     detail: `remove "${table}" (40 record(s))`,
   };
 }
@@ -367,10 +374,16 @@ describe('POST /api/chat', () => {
  * Three properties, each closing a way the previous transcript-derived consent could
  * be bypassed or misread:
  *
- *  - STALENESS IS SERVER-ENFORCED. Every send expires the questions still open in
+ *  - STALENESS IS SERVER-ENFORCED. Every send CLOSES the questions still open in
  *    the thread. Keyed on nothing the client sends, because the bypass it closes is
  *    precisely a send that carries no user text to go stale — a files-only turn used
- *    to leave an open destructive question live behind it.
+ *    to leave an open destructive question live behind it. A card that was still LIVE
+ *    when the next message arrived is closed as `declined` rather than `expired`: the
+ *    user replied to it with something that was not the affirming click, which is what
+ *    the typed-decline path already means by a no. That reading used to depend on the
+ *    CLIENT attaching the open card's id — ephemeral in-memory state a reload loses —
+ *    so the server answers it from the store instead. Either way the record can never
+ *    authorize anything; `declined` additionally keeps the plan refused.
  *  - A BARE "YES" WITH NO HANDLE GRANTS NOTHING. Agreement has to be an answer to a
  *    question the server wrote down, not a word that appeared in a message.
  *  - A GRANTED RECORD REACHES THE TOOL LOOP. The text of an answer to a confirmation
@@ -393,7 +406,7 @@ describe('POST /api/chat — durable consent', () => {
     return ((await r.json()) as { threadId: string }).threadId;
   }
 
-  it('a files-only turn EXPIRES a pending consent record (the staleness bypass)', async () => {
+  it('a files-only turn CLOSES a pending consent record as refused (the staleness bypass)', async () => {
     process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
     const s = await boot();
     seedClaudeOAuth();
@@ -428,9 +441,16 @@ describe('POST /api/chat — durable consent', () => {
       });
       expect(r.status).toBe(202);
 
-      expect(await until(async () => (await loadConsent(db, id))?.status === 'expired')).toBe(true);
-      // Expired ⇒ nothing it described can ever be authorized.
-      expect((await loadConsent(db, id))?.status).toBe('expired');
+      expect(await until(async () => (await loadConsent(db, id))?.status !== 'pending')).toBe(true);
+      // Closed as a REFUSAL: the card was still live when the next message arrived, and
+      // that message was not the affirming click. Nothing it described can ever be
+      // authorized — asserted on the behaviour, not on the status alone.
+      expect((await loadConsent(db, id))?.status).toBe('declined');
+      expect((await resolveConsent(db, id, 0, { threadId, ownerUserId: null })).status).toBe(
+        'rejected',
+      );
+      expect((await loadConsent(db, id))?.grants.every((g) => g.spentAt === undefined)).toBe(true);
+      expect(await spendGrant(db, id, 0, 'test')).toBe(false);
     } finally {
       db.close();
     }
@@ -459,9 +479,16 @@ describe('POST /api/chat — durable consent', () => {
 
       expect(await until(async () => (await loadConsent(db, id))?.status !== 'pending')).toBe(true);
       const after = await loadConsent(db, id);
-      expect(after?.status).toBe('expired'); // swept, never granted
-      expect(after?.answerIndex).toBeNull();
+      // Closed as a refusal, never granted — the word in the message is not an answer.
+      expect(after?.status).toBe('declined');
+      expect(after?.answerIndex).toBe(-1); // the "not the affirming click" sentinel
       expect(after?.grants.every((g) => g.spentAt === undefined)).toBe(true);
+      // ...and it can never become one: the record is answered, so a later click on it
+      // is rejected and no grant on it is spendable.
+      expect((await resolveConsent(db, id, 0, { threadId, ownerUserId: null })).status).toBe(
+        'rejected',
+      );
+      expect(await spendGrant(db, id, 0, 'test')).toBe(false);
     } finally {
       db.close();
     }

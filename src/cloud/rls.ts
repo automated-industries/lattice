@@ -563,6 +563,38 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $fn$
   )
 $fn$;
 
+-- Does p_table carry a COLUMN MASK right now? Read out of the standing member read
+-- view, which is the artifact that ENFORCES the mask -- never out of
+-- __lattice_column_policy, which is losable: a policy row that is missing, stale, or
+-- stranded under a pre-rename name reads back empty, indistinguishable from "nothing
+-- is masked here", and every masking leak in this release came out of a decision made
+-- that way.
+--
+-- A masked column is emitted by audienceViewSql as
+--   CASE WHEN lattice_is_owner(...) THEN col END AS col
+-- so the presence of an END AS in the projection IS the mask. The pattern is written
+-- IDENTICALLY to the other view-mask readers -- the plpgsql one in
+-- lattice_member_add_column and the TypeScript one in audience.ts -- capture group
+-- included even though a boolean test does not need one, because the unit test that
+-- holds all of them to the same accepted set compares them by BEHAVIOUR and a reader
+-- with a different shape is a reader that can drift. (It did drift once, and a
+-- mixed-case masked column was republished in clear.)
+--
+-- FAIL CLOSED. No view => no evidence => "assume masked". A relation with no member
+-- read view is one a member cannot read at all, so withholding derived cleartext for
+-- it costs nothing real and guessing "unmasked" would cost exactly the leak.
+CREATE OR REPLACE FUNCTION lattice_table_has_masked_column(p_table text)
+RETURNS boolean LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
+DECLARE v_def text;
+BEGIN
+  SELECT pg_get_viewdef(c.oid, true) INTO v_def
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = current_schema() AND c.relkind = 'v'
+     AND c.relname = p_table || '_v';
+  IF v_def IS NULL THEN RETURN true; END IF;
+  RETURN v_def ~* 'END AS[[:space:]]+"{0,1}([A-Za-z_][A-Za-z0-9_]*)"{0,1}';
+END $fn$;
+
 -- Owner-only: set a table's default row visibility for NEW rows. Raises unless the
 -- caller can create roles (a cloud owner / DBA). Rejects 'everyone' on a
 -- never-share table.
@@ -755,6 +787,7 @@ DECLARE
   v_pk_expr   text;
   v_select    text;
   v_preserved text[];
+  v_col       text;
 BEGIN
   -- Never alter internal bookkeeping tables (names start with "_"). The GUI only
   -- ever calls this for a user entity table; rejecting the rest is defense-in-depth
@@ -840,7 +873,19 @@ BEGIN
       INTO v_preserved
       FROM regexp_matches(
              COALESCE(pg_get_viewdef(to_regclass(quote_ident(v_view)), true), ''),
-             'END AS ([a-zA-Z_][a-zA-Z0-9_]*)', 'g') AS m;
+             -- Must match the owner-side reader in audience.ts EXACTLY. Postgres
+             -- QUOTES any identifier that is not all-lowercase, so a mixed-case
+             -- column emits END AS "secretNote" — a case-sensitive, unquoted,
+             -- single-space pattern silently matched nothing and republished the
+             -- column in clear. The two readers disagreeing is the whole failure:
+             -- this is the one that runs with no owner connected.
+             --
+             -- The two are held to the same ACCEPTED SET by a unit test rather than by
+             -- eye (member-access.test.ts, "the plpgsql and TypeScript view-mask
+             -- readers recover the SAME columns"): they are written in different
+             -- languages, so behaviour is the only comparison that means anything, and
+             -- behaviour is exactly what drifted.
+             'END AS[[:space:]]+"{0,1}([A-Za-z_][A-Za-z0-9_]*)"{0,1}', 'gi') AS m;
 
     -- Build the masked SELECT list in column order: masked when the policy says so,
     -- OR when the view already guarded it. Union only — never a reduction.
@@ -865,7 +910,46 @@ BEGIN
     EXECUTE format('GRANT SELECT ON %I TO ${group}', v_view);
     -- Belt and braces: the member's own path can never leave base SELECT standing.
     -- Idempotent, and cheap.
+    --
+    -- It is also NOT free, and the re-grant below is the other half of it. A
+    -- column-less REVOKE SELECT drops the table-level grant AND every column-level
+    -- one, and a member needs column SELECT to WRITE: Postgres checks it on every
+    -- column an UPDATE or DELETE names in its WHERE clause. So this one statement used
+    -- to leave the member able to read (the view is re-granted above) and unable to
+    -- change anything at all — permission denied on every write, permanently, until an
+    -- owner reopened the workspace. Measured: the member's column grants went from
+    -- [body, deleted_at, id] to []. The owner-side emitter welds the key grant to its
+    -- own revoke for exactly this reason; performing the revoke without it is the bug.
     EXECUTE format('REVOKE SELECT ON %I FROM ${group}', p_table);
+
+    -- The write keys, and ONLY the write keys — the pk columns and the soft-delete
+    -- marker, exactly what dmlKeyGrantSql emits on the owner side. Deliberately the
+    -- narrower of the two possible re-grants:
+    --
+    --   * it restores writes, which is what the revoke broke; and
+    --   * it cannot re-open a base READ path. Granting "every column the rebuilt view
+    --     does not mask" would also work for writes AND would let a member widen its
+    --     own base access by adding a field — the release closed base reads for
+    --     members on purpose (per-author chat isolation depends on it), so a
+    --     member-callable SECURITY DEFINER function must not hand that back.
+    --
+    -- Read from the catalog, never from __lattice_column_policy: a policy that is
+    -- missing, stale, or stranded under an old name cannot widen this set, which is the
+    -- losability behind most of this release's leaks.
+    FOR v_col IN
+      SELECT a.attname FROM pg_index i
+        JOIN pg_class t     ON t.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(i.indkey)
+       WHERE n.nspname = current_schema() AND t.relname = p_table AND i.indisprimary
+      UNION
+      SELECT 'deleted_at' WHERE EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = p_table AND column_name = 'deleted_at')
+    LOOP
+      EXECUTE format('GRANT SELECT (%I) ON %I TO ${group}', v_col, p_table);
+    END LOOP;
   EXCEPTION
     WHEN invalid_object_definition THEN
       -- CREATE OR REPLACE VIEW cannot change a view's column set or names, so a
@@ -982,12 +1066,45 @@ GRANT EXECUTE ON FUNCTION lattice_member_claim_ownerless(text, text) TO ${group}
 -- exists: the body binds the table at call time, by which point a searchable cloud
 -- has it. lattice_row_visible runs as this definer (owner) but still keys on the
 -- caller's session_user, so a member can never read another member's vectors.
+--
+-- CHUNK TEXT IS WITHHELD FROM ANYONE WHO IS NOT THE ROW'S OWNER. The stored
+-- \`content\` is a VERBATIM copy of the row's embedded fields concatenated together,
+-- masked columns included — the identical cleartext the FTS index holds. Row
+-- visibility is the wrong gate for it: a row can be visible to everyone while one of
+-- its columns is owner-only, which is the entire point of the mask. Filtering by
+-- lattice_row_visible alone therefore returned, in clear, the value the base table
+-- denied, the FTS index denied, and the \`<t>_v\` view returned as NULL. Measured from
+-- a real member login before this line existed.
+--
+-- The gate is lattice_is_owner — the SAME predicate the generated mask views compile
+-- to — so this function agrees with \`<t>_v\` by construction rather than by having
+-- read the column policy and reached the same conclusion. That is deliberate: a
+-- policy row that is missing, stale, or stranded under a pre-rename table name reads
+-- back EMPTY, which is indistinguishable from "nothing is masked here", and every
+-- masking leak in this release came out of a decision made that way. Consulting the
+-- policy would have re-created it here. Withholding unconditionally cannot.
+--
+-- It costs nothing: the app NEVER uses this column for a member. searchByEmbedding
+-- re-derives matchedContent from the already-masked row for a cloud member, and
+-- scoring reads only \`embedding\`. The vectors still come back, so a member's
+-- semantic search over a table with a masked column keeps working exactly as before
+-- — masking hides the VALUE, not the row.
+--
+-- RESIDUAL, stated rather than papered over: the embedding VECTOR of a chunk that
+-- covered a masked column is still returned, because scoring needs it and returning
+-- nothing would silently delete member semantic search on every masked table. A
+-- vector is a lossy projection, not the text, but it is derived from it. Removing
+-- that residual means embedding masked and unmasked columns as SEPARATE chunks so a
+-- member can be served only the chunks it may read — a change to what an embedding
+-- IS, i.e. a product decision, not a fix to make here.
 CREATE OR REPLACE FUNCTION lattice_visible_embeddings(p_table text)
 RETURNS TABLE(row_pk text, chunk_index int, content text, embedding text, vec_dim int)
 LANGUAGE plpgsql STABLE SECURITY DEFINER AS $fn$
 BEGIN
   RETURN QUERY
-    SELECT e."row_pk", e."chunk_index", e."content", e."embedding", e."vec_dim"
+    SELECT e."row_pk", e."chunk_index",
+           CASE WHEN lattice_is_owner(p_table, e."row_pk") THEN e."content" END,
+           e."embedding", e."vec_dim"
       FROM "_lattice_embeddings" e
      WHERE e."table_name" = p_table
        AND lattice_row_visible(p_table, e."row_pk");
@@ -1163,19 +1280,29 @@ export async function ownPolyfillsByGroup(db: Lattice): Promise<void> {
  * the whole history. Idempotent → converges on every owner open. No-op off Postgres
  * or when the table doesn't exist yet.
  *
- * COLUMN masking of the audit images is NOT done here, and cannot be: this policy
- * decides which audit ROWS a member may see, and the secret columns live inside the
- * `before_json` / `after_json` payloads of rows they are legitimately allowed to
- * see. That gap — a member reading an owner-secret column out of a shared row's
- * history — is closed at SERVE time instead, by `maskAuditImagesForViewer`
- * (src/gui/mutations.ts), which every path that returns audit images now calls.
+ * COLUMN masking of the audit images cannot be done by this POLICY: a policy decides
+ * which audit ROWS a member may see, and the secret columns live inside the
+ * `before_json` / `after_json` payloads of rows they are legitimately allowed to see.
+ *
+ * It used to be left to SERVE time alone — `maskAuditImagesForViewer`
+ * (src/gui/mutations.ts) — and that is not sufficient, because a cloud member holds
+ * a DIRECT Postgres session. A serve-time mask cannot reach a query the member
+ * issues itself, and `SELECT before_json FROM _lattice_gui_audit` returned the
+ * owner-masked column in cleartext to any member who could see the row. The serve
+ * path was masked; the relation was not.
+ *
+ * So the mask is installed HERE too, in the database, the same way every user table
+ * gets one: `_lattice_gui_audit_v` projects the images through the SAME
+ * `session_user`-keyed predicate the `<t>_v` masks compile to, base SELECT is
+ * narrowed to the metadata columns (see MEMBER_READABLE_BOOKKEEPING), and the member
+ * reads the view. Serve-time masking stays — it is what covers the OWNER-connection
+ * paths that this view is not in, and it is defence in depth for the member ones.
  *
  * The stored images stay complete, deliberately: undo, redo and revert restore a
- * row FROM them, so masking at rest would break recovery. The consequence worth
- * stating plainly is that anything reading `_lattice_gui_audit` OUTSIDE those serve
- * paths still sees raw images by design. `tests/unit/security-helpers-wired-guard.test.ts`
- * is what keeps the set of serve paths from silently becoming empty again — which is
- * exactly what happened when the mask was written and never wired.
+ * row FROM them, so masking at rest would break recovery for the owner as well.
+ * `tests/unit/security-helpers-wired-guard.test.ts` is what keeps the set of serve
+ * paths from silently becoming empty again — which is exactly what happened when the
+ * serve-time mask was written and never wired.
  */
 export async function enableGuiAuditRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
@@ -1201,6 +1328,64 @@ CREATE POLICY "lattice_gui_audit_upd" ON "_lattice_gui_audit" FOR UPDATE
 DROP POLICY IF EXISTS "lattice_gui_audit_del" ON "_lattice_gui_audit";
 CREATE POLICY "lattice_gui_audit_del" ON "_lattice_gui_audit" FOR DELETE
   USING ("row_id" IS NULL OR lattice_row_visible("table_name", "row_id"));
+
+-- The member READ path onto the audit log. Same shape as any user entity: the
+-- relation the member is granted is a view, and the base keeps only the privileges a
+-- write needs.
+--
+-- Three cases pass the image through, and each is a case where the member could
+-- already read every value in it:
+--   * row_id IS NULL -- a schema/data-model entry. Its payload is a definition, not a
+--     row snapshot, so there is no cell to mask (this mirrors the serve-time mask,
+--     which leaves schema entries alone).
+--   * the caller OWNS the recorded row -- lattice_is_owner is exactly the predicate
+--     the mask views compile to, so an owner sees in history precisely what they see
+--     in the table.
+--   * the recorded table carries NO column mask at all. Withholding there would break
+--     a member undo / revert of a shared row for no gain: the image holds nothing the
+--     member cannot read straight out of the row.
+-- Everything else -- a masked table, a row someone else owns -- yields NULL images.
+-- That is a real cost, stated rather than hidden: a member can no longer undo or
+-- revert their own edit to a row they do not own on a MASKED table, because the
+-- restore reads the image. Fail closed is the right side of that trade, and the
+-- narrow case is the one where the image is exactly the cleartext being withheld.
+--
+-- The projection is built from the CATALOG, not from a column list written here.
+-- This table's columns genuinely vary -- ts, undone, session_id and source were each
+-- added in a later release and arrive through an idempotent schema reconcile -- so a
+-- literal list breaks the owner open on every workspace carrying a different subset,
+-- and silently drops a column from the member read on the rest. Same reasoning as the
+-- catalog-driven projection the user-table mask generator uses.
+DO $LATTICE_AUDIT_V$
+DECLARE
+  v_guard text := '"row_id" IS NULL OR lattice_is_owner("table_name", "row_id")'
+                  || ' OR NOT lattice_table_has_masked_column("table_name")';
+  v_sel  text;
+  v_ddl  text;
+BEGIN
+  SELECT string_agg(
+           CASE WHEN "column_name" IN ('before_json', 'after_json')
+                THEN format('CASE WHEN %s THEN %I END AS %I', v_guard, "column_name", "column_name")
+                ELSE format('%I', "column_name") END,
+           ', ' ORDER BY "ordinal_position")
+    INTO v_sel
+    FROM "information_schema"."columns"
+   WHERE "table_schema" = current_schema() AND "table_name" = '_lattice_gui_audit';
+  IF v_sel IS NULL THEN RETURN; END IF;
+  v_ddl := format(
+    'CREATE OR REPLACE VIEW "_lattice_gui_audit_v" AS SELECT %s FROM "_lattice_gui_audit"'
+    || ' WHERE "row_id" IS NULL OR lattice_row_visible("table_name", "row_id")', v_sel);
+  BEGIN
+    EXECUTE v_ddl;
+  EXCEPTION WHEN invalid_object_definition THEN
+    -- CREATE OR REPLACE VIEW cannot drop or reorder a view column, which is what a
+    -- removed audit column would ask for. Nothing depends on this view -- it is a
+    -- read path, not a base relation -- so recreating it is safe here, unlike the
+    -- user-table mask views whose computed dependents a DROP would take with them.
+    EXECUTE 'DROP VIEW IF EXISTS "_lattice_gui_audit_v"';
+    EXECUTE replace(v_ddl, 'CREATE OR REPLACE VIEW', 'CREATE VIEW');
+  END;
+END $LATTICE_AUDIT_V$;
 `,
   );
 }
