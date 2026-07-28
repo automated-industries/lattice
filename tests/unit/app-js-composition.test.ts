@@ -670,8 +670,28 @@ import { appJs } from '../../src/gui/app/script.js';
 // the remembered open-question id, the option INDEX passed to onAnswer, and the
 // questionId/optionIndex fields on the send body + the queued-item copies are all
 // gone. A question is a question again. Recaptured.
-const ORIGINAL_LENGTH = 857213;
-const ORIGINAL_SHA256 = '20201a88755d73f4adb58f126efae031236ac1aa5dc56df71ba07e6e0743f90e';
+// Clickable citations feature: open-record navigation action (wired to citation badges),
+// provenance read operation for interactive data-lineage popovers, + guidance in the
+// HTML authoring prompt. Recaptured.
+// Part A - side-by-side record panel: when a dashboard citation is clicked, open the
+// linked record/file in a panel alongside the dashboard (rather than replacing it). The
+// panel reflows the layout (flex row, ~40% width) with a close button (✕) to restore
+// full width. Reuses existing file preview + record renderers (openDashboardRecordPanel,
+// closeDashboardRecordPanel in dashboard.ts module). HTML structure added to renderDashboardPage
+// (wrap the dash-frame + new panel in a .dash-frame-wrap flex row). CSS added for the panel
+// layout, header, scroll area, and record-field display. Part B - honest + robust citation
+// wiring: strengthened html-author.ts guidance to prefer explicit FILE_MAP (mapping labels
+// to file ids) + drop interactive affordances for unresolved citations (no dead controls) +
+// never emit uninterpolated ${} into attributes. Strengthened create_dashboard spec field
+// guidance in registry.ts to enumerate source documents as "Source: <label> = files id <id>"
+// pairs, ensuring citations resolve correctly by id rather than fragile runtime name-matching.
+// Recaptured.
+// 5.6 merge: citations branch integrated on top of the 5.5 client (open-record broker
+// action added ALONGSIDE the retained showSource + sidebar add-file handlers; both the
+// dash-source provenance row and the side-by-side record panel mount under a wrapping
+// .dash-frame-wrap). Recaptured once for the merged client.
+const ORIGINAL_LENGTH = 862351;
+const ORIGINAL_SHA256 = 'fffe2bfc98ca41a824a6b538bb9ba37b4fc5175a89d0949ae6e50d3b037048a4';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

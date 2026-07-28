@@ -272,8 +272,12 @@ import { css } from '../../src/gui/app/css.js';
 // 5.5 (cont.): both removed again with the destructive-confirmation card itself —
 // the assistant no longer performs wide or multi-object removals, so no card exists
 // to style. Recaptured.
-const ORIGINAL_LENGTH = 173774;
-const ORIGINAL_SHA256 = '26045ae28b3f12a5b5592f435063b05777a83ada68035b4accdafc9ccd2a1314';
+// 5.6 dashboard record panel: .dashboard-record-panel side-by-side reflow layout
+// (.dash-frame-wrap flex row + wrap, .panel-header/.panel-close/.panel-scroll,
+// .record-fields/.record-field) for the open-record citation click-through, plus
+// the full-width .dash-source row under the now-flex wrap. Length + hash recaptured.
+const ORIGINAL_LENGTH = 176035;
+const ORIGINAL_SHA256 = '023448148a27618e30d6420ee72423338b3939b35a7ca0299b18566cf5b45cd0';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

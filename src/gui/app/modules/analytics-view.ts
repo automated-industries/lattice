@@ -282,12 +282,17 @@ export const analyticsViewJs = `
             '</div>' +
             (row.description ? '<div class="dash-desc muted">' + escapeHtml(String(row.description)) + '</div>' : '') +
             '<div id="record-history" class="dash-history" hidden></div>' +
+            '<div class="dash-frame-wrap">' +
             '<iframe id="dash-frame" class="html-frame dash-frame" title="' + escapeHtml(String(row.title || 'Dashboard')) + '" sandbox="allow-scripts"></iframe>' +
             // Click-through target: clicking a chart opens "where did this come
             // from" HERE, below the canvas, so the dashboard stays on screen. The
             // panel is filled by the host broker (never by the frame) and starts
             // empty; leaving for the underlying table is an explicit link inside it.
+            // (Full-width flex row under the wrap; the record panel below sits
+            // side-by-side with the canvas instead.)
             '<div id="dash-source" class="dash-history dash-source" hidden></div>' +
+            '<div id="dashboard-record-panel" class="dashboard-record-panel"><div id="dashboard-panel-content"></div></div>' +
+            '</div>' +
             '</div>');
           // Sharing: the SAME per-row visibility line + grants panel every
           // record page uses — dashboards are ordinary shareable rows.
