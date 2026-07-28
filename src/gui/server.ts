@@ -1181,7 +1181,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // so a workbook lands ALL its rows, never the lossy LLM summary.
                 importAttachment: (fileId: string) =>
                   readImportSourceFromFile(active.db, fileId, dirname(active.configPath)).then(
-                    ({ data }) => importDataFaithfully(active.db, active.configPath, data),
+                    // Forward the source's original name so the faithful importer knows it is
+                    // an .xlsx: a large multi-sheet workbook splits per sheet on that signal;
+                    // without the name it would hit the over-cap dead-end instead.
+                    ({ data, name }) =>
+                      importDataFaithfully(active.db, active.configPath, data, {
+                        sourceName: name,
+                      }),
                   ),
                 // Computed tables: tagged read-only in the schema context, and
                 // driven by the assistant's computed-table tools through the

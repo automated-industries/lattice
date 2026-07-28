@@ -6,16 +6,28 @@ import { getAsyncOrSync } from '../db/adapter.js';
 import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
-import { materializeImport, type ImportMode } from '../import/materialize.js';
+import {
+  materializeImport,
+  type ImportMode,
+  type MaterializeResult,
+} from '../import/materialize.js';
 import { MAX_IMPORT_TABLES, applySourceNameFallback } from '../import/name-policy.js';
 import { localPathOf } from './files-routes.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import {
   excelFormulaSummary,
+  excelFormulaSummaryForSheet,
   excelImportWarnings,
+  excelImportWarningsForSheet,
   excelToRecords,
   type WorkbookFormulaSummary,
 } from '../import/excel.js';
+import {
+  MAX_WORKBOOK_TABLES,
+  parseSheetFileRef,
+  splitSheetJobs,
+  type SheetJob,
+} from '../import/sheet-jobs.js';
 import { csvToRecords } from '../import/csv.js';
 import { docxToRecords, pptxToRecords } from './ai/doc/doc-tables.js';
 import {
@@ -26,7 +38,6 @@ import type { ProposedSchema } from '../import/types.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
 import { getClarifyThreshold } from './assistant-routes.js';
 import type { FeedBus } from './feed.js';
-import { enqueueQuestion } from './questions.js';
 
 /**
  * Structured-source import — apply route. The importer is reachable only by
@@ -49,7 +60,8 @@ export interface ImportRouteDeps {
   latticeRoot: string | undefined;
   validTables: Set<string>;
   softDeletable: Set<string>;
-  /** Feed bus — marginal-link clarification questions are enqueued through it. */
+  /** Feed bus — the import publishes activity events through it (e.g. a note that
+   *  low-confidence links were left unconnected). */
   feed: FeedBus;
   /**
    * Creates a computed table through the audited GUI op (view DDL + YAML +
@@ -57,13 +69,6 @@ export interface ImportRouteDeps {
    */
   createComputed?: (name: string, def: ComputedTableDef) => Promise<void>;
 }
-
-/** At most this many marginal-link questions are enqueued per import. */
-const MAX_LINK_QUESTIONS = 5;
-
-/** The affirmative option — the deferred action runs only on this exact pick. */
-const LINK_YES = 'Yes, connect them';
-const LINK_NO = "No, it's just text";
 
 interface FileRow {
   id: string;
@@ -110,13 +115,18 @@ export function existingDataTables(db: Lattice): ExistingTable[] {
  */
 export async function readImportSourceFromFile(
   db: Lattice,
-  fileId: string,
+  fileRef: string,
   latticeRoot: string | undefined,
 ): Promise<{
   data: Record<string, unknown>;
   formulaSummary: WorkbookFormulaSummary | null;
   importWarnings: string[];
+  /** The source's original file name (drives parser choice + naming fallback). */
+  name: string;
 }> {
+  // A reference may name the whole file (a bare files-row id) or a single sheet of a
+  // multi-sheet workbook (`<id>#<sheet>`), so one sheet can be re-read + applied on its own.
+  const { fileId, sheet } = parseSheetFileRef(fileRef);
   const row = (await getAsyncOrSync(
     db.adapter,
     `SELECT "id","original_name","mime","ref_kind","ref_uri","blob_path"
@@ -148,11 +158,23 @@ export async function readImportSourceFromFile(
   // parity), and the materialize pre-flight never refuses a default-named
   // workbook.
   if (/\.xlsx?$/i.test(name) || mime.includes('spreadsheet') || mime.includes('excel')) {
-    const data = applySourceNameFallback(await excelToRecords(path), name);
+    const whole = await excelToRecords(path);
+    // A per-sheet reference narrows to exactly one sheet (keyed by (path, sheet)); the
+    // whole-file reference keeps every sheet. Either way the bytes are read once.
+    if (sheet !== null) {
+      const one = sheet in whole ? { [sheet]: whole[sheet] } : {};
+      return {
+        data: applySourceNameFallback(one, name),
+        formulaSummary: excelFormulaSummaryForSheet(path, sheet),
+        importWarnings: excelImportWarningsForSheet(path, sheet),
+        name,
+      };
+    }
     return {
-      data,
+      data: applySourceNameFallback(whole, name),
       formulaSummary: excelFormulaSummary(path),
       importWarnings: excelImportWarnings(path),
+      name,
     };
   }
   if (/\.(csv|tsv)$/i.test(name) || mime.includes('csv') || mime.includes('tab-separated')) {
@@ -160,6 +182,7 @@ export async function readImportSourceFromFile(
       data: applySourceNameFallback(csvToRecords(path, name), name),
       formulaSummary: null,
       importWarnings: [],
+      name,
     };
   }
   // Documents: extract embedded tables (every row) so the Apply route materializes a
@@ -171,6 +194,7 @@ export async function readImportSourceFromFile(
       data: applySourceNameFallback(await docxToRecords(path, name), name),
       formulaSummary: null,
       importWarnings: [],
+      name,
     };
   }
   if (/\.pptx$/i.test(name) || mime.includes('presentationml')) {
@@ -178,6 +202,7 @@ export async function readImportSourceFromFile(
       data: applySourceNameFallback(await pptxToRecords(path, name), name),
       formulaSummary: null,
       importWarnings: [],
+      name,
     };
   }
   let parsed: unknown;
@@ -193,6 +218,7 @@ export async function readImportSourceFromFile(
     data: applySourceNameFallback(parsed as Record<string, unknown>, name),
     formulaSummary: null,
     importWarnings: [],
+    name,
   };
 }
 
@@ -227,44 +253,193 @@ function proposalToFieldDef(f: ComputedFieldProposal): ComputedFieldDef | null {
 }
 
 /**
- * Enqueue clarification questions for the marginal links of a (renamed) plan:
- * highest confidence first, capped, and only for references that survived as
- * scalar columns on the materialized entity (an array reference has no column
- * a later "yes" could read). Answering "Yes, connect them" creates + fills the
- * junction via the deferred `import_link` action; a "No" or dismissal does
- * nothing; a free-form answer is persisted as the column's definition.
+ * Count the marginal (low-confidence) links of a plan that survived as a plain scalar column a
+ * later connect could read (an array reference has no such column, so it is not counted). Pure —
+ * no side effects — so both the single-plan path and the per-sheet aggregate can sum across plans
+ * before deciding whether to publish anything.
  */
-async function enqueueMarginalLinkQuestions(
-  deps: ImportRouteDeps,
-  plan: ProposedSchema,
-): Promise<number> {
-  const marginal = [...plan.marginalLinks].sort((a, b) => b.confidence - a.confidence);
-  let asked = 0;
-  for (const link of marginal) {
-    if (asked >= MAX_LINK_QUESTIONS) break;
+export function countMarginalLinks(plan: ProposedSchema): number {
+  return plan.marginalLinks.filter((link) => {
     const from = plan.entities.find((e) => e.name === link.fromEntity);
-    const column = from?.columns.find((c) => c.sourceKey === link.fromField);
-    if (!from || !column) continue; // reference did not survive as a scalar column
-    await enqueueQuestion(deps.db, deps.feed, {
-      source: 'import',
-      question: `Is "${link.fromField}" in ${link.fromEntity} meant to refer to your ${link.toEntity} records?`,
-      options: [LINK_YES, LINK_NO],
-      context: {
-        action: {
-          kind: 'import_link',
-          confirm: LINK_YES,
-          junction: link.junction ?? `${link.fromEntity}_${link.toEntity}`,
-          fromTable: link.fromEntity,
-          fromColumn: column.name,
-          toTable: link.toEntity,
-          toKey: link.toKey,
+    return from?.columns.some((c) => c.sourceKey === link.fromField) ?? false;
+  }).length;
+}
+
+/**
+ * Publish the "left N links unconnected" activity note for a marginal-link count. A zero-decision
+ * import never stops to ask and never fabricates an uncertain relationship, but it also never
+ * leaves the choice INVISIBLE: the count is surfaced as a feed event so it can be made later from
+ * the Data Model panel. No-op at count 0.
+ */
+export function publishMarginalLinksNote(deps: ImportRouteDeps, count: number): void {
+  if (count === 0) return;
+  const summary =
+    `Left ${String(count)} possible link${count === 1 ? '' : 's'} unconnected ` +
+    `(low confidence) — connect from the Data Model panel if they belong.`;
+  // A general import note, not a row mutation — table:null keeps it non-clickable, like the
+  // other non-row signals on the feed.
+  deps.feed.publish({ table: null, op: 'schema', rowId: null, source: 'system', summary });
+}
+
+/**
+ * Report the marginal (low-confidence) links of one materialized plan: count them, then publish
+ * the activity note. Returns how many were reported (0 ⇒ nothing published).
+ */
+function reportMarginalLinks(deps: ImportRouteDeps, plan: ProposedSchema): number {
+  const count = countMarginalLinks(plan);
+  publishMarginalLinksNote(deps, count);
+  return count;
+}
+
+/**
+ * Materialize a large multi-sheet workbook as many independent per-sheet units, streaming
+ * progress. Each sheet is inferred + matched + materialized on its own, sequentially, so a
+ * later sheet sees the tables the earlier ones created. The whole-workbook table cap becomes
+ * per sheet (a single sheet that fans out beyond {@link MAX_IMPORT_TABLES} is skipped with a
+ * warning, not a dead-end for the other sheets) plus a high overall ceiling
+ * ({@link MAX_WORKBOOK_TABLES}); reaching either is reported, never silent. Cross-sheet
+ * foreign keys are not inferred here — they are re-derived over the whole workspace after.
+ * Returns an aggregate {@link MaterializeResult} so the client's done handler reads it exactly
+ * like a single-plan import.
+ */
+async function materializeWorkbookPerSheet(
+  deps: ImportRouteDeps,
+  jobs: SheetJob[],
+  opts: {
+    linkConfidence: number;
+    asOf: string | null;
+    asOfColumn: string | null;
+    mode: ImportMode;
+    emit: (p: Record<string, unknown>) => void;
+  },
+): Promise<MaterializeResult> {
+  const { linkConfidence, asOf, asOfColumn, mode, emit } = opts;
+  const tablesCreated: string[] = [];
+  const rowsByTable: Record<string, number> = {};
+  const links: MaterializeResult['links'] = [];
+  const views: MaterializeResult['views'] = [];
+  // Aggregated across all per-sheet plans, reported ONCE after the loop so the split path is as
+  // honest as the single-plan path: the marginal (low-confidence) links left unconnected, the
+  // count of sheets that landed, and the sheets that could not be imported.
+  let marginalLinkCount = 0;
+  let importedSheets = 0;
+  const failedSheets: string[] = [];
+  // Match each sheet against the tables ALREADY in the workspace before this workbook
+  // started importing — never against a table an earlier sheet of the SAME workbook just
+  // created. Recomputing the existing set inside the loop would fold sibling tabs that
+  // share a column signature (monthly, per-region, paginated tabs) into the first tab's
+  // table: many sheets would collapse into one, losing the per-sheet identity and dropping
+  // rows whose signature values coincide across tabs. A genuine re-import of a whole
+  // workbook still matches its prior version's tables — those are captured in this frozen
+  // snapshot; only same-workbook siblings are kept apart.
+  const existingBefore = existingDataTables(deps.db);
+  emit({ phase: 'detect', message: `Importing ${String(jobs.length)} sheets, one at a time…` });
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
+    if (!job) continue;
+    try {
+      const { plan: inferredPlan, views: inferredViews } = await dedupeAndDetectViews(
+        await inferSchema(job.data, { minLinkConfidence: linkConfidence }),
+        job.data,
+      );
+      if (inferredPlan.entities.length === 0) continue; // a prose / empty / refused sheet — nothing to model
+      const match = matchSchemaToExisting(existingBefore, inferredPlan);
+      const { plan, views: renamedViews } = renameEntities(
+        inferredPlan,
+        inferredViews,
+        match.rename,
+      );
+      const planned =
+        plan.entities.length +
+        plan.dimensions.length +
+        new Set(plan.linkages.map((l) => l.junction).filter(Boolean)).size;
+      if (planned > MAX_IMPORT_TABLES) {
+        emit({
+          phase: 'warning',
+          message: `Sheet "${job.key}" would create ${String(planned)} tables, over the per-sheet limit of ${String(MAX_IMPORT_TABLES)} — skipped. Import that sheet on its own to review it.`,
+        });
+        continue;
+      }
+      if (tablesCreated.length + planned > MAX_WORKBOOK_TABLES) {
+        emit({
+          phase: 'warning',
+          message: `Imported ${String(tablesCreated.length)} tables, reaching the overall workbook limit of ${String(MAX_WORKBOOK_TABLES)}. The remaining ${String(jobs.length - i)} sheet(s) were not imported — import them separately.`,
+        });
+        break;
+      }
+      emit({
+        phase: 'materialize',
+        message: `Importing sheet "${job.key}" (${String(i + 1)}/${String(jobs.length)})…`,
+      });
+      const result = await materializeImport(
+        { db: deps.db, configPath: deps.configPath },
+        job.data,
+        plan,
+        renamedViews,
+        {
+          mode,
+          asOf,
+          asOfColumn,
+          onProgress: async (p) => {
+            // Each sheet's own terminal 'done' is swallowed — the ONE aggregate 'done' is
+            // emitted after every sheet, so the client completes the import exactly once.
+            if (p.phase === 'done') return;
+            emit({ ...p });
+            await new Promise((r) => setImmediate(r));
+          },
         },
-        enrich: [{ target: 'column_definition', table: link.fromEntity, column: column.name }],
-      },
-    });
-    asked++;
+      );
+      for (const t of result.tablesCreated) {
+        deps.validTables.add(t);
+        const cols = deps.db.getRegisteredColumns(t);
+        if (cols && 'deleted_at' in cols) deps.softDeletable.add(t);
+        if (!tablesCreated.includes(t)) tablesCreated.push(t);
+      }
+      for (const [t, n] of Object.entries(result.rowsByTable)) rowsByTable[t] = n;
+      links.push(...result.links);
+      views.push(...result.views);
+      // This sheet landed. Fold its marginal-link count into the workbook total (reported once
+      // below) so the per-sheet path never silently drops a low-confidence link the single-plan
+      // path would have surfaced.
+      marginalLinkCount += countMarginalLinks(plan);
+      importedSheets++;
+    } catch (e) {
+      // One sheet's runtime failure must not sink the whole workbook: the sheets that
+      // already imported are committed (materialize has no enclosing transaction), the
+      // remaining sheets still run, and the failure is surfaced here rather than swallowed —
+      // so the aggregate result the client's done handler reads reflects what really landed
+      // instead of the whole import reporting "nothing imported".
+      failedSheets.push(job.key);
+      emit({
+        phase: 'warning',
+        message: `Sheet "${job.key}" could not be imported: ${(e as Error).message} — the other sheets were imported; import this sheet on its own to see the full error.`,
+      });
+      continue;
+    }
   }
-  return asked;
+  // Marginal links left unconnected across every sheet — one feed note + one stream line, matching
+  // the single-plan path. Zero decisions, never silent.
+  publishMarginalLinksNote(deps, marginalLinkCount);
+  if (marginalLinkCount > 0) {
+    emit({
+      phase: 'detect',
+      count: marginalLinkCount,
+      message:
+        `Left ${String(marginalLinkCount)} possible link${marginalLinkCount === 1 ? '' : 's'} ` +
+        `unconnected (low confidence) — connect from the Data Model panel if they belong.`,
+    });
+  }
+  // Honest aggregate: how many sheets landed, and — named, never swallowed — any that could not
+  // be imported. The client's done handler shows the real per-table totals; this line makes a
+  // partial workbook import legible instead of the earlier "nothing imported" when a sheet threw.
+  const aggregate =
+    `Imported ${String(tablesCreated.length)} table${tablesCreated.length === 1 ? '' : 's'} ` +
+    `from ${String(importedSheets)} of ${String(jobs.length)} sheet${jobs.length === 1 ? '' : 's'}` +
+    (failedSheets.length > 0
+      ? `; ${String(failedSheets.length)} could not be imported: ${failedSheets.join(', ')}`
+      : '');
+  emit({ phase: 'detect', message: aggregate });
+  return { mode, asOf, asOfColumn, tablesCreated, rowsByTable, links, views };
 }
 
 export async function dispatchImportRoute(
@@ -292,6 +467,17 @@ export async function dispatchImportRoute(
       : null;
   const asOfColumn =
     typeof body.asOfColumn === 'string' && body.asOfColumn.trim() ? body.asOfColumn.trim() : null;
+  // Zero-decision snapshots — the no-overwrite guarantee. A passive drop carries no date
+  // choice, but importing it undated upserts each row in place by natural key, so re-importing
+  // the same dataset would silently clobber the prior import's values. Instead, stamp every
+  // dateless import with the IMPORT DATE (server clock, UTC), making it a dated snapshot: row
+  // identity folds in `as_of`, so a re-import on a later day APPENDS a new snapshot beside the
+  // prior one, and a same-day re-import of identical data dedups (idempotent) rather than
+  // overwriting. This holds from the very first import — the first drop of a dataset is itself
+  // a dated snapshot — so a later known-document re-import always has a dated base to append to.
+  // A source that DOES carry a file-level date (`asOf`) or dates each row (`asOfColumn`) keeps
+  // its own dating and is unaffected.
+  const effectiveAsOf = asOf ?? (asOfColumn ? null : new Date().toISOString().slice(0, 10));
   // The card echoes the threshold its proposal was inferred under, so the
   // re-derivation bands links the same way even if the preference changed
   // between upload and confirm. Clamped; absent ⇒ the current preference.
@@ -314,7 +500,7 @@ export async function dispatchImportRoute(
   };
   try {
     emit({ phase: 'parse', message: 'Reading source…' });
-    const { data, formulaSummary, importWarnings } = await readImportSourceFromFile(
+    const { data, formulaSummary, importWarnings, name } = await readImportSourceFromFile(
       deps.db,
       fileId,
       deps.latticeRoot,
@@ -322,9 +508,30 @@ export async function dispatchImportRoute(
     // Surface a stacked-table partial-import warning on the apply log — a partial import is
     // never silent (it also rode the confirm card + the post-import feed pill).
     for (const w of importWarnings) emit({ phase: 'warning', message: w });
+    // A LARGE multi-sheet Excel workbook is not refused — it is imported per sheet, each
+    // sheet its own small unit under the cap, so a 77-tab book lands instead of dead-ending.
+    // When the workbook has MORE sheets than the whole-import table cap it is over-cap by
+    // construction (each sheet is at least its own unit), so it takes the per-sheet split
+    // WITHOUT first paying for a whole-workbook inference whose cross-sheet plan would only
+    // be discarded when the split re-infers each sheet. Cross-sheet foreign keys are re-
+    // derived over the whole workspace afterwards, so nothing is lost by splitting here.
+    const workbookJobs = /\.xlsx?$/i.test(name) ? splitSheetJobs(data) : [];
+    if (workbookJobs.length > MAX_IMPORT_TABLES) {
+      emit({ phase: 'infer', message: 'Analyzing schema…' });
+      const result = await materializeWorkbookPerSheet(deps, workbookJobs, {
+        linkConfidence,
+        asOf: effectiveAsOf,
+        asOfColumn,
+        mode,
+        emit,
+      });
+      emit({ phase: 'done', ok: true, result });
+      res.end();
+      return true;
+    }
     emit({ phase: 'infer', message: 'Analyzing schema…' });
-    const { plan: inferredPlan, views: inferredViews } = dedupeAndDetectViews(
-      inferSchema(data, { minLinkConfidence: linkConfidence }),
+    const { plan: inferredPlan, views: inferredViews } = await dedupeAndDetectViews(
+      await inferSchema(data, { minLinkConfidence: linkConfidence }),
       data,
     );
     emit({
@@ -344,6 +551,21 @@ export async function dispatchImportRoute(
       plan.entities.length +
       plan.dimensions.length +
       new Set(plan.linkages.map((l) => l.junction).filter(Boolean)).size;
+    // A smaller multi-sheet workbook whose EXACT plan still exceeds the cap also splits per
+    // sheet rather than dead-ending — the whole-workbook inference above was needed to learn
+    // the exact count (a sheet count under the cap can still fan out past it via dimensions).
+    if (workbookJobs.length > 1 && plannedTables > MAX_IMPORT_TABLES) {
+      const result = await materializeWorkbookPerSheet(deps, workbookJobs, {
+        linkConfidence,
+        asOf: effectiveAsOf,
+        asOfColumn,
+        mode,
+        emit,
+      });
+      emit({ phase: 'done', ok: true, result });
+      res.end();
+      return true;
+    }
     if (plannedTables > MAX_IMPORT_TABLES && body.override !== true) {
       emit({
         phase: 'error',
@@ -368,6 +590,14 @@ export async function dispatchImportRoute(
       emit({ phase: 'infer', message: `Dating each row by its "${asOfColumn}" column` });
     } else if (asOf) {
       emit({ phase: 'infer', message: `Importing as a snapshot dated ${asOf}` });
+    } else if (match.isKnownDocument && effectiveAsOf) {
+      // A dateless re-import of a known document: it is filed under the import date as its own
+      // snapshot so the prior import is preserved, not overwritten. Say so — the outcome differs
+      // from what a naive undated re-import would do, so it must be visible.
+      emit({
+        phase: 'detect',
+        message: `Filed as a new snapshot dated ${effectiveAsOf} — the prior import is kept.`,
+      });
     }
     const result = await materializeImport(
       { db: deps.db, configPath: deps.configPath },
@@ -376,7 +606,7 @@ export async function dispatchImportRoute(
       views,
       {
         mode,
-        asOf,
+        asOf: effectiveAsOf,
         asOfColumn,
         onProgress: async (p) => {
           emit({ ...p });
@@ -458,15 +688,20 @@ export async function dispatchImportRoute(
       }
     }
 
-    // ── Marginal links → clarification questions ──
-    // Confidently-inferred links were materialized above; the marginal band
-    // asks instead of guessing.
-    const asked = await enqueueMarginalLinkQuestions(deps, plan);
-    if (asked > 0) {
+    // ── Marginal links ──
+    // Confidently-inferred links were materialized above. The marginal (low-confidence) band is
+    // NOT connected — a zero-decision import never asks, and it also never fabricates an uncertain
+    // relationship. Those references stay as plain text columns; the fact that they were left
+    // unconnected is reported (feed event for the activity log + a line on this import stream) so
+    // the choice is visible and can be made later from the Data Model panel.
+    const leftUnconnected = reportMarginalLinks(deps, plan);
+    if (leftUnconnected > 0) {
       emit({
-        phase: 'questions',
-        count: asked,
-        message: `Queued ${String(asked)} question${asked === 1 ? '' : 's'} about possible links — answer in the assistant panel.`,
+        phase: 'detect',
+        count: leftUnconnected,
+        message:
+          `Left ${String(leftUnconnected)} possible link${leftUnconnected === 1 ? '' : 's'} ` +
+          `unconnected (low confidence) — connect from the Data Model panel if they belong.`,
       });
     }
 

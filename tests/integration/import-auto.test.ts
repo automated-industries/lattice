@@ -79,7 +79,7 @@ describe('importDataFaithfully (explicit import_spreadsheet materialization)', (
 describe('autoImportStructured (assistant-door smart import)', () => {
   it('auto-imports a recognized new period as a dated snapshot', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+    await materializeImport({ db, configPath }, doc(), await inferSchema(doc()), [], {
       asOf: '2025-06-30',
     });
 
@@ -102,7 +102,7 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     await materializeImport(
       { db: dbs[dbs.length - 1]!, configPath },
       doc(),
-      inferSchema(doc()),
+      await inferSchema(doc()),
       [],
       {
         asOf: '2025-06-30',
@@ -119,7 +119,7 @@ describe('autoImportStructured (assistant-door smart import)', () => {
 
   it('surfaces a brand-new structured drop as a new-dataset proposal (no silent create)', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+    await materializeImport({ db, configPath }, doc(), await inferSchema(doc()), [], {
       asOf: '2025-06-30',
     });
     const p = join(base, 'orders.json');
@@ -174,10 +174,11 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     expect(r).toBeNull();
   });
 
-  it('trips the scale guard (lowConfidence) when an import would explode into many tables', async () => {
+  it('proposes a silent new-dataset import for a many-table drop under the cap (no interrupt)', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    // 14 distinct top-level arrays → 14 entities, over MAX_SILENT_TABLES (12). Without the
-    // guard the 5.1.1 silent path would materialize all of them unattended (Bug 1 / ~740 tables).
+    // 14 distinct top-level arrays → 14 entities, under the per-import table cap (50). The
+    // scale-guard interrupt is gone: a zero-decision drop imports silently, and the client
+    // gets a plain new-dataset proposal carrying no low-confidence flag to surface a card.
     const many: Record<string, unknown> = {};
     for (let i = 0; i < 14; i++) {
       many['set' + String(i)] = [
@@ -189,11 +190,13 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     writeFileSync(p, JSON.stringify(many));
     const r = await autoImportStructured(db, configPath, p, 'many.json');
     expect(r?.reason).toBe('new-dataset');
-    expect(r?.lowConfidence).toBe(true); // → the client surfaces the confirm card, not silent
-    expect(typeof r?.guardReason).toBe('string');
+    // The removed guard used to attach these; the interrupt no longer exists.
+    expect(r as Record<string, unknown>).not.toHaveProperty('lowConfidence');
+    expect(r as Record<string, unknown>).not.toHaveProperty('guardReason');
+    expect(r?.plan?.entities.length).toBe(14); // a full proposal the client imports silently
   });
 
-  it('does NOT trip the scale guard on a small clean import (stays silent)', async () => {
+  it('proposes a silent new-dataset import for a small clean drop', async () => {
     const { db, configPath, base } = await freshWorkspace();
     const p = join(base, 'orders.json');
     writeFileSync(
@@ -207,23 +210,27 @@ describe('autoImportStructured (assistant-door smart import)', () => {
     );
     const r = await autoImportStructured(db, configPath, p, 'orders.json');
     expect(r?.reason).toBe('new-dataset');
-    expect(r?.lowConfidence).toBeFalsy();
+    expect(r as Record<string, unknown>).not.toHaveProperty('lowConfidence');
   });
 
-  it('flags a matched document with no detectable date instead of overwriting', async () => {
+  it('does NOT silently overwrite: a matched doc with no date returns a needs-confirm proposal', async () => {
     const { db, configPath, base } = await freshWorkspace();
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+    await materializeImport({ db, configPath }, doc(), await inferSchema(doc()), [], {
       asOf: '2025-06-30',
     });
     const p = join(base, 'book.json'); // no date in name, no date in content
     writeFileSync(p, JSON.stringify(doc()));
     const r = await autoImportStructured(db, configPath, p, 'book.json');
+    // This upload door never materializes a dateless known re-import (imported:true undated
+    // would upsert in place and clobber the 2025-06-30 snapshot). It returns a proposal; the
+    // client imports it silently and the apply route files it as a NEW dated snapshot (proved
+    // end-to-end in import-http.test.ts). So at THIS layer the prior data is still untouched.
     expect(r?.imported).toBe(false);
     expect(r?.reason).toBe('needs-confirm');
     expect(r?.plan?.entities.length).toBeGreaterThan(0); // full proposal present
     expect(r?.linkConfidence).toBe(0.6); // apply echoes this back
     expect(r?.computedProposals).toBeUndefined(); // new-dataset flows only
-    expect(await db.count('funds')).toBe(2); // untouched — no silent overwrite
+    expect(await db.count('funds')).toBe(2); // untouched by the upload door
   });
 
   it('attaches computed proposals to a new-dataset drop, never to a known re-import', async () => {
@@ -253,7 +260,7 @@ describe('autoImportStructured (assistant-door smart import)', () => {
 
     // Once materialized, the SAME file re-dropped with a dated name is a known
     // document — the silent snapshot path never carries proposals.
-    await materializeImport({ db, configPath }, tickets, inferSchema(tickets), [], {
+    await materializeImport({ db, configPath }, tickets, await inferSchema(tickets), [], {
       asOf: '2025-06-30',
     });
     const p2 = join(base, 'tickets 12.31.2025.json');

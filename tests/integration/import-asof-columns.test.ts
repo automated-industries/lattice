@@ -34,14 +34,14 @@ function dated() {
 }
 
 describe('parseCellDate', () => {
-  it('reads a Date (UTC), ISO, US, and long-month strings', () => {
+  it('reads a Date (UTC), ISO, US, and long-month strings', async () => {
     expect(parseCellDate(new Date(Date.UTC(2026, 2, 31)))).toBe('2026-03-31');
     expect(parseCellDate('2025-06-30')).toBe('2025-06-30');
     expect(parseCellDate('3/31/2026')).toBe('2026-03-31');
     expect(parseCellDate('March 31, 2026')).toBe('2026-03-31');
   });
 
-  it('returns null for non-dates and bare numbers', () => {
+  it('returns null for non-dates and bare numbers', async () => {
     expect(parseCellDate('not a date')).toBeNull();
     expect(parseCellDate(42)).toBeNull();
     expect(parseCellDate(null)).toBeNull();
@@ -50,16 +50,16 @@ describe('parseCellDate', () => {
 });
 
 describe('detectAsOfColumns', () => {
-  it('finds a report-date column with its distinct-date count, ranked by name', () => {
+  it('finds a report-date column with its distinct-date count, ranked by name', async () => {
     const data = dated();
-    const cols = detectAsOfColumns(data, inferSchema(data));
+    const cols = await detectAsOfColumns(data, await inferSchema(data));
     expect(cols[0]?.column).toBe('report_date');
     expect(cols[0]?.entity).toBe('positions');
     expect(cols[0]?.distinctDates).toBe(2);
     expect(cols[0]?.confidence).toBeGreaterThan(0.85);
   });
 
-  it('does NOT offer a date column whose name is not an as-of (e.g. "founded")', () => {
+  it('does NOT offer a date column whose name is not an as-of (e.g. "founded")', async () => {
     const data = {
       companies: [
         { name: 'A', founded: '2008-01-01' },
@@ -67,7 +67,7 @@ describe('detectAsOfColumns', () => {
         { name: 'C', founded: '2012-03-03' },
       ],
     };
-    const cols = detectAsOfColumns(data, inferSchema(data));
+    const cols = await detectAsOfColumns(data, await inferSchema(data));
     expect(cols.find((c) => c.column === 'founded')).toBeUndefined();
   });
 });
@@ -84,7 +84,7 @@ describe('import: per-row as-of date column', () => {
     const configPath = resolveWorkspacePaths(root, ws).configPath;
     const data = dated();
 
-    const result = await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+    const result = await materializeImport({ db, configPath }, data, await inferSchema(data), [], {
       asOfColumn: 'report_date',
     });
     expect(result.asOfColumn).toBe('report_date');
@@ -107,7 +107,7 @@ describe('import: per-row as-of date column', () => {
     expect(pos26.length).toBe(2);
 
     // Re-applying the same file is idempotent — no extra snapshot, no dup links.
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+    await materializeImport({ db, configPath }, data, await inferSchema(data), [], {
       asOfColumn: 'report_date',
     });
     expect(await db.count('positions')).toBe(4);

@@ -13,6 +13,7 @@ import { matchSchemaToExisting, type ExistingTable } from '../import/match.js';
 import { normalizeName } from '../import/infer-core.js';
 import { materializeImport } from '../import/materialize.js';
 import { MAX_IMPORT_TABLES, applySourceNameFallback } from '../import/name-policy.js';
+import { MAX_WORKBOOK_TABLES, splitSheetJobs } from '../import/sheet-jobs.js';
 import { buildImportPlan, documentsKeptAsFilesNotice } from '../import/front-door.js';
 import { checkSourceIsDuplicate } from '../import/duplicate-source.js';
 import { planSourceFor } from '../import/plan-source.js';
@@ -25,21 +26,24 @@ import { detectAsOfColumns } from '../import/asof-columns.js';
 
 /**
  * Automatic structured import for a file dropped into the assistant. The importer
- * is reachable ONLY through this single chat-upload door. Behavior:
+ * is reachable ONLY through this single chat-upload door. A drop imports with no
+ * decisions to make — the client materializes every case silently through the
+ * apply route; there is no confirm card. Behavior:
  *
  *   - not parseable as structured data → null (kept as a plain reference file)
  *   - no entities inferred             → null
  *   - matches an existing dataset + a CONFIDENT date → silent import as a dated
  *     snapshot (`imported:true`), no preview, no Q&A
  *   - matches an existing dataset but NO/ambiguous date → `reason:'needs-confirm'`
- *     + a full proposal (surface the date choice, don't guess)
+ *     + a full proposal; the client imports it silently, and the apply route files
+ *     it as a NEW snapshot dated by the import date so the prior one is never
+ *     overwritten (undated in-place upsert is what would clobber it)
  *   - brand-new structured data (no match) → `reason:'new-dataset'` + a full
- *     proposal; tables are created only when the user confirms (never silently
- *     from a chat drop)
+ *     proposal; the client imports it silently through the apply route
  *
- * Non-silent cases carry the proposal the inline confirm card renders; the apply
- * route (`/api/import/apply`) re-reads the file's bytes from its `fileId` and
- * re-derives everything, so these fields are display-only.
+ * The proposal fields ride along for the client's silent executor + reporting; the
+ * apply route (`/api/import/apply`) re-reads the file's bytes from its `fileId` and
+ * re-derives everything, so those fields are informational.
  */
 
 export interface AutoImportResult {
@@ -61,10 +65,10 @@ export interface AutoImportResult {
   // ── Proposal payload for the inline confirm card (present when `reason` is set).
   /** The dropped file's `files` row id — the apply route resolves it to the blob. */
   fileId?: string;
-  plan?: ReturnType<typeof dedupeAndDetectViews>['plan'];
-  views?: ReturnType<typeof dedupeAndDetectViews>['views'];
+  plan?: Awaited<ReturnType<typeof dedupeAndDetectViews>>['plan'];
+  views?: Awaited<ReturnType<typeof dedupeAndDetectViews>>['views'];
   asOfCandidates?: Awaited<ReturnType<typeof detectImportAsOf>>;
-  asOfColumns?: ReturnType<typeof detectAsOfColumns>;
+  asOfColumns?: Awaited<ReturnType<typeof detectAsOfColumns>>;
   schemaMatch?: ReturnType<typeof matchSchemaToExisting>;
   /**
    * The clarify threshold link inference ran under. The card echoes it back on
@@ -76,15 +80,9 @@ export interface AutoImportResult {
    *  the apply route re-derives them and intersects with the user's picks). */
   computedProposals?: ComputedTableProposal[];
   /** Reconciliation warnings from the read (a stacked-table sheet where only the largest
-   *  table was imported) — surfaced on the confirm card so a partial import is never silent. */
+   *  table was imported) — surfaced through the import task + feed so a partial import is
+   *  never silent. */
   importWarnings?: string[];
-  /** Scale guard: true when a brand-new import looks pathological (too many tables, a
-   *  mostly-empty/template set, a document fan-out, or partial-import warnings). The client
-   *  then surfaces the confirm card instead of silently materializing — "silent by default,
-   *  interrupt on genuine low confidence." */
-  lowConfidence?: boolean;
-  /** Human-readable reason the scale guard tripped (shown on the card). */
-  guardReason?: string;
   /**
    * Outcomes of the import that the user would otherwise never see: a table the
    * shape contract refused, tables named positionally for want of a model,
@@ -299,43 +297,6 @@ export function hasSubstantiveDocTable(data: Record<string, unknown>): boolean {
   return false;
 }
 
-/** Above this many tables a brand-new import is treated as low-confidence. */
-const MAX_SILENT_TABLES = 12;
-
-/**
- * Scale guard for a brand-new import: trips when the proposal looks pathological — too many
- * tables, a mostly empty/template set, a document fan-out of auto-named tables, or a partial
- * import — so the client surfaces the confirm card (a preview/decline surface) instead of
- * silently materializing dozens/hundreds of tables. Small, clean imports do not trip.
- */
-function importScaleGuard(
-  plan: {
-    entities: { name: string; rowCount?: number; columns?: unknown[] }[];
-    dimensions: unknown[];
-  },
-  importWarnings: string[],
-): { trip: boolean; reason: string } {
-  const tableCount = plan.entities.length + plan.dimensions.length;
-  if (tableCount >= MAX_SILENT_TABLES) {
-    return { trip: true, reason: `${String(tableCount)} tables — review before importing` };
-  }
-  // NB: the fold in doc-tables (un-nameable fragments → one combined table) makes
-  // this `thin` clause harder to trip for documents — accepted knowingly: the
-  // naming ladder + shape gate now catch the pathological document case at the
-  // source. (The old `table_\d+` fan-out clause is gone for the same reason —
-  // no `table_N` name can be produced any more, so it was dead code.)
-  const thin = plan.entities.filter(
-    (e) => (e.rowCount ?? 0) <= 1 || (e.columns?.length ?? 0) <= 1,
-  ).length;
-  if (plan.entities.length >= 2 && thin > plan.entities.length / 2) {
-    return { trip: true, reason: 'mostly empty or template tables — review before importing' };
-  }
-  if (importWarnings.length > 0) {
-    return { trip: true, reason: 'a partial or ambiguous import — review before importing' };
-  }
-  return { trip: false, reason: '' };
-}
-
 export async function autoImportStructured(
   db: Lattice,
   configPath: string | null,
@@ -377,6 +338,10 @@ export async function autoImportStructured(
   // asked about; carried on the proposal so apply uses the same bar.
   const linkConfidence = getClarifyThreshold();
   const existing = existingDataTables(db);
+  // A multi-sheet Excel workbook is materialized per sheet on apply, so the whole-workbook
+  // proposal is judged against the high overall ceiling rather than the per-import cap — a
+  // 77-tab book is not "over the safe limit", it is 77 small imports. Non-Excel keeps the cap.
+  const sheetCount = /\.xlsx?$/i.test(name) ? splitSheetJobs(data).length : 1;
   // The front door owns naming + the shape contract for every import path. The
   // name assist is deliberately NOT wired here: this door only PROPOSES, and the
   // confirm-card apply re-derives the plan from the same bytes on its own. A
@@ -388,6 +353,7 @@ export async function autoImportStructured(
     existing,
     registered: db.getRegisteredTableNames(),
     minLinkConfidence: linkConfidence,
+    ...(sheetCount > 1 ? { maxTables: MAX_WORKBOOK_TABLES } : {}),
   });
   data = front.data;
   const inferredPlan = front.plan;
@@ -397,7 +363,7 @@ export async function autoImportStructured(
   const schemaMatch = front.schemaMatch;
   const asOfCandidates = await detectImportAsOf(db, data, { abs, fileName: name });
   const asOf = asOfCandidates[0]?.date ?? null;
-  const asOfColumns = detectAsOfColumns(data, inferredPlan);
+  const asOfColumns = await detectAsOfColumns(data, inferredPlan);
   // Reconciliation warnings from the Excel read (a stacked-table sheet only partially
   // imported) — surfaced on the confirm card so the user sees a partial import before applying.
   const importWarnings = /\.xlsx?$/i.test(name) ? excelImportWarnings(abs) : [];
@@ -423,10 +389,11 @@ export async function autoImportStructured(
     ...(front.notices.length > 0 ? { notices: front.notices } : {}),
   };
 
-  // Brand-new structured data → a 'new-dataset' proposal. The client imports it SILENTLY
-  // (5.1.1) unless the scale guard trips (too many tables / mostly template / doc fan-out /
-  // partial import), in which case `lowConfidence` tells the client to surface the confirm
-  // card so the user can review + decline instead of silently getting hundreds of tables.
+  // Brand-new structured data → a 'new-dataset' proposal the client imports SILENTLY through
+  // the apply route (no confirm card, no decisions). An unreasonable fan-out is still bounded:
+  // the per-import table cap is enforced server-side at apply time (a many-sheet workbook is
+  // split per sheet under the cap; any other over-cap source fails loudly there), so the drop
+  // does not need a client-side interrupt to stay safe.
   if (!schemaMatch.isKnownDocument) {
     const computedProposals = buildComputedProposals({
       data,
@@ -436,18 +403,19 @@ export async function autoImportStructured(
       formulaSummary: /\.xlsx?$/i.test(name) ? excelFormulaSummary(abs) : null,
       existingTables: existing.map((t) => t.name),
     });
-    const guard = importScaleGuard(inferredPlan, importWarnings);
     return {
       imported: false,
       reason: 'new-dataset',
       asOf,
       ...proposal,
       computedProposals,
-      ...(guard.trip ? { lowConfidence: true, guardReason: guard.reason } : {}),
     };
   }
-  // Recognized as a known dataset but no confident date — importing undated would
-  // overwrite the prior snapshot, so surface a 'needs-confirm' card.
+  // Recognized as a known dataset but no confident date. Materializing it here (imported:true)
+  // undated would upsert in place and clobber the prior import, so this door does NOT commit —
+  // it returns a 'needs-confirm' proposal. The client still imports it silently, and the apply
+  // route stamps it with the import date so it lands as a NEW dated snapshot beside the prior
+  // one rather than overwriting it.
   if (!asOf) {
     return { imported: false, reason: 'needs-confirm', asOf: null, ...proposal };
   }
@@ -506,26 +474,37 @@ export async function importDataFaithfully(
   data: Record<string, unknown>,
   opts: FaithfulImportOptions = {},
 ): Promise<FaithfulImportResult | null> {
-  const linkConfidence = getClarifyThreshold();
   const sourceName = opts.sourceName ?? '';
-  const front = await buildImportPlan({
-    data,
-    source: planSourceFor(sourceName),
-    existing: existingDataTables(db),
-    registered: db.getRegisteredTableNames(),
-    minLinkConfidence: linkConfidence,
-    ...(opts.nameAssist ? { nameAssist: opts.nameAssist } : {}),
-  });
+  // A multi-sheet Excel workbook with more sheets than the whole-import table cap is over-cap
+  // by construction, so it goes straight to the per-sheet split WITHOUT first paying for a
+  // whole-workbook plan whose cross-sheet inference would only be discarded when the split
+  // re-infers each sheet. Smaller workbooks fall through to the exact-count check below (a
+  // sub-cap sheet count can still fan out past the cap via dimensions), and any non-Excel
+  // over-cap source still refuses loudly there — there is no per-sheet split to fall back on.
+  if (/\.xlsx?$/i.test(sourceName)) {
+    const jobs = splitSheetJobs(data);
+    if (jobs.length > MAX_IMPORT_TABLES) {
+      return importWorkbookPerSheet(db, configPath, jobs, opts);
+    }
+  }
+  const front = await faithfulFront(db, data, opts);
   if (front.plan.entities.length === 0) {
     if (front.dropped.length === 0) return null; // nothing to import — not a failure
     throw new Error(
       `Nothing could be imported from ${sourceName || 'this file'}. ` + front.notices.join(' '),
     );
   }
-  // Same hard table cap as the apply route (shared const): this path commits
-  // immediately with no confirm card, so there is no override — an explicit
-  // user request to import can still not blow the workspace past the cap.
+  // The whole-workbook plan is over the per-import cap. A LARGE multi-sheet Excel workbook is
+  // not refused for it — it is imported per sheet, each sheet its own small unit under the
+  // cap, so a 77-tab book lands instead of dead-ending. Cross-sheet foreign keys are given up
+  // here and re-derived over the whole workspace afterwards. Any OTHER over-cap source (a
+  // single sheet that fans out, a JSON of 50+ arrays) still refuses loudly — there is no
+  // per-sheet split to fall back on, and committing it unreviewed is the outcome the cap stops.
   if (front.overCap) {
+    const jobs = splitSheetJobs(data);
+    if (/\.xlsx?$/i.test(sourceName) && jobs.length > 1) {
+      return importWorkbookPerSheet(db, configPath, jobs, opts);
+    }
     throw new Error(
       `This import would create ${String(front.tableCount)} tables, over the safe limit of ` +
         `${String(MAX_IMPORT_TABLES)}. Import a narrower file, or use the import panel to review it.`,
@@ -540,4 +519,130 @@ export async function importDataFaithfully(
     rowsByTable: result.rowsByTable,
     notices: front.notices,
   };
+}
+
+/**
+ * Build the front-door plan for one already-parsed source unit. `registered` is always
+ * read live so per-sheet jobs run sequentially with name collisions resolving as tables
+ * are created. The snapshot-MATCH set (`existing`) is passed in by a caller that wants it
+ * frozen: a per-sheet workbook split freezes it to the pre-workbook tables so sibling tabs
+ * are not folded into each other, while the single-unit door defaults to the live tables.
+ */
+async function faithfulFront(
+  db: Lattice,
+  data: Record<string, unknown>,
+  opts: FaithfulImportOptions,
+  existing?: ExistingTable[],
+): Promise<Awaited<ReturnType<typeof buildImportPlan>>> {
+  return buildImportPlan({
+    data,
+    source: planSourceFor(opts.sourceName ?? ''),
+    existing: existing ?? existingDataTables(db),
+    registered: db.getRegisteredTableNames(),
+    minLinkConfidence: getClarifyThreshold(),
+    ...(opts.nameAssist ? { nameAssist: opts.nameAssist } : {}),
+  });
+}
+
+/**
+ * Materialize a multi-sheet workbook as many independent per-sheet units. Each sheet is
+ * planned and materialized on its own, sequentially, so a later sheet sees the tables the
+ * earlier ones created. The old whole-workbook cap becomes:
+ *   - per sheet: a single sheet that fans out beyond {@link MAX_IMPORT_TABLES} is SKIPPED
+ *     with a notice (pathological — import it on its own to review it), not a dead-end that
+ *     sinks the other 76 sheets;
+ *   - per workbook: a high overall ceiling ({@link MAX_WORKBOOK_TABLES}); when it is reached
+ *     the remaining sheets are left for a separate import and that is REPORTED.
+ * Neither is a silent drop and neither refuses the whole workbook.
+ */
+async function importWorkbookPerSheet(
+  db: Lattice,
+  configPath: string | null,
+  jobs: ReturnType<typeof splitSheetJobs>,
+  opts: FaithfulImportOptions,
+): Promise<FaithfulImportResult | null> {
+  const tables: string[] = [];
+  const rowsByTable: Record<string, number> = {};
+  const notices: string[] = [];
+  let refused = false;
+  let failed = false;
+  // Tracked for the honest end-of-workbook aggregate (how many sheets landed; which failed).
+  let importedSheets = 0;
+  const failedSheets: string[] = [];
+  // Match each sheet against the tables ALREADY in the workspace before this workbook
+  // started — never against a table an earlier sibling sheet just created — so sibling tabs
+  // that share a column signature stay distinct tables instead of one collapsing into
+  // another (and, in this undated faithful path, overwriting it by natural key). A genuine
+  // re-import of a whole workbook still matches its prior version's tables in this snapshot.
+  const existingBefore = existingDataTables(db);
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
+    if (!job) continue;
+    try {
+      const front = await faithfulFront(db, job.data, opts, existingBefore);
+      notices.push(...front.notices);
+      if (front.plan.entities.length === 0) {
+        // A prose / empty / gate-refused sheet models no table. That is not a failure of the
+        // whole workbook — skip it; its refusal notices (if any) already rode along above.
+        if (front.dropped.length > 0) refused = true;
+        continue;
+      }
+      if (front.overCap) {
+        notices.push(
+          `Sheet "${job.key}" would create ${String(front.tableCount)} tables, over the ` +
+            `per-sheet limit of ${String(MAX_IMPORT_TABLES)} — skipped. Import that sheet on ` +
+            `its own to review it.`,
+        );
+        continue;
+      }
+      if (tables.length + front.tableCount > MAX_WORKBOOK_TABLES) {
+        notices.push(
+          `Imported ${String(tables.length)} tables, reaching the overall workbook limit of ` +
+            `${String(MAX_WORKBOOK_TABLES)}. The remaining ${String(jobs.length - i)} sheet(s) ` +
+            `were not imported — import them separately.`,
+        );
+        break;
+      }
+      const { plan, views } = front.matched;
+      const result = await materializeImport({ db, configPath }, front.data, plan, views, {});
+      for (const [t, n] of Object.entries(result.rowsByTable)) {
+        if (!tables.includes(t)) tables.push(t);
+        rowsByTable[t] = n;
+      }
+      importedSheets++;
+    } catch (e) {
+      // One sheet's runtime failure must not sink the whole workbook: the sheets that
+      // already imported are committed (materialize has no enclosing transaction), the
+      // remaining sheets still run, and the failure is surfaced through the notices channel
+      // rather than swallowed — so the caller's result reflects what really landed.
+      failed = true;
+      failedSheets.push(job.key);
+      notices.push(
+        `Sheet "${job.key}" could not be imported: ${(e as Error).message} — the other sheets ` +
+          `were imported; import this sheet on its own to see the full error.`,
+      );
+      continue;
+    }
+  }
+  if (tables.length === 0) {
+    // Nothing landed. If tables were REFUSED or a sheet FAILED (not merely absent), the user
+    // asked to import a file that imported nothing — say why loudly, matching the single-unit
+    // contract, rather than reporting a clean no-op.
+    if (refused || failed) {
+      throw new Error(`Nothing could be imported from this workbook. ${notices.join(' ')}`.trim());
+    }
+    return null;
+  }
+  // Honest aggregate: how many sheets landed, and — named, never swallowed — any that could not
+  // be imported. The per-table result already carries what really committed; this makes a partial
+  // workbook import legible instead of leaving the shortfall implicit.
+  notices.push(
+    `Imported ${String(tables.length)} table${tables.length === 1 ? '' : 's'} from ` +
+      `${String(importedSheets)} of ${String(jobs.length)} sheet${jobs.length === 1 ? '' : 's'}` +
+      (failedSheets.length > 0
+        ? `; ${String(failedSheets.length)} could not be imported: ${failedSheets.join(', ')}`
+        : ''),
+  );
+  const rows = Object.values(rowsByTable).reduce((a, b) => a + b, 0);
+  return { tables, rows, rowsByTable, notices };
 }

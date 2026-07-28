@@ -708,8 +708,16 @@ import { appJs } from '../../src/gui/app/script.js';
 // .graph-spinner), so one keyframe + duration token drives every ring. This
 // recapture covers the merged 5.6 client: bulk-undo affordance, update-pill
 // placement, empty-bucket nav subheads, and the motion vocabulary. Recaptured.
-const ORIGINAL_LENGTH = 869047;
-const ORIGINAL_SHA256 = '136d9344d516269b72e40b5c9449c9f3ebd0f37ab31286c2bec9bcb1cda978b9';
+// 5.6 zero-decision import: the structured-source drop has no confirm card any more. The
+// inline-import segment drops the card renderer + the card-apply path entirely; handleAutoImport
+// routes every case (new dataset, or a known-document re-import with no date) to the silent
+// executor. Length + hash recaptured for the shrunken client.
+// 5.6 import date fidelity: the silent apply now forwards the proposal's detected file-level
+// date (asOf: autoImport.asOf || '') so a brand-new dataset that reports its own period is filed
+// under that date instead of the import day; only an undated drop falls back to the import day.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 856660;
+const ORIGINAL_SHA256 = '7a123f02e77ee39afa7d947e57298dc86941f152cee12975e6163e86289977e0';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

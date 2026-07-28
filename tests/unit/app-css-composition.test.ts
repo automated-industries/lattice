@@ -292,8 +292,11 @@ import { css } from '../../src/gui/app/css.js';
 // primitive (reduced-motion kill switch included). This recapture covers the
 // merged 5.6 stylesheet: bulk-undo history pill, update-pill placement,
 // empty-bucket nav subheads, and the motion vocabulary. Recaptured.
-const ORIGINAL_LENGTH = 177243;
-const ORIGINAL_SHA256 = '5b7a76042e3818a175ae8fb4aafc104ea6c493c5717b86fd416fe3e40f41ed08';
+// 5.6 zero-decision import: the inline structured-import confirm card is gone, so its whole
+// stylesheet section (the .cd-* / .imp-* card rules) is removed from the composed sheet. Length
+// + hash recaptured.
+const ORIGINAL_LENGTH = 174231;
+const ORIGINAL_SHA256 = '29a58c536d2ef89770c3f9acb55d936566a29a96704eeb76d689ce482be53244';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

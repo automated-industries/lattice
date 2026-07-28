@@ -201,8 +201,8 @@ export async function buildImportPlan(input: BuildImportPlanInput): Promise<Impo
   // ── 2. Infer ──
   // minLinkConfidence is passed through only when the caller set one, so an
   // omitted value keeps the inferrer's own default rather than being pinned to 0.
-  const inferred = dedupeAndDetectViews(
-    inferSchema(
+  const inferred = await dedupeAndDetectViews(
+    await inferSchema(
       data,
       input.minLinkConfidence !== undefined ? { minLinkConfidence: input.minLinkConfidence } : {},
     ),

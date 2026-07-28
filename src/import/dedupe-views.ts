@@ -14,6 +14,10 @@ import type { DetectedView, ProposedSchema } from './types.js';
  * are also on B), (b) B has a column whose value equals A's tab name on some rows
  * (the discriminator), and (c) ≥80% of A's identifying values appear among those
  * matched B rows. Conservative + reported for review; nothing is applied silently.
+ *
+ * Every per-cell / per-row pass yields the event loop periodically (the same
+ * cadence the inferrer and column-profiler use), so a very large source cannot
+ * hold the loop — and the Stop button — while it is normalized and compared.
  */
 
 interface EntityData {
@@ -27,8 +31,41 @@ interface EntityData {
 const SAMPLE = 300;
 const VIEW_MIN_OVERLAP = 0.8;
 
-function buildEntityData(plan: ProposedSchema, data: Record<string, unknown>): EntityData[] {
-  return plan.entities.map((e) => {
+/** Items scanned between event-loop yields. Building the normalized row copies is
+ *  O(rows × cols) and the cross-entity comparison is O(entities² × rows); on a very
+ *  large source either can hold the event loop for seconds. Mirrors the inferrer's
+ *  cadence. */
+const YIELD_EVERY_ITEMS = 2048;
+
+export interface DedupeViewsOptions {
+  /** Items scanned between yields (default {@link YIELD_EVERY_ITEMS}). */
+  yieldEvery?: number;
+  /** Called to yield the event loop (default: a `setImmediate` hop). Injectable so
+   *  a test drives the cadence without real waits. */
+  onYield?: () => Promise<void>;
+}
+
+/** Build the shared "tick" the passes call once per scanned item: it yields the
+ *  event loop every {@link DedupeViewsOptions.yieldEvery} calls. */
+function makeTick(opts: DedupeViewsOptions): () => Promise<void> {
+  const onYield = opts.onYield ?? ((): Promise<void> => new Promise((r) => setImmediate(r)));
+  const every = Math.max(1, opts.yieldEvery ?? YIELD_EVERY_ITEMS);
+  let n = 0;
+  return async (): Promise<void> => {
+    if (++n >= every) {
+      n = 0;
+      await onYield();
+    }
+  };
+}
+
+async function buildEntityData(
+  plan: ProposedSchema,
+  data: Record<string, unknown>,
+  tick: () => Promise<void>,
+): Promise<EntityData[]> {
+  const out: EntityData[] = [];
+  for (const e of plan.entities) {
     const records = sourceRecords(data, e);
     const colSet = new Set<string>();
     const colSource = new Map<string, string>();
@@ -39,17 +76,26 @@ function buildEntityData(plan: ProposedSchema, data: Record<string, unknown>): E
         if (!colSource.has(n)) colSource.set(n, k);
       }
     }
-    const normRows = records.map((r) => {
+    // Normalizing every cell of every row is the whole-source O(rows × cols) pass —
+    // yield periodically so a giant sheet cannot monopolize the event loop here.
+    const normRows: Record<string, unknown>[] = [];
+    for (const r of records) {
+      await tick();
       const o: Record<string, unknown> = {};
       for (const k of Object.keys(r)) o[normalizeName(k)] = r[k];
-      return o;
-    });
-    return { name: e.name, sourceKey: e.sourceKey, cols: [...colSet], colSource, normRows };
-  });
+      normRows.push(o);
+    }
+    out.push({ name: e.name, sourceKey: e.sourceKey, cols: [...colSet], colSource, normRows });
+  }
+  return out;
 }
 
 /** The most-identifying shared column (mostly-text, highest distinct count). */
-function pickIdentity(a: EntityData, shared: string[]): string | null {
+async function pickIdentity(
+  a: EntityData,
+  shared: string[],
+  tick: () => Promise<void>,
+): Promise<string | null> {
   let bestCol: string | null = null;
   let bestDistinct = -1;
   for (const c of shared) {
@@ -57,6 +103,7 @@ function pickIdentity(a: EntityData, shared: string[]): string | null {
     let textish = 0;
     let total = 0;
     for (const r of a.normRows) {
+      await tick();
       const v = r[c];
       if (v === null || v === undefined || v === '') continue;
       total++;
@@ -72,11 +119,13 @@ function pickIdentity(a: EntityData, shared: string[]): string | null {
   return bestCol;
 }
 
-export function dedupeAndDetectViews(
+export async function dedupeAndDetectViews(
   plan: ProposedSchema,
   data: Record<string, unknown>,
-): { plan: ProposedSchema; views: DetectedView[] } {
-  const entities = buildEntityData(plan, data);
+  opts: DedupeViewsOptions = {},
+): Promise<{ plan: ProposedSchema; views: DetectedView[] }> {
+  const tick = makeTick(opts);
+  const entities = await buildEntityData(plan, data, tick);
   const views: DetectedView[] = [];
   const asView = new Set<string>();
   const colKeeps: { master: EntityData; col: string }[] = [];
@@ -102,20 +151,31 @@ export function dedupeAndDetectViews(
       const shared = a.cols.filter((c) => bColSet.has(c));
       if (shared.length < Math.max(2, Math.ceil(a.cols.length * 0.5))) continue; // not similar enough
 
-      const identity = pickIdentity(a, shared);
+      const identity = await pickIdentity(a, shared, tick);
       if (!identity) continue;
-      const aIds = new Set(
-        a.normRows.map((r) => normalizeText(r[identity])).filter((v) => v !== ''),
-      );
+      const aIds = new Set<string>();
+      for (const r of a.normRows) {
+        await tick();
+        const v = normalizeText(r[identity]);
+        if (v !== '') aIds.add(v);
+      }
       if (aIds.size === 0) continue;
 
       // Discriminator: a master column (one A does NOT have) whose value equals
       // the tab name on some rows. Those rows are the candidate slice.
       for (const disc of b.cols) {
         if (aColSet.has(disc)) continue;
-        const sub = b.normRows.filter((r) => normalizeText(r[disc]) === tabName);
+        const sub: Record<string, unknown>[] = [];
+        for (const r of b.normRows) {
+          await tick();
+          if (normalizeText(r[disc]) === tabName) sub.push(r);
+        }
         if (sub.length === 0) continue;
-        const bIds = new Set(sub.map((r) => normalizeText(r[identity])).filter((v) => v !== ''));
+        const bIds = new Set<string>();
+        for (const r of sub) {
+          const v = normalizeText(r[identity]);
+          if (v !== '') bIds.add(v);
+        }
         let inter = 0;
         for (const id of aIds) if (bIds.has(id)) inter++;
         const overlap = inter / aIds.size;

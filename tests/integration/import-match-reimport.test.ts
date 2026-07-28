@@ -59,18 +59,18 @@ describe('import: recognize a re-upload as a new period of an existing document'
     const configPath = resolveWorkspacePaths(root, ws).configPath;
 
     // First period establishes the document (as a dated snapshot).
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+    await materializeImport({ db, configPath }, doc(), await inferSchema(doc()), [], {
       asOf: '2025-06-30',
     });
 
     // A second upload of the same shape is recognized as the same document.
-    const match = matchSchemaToExisting(existingDataTables(db), inferSchema(doc()));
+    const match = matchSchemaToExisting(existingDataTables(db), await inferSchema(doc()));
     expect(match.isKnownDocument).toBe(true);
     expect(match.matches.find((m) => m.from === 'funds')?.to).toBe('funds');
     expect(match.matches.find((m) => m.from === 'investments')?.to).toBe('investments');
 
     // Importing it at a new date appends a snapshot into those same tables.
-    await materializeImport({ db, configPath }, doc(), inferSchema(doc()), [], {
+    await materializeImport({ db, configPath }, doc(), await inferSchema(doc()), [], {
       asOf: '2026-03-31',
     });
     expect(await db.count('funds')).toBe(4); // 2 funds × 2 periods

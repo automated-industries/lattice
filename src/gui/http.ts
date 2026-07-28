@@ -89,11 +89,22 @@ export function sendHtmlCompressed(req: IncomingMessage, res: ServerResponse, ht
  *  an explicit `maxBytes` (ingest uploads 10 MB, chat history 2 MB). */
 export const DEFAULT_BODY_MAX_BYTES = 1_000_000;
 
-/** Max bytes Lattice will read for a structured-source ingest/import (50 MB). The
- *  cap is enforced both on the streaming upload and again when the import-apply
- *  route re-reads the retained bytes, so an oversized source can't exhaust memory
- *  regardless of how the file got onto disk. */
-export const MAX_INGEST_BYTES = 50_000_000;
+/** Max bytes Lattice will read for a structured-source ingest/import (100 MB). The
+ *  ceiling sits above the pre-overhaul 50 MB so a genuinely large extract still
+ *  imports, but well BELOW a naive 250 MB because the worst case is an `.xlsx`, and
+ *  an `.xlsx` is a zip: the parser (`exceljs`) reads the WHOLE workbook with
+ *  `wb.xlsx.readFile` (no streaming) and holds the DECOMPRESSED object model in
+ *  memory at several times the on-disk size. A 250 MB workbook can therefore expand
+ *  past even the desktop build's baked 4 GB V8 heap (`--max-old-space-size=4096`)
+ *  and OOM the process — and per-sheet splitting does NOT help, because the whole
+ *  book is parsed before it is split. 100 MB keeps that worst-case expansion inside
+ *  the desktop heap with margin. It is deliberately NOT unbounded: an uncapped read
+ *  would reintroduce exactly the OOM the cap exists to prevent. The cap is enforced
+ *  both on the streaming upload and again when the import-apply route re-reads the
+ *  retained bytes, so an oversized source can't exhaust memory regardless of how the
+ *  file got onto disk; the too-large error reports this value, so it stays honest
+ *  automatically. */
+export const MAX_INGEST_BYTES = 100_000_000;
 
 /** Max rows a single bounded list read returns — `limit` is clamped to this so no
  *  one request can read an unbounded slice of a table (bounded reads). */

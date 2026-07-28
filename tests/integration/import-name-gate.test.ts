@@ -184,7 +184,7 @@ describe('materialize pre-flight — filter, report, never a partial write', () 
       ],
     };
     const messages: string[] = [];
-    const result = await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+    const result = await materializeImport({ db, configPath }, data, await inferSchema(data), [], {
       onProgress: (p) => {
         messages.push(p.message);
       },
@@ -210,7 +210,7 @@ describe('materialize pre-flight — filter, report, never a partial write', () 
         { alpha: 'c', beta: 'd' },
       ],
     };
-    await materializeImport({ db, configPath }, data, inferSchema(data));
+    await materializeImport({ db, configPath }, data, await inferSchema(data));
     expect(await db.count('table_1')).toBe(2); // rows landed in the existing table
   });
 
@@ -224,7 +224,7 @@ describe('materialize pre-flight — filter, report, never a partial write', () 
       Sheet1: i % 2 === 0 ? 'Even' : 'Odd',
     }));
     const data = { inventory: rows };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     // Confirm the fixture actually infers the anonymous-named dimension.
     expect(plan.dimensions.map((d) => d.name)).toContain('sheet1');
     await materializeImport({ db, configPath }, data, plan);
@@ -356,7 +356,7 @@ describe('views ride the pre-flight — no mid-loop throw on a dropped master', 
         { vendor: 'Beta', amount: 20 },
       ],
     };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const views = [
       { name: 'x_rows', master: 'table_1', filterColumn: 'kind', filterValue: 'x', matchedRows: 1 },
     ];
@@ -397,13 +397,13 @@ describe('match — anonymous names never short-circuit onto an unrelated table'
     expect(await db.count('table_3')).toBe(1); // untouched
   });
 
-  it('an anonymous 5.1.x table still EARNS the match on column containment', () => {
+  it('an anonymous 5.1.x table still EARNS the match on column containment', async () => {
     // The corrective half: a leftover table_3 with the SAME columns as the new
     // upload is genuinely the same dataset — containment (not name equality)
     // recognizes it, so the re-import lands in the existing table.
     const match = matchSchemaToExisting(
       [{ name: 'table_3', columns: ['id', 'alpha', 'beta', 'deleted_at'] }],
-      inferSchema({
+      await inferSchema({
         rates: [
           { alpha: 'x', beta: 'y' },
           { alpha: 'p', beta: 'q' },

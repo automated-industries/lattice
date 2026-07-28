@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,6 +27,7 @@ vi.mock('../../src/ai/vision.js', async (orig) => {
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { Lattice } from '../../src/lattice.js';
+import { MAX_INGEST_BYTES } from '../../src/gui/http.js';
 import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
@@ -343,6 +344,27 @@ describe('ingest routes', () => {
     expect(row.ref_provider).toBe('fs');
     expect(row.mime).toBe('text/markdown');
     expect(String(row.extracted_text)).toContain('quick brown fox');
+  });
+
+  it('rejects a local file over the ingest byte ceiling with an honest 413', async () => {
+    const { root, server: sp } = boot();
+    const server = await sp;
+    servers.push(server);
+    const bigPath = join(root, 'huge.csv');
+    writeFileSync(bigPath, 'a,b\n1,2\n');
+    // Grow it one MB past the ceiling. truncateSync makes a sparse file, so this
+    // stays cheap even at hundreds of MB — and the route statSyncs the size and
+    // refuses BEFORE reading, so the file is never streamed into memory.
+    truncateSync(bigPath, MAX_INGEST_BYTES + 1_000_000);
+
+    const res = await fetch(`${server.url}/api/ingest/file`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: bigPath }),
+    });
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/too large/i);
   });
 
   it('marks an unsupported binary type as skipped (still referenced)', async () => {

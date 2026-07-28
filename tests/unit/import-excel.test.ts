@@ -58,7 +58,7 @@ async function writeFixture(): Promise<string> {
 }
 
 describe('cellValue', () => {
-  it('flattens dates, formulas, rich text, and primitives', () => {
+  it('flattens dates, formulas, rich text, and primitives', async () => {
     expect(__test.cellValue(new Date('2022-03-31T00:00:00Z'))).toBe('2022-03-31');
     expect(__test.cellValue({ formula: 'A1*2', result: 42 })).toBe(42);
     expect(__test.cellValue({ richText: [{ text: 'a' }, { text: 'b' }] })).toBe('ab');
@@ -92,7 +92,7 @@ describe('excelToRecords', () => {
     expect(funds.map((r) => r.Net)).toEqual([98, 245]);
 
     // And it feeds the existing inference pipeline cleanly.
-    const schema = inferSchema(out);
+    const schema = await inferSchema(out);
     const entity = schema.entities.find((e) => e.name === 'funds');
     expect(entity).toBeTruthy();
     expect(entity!.columns.find((c) => c.name === 'vintage')?.type).toBe('integer');
@@ -383,5 +383,61 @@ describe('excelToRecords — grouped (two-row) headers', () => {
       { Fund: 'Alpha', Vintage: 2022, Size: 100 },
       { Fund: 'Beta', Vintage: 2018, Size: 250 },
     ]);
+  });
+});
+
+describe('excelToRecords — event-loop yielding on a large sheet', () => {
+  /** A single dense sheet of `rows` data rows under a one-row header — the shape a
+   *  giant single-sheet import takes, sized so the several O(rows×cols) parse
+   *  passes each touch many rows. */
+  async function writeLargeSheet(rows: number): Promise<string> {
+    const ExcelJS = await import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Big');
+    ws.getRow(1).values = [null, 'Code', 'Name', 'Amount', 'Region'];
+    for (let i = 0; i < rows; i++) {
+      ws.getRow(i + 2).values = [
+        null,
+        'C-' + String(i),
+        'Name ' + String(i),
+        i * 3,
+        ['NA', 'EU', 'Asia'][i % 3],
+      ];
+    }
+    const dir = mkdtempSync(join(tmpdir(), 'lattice-xlsx-big-'));
+    dirs.push(dir);
+    const path = join(dir, 'big.xlsx');
+    await wb.xlsx.writeFile(path);
+    return path;
+  }
+
+  it('calls the injected yield hook while parsing and still returns every row', async () => {
+    const path = await writeLargeSheet(600);
+    let yields = 0;
+    // A small yieldEvery makes the several O(rows×cols) passes over 600 rows fire
+    // the hook many times; the resolved-promise hook keeps the test fast (no real
+    // macrotask waits) while proving the extractor awaits between chunks of work.
+    const out = await excelToRecords(path, {
+      yieldEvery: 50,
+      onYield: async () => {
+        yields++;
+      },
+    });
+    expect(yields).toBeGreaterThan(0);
+    const big = out.Big!;
+    expect(big).toHaveLength(600);
+    expect(big[0]).toMatchObject({ Code: 'C-0', Name: 'Name 0', Amount: 0, Region: 'NA' });
+    expect(big[599]).toMatchObject({ Code: 'C-599', Amount: 1797 });
+  });
+
+  it('parses byte-identically whether or not a custom yield hook is injected', async () => {
+    // The yield plumbing must be behavior-neutral: the records are the same with
+    // the default hook and with an injected one — yielding only changes WHEN the
+    // event loop is serviced, never WHAT the extractor produces.
+    const path = await writeLargeSheet(120);
+    const withHook = await excelToRecords(path, { yieldEvery: 7, onYield: async () => {} });
+    const withDefault = await excelToRecords(path);
+    expect(withHook).toEqual(withDefault);
+    expect(withDefault.Big).toHaveLength(120);
   });
 });

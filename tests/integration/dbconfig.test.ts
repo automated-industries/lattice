@@ -166,13 +166,14 @@ describe('dbconfig endpoints', () => {
     expect(yaml).toMatch(/db:\s+\.\/data\/alt\.db/);
   });
 
-  it('rejects malformed bodies with 400', async () => {
+  it('rejects genuinely malformed bodies with 400 (but a spaced label is normalized, not rejected)', async () => {
     const { handle } = await startGui();
-    const r = await api(handle.url, '/api/dbconfig/save', {
+    // A label with a space is NOT malformed — it normalizes to a valid key and succeeds.
+    const spaced = await api(handle.url, '/api/dbconfig/save', {
       method: 'POST',
       body: {
         type: 'postgres',
-        label: 'has space!',
+        label: 'has space',
         host: 'h',
         dbname: 'd',
         user: 'u',
@@ -180,7 +181,22 @@ describe('dbconfig endpoints', () => {
         port: 5432,
       },
     });
-    expect(r.status).toBe(400);
+    expect(spaced.status).toBe(200);
+    // A truly malformed body (missing the required host) is still a 400, and names the field.
+    const bad = await api(handle.url, '/api/dbconfig/save', {
+      method: 'POST',
+      body: {
+        type: 'postgres',
+        label: 'ok',
+        host: '',
+        dbname: 'd',
+        user: 'u',
+        password: 'p',
+        port: 5432,
+      },
+    });
+    expect(bad.status).toBe(400);
+    expect(String(bad.body?.error ?? '').toLowerCase()).not.toContain('credential');
   });
 
   it('POST /api/dbconfig/test returns ok:false for an unreachable Postgres', async () => {

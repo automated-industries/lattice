@@ -17,43 +17,43 @@ const existing = [
 ];
 
 describe('matchSchemaToExisting', () => {
-  it('recognizes a new period of the same document (same sheet names)', () => {
+  it('recognizes a new period of the same document (same sheet names)', async () => {
     const march = {
       funds: [{ code: 'EP', name: 'Early Plays', vintage: 1999, fundSize: 100 }],
       investments: [{ company: 'Acme', invested: 5, region: 'Europe' }],
     };
-    const m = matchSchemaToExisting(existing, inferSchema(march));
+    const m = matchSchemaToExisting(existing, await inferSchema(march));
     expect(m.isKnownDocument).toBe(true);
     expect(m.matches.find((x) => x.from === 'funds')?.to).toBe('funds');
     expect(m.matches.find((x) => x.from === 'investments')?.to).toBe('investments');
     expect(Object.keys(m.rename)).toHaveLength(0); // names already match
   });
 
-  it('matches by column overlap when a sheet was renamed + a column added', () => {
+  it('matches by column overlap when a sheet was renamed + a column added', async () => {
     // "holdings" is investments renamed, with one extra column → still matches.
     const renamed = {
       holdings: [{ company: 'Acme', invested: 5, region: 'Europe', sector: 'Tech' }],
     };
-    const m = matchSchemaToExisting(existing, inferSchema(renamed));
+    const m = matchSchemaToExisting(existing, await inferSchema(renamed));
     const hit = m.matches.find((x) => x.from === 'holdings');
     expect(hit?.to).toBe('investments');
     expect(hit?.overlap).toBeGreaterThanOrEqual(0.6);
     expect(m.rename.holdings).toBe('investments');
   });
 
-  it('does NOT call an unrelated file a known document', () => {
+  it('does NOT call an unrelated file a known document', async () => {
     const other = {
       orders: [{ order_id: 1, sku: 'X', qty: 3, customer: 'Bob' }],
     };
-    const m = matchSchemaToExisting(existing, inferSchema(other));
+    const m = matchSchemaToExisting(existing, await inferSchema(other));
     expect(m.isKnownDocument).toBe(false);
     expect(m.matchedCount).toBe(0);
   });
 });
 
 describe('renameEntities', () => {
-  it('rewrites entity + linkage + view names per the rename map', () => {
-    const plan = inferSchema({
+  it('rewrites entity + linkage + view names per the rename map', async () => {
+    const plan = await inferSchema({
       holdings: [{ company: 'Acme', invested: 5, region: 'Europe' }],
     });
     const { plan: renamed } = renameEntities(plan, [], { holdings: 'investments' });
