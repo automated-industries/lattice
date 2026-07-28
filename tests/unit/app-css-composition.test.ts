@@ -256,8 +256,8 @@ import { css } from '../../src/gui/app/css.js';
 // (.dash-frame-wrap flex row, .panel-header/.panel-close/.panel-scroll,
 // .record-fields/.record-field) for the open-record citation click-through.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 175963;
-const ORIGINAL_SHA256 = 'fa6b8d7a3a77d1283bc7cd4cacf552df31d8f4109494b8e7550c29b4cf484cdb';
+const ORIGINAL_LENGTH = 176203;
+const ORIGINAL_SHA256 = 'bd1864025e13397c3303e5f52016efbb752cb723199787aa026402c2b9484357';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
