@@ -7,10 +7,16 @@ export const onboardingJs = `    // ──────────────�
     // ────────────────────────────────────────────────────────────
     var chatHistory = [];
     var chatBusy = false;
-    // Follow-ups typed while a turn streams are queued (FIFO) and sent when the
-    // turn finishes — never dropped. Each item: { text, files, node } where node
-    // is the dimmed "queued" placeholder bubble.
+    // Follow-ups typed while a turn streams are queued (FIFO) and sent when the turn
+    // finishes — never dropped. Each item: { text, files, names, claimed }. They render
+    // in a tray above the composer (renderQueueTray), where they can be reordered out of
+    // or removed; they are NOT placeholder bubbles in the conversation, which read as
+    // messages that had already been sent.
     var chatQueue = [];
+    // An item pulled out of the queue by "send now": it has been CLAIMED, so the ordinary
+    // drain can never also fire it, and it is delivered by the next flush — after the
+    // running turn has been stopped. Exactly one item can be in this state at a time.
+    var forcePushItem = null;
     var COMPOSER_MAX_H = 160; // px — textarea auto-grow ceiling (then it scrolls)
     function railFeedEl() { return document.getElementById('rail-feed'); }
     function railEmptyGone() { var e = document.getElementById('rail-empty'); if (e) e.remove(); }
@@ -34,33 +40,33 @@ export const onboardingJs = `    // ──────────────�
     function clearChat() {
       chatHistory = [];
       // Discard any follow-ups queued for the conversation we're leaving, so they
-      // never leak into a different thread.
+      // never leak into a different thread — including one already claimed by a
+      // "send now" whose stop had not come back yet.
       chatQueue = [];
+      forcePushItem = null;
+      renderQueueTray();
+      updateComposerAction();
       var feedEl = railFeedEl();
       if (!feedEl) return;
       // The rail is conversation-scoped: clearing or switching a conversation
-      // drops both its chat bubbles AND its activity cards (each conversation
-      // replays its own data-change cards from the persisted per-turn events).
-      // Also clear any in-progress ingest bar (orphaned by the conversation switch).
-      // Reset the grouping anchors so a freshly loaded thread starts clean.
+      // drops its chat bubbles, plus anything a previous version of the client
+      // left behind in the rail, so a freshly loaded thread starts clean.
       var nodes = feedEl.querySelectorAll('.chat-msg, .feed-item, .ingest-progress');
       for (var i = 0; i < nodes.length; i++) nodes[i].remove();
-      feedGroups = {};
       // Restore the empty hint only when the rail is now completely empty.
       if (!feedEl.firstElementChild) {
         feedEl.innerHTML = '<div class="rail-empty" id="rail-empty">No activity yet. Changes you make will appear here.</div>';
       }
     }
-    // Drop the activity cards (e.g. when switching to another workspace, whose
-    // events are a different set). Resets the grouping anchor too. Clear any
-    // in-progress ingest bar: it belongs to the workspace we're leaving and must
-    // not bleed into the new one (its feed events go to the old workspace's feed).
+    // Drop anything left in the rail that is not conversation (e.g. when switching
+    // to another workspace, whose activity is a different set). Clear any
+    // in-progress ingest task too: it belongs to the workspace we're leaving and
+    // must not bleed into the new one (its feed events go to the old workspace).
     function clearActivityFeed() {
       var feedEl = railFeedEl();
       if (!feedEl) return;
       var items = feedEl.querySelectorAll('.feed-item');
       for (var i = 0; i < items.length; i++) items[i].remove();
-      feedGroups = {};
       clearIngestProgress();
     }
     function newChat() {
@@ -135,12 +141,22 @@ export const onboardingJs = `    // ──────────────�
               if (m.text) setBubbleText(rctx, m.text);
               bindChatTurn({ messageId: m.id, threadId: id, actx: rctx, assembled: m.text || '', pendingOpen: null, done: false });
               chatBusy = true; feedTurnActive = true;
-              var sbtn = document.getElementById('chat-send'); if (sbtn) sbtn.disabled = true;
+              updateComposerAction();
             } else if (streaming) {
               // Orphaned in-flight turn: show what was saved (or a soft interrupted note)
               // as final — no bind, no composer lock, no lingering turn.
               var ictx = newAssistantBubble(m.startedAt || m.created_at);
               setBubbleText(ictx, m.text || '\\u26a0 This reply was interrupted and did not finish.');
+            } else if (m.status === 'stopped') {
+              // The user stopped this reply. Terminal, and NOT a failure: replay the
+              // partial text that survived and mark plainly where it was cut off.
+              var sctx = newAssistantBubble(m.startedAt || m.created_at);
+              if (m.text) setBubbleText(sctx, m.text);
+              else finalizeBubble(sctx);
+              var stopNote = document.createElement('div');
+              stopNote.className = 'chat-stopped';
+              stopNote.textContent = '⏹ You stopped this reply.';
+              var sfeed = railFeedEl(); if (sfeed) sfeed.appendChild(stopNote);
             } else if (Array.isArray(m.turns) && m.turns.length > 0) {
               // Rich replay: the saved per-turn structure (text + the data-change activity
               // cards it produced), matching the live stream.
@@ -162,21 +178,23 @@ export const onboardingJs = `    // ──────────────�
       refreshThreadList(true); // restore the most recent conversation on load
     }
     // Append a relative-time label as a SIBLING of the bubble (so setBubbleText's
-    // innerHTML rewrite of the bubble never clobbers it). Recomputed on each reload
-    // via relTime — which is exactly what defeats reading a stale reply as current.
-    // iso defaults to now, so live sends get a fresh "just now" label.
+    // innerHTML rewrite of the bubble never clobbers it). stampRelTime writes both the
+    // label AND the instant it came from, so the shared ticker can keep it current —
+    // without the stamp the label froze at whatever it said when the node was made, and
+    // a live send (which passes no timestamp) read "0s ago" for the rest of the session.
     function stampBubble(msgEl, iso) {
       if (!msgEl) return;
-      var when = iso || new Date().toISOString();
       var t = document.createElement('span'); t.className = 'chat-time';
-      t.textContent = relTime(when);
-      try { t.title = new Date(when).toLocaleString(); } catch (_) { /* invalid date → no title */ }
+      stampRelTime(t, iso || new Date().toISOString());
       msgEl.appendChild(t);
     }
-    function appendUserBubble(text, fileNames, createdAt) {
+    // opts.pending marks the bubble as not-yet-delivered (an attachment is still
+    // ingesting). Returns the message element so the caller can settle it.
+    function appendUserBubble(text, fileNames, createdAt, opts) {
       railEmptyGone();
-      var feedEl = railFeedEl(); if (!feedEl) return;
+      var feedEl = railFeedEl(); if (!feedEl) return null;
       var msg = document.createElement('div'); msg.className = 'chat-msg user';
+      if (opts && opts.pending) msg.classList.add('pending');
       var hasFiles = !!(fileNames && fileNames.length);
       // With files, stack the bubble + file chips vertically (right-aligned); a
       // text-only message keeps the plain single-bubble layout unchanged.
@@ -207,6 +225,40 @@ export const onboardingJs = `    // ──────────────�
       }
       stampBubble(msg, createdAt);
       feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
+      return msg;
+    }
+    // The attachment landed and the turn is on its way: drop the in-flight marking.
+    function markBubbleSent(msg) {
+      if (!msg) return;
+      msg.classList.remove('pending', 'failed');
+      var note = msg.querySelector('.chat-send-error');
+      if (note) note.remove();
+    }
+    // The send never happened. Say so ON the message — a bubble sitting in the feed
+    // for something that was never sent is worse than no bubble at all — and offer
+    // the retry inline. The composer still holds the text + files, so retry re-runs
+    // the same submit.
+    function markBubbleFailed(msg, detail, onRetry) {
+      if (!msg) return;
+      msg.classList.remove('pending');
+      msg.classList.add('failed');
+      var old = msg.querySelector('.chat-send-error');
+      if (old) old.remove();
+      var note = document.createElement('div');
+      note.className = 'chat-send-error';
+      var label = document.createElement('span');
+      label.textContent = detail || 'Not sent.';
+      note.appendChild(label);
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'chat-retry';
+      retry.textContent = 'Retry';
+      retry.addEventListener('click', function () {
+        msg.remove();
+        if (typeof onRetry === 'function') onRetry();
+      });
+      note.appendChild(retry);
+      msg.appendChild(note);
     }
     function newAssistantBubble(createdAt) {
       railEmptyGone();
@@ -317,28 +369,23 @@ export const onboardingJs = `    // ──────────────�
     }
     /**
      * A turn ended still showing the typing indicator (no text streamed) — drop
-     * the empty bubble. The turn's data-change activity cards live in the rail
-     * feed independently (not inside the message), so they remain.
+     * the empty bubble. Data changes are reported in the activity menu, not in
+     * the conversation, so there is nothing else to leave behind.
      */
     function finalizeBubble(ctx) {
       if (!ctx || !ctx.bubble || !ctx.bubble.getAttribute('data-typing')) return;
       if (ctx.msg) ctx.msg.remove();
     }
-    /** Replay one persisted assistant turn: its text bubble + the data-change
-     *  activity cards it produced (collapsed, per-turn). Reads aren't persisted
-     *  as events, so a read-only turn with no text renders nothing. createdAt
-     *  stamps the cards' relative time (events carry no ts of their own). */
+    /** Replay one persisted assistant turn: its text bubble, and nothing else.
+     *  Background work — including the data changes a turn made — is reported in
+     *  the activity menu while it happens; the conversation carries only what you
+     *  sent and what the assistant answered. Any events array on an older
+     *  persisted row is ignored, so threads written before that change replay
+     *  cleanly as text. A read-only turn with no text renders nothing. */
     function appendAssistantTurn(turn, createdAt, startedAt) {
       var ctx = newAssistantBubble(startedAt || createdAt);
       if (turn.text) setBubbleText(ctx, turn.text);
       else finalizeBubble(ctx); // no text → drop the empty typing bubble
-      var events = (turn.events || []).map(function (e) {
-        return e.ts ? e : { op: e.op, table: e.table, rowId: e.rowId, summary: e.summary, source: e.source || 'ai', ts: createdAt };
-      });
-      // Task start for the duration timer: the persisted turn-start, else the
-      // message time. Per-event ts (above) gives the run's finish.
-      var startedMs = new Date(startedAt || createdAt || 0).getTime();
-      renderTurnEventCards(railFeedEl(), events, startedMs);
     }
     // ── Async chat transport ──────────────────────────────────────
     // POST /api/chat ACKs 202 {threadId, messageId} and the turn runs as a background
@@ -362,17 +409,206 @@ export const onboardingJs = `    // ──────────────�
       if (!(t > 0)) return false;
       return (Date.now() - t) < CHAT_TURN_STALE_MS;
     }
+    // ── Composer action button ──────────────────────────────────────────────
+    // ONE button, four derived states, so it is never a dead grey rectangle while a
+    // reply streams: Send (idle), Queue (busy + something typed), Stop (busy + nothing
+    // typed), disabled Send (idle + nothing typed). The state is DERIVED, so every
+    // input that can change it just calls updateComposerAction() and is done.
+    //
+    // Registered by id rather than hard-coded, because the dock is not the only
+    // composer in the app — a second one hands off to the assistant the same way and
+    // can join the machine by registering its button (and naming its textarea with
+    // data-composer-input) instead of duplicating any of this.
+    var composerActionIds = ['chat-send'];
+    function registerComposerAction(id) {
+      if (!id || composerActionIds.indexOf(id) >= 0) return;
+      composerActionIds.push(id);
+      updateComposerAction();
+    }
+    function composerInputFor(btn) {
+      var id = (btn && btn.getAttribute && btn.getAttribute('data-composer-input')) || 'chat-input';
+      return document.getElementById(id);
+    }
+    function composerHasContent(btn) {
+      var inp = composerInputFor(btn);
+      if (inp && inp.value && inp.value.trim()) return true;
+      // Staged attachments are content too — a files-only send is a real send. They
+      // belong to the dock composer's tray only.
+      if (btn && btn.id === 'chat-send' && typeof stagedFiles !== 'undefined' && stagedFiles && stagedFiles.length) return true;
+      return false;
+    }
+    function updateComposerAction() {
+      // A voice note being recorded/transcribed owns the composer for its duration;
+      // half-captured audio must not be sendable, queueable, or a Stop target.
+      var dictating = recState === 'recording' || recState === 'transcribing';
+      for (var i = 0; i < composerActionIds.length; i++) {
+        var btn = document.getElementById(composerActionIds[i]);
+        if (!btn) continue;
+        var content = composerHasContent(btn);
+        btn.classList.remove('is-stop', 'is-queue');
+        var ingesting = btn.id === 'chat-send' && typeof stagingBusy !== 'undefined' && !!stagingBusy;
+        if (dictating || ingesting) {
+          // Nothing can be submitted until the audio or the attachment has landed, so
+          // the button says Send and is genuinely disabled — rather than looking live
+          // and doing nothing when clicked.
+          btn.setAttribute('data-action', 'send');
+          btn.textContent = 'Send';
+          btn.title = ingesting ? 'Adding your files…' : 'Send';
+          btn.disabled = true;
+        } else if (stopPending() && !content) {
+          // A Stop the user already pressed that has not been delivered yet: the turn
+          // is still being identified (see stopActiveTurn). It goes out on its own, so
+          // the button reports that instead of looking armed for a press that would
+          // add nothing.
+          btn.setAttribute('data-action', 'stopping');
+          btn.classList.add('is-stop');
+          btn.textContent = 'Stopping…';
+          btn.title = 'Stopping this reply';
+          btn.disabled = true;
+        } else if (chatBusy && !content) {
+          btn.setAttribute('data-action', 'stop');
+          btn.classList.add('is-stop');
+          btn.textContent = 'Stop';
+          btn.title = 'Stop this reply';
+          btn.disabled = false;
+        } else if (chatBusy) {
+          btn.setAttribute('data-action', 'queue');
+          btn.classList.add('is-queue');
+          btn.textContent = 'Queue';
+          btn.title = 'Send this as soon as the current reply finishes';
+          btn.disabled = false;
+        } else {
+          btn.setAttribute('data-action', 'send');
+          btn.textContent = 'Send';
+          btn.title = 'Send';
+          btn.disabled = !content;
+        }
+      }
+    }
     // Re-enable the composer once no turn is streaming (a turn recovered on reload keeps
     // it disabled until that turn finishes). Reflects busy state off the live turn count.
     function releaseComposer() {
       var streaming = Object.keys(chatTurns).length > 0;
       chatBusy = streaming;
       feedTurnActive = streaming;
-      var sb = document.getElementById('chat-send'); if (sb) sb.disabled = streaming;
+      updateComposerAction();
       if (!streaming) { var inp = document.getElementById('chat-input'); if (inp) inp.focus(); }
       // Turn finished (also fires on a pre-flight refusal / network reject): drain
       // the next queued follow-up, if any.
       if (!streaming) flushChatQueue();
+    }
+    // ── Stopping a turn ─────────────────────────────────────────────────────
+    // The turn does NOT run inside the POST that started it: that request acks 202 and
+    // the work continues server-side as a background job streaming over the socket. So
+    // abandoning a fetch here would stop nothing — the job would keep calling the model
+    // and keep writing to the workspace. Stopping has to be a request of its own.
+    //
+    // That ack is also what NAMES the turn, and the button becomes a Stop the moment
+    // the send leaves — so there is a window where the turn is already running but no
+    // messageId has come back to address a stop to. A press there must not evaporate
+    // (it is exactly when an alarmed user reaches for Stop), so the intent is
+    // REMEMBERED and delivered the instant the ack binds the turn:
+    //   pendingSendCount — /api/chat POSTs that have not resolved yet
+    //   stopRequested    — a Stop pressed while only such a send existed
+    //   stopWaiters      — the callers awaiting that stop; they settle on its REAL
+    //                      outcome, never on a promise that stopped nothing.
+    var pendingSendCount = 0;
+    var stopRequested = false;
+    var stopWaiters = [];
+    // True while a requested stop has not been delivered/settled — the composer button
+    // shows this state rather than a live-looking Stop.
+    function stopPending() { return stopRequested || stopWaiters.length > 0; }
+    function settleStopWaiters(err) {
+      var waiters = stopWaiters;
+      stopWaiters = [];
+      updateComposerAction();
+      for (var i = 0; i < waiters.length; i++) {
+        if (err) waiters[i].reject(err); else waiters[i].resolve();
+      }
+    }
+    // The ack named the turn: deliver the Stop the user already pressed.
+    function deliverRememberedStop() {
+      if (!stopRequested) return;
+      stopRequested = false;
+      stopActiveTurn().then(
+        function () { settleStopWaiters(null); },
+        function (e) { settleStopWaiters(e); }
+      );
+    }
+    // A send POST has resolved — with an ack, a refusal, or a network error. If a Stop
+    // is STILL remembered at that point, no turn was ever opened for it to name (the
+    // send was refused, or its turn had already finished), so there is genuinely
+    // nothing running: clear the intent rather than leaving the button on 'Stopping…'
+    // forever, and settle the callers.
+    function sendSettled() {
+      if (pendingSendCount > 0) pendingSendCount -= 1;
+      if (!stopRequested) { updateComposerAction(); return; }
+      if (pendingSendCount > 0 || Object.keys(chatTurns).length) return;
+      stopRequested = false;
+      settleStopWaiters(null);
+    }
+    function stopActiveTurn() {
+      var ids = Object.keys(chatTurns);
+      if (!ids.length) {
+        // Nothing bound yet. If a send is still in flight, its turn IS running on the
+        // server and its ack is on the way — remember the request instead of handing
+        // back a resolved promise for a stop that never happened.
+        if (pendingSendCount > 0) {
+          stopRequested = true;
+          updateComposerAction();
+          return new Promise(function (resolve, reject) {
+            stopWaiters.push({ resolve: resolve, reject: reject });
+          });
+        }
+        return Promise.resolve();
+      }
+      var reqs = [];
+      for (var i = 0; i < ids.length; i++) {
+        (function (mid) {
+          reqs.push(
+            fetch('/api/chat/messages/' + encodeURIComponent(mid) + '/stop', { method: 'POST' })
+              .then(function (r) {
+                return r.json().then(
+                  function (j) { return { ok: r.ok, body: j || {} }; },
+                  function () { return { ok: r.ok, body: {} }; }
+                );
+              })
+              .then(function (out) {
+                if (!out.ok) throw new Error(out.body.error || 'Could not stop the reply.');
+                // stopped:false means the reply had already finished — nothing to
+                // report, the turn's own 'done' releases the composer.
+                if (out.body.stopped) noteTurnStopped(mid);
+              })
+          );
+        })(ids[i]);
+      }
+      return Promise.all(reqs).then(function () { return undefined; }, function (e) {
+        // A stop that did not take is exactly the case the user must hear about: the
+        // reply is still running and still spending. Surface it and re-throw so the
+        // caller does not act as though the turn had ended.
+        showToast('Could not stop the reply: ' + e.message, {});
+        throw e;
+      });
+    }
+    // Mark a stopped turn in the conversation and release locally. The server settles
+    // the persisted row and publishes its own terminal frame; finalizeChatTurn is
+    // idempotent, so whichever arrives first wins and the other is a no-op.
+    function noteTurnStopped(messageId) {
+      var turn = chatTurns[messageId];
+      if (!turn) return;
+      if (turn.threadId === currentThreadId) {
+        finalizeBubble(turn.actx);
+        var feedEl = railFeedEl();
+        if (feedEl) {
+          var note = document.createElement('div');
+          note.className = 'chat-stopped';
+          // Honest about the boundary: a tool call already in flight finishes.
+          note.textContent = '⏹ Stopped. Anything already running finished; nothing new was started.';
+          feedEl.appendChild(note);
+          feedEl.scrollTop = feedEl.scrollHeight;
+        }
+      }
+      finalizeChatTurn(turn);
     }
     // Reconcile bound (streaming) turns after the /api/stream WebSocket reconnects. The bus
     // has NO replay buffer, so any event — including the terminal 'done' — published while
@@ -399,6 +635,9 @@ export const onboardingJs = `    // ──────────────�
             var row = null;
             for (var i = 0; i < msgs.length; i++) { if (msgs[i].id === mid) { row = msgs[i]; break; } }
             if (!row) return; // row not found (deleted?) — leave the turn; a full reload recovers
+            // 'stopped' is terminal alongside 'done'/'error': the user ended it, so the
+            // turn must be released rather than left bound waiting for frames that will
+            // never come.
             var settled = row.status !== 'streaming' && row.status !== 'pending';
             var visible = turn.threadId === currentThreadId;
             if (settled) {
@@ -406,6 +645,12 @@ export const onboardingJs = `    // ──────────────�
               // render the final text and release.
               if (visible && row.text) { if (!turn.actx) turn.actx = newAssistantBubble(); setBubbleText(turn.actx, row.text); }
               turn.assembled = row.text || turn.assembled;
+              if (visible && row.status === 'stopped') {
+                var rsNote = document.createElement('div');
+                rsNote.className = 'chat-stopped';
+                rsNote.textContent = '⏹ You stopped this reply.';
+                var rsFeed = railFeedEl(); if (rsFeed) rsFeed.appendChild(rsNote);
+              }
               finalizeChatTurn(turn);
             } else if (chatTurnFresh(row.startedAt)) {
               // Still legitimately running — refresh the partial (recovering deltas lost in
@@ -485,7 +730,7 @@ export const onboardingJs = `    // ──────────────�
         if (visible) { finalizeBubble(turn.actx); var wb = newAssistantBubble(); setBubbleText(wb, '⚠ ' + ev.message); }
         turn.actx = null;
       } else if (ev.type === 'limit') {
-        if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); }
+        if (visible) { finalizeBubble(turn.actx); var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + ev.message); if (typeof refreshLimitBlock === 'function') refreshLimitBlock(); if (typeof refreshAuthWarningBlock === 'function') refreshAuthWarningBlock(); }
         turn.actx = null;
       } else if (ev.type === 'error') {
         if (visible) {
@@ -542,48 +787,170 @@ export const onboardingJs = `    // ──────────────�
         setTimeout(function () { if (!chatTurns[msg.messageId]) delete chatEventBuffer[msg.messageId]; }, 5000);
       }
     }
-    // A dimmed placeholder for a follow-up typed mid-turn; removed when it flushes.
-    function appendQueuedBubble(text, fileNames) {
-      railEmptyGone();
-      var feedEl = railFeedEl(); if (!feedEl) return null;
-      var msg = document.createElement('div'); msg.className = 'chat-msg user queued';
-      var label = text || (fileNames && fileNames.length ? fileNames.join(', ') : '');
-      var b = document.createElement('div'); b.className = 'chat-bubble user'; b.textContent = label;
-      msg.appendChild(b);
-      var tag = document.createElement('span'); tag.className = 'chat-queued-tag'; tag.textContent = 'queued';
-      msg.appendChild(tag);
-      feedEl.appendChild(msg); feedEl.scrollTop = feedEl.scrollHeight;
-      return msg;
+    // ── Queue tray ──────────────────────────────────────────────────────────
+    // Queued follow-ups get their OWN surface directly above the composer — the same
+    // shape as the staged-files tray — instead of ghost bubbles in the conversation.
+    // A bubble in the feed reads as a message that was sent; these have not been.
+    function queueTrayHost() {
+      var host = document.getElementById('chat-queue-host');
+      if (host) return host;
+      var composer = document.getElementById('rail-composer');
+      if (!composer || !composer.parentNode) return null;
+      host = document.createElement('div');
+      host.className = 'chat-queue-host';
+      host.id = 'chat-queue-host';
+      composer.parentNode.insertBefore(host, composer);
+      return host;
     }
-    // Queue a follow-up sent while a turn is streaming: show a placeholder, clear
-    // the composer (like a real send), and remember it to flush on turn-done.
+    function queueItemLabel(item) {
+      if (item.text) return item.text.length > 90 ? item.text.slice(0, 90) + '…' : item.text;
+      if (item.names && item.names.length) return item.names.join(', ');
+      return 'Attached files';
+    }
+    function renderQueueTray() {
+      var host = queueTrayHost(); if (!host) return;
+      host.innerHTML = '';
+      if (!chatQueue.length) return;
+      var tray = document.createElement('div');
+      tray.className = 'chat-queue-tray';
+      tray.id = 'chat-queue-tray';
+      var head = document.createElement('div');
+      head.className = 'chat-queue-head';
+      head.textContent = chatQueue.length === 1
+        ? 'Queued — sends when this reply finishes'
+        : chatQueue.length + ' queued — sent in order when this reply finishes';
+      tray.appendChild(head);
+      var list = document.createElement('ul');
+      list.className = 'chat-queue-list';
+      for (var i = 0; i < chatQueue.length; i++) {
+        (function (idx) {
+          var li = document.createElement('li');
+          li.className = 'chat-queue-item';
+          var label = document.createElement('span');
+          label.className = 'chat-queue-text';
+          label.textContent = queueItemLabel(chatQueue[idx]);
+          li.appendChild(label);
+          var push = document.createElement('button');
+          push.type = 'button';
+          push.className = 'chat-queue-push';
+          push.title = 'Stop the current reply and send this now';
+          push.setAttribute('aria-label', 'Send now');
+          push.textContent = '⏭';
+          push.addEventListener('click', function () { forcePushQueued(idx); });
+          li.appendChild(push);
+          var rm = document.createElement('button');
+          rm.type = 'button';
+          rm.className = 'chat-queue-x';
+          rm.title = 'Remove';
+          rm.setAttribute('aria-label', 'Remove');
+          rm.textContent = '✕';
+          rm.addEventListener('click', function () { removeQueued(idx); });
+          li.appendChild(rm);
+          list.appendChild(li);
+        })(i);
+      }
+      tray.appendChild(list);
+      host.appendChild(tray);
+    }
+    function removeQueued(idx) {
+      var item = chatQueue[idx];
+      if (!item || item.claimed) return; // already on its way out via "send now"
+      chatQueue.splice(idx, 1);
+      renderQueueTray();
+      updateComposerAction();
+    }
+    // "Send now": stop the running turn, then send THIS item ahead of the rest. The
+    // item is CLAIMED and pulled out of the queue first, and held in forcePushItem
+    // which flushChatQueue consumes before anything else — so the ordinary
+    // drain-on-turn-done can never send it a second time.
+    function forcePushQueued(idx) {
+      var item = chatQueue[idx];
+      if (!item || item.claimed || forcePushItem) return;
+      item.claimed = true;
+      chatQueue.splice(idx, 1);
+      forcePushItem = item;
+      renderQueueTray();
+      updateComposerAction();
+      stopActiveTurn().then(function () {
+        // If the turn's release already ran, this is a no-op; otherwise it delivers.
+        flushChatQueue();
+      }, function () {
+        // The turn could not be stopped, so it is still running and this message must
+        // NOT be sent into the middle of it. Put it back exactly where it was — the
+        // failure itself was already surfaced by stopActiveTurn.
+        if (forcePushItem !== item) return;
+        forcePushItem = null;
+        item.claimed = false;
+        chatQueue.splice(idx, 0, item);
+        renderQueueTray();
+        updateComposerAction();
+      });
+    }
+    // Queue a follow-up sent while a turn is streaming: clear the composer (like a real
+    // send) and remember it to flush on turn-done.
     function enqueueChat(text, attachedFiles) {
       var fileNames = (attachedFiles || []).map(function (f) { return f && f.name ? f.name : 'file'; });
-      var node = appendQueuedBubble(text, fileNames);
-      var input = document.getElementById('chat-input');
-      if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
-      chatQueue.push({ text: text, files: attachedFiles, node: node });
+      clearComposerInput(!!fileNames.length);
+      chatQueue.push({
+        text: text, files: attachedFiles, names: fileNames, claimed: false
+      });
+      renderQueueTray();
+      updateComposerAction();
     }
-    // Send the next queued follow-up once the composer is free. Each flushed send
-    // keeps sendChat's own inline error handling, so a failed queued send surfaces
-    // loudly rather than dropping.
+    // Send the next follow-up once the composer is free — a force-pushed item first,
+    // then the FIFO. Each flushed send keeps sendChat's own inline error handling, so a
+    // failed queued send surfaces loudly rather than dropping.
     function flushChatQueue() {
-      if (chatBusy || !chatQueue.length) return;
+      if (chatBusy) return;
+      if (forcePushItem) {
+        var pushed = forcePushItem;
+        forcePushItem = null; // consumed here and nowhere else — never twice
+        sendChat(pushed.text, pushed.files);
+        return;
+      }
+      if (!chatQueue.length) return;
       var item = chatQueue.shift();
-      if (item.node && item.node.remove) item.node.remove();
+      renderQueueTray();
+      updateComposerAction();
       sendChat(item.text, item.files);
     }
-    function sendChat(text, attachedFiles) {
+    // Empty the composer: the textarea (collapsed back to one line via its own
+    // auto-grow, so the reset matches the grow logic) and — only when this send is
+    // actually carrying them — the staged files, in the same tick. A send that carries
+    // NO attachment must leave the tray alone: a suggested-prompt click elsewhere in the
+    // app routes through here too, and it must not quietly discard files the user staged.
+    function clearComposerInput(alsoStaged) {
+      var input = document.getElementById('chat-input');
+      if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
+      if (alsoStaged && typeof clearStaging === 'function') clearStaging();
+      updateComposerAction();
+    }
+    /**
+     * Commit the composer for a submission. Runs SYNCHRONOUSLY, before any await, so
+     * there is never a window where the message has left the box but nothing shows it:
+     * the bubble appears, the box and the tray empty, and the button takes its busy
+     * state — all in one tick. The bubble is marked pending until the send actually
+     * goes out (an attachment still has to be ingested first), and can be marked failed
+     * if it never does. Returns the bubble element.
+     */
+    function commitComposer(text, fileNames) {
+      var msg = appendUserBubble(text, fileNames, null, { pending: true });
+      clearComposerInput(!!(fileNames && fileNames.length));
+      return msg;
+    }
+    function sendChat(text, attachedFiles, opts) {
+      opts = opts || {};
       var hasFiles = !!(attachedFiles && attachedFiles.length);
       if (!text && !hasFiles) return;
-      // Streaming: don't drop the message — queue it and drain on turn-done.
-      if (chatBusy) { enqueueChat(text, attachedFiles); return; }
-      // A files-only send (no message) must NOT fabricate a "take a look at this file"
-      // sentence — show the attached file name(s) as the bubble instead. That is
-      // truthful (it is what the user attached), and the server's attached-files note
-      // is what actually directs the assistant to read them.
+      // Streaming: don't drop the message — queue it and drain on turn-done. A bubble
+      // committed before the ingest is REMOVED here: the message is not sent, so its one
+      // surface is the queue tray. Leaving both would show it twice, once as if sent.
+      if (chatBusy) {
+        if (opts.bubble && opts.bubble.remove) opts.bubble.remove();
+        enqueueChat(text, attachedFiles);
+        return;
+      }
       var fileNames = (attachedFiles || []).map(function (f) { return f && f.name ? f.name : 'file'; });
-      var effectiveText = text || fileNames.join(', ') || 'file';
       chatBusy = true;
       gaTrack('assistant_message', {}); // no message text — just the event
 
@@ -592,26 +959,29 @@ export const onboardingJs = `    // ──────────────�
       feedTurnId += 1;
       feedTurnStartMs = Date.now();
       feedTurnActive = true;
-      // Show the REAL typed text (empty on a files-only send) plus the attached files
-      // as chips — not the synthesized effectiveText, which would otherwise hide the
-      // files behind the message on a text+file send.
-      appendUserBubble(text, fileNames);
+      // The bubble may already be on screen — a send with attachments commits the
+      // composer before the ingest starts, and hands that bubble in here. Otherwise
+      // commit now (still synchronously, before the request goes out).
+      var bubble = opts.bubble || commitComposer(text, fileNames);
+      markBubbleSent(bubble);
       var historyToSend = chatHistory.slice();
-      chatHistory.push({ role: 'user', text: effectiveText, files: fileNames });
-      var input = document.getElementById('chat-input');
-      var sendBtn = document.getElementById('chat-send');
-      // Clear + collapse the textarea back to one line (reuse its auto-grow so
-      // the reset matches the grow logic instead of leaving a bare 'auto').
-      if (input) { input.value = ''; if (input._autoGrow) input._autoGrow(); else input.style.height = 'auto'; }
-      if (sendBtn) sendBtn.disabled = true;
+      // The user's OWN words go into the history, empty on a files-only send. Putting
+      // the file NAMES here instead made the filename the message: the server then
+      // classified a bare filename as ambiguous and asked what to do with it, while the
+      // file itself was sitting right there. The attachment travels as structured data.
+      chatHistory.push({ role: 'user', text: text || '', files: fileNames });
+      updateComposerAction();
       // Private mode: when the composer checkbox is checked, items the assistant
       // adds on this turn stay private to the current user.
       var privEl = document.getElementById('chat-private');
       var privateMode = !!(privEl && privEl.checked);
+      // Counted from here until the response settles: until it does, this turn cannot
+      // be named, and a Stop pressed meanwhile is held rather than dropped.
+      pendingSendCount += 1;
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        body: JSON.stringify({ message: effectiveText, history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25), ingestInProgress: (typeof ingestOrImportActive === 'function' && ingestOrImportActive()) })
+        body: JSON.stringify({ message: text || '', history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25), ingestInProgress: (typeof ingestOrImportActive === 'function' && ingestOrImportActive()) })
       }).then(function (r) {
         var tid = r.headers.get('x-thread-id');
         if (r.status === 202) {
@@ -625,6 +995,9 @@ export const onboardingJs = `    // ──────────────�
             // buffered from before this resolved) paint the reply. The composer stays busy
             // until the turn's 'done' event fires (finalizeChatTurn).
             bindChatTurn({ messageId: mid, threadId: threadId || currentThreadId, actx: null, assembled: '', pendingOpen: null, done: false });
+            // A Stop pressed while this send was in flight had no message to name;
+            // now it does, so it goes out immediately.
+            deliverRememberedStop();
             return undefined;
           });
         }
@@ -635,6 +1008,7 @@ export const onboardingJs = `    // ──────────────�
           if (j && j.error === 'claude_limit') {
             var lb = newAssistantBubble(); setBubbleText(lb, '⏳ ' + (j.message || 'Claude usage limit reached.'));
             if (typeof refreshLimitBlock === 'function') refreshLimitBlock();
+            if (typeof refreshAuthWarningBlock === 'function') refreshAuthWarningBlock();
           } else {
             var c = newAssistantBubble(); setBubbleText(c, '⚠ ' + ((j && j.error) || ('HTTP ' + r.status)));
           }
@@ -652,6 +1026,11 @@ export const onboardingJs = `    // ──────────────�
             if (cfg && cfg.connected === false) reonboardOnAiFailure();
           }).catch(function () { /* ignore */ });
         }
+      }).then(function () {
+        // Runs on every outcome (the catch above resolves): this send is no longer
+        // in flight, so a Stop still waiting on it has to be settled one way or the
+        // other rather than left pending forever.
+        sendSettled();
       });
     }
     var recState = 'idle';
@@ -665,7 +1044,6 @@ export const onboardingJs = `    // ──────────────�
       // half-captured voice note. Returning to idle restores both, then the
       // transcript is dropped in (see rec.onstop).
       var inp = document.getElementById('chat-input');
-      var snd = document.getElementById('chat-send');
       var busy = state === 'recording' || state === 'transcribing';
       if (inp) {
         if (busy) {
@@ -684,7 +1062,9 @@ export const onboardingJs = `    // ──────────────�
           }
         }
       }
-      if (snd) snd.disabled = busy;
+      // The action button's state is derived, and dictation is one of its inputs —
+      // recState is already set above, so this reflects the new state.
+      updateComposerAction();
       if (!btn) return;
       btn.classList.remove('recording', 'transcribing');
       if (state === 'recording') { btn.classList.add('recording'); btn.textContent = '⏹'; btn.title = 'Stop recording'; btn.disabled = false; }

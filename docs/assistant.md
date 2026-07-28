@@ -113,12 +113,34 @@ one tool call. It falls back to direct row tools when a record hasn't been rende
 yet.
 
 **Deleting a table is guarded + reversible.** The `delete_entity` tool refuses
-built-in tables, tables another table links to, and tables you don't own. An
-**empty** table is soft-deleted immediately; a **non-empty** one is **not**
-deleted until you decide what happens to the data — the tool reports the row
-count and the assistant asks, then you choose `delete_data` (soft-delete the rows
-too) or `move_to` another table. The physical table + rows are kept (no hard
-drop), so the whole thing is revertible from version history.
+built-in tables, computed views (remove the definition instead), a table still
+mirrored by a connected source (disconnect the connector instead), a table a
+computed table reads from, and tables you don't own. An **empty** table is
+soft-deleted immediately; a **non-empty** one is **not** deleted until you decide
+what happens to the data — the tool reports the row count and the assistant asks,
+then you choose one of three resolutions:
+
+- `delete_data` — soft-delete this table's own rows, then the table.
+- `delete_cascade` — the same, **plus** the rows in other tables that point at
+  this one. This is the path when something still links here: the tool names
+  those tables with their live row counts first, and the assistant repeats that
+  inventory to you before taking it.
+- `move_to: <table>` — merge the rows into another existing table (carrying the
+  inbound links across) and remove the emptied source.
+
+`delete_data` is refused while a first-class table still links here, and says so
+with the same inventory — the choice is between cascading and merging, never a
+dead end. **A link table created on a relationship's behalf does not block the
+delete of the thing it belongs to**: a strict link table (exactly two foreign
+keys and no payload of its own — for example the `files_<table>` table created
+the first time you attach a file to a record) is part of the relationship rather
+than an object in its own right, so it is removed together with the table and
+never needs a decision of its own.
+
+Auto-deletion is capped (1000 rows, shared between the table's own rows and the
+cascade) — anything larger is refused up front, with nothing written, rather than
+half-applied. The physical table + rows are kept (no hard drop), so the whole
+thing is revertible from version history.
 
 **Adding a field to an existing table.** The `add_column` tool lets the assistant
 add a single column to an existing table on request ("add a priority field to
@@ -128,13 +150,21 @@ members see the new field immediately.
 
 Conversations persist in the native `chat_threads` / `chat_messages` entities;
 use the thread switcher to revisit them. A new thread is **named from a short AI
-summary** of its first exchange (e.g. "Adding New Notes About Cheese"). The
-assistant's **data changes are saved with each turn and replayed as activity
-cards** when you reopen the conversation — collapsed by type (e.g. "Deleted 19
-tables", "Removed 49 rows across 9 tables"), with the operation's icon. Reads
-(list / get / search) change nothing, so they produce no card; only data changes
-appear. The activity feed is scoped to the open conversation rather than a global
-workspace log.
+summary** of its first exchange (e.g. "Adding New Notes About Cheese").
+
+**The conversation carries messages and answers, nothing else (5.5).** The rail
+holds what you sent and what the assistant replied — there are no per-turn
+data-change cards inside it, live or on replay. Everything else reports in **one**
+place: the **activity menu** in the header (the pill next to the version-history
+clock). A running turn drives a single **background task** there, re-labelled in
+plain language as each tool starts ("Reading your data…", "Updating your data
+model…") and settled the moment the answer begins streaming — the same tracker
+ingestion, imports and renders use, so concurrent work is one list rather than
+several competing indicators. The data changes themselves stream into that menu's
+activity feed as they happen, alongside your own edits. Reopening an older thread
+replays its text; any activity events a previous version of Lattice persisted with
+the turn are ignored rather than re-rendered, so nothing is missing and nothing is
+duplicated.
 
 The assistant **remembers what it read across turns.** Earlier tool calls and
 their results (including row ids) are replayed into the model's context, so a
@@ -164,8 +194,12 @@ guessing or searching your data.
 
 ## The Context Constructor (file & text ingest)
 
-Drag files onto the rail, click the upload button, or paste text (or a URL). For
-each source:
+Drag files onto the rail, click the upload button, paste text (or a URL), or add
+a file or whole folder from the **Files** section in the left sidebar — the single
+place your sources live. That section is a lazy, nestable tree of the folders you
+have pointed Lattice at plus any loose files you added; expanding a folder lists
+one level at a time, clicking a file opens its record, and the ✕ on a row stops
+Lattice tracking it (your file stays on disk). For each source:
 
 1. **Referenced, not copied.** The source becomes a native `files` row that
    points at the original; bytes are not moved into Lattice.
@@ -182,10 +216,14 @@ each source:
 3. **Summarized** with Claude Haiku (the description fills in).
 4. **Organized.** The text is classified against your existing records, and for
    each match the file is **linked** — **auto-creating the `files_<entity>` junction
-   table when none exists yet**. When a source fits **nothing** (and aggressiveness
-   is high), a new native `notes` object is **created** for it, linked back via
-   `source_file_id`. New objects, enrichment, links, and junctions are all
-   reversible via the version history.
+   table when none exists yet**. When a source fits **nothing** it simply stays a
+   file: it keeps its summary, stays searchable, and stays listed under **Files**,
+   rather than becoming a row in a generic bucket table. (The library-level
+   `organizeSource()` API still supports a fallback object table for callers that
+   want one; the app does not use it, and the legacy native `notes` table is no
+   longer shown in the GUI — existing rows are untouched and still queryable.) New
+   objects, enrichment, links, and junctions are all reversible via the version
+   history.
 
 ### Reading a web link (`ingest_url`)
 
@@ -275,6 +313,29 @@ assistant can author or correct one with the **`set_definition`** tool
 (`{ table, column?, description }` — column present ⇒ column definition, absent ⇒
 table definition).
 
+## Simplifying the data model (5.5+)
+
+Ask the assistant to **simplify, clean up, tidy, consolidate, or reorganize** your
+data model and it calls the read-only **`propose_model_simplification`** tool,
+which runs the same deterministic **data-model planner** the Data Model panel
+uses. You get back a reviewable plan: tables that hold the same thing
+(merge), duplicate records (deduplicate), a repeated category that deserves its
+own object (extract), missing links, undocumented objects, awkward names, and
+columns stored as text that are really numbers or dates — each with a
+plain-language reason and **how many records it would affect**.
+
+Two properties make this safe:
+
+- **The tool changes nothing.** It only reports. Applying a proposal stays a
+  deliberate, owner-gated click in the Data Model panel, where every applier runs
+  through the audited, revertible schema primitives.
+- **A broad "simplify" request is asked about, not guessed at.** "Simplify the
+  model" has at least three readings — tidy the presentation, fold duplicate
+  objects together, or remove objects outright — and only the last is
+  irreversible. Any request whose plausible executions include destroying data
+  gets a clarifying question first, regardless of how confident the intake step
+  is. Simplifying never means deleting your tables or records on your behalf.
+
 ## De-duplication
 
 Uploading a **byte-identical** file is de-duplicated automatically: the copy is
@@ -283,6 +344,44 @@ soft-deleted — recoverable from Trash / Undo), attributed to "Lattice" in the
 feed. No modal, no prompt. The assistant can also de-duplicate any table on
 request with the **`dedup`** tool (`{ table, fuzzy? }`); fuzzy-merge liberalness
 follows the [aggressiveness slider](#inference-aggressiveness).
+
+## Wide removals are yours to make (5.5+)
+
+The assistant will not remove or clear data across **more than one object**, or
+across **more than a couple of hundred records in a turn** — the exact limit is
+`DESTRUCTIVE_ROW_THRESHOLD` in `src/gui/ai/dispatch.ts`, currently **200**, and
+the rejection always quotes it. Attempting one is rejected before anything runs,
+and it tells you what has to change — which objects, and how many records — so
+you can make the change yourself in the app, where you can see what you are
+changing before it happens.
+
+This is not a permission you can grant it. There is no confirmation, no approval
+and no setting that turns it on. A change that size is made by a person, on a
+screen, where the confirmation is a real action rather than a message in a
+conversation.
+
+Small, single-object removals are unaffected — that is the everyday work the
+assistant is for, and every change it makes is recorded in version history and can
+be undone. `dedup` and `merge_rows` count as removals, so a bulk merge is subject
+to the same limit.
+
+A `dedup` is judged by a **bound**, not by a measurement: a table with N live
+records can lose at most N−1 to merging, so a table over the limit is refused
+whatever the duplicate scan would actually have found in it. That is deliberately
+conservative, and it means a large table holding only a handful of duplicates is
+refused too. The alternative — running the duplicate scan first, to get the real
+number — was built and removed: that scan is quadratic and synchronous, and on a
+1,200-row `files` table it held the server's event loop for **104 seconds** before
+refusing the call anyway. Nothing else could be served for the whole of that.
+Making the scan cheap enough to run in the gate is the prerequisite for measuring
+this honestly; until then the bound stands, and the rejection says plainly that it
+is a ceiling rather than a count.
+
+> This replaces two attempts at an assistant-side confirmation. The first inferred
+> agreement by re-reading the conversation; the second recorded it server-side as a
+> spendable grant. Both were repeatedly found forgeable — the authority was always
+> derived inside a conversation the assistant can steer, and closing one route
+> opened others. Not offering the capability removes the question entirely.
 
 ## Inference Aggressiveness
 

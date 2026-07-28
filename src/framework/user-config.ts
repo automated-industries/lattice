@@ -13,10 +13,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
-import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
+import { resolveSessionRoot, rootConfigDir } from './lattice-root.js';
 
 /**
  * Machine-local lattice user config — small files that live outside any
@@ -42,38 +42,32 @@ import { findLatticeRoot, rootConfigDir } from './lattice-root.js';
  *
  * Resolution order:
  *   1. `LATTICE_CONFIG_DIR` — explicit override, always wins.
- *   2. `<root>/.config` — when a `.lattice` root is discoverable (via
- *      `LATTICE_ROOT` or by walking up from the cwd to a `.lattice/.config`).
- *      This is what consolidates config into the single per-install `.lattice`
- *      folder, BUT only when adopting the root won't orphan an existing key:
- *      use the root if it already holds a `master.key`, or — for a fresh
- *      install — if there is no legacy `~/.lattice/master.key` to strand.
+ *   2. `<session root>/.config` — the root this session was told to use
+ *      (`LATTICE_ROOT`, else `~/.lattice`). This is what consolidates config into
+ *      the single per-install `.lattice` folder, BUT only when adopting the root
+ *      won't orphan an existing key: use the root if it already holds a
+ *      `master.key`, or — for a fresh install — if there is no legacy
+ *      `~/.lattice/master.key` to strand.
  *   3. `~/.lattice` — legacy fallback, so existing installs keep decrypting.
+ *
+ * The session root deliberately does NOT come from searching upward for a
+ * `.lattice/.config`. The master key and the encrypted credential store are the
+ * most sensitive things on the machine; picking them up from whatever root
+ * happened to sit above the working directory means a leftover checkout can hand
+ * a process working credentials for a database it was never meant to reach. A
+ * GUI launched from the Dock/Finder (cwd=`/`) also never reached `~/.lattice` by
+ * searching, so the desktop and the CLI resolved to DIFFERENT stores and every
+ * credential read as missing. Anchoring on the session root fixes both.
  */
 export function configDir(): string {
   if (process.env.LATTICE_CONFIG_DIR) return process.env.LATTICE_CONFIG_DIR;
   const legacy = join(homedir(), '.lattice');
-  const root = findLatticeRoot();
-  if (root) {
-    const rootDir = rootConfigDir(root);
-    // The root is the encryption home once it holds a key. Before that, only
-    // adopt it for a fresh install (no legacy key to orphan); otherwise keep
-    // using `~/.lattice` so an existing install keeps decrypting its secrets.
-    if (existsSync(join(rootDir, MASTER_KEY_FILENAME))) return rootDir;
-    if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return rootDir;
-  }
-  // No root was discoverable by walking UP from the cwd. A GUI app launched from
-  // the Dock/Finder has cwd=`/`, so the walk never reaches `~/.lattice` and we'd
-  // otherwise fall to the LEGACY top-level dir — a different, stale store than the
-  // one the CLI (whose cwd is near the workspace) resolves to via `<root>/.config`.
-  // That divergence made the desktop read the wrong credential store and report
-  // every credential as missing. Anchor to the per-user `~/.lattice/.config` (the
-  // current-format store) so the desktop and CLI resolve to the SAME place —
-  // unless only the legacy top-level holds a key, in which case keep using it so
-  // an existing legacy install still decrypts.
-  const homeConfig = rootConfigDir(legacy);
-  if (existsSync(join(homeConfig, MASTER_KEY_FILENAME))) return homeConfig;
-  if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return homeConfig;
+  const rootDir = rootConfigDir(resolveSessionRoot().root);
+  // The root is the encryption home once it holds a key. Before that, only
+  // adopt it for a fresh install (no legacy key to orphan); otherwise keep
+  // using `~/.lattice` so an existing install keeps decrypting its secrets.
+  if (existsSync(join(rootDir, MASTER_KEY_FILENAME))) return rootDir;
+  if (!existsSync(join(legacy, MASTER_KEY_FILENAME))) return rootDir;
   return legacy;
 }
 
@@ -579,7 +573,8 @@ const DB_CREDENTIALS_FILENAME = 'db-credentials.enc';
 const CRED_LOCK_FILENAME = '.credentials.lock';
 const LOCK_STALE_MS = 10_000; // a lock older than this is presumed abandoned
 const LOCK_TIMEOUT_MS = 15_000; // give up acquiring after this
-let lockDepthInProcess = 0; // re-entrancy counter for THIS process
+/** Re-entrancy depth per store directory, for THIS process. */
+const lockDepthInProcess = new Map<string, number>();
 
 /** Sleep synchronously without busy-spinning the CPU. */
 function syncSleep(ms: number): void {
@@ -593,16 +588,22 @@ function syncSleep(ms: number): void {
  * crashed holder.
  */
 function withCredentialLock<T>(fn: () => T): T {
-  if (lockDepthInProcess > 0) {
+  return withCredentialLockIn(ensureConfigDir(), fn);
+}
+
+/** {@link withCredentialLock} against a specific store directory. */
+function withCredentialLockIn<T>(dir: string, fn: () => T): T {
+  const key = resolve(dir);
+  const held = lockDepthInProcess.get(key) ?? 0;
+  if (held > 0) {
     // Already held by this process — run inline (the outer holder protects us).
-    lockDepthInProcess++;
+    lockDepthInProcess.set(key, held + 1);
     try {
       return fn();
     } finally {
-      lockDepthInProcess--;
+      lockDepthInProcess.set(key, (lockDepthInProcess.get(key) ?? 1) - 1);
     }
   }
-  const dir = ensureConfigDir();
   const lockPath = join(dir, CRED_LOCK_FILENAME);
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   let fd: number;
@@ -639,11 +640,11 @@ function withCredentialLock<T>(fn: () => T): T {
       syncSleep(25);
     }
   }
-  lockDepthInProcess++;
+  lockDepthInProcess.set(key, 1);
   try {
     return fn();
   } finally {
-    lockDepthInProcess--;
+    lockDepthInProcess.set(key, (lockDepthInProcess.get(key) ?? 1) - 1);
     try {
       closeSync(fd);
       unlinkSync(lockPath);
@@ -1047,9 +1048,14 @@ function ensureKeysDir(): string {
  * unsafe as a filename. Allow conservative ssh-style label characters.
  */
 function assertSafeLabel(label: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(label) || label.startsWith('.')) {
+  if (!isTokenSafeLabel(label)) {
     throw new Error(`Invalid label "${label}": must match [A-Za-z0-9._-]+ and not start with .`);
   }
+}
+
+/** The predicate behind {@link assertSafeLabel}, for callers that branch instead of throwing. */
+function isTokenSafeLabel(label: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(label) && !label.startsWith('.');
 }
 
 /** Return labels of all stored team tokens (each ends in `.token`). */
@@ -1088,4 +1094,165 @@ export function deleteToken(label: string): void {
   assertSafeLabel(label);
   const path = join(ensureKeysDir(), label + TOKEN_EXT);
   if (existsSync(path)) unlinkSync(path);
+}
+
+// ---------------------------------------------------------------------------
+// Per-workspace secret purge — what this machine keeps in order to reconnect.
+//
+// A cloud workspace leaves three things behind on the machine that joined it,
+// all keyed by its `${LATTICE_DB:<label>}` label: the encrypted connection
+// string, the S3 access keys, and its bearer token. Dropping the registry
+// pointer without these leaves the machine perfectly able to reconnect to a
+// database its operator believes it has been disconnected from — a delete that
+// reports success while the access it was supposed to revoke still works.
+//
+// Only label-keyed entries are removed. The master key, identity, preferences
+// and assistant credentials are SHARED by every workspace under a root; taking
+// them out would strand the workspaces that remain.
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceSecretPurge {
+  /** Store directories that were inspected. */
+  dirs: string[];
+  /** What was actually removed, as `<store file>:<dir>` entries. Empty is fine. */
+  removed: string[];
+}
+
+/**
+ * Every store directory that could plausibly hold `root`'s secrets: the root's
+ * own `.config`, plus the store this process is currently resolving to. They are
+ * usually the same; they diverge when the session is running against a different
+ * root (or an explicit `LATTICE_CONFIG_DIR`), which is exactly the case where a
+ * purge aimed at only one of them silently leaves the credential in place.
+ */
+function credentialStoreDirs(root: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const dir of [rootConfigDir(root), configDir()]) {
+    const key = resolve(dir);
+    if (seen.has(key) || !existsSync(dir)) continue;
+    seen.add(key);
+    out.push(dir);
+  }
+  return out;
+}
+
+/**
+ * Candidate master keys for a store directory, most specific first: the store's
+ * own `master.key`, the environment key, then the key file this process would
+ * otherwise use. The store is decrypted with whichever one works, and
+ * re-encrypted with that SAME key — a delete must never silently re-key a store
+ * it does not own.
+ *
+ * Deliberately reads key FILES rather than calling `getOrCreateMasterKey()`:
+ * removing a credential must not have the side effect of minting a master key on
+ * a machine that had none.
+ */
+function candidateKeysFor(dir: string): string[] {
+  const out: string[] = [];
+  const push = (v: string | undefined): void => {
+    if (v !== undefined && v.length > 0 && !out.includes(v)) out.push(v);
+  };
+  const readKeyFile = (from: string): void => {
+    const path = join(from, MASTER_KEY_FILENAME);
+    if (!existsSync(path)) return;
+    try {
+      push(readFileSync(path, 'utf8').trim());
+    } catch {
+      /* unreadable — the other candidates still apply */
+    }
+  };
+  readKeyFile(dir);
+  push(readEnvMasterKey());
+  try {
+    readKeyFile(configDir());
+  } catch {
+    /* no resolvable ambient store — the candidates above still apply */
+  }
+  return out;
+}
+
+/**
+ * Read + decrypt a label-keyed JSON store. Returns null when the file is absent.
+ * Throws when it exists but no candidate key opens it: we cannot prove the
+ * credential is gone, and reporting a successful purge in that state is the
+ * false assurance this whole path exists to prevent.
+ */
+function openLabelStore(
+  path: string,
+  keys: string[],
+): { data: Record<string, unknown>; key: string } | null {
+  if (!existsSync(path)) return null;
+  const ciphertext = readFileSync(path, 'utf8').trim();
+  for (const candidate of keys) {
+    try {
+      const parsed = JSON.parse(decrypt(ciphertext, deriveKey(candidate))) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { data: parsed as Record<string, unknown>, key: candidate };
+      }
+    } catch {
+      /* wrong key or corrupt — try the next candidate */
+    }
+  }
+  throw new Error(
+    `Lattice: cannot remove stored credentials — ${path} exists but could not be decrypted ` +
+      `with any available key. The credentials are still on disk and still usable; resolve the ` +
+      `key mismatch (or remove the file yourself) before treating this workspace as disconnected.`,
+  );
+}
+
+/** Drop `label` from a label-keyed encrypted store, then verify it is gone. */
+function purgeLabelStore(dir: string, filename: string, label: string, keys: string[]): boolean {
+  const path = join(dir, filename);
+  return withCredentialLockIn(dir, () => {
+    const opened = openLabelStore(path, keys);
+    if (!opened || !(label in opened.data)) return false;
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- label is a store key
+    delete opened.data[label];
+    writeFileAtomic(path, encrypt(JSON.stringify(opened.data), deriveKey(opened.key)) + '\n');
+    // Re-read from disk, still holding the lock: a write that appeared to succeed
+    // but did not land would otherwise be reported as a completed purge.
+    const after = openLabelStore(path, keys);
+    if (after && label in after.data) {
+      throw new Error(
+        `Lattice: failed to remove "${label}" from ${path} — the credential is still stored.`,
+      );
+    }
+    return true;
+  });
+}
+
+/**
+ * Remove every machine-local secret keyed to `label` — the encrypted connection
+ * string, the S3 configuration, and the bearer token — from the stores belonging
+ * to `root`. Shared material (master key, identity, preferences, assistant
+ * credentials) is untouched, as are all other labels.
+ *
+ * Throws if anything keyed to `label` survives, or if a store cannot be read.
+ * Callers must let that surface: a delete that quietly leaves working
+ * credentials behind is worse than one that fails.
+ */
+export function purgeWorkspaceSecrets(root: string, label: string): WorkspaceSecretPurge {
+  const dirs = credentialStoreDirs(root);
+  const removed: string[] = [];
+  for (const dir of dirs) {
+    const keys = candidateKeysFor(dir);
+    for (const filename of [DB_CREDENTIALS_FILENAME, S3_CONFIG_FILENAME]) {
+      if (purgeLabelStore(dir, filename, label, keys)) removed.push(`${filename}:${dir}`);
+    }
+    // Token files are named after the label, so only labels that `writeToken`
+    // would have accepted can have one. Checking here (rather than rejecting the
+    // whole purge) keeps an odd-but-harmless label from turning a delete into a
+    // failure, while still refusing to build a path out of an unsafe name.
+    if (!isTokenSafeLabel(label)) continue;
+    const tokenPath = join(dir, KEYS_SUBDIR, label + TOKEN_EXT);
+    if (existsSync(tokenPath)) {
+      unlinkSync(tokenPath);
+      if (existsSync(tokenPath)) {
+        throw new Error(`Lattice: failed to remove the stored token at ${tokenPath}.`);
+      }
+      removed.push(`${KEYS_SUBDIR}/${label}${TOKEN_EXT}:${dir}`);
+    }
+  }
+  return { dirs, removed };
 }

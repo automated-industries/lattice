@@ -96,3 +96,40 @@ export function curatedCatalog(): CatalogEntry[] {
     },
   ];
 }
+
+/** The hostname of a URL, lower-cased, or null when it is not a parseable URL. */
+function hostOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The curated entry an MCP endpoint belongs to, matched on an exact URL first and otherwise on the
+ * host. Several services hosted behind one vendor platform answer the MCP handshake with the SAME
+ * generic self-reported name, so the curated label is the only thing that tells them apart — this
+ * lookup is what makes it available to the connect flow.
+ *
+ * Host matching (rather than URL-only) survives a provider changing its path or version segment.
+ * When more than one curated entry shares a host the host alone does NOT identify a service, so
+ * this returns null and the caller falls through to the next naming rung rather than guessing.
+ */
+export function curatedEntryForServerUrl(
+  serverUrl: string | null | undefined,
+): CatalogEntry | null {
+  const host = hostOf(serverUrl);
+  if (!host) return null;
+  const entries = curatedCatalog();
+  const exact = entries.find((e) => e.serverUrl === serverUrl);
+  if (exact) return exact;
+  const sameHost = entries.filter((e) => hostOf(e.serverUrl) === host);
+  return sameHost.length === 1 ? (sameHost[0] ?? null) : null;
+}
+
+/** The curated display label for an MCP endpoint, or null when it is not a curated service. */
+export function curatedLabelForServerUrl(serverUrl: string | null | undefined): string | null {
+  return curatedEntryForServerUrl(serverUrl)?.label ?? null;
+}

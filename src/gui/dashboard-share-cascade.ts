@@ -1,5 +1,5 @@
 import type { Lattice } from '../lattice.js';
-import { allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync } from '../db/adapter.js';
 import { shareTable } from '../cloud/members.js';
 import { extractSourceTables } from './dashboard-row.js';
 
@@ -38,11 +38,17 @@ export async function cascadeDashboardDataShare(
   // fall back to re-deriving from the page HTML for a dashboard saved before that
   // column was recorded. The sharer owns the dashboard row, so it reads back under
   // their own connection regardless of RLS.
-  const row = (await getAsyncOrSync(
-    db.adapter,
-    `SELECT "source_tables", "html" FROM "dashboards" WHERE "id" = ? LIMIT 1`,
-    [dashboardPk],
-  )) as { source_tables?: string | null; html?: string | null } | undefined;
+  //
+  // Read through `db.get`, not a hand-written SELECT against the base table. A cloud
+  // MEMBER holds no table-level SELECT on any base table — reads resolve to the
+  // member's `<t>_v` view inside the query layer — so a raw `FROM "dashboards"` here
+  // is `permission denied` for the very people this function exists to serve: a
+  // member sharing their OWN dashboard. Going through the query layer inherits that
+  // routing instead of quietly stepping around it.
+  const row = (await db.get('dashboards', dashboardPk)) as {
+    source_tables?: string | null;
+    html?: string | null;
+  } | null;
   if (!row) return { shared: [], skipped: [] };
 
   let deps: string[] = [];

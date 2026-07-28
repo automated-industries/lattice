@@ -4,10 +4,10 @@ import {
   parsePostgresUrl,
   parseSaveBody,
   rewriteDbLine,
+  rootForDbConfig,
 } from './shared.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { parseDocument } from 'yaml';
 import { randomUUID } from 'node:crypto';
 import { sendJson, readJson, tryHandler } from '../http.js';
@@ -42,7 +42,6 @@ import {
   openTargetLatticeForMigration,
 } from '../../framework/cloud-migration.js';
 import { parseConfigFile } from '../../config/parser.js';
-import { findLatticeRoot } from '../../framework/lattice-root.js';
 import { getActiveWorkspace, registerOrUpdateCloudWorkspace } from '../../framework/workspace.js';
 import { resolveContextDirForConfig } from '../../framework/gui-bootstrap.js';
 
@@ -52,8 +51,12 @@ import { resolveContextDirForConfig } from '../../framework/gui-bootstrap.js';
  * the header switcher + Settings reflect that this workspace is now cloud. No-op
  * when not running inside a `.lattice` root.
  */
-function updateActiveWorkspaceToCloud(configPath: string, displayName: string, key: string): void {
-  const root = findLatticeRoot(dirname(configPath));
+function updateActiveWorkspaceToCloud(
+  root: string | null,
+  configPath: string,
+  displayName: string,
+  key: string,
+): void {
   if (!root) return;
   registerOrUpdateCloudWorkspace(root, {
     configPath,
@@ -337,7 +340,12 @@ export async function dispatchCloudState(
         rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         // parsed.label already satisfies the ${LATTICE_DB:…} charset (it was
         // parsed from one), so it's a valid key + a fine display name.
-        updateActiveWorkspaceToCloud(ctx.configPath, parsed.label, parsed.label);
+        updateActiveWorkspaceToCloud(
+          rootForDbConfig(ctx),
+          ctx.configPath,
+          parsed.label,
+          parsed.label,
+        );
         await ctx.swap();
         sendJson(res, {
           ok: true,
@@ -459,7 +467,7 @@ export async function dispatchCloudState(
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       // Stamp the owner's cloud (workspace) name so the member's new workspace is
       // named after the cloud, not a generic default (1.3a).
-      const inviteRoot = findLatticeRoot(dirname(ctx.configPath));
+      const inviteRoot = rootForDbConfig(ctx);
       const ownerWs = inviteRoot ? getActiveWorkspace(inviteRoot) : null;
       const token = mintInviteToken({
         coords,

@@ -14,6 +14,7 @@ import { installCloudSettings } from './settings.js';
 import {
   seedColumnPolicyFromYaml,
   regenerateAudienceViewFromDb,
+  regenerateMemberReadView,
   tableNeedsAudienceView,
   loadAllColumnPolicy,
 } from './audience.js';
@@ -38,7 +39,7 @@ const PRIVATE_ONLY_TABLES: readonly string[] = [...NATIVE_INTERNAL_NAMES, 'secre
  * Converge per-table member ACCESS on a cloud — ungated and with NO data-row
  * scans (so it is safe to run on every owner open, not just the one-time secure
  * cutover). It self-heals two drift classes the version-gated per-table securing
- * (`enableRlsForTable`, recorded as `internal:cloud-rls:table:<t>:v3`) cannot:
+ * (`enableRlsForTable`, recorded as `internal:cloud-rls:table:<t>:v4`) cannot:
  *
  *  1. PRIVACY — force `never_share` on {@link PRIVATE_ONLY_TABLES}. The assistant's
  *     `chat_threads`/`chat_messages` are per-author private; without this a bulk
@@ -146,17 +147,142 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
   // on a runtime-masked table — re-exposing the column the owner hid. One query for all.
   const columnPolicy = await loadAllColumnPolicy(db);
 
+  // The masking views that actually EXIST. A `<t>_v` view is physical evidence
+  // that `<t>` is masked, and it is evidence the policy read above cannot forge:
+  // the two are written by the same operation, so they disagree only when
+  // something moved one without the other — a rename or a restore that carried
+  // the table but not its column policy. Resolving that disagreement by taking
+  // the unmasked branch below would GRANT members raw SELECT on the base table,
+  // silently un-masking every column the owner marked secret. So when the view
+  // says masked and the policy says otherwise, this refuses the table, names it,
+  // and leaves the mask exactly as it stands. Computed tables are views too and
+  // one could be named `<t>_v` legitimately, so they are excluded.
+  const viewRows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT c.relname AS name FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relkind = 'v'`,
+  )) as { name: string }[];
+  const computedViews = new Set(db.getComputedTableNames());
+  const maskViews = new Set(viewRows.map((r) => r.name).filter((name) => !computedViews.has(name)));
+
+  // Masking evidence STRANDED UNDER A NAME THE TABLE NO LONGER HAS.
+  //
+  // Both checks the grant loop makes — "is there a policy for this table" and "is
+  // there a `<t>_v` view for this table" — are keyed to the table's CURRENT name,
+  // so neither can see a mask left behind by a rename that moved the table without
+  // its policy. Postgres binds a view to the table it selects FROM by identity, not
+  // by name, so the stale `<old>_v` keeps masking the table under its new name
+  // while both reads above come back empty and the table looks unmasked.
+  //
+  // The binding the rename could not break is what makes it findable: resolve each
+  // `_v` view to the table it actually reads, and any view whose name does not
+  // match that table's current name is drift. That is name-independent, so it also
+  // catches workspaces that drifted BEFORE the rename paths were hardened — which
+  // exist in the wild — rather than only renames performed from here on.
+  const viewBaseRows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT v.relname AS view_name, t.relname AS base_name
+       FROM pg_rewrite r
+       JOIN pg_class v ON v.oid = r.ev_class
+       JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass
+       JOIN pg_class t ON t.oid = d.refobjid AND t.relkind = 'r'
+       JOIN pg_namespace n ON n.oid = v.relnamespace
+      WHERE n.nspname = current_schema() AND v.relkind = 'v' AND t.oid <> v.oid
+      GROUP BY 1, 2`,
+  )) as { view_name: string; base_name: string }[];
+  /** Current table name → the mask views reading it under some OTHER name. */
+  const strandedMasks = new Map<string, string[]>();
+  for (const row of viewBaseRows) {
+    if (!row.view_name.endsWith('_v')) continue; // a mask view is always `<t>_v`
+    if (computedViews.has(row.view_name)) continue;
+    if (row.view_name === `${row.base_name}_v`) continue; // named for what it reads
+    const list = strandedMasks.get(row.base_name) ?? [];
+    list.push(row.view_name);
+    strandedMasks.set(row.base_name, list);
+  }
+  // A policy row keyed to a name no table answers to, with no view left to point
+  // at the table it belongs to, cannot be attributed to anything — so it cannot be
+  // acted on, only reported. (The tables it could name are unaffected: whatever
+  // they are, they carry no masking evidence of their own.)
+  const orphanPolicy = [...columnPolicy.keys()].filter(
+    (name) =>
+      !registered.includes(name) &&
+      !maskViews.has(`${name}_v`) &&
+      tableNeedsAudienceView(columnPolicy.get(name) ?? {}),
+  );
+  if (orphanPolicy.length > 0) {
+    console.warn(
+      `[reconcileCloudMemberAccess] column policy recorded for ${orphanPolicy
+        .map((n) => `"${n}"`)
+        .join(', ')}, which no table in this workspace answers to`,
+    );
+  }
+
   for (const table of registered) {
     if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) continue;
     if (!rlsOn.has(table)) continue;
     if (db.getPrimaryKey(table).length === 0) continue;
-    const masked = tableNeedsAudienceView(columnPolicy.get(table) ?? {});
+    // Repair, then replace, then revoke — as ONE fault-isolated unit.
+    //
+    // Ordering is the safety property, not a detail. Step (c) takes base SELECT
+    // away; step (b) builds the thing that replaces it. Keeping them in a single
+    // `tryTable` means a failure in (b) skips (c) as well, so a table only ever
+    // loses its old read path once the new one exists. Between (b) and (c) a member
+    // transiently holds BOTH — never neither.
+    //
+    // This is also what upgrades a workspace that is leaking right now. Earlier
+    // versions granted members raw base SELECT whenever the column policy read back
+    // empty, which is what a rename left behind. The two guards that used to sit
+    // here only REFUSED such a table — they withheld new grants while the exposure
+    // already standing stayed exactly as it was. Refusing does not un-leak anything;
+    // revoking does.
     await tryTable(table, async () => {
-      // One round-trip per table (the masked case batches its 2 GRANTs) — the
-      // per-table tryTable wrapper still isolates a failure to this table + records
-      // it in skipped[], so batching changes only the round-trip count, not the
-      // fault isolation or reporting.
-      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, { masked }, group));
+      // (a) A mask stranded under a name the table no longer answers to. The
+      // evidence is `pg_rewrite`, which binds a view to the table it actually reads
+      // by identity — so it is trustworthy even though every name-keyed lookup has
+      // already come back empty.
+      const stranded = strandedMasks.get(table) ?? [];
+      for (const staleView of stranded) {
+        const oldName = staleView.slice(0, -2);
+        // Re-attach the policy the rename failed to carry. Gated on the CURRENT
+        // name having no policy at all, so this can never overwrite a deliberate one.
+        const here = columnPolicy.get(table) ?? {};
+        if (Object.keys(here).length === 0 && (columnPolicy.get(oldName) ?? null) !== null) {
+          await runAsyncOrSync(
+            db.adapter,
+            `UPDATE "__lattice_column_policy" SET "table_name" = ? WHERE "table_name" = ?`,
+            [table, oldName],
+          );
+          columnPolicy.set(table, columnPolicy.get(oldName) ?? {});
+          columnPolicy.delete(oldName);
+        }
+        await runAsyncOrSync(
+          db.adapter,
+          `DROP VIEW IF EXISTS "${staleView.replace(/"/g, '""')}" CASCADE`,
+        );
+        const reason =
+          `"${staleView}" was masking this table under the name "${oldName}", which it no longer ` +
+          `has — the masking was left behind by a rename that moved the table without its column ` +
+          `policy. The policy was re-attached to "${table}" and the stale view rebuilt. If a COLUMN ` +
+          `was also renamed, its masking cannot be recovered from the view alone; re-mark it.`;
+        skipped.push({ table, reason });
+        console.warn(`[reconcileCloudMemberAccess] repaired "${table}": ${reason}`);
+      }
+
+      // (b) The relation members read this table through. Always built — masking
+      // where the policy says so, pass-through where it does not.
+      await regenerateMemberReadView(
+        db,
+        table,
+        Object.keys(db.getRegisteredColumns(table) ?? {}),
+        db.getPrimaryKey(table),
+        stranded.length > 0 ? { recreate: true } : {},
+      );
+
+      // (c) Writes on the base, reads on the view, base SELECT revoked. One
+      // round-trip; `tryTable` still isolates a failure to this table and records it.
+      await runAsyncOrSync(db.adapter, grantMemberTableAccessBatchSql(table, undefined, group));
     });
   }
 

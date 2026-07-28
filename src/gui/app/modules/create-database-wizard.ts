@@ -40,6 +40,11 @@ export const createDatabaseWizardJs = `    // ───────────�
     // Append a transient "Analyzing <file>…" row to the feed so the user sees
     // the ingest is processing in the background; returns a disposer. The real
     // create/link feed events stream in over SSE as the server materializes them.
+    // Upload ONE file. RESOLVES with the server's JSON on success and REJECTS on
+    // failure — it deliberately does not swallow the error and resolve undefined.
+    // That old shape was a success-shaped value for a failure: the batch caller read
+    // the id off undefined, contributed nothing, and the composer then sent the turn
+    // as though one attachment had been everything the user attached.
     function uploadFile(file) {
       // Per-file progress is surfaced by the caller through the unified
       // activity-menu background-task tracker (a single-file task, or the batch
@@ -61,58 +66,73 @@ export const createDatabaseWizardJs = `    // ───────────�
         headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'file'), 'x-lattice-private': priv },
         body: file,
       })
-        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
-        .catch(function (e) { showToast('Ingest failed: ' + e.message, {}); });
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); });
     }
-    // Ingest the given files and RESOLVE with [{id, name}] for each that landed —
-    // so the caller (the composer Send) can reference the just-added files in the
-    // chat turn. opts.silent suppresses the single-file open-the-record navigation
-    // (used when a chat message accompanies the upload — the chat is the focus).
+    // Ingest the given files and RESOLVE with { ok: [{id, name}], failed: [{name, error}] }
+    // — BOTH sets, always. The caller (the composer Send) needs to know not just what
+    // landed but what didn't: sending a turn that references only the files that
+    // happened to succeed is how five attachments quietly became one. opts.silent
+    // suppresses the single-file open-the-record navigation (used when a chat message
+    // accompanies the upload — the chat is the focus).
     function uploadFiles(files, opts) {
       opts = opts || {};
-      if (!files || !files.length) return Promise.resolve([]);
+      if (!files || !files.length) return Promise.resolve({ ok: [], failed: [] });
       gaTrack('file_ingest', { count: files.length }); // count only — never file names
       // Single-file drop: open the resulting record once it lands (the dedup
       // survivor if it was a duplicate). Multi-file drops do not navigate.
       if (files.length === 1) {
         var only = files[0];
+        var oname = (only && only.name) || 'file';
         // Single-file: an indeterminate task in the unified tracker while the
         // upload + server-side extraction run.
-        var t1 = bgTask('ingest', { label: 'Analyzing ' + (only.name || 'file') + '…' });
+        var t1 = bgTask('ingest', { label: 'Analyzing ' + oname + '…' });
         return uploadFile(only).then(function (j) {
-          if (!j) { t1.fail('Ingest failed'); return []; }
-          t1.done('Analyzed ' + (only.name || 'file'));
+          var sid = j && (j.duplicateOf || j.id);
+          if (!sid) {
+            t1.fail('Ingest failed');
+            return { ok: [], failed: [{ name: oname, error: 'the server returned no file' }] };
+          }
+          t1.done('Analyzed ' + oname);
           // A structured source the server flagged as confirmable comes back with
           // an autoImport proposal — render the inline confirm card instead of
           // navigating to the file record. A silent import (autoImport.imported,
           // no reason) or a plain file keeps the open-the-record behavior.
           if (j.autoImport && j.autoImport.reason) handleAutoImport(j.autoImport);
-          else if (!opts.silent && (j.duplicateOf || j.id)) openSearchHit('files', j.duplicateOf || j.id);
-          var sid = j.duplicateOf || j.id;
-          return sid ? [{ id: sid, name: only.name }] : [];
+          else if (!opts.silent) openSearchHit('files', sid);
+          return { ok: [{ id: sid, name: only.name }], failed: [] };
+        }, function (e) {
+          t1.fail('Ingest failed: ' + e.message);
+          showToast('Ingest failed: ' + e.message, {});
+          return { ok: [], failed: [{ name: oname, error: e.message }] };
         });
       }
       // Multi-file: drain through the bounded-concurrency queue (so a big drop
       // can't saturate the connection budget) with a batch progress bar.
       var bar = ingestProgress(files.length, 'browser');
-      var refs = [];
+      var okRefs = [];
+      var failedRefs = [];
       var thunks = [];
       for (var i = 0; i < files.length; i++) {
         (function (f) {
+          var fname = (f && f.name) || 'file';
           thunks.push(function () {
             return uploadFile(f).then(function (j) {
               // A structured source within a batch still gets its own inline
               // confirm card (the batch as a whole does not navigate).
               if (j && j.autoImport && j.autoImport.reason) handleAutoImport(j.autoImport);
               var fid = j && (j.duplicateOf || j.id);
-              if (fid) refs.push({ id: fid, name: f.name });
+              if (fid) okRefs.push({ id: fid, name: f.name });
+              else failedRefs.push({ name: fname, error: 'the server returned no file' });
+            }, function (e) {
+              showToast('Could not add ' + fname + ': ' + e.message, {});
+              failedRefs.push({ name: fname, error: e.message });
             });
           });
         })(files[i]);
       }
       return runIngestBatch(thunks, INGEST_MAX_CONCURRENCY, bar.update)
         .then(bar.done)
-        .then(function () { return refs; });
+        .then(function () { return { ok: okRefs, failed: failedRefs }; });
     }
     // ── Staging tray ────────────────────────────────────────────────────────
     // A dropped file (or one picked via the paperclip) is NOT ingested on the
@@ -120,28 +140,29 @@ export const createDatabaseWizardJs = `    // ───────────�
     // the main composer Send ingests the batch (→ uploadFiles) along with any typed
     // message. Multiple drops accumulate into the one tray (deduped by name+size).
     var stagedFiles = [];
+    // Files already ingested for the CURRENT draft but not yet sent — they exist when a
+    // previous submit had SOME uploads fail: those refs must not be re-uploaded (they
+    // are already in Files) and must not be dropped either, so they ride along with the
+    // next send of this draft.
+    var stagedRefs = [];
     function removeStagingTray() {
       var el = document.getElementById('staging-tray');
       if (el && el.parentNode) el.parentNode.removeChild(el);
     }
-    function clearStaging() { stagedFiles = []; removeStagingTray(); }
-    // While a staged batch is ingesting, lock Send + relabel the tray "Adding…"
-    // instead of clearing it — so a single-file ingest (which has no batch bar) still
-    // shows the work in flight, and a failure keeps the files attached to retry.
+    function clearStaging() {
+      stagedFiles = [];
+      stagedRefs = [];
+      removeStagingTray();
+      if (typeof updateComposerAction === 'function') updateComposerAction();
+    }
+    // True while a staged batch is ingesting. The tray itself is already gone by then
+    // (the submit clears the composer in one tick and shows the pending message bubble
+    // instead), so this is purely the re-entrancy guard + an input to the action
+    // button's derived state.
     var stagingBusy = false;
     function setStagingBusy(busy) {
       stagingBusy = busy;
-      var sendBtn = document.getElementById('chat-send');
-      if (sendBtn) sendBtn.disabled = busy;
-      var tray = document.getElementById('staging-tray');
-      if (tray) tray.classList.toggle('staging-busy', busy);
-      var head = tray && tray.querySelector('.staging-head');
-      if (head) {
-        var n = stagedFiles.length;
-        head.textContent = busy
-          ? (n === 1 ? 'Adding your file…' : 'Adding ' + n + ' files…')
-          : (n + (n === 1 ? ' file to add' : ' files to add'));
-      }
+      if (typeof updateComposerAction === 'function') updateComposerAction();
     }
     function stageFiles(fileList) {
       if (!fileList || !fileList.length) return;
@@ -151,6 +172,7 @@ export const createDatabaseWizardJs = `    // ───────────�
         if (!dup) stagedFiles.push(f);
       }
       renderStagingTray();
+      if (typeof updateComposerAction === 'function') updateComposerAction();
     }
     function renderStagingTray() {
       removeStagingTray();
@@ -181,6 +203,7 @@ export const createDatabaseWizardJs = `    // ───────────�
         b.addEventListener('click', function () {
           stagedFiles.splice(Number(b.getAttribute('data-idx')), 1);
           renderStagingTray();
+          if (typeof updateComposerAction === 'function') updateComposerAction();
         });
       });
     }
@@ -274,7 +297,12 @@ export const createDatabaseWizardJs = `    // ───────────�
             input.style.height = Math.min(COMPOSER_MAX_H, input.scrollHeight) + 'px';
           }
           input._autoGrow = autoGrowInput;
-          input.addEventListener('input', autoGrowInput);
+          input.addEventListener('input', function () {
+            autoGrowInput();
+            // Typing is one of the inputs to the action button's state: an empty box
+            // mid-reply offers Stop, a non-empty one offers Queue.
+            updateComposerAction();
+          });
           if (typeof ResizeObserver !== 'undefined') {
             new ResizeObserver(function () { autoGrowInput(); }).observe(input);
           }
@@ -286,43 +314,75 @@ export const createDatabaseWizardJs = `    // ───────────�
           // → add them AND chat, so Lattice always responds to an attachment.
           function submitComposer() {
             var t = input.value.trim();
-            // Lattice is still replying: DON'T bail — sendChat now queues a follow-up
-            // sent while a turn streams (see the FIFO queue in onboarding.ts) instead
-            // of dropping it. A text-only send queues directly; a send with staged
-            // files ingests them (so they're added now) and queues the chat about them.
+            // Lattice is still replying: DON'T bail — sendChat queues a follow-up sent
+            // while a turn streams (see the queue tray in onboarding.ts) instead of
+            // dropping it. A text-only send queues directly; a send with staged files
+            // ingests them (so they're added now) and queues the chat about them.
             // Guard the in-flight ingest FIRST, before the text-only fast path: while a
             // staged batch ingests, stagedFiles is already cleared, so a second Enter
             // would otherwise fall into the fast path and fire a text-only turn that
             // races the files. (Enter isn't covered by the disabled Send button.)
             if (stagingBusy) return; // an ingest for this tray is already in flight
-            if (!stagedFiles.length) { if (t) sendChat(t); return; }
+            if (!stagedFiles.length) {
+              // Nothing new to ingest — but a previous partial failure may have left
+              // already-ingested refs waiting for this draft; they go now.
+              if (stagedRefs.length) {
+                var carried = stagedRefs.slice();
+                stagedRefs = [];
+                sendChat(t, carried);
+              } else if (t) {
+                sendChat(t);
+              }
+              return;
+            }
             var batch = stagedFiles.slice();
-            // Clear the tray for the send (the ingest shows its own "Analyzing…" card) and
-            // LOCK Send while the files ingest. Critically, an attachment must NEVER be dropped
-            // silently: if the ingest fails (or yields no file) we RE-STAGE the batch and never
-            // send the message without it — the old reject path sent the text alone, losing the
-            // file, and a files-only send no-oped with the file already gone.
-            clearStaging();
+            var names = batch.map(function (f) { return (f && f.name) || 'file'; });
+            var carriedRefs = stagedRefs.slice();
+            // COMMIT THE COMPOSER FIRST, synchronously, before the upload is even
+            // started: the message appears in the conversation, the box and the tray
+            // empty together, and the button takes its busy state — all in one tick.
+            // Doing the ingest first left the typed text sitting in a box the user
+            // could not send from, with the file chips already gone and no sign that
+            // anything had happened.
+            var pendingBubble = commitComposer(t, names);
             setStagingBusy(true);
+            // An attachment must NEVER be dropped silently. If ANY file fails to land we
+            // send NOTHING: the failures go back in the tray, the text goes back in the
+            // box, and the message is marked as not sent — because a turn that names
+            // only the files that happened to succeed is a turn about the wrong thing.
+            var restore = function (failedNames, message) {
+              stageFiles(batch.filter(function (f) {
+                return failedNames.indexOf((f && f.name) || 'file') >= 0;
+              }));
+              // Files that DID land are already in Files; carry their refs so the retry
+              // attaches them instead of losing or re-uploading them.
+              input.value = t;
+              if (input._autoGrow) input._autoGrow();
+              setStagingBusy(false);
+              markBubbleFailed(pendingBubble, message, function () { submitComposer(); });
+              showToast(message, {});
+            };
             uploadFiles(batch, { silent: true }).then(
-              function (refs) {
-                if (refs && refs.length) {
-                  stagingBusy = false; // sendChat now owns the Send button for this turn
-                  sendChat(t, refs);
-                } else {
-                  // Ingest produced no usable file — put the files back, keep the text,
-                  // never fabricate a turn with no attachment.
-                  stageFiles(batch);
-                  setStagingBusy(false);
-                  showToast('Those files couldn’t be added — they’re still attached, tap Send to retry.', {});
+              function (result) {
+                var ok = (result && result.ok) || [];
+                var failed = (result && result.failed) || [];
+                if (failed.length) {
+                  stagedRefs = carriedRefs.concat(ok);
+                  restore(
+                    failed.map(function (f) { return f.name; }),
+                    'Couldn’t add ' + failed.map(function (f) { return f.name; }).join(', ') +
+                      ' — still attached, tap Send to retry.'
+                  );
+                  return;
                 }
+                stagedRefs = [];
+                stagingBusy = false; // sendChat owns the action button for this turn
+                sendChat(t, carriedRefs.concat(ok), { bubble: pendingBubble });
               },
-              function () {
-                // Ingest failed — put the staged files back (never send the message without
-                // its attachment) and tell the user; they retry with Send.
-                stageFiles(batch);
-                setStagingBusy(false);
-                showToast('Couldn’t add your files — they’re still attached, tap Send to retry.', {});
+              function (e) {
+                // The whole ingest failed — put everything back and say so.
+                stagedRefs = carriedRefs;
+                restore(names, 'Couldn’t add your files (' + e.message + ') — still attached, tap Send to retry.');
               },
             );
           }
@@ -339,7 +399,41 @@ export const createDatabaseWizardJs = `    // ───────────�
             }
             if (!e.shiftKey) { e.preventDefault(); submitComposer(); }
           });
-          sendBtn.addEventListener('click', function () { submitComposer(); });
+          // Paste handler for images: extract images from clipboard and stage them
+          // (text paste is unaffected, allowing normal text paste to coexist with
+          // attached images). Unnamed clipboard images get a timestamp-based name.
+          input.addEventListener('paste', function (e) {
+            var dt = e.clipboardData;
+            if (!dt || !dt.items) return; // no clipboard data
+            var imagesToStage = [];
+            for (var i = 0; i < dt.items.length; i++) {
+              var item = dt.items[i];
+              if (item.kind === 'file' && item.type.startsWith('image/')) {
+                var f = item.getAsFile();
+                if (f) imagesToStage.push(f);
+              }
+            }
+            // Only prevent default if we found images — text paste still works normally
+            if (imagesToStage.length > 0) {
+              e.preventDefault();
+              stageFiles(imagesToStage);
+            }
+          });
+          sendBtn.addEventListener('click', function () {
+            // One button, whichever state it is currently in.
+            var action = sendBtn.getAttribute('data-action');
+            // A stop already asked for and not yet delivered — the button says so and
+            // is disabled. Never fall through to a send from this state.
+            if (action === 'stopping') return;
+            if (action === 'stop') {
+              stopActiveTurn().then(null, function () {
+                // stopActiveTurn already showed the failure; nothing further to do
+                // here beyond not treating the turn as ended.
+              });
+              return;
+            }
+            submitComposer();
+          });
           var micBtn = document.getElementById('chat-mic');
           if (micBtn) {
             micBtn.addEventListener('click', function () {
@@ -349,6 +443,10 @@ export const createDatabaseWizardJs = `    // ───────────�
             });
             refreshMicAvailability(micBtn);
           }
+          // The composer is freshly rendered — derive the button's state rather than
+          // leaving it on whatever the markup happened to say.
+          registerComposerAction('chat-send');
+          updateComposerAction();
       }).catch(function () {
         host.innerHTML = '<div class="composer-setup">Assistant unavailable.</div>';
       });
@@ -362,6 +460,10 @@ export const createDatabaseWizardJs = `    // ───────────�
     }
 
 
+    // One shared interval keeps every relative timestamp on the page current — chat
+    // bubbles and activity times alike. Without it a label is frozen at the moment it
+    // was written, so an open conversation reads "0s ago" indefinitely.
+    startRelTimeTicker();
     init();
   })();
   `;

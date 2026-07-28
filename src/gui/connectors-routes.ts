@@ -12,7 +12,12 @@ import {
   createConnector,
   getConnectorByToolkit,
   updateConnectorConnection,
+  classifyConnectorFailure,
+  isSetupIncomplete,
 } from '../connectors/registry.js';
+import { isPlaceholderServerName, hostnameLabelFor } from '../connectors/mcp/connector-base.js';
+import { curatedLabelForServerUrl } from '../connectors/prefab/curated.js';
+import { sanitizeConnectorLabel } from '../connectors/sanitize-label.js';
 import { syncConnector, syncStaleConnectors, collectConnectorKeys } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
 import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
@@ -63,8 +68,12 @@ function isActionable(err: unknown): err is Error {
  * specific message.
  */
 export function connectFailureHint(err: unknown): string | null {
+  const raw = err instanceof Error ? err.message : String(err);
+  // A failure with a shared classification always reads as its curated message, on every path.
+  const known = classifyConnectorFailure(raw);
+  if (known) return known.message;
   if (err instanceof ConnectorUnavailableError) return err.message;
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const msg = raw.toLowerCase();
   if (
     /invalid_grant|code (?:has )?(?:expired|already been used|already used)|expired.*code/.test(msg)
   )
@@ -185,6 +194,17 @@ function hostnameOf(serverUrl: string | null | undefined): string | null {
 }
 
 /**
+ * A server's self-reported name, or null when it is absent or one of the generic placeholders
+ * several services of one vendor all answer with. Sanitized here because it is attacker-controlled
+ * text that becomes a stored label.
+ */
+function namedServer(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const name = sanitizeConnectorLabel(raw);
+  return name !== '' && !isPlaceholderServerName(name) ? name : null;
+}
+
+/**
  * Record an established MCP connection, define + secure its connected tables,
  * and run the initial sync. Shared by the direct connect path (open/stdio
  * server) and the OAuth callback. Every NEW connect creates its own registry
@@ -246,8 +266,17 @@ async function finishMcpConnection(
       await (connector.purgeConnection?.(existing.connectionRef) ??
         connector.disconnect(existing.connectionRef));
     }
-    // Re-key the toolkit to the new connection (its typed tables live under mcp:<newId>).
-    await updateConnectorConnection(db, existing.id, connectionId, toolkit);
+    // Re-key the toolkit to the new connection (its typed tables live under mcp:<newId>), and
+    // re-stamp the label this connect resolved. A row created before the connection ever
+    // authenticated can be carrying the generic name its server reported; without this it would
+    // keep that useless title forever, even once the connection finally works.
+    await updateConnectorConnection(
+      db,
+      existing.id,
+      connectionId,
+      toolkit,
+      displayName ?? brand ?? undefined,
+    );
     connectorId = existing.id;
   } else {
     connectorId = await createConnector(db, {
@@ -386,6 +415,9 @@ export async function dispatchConnectorsRoute(
       deps.catalog?.refreshInBackground();
       const connectedHosts = new Set<string>();
       for (const c of connected) {
+        // A connection that errored before it ever synced is NOT wired up — treating it as such
+        // hid the very card offering the way to finish it, so the broken row concealed its own fix.
+        if (isSetupIncomplete(c)) continue;
         const impl = connectorForRowToolkit(byToolkit, c.toolkit);
         const su =
           impl && isMcpConnector(impl) && c.connectionRef ? getMcpServerUrl(c.connectionRef) : null;
@@ -415,6 +447,11 @@ export async function dispatchConnectorsRoute(
             status: c.status,
             lastSyncAt: c.lastSyncAt,
             lastError: c.lastError,
+            // A stable code for a failure the member can act on, so the GUI can offer the fix
+            // instead of printing a sentence and stopping there.
+            lastErrorCode: classifyConnectorFailure(c.lastError ?? '')?.code ?? null,
+            // Never authenticated: unfinished, not broken — and not a working connection either.
+            setupIncomplete: isSetupIncomplete(c),
             serverUrl,
             // Synced rows are lineage-stamped with the registry row id.
             itemCount: itemCounts.get(c.id) ?? 0,
@@ -506,9 +543,16 @@ export async function dispatchConnectorsRoute(
       try {
         const done = await mcp.completeConnect(state, { code });
         exchangedConnectionId = done.connectionId;
-        // Prefer the server's self-reported name, then its hostname — the generic
-        // toolkit label ("MCP server") identifies nothing once several are connected.
-        const name = done.serverName ?? hostnameOf(pending.serverUrl) ?? done.displayName;
+        // Name ladder: the curated catalog label for this endpoint, then the server's own name
+        // when it is not a generic placeholder, then whatever the connector resolved (which
+        // already falls back through a host-derived label), then the host itself. A placeholder
+        // must not win — several services of one vendor report the SAME name, so taking it
+        // renders every one of them under one identical, useless title.
+        const name =
+          curatedLabelForServerUrl(pending.serverUrl) ??
+          namedServer(done.serverName) ??
+          done.displayName ??
+          hostnameLabelFor(pending.serverUrl);
         await finishMcpConnection(
           deps,
           mcp,
@@ -645,26 +689,14 @@ export async function dispatchConnectorsRoute(
               ...(targetConnectorId ? { targetConnectorId } : {}),
             });
           } catch (e) {
-            // The SDK's terminal "no way to identify this client" failures: the
-            // authorization server has no registration endpoint ("does not
-            // support dynamic client registration"), OR its registration
-            // endpoint rejected the request ("dynamic client registration
-            // failed: …"). Either way the fix is a pre-registered client, so a
-            // distinct code lets the GUI switch the form into that mode instead
-            // of dead-ending. (Both messages contain "dynamic client
-            // registration"; matching that phrase covers both without swallowing
-            // unrelated errors, which are rethrown to the loud 500.)
-            const msg = e instanceof Error ? e.message : String(e);
-            if (/dynamic client registration/i.test(msg)) {
-              sendJson(
-                res,
-                {
-                  error:
-                    'This MCP server requires a pre-registered OAuth client. Enter the client ID (and secret, if it has one) issued by the provider.',
-                  code: 'client_registration_unsupported',
-                },
-                422,
-              );
+            // The terminal "no way to identify this client" failures. The classification is
+            // SHARED with the sync path (see the connector registry), so the member reads the
+            // same actionable message whichever path hit it, and the distinct code lets the GUI
+            // switch the form into pre-registered-client mode instead of dead-ending. Anything
+            // unrecognized is rethrown to the loud 500.
+            const known = classifyConnectorFailure(e instanceof Error ? e.message : String(e));
+            if (known) {
+              sendJson(res, { error: known.message, code: known.code }, 422);
               return true;
             }
             throw e;
@@ -678,7 +710,9 @@ export async function dispatchConnectorsRoute(
             connector,
             toolkit,
             begin.connectionId,
-            begin.displayName ?? hostnameOf(serverUrl),
+            // Same ladder as the OAuth callback: a curated label for a known endpoint outranks
+            // whatever the server called itself, and a host-derived label backs both up.
+            curatedLabelForServerUrl(serverUrl) ?? begin.displayName ?? hostnameLabelFor(serverUrl),
             targetConnectorId,
           );
           sendJson(res, out);
@@ -801,6 +835,14 @@ export async function dispatchConnectorsRoute(
 
     return false;
   } catch (err) {
+    // A classified failure answers with its code wherever it surfaced — including from a step
+    // AFTER the connect call itself (the initial sync), which otherwise reached the caller as an
+    // opaque 500 with no hint that supplying a client id is the fix.
+    const known = classifyConnectorFailure(err instanceof Error ? err.message : String(err));
+    if (known) {
+      sendJson(res, { error: known.message, code: known.code }, 422);
+      return true;
+    }
     if (isActionable(err)) {
       sendJson(res, { error: err.message }, 422);
       return true;

@@ -5,26 +5,26 @@ import { join } from 'node:path';
 import { bootGui, type BootedGui } from './helpers.js';
 
 /**
- * Inputs — the Configure drawer's three input tabs (Files / Connectors /
- * Databases), split out of the old single "Inputs" tab. A registered on-disk
- * folder renders (on the Files tab) as a lazy tree that fetches one level per
- * expand; the MCP Connectors tab hosts the whole connectors panel inline (no
- * dialog). The native OS picker can't run headless, so roots are registered via
- * the real API (the same endpoint the picker feeds).
+ * Sources — the left-sidebar FILES section plus the Configure drawer's two
+ * remaining input tabs (Connectors / Databases). FILES is the single file home:
+ * a registered on-disk folder renders there as a lazy tree that fetches one
+ * level per expand, and there is no Files tab in the Configure drawer any more.
+ * The MCP Connectors tab hosts the whole connectors panel inline (no dialog).
+ * The native OS picker can't run headless, so roots are registered via the real
+ * API (the same endpoint the picker feeds).
  */
 
 let gui: BootedGui;
 let srcDir: string;
 
 /**
- * Open the Configure drawer to one of the three input tabs (Files / Connectors /
- * Databases — the former single "Inputs" tab was split into three peer tabs). The
- * single-layout router maps #/settings/<tab> → open the drawer over the Workspace
- * home; wait until that tab's body sentinel has rendered.
+ * Open the Configure drawer to one of its input tabs (Connectors / Databases).
+ * The single-layout router maps #/settings/<tab> → open the drawer over the
+ * Workspace home; wait until that tab's body sentinel has rendered.
  */
 async function openConfigureTab(
   page: import('@playwright/test').Page,
-  tab: 'files' | 'connectors' | 'databases',
+  tab: 'connectors' | 'databases',
   sentinel: string,
 ): Promise<void> {
   const hash = '#/settings/' + tab;
@@ -49,24 +49,25 @@ test.afterEach(async () => {
   rmSync(srcDir, { recursive: true, force: true });
 });
 
-test('the Configure drawer has Files / Connectors / Databases tabs', async ({ page }) => {
-  // Files / Connectors / Databases are now three peer Configure tabs (the former
-  // single "Inputs" tab, with the FILES/CONNECTORS/DATABASES subheadings dropped —
-  // the tab name IS the heading).
-  await openConfigureTab(page, 'files', '#inputs-files-tree');
-  await expect(page.locator('.drawer-tab[data-tab="files"]')).toBeVisible();
+/** The sidebar FILES section's tree host — the single file browser. */
+function filesTree(page: import('@playwright/test').Page) {
+  return page.locator('#src-files-tree');
+}
+
+test('the Configure drawer has Connectors / Databases tabs and NO Files tab', async ({ page }) => {
+  // Files moved out of the drawer entirely — it is a left-sidebar specialty
+  // section now, so a second file browser (and a second add-files button) here
+  // would be a duplicate surface.
+  await openConfigureTab(page, 'connectors', '#mcp-connectors-list');
+  await expect(page.locator('.drawer-tab[data-tab="files"]')).toHaveCount(0);
   await expect(page.locator('.drawer-tab[data-tab="connectors"]')).toBeVisible();
   await expect(page.locator('.drawer-tab[data-tab="databases"]')).toBeVisible();
-  // The old subheadings are gone.
-  await expect(page.locator('#drawer-body .inputs-group-head')).toHaveCount(0);
   // Each tab renders its own body.
-  await page.locator('.drawer-tab[data-tab="connectors"]').click();
-  await expect(page.locator('#drawer-body #mcp-connectors-list')).toBeVisible({ timeout: 5000 });
   await page.locator('.drawer-tab[data-tab="databases"]').click();
   await expect(page.locator('#drawer-body #src-databases-list')).toBeVisible({ timeout: 5000 });
 });
 
-test('the Files tab is a GRID (no list/grid toggle) and a folder lazily expands one level', async ({
+test('the sidebar FILES section renders a tree and a folder lazily expands one level', async ({
   page,
 }) => {
   // Register the folder via the real API (what the native picker feeds).
@@ -75,21 +76,24 @@ test('the Files tab is a GRID (no list/grid toggle) and a folder lazily expands 
   });
   expect(res.ok()).toBeTruthy();
 
-  await openConfigureTab(page, 'files', '#inputs-files-tree');
-  const grid = page.locator('#inputs-files-tree');
-  // Grid-only: the retired list/grid toggle is gone.
-  await expect(page.locator('#inputs-files-toggle')).toHaveCount(0);
-  // The folder root renders as an expandable grid group.
-  const folder = grid.locator('.ifg-tile-wrap.ifg-folder').first();
-  await expect(folder).toBeVisible({ timeout: 5000 });
+  await page.goto(gui.url + '#/');
+  await page.waitForSelector('nav.dash-sidebar', { state: 'visible' });
+  const tree = filesTree(page);
+  await expect(tree).toHaveCount(1);
+  // Exactly one add-files control in the whole document (it is resolved by id).
+  await expect(page.locator('#src-add-files')).toHaveCount(1);
+  await expect(page.locator('#src-add-files-menu')).toHaveCount(1);
 
-  // Children are NOT loaded until the folder tile is clicked (lazy).
-  await expect(grid.locator('.ifg-children .fs-tile')).toHaveCount(0);
-  await folder.locator('.fs-tile').click();
+  // The folder root renders as a collapsed tree node.
+  const folder = tree.locator('li.src-folder').first();
+  await expect(folder).toBeVisible({ timeout: 5000 });
+  // Children are NOT loaded until the folder row is clicked (lazy).
+  await expect(tree.locator('.src-children .src-node')).toHaveCount(0);
+  await folder.locator('> .src-row').click();
   // One level: the 'sub' folder + 'note.txt' file appear; 'deep.txt' does not.
-  await expect(grid.getByText('note.txt', { exact: true })).toBeVisible({ timeout: 5000 });
-  await expect(grid.getByText('sub', { exact: true })).toBeVisible();
-  await expect(grid.getByText('deep.txt', { exact: true })).toHaveCount(0);
+  await expect(tree.getByText('note.txt', { exact: true })).toBeVisible({ timeout: 5000 });
+  await expect(tree.getByText('sub', { exact: true })).toBeVisible();
+  await expect(tree.getByText('deep.txt', { exact: true })).toHaveCount(0);
 });
 
 test('a file source shows ONCE with a ✕, and removing it clears both root + ingested row', async ({
@@ -108,12 +112,13 @@ test('a file source shows ONCE with a ✕, and removing it clears both root + in
   });
   expect(reg.ok()).toBeTruthy();
 
-  await openConfigureTab(page, 'files', '#inputs-files-tree');
-  const grid = page.locator('#inputs-files-tree');
-  // De-dupe: the file appears exactly ONCE (as the root tile), not twice.
-  await expect(grid.getByText('note.txt', { exact: true })).toHaveCount(1);
-  const tile = grid.locator('.ifg-tile-wrap', { hasText: 'note.txt' }).first();
-  const del = tile.locator('.src-del');
+  await page.goto(gui.url + '#/');
+  await page.waitForSelector('nav.dash-sidebar', { state: 'visible' });
+  const tree = filesTree(page);
+  // De-dupe: the file appears exactly ONCE (as the root node), not twice.
+  await expect(tree.getByText('note.txt', { exact: true })).toHaveCount(1, { timeout: 5000 });
+  const row = tree.locator('.src-node', { hasText: 'note.txt' }).first();
+  const del = row.locator('.src-del');
   await expect(del).toHaveCount(1);
 
   // The root + its twin row are both present before removal.
@@ -127,8 +132,8 @@ test('a file source shows ONCE with a ✕, and removing it clears both root + in
   const modal = page.locator('.modal-backdrop .modal');
   await expect(modal).toContainText('stays on your disk', { timeout: 5000 });
   await modal.locator('[data-act="ok"]').click();
-  // Both representations gone (API-confirmed), the tile disappears.
-  await expect(grid.getByText('note.txt', { exact: true })).toHaveCount(0, { timeout: 5000 });
+  // Both representations gone (API-confirmed), the node disappears.
+  await expect(tree.getByText('note.txt', { exact: true })).toHaveCount(0, { timeout: 5000 });
   const rootsAfter = await (await page.request.get(gui.url + '/api/sources/roots')).json();
   expect((rootsAfter.roots || []).some((r: { path: string }) => r.path.endsWith('note.txt'))).toBe(
     false,
@@ -149,17 +154,30 @@ test('a file source shows ONCE with a ✕, and removing it clears both root + in
   expect(pageErrors).toEqual([]);
 });
 
+test('an empty workspace shows the FILES empty state and no table entries', async ({ page }) => {
+  await page.goto(gui.url + '#/');
+  await page.waitForSelector('nav.dash-sidebar', { state: 'visible' });
+  await expect(filesTree(page).locator('.src-empty')).toHaveText(
+    'No files yet — add a file or folder to get started.',
+    { timeout: 5000 },
+  );
+  // files itself is never listed among the tables — it has this section instead.
+  await expect(page.locator('.nav-table-item[data-table="files"]')).toHaveCount(0);
+  // …and the legacy notes table is gone from the payload entirely.
+  await expect(page.locator('.nav-table-item[data-table="notes"]')).toHaveCount(0);
+});
+
 test('the MCP Connectors tab hosts the table + add form inline (no dialog)', async ({ page }) => {
   await openConfigureTab(page, 'connectors', '#mcp-connectors-list');
   await expect(page.locator('#mcp-connectors-form')).toContainText('Add an MCP connector');
   await expect(page.locator('#connectors-dialog')).toHaveCount(0);
 });
 
-test('the Files table opens as a SQL runner (like every table)', async ({ page }) => {
-  // Files is now a table in the LATTICE schema — clicking it opens the uniform SQL
-  // runner, not a bespoke folder tree. The default query shows LIVE rows only (files is
+test('the Files table still opens as a SQL runner when addressed directly', async ({ page }) => {
+  // files is hidden from the table nav (it has its own sidebar section) but stays a
+  // fully registered, routable table — a direct #/w/table/files link still opens the
+  // uniform SQL runner. The default query shows LIVE rows only (files is
   // soft-deletable), so a soft-deleted/merged file doesn't linger in the view.
-  // (On-disk folder roots are still managed in the Configure drawer's Files tab.)
   await page.goto(gui.url + '#/w/table/files');
   await expect(page.locator('.sql-runner')).toBeVisible({ timeout: 5000 });
   await expect(page.locator('#sql-editor')).toHaveValue(

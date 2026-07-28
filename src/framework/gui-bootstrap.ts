@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
-import { ensureLatticeRoot, findLatticeRoot } from './lattice-root.js';
+import { ensureRootAt, resolveSessionRoot, rootConfigDir } from './lattice-root.js';
 import { importLegacyUserConfig } from './migrate-to-root.js';
 import {
   addAdoptedWorkspace,
@@ -37,6 +37,30 @@ export interface GuiBootstrap {
   configPath: string | null;
   /** Absolute render output dir for the active workspace, or NULL when virgin. */
   contextDir: string | null;
+  /**
+   * A DIFFERENT root that searching upward from the start directory would have
+   * adopted, or NULL. Present so the launcher can say once, naming the path,
+   * that this session is NOT opening it — otherwise someone who relied on the
+   * old upward search lands in an empty workspace with no idea why.
+   */
+  shadowedRoot: string | null;
+}
+
+/**
+ * Paths already announced this process, so a relaunch loop doesn't repeat the
+ * same notice. Keyed by the shadowed path: a different leftover root is a
+ * different thing to say.
+ */
+const announcedShadowedRoots = new Set<string>();
+
+function announceShadowedRoot(root: string, shadowed: string): void {
+  if (announcedShadowedRoots.has(shadowed)) return;
+  announcedShadowedRoots.add(shadowed);
+  console.error(
+    `[lattice] Opening the root ${root}. A different root exists above this directory ` +
+      `(${shadowed}) and older versions would have opened THAT one by searching upward. ` +
+      `Sessions no longer do; pass --root ${shadowed} to open it.`,
+  );
 }
 
 /**
@@ -187,27 +211,37 @@ export function pruneEphemeralWorkspaces(root: string, tmpDir: string = tmpdir()
 
 /**
  * Ensure a `.lattice` root for the GUI and resolve the active workspace to open.
- * Creates a root if none exists (in the config's directory when a config file is
- * present, else `startDir`), adopts the launch config as a workspace, reconciles
- * stray sibling configs, and guarantees at least one workspace exists.
+ *
+ * The root is the one that was NAMED — `opts.root` (`--root`) or the
+ * `LATTICE_ROOT` override — and otherwise the home root. It is never inferred by
+ * searching upward from the working directory: a launcher that adopts whichever
+ * root happens to sit above it will, sooner or later, open a leftover registry
+ * and serve data that has nothing to do with the person who started it.
+ *
+ * The launch config is still adopted as a workspace wherever it lives, so a
+ * config inside a checkout keeps working — it is simply registered under the
+ * session's root instead of deciding what that root is.
  */
 export function ensureRootForGui(opts: {
   startDir: string;
   configPath: string;
   /** True when the user passed `--config` explicitly (not the default). */
   explicitConfig: boolean;
+  /** Explicitly named root (`--root`). Absent ⇒ the home root. */
+  root?: string | undefined;
   displayName?: string;
 }): GuiBootstrap {
   const configAbs = resolve(opts.configPath);
   const hasConfigFile = existsSync(configAbs);
 
-  let root = findLatticeRoot(opts.startDir);
-  if (!root && hasConfigFile) root = findLatticeRoot(dirname(configAbs));
-  let freshRoot = false;
-  if (!root) {
-    root = ensureLatticeRoot(hasConfigFile ? dirname(configAbs) : opts.startDir);
-    freshRoot = true;
-  }
+  const session = resolveSessionRoot({
+    explicitRoot: opts.root,
+    startDir: opts.startDir,
+  });
+  const root = session.root;
+  const freshRoot = !existsSync(rootConfigDir(root));
+  ensureRootAt(root);
+  if (session.shadowed) announceShadowedRoot(root, session.shadowed);
   // No-op when the root's `.config` is already initialized.
   importLegacyUserConfig(root);
 
@@ -233,7 +267,14 @@ export function ensureRootForGui(opts: {
   // already tolerates zero workspaces (activeWorkspaceId may be null).
   const ws = getActiveWorkspace(root) ?? listWorkspaces(root)[0] ?? null;
   if (!ws) {
-    return { root, workspaceId: null, displayName: '', configPath: null, contextDir: null };
+    return {
+      root,
+      workspaceId: null,
+      displayName: '',
+      configPath: null,
+      contextDir: null,
+      shadowedRoot: session.shadowed,
+    };
   }
   const paths = resolveWorkspacePaths(root, ws);
   return {
@@ -242,5 +283,6 @@ export function ensureRootForGui(opts: {
     displayName: ws.displayName,
     configPath: paths.configPath,
     contextDir: paths.contextDir,
+    shadowedRoot: session.shadowed,
   };
 }

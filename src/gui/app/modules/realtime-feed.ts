@@ -67,9 +67,10 @@ export const realtimeFeedJs = `    // ──────────────
         : 'e-' + Date.now() + '-' + Math.round(Math.random() * 1e9);
     }
     function updatePendingPill(n) {
-      // The offline-queue state now shows in the single top-right status indicator.
-      if (n > 0) setStatus({ id: 'offline', kind: 'warn', text: '⏳ ' + n + ' pending', priority: 40, sticky: true });
-      else clearStatus('offline');
+      // Edits waiting to sync are background work like any other — they report in
+      // the activity-menu tracker, not a separate header indicator.
+      if (n > 0) bgTask('offline', { label: n + (n === 1 ? ' change' : ' changes') + ' waiting to sync' });
+      else clearBgTask('offline');
     }
     function refreshPendingPill() {
       idbAll().then(function (items) {

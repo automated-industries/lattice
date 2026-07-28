@@ -5,6 +5,7 @@ import { fullTextSearch } from '../../../search/fts.js';
 import { buildRowContextLocator, readRowContext } from '../../row-context.js';
 import { readManifest } from '../../../lifecycle/manifest.js';
 import { buildProvenanceGraph, summarizeProvenance } from '../../provenance.js';
+import { previewPlan } from '../../planner/run.js';
 import {
   ASSISTANT_HIDDEN_TABLES,
   NOT_HANDLED,
@@ -304,6 +305,54 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
       });
       return { ok: true, result: summarizeProvenance(payload, table, rowId) };
     }
+    case 'propose_model_simplification': {
+      // "Simplify the model" is a real, already-solved operation here: the
+      // deterministic data-model planner detects merges, duplicates, embedded
+      // dimensions, missing links, undocumented objects, awkward names and
+      // mistyped columns, and each finding is applied through the owner-gated
+      // review surface. Without a tool that runs it, the only shapes the model
+      // could reach for were row/table deletion — which is not what the request
+      // means and cannot be guessed at. This runs the planner in READ-ONLY mode
+      // (no auto tier, no writes, no cache effects) and hands back the plan.
+      if (!ctx.configPath || !ctx.outputDir) {
+        // Fail loudly: an empty proposal list here would read as "your model is
+        // already clean", which is a different (and wrong) answer.
+        return {
+          ok: false,
+          error: 'The data-model planner needs an open workspace, which is not available here.',
+        };
+      }
+      const preview = await previewPlan({
+        db: ctx.db,
+        configPath: ctx.configPath,
+        outputDir: ctx.outputDir,
+        computedTables: ctx.computedTables ?? new Set<string>(),
+      });
+      return {
+        ok: true,
+        result: {
+          proposals: preview.proposals.map(({ op, rows, rowsCapped }) => ({
+            id: op.id,
+            kind: op.kind,
+            tier: op.tier,
+            class: op.class,
+            table: op.target.table,
+            ...(op.target.column ? { column: op.target.column } : {}),
+            ...(op.target.toTable ? { relatedTable: op.target.toTable } : {}),
+            rationale: op.rationale,
+            confidence: op.confidence,
+            rows,
+            ...(rowsCapped ? { rowsAtLeast: true } : {}),
+          })),
+          ...(preview.skipped.length > 0 ? { skipped: preview.skipped } : {}),
+          note:
+            'These are proposals only — nothing has been changed. Summarize them for the user in ' +
+            'plain language (what it would do, to which object, how many records) and let them ' +
+            'choose; each one is applied with one click from the Data Model panel. Do not delete ' +
+            'any table or record on their behalf.',
+        },
+      };
+    }
     case 'lattice_help': {
       // Answer questions about Lattice ITSELF from the canonical bundled docs —
       // not the user's data. Read-only; no DB access, no permission concerns.
@@ -328,6 +377,9 @@ export async function handleRead(deps: HandlerDeps): Promise<GroupResult> {
       const result = await fullTextSearch(ctx.db.adapter, tables, {
         query,
         limitPerTable: limit,
+        // Same reason as the HTTP search route: a member reads through `<t>_v`, and a
+        // swallowed per-table denial would turn that into a silent empty result.
+        readRelation: (t) => ctx.db.memberReadRelation(t),
       });
       return { ok: true, result };
     }

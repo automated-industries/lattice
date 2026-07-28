@@ -1,6 +1,71 @@
 // Auto-composed segment of the GUI client script. Verbatim substring of the original
 // appJs template literal — do not hand-edit; see modules/index.ts for composition.
 export const searchJs = `    // ────────────────────────────────────────────────────────────
+    // Graph search field
+    // ────────────────────────────────────────────────────────────
+    // Finding something IN the graph is a graph-local affordance, so the field
+    // lives in the graph's own toolbar beside its other controls rather than
+    // returning an app-wide search bar. It owns no matching and no highlighting:
+    // it feeds the one workspace search endpoint through graphSearchHighlight,
+    // which drives the renderer's one highlight entry point. The input carries no
+    // styling of its own — the global form-field base already gives a bare input
+    // the app's look on every surface.
+    var GRAPH_SEARCH_DEBOUNCE_MS = 220;
+    var graphSearchTimer = null;
+
+    // Place (or re-place) the field in the graph toolbar currently on screen, and
+    // restore the live query so the field and the highlight stay in step across a
+    // re-render. Returns the input, or null when no graph toolbar is mounted.
+    function mountGraphSearch() {
+      var bar = document.querySelector('.graph-toolbar');
+      if (!bar) return null;
+      var input = document.getElementById('graph-search-input');
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'search';
+        input.id = 'graph-search-input';
+        input.className = 'graph-search-input';
+        input.placeholder = 'Search…';
+        input.autocomplete = 'off';
+        input.setAttribute('aria-label', 'Search this workspace and highlight the matches');
+        var spacer = bar.querySelector('.graph-tools-spacer');
+        if (spacer) bar.insertBefore(input, spacer);
+        else bar.insertBefore(input, bar.firstChild);
+        input.addEventListener('input', function () { graphSearchTyped(input.value); });
+        input.addEventListener('keydown', function (e) {
+          // Escape empties the field, which clears the highlight on the spot.
+          if (e.key === 'Escape') { input.value = ''; graphSearchTyped(''); }
+        });
+      }
+      if (typeof graphSearchQuery === 'string' && input.value !== graphSearchQuery) {
+        input.value = graphSearchQuery;
+      }
+      return input;
+    }
+
+    // Debounced so a word doesn't cost one request per keystroke. CLEARING is
+    // applied immediately and never debounced — a highlight must not outlive the
+    // query that produced it, not even for a moment.
+    function graphSearchTyped(value) {
+      if (graphSearchTimer) { window.clearTimeout(graphSearchTimer); graphSearchTimer = null; }
+      var q = value == null ? '' : String(value);
+      if (!q.trim()) { runGraphSearch(''); return; }
+      graphSearchTimer = window.setTimeout(function () {
+        graphSearchTimer = null;
+        runGraphSearch(q);
+      }, GRAPH_SEARCH_DEBOUNCE_MS);
+    }
+
+    function runGraphSearch(q) {
+      if (typeof graphSearchHighlight !== 'function') return;
+      graphSearchHighlight(q).catch(function (err) {
+        // Report it: a search that failed looks exactly like a search that matched
+        // nothing, so staying quiet would tell the user the wrong thing.
+        showToast('Search failed: ' + (err && err.message ? err.message : String(err)), {});
+      });
+    }
+
+    // ────────────────────────────────────────────────────────────
     // Version history (undo / redo / log)
     // ────────────────────────────────────────────────────────────
     // ── Page-navigation history — PER WORKSPACE ──────────────────

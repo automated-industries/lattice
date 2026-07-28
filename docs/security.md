@@ -267,6 +267,35 @@ Postgres role with login + scoped permissions. Some guidance:
   Postgres role (the role's owned rows survive). Re-provisioning the
   same role name with a new password is supported.
 
+### Serving the GUI on a network
+
+The GUI's data routes carry no authentication. Binding it anywhere other than the
+loopback publishes read, write and delete access to everything in the open
+workspace, so `lattice gui --host <non-loopback>` requires `--allow-remote`, an
+explicitly named `--root`, and a typed confirmation of a disclosure naming the
+exact root and workspace about to be served (`--yes` for scripted use skips the
+question, never the disclosure). See `docs/cli.md` for the full flow.
+
+Two things this does not do, and that you still own: it is not authentication,
+and it is not a firewall. Treat an exposed GUI as a service anyone on the
+reachable network is an administrator of, and put your own network controls in
+front of it.
+
+### Disconnecting a cloud workspace
+
+Deleting a cloud workspace removes what the machine kept in order to reconnect —
+the encrypted connection string, the S3 configuration, and the bearer token
+stored under that workspace's credential label. Other workspaces' credentials and
+the root's shared material (master key, identity, preferences) are untouched, and
+so is the remote database itself: this only revokes what this machine retains.
+
+If any of that material cannot be removed, the delete **fails loudly** rather
+than reporting success — a machine that still holds working credentials for a
+database you were told it had been disconnected from is worse than a delete that
+visibly failed. Revoking the member's role on the cloud (see _Member role
+provisioning_) remains the authoritative revocation; the local purge is what stops
+this machine from silently reconnecting with what it already had.
+
 ### Network isolation
 
 - Database in a private VPC subnet with no public access.
@@ -318,6 +347,11 @@ Before going live, verify:
 - [ ] CloudWatch alarms on connection count + permission-denied rate.
 - [ ] GUI XSS audit done (manual or automated) before exposing the
       `lattice gui` to untrusted members.
+- [ ] Any non-loopback `lattice gui` bind names its `--root` explicitly, and
+      whoever runs it has read the disclosure naming the exact workspace served.
+- [ ] Network controls (firewall / VPN / reverse proxy with auth) sit in front of
+      any exposed GUI — the confirmation prompt is informed consent, not access
+      control.
 
 Schedule a real third-party security review post-launch — the items
 above are baseline hygiene, not a substitute for a proper audit.

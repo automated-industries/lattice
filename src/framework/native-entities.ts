@@ -85,8 +85,10 @@ export const NATIVE_ENTITY_DEFS: Readonly<Record<string, TableDefinition>> = {
   notes: {
     // A generic knowledge object: a free-form note with a title and body.
     // Ordinary, user-editable rows; `source_file_id` optionally points back at
-    // an originating `files` row. Retained as native (1.16.3) because the
-    // reference/source-organizer store uses it as the fallback organizer target.
+    // an originating `files` row. Still the library organizer's fallback target,
+    // but no longer surfaced in the GUI — see NATIVE_LEGACY_NAMES. Kept
+    // registered so existing rows stay queryable and their back-references
+    // resolve; nothing is dropped from any database.
     columns: {
       id: 'TEXT PRIMARY KEY',
       title: 'TEXT',
@@ -198,8 +200,10 @@ export function isNativeEntity(name: string): boolean {
  * chat threads + messages. They are real native tables (queryable + persisted by
  * the chat route), but must NOT show up in the GUI's Objects list / dashboard
  * cards: they're an implementation detail of the chat rail, not user-facing data
- * objects. (Contrast `secrets`/`files`/`notes`, which ARE user-facing and stay
- * visible.) Mirrors {@link ASSISTANT_HIDDEN_TABLES} on the assistant side.
+ * objects. (Contrast `secrets`, which IS user-facing and stays visible; `files`
+ * and `notes` are user-facing too but display-gated by
+ * {@link NATIVE_NAV_HIDDEN_NAMES} / {@link NATIVE_LEGACY_NAMES}.) Mirrors
+ * {@link ASSISTANT_HIDDEN_TABLES} on the assistant side.
  */
 export const NATIVE_INTERNAL_NAMES: ReadonlySet<string> = new Set([
   'chat_threads',
@@ -227,6 +231,45 @@ export const NATIVE_ANALYTICS_NAMES: ReadonlySet<string> = new Set(['dashboards'
 /** True when `name` is an analytics-surface native entity (see {@link NATIVE_ANALYTICS_NAMES}). */
 export function isAnalyticsNativeEntity(name: string): boolean {
   return NATIVE_ANALYTICS_NAMES.has(name);
+}
+
+/**
+ * Native entities the left-hand table nav SKIPS while they stay fully present in
+ * the entities payload — a SOFT hide, and deliberately narrower than
+ * {@link NATIVE_ANALYTICS_NAMES}.
+ *
+ * `files` has a dedicated specialty section in the sidebar (a lazy, nestable
+ * on-disk tree with its own add/remove affordances), so listing it a second time
+ * among the ordinary tables would be two entry points to one thing. It must still
+ * reach the Data Model panel and the brain graph, where file → data lineage is the
+ * whole point — hence a stamp on the payload row rather than a payload filter.
+ *
+ * Nothing else changes: the table stays registered, queryable, shareable,
+ * soft-deletable, audited and assistant-visible.
+ */
+export const NATIVE_NAV_HIDDEN_NAMES: ReadonlySet<string> = new Set(['files']);
+
+/** True when `name` is skipped by the left-hand table nav but stays in the payload. */
+export function isNavHiddenNativeEntity(name: string): boolean {
+  return NATIVE_NAV_HIDDEN_NAMES.has(name);
+}
+
+/**
+ * Native entities kept only for backwards compatibility — a HARD drop from the
+ * entities payload, so they surface as a browsable object nowhere in the GUI.
+ *
+ * `notes` was the generic fallback target for the source organizer: an untyped
+ * title/body row created when a source matched no real record. Real, named tables
+ * cover that now, so a generic bucket is noise in the nav and the Data Model. It
+ * stays REGISTERED so a workspace that already holds notes keeps them queryable
+ * and row-routable, its RLS / soft-delete / audit behaviour is untouched, and the
+ * `notes.source_file_id` back-reference to a `files` row still resolves.
+ */
+export const NATIVE_LEGACY_NAMES: ReadonlySet<string> = new Set(['notes']);
+
+/** True when `name` is a legacy native entity dropped from the entities payload. */
+export function isLegacyNativeEntity(name: string): boolean {
+  return NATIVE_LEGACY_NAMES.has(name);
 }
 
 /**

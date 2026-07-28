@@ -63,19 +63,28 @@ describe.skipIf(!PG_URL)('cloud open backgrounds the owner convergence', () => {
     // Secure the table + grant the member group, then DRIFT: revoke the SELECT grant.
     // reconcileCloudMemberAccess (in the background converge) must re-grant it.
     const { enableRlsForTable } = await import('../../src/cloud/rls.js');
+    // Securing the table also builds `note_v` and grants the member group SELECT on
+    // it. That view IS the member's read path — a member holds no table-level SELECT
+    // on any base table — so the grant worth drifting is the one ON THE VIEW.
     await enableRlsForTable(setup, 'note', ['id']);
-    await runAsyncOrSync(setup.adapter, `GRANT SELECT ON "note" TO ${group}`);
-    await runAsyncOrSync(setup.adapter, `REVOKE SELECT ON "note" FROM ${group}`); // drift
+    await runAsyncOrSync(setup.adapter, `REVOKE SELECT ON "note_v" FROM ${group}`); // drift
     setup.close();
 
-    const hasSelect = async (db: Lattice): Promise<boolean> => {
+    const hasSelect = async (db: Lattice, rel: string): Promise<boolean> => {
       const row = (await getAsyncOrSync(
         db.adapter,
-        `SELECT has_table_privilege($1, 'note', 'SELECT') AS ok`,
-        [group],
+        `SELECT has_table_privilege($1, $2, 'SELECT') AS ok`,
+        [group, rel],
       )) as { ok?: boolean } | undefined;
       return row?.ok === true;
     };
+    // The drift is real before the open, or (B) below proves nothing.
+    {
+      const probe = new Lattice(schemaUrl(schema));
+      await probe.init();
+      expect(await hasSelect(probe, 'note_v')).toBe(false);
+      probe.close();
+    }
 
     // A workspace config pointing at the cloud schema.
     const root = mkdtempSync(join(tmpdir(), `bgc-${randomBytes(3).toString('hex')}-`));
@@ -105,10 +114,15 @@ describe.skipIf(!PG_URL)('cloud open backgrounds the owner convergence', () => {
     const rows = await active.db.query('note', {});
     expect(Array.isArray(rows)).toBe(true);
 
-    // (B) Awaiting convergence performs the real reconcile: the drifted SELECT grant
-    // is restored. (Proves the convergence was deferred to the background, not lost.)
+    // (B) Awaiting convergence performs the real reconcile: the drifted member read
+    // grant is restored. (Proves the convergence was deferred to the background, not
+    // lost.)
     await active.converged;
-    expect(await hasSelect(active.db)).toBe(true);
+    expect(await hasSelect(active.db, 'note_v')).toBe(true);
+    // ...and restoring the read path never means handing back base SELECT. The
+    // reconcile revokes it unconditionally, so a converge can only ever re-open the
+    // view — the one relation that re-applies row visibility and cell masking.
+    expect(await hasSelect(active.db, 'note')).toBe(false);
     expect(active.convergeWarnings).toEqual([]);
 
     await disposeActive(active);

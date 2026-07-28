@@ -28,7 +28,6 @@ import { questionsCss } from './questions.js';
 import { inlineImportCss } from './inline-import.js';
 import { tabsCss } from './tabs.js';
 import { sourcesCss } from './sources.js';
-import { statusIndicatorCss } from './status-indicator.js';
 import { fileDocCss } from './file-doc.js';
 import { connectWallCss } from './connect-wall.js';
 import { utilitiesCss } from './utilities.js';
@@ -61,7 +60,6 @@ export const css = [
   inlineImportCss,
   tabsCss,
   sourcesCss,
-  statusIndicatorCss,
   fileDocCss,
   connectWallCss,
   utilitiesCss,

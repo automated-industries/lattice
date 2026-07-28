@@ -4,6 +4,7 @@ import {
   revertEntry,
   parseAudit,
   maskEncryptedJson,
+  maskAuditImagesForViewer,
   auditEntryWithoutImages,
 } from '../../mutations.js';
 import { requireString } from './helpers.js';
@@ -36,6 +37,9 @@ export async function handleHistory(deps: HandlerDeps): Promise<GroupResult> {
             after_json: maskEncryptedJson(e.after_json, enc),
           };
         });
+      // ...and the owner-secret columns for a cloud member, or this tool result
+      // streams another member's cells straight into model context.
+      entries = await maskAuditImagesForViewer(ctx.db, entries);
       return { ok: true, result: entries };
     }
     case 'undo': {

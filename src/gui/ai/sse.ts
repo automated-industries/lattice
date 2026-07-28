@@ -23,6 +23,11 @@ export type ChatStreamEvent =
   // The model called ask_user: show this multiple-choice question inline in the
   // chat and end the turn — the user's pick (or free-form reply) arrives as the
   // next chat message. Never persisted to the question store; in-turn only.
+  //
+  // A question is a QUESTION, and nothing else. It carried an optional consent card
+  // (a server-composed destructive confirmation the user's click could authorize);
+  // that whole mechanism is gone, because a wide or multi-object removal is not
+  // something the assistant may do however the user answers.
   | { type: 'question'; question: string; options: string[]; allowOther: boolean }
   // Ends one round. `hadTools` is true when this round called tools — its streamed
   // text was pre-tool preamble ("Let me search…"), NOT the answer, so the client
@@ -32,7 +37,18 @@ export type ChatStreamEvent =
   // `dropText`: this round's preamble exactly repeated the previous kept one, so
   // the client removes its bubble and the route rolls its text off the persisted
   // message (a consumer that ignores the field degrades to the pre-collapse behavior).
-  | { type: 'assistant_message_end'; hadTools?: boolean; dropText?: boolean }
+  // `usage`: token usage metrics from this turn (input, output, cache read/creation).
+  | {
+      type: 'assistant_message_end';
+      hadTools?: boolean;
+      dropText?: boolean;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadInputTokens?: number;
+        cacheCreationInputTokens?: number;
+      };
+    }
   // A fast, contextual acknowledgement published the instant a turn is accepted, BEFORE
   // the (possibly slow) tool loop starts — "Got it, pulling your Q3 invoices…". Rendered
   // as a transient bubble; the real answer streams into its own bubble after. Not

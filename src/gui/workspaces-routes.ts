@@ -22,16 +22,23 @@ import {
   type WorkspaceRecord,
 } from '../framework/workspace.js';
 import { workspaceDir } from '../framework/lattice-root.js';
-import { deleteDbCredential } from '../framework/user-config.js';
+import { purgeWorkspaceSecrets } from '../framework/user-config.js';
 
 /**
  * Remove a workspace's owned files from disk after its registry record has been
  * dropped. Loud on failure (the caller surfaces it as a 500). Scaffolded local
- * workspace → delete its whole folder; cloud → forget only the LOCAL pointer
- * (its managed config + the saved credential when no other workspace uses it)
- * and never touch the shared remote; adopted-in-place local → leave the user's
- * files alone (non-destructive). Shared by the active-DB delete handler here and
- * the virgin-state delete route in server.ts so the two can never drift.
+ * workspace → delete its whole folder; cloud → forget the LOCAL pointer (its
+ * managed config) AND purge the material this machine kept in order to
+ * reconnect, never touching the shared remote; adopted-in-place local → leave
+ * the user's files alone (non-destructive). Shared by the active-DB delete
+ * handler here and the virgin-state delete route in server.ts so the two can
+ * never drift.
+ *
+ * Removing a cloud workspace has to take its stored credential, S3 keys and
+ * token with it. Forgetting only the pointer leaves the machine able to
+ * reconnect to a database its operator was told it had been disconnected from —
+ * and a failure to remove them must reach the caller, because reporting a clean
+ * delete over still-working credentials is the false assurance this prevents.
  */
 export function cleanupWorkspaceFiles(root: string, ws: WorkspaceRecord): void {
   if (!ws.configPath && ws.kind === 'local') {
@@ -43,16 +50,12 @@ export function cleanupWorkspaceFiles(root: string, ws: WorkspaceRecord): void {
     const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
     const label = labelMatch?.[1];
     if (label) {
+      // Another registered workspace pointing at the same label still needs
+      // these — they are not exclusively this workspace's to remove.
       const stillUsed = listWorkspaces(root).some((w) =>
         w.db.includes('${LATTICE_DB:' + label + '}'),
       );
-      if (!stillUsed) {
-        try {
-          deleteDbCredential(label);
-        } catch {
-          // credential already gone — fine
-        }
-      }
+      if (!stillUsed) purgeWorkspaceSecrets(root, label);
     }
   }
   // Adopted local workspaces: leave the user's files in place (non-destructive).

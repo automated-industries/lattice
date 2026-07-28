@@ -59,6 +59,31 @@ export const assistantRailCss = `    /* ============ AI assistant rail (2.0) ===
     .staging-tray-host:empty { display: none; }
     .staging-tray-host .staging-tray { margin: 8px 10px 0; }
     .staging-send { flex: 1; }
+    /* ── Queued follow-ups ────────────────────────────────────────────
+       Messages typed while a reply is still streaming. They sit in their own tray
+       directly above the composer — same shape as the staged-files tray — so they
+       stay reviewable and removable instead of looking like sent messages parked in
+       the conversation. Each row can be dropped (✕) or jumped to the front (⏭,
+       which stops the running reply first). */
+    .chat-queue-host { flex: none; }
+    .chat-queue-host:empty { display: none; }
+    .chat-queue-tray {
+      display: flex; flex-direction: column; gap: 6px;
+      margin: 8px 10px 0; padding: 8px 10px; border-radius: var(--r-lg);
+      background: var(--surface); border: 1px dashed var(--border-strong);
+    }
+    .chat-queue-head { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+    .chat-queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .chat-queue-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .chat-queue-text {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+    }
+    .chat-queue-push, .chat-queue-x {
+      flex: none; background: none; border: 0; color: var(--text-muted);
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: var(--r-xs);
+    }
+    .chat-queue-push:hover { background: var(--surface-2); color: var(--accent); }
+    .chat-queue-x:hover { background: var(--surface-2); color: var(--danger); }
     /* ── The assistant dock (Analytics view, right column) ─────────── */
     /* The chat's permanent home: a full-height column docked to the right of
        the Analytics layout. Same feed/composer internals as always — only the

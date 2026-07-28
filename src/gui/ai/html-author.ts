@@ -1,5 +1,6 @@
 import type { LlmClient } from './chat.js';
-import { DEFAULT_MODEL } from './chat.js';
+import { authorWithEscalation } from './author-budget.js';
+import { DEFAULT_MODEL, maxOutputTokensFor } from './chat.js';
 
 /**
  * Author a complete, standalone HTML file via a focused model sub-call.
@@ -63,6 +64,7 @@ const HTML_SYSTEM = [
   '- The page runs fully isolated with NO network access: `fetch`, `XMLHttpRequest`, WebSocket, and remote images are all blocked. Read data ONLY through the injected `window.lattice` bridge (described below). Never attempt a direct network call — it will fail.',
   '- A charting library is ALREADY loaded in the page: a global `Chart` (Chart.js) is available. Call `new Chart(canvasEl, {...})` directly when a chart helps. Never load your own chart library.',
   '- The preview sandbox blocks browser-chrome actions: `window.print()`, `window.open()`, `alert()`/`confirm()`/`prompt()`, `target="_blank"`, and form submission all silently do NOTHING. Do NOT add Print / Export-PDF / Download / "Open in new tab" / submit buttons or any control that calls those — it renders as a dead button, and Lattice strips it and tells the user. Build interactivity IN the page instead (tabs, toggles, filters, sorts that re-render the DOM).',
+  '- The preview sandbox also blocks anchor navigation: `<a href>` links do not navigate because the frame has no allow-same-origin. Use window.lattice.act() for page navigation instead (see below). When the page includes source citations or references to external documents, use native browser tooltips via the `title` attribute — `<span title="Full source name">abbreviated label</span>` — so hovering shows the full citation. Do NOT author anchor links for source citations.',
   '',
   "Live data (optional — only when the page should show the user's data):",
   '- A global `window.lattice` object is preloaded. Every method returns a Promise:',
@@ -80,9 +82,89 @@ const HTML_SYSTEM = [
   '    • Stay within functions both engines share (count, sum, avg, min, max, round, coalesce, cast, substr, length, lower, upper, replace) plus standard GROUP BY / ORDER BY / JOIN / CASE. Avoid anything specific to one engine.',
   '- The page must stay CURRENT: never hardcode, snapshot, or inline data values into the document — every number, row, and chart must come from a lattice.query/get/sql read at load time, so the page always shows the live data.',
   '',
+  'Make every number traceable back to its source — you know which table each read came from, so SAY so in the markup:',
+  '- Put `data-lattice-table="<table>"` on the element that renders each chart, key-number tile, or data table, naming the table that section was read FROM (for a chart, put it on the `<canvas>` or its wrapper). For a section built from a join, name the table the section is really ABOUT.',
+  '- Additionally put `data-lattice-row-id="<the row id>"` on any element that corresponds to exactly ONE record — a table row, a tile about a single record. Omit it wherever a mark aggregates many rows; a section with no row id is traced at the table level, which is the correct answer there.',
+  '- That is ALL that is needed: Lattice turns those attributes into click-through and shows the user where the data came from. Do NOT add your own click handler, link, or tooltip for this, and do NOT invent an id you did not read from the data.',
+  '- For marks drawn on a canvas (where there is no per-mark element to annotate), you may call `lattice.showSource(table, rowId)` from the chart onClick with the row id for that mark; pass an empty string when the mark covers many rows.',
+  '',
   'Make it clean, readable, and self-explanatory: a simple system-font stack and a responsive layout. Prefer clarity over cleverness.',
   'When the page is a DASHBOARD — an at-a-glance answer to a question about the data — lead with a compact row of key-number tiles, then charts in a responsive grid, then any supporting detail table, each section clearly titled.',
 ].join('\n');
+
+// ── "clean the data" is not a page change ────────────────────────────────────
+//
+// A request to fix the DATA — dedupe it, normalize the values, fill the blanks —
+// is a request to change rows. Sent here it becomes a re-authored page instead:
+// the dirty values stay exactly as they were, the page is rewritten around them,
+// and the reply says the data was cleaned. So the authoring path refuses it and
+// names the tools that actually change rows.
+
+/** Verbs that can ONLY mean "change the stored values" — no object needed. */
+const DATA_ONLY_VERBS =
+  /\b(cleanse|dedupe|de-?dup\w*|deduplicat\w*|normali[sz]\w*|standardi[sz]\w*|canonicali[sz]\w*|backfill)\b/i;
+
+/** Verbs that mean cleaning only when aimed at stored values ("fix the layout" does not). */
+const AMBIGUOUS_VERBS =
+  /\b(clean(?:s|ed|ing)?(?:\s*up)?|reconcile|merge|consolidat\w*|correct|fix|repair|trim|strip|fill\s+in|populate|delete|remove|drop|purge)\b/i;
+
+/**
+ * Objects that unambiguously mean STORED VALUES. Deliberately excludes the
+ * structural/ambiguous ones (columns, fields, names, titles) — "fix the column
+ * names" is as likely to be about the page's headers, and refusing a real page
+ * edit is worse than missing one cleaning request.
+ */
+const DATA_OBJECTS =
+  /\b(data|dataset|rows?|records?|entries|values?|duplicates?|dupes?|blanks?|nulls?|whitespace|typos?|spellings?|imports?)\b/i;
+
+/** Objects that make it about the page — these win, so layout work is never misrouted. */
+const PAGE_OBJECTS =
+  /\b(page|dashboard|chart|charts|graph|graphs|plot|tile|tiles|card|cards|layout|design|style|styling|css|colou?rs?|font|fonts|header|footer|legend|axis|axes|label|labels|section|sections|widget|widgets|ui|view|tab|tabs|filter\s+control|spacing|margin|padding|theme)\b/i;
+
+/** The row tools that actually change stored values. */
+export const ROW_MUTATION_TOOLS = ['update_row', 'bulk_update', 'dedup', 'merge_rows'] as const;
+
+export type AuthoringClassification =
+  | { kind: 'authoring' }
+  | { kind: 'data_cleaning'; reason: string; tools: readonly string[] };
+
+/**
+ * Is this instruction asking to change the DATA rather than the page? Conservative
+ * on purpose: a request that names anything visual ("clean up the chart layout")
+ * is authoring, and only a cleaning verb aimed at a data object counts as data
+ * cleaning — the cost of a false positive (refusing a real page edit) is higher
+ * than the cost of a miss.
+ */
+export function classifyAuthoringRequest(spec: string): AuthoringClassification {
+  const text = spec.trim();
+  // Anything naming the page wins outright, so layout work is never misrouted.
+  if (!text || PAGE_OBJECTS.test(text)) return { kind: 'authoring' };
+  const strong = DATA_ONLY_VERBS.exec(text);
+  const object = DATA_OBJECTS.exec(text);
+  const verb = strong ?? (object ? AMBIGUOUS_VERBS.exec(text) : null);
+  if (!verb) return { kind: 'authoring' };
+  return {
+    kind: 'data_cleaning',
+    reason:
+      `"${verb[0]}${object ? ` … ${object[0]}` : ''}" asks for the stored values to change, ` +
+      `which authoring a page cannot do`,
+    tools: ROW_MUTATION_TOOLS,
+  };
+}
+
+/** The refusal text for a data-cleaning request that reached the authoring path. */
+export function dataCleaningRefusal(spec: string, reason: string): string {
+  return (
+    `That is a request to change the DATA, not the page — ${reason}. Nothing was authored and ` +
+    `nothing was changed. Re-authoring a dashboard leaves every dirty value exactly as it is, ` +
+    `so it must never be reported as cleaning the data. Do it on the rows instead: ` +
+    `${ROW_MUTATION_TOOLS.join(' / ')} (read the real values first with list_rows / search, and ` +
+    `if which rows should change is a judgement call — the same thing recorded several ways — ` +
+    `ask the user which definition to use before changing anything). Request: "${spec
+      .replace(/\s+/g, ' ')
+      .slice(0, 200)}"`
+  );
+}
 
 /** Strip a leading/trailing ``` fence if the model wrapped the document in one. */
 function stripFences(s: string): string {
@@ -118,6 +200,12 @@ export interface HtmlAuthorRequest {
  */
 export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> {
   const { client, schema, spec, currentHtml, model } = req;
+  // Refuse BEFORE the model call: a data-cleaning request answered with a page is
+  // the failure, and it costs a page rewrite to produce.
+  const routed = classifyAuthoringRequest(spec);
+  if (routed.kind === 'data_cleaning') {
+    throw new Error(dataCleaningRefusal(spec, routed.reason));
+  }
   const parts: string[] = [`# Available data (tables and columns)\n${schema}`];
   if (currentHtml?.trim()) {
     parts.push(
@@ -130,16 +218,46 @@ export async function generateHtmlFile(req: HtmlAuthorRequest): Promise<string> 
   }
 
   let captured = '';
-  const turn = await client.runTurn({
-    model: model ?? HTML_AUTHOR_MODEL,
-    system: HTML_SYSTEM,
-    messages: [{ role: 'user', content: parts.join('\n\n') }],
-    tools: [],
-    maxTokens: HTML_MAX_TOKENS,
-    onText: (d) => {
-      captured += d;
+  // Try the normal budget first, then climb if the page did not fit. A large page
+  // is not a malformed request, so exhausting the ceiling should escalate rather
+  // than immediately telling the user to simplify something reasonable.
+  const attempt = await authorWithEscalation(
+    HTML_MAX_TOKENS,
+    async (maxTokens) => {
+      captured = '';
+      const t = await client.runTurn({
+        model: model ?? HTML_AUTHOR_MODEL,
+        system: HTML_SYSTEM,
+        messages: [{ role: 'user', content: parts.join('\n\n') }],
+        tools: [],
+        maxTokens,
+        onText: (d) => {
+          captured += d;
+        },
+      });
+      return { result: t, truncated: t.stopReason === 'max_tokens' };
     },
-  });
+    (from, to) => {
+      console.warn(
+        `[html-author] page did not fit in ${String(from)} output tokens; retrying at ${String(to)}`,
+      );
+    },
+    // The model's hard ceiling: a rung above it is rejected as a bad REQUEST, which
+    // would replace the explanatory refusal below with a raw provider error.
+    maxOutputTokensFor(model ?? HTML_AUTHOR_MODEL),
+  );
+  const turn = attempt.result;
+
+  // Every budget tier ran out mid-token. Fail loudly rather than returning the
+  // fragment: a truncated page is worse than no page at all. The
+  // model MUST complete the document before returning — a truncated page is
+  // worse than no page at all (a partial <script> or unterminated attribute
+  // breaks the whole thing and silent failures downstream catch nothing).
+  if (attempt.truncated) {
+    throw new Error(
+      'HTML authoring exceeded the output budget and returned an incomplete page. Simplify the request (fewer data sources, smaller dashboards, less detailed charts) or split it into multiple pages.',
+    );
+  }
 
   const html = stripFences(turn.text || captured);
   if (!html || !looksLikeHtml(html)) {

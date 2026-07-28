@@ -529,6 +529,7 @@ export {
   loadColumnPolicy,
   seedColumnPolicyFromYaml,
   regenerateAudienceViewFromDb,
+  regenerateMemberReadView,
   setColumnAudience,
 } from './cloud/audience.js';
 export type { AudienceRowCtx } from './cloud/audience.js';

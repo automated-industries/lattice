@@ -109,14 +109,15 @@ describe('chat thread endpoints', () => {
     ]);
   });
 
-  it("replays an assistant turn's persisted data-change events (rail activity cards)", async () => {
+  it('replays a turn written before data changes moved out of the conversation', async () => {
     const server = await boot();
     await insert(server.url, 'chat_threads', { id: 't2', title: 'Cleanup' });
     await insert(server.url, 'chat_messages', {
       thread_id: 't2',
       role: 'assistant',
-      // A turn that deleted two tables, persisted the way runChat now records it:
-      // per-turn `events` (mutations only) drive the collapsed replay cards.
+      // A turn that deleted two tables, persisted the way runChat used to record
+      // it: per-turn `events` alongside the text. Nothing renders those any more,
+      // so the row must still replay — as text — without handing them back.
       content_json: JSON.stringify({
         text: 'Done — removed them.',
         turns: [
@@ -143,17 +144,186 @@ describe('chat thread endpoints', () => {
     )) as {
       messages: {
         role: string;
+        text: string;
         turns?: {
-          events?: { op: string; table: string | null; summary: string }[];
+          text: string;
+          tools?: { name: string }[];
+          events?: unknown[];
           toolCalls?: unknown[];
         }[];
       }[];
     };
     const asst = replay.messages.find((m) => m.role === 'assistant');
-    expect(asst?.turns?.[0]?.events?.length).toBe(2);
-    expect(asst?.turns?.[0]?.events?.[0]?.op).toBe('schema.delete_entity');
-    expect(asst?.turns?.[0]?.events?.[1]?.summary).toBe('Deleted table b');
+    // The conversation reads back in full…
+    expect(asst?.text).toBe('Done — removed them.');
+    expect(asst?.turns?.[0]?.text).toBe('Done — removed them.');
+    expect(asst?.turns?.[0]?.tools?.[0]?.name).toBe('delete_entity');
+    // …and the stored events are dropped rather than returned: they duplicated
+    // what the activity menu already showed while the work happened.
+    expect(asst?.turns?.[0]?.events).toBeUndefined();
     // toolCalls are server-side memory only — stripped from the GUI replay.
     expect(asst?.turns?.[0]?.toolCalls).toBeUndefined();
+  });
+
+  it('persists tool-call error text and includes it in replay', async () => {
+    const server = await boot();
+    await insert(server.url, 'chat_threads', { id: 't3', title: 'Errors' });
+    const errorMsg = 'Failed to update row: constraint violation on unique field';
+    await insert(server.url, 'chat_messages', {
+      thread_id: 't3',
+      role: 'assistant',
+      // A turn with an errored tool call, persisted with errorText in toolCalls
+      content_json: JSON.stringify({
+        text: 'Let me try a different approach.',
+        turns: [
+          {
+            text: 'Let me try a different approach.',
+            tools: [
+              { name: 'update_row', isError: false },
+              { name: 'update_row', isError: true, errorText: errorMsg },
+            ],
+            events: [],
+            // Cross-turn replay memory: includes errorText on errored calls
+            toolCalls: [
+              { id: 'u1', name: 'update_row', input: { id: 'r1' }, content: '{}', isError: false },
+              {
+                id: 'u2',
+                name: 'update_row',
+                input: { id: 'r2' },
+                content: JSON.stringify({ error: errorMsg }),
+                isError: true,
+                errorText: errorMsg,
+              },
+            ],
+          },
+        ],
+      }),
+      source: 'ai',
+      created_at: '2026-01-03T00:00:01.000Z',
+    });
+
+    const replay = (await fetch(`${server.url}/api/chat/threads/t3/messages`).then((r) =>
+      r.json(),
+    )) as {
+      messages: {
+        role: string;
+        turns?: {
+          tools?: { name: string; isError: boolean; errorText?: string }[];
+        }[];
+      }[];
+    };
+    const asst = replay.messages.find((m) => m.role === 'assistant');
+    expect(asst?.turns?.[0]?.tools?.length).toBe(2);
+    // First tool succeeded — no errorText
+    expect(asst?.turns?.[0]?.tools?.[0]).toEqual({
+      name: 'update_row',
+      isError: false,
+    });
+    // Second tool failed — errorText is harvested from toolCalls and included
+    expect(asst?.turns?.[0]?.tools?.[1]).toEqual({
+      name: 'update_row',
+      isError: true,
+      errorText: errorMsg,
+    });
+  });
+
+  it('replays threads without errorText (backward-compatible)', async () => {
+    const server = await boot();
+    await insert(server.url, 'chat_threads', { id: 't4', title: 'Old' });
+    await insert(server.url, 'chat_messages', {
+      thread_id: 't4',
+      role: 'assistant',
+      // An old persisted turn without errorText in toolCalls (backward-compat)
+      content_json: JSON.stringify({
+        text: 'Something went wrong.',
+        turns: [
+          {
+            text: 'Something went wrong.',
+            tools: [{ name: 'list_rows', isError: true }],
+            events: [],
+            // Old toolCalls format: no errorText field
+            toolCalls: [
+              {
+                id: 'u1',
+                name: 'list_rows',
+                input: { table: 'items' },
+                content: JSON.stringify({ error: 'Table not found' }),
+                isError: true,
+              },
+            ],
+          },
+        ],
+      }),
+      source: 'ai',
+      created_at: '2026-01-04T00:00:01.000Z',
+    });
+
+    const replay = (await fetch(`${server.url}/api/chat/threads/t4/messages`).then((r) =>
+      r.json(),
+    )) as {
+      messages: {
+        role: string;
+        turns?: {
+          tools?: { name: string; isError: boolean; errorText?: string }[];
+        }[];
+      }[];
+    };
+    const asst = replay.messages.find((m) => m.role === 'assistant');
+    // Tool is present and marked as error; errorText is undefined (not in old record)
+    expect(asst?.turns?.[0]?.tools?.[0]).toEqual({
+      name: 'list_rows',
+      isError: true,
+    });
+    expect(asst?.turns?.[0]?.tools?.[0]?.errorText).toBeUndefined();
+  });
+
+  it('truncates error text to ~500 chars on persist', async () => {
+    const server = await boot();
+    await insert(server.url, 'chat_threads', { id: 't5', title: 'LongError' });
+    const longError = 'x'.repeat(600);
+    await insert(server.url, 'chat_messages', {
+      thread_id: 't5',
+      role: 'assistant',
+      content_json: JSON.stringify({
+        text: 'Oops.',
+        turns: [
+          {
+            text: 'Oops.',
+            tools: [
+              { name: 'create_row', isError: true, errorText: longError.slice(0, 500) + '…' },
+            ],
+            events: [],
+            toolCalls: [
+              {
+                id: 'u1',
+                name: 'create_row',
+                input: {},
+                content: JSON.stringify({ error: longError }),
+                isError: true,
+                errorText: longError.slice(0, 500) + '…',
+              },
+            ],
+          },
+        ],
+      }),
+      source: 'ai',
+      created_at: '2026-01-05T00:00:01.000Z',
+    });
+
+    const replay = (await fetch(`${server.url}/api/chat/threads/t5/messages`).then((r) =>
+      r.json(),
+    )) as {
+      messages: {
+        role: string;
+        turns?: {
+          tools?: { errorText?: string }[];
+        }[];
+      }[];
+    };
+    const asst = replay.messages.find((m) => m.role === 'assistant');
+    const errorText = asst?.turns?.[0]?.tools?.[0]?.errorText;
+    // Verify it's truncated and includes ellipsis
+    expect(errorText?.length).toBeLessThanOrEqual(502); // 500 + '…' (3 bytes as UTF-8)
+    expect(errorText).toMatch(/^x{500}…$/);
   });
 });

@@ -15,6 +15,15 @@ import {
   createUserEntity,
   softDeleteUserEntity,
   aiDeleteEntity,
+  inboundLinksTo,
+  describeInboundLinks,
+  removeInboundLinks,
+  AI_DELETE_ROW_CAP,
+  renameUserEntity,
+  purgeUserEntity,
+  renameUserColumn,
+  dropColumnCarryingPolicy,
+  RenameRefused,
 } from './schema-ops.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
@@ -285,13 +294,16 @@ export async function handleSchemaRoutes(
 
   // ── Delete a whole table (the single, explicit table-drop path) ───
   // This is the ONLY DROP TABLE in the GUI. It is deliberately guarded:
-  // owner-gated, never drops a native entity, and REFUSES while any other
-  // table still has a foreign key pointing at it (so a delete can never
-  // leave dangling references / a broken data model — the user removes
-  // those links first). The client gates this behind a type-the-name
-  // confirmation. The old, dangerous DELETE /api/schema/junctions/:name
-  // route (which dropped a "junction" inferred only from FK count, and so
-  // could drop a misclassified first-class entity) has been removed.
+  // owner-gated, never drops a native entity, and REFUSES while a first-class
+  // table still has a foreign key pointing at it (so a delete can never leave
+  // dangling references / a broken data model) unless `?cascade=1` says to take
+  // those rows too. Link tables that exist only to express a relationship with
+  // this entity go with it either way — they are part of the relationship, not
+  // independent objects, and could never be removed on their own. The client
+  // gates this behind a type-the-name confirmation. The old, dangerous
+  // DELETE /api/schema/junctions/:name route (which dropped a "junction"
+  // inferred only from FK count, and so could drop a misclassified first-class
+  // entity) has been removed.
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+$/.test(pathname)) {
     const name = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(name)) {
@@ -323,24 +335,40 @@ export async function handleSchemaRoutes(
     // Owner-gate: dropping a table mutates the owner's config; RLS alone doesn't
     // gate this DDL/config path.
     if (await denyIfNotCloudOwner(active.db, res, 'delete tables')) return true;
-    // Inbound-FK guard: refuse if another table links to this one.
-    const inbound: string[] = [];
-    for (const t of getGuiEntities(active.configPath, active.outputDir).tables) {
-      if (t.name === name) continue;
-      for (const rel of Object.values(t.relations)) {
-        if (rel.type === 'belongsTo' && rel.table === name) {
-          inbound.push(`${t.name}.${rel.foreignKey}`);
-        }
-      }
-    }
-    if (inbound.length > 0) {
+    // Inbound-link guard. Classification is shared with the assistant's delete
+    // tool (inboundLinksTo) so the two guards read the model identically and
+    // cannot drift apart.
+    const inbound = inboundLinksTo(active, name);
+    const externalLinks = inbound.filter((l) => !l.owned);
+    const cascadeParam = url.searchParams.get('cascade');
+    const cascade = cascadeParam === '1' || cascadeParam === 'true';
+    if (externalLinks.length > 0 && !cascade) {
       sendJson(
         res,
         {
-          error: `Cannot delete "${name}" — these links point at it: ${inbound.join(', ')}. Delete those links first.`,
+          error:
+            `Cannot delete "${name}" — these links point at it: ` +
+            `${await describeInboundLinks(active, externalLinks)}. Delete it together with those linked ` +
+            `rows (cascade), or merge "${name}" into another table to carry the links across.`,
         },
         400,
       );
+      return true;
+    }
+    // Remove the link side first — the link tables this entity owns, plus (only
+    // when cascading) the rows that point at it. Audited + reversible, and
+    // refused up front if the cascade is too large, so a refusal never leaves
+    // the model half-deleted.
+    const links = await removeInboundLinks(
+      active,
+      name,
+      inbound,
+      ctx.buildMutationCtx(),
+      { cascade, rowBudget: AI_DELETE_ROW_CAP },
+      sessionId,
+    );
+    if (!links.ok) {
+      sendJson(res, { error: links.error }, 400);
       return true;
     }
     // SOFT delete: remove the entity from the config + live registry
@@ -349,7 +377,11 @@ export async function handleSchemaRoutes(
     // with no snapshot. No reopen (shared with the assistant's delete tool).
     // Physical removal is a separate, API-only `POST /api/schema/purge`.
     await softDeleteUserEntity(active, name, sessionId);
-    sendJson(res, { ok: true });
+    sendJson(res, {
+      ok: true,
+      ...(links.cascadedLinkRows > 0 ? { cascadedLinkRows: links.cascadedLinkRows } : {}),
+      ...(links.droppedLinkTables.length > 0 ? { droppedLinkTables: links.droppedLinkTables } : {}),
+    });
     return true;
   }
 
@@ -525,30 +557,31 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Entity already exists: ${newName}` }, 400);
       return true;
     }
-    await execSql(active.db, `ALTER TABLE "${oldName}" RENAME TO "${newName}"`);
-    const doc = loadConfigDoc(active.configPath);
-    const entity: unknown = doc.getIn(['entities', oldName]);
-    doc.deleteIn(['entities', oldName]);
-    doc.setIn(['entities', newName], entity);
-    // Also rename in entityContexts if present.
-    if (doc.getIn(['entityContexts', oldName])) {
-      const entCtx: unknown = doc.getIn(['entityContexts', oldName]);
-      doc.deleteIn(['entityContexts', oldName]);
-      doc.setIn(['entityContexts', newName], entCtx);
+    // Rename through the shared cascade primitive rather than a bare ALTER.
+    // A table name is stored in many places — other tables' relations, the link
+    // tables named after it, computed definitions, per-table and per-column
+    // metadata, lineage, dashboards, and on a cloud the column policy and the
+    // masking view members read through. Renaming only the table and the config
+    // left every one of those pointing at a name that no longer exists.
+    //
+    // The cloud policy is the one that mattered most: the reopen below triggers
+    // member-access reconciliation, which rebuilds the masking view from the
+    // column policy. With the policy still keyed to the OLD name the rebuild
+    // found nothing to mask, took the no-masking-needed branch, and re-granted
+    // members raw SELECT — so every member silently gained cleartext read on
+    // columns the owner had marked secret, while the GUI still showed them as
+    // masked. The primitive repoints the policy and regenerates the view as part
+    // of the rename, and refuses before writing anything rather than
+    // half-applying. It records the revertible rename op itself, with the
+    // inventory of what moved.
+    const renamed = await renameUserEntity(active, oldName, newName, sessionId);
+    if (!renamed.ok) {
+      sendJson(res, { error: renamed.error }, 400);
+      return true;
     }
-    saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
-    await recordSchemaOp(
-      active,
-      'schema.rename_entity',
-      newName,
-      { entity: oldName },
-      { entity: newName },
-      `Renamed table ${oldName} → ${newName}`,
-      sessionId,
-    );
-    sendJson(res, { ok: true });
+    sendJson(res, { ok: true, cascade: renamed.cascade });
     return true;
   }
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
@@ -632,6 +665,17 @@ export async function handleSchemaRoutes(
     method === 'POST' &&
     /^\/api\/schema\/entities\/[^/]+\/columns\/[^/]+\/rename$/.test(pathname)
   ) {
+    // Owner-only, like every other schema mutation in this file — renaming a table
+    // (:515) and changing a table's columns (:588) are both gated, and this route
+    // changes the shape of the shared schema exactly as they do. It was the single
+    // schema-mutation route without the check.
+    //
+    // Postgres would refuse the DDL for a scoped member anyway, so this is not the
+    // only thing between a member and the owner's schema. But relying on that means
+    // the refusal arrives as a raw privilege error from inside a multi-step carry,
+    // after the config edit has already been considered. An explicit gate refuses in
+    // one place, before anything is touched, and says why.
+    if (await denyIfNotCloudOwner(active.db, res, 'rename a column')) return true;
     const parts = pathname.split('/');
     const entityName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[6] ?? '');
@@ -684,16 +728,32 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Column "${newCol}" already exists on ${entityName}` }, 400);
       return true;
     }
-    await execSql(
-      active.db,
-      `ALTER TABLE "${entityName}" RENAME COLUMN "${colName}" TO "${newCol}"`,
-    );
-    const renamedFields: Record<string, unknown> = {};
-    for (const k of Object.keys(fieldsObj)) {
-      renamedFields[k === colName ? newCol : k] = fieldsObj[k];
+    // The rename goes through the one primitive that carries every COLUMN-name-
+    // keyed store with it — never a bare rename statement of its own. On a
+    // hosted workspace the per-column masking policy is keyed by (table,
+    // column), so a bare rename strands the mask under a name the table no
+    // longer has a column for, and the next rebuild of the member read view
+    // serves the renamed column in cleartext to the whole team.
+    //
+    // The carry has to run while THIS `active` is still open — the reopen below
+    // disposes it — so the configuration write is bracketed with the DDL and the
+    // reopen stays outside.
+    try {
+      await renameUserColumn(active, entityName, colName, newCol, () => {
+        const renamedFields: Record<string, unknown> = {};
+        for (const k of Object.keys(fieldsObj)) {
+          renamedFields[k === colName ? newCol : k] = fieldsObj[k];
+        }
+        doc.setIn(['entities', entityName, 'fields'], renamedFields);
+        saveConfigDoc(active.configPath, doc);
+      });
+    } catch (err) {
+      if (err instanceof RenameRefused) {
+        sendJson(res, { error: err.message }, 400);
+        return true;
+      }
+      throw err;
     }
-    doc.setIn(['entities', entityName, 'fields'], renamedFields);
-    saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
     await recordSchemaOp(
@@ -975,7 +1035,11 @@ export async function handleSchemaRoutes(
         return true;
       }
       try {
-        await execSql(active.db, `DROP TABLE IF EXISTS "${name}"`);
+        // Takes the masking view and the name-keyed cloud policy with it — the
+        // view because the table cannot be dropped while it depends on it, the
+        // policy because the next table to take this name would otherwise
+        // inherit this one's sharing, defaults and column masking.
+        await purgeUserEntity(active, name);
       } catch (err) {
         sendJson(
           res,
@@ -1035,7 +1099,12 @@ export async function handleSchemaRoutes(
       return true;
     }
     try {
-      await execSql(active.db, `ALTER TABLE "${name}" DROP COLUMN "${column}"`);
+      // Not a bare DROP COLUMN: on a hosted workspace the member read view
+      // depends on the column (so the drop is refused outright without taking
+      // the view down first), and the column's masking policy is keyed by its
+      // name (so left behind, the next column given that name inherits a mask
+      // nobody wrote for it).
+      await dropColumnCarryingPolicy(active.db, name, column);
     } catch (err) {
       sendJson(
         res,

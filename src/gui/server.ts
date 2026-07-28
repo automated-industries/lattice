@@ -46,6 +46,7 @@ import { probeCloud } from '../framework/cloud-connect.js';
 import { dispatchFilesRoute } from './files-routes.js';
 import { dispatchAssistantRoute, getAggressiveness } from './assistant-routes.js';
 import { dispatchChatRoute } from './chat-routes.js';
+import { chatCancelRegistry } from './chat-cancel.js';
 import { isCloudChat, resolveChatOwnerId, mayReceiveChat } from './chat-identity.js';
 import type { ChatProgressEnvelope } from './chat-progress.js';
 import { resolvedProviderKind } from './ai/provider.js';
@@ -398,13 +399,19 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   // on close. The request handler reads it for `/api/update/status`.
   let updateService: UpdateService | null = null;
 
-  // Discover the `.lattice` root (if the GUI was opened inside a workspace) so the
-  // header switcher can list + switch workspaces — and so a bad active workspace
-  // can fall through to a working one at boot. `null` ⇒ opened on a plain config
-  // (switcher hidden); in the virgin state the root comes from the options.
+  // The `.lattice` root whose registry backs the header switcher — and the
+  // fall-through when a bad active workspace can't open. `null` ⇒ opened on a
+  // plain config (switcher hidden).
+  //
+  // The root the LAUNCHER resolved wins. Deriving it from the boot config's
+  // directory instead would re-open the hole the launcher just closed: an
+  // adopted-in-place config living inside a checkout that also contains a
+  // leftover `.lattice` would make the server serve THAT registry — a different
+  // set of workspaces than the one the session was started for. Searching upward
+  // stays only as the fallback for embedders that pass no root at all.
   const latticeRoot =
-    (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null) ??
-    (options.latticeRoot ? resolve(options.latticeRoot) : null);
+    (options.latticeRoot ? resolve(options.latticeRoot) : null) ??
+    (bootConfigPath ? findLatticeRoot(dirname(bootConfigPath)) : null);
 
   // Mutable reference: switching DBs replaces this wholesale; NULL in the virgin
   // (zero-workspace) state until the first workspace is created or joined. The
@@ -1135,6 +1142,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // forwarder gates delivery per user). The FIFO serializes turns so a
                 // second message waits for the first.
                 chatProgress: active.chatProgress,
+                // Registry of turns that can still be stopped. Process-wide (like the
+                // background jobs themselves) rather than per-workspace, so a stop
+                // request finds its turn regardless of which workspace is open.
+                chatCancel: chatCancelRegistry,
                 enqueueChatJob: (job) => {
                   active.chatJobs = active.chatJobs.then(job).catch((err: unknown) => {
                     // The job already published an 'error'+'done' frame before throwing;
@@ -1225,6 +1236,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
             handle: async (req, res) => {
               if (!pathname.startsWith('/api/ingest/')) return false;
               const ingestHandled = await dispatchIngestRoute(req, res, {
+                autoRender,
                 db: active.db,
                 feed: active.feed,
                 softDeletable: active.softDeletable,
@@ -1240,6 +1252,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 configPath: active.configPath,
                 outputDir: active.outputDir,
                 sessionId,
+                // A detached ingest has written nothing by the time the request
+                // returns, so the post-ingest model pass runs again when it settles.
+                onIngestComplete: triggerDataModelPlan,
                 pathname,
                 method,
               });
@@ -1402,6 +1417,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               return await dispatchDbConfigRoute(req, res, {
                 db: active.db,
                 configPath: active.configPath,
+                // Registry writes (migrate-to-cloud, rename) go to the root this
+                // session is serving — never one found above the active config.
+                latticeRoot,
                 pathname,
                 method,
                 convergeWarnings: active.convergeWarnings,

@@ -110,7 +110,6 @@ export const tableViewJs = `    // ───────────────
       if (tab === 'history') renderHistory(body);
       else if (tab === 'datamodel' && typeof renderDataModelTab === 'function') renderDataModelTab(body);
       else if (tab === 'graph' && typeof renderGraphTab === 'function') renderGraphTab(body);
-      else if (tab === 'files' && typeof renderFilesTab === 'function') renderFilesTab(body);
       else if (tab === 'connectors' && typeof renderConnectorsTab === 'function') renderConnectorsTab(body);
       else if (tab === 'databases' && typeof renderDatabasesTab === 'function') renderDatabasesTab(body);
       else if (tab === 'database') renderDatabaseSettings(body);

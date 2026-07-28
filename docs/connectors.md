@@ -13,9 +13,30 @@ introspective engine turns whatever that server exposes into typed tables.
 Open **Configure → MCP Connectors**. This tab has two parts: a **catalog** of
 services you can connect with one click, and the classic **paste-a-URL** field
 for any server not in the catalog. Every connection you already have is listed
-here too — name (the server's self-reported name from the MCP handshake), URL,
-status, last sync, and per-server **Refresh** / **Disconnect** / **Reconnect**
-actions.
+here too — name (see _How a connection is named_ below), URL, status, last sync,
+and per-server **Refresh** / **Disconnect** / **Reconnect** actions.
+
+### How a connection is named
+
+A connection's display name is resolved down a fixed ladder, first match wins:
+
+1. **The curated catalog label for that endpoint.** Authoritative, because it is
+   the only thing that can tell apart several services from one vendor whose
+   servers all answer the handshake with the same word.
+2. **The server's own name from the MCP handshake**, when it is not a generic
+   placeholder. Placeholder names — `server`, `mcp`, `mcp-server`,
+   `stateless-server`, `default`, `unnamed`, `unknown` and the like, compared with
+   case and separators stripped — are **discarded outright** rather than shown, so
+   a present-but-worthless name can't beat a good fallback and render three
+   different connectors under one identical title. The name that does survive is
+   sanitized before use: it is text the remote server chose, and it later reaches
+   a model prompt.
+3. **A label read out of the endpoint's hostname.** A subdomain carrying an "mcp"
+   token plus a real word wins (a vendor fanning several endpoints out of one
+   domain names the service there); otherwise the registrable label is the brand.
+   A host that names only infrastructure (`api`, `gateway`, `mcp`, a bare IP)
+   yields nothing and falls through.
+4. **The caller's own fallback label.**
 
 ### The catalog
 

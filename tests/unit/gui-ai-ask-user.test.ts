@@ -92,6 +92,51 @@ describe('ask_user assistant tool', () => {
     expect(DISPATCHABLE.has('ask_user')).toBe(true);
   });
 
+  it('offers no way to confirm anything — the schema has no `confirm` argument', () => {
+    // ask_user briefly doubled as the confirmation channel for a destructive plan: a
+    // `confirm` array of intended calls, which the server turned into a spendable
+    // grant. That is gone, and its absence is pinned here rather than left implicit —
+    // an argument the model can pass but the server ignores is the worst of both.
+    const fn = getFunction('ask_user');
+    expect(Object.keys(fn?.args.properties ?? {}).sort()).toEqual([
+      'allow_other',
+      'options',
+      'question',
+    ]);
+    expect(fn?.description).not.toMatch(/confirm/i);
+    // ...and it says plainly that answering it authorizes nothing, so the model does
+    // not reach for it as a way around the destructive gate.
+    expect(fn?.description).toMatch(/cannot authorize anything/i);
+  });
+
+  it('treats a `confirm` argument as ordinary noise: a plain question, and nothing minted', async () => {
+    const { client } = scriptedClient([
+      {
+        text: '',
+        toolUses: [
+          {
+            id: 'tu1',
+            name: 'ask_user',
+            input: {
+              question: 'Remove both?',
+              options: ['Yes', 'No'],
+              confirm: [{ tool: 'delete_entity', args: { name: 'notes' } }],
+            },
+          },
+        ],
+      },
+    ]);
+    const events = await collect(runChat({ client, dispatch, userMessage: 'clean up' }));
+    // The MODEL's question and options, exactly as an ordinary ask_user renders them,
+    // and no extra field on the event: no record id, no server-composed card.
+    expect(events.find((e) => e.type === 'question')).toEqual({
+      type: 'question',
+      question: 'Remove both?',
+      options: ['Yes', 'No'],
+      allowOther: true,
+    });
+  });
+
   it('never executes through the dispatcher (chat-stream only)', async () => {
     const r = await executeFunction(dispatch, 'ask_user', {
       question: 'Q?',

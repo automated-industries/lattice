@@ -121,10 +121,10 @@ export const questionsJs = `
     // Build one interactive question card: the question text, one button per
     // option, a free-form "Other" input, and (for store-backed cards) a subtle
     // dismiss. spec: { question, options, allowOther, onAnswer(text, card),
-    // onDismiss(card) | null, subject?: { table, rowId, label } }. Shared by
-    // the pending-store cards (POST answer/dismiss) and the in-turn chat card
-    // (answer = next chat message). The subject (if present) displays as a
-    // secondary line under the question text, clickable to navigate to that record.
+    // onDismiss(card) | null, subject?: { table, rowId, label } }. Shared by the
+    // pending-store cards (POST answer/dismiss) and the in-turn chat card (answer =
+    // next chat message). The subject (if present) displays as a secondary line under
+    // the question text, clickable to navigate to that record.
     function buildQuestionCard(spec) {
       var card = document.createElement('div');
       card.className = 'q-card';
@@ -361,7 +361,7 @@ export const questionsJs = `
         setTimeout(function () { qSendAnswerAsChat(text, tries + 1); }, 150);
         return;
       }
-      sendChat(text);
+      sendChat(text, null);
     }
 
     // The Configure-view Data Questions page (route #/questions). Lists the pending

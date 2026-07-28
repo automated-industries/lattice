@@ -1,12 +1,16 @@
 import type { ComputedTableDef, ComputedFieldDef } from '../../../config/types.js';
 import { narrowComputedDef } from '../../../config/parser.js';
+import { checkDataReadiness, type ReadinessRequest } from '../dashboard-qa.js';
 import { requireString } from './helpers.js';
 import { NOT_HANDLED, type HandlerDeps, type GroupResult, type DispatchResult } from './types.js';
 
 /**
- * Computed-table tool group: preview / create / update / refresh. Every
- * mutation runs through the `ctx.computedOps` closure bundle the server
- * injects — the same audited, revertible primitives the computed-table
+ * Pre-build inspection + computed tables — the tools that look at the data
+ * BEFORE something is built on top of it, and the computed-table lifecycle
+ * (preview / create / update / refresh).
+ *
+ * Every computed mutation runs through the `ctx.computedOps` closure bundle the
+ * server injects — the same audited, revertible primitives the computed-table
  * builder routes use — so an assistant-made computed table lands in the
  * activity feed and the session undo stack exactly like a builder action.
  *
@@ -15,6 +19,10 @@ import { NOT_HANDLED, type HandlerDeps, type GroupResult, type DispatchResult } 
  * `Record<name, ComputedFieldDef>` the engine defines, preserving order, and
  * validates each field through the SAME config narrower the YAML and HTTP
  * paths use — the assistant can never accept a definition those would reject.
+ *
+ * `check_data_readiness` sits here because it answers the same question
+ * `preview_computed_table` does — "will what I am about to build actually hold
+ * up against the real data?" — one step earlier, before a definition exists.
  */
 
 /** Preview row cap: enough to judge a definition, small enough for a prompt. */
@@ -93,9 +101,52 @@ function fieldErrorSummary(errors: { name: string; error: string }[], okNames: s
   );
 }
 
+/** Optional string arg → trimmed value, or undefined when absent/blank. */
+function optionalString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
 export async function handleComputed(deps: HandlerDeps): Promise<GroupResult> {
   const { ctx, name, args } = deps;
   switch (name) {
+    case 'check_data_readiness': {
+      // An INSPECTION, never a gate: it reports what is dirty (duplicate keys,
+      // no clean categorical column, one status recorded several ways) with real
+      // counts, plus the question to put to the user. It refuses nothing and
+      // decides nothing — the caller still builds whatever the user asks for,
+      // it just does not get to invent the classification rule silently.
+      const table = requireString(args.table, 'table');
+      const req: ReadinessRequest = { table };
+      const key = optionalString(args.key_column);
+      const groupBy = optionalString(args.group_by);
+      const concept = optionalString(args.concept);
+      if (key !== undefined) req.keyColumn = key;
+      if (groupBy !== undefined) req.groupBy = groupBy;
+      if (concept !== undefined) req.concept = concept;
+      try {
+        const report = await checkDataReadiness(ctx.db, req);
+        return {
+          ok: true,
+          result: {
+            table: report.table,
+            rows: report.rows,
+            ready: report.ready,
+            findings: report.findings,
+            question: report.question,
+            note: report.ready
+              ? 'The data answers this as asked — build it.'
+              : 'Do NOT pick one of these definitions yourself and do NOT state a figure based ' +
+                'on one. Put the question above to the user (ask_user) with the counts, and build ' +
+                'the answer they choose. If the values themselves are wrong, offer to clean the ' +
+                'rows (update_row / bulk_update / dedup / merge_rows) — not to edit a dashboard.',
+          },
+        };
+      } catch (e) {
+        // Loud: an unknown table / unsearchable term must never read as "all clean".
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+
     case 'preview_computed_table': {
       if (!ctx.computedOps) return NOT_AVAILABLE;
       const base = requireString(args.base, 'base');

@@ -6,6 +6,250 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.5.0] — 2026-07-27
+
+### Security
+
+- **Every rename path now carries a table's cloud masking with it.** Renaming a table is performed in
+  three places — the schema route, the data-model planner, and the history undo/redo — and only the
+  first carried the column policy across. Through the other two a renamed table's policy and masking
+  view were left behind under the old name, so the next member reconciliation saw an unmasked table
+  and granted members direct read on columns the owner had marked secret. All three now run through a
+  single primitive that snapshots the masking, moves it, rebuilds the view under the new name, and
+  refuses rather than proceeding if the policy cannot follow. A test fails the build if a fourth
+  rename path is ever added outside it.
+- **A member is never granted direct read on a table.** Previously a table with no recorded secret
+  columns was granted members direct read of the base table, and "no recorded secret columns" is what a
+  lost or mislaid column policy looks like — so a bookkeeping slip became a data exposure. Reads now
+  always go through a per-table view, whether or not anything is masked, and direct read is withheld
+  unconditionally. A policy that goes missing can now at worst produce a stale view, which is visible
+  and repairable, instead of cleartext. Members keep the column-level access their own writes need.
+- **A mask is never rebuilt looser than the one already in place.** The view itself is treated as the
+  record of what was masked, so restoring a database without its column policy, or losing those rows
+  any other way, no longer regenerates the view without its masking. Recovered masking is written back,
+  and only an explicit change to a column's audience can relax it.
+- **Member reconciliation repairs drift instead of refusing it.** It resolves each masking view to the
+  table it actually reads, so masking stranded under an older name is detected even though every
+  name-based lookup comes back empty — and it is then re-attached and rebuilt, with the repair
+  reported. Refusing only withheld new access; it left an existing exposure standing. This is what
+  upgrades workspaces that drifted under earlier versions.
+- **A renamed column keeps its masking.** Renaming a column moved the column but not the record of it
+  being secret, so the next rebuild of the view served it in the clear. Column renames and drops now
+  carry that record with them, and a test fails the build if a rename path is added that does not.
+- **Marking a column secret accounts for what reads it.** A computed view built over the column kept
+  serving the value after the base table was masked; the operation now handles dependent views or
+  refuses and names them, rather than reporting a column as masked while a path still exposes it.
+- **Change history no longer shows members values they cannot read.** Audit images are masked for the
+  viewer at the point they are served, so a member browsing history cannot see owner-secret columns of
+  a shared row. What is stored is unchanged, so undo and redo still restore completely.
+- **The assistant no longer performs wide or multi-object removals at all.** Removing or clearing data
+  across more than one object, or across more than 200 records in a turn, is now rejected before
+  anything runs — and it is not a permission you can grant. There is no confirmation, no approval and
+  no setting that enables it. The rejection names the objects and their record counts so you can make
+  the change yourself in the app.
+
+  Two mechanisms preceded this and both are removed. The first inferred your agreement by re-reading
+  the conversation; the second recorded it server-side as a single-use grant matched on object, kind
+  of removal and record count. Both were repeatedly found forgeable — an option you never chose
+  counting as part of the question, a document title putting an affirmation into what was read as your
+  words, one record's removal authorising a whole list, an approval outliving the act it was given
+  for. Each fix closed a route and opened others, because the authority was always derived inside a
+  conversation the assistant can steer. A person still makes every one of these changes, in the app,
+  where the confirmation is a real action on a real screen and no authorisation record has to exist or
+  be defended. Small, single-object removals are unaffected, and remain undoable from version history.
+
+- **Bulk merges are treated as removals.** Deduplicating a table and merging rows remove data, often a
+  great deal of it, and were not covered by the confirmation gate at all. They are now, counted by how
+  many rows they can remove. They are also recorded against the session that asked for them, so the
+  assistant's own undo can see them — and so a merge no longer discards other people's redo history.
+- **A member adding a field can no longer un-mask a column.** Adding a field rebuilds the view members
+  read a table through, and that rebuild was driven only by the record of which columns are secret —
+  which does not cover a column that inherits its masking, and is empty when that record has been lost.
+  A rebuild can now only ever tighten masking, never relax it.
+
+- **A session opens the root it was given, never one found by searching upward.** Root resolution is
+  now `--root`, else `LATTICE_ROOT`, else `~/.lattice` — matching what the desktop app has done since
+  4.3.0. A `.lattice` directory left inside a project could previously be adopted by any later,
+  unrelated run, along with its registry, its cloud workspaces, and the key material needed to reach
+  them. A project-local root still works when named; when one exists above the working directory
+  Lattice names it once at startup so the change is visible rather than silent.
+- **Binding the GUI to a non-loopback address is now deliberate.** It requires `--allow-remote`, an
+  explicitly named `--root`, and a typed confirmation of a disclosure naming the resolved root, the
+  workspace (called out prominently when it is a cloud workspace), the address, and the fact that the
+  server has no login. `--yes` is the non-interactive escape: it skips the question, never the
+  disclosure, and a piped invocation with no terminal is refused rather than treated as consent. None
+  of this is authentication — the server still has none — it only ensures an exposure is intentional
+  and that you know which data you are exposing.
+- **Deleting a cloud workspace purges its stored credentials.** Removing one previously forgot the
+  registry pointer but left that root's credential, S3 configuration and bearer token on disk, so the
+  machine stayed silently able to reconnect. Other workspaces' credentials and the root's shared
+  material are untouched, the remote database is not touched, and a purge that cannot complete fails
+  loudly rather than reporting a clean delete.
+- **Renaming a table no longer strips its cloud column masking.** A rename left the column policy
+  keyed to the old name, so the masking view was rebuilt as though the table had no secret columns and
+  members were re-granted direct read on the base table — while the interface continued to show the
+  column as masked. Renames now repoint the policy before rebuilding, refuse rather than un-mask if
+  the policy cannot follow the table, and member reconciliation refuses by name instead of silently
+  granting when a masking view and its policy disagree.
+- **Removing a table takes its cloud sharing with it.** A masked table could not be removed at all,
+  and the sharing, row visibility and column masking attached to its name outlived it — so a later
+  table created with the same name inherited them.
+- **Nothing in a conversation can authorise a destructive action.** Merely mentioning a table could
+  authorise destroying it, and the assistant's own question supplied the names it needed. There is now
+  no path at all: a wide or multi-object removal is refused regardless of what was said. The threshold
+  measures everything a turn attempted, so a plan split across several calls still trips it, and an
+  act whose size cannot be measured counts as wide rather than as harmless.
+- **An answer that is only "yes" reaches the tool loop.** A reply carrying nothing but a go-ahead was
+  classified as small talk by the fast intake pass and answered inline, so work the user had just
+  agreed to never ran — they said yes and nothing happened.
+
+### Breaking
+
+- **`FoldCache.get()` and `invalidateRow()` take a required `table` argument.** The cache keyed on row
+  id alone, and a single-column primary key serializes to its bare value — so row `1` of two different
+  tables shared one entry and one row's compiled view could be served for the other. Callers must pass
+  the table the row belongs to.
+
+### Changed
+
+- **One place for background progress.** Long-running work — file ingestion, imports, background
+  renders, workspace switches — now reports in a single surface: the activity menu, which stacks
+  every running job with a progress bar and marks each done as it finishes. The separate status
+  strip above the chat, the transient header pill, and the per-change cards inside the conversation
+  are retired. The conversation now shows only what you sent and what the assistant answered, and
+  you can move around the app or keep chatting while background work runs.
+- **The update control moved next to Configure.** "Update available — Upgrade" is an action, not a
+  progress indicator, so it now sits with the other header actions at the right edge. Update
+  _download_ progress reports in the activity menu with the rest of the background work.
+
+### Added
+
+- **The assistant reuses its instructions between turns.** The unchanging part of the assistant's
+  system prompt is now sent as a cacheable block, so follow-up turns in a conversation re-read it
+  instead of paying to re-send it. Per-turn token usage is also reported on the chat stream.
+- **Long documents are authored directly instead of squeezed through a tool call.** Asking for a
+  large artifact now hands the writing to a dedicated authoring pass rather than trying to carry the
+  whole document inside the request that creates it.
+- **Stop a reply that is already running.** The Send button becomes a Stop button while the
+  assistant is working, and stopping actually halts the turn on the server rather than only closing
+  the connection — the reply stops writing to your workspace and stops spending. Whatever it had
+  written is kept and marked as interrupted. If you start typing while a reply is running, the same
+  button becomes Queue instead.
+- **A visible queue you can manage.** Messages sent mid-reply used to appear as dimmed bubbles in
+  the conversation with no way to change your mind. They now sit in a tray above the composer where
+  each one can be removed, or pushed to the front — which stops the current reply and starts that
+  one instead.
+- **FILES is a section of the sidebar again.** Files and folders are browsable as a nested list with
+  an add button, instead of appearing as a table. Folders expand in place. A brand-new workspace now
+  opens with no tables at all rather than two you did not create. Existing data is untouched: both
+  tables stay registered and queryable, they are simply no longer presented as tables to browse.
+- **Click a dashboard chart to see where its data came from.** Charts carry their source binding, and
+  clicking one opens the same provenance panel the record view uses — in place, without leaving the
+  dashboard — with a link through to the underlying table.
+- **Ask the assistant to simplify the data model.** It can now propose a plan — merges, deduplication,
+  dimension extraction, renames, retypes — and show you what each one affects before anything runs,
+  instead of improvising deletions. Proposals you dismiss stay dismissed across restarts.
+- **Search highlights matching objects in the graph.** The graph could already highlight; nothing
+  ever asked it to.
+
+### Fixed
+
+- **A member can edit a table whose columns are masked.** Masking withheld direct read of the base
+  table, and an update has to name the row it is changing — so a member could read such a table and not
+  edit it, and syncing a connector failed outright. Members now hold exactly the column-level access
+  their own writes require, which is deliberately derived from the table's structure rather than from
+  the masking policy, so a policy problem can never widen it.
+- **Search works for members again.** Both search tiers read the underlying table directly, which a
+  member is not permitted to do, and a per-table failure is skipped so one bad table cannot break a
+  whole search — so search quietly returned nothing at all rather than reporting a problem. It now
+  reads what the member is allowed to read.
+- **Sharing a dashboard works for the member who owns it.** The share cascade read the underlying table
+  directly instead of through the member's read path, so it failed for the very people it was for.
+- **Renaming a column is now restricted to the workspace owner**, like every other change to a
+  workspace's shape. It was the one that was not.
+- **Authoring no longer asks a model for more room than it accepts.** The largest retry exceeded the
+  output ceiling of the default model, so the last attempt was rejected outright and replaced a clear
+  explanation with a raw provider error. Retries are capped to each model's ceiling, and a retry that
+  would buy almost no extra room is skipped rather than spending a whole regeneration on it.
+- **A document too large to author no longer stores as a broken one.** Delegated authoring exists
+  because a whole document cannot fit through a tool call, but the authoring call had its own ceiling
+  and no check on hitting it — so a page cut mid-token was returned as though it were finished. An HTML
+  page severed inside a script block still parses as text, so every check that inspects text passed it,
+  and it stored as a page whose behaviour never ran. Authoring now climbs the output budget when a
+  document does not fit, refuses outright if it still does not, and a deterministic well-formedness
+  check rejects a mutilated page at store time. Refusing an edit leaves the previous page intact.
+
+- **A table can be deleted even when other things link to it.** Deleting a table that anything
+  pointed at was refused with advice to remove the links first — advice that could not be followed,
+  because the link tables are themselves tables with links. There is now a resolution that removes
+  the table together with the links into it, and the link tables a relationship creates on your
+  behalf no longer block the deletion of the thing they belong to. All of it stays reversible.
+- **Sending a message with an attachment no longer looks like it hung.** Your message and its file
+  chips now appear in the conversation the moment you press Send, and the box clears at the same
+  time, instead of everything sitting frozen until the upload finished. If the upload fails, your
+  text and files come back so you can retry — an attachment is never silently dropped.
+- **Attaching several files sends all of them.** A batch where some uploads failed used to proceed
+  with whichever ones happened to succeed, so five attachments could arrive as one, and a
+  files-only message was sent as the literal filename — which is why the assistant sometimes replied
+  to the name of a file rather than its contents. Failed uploads are now named and re-staged, and
+  files are sent as attachments rather than as text.
+- **Timestamps in the conversation move.** Every message read "0s ago" indefinitely; only a reload
+  corrected them, after which they froze again.
+- **The assistant cannot report success for work that failed.** A turn is now reconciled against what
+  its tools actually did before it answers, so a run of failed deletions can no longer be summarized
+  as "done" — and when a destructive step half-completes, what was changed on the way is stated
+  plainly with an offer to undo it. Removing or clearing more than a handful of things now requires
+  confirmation naming each target and its record count.
+- **An empty dashboard is no longer called healthy.** Checking a dashboard verified only that its
+  tables existed and its queries parsed, so one that rendered all zeros passed. A primary query that
+  returns nothing is now a failure, and before building on messy data the assistant surfaces what is
+  ambiguous — duplicate keys, competing spellings of a category — with counts, and asks how you want
+  it defined.
+- **Extracted content is no longer dropped in silence.** When the importer refused to write something
+  it had extracted, the upload still reported a clean result. Refusals are now reported with the
+  result, and the importer no longer aims at read-only mirror tables in the first place.
+- **Sign-in failures explain themselves.** A failed sign-in showed a raw status code on the first
+  screen with no way forward. The message now says what happened and which step failed, and offers
+  the other ways to connect.
+- **Connectors are told apart.** Every connector could show the same self-reported placeholder name.
+  They now resolve to a real label. A server that cannot register a client automatically now offers
+  the recovery that already existed but was reachable only when first connecting.
+- **Ruled tables in PDFs extract correctly.** A column that appeared in the header but in only one
+  row shifted every later cell one place left.
+- **Renaming a table updates everything that referred to it**, including, on a cloud, the view members
+  read through — which previously kept pointing at the old name and made a renamed table unreadable
+  for everyone but the owner.
+- **Changing a column's type verifies the data first.** Values that could not be converted were
+  silently stored as zero on one of the two engines. An unconvertible value is now refused, naming
+  the values, and nothing is rewritten. Type changes and column additions can also be undone from
+  history, which previously failed.
+
+- **Chat history survives the move to a cloud.** Migrating a local workspace to a cloud copied its
+  threads and messages across without an owner, and on a cloud the chat read path treats an unowned
+  row as belonging to no one. The conversations arrived intact but permanently unreadable — present
+  in the database, invisible to the person who wrote them. The migration now claims ownerless
+  history for the account performing it. It only ever fills a missing owner, so a conversation that
+  already names its author is never reassigned to someone else.
+- **A dead sign-in is now visible instead of silent.** When a connected Claude account's refresh
+  stops working for good, Lattice shows a reconnect notice rather than carrying on against a
+  credential that is guaranteed to stop working the moment the current one expires. Your connection
+  and credential are left in place — nothing is switched out from under you.
+- **Large documents no longer fail silently, and tool errors are no longer invisible.** Asking for a
+  big document could fail repeatedly while the assistant reported success and nothing was written.
+  The failure is now reported accurately, a request too large to carry is answered with a specific
+  explanation rather than a generic missing-argument error, and tool errors are recorded so they
+  survive a reload instead of vanishing.
+- **Dashboards no longer advertise interactions they don't have.** Generated dashboards could
+  describe "clickable" source citations that had nothing behind them. Citations now carry real
+  hover tooltips, and elements that merely look interactive — a pointer cursor with no actual
+  behavior — have that false affordance removed, with the change reported alongside the other
+  adjustments made when a page is sanitized.
+- **The assistant no longer answers refusals and over-long conversations with a generic error.**
+  A refusal and a conversation that has outgrown its context window are now distinguished from each
+  other and from ordinary failures, so the message explains what actually happened.
+
+---
+
 ## [5.4.0] — 2026-07-26
 
 ### Added

@@ -2,8 +2,9 @@
 // left-sidebar DATA nav section beneath Dashboards. Every model table sits under
 // one of three fixed subheads — TABLES (the user's own entities, the lattice
 // schema), CONNECTORS (every connector schema), DATABASES (every connected
-// database) — each an independently collapsible group. Junctions (linkTable) and
-// SQL-protected tables (sqlDenied) are excluded. Clicking a table opens its
+// database) — each an independently collapsible group. Junctions (linkTable),
+// SQL-protected tables (sqlDenied) and tables with their own dedicated home
+// (navHidden — files, which has its own sidebar section) are excluded. Clicking a table opens its
 // Workspace tab (#/w/table/<name>). Collapse state reuses the shared
 // .section-toggle[data-group] idiom (sources.ts). Must stay INSIDE the client
 // IIFE (uses state/escapeHtml/displayFor/sidebarGroupKey/
@@ -26,7 +27,7 @@ export const navSectionsJs = `
       // show, even when empty, so a table they just created still appears. rowCount
       // null = unknown → keep, so a counting hiccup never hides real data.
       var tables = ((state.entities && state.entities.tables) || []).filter(function (t) {
-        if (!t || !t.name || t.linkTable || t.sqlDenied) return false;
+        if (!t || !t.name || t.linkTable || t.sqlDenied || t.navHidden) return false;
         var isConnectorSchema = !!(t.schemaKey && t.schemaKey !== 'lattice');
         if (isConnectorSchema && t.rowCount === 0) return false;
         return true;
@@ -105,12 +106,12 @@ export const navSectionsJs = `
 
     function renderNavSections() {
       renderNavTables();
-      // (Files no longer has its own sidebar section — it is a table under the TABLES
-      // subhead above.) Enforce the outer single-open accordion (Dashboards | Data) +
-      // wire the toggles (both idempotent).
+      // Enforce the outer single-open accordion (Files | Data | Dashboards) + wire
+      // the toggles (both idempotent). The FILES section's own body is rendered by
+      // renderSources() in sources.ts, not here.
       if (typeof enforceNavAccordion === 'function') enforceNavAccordion();
       else if (typeof applySidebarGroupState === 'function') {
-        ['nav-tables', 'nav-dashboards'].forEach(applySidebarGroupState);
+        ['nav-files', 'nav-tables', 'nav-dashboards'].forEach(applySidebarGroupState);
       }
       if (typeof wireSidebarGroupToggles === 'function') wireSidebarGroupToggles();
     }

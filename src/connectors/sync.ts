@@ -134,6 +134,9 @@ export async function syncConnector(
     }
     await recordSync(db, connectorId, { ok: true, at: now });
   } catch (err) {
+    // Pass the RAW message: recordSync runs it through the shared classification, so a failure a
+    // member can act on (e.g. an authorization server that needs a pre-registered client) is
+    // recorded as its curated, actionable message here exactly as it is on the connect path.
     const message = err instanceof Error ? err.message : String(err);
     await recordSync(db, connectorId, { ok: false, error: message });
     throw err; // fail loudly — do not swallow an external-sync failure

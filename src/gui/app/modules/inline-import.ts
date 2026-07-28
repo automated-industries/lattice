@@ -2,18 +2,37 @@
 // is reachable ONLY by dropping a file into the assistant chat: an upload that the
 // server recognizes as a confirmable structured source comes back with an
 // `autoImport` proposal, and this segment renders a confirm card straight into the
-// assistant rail (#rail-feed) — no top-bar button, no modal. Apply streams the
-// import pipeline live into that same card. Reuses the shared globals defined
-// earlier in the composed script: escapeHtml, refreshEntities, renderSidebar,
-// renderRoute, state. Like every segment this is ONE template literal — no raw
-// backticks or ${...} inside (they would break the literal); HTML is built with
-// single-quoted string concatenation.
+// assistant rail (#rail-feed) — no top-bar button, no modal. That card asks the
+// user a question, so it belongs in the conversation; the import RUN it starts does
+// not. Running an import is a long background job and reports through the shared
+// background-task tracker in the activity menu, next to ingestion and renders.
+// Reuses the shared globals defined earlier in the composed script: escapeHtml,
+// refreshEntities, renderSidebar, renderRoute, state. Like every segment this is
+// ONE template literal — no raw backticks or ${...} inside (they would break the
+// literal); HTML is built with single-quoted string concatenation.
 export const inlineImportJs = `
     // ── Inline structured-source import (confirm card in the assistant rail) ──
     function iiRailFeed() { return document.getElementById('rail-feed'); }
     function iiRailEmptyGone() {
       var e = document.getElementById('rail-empty');
       if (e) e.parentNode && e.parentNode.removeChild(e);
+    }
+
+    // The background-task tracker (bgTask) is declared inside the main client
+    // closure, which has already ended by the time this segment runs — the same
+    // scope boundary iiBatchIngestActive crosses in the other direction. The
+    // closure hands it over on window; see the data-model segment.
+    // An import with nowhere to report its progress would run invisibly, so a
+    // missing tracker is a hard error, raised BEFORE any work starts rather than
+    // swallowed into a silent import.
+    // This segment is composed INSIDE the main client IIFE, so the tracker is a
+    // direct wrapper-scope reference. Still guarded: an import that cannot report
+    // progress must fail before it starts rather than run somewhere invisible.
+    function iiTracker() {
+      if (typeof bgTask !== 'function') {
+        throw new Error('Background-task tracker unavailable — cannot report import progress');
+      }
+      return bgTask;
     }
 
     // Auto-run the data-model planner on the freshly-imported tables — it applies safe
@@ -95,39 +114,25 @@ export const inlineImportJs = `
       else renderInlineImportCard(autoImport);
     }
 
+    // One tracked task per import, so a batch drop that produces several structured
+    // sources gets a row each instead of overwriting one shared task.
+    function iiTaskId(fileId) { return 'import:' + String(fileId); }
+
     // Silent import of a brand-new dataset: materialize every base table + row plus ALL
-    // detected computed views immediately (no opt-in UI), streaming a compact live-
-    // progress card — there is no Apply gate. Marginal/uncertain links still surface as
-    // questions in the assistant's panel (the apply route enqueues them regardless).
+    // detected computed views immediately (no opt-in UI) — there is no Apply gate.
+    // Marginal/uncertain links still surface as questions in the assistant's panel (the
+    // apply route enqueues them regardless). Progress is reported on the background-task
+    // tracker; nothing about the run is painted into the conversation.
     function runInlineImportSilent(autoImport) {
       if (!autoImport || !autoImport.fileId) return;
+      var bg = iiTracker(); // throws before any work starts if there is nowhere to report
       iiActiveImports++; // chat-awareness: a turn sent now knows the import is running
       // Auto-select every detected computed view (the silent path has no opt-in card).
       var computedSel = (autoImport.computedProposals || []).map(function (p) {
         return { table: p.table, fields: (p.fields || []).map(function (f) { return f.name; }) };
       });
-      iiRailEmptyGone();
-      var feedEl = iiRailFeed();
-      var card = document.createElement('div');
-      card.className = 'feed-item import-live';
-      var icon = document.createElement('div'); icon.className = 'feed-icon'; icon.textContent = '⤓';
-      var bodyEl = document.createElement('div'); bodyEl.className = 'feed-body';
-      var title = document.createElement('div'); title.className = 'feed-summary';
-      title.textContent = 'Importing your data…';
-      var log = document.createElement('div'); log.className = 'imp-card-log';
-      bodyEl.appendChild(title); bodyEl.appendChild(log);
-      card.appendChild(icon); card.appendChild(bodyEl);
-      if (feedEl) { feedEl.appendChild(card); feedEl.scrollTop = feedEl.scrollHeight; }
-      function addLine(text, cls) {
-        var d = document.createElement('div');
-        d.className = 'imp-card-line' + (cls ? ' ' + cls : '');
-        d.textContent = text;
-        log.appendChild(d);
-        while (log.childNodes.length > 60) log.removeChild(log.firstChild);
-        if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
-        return d;
-      }
-      addLine('Starting…');
+      var taskId = iiTaskId(autoImport.fileId);
+      var task = bg(taskId, { label: 'Importing your data…' });
       iiStreamNdjson('/api/import/apply', {
         fileId: autoImport.fileId,
         mode: 'both',
@@ -145,28 +150,26 @@ export const inlineImportJs = `
           var names = Object.keys(rbt);
           var total = 0;
           names.forEach(function (n) { total += (rbt[n] || 0); });
-          title.textContent = 'Imported ' + names.length + ' table' + (names.length === 1 ? '' : 's') +
+          var summary = 'Imported ' + names.length + ' table' + (names.length === 1 ? '' : 's') +
             ', ' + total + ' row' + (total === 1 ? '' : 's');
-          var upd = addLine('Updating your objects…', 'imp-spin');
+          // The rows have landed but the views still show the old shape, so the
+          // task stays running until the refresh completes.
+          bg(taskId, { label: 'Updating your objects…' });
           refreshEntities().then(function () {
             renderSidebar();
             renderRoute();
-            if (upd) { upd.className = 'imp-card-line imp-done'; upd.textContent = '✓ Done'; }
+            task.done(summary);
             iiAutoTidy();
           }).catch(function () {
-            if (upd) {
-              upd.className = 'imp-card-line imp-err';
-              upd.textContent = 'Imported, but refreshing the view failed — reload to see your objects.';
-            }
+            task.fail('Imported, but refreshing the view failed — reload to see your objects.');
           });
         } else if (evt.phase === 'error') {
           iiActiveImports = Math.max(0, iiActiveImports - 1);
           // A passive drop that could not be modeled as tables is NOT data loss — the file was
           // already saved as a reference you can open. Say that instead of "Import failed".
-          title.textContent = 'Kept as a file';
-          addLine((evt.message || 'Could not model this as tables') + ' — it is saved as a file you can open.', 'imp-err');
+          task.fail((evt.message || 'Could not model this as tables') + ' — kept as a file you can open');
         } else if (evt.message) {
-          addLine(evt.message);
+          bg(taskId, { label: evt.message });
         }
       });
     }
@@ -282,8 +285,10 @@ export const inlineImportJs = `
           });
         });
       }
+      // The card asks a question and offers the answer. Once the answer is given,
+      // the import itself reports on the background-task tracker — the card grows
+      // no progress log of its own.
       parts.push('<div class="cd-row"><button class="btn primary cd-btn cd-primary" id="ii-apply" type="button">Import into Lattice</button></div>');
-      parts.push('<div class="imp-card-log" id="ii-log"></div>');
 
       var content = document.createElement('div');
       content.className = 'imp-confirm-body';
@@ -310,14 +315,16 @@ export const inlineImportJs = `
 
       var applyBtn = document.getElementById('ii-apply');
       if (applyBtn) applyBtn.addEventListener('click', function () {
-        runInlineImport(autoImport, title, content);
+        runInlineImport(autoImport, content);
       });
     }
 
-    // POST the confirmed proposal to /api/import/apply and stream the pipeline
-    // live into the card's log. On 'done' show a success summary + refresh the
-    // Objects nav in place; on 'error' show the message.
-    function runInlineImport(autoImport, title, content) {
+    // POST the confirmed proposal to /api/import/apply. The question the card
+    // asked has now been answered, so the run reports on the background-task
+    // tracker: the button reflects that the answer was accepted, and the tracker
+    // carries the progress, the outcome, and any failure.
+    function runInlineImport(autoImport, content) {
+      var bg = iiTracker(); // throws before any work starts if there is nowhere to report
       var fileId = autoImport.fileId;
       var sel = content.querySelector('input[name="ii-mode"]:checked');
       var mode = sel ? sel.value : 'both';
@@ -339,23 +346,18 @@ export const inlineImportJs = `
         return { table: t, fields: computedByTable[t] };
       });
       var applyBtn = document.getElementById('ii-apply');
-      if (applyBtn) applyBtn.disabled = true;
-
-      var feedEl = iiRailFeed();
-      var log = document.getElementById('ii-log');
-      function addLine(text, cls) {
-        if (!log) return null;
-        var d = document.createElement('div');
-        d.className = 'imp-card-line' + (cls ? ' ' + cls : '');
-        d.textContent = text;
-        log.appendChild(d);
-        while (log.childNodes.length > 60) log.removeChild(log.firstChild);
-        log.scrollTop = log.scrollHeight;
-        if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
-        return d;
+      var applyLabel = applyBtn ? applyBtn.textContent : '';
+      if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Importing…'; }
+      // A failed import must leave the question answerable again rather than a
+      // dead, permanently-disabled button.
+      function releaseApply() {
+        if (!applyBtn) return;
+        applyBtn.disabled = false;
+        applyBtn.textContent = applyLabel;
       }
-      title.textContent = 'Importing your data…';
-      addLine('Starting…');
+
+      var taskId = iiTaskId(fileId);
+      var task = bg(taskId, { label: 'Importing your data…' });
 
       iiStreamNdjson('/api/import/apply', {
         fileId: fileId,
@@ -377,28 +379,26 @@ export const inlineImportJs = `
           var names = Object.keys(rbt);
           var total = 0;
           names.forEach(function (n) { total += (rbt[n] || 0); });
-          title.textContent = 'Imported ' + names.length + ' tables' + (mode === 'schema' ? '' : ', ' + total + ' rows');
-          var upd = addLine('Updating your objects…', 'imp-spin');
+          var summary = 'Imported ' + names.length + ' tables' + (mode === 'schema' ? '' : ', ' + total + ' rows');
+          // The rows have landed but the views still show the old shape, so the
+          // task stays running until the refresh completes.
+          bg(taskId, { label: 'Updating your objects…' });
           refreshEntities().then(function () {
             renderSidebar();
             renderRoute();
             var count = (state.entities && state.entities.tables) ? state.entities.tables.length : names.length;
-            if (upd) {
-              upd.className = 'imp-card-line imp-done';
-              upd.textContent = '✓ Done — ' + count + ' objects in your workspace';
-            }
+            if (applyBtn) applyBtn.textContent = 'Imported';
+            task.done(summary + ' — ' + count + ' objects in your workspace');
             iiAutoTidy();
           }).catch(function () {
-            if (upd) {
-              upd.className = 'imp-card-line imp-err';
-              upd.textContent = 'Imported, but refreshing the view failed — reload to see your objects.';
-            }
+            if (applyBtn) applyBtn.textContent = 'Imported';
+            task.fail('Imported, but refreshing the view failed — reload to see your objects.');
           });
         } else if (evt.phase === 'error') {
-          title.textContent = 'Import failed';
-          addLine('Error: ' + (evt.message || 'import failed'), 'imp-err');
+          releaseApply();
+          task.fail('Import failed: ' + (evt.message || 'import failed'));
         } else if (evt.message) {
-          addLine(evt.message);
+          bg(taskId, { label: evt.message });
         }
       });
     }

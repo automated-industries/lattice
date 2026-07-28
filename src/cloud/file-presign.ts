@@ -140,8 +140,14 @@ END;
 $sig$;
 
 -- Member-facing entry: presign GET/PUT for a files row the caller can see.
+--
+-- STABLE, not the plpgsql default of VOLATILE. It writes nothing -- it reads the
+-- secret row, the files row and now(). Declaring that honestly is also what puts it
+-- inside the member-callable definer SWEEP, which only calls STABLE/IMMUTABLE
+-- functions (a VOLATILE one could damage the fixture it is swept against). While it
+-- claimed to be VOLATILE the sweep skipped it, and it leaked underneath.
 CREATE OR REPLACE FUNCTION lattice_presign_file(p_file_id text, p_method text, p_ttl int)
-RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS $pf$
+RETURNS text LANGUAGE plpgsql STABLE SECURITY DEFINER AS $pf$
 DECLARE
   s ${S3_SECRET_TABLE}%ROWTYPE;
   object_key text;
@@ -167,12 +173,47 @@ BEGIN
 
   -- Resolve the VERBATIM S3 object key from the files row. The key was finalized
   -- at upload time (it already includes any configured prefix) and is stored in
-  -- the row''s s3://bucket/<key> ref_uri, so the owner read path and this presigner
+  -- the row s3://bucket/<key> ref_uri, so the owner read path and this presigner
   -- both use it as-is. The prefix is NEVER re-prepended here -- doing so would
   -- double it (e.g. <prefix>/<prefix>/<sha>) and 404 on the default config.
-  SELECT ref_uri INTO object_key FROM files WHERE id = p_file_id;
+  --
+  -- READ IT AS THE CALLER MAY SEE IT, NEVER OFF THE BASE TABLE.
+  --
+  -- The key is spliced VERBATIM into the URL this function returns, so handing it
+  -- back is handing back files.ref_uri. The row-visibility gate above is the wrong
+  -- test for a COLUMN: a files row can be visible to everyone while ref_uri carries
+  -- an owner-only audience, which is the entire point of the column mask. Reading
+  -- the base table here therefore returned, in clear, the exact value files_v
+  -- returns as NULL -- plus a working URL to the bytes. Measured from a real member
+  -- login: files_v.ref_uri came back NULL and the presigned URL carried the object
+  -- key. Same shape as the embeddings leak, one function along.
+  --
+  -- The read is routed through the two artifacts that ENFORCE the mask, and never
+  -- through __lattice_column_policy (a policy row that is missing, stale, or
+  -- stranded under a pre-rename name reads back EMPTY, which is indistinguishable
+  -- from "nothing is masked here" -- the losability behind every masking leak in
+  -- this release):
+  --
+  --   * a caller holding column SELECT on files.ref_uri reads the base. A MASKED
+  --     column never carries that grant: the mask generator revokes table AND
+  --     column SELECT and re-grants only the columns it does not mask, so this
+  --     branch is unreachable for a member on a masked column -- while the cloud
+  --     owner, who owns the table, keeps presigning rows they do not themselves own.
+  --   * everyone else reads files_v, which compiles the mask to the SAME
+  --     session_user-keyed lattice_is_owner predicate (session_user is definer-
+  --     invariant, so it is still the MEMBER inside this function). Masked and not
+  --     the row owner => NULL => refused below. Unmasked => the key, as before.
+  --
+  -- No readable path at all (no view yet) => NULL => refused. Fail closed: a member
+  -- with no view has no read path to files either, so nothing real is lost.
+  IF has_column_privilege(session_user, 'files', 'ref_uri', 'SELECT') THEN
+    SELECT ref_uri INTO object_key FROM files WHERE id = p_file_id;
+  ELSIF to_regclass('files_v') IS NOT NULL THEN
+    EXECUTE 'SELECT ref_uri FROM files_v WHERE id = $1' INTO object_key USING p_file_id;
+  END IF;
   IF object_key IS NULL THEN
-    RAISE EXCEPTION 'no object reference for file %', p_file_id;
+    RAISE EXCEPTION 'no readable object reference for file %', p_file_id
+      USING ERRCODE = '42501';
   END IF;
   object_key := substring(object_key from '^s3://[^/]+/(.+)$');
   IF object_key IS NULL OR object_key = '' THEN

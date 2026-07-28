@@ -84,23 +84,22 @@ describe('assistant dock + Outputs markup + wiring', () => {
     expect(guiAppHtml).toContain('checkNativeSetup();');
   });
 
-  it("renders the assistant's data changes as collapsed activity cards (no inline tool pills)", () => {
-    // Tool actions are no longer painted as inline pills. The assistant's data
-    // changes render as the same full-width activity cards as the live feed,
-    // collapsed by type and persisted per-turn for replay. Reads emit no card.
+  it("reports the assistant's data changes outside the conversation", () => {
+    // The conversation carries what the user sent and what the assistant
+    // answered. A data change is painted as an activity card in the header
+    // popover instead — live, as it happens.
     expect(guiAppHtml).toContain('function makeFeedCard');
-    expect(guiAppHtml).toContain('function renderTurnEventCards');
-    expect(guiAppHtml).toContain('function feedGroupKey');
-    // Same-type events collapse even across different objects (table excluded
-    // from the key) — e.g. "Removed N rows across M tables".
-    expect(guiAppHtml).toContain('across ');
+    expect(guiAppHtml).toContain('function renderFeedItem');
     // Live (op:'schema') and persisted (op:'schema.delete_entity') schema events
-    // both collapse + take the 🛠 icon via the shared normalizer.
+    // take the 🛠 icon via the shared normalizer.
     expect(guiAppHtml).toContain('function isSchemaOp');
-    // The old inline tool-pill system is gone entirely.
+    // Neither the inline tool-pill system nor the per-turn card replay that
+    // followed it puts mechanical progress back into the conversation.
     expect(guiAppHtml).not.toContain('renderResolvedPills');
     expect(guiAppHtml).not.toContain('addToolPill');
     expect(guiAppHtml).not.toContain("className = 'tool-pill'");
+    expect(guiAppHtml).not.toContain('renderTurnEventCards');
+    expect(guiAppHtml).not.toContain('feedGroupKey');
   });
 
   it('auto-grows the composer textarea and re-fits on width change', () => {

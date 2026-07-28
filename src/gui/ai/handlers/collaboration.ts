@@ -246,22 +246,45 @@ export async function handleCollaboration(deps: HandlerDeps): Promise<GroupResul
       if (!ctx.deleteEntity) {
         return { ok: false, error: 'Deleting tables is not available in this context' };
       }
-      // Optional resolution for a NON-empty table: delete its data too, or move
-      // it into another table. Omitted → the tool reports the table isn't empty
-      // and the assistant must ask the user before retrying.
+      // Optional resolution for a NON-empty table: delete its data, delete its
+      // data AND the rows in other tables that point at it, or move it into
+      // another table. Omitted → the tool reports what is in the way (row count,
+      // and any tables that link here) and the assistant must ask the user
+      // before retrying.
       let resolution: DeleteResolution | undefined;
       if (args.resolution === 'delete_data') resolution = 'delete_data';
+      else if (args.resolution === 'delete_cascade') resolution = 'delete_cascade';
       else if (typeof args.move_to === 'string' && args.move_to) {
         resolution = { move_to: args.move_to };
       }
       const outcome = await ctx.deleteEntity(target, resolution);
       // Not deleted (table not empty + no resolution): hand the question back to
       // the model as a successful tool result so it asks the user what to do.
-      if ('needsResolution' in outcome) return { ok: true, result: outcome };
+      // `removed: false` states that outright — a successful CALL that removed
+      // NOTHING is exactly the shape a turn summary misreads as "done".
+      if ('needsResolution' in outcome) {
+        return {
+          ok: true,
+          result: {
+            ...outcome,
+            removed: false,
+            next:
+              `Nothing was removed. "${target}" still holds ${String(outcome.rowCount)} record(s). ` +
+              `Ask the user what to do with them (ask_user) before retrying, and do not describe ` +
+              `it as removed, merged, or cleaned up.`,
+          },
+        };
+      }
       if (!outcome.ok) return { ok: false, error: outcome.error };
-      // Keep the in-turn allowlist consistent with the deletion.
+      // Keep the in-turn allowlist consistent with the deletion — including the
+      // link tables that were removed along with the entity, so a later call this
+      // turn can't be pointed at one of them.
       ctx.validTables.delete(target);
       ctx.junctionTables.delete(target);
+      for (const linkTable of outcome.droppedLinkTables ?? []) {
+        ctx.validTables.delete(linkTable);
+        ctx.junctionTables.delete(linkTable);
+      }
       return { ok: true, result: outcome };
     }
     default:

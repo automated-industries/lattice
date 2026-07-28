@@ -56,6 +56,7 @@ import type { StorageAdapter } from './db/adapter.js';
 import {
   runAsyncOrSync,
   getAsyncOrSync,
+  allAsyncOrSync,
   introspectColumnsAsyncOrSync,
   introspectAllColumnsAsyncOrSync,
   addColumnAsyncOrSync,
@@ -85,7 +86,7 @@ import { SyncLoop } from './sync/loop.js';
 import { WritebackPipeline } from './writeback/pipeline.js';
 import { compileRender } from './render/templates.js';
 import { parseConfigFile } from './config/parser.js';
-import { resolveLatticeRoot } from './framework/lattice-root.js';
+import { resolveSessionRoot } from './framework/lattice-root.js';
 import {
   getActiveWorkspace,
   getWorkspace,
@@ -162,7 +163,11 @@ import type {
   ComputedSchemaTable,
   ComputedTableHost,
 } from './schema/computed-table.js';
-import { loadAllColumnPolicy, tableNeedsAudienceView } from './cloud/audience.js';
+import {
+  maskedColumnsForTables,
+  loadAllColumnPolicy,
+  tableNeedsAudienceView,
+} from './cloud/audience.js';
 import type { ComputedTableDef } from './config/types.js';
 import {
   installFilePresigner,
@@ -476,9 +481,10 @@ export class Lattice {
   // -------------------------------------------------------------------------
 
   /**
-   * Open a workspace under a `.lattice` root. Resolves the root (the
-   * `LATTICE_ROOT` env override or a `.lattice/.config` found by walking up
-   * from the cwd), looks up the active or named workspace, applies the
+   * Open a workspace under a `.lattice` root. Resolves the root (`opts.root`,
+   * else the `LATTICE_ROOT` env override, else the home root — never by
+   * searching upward from the cwd, which would open whichever root happened to
+   * sit above the process), looks up the active or named workspace, applies the
    * canonical DB-aligned `Context/` layout for any table lacking an explicit
    * entity context, runs `init()`, and — by default — enables auto-render and
    * renders once so the `Context/` tree exists immediately (no "run lattice
@@ -492,7 +498,7 @@ export class Lattice {
       autoRender?: boolean;
     } = {},
   ): Promise<Lattice> {
-    const root = opts.root ?? resolveLatticeRoot();
+    const root = resolveSessionRoot({ explicitRoot: opts.root }).root;
     const ws: WorkspaceRecord | null = opts.workspaceId
       ? getWorkspace(root, opts.workspaceId)
       : getActiveWorkspace(root);
@@ -808,6 +814,15 @@ export class Lattice {
       // Computed tables: the owner already created the views; this role can't
       // DDL, so register purely by introspection (invisible views are skipped).
       await this._registerConfigComputedTables(true);
+      // Point this member's READS at the views it can actually read.
+      //
+      // A member holds no SELECT on any base table — reads are granted on
+      // `<t>_v`. That routing used to be installed by the GUI's open path only, so
+      // a member reaching Lattice any other way (the CLI, a library caller, a test)
+      // issued base-table SELECTs and got `permission denied` on everything. The
+      // resolver belongs HERE, at the one place that already knows this is a member
+      // open, so every entry point inherits it rather than each one remembering.
+      await this._installMemberReadRelation();
       return;
     }
     // One whole-schema introspection up front (one query on Postgres vs. a
@@ -953,6 +968,29 @@ export class Lattice {
     const maskedTables = new Set<string>();
     for (const [table, cols] of policy) {
       if (tableNeedsAudienceView(cols)) maskedTables.add(table);
+    }
+
+    // The policy alone is not a safe basis for this decision, because it is
+    // LOSABLE — restore a database without it, or mis-key it with a rename, and it
+    // reads back "nothing is masked here".
+    //
+    // Getting that wrong here is worse than getting it wrong for the `<t>_v` view
+    // itself. A computed view compiled while a table looked unmasked reads the BASE
+    // table forever, and member reconciliation grants members SELECT on every
+    // computed view — so a lost policy plus any recompilation (a definition edit,
+    // or the open path's content-hash migration) turns a masked column into
+    // cleartext through a projection, with the mask on `<t>_v` still standing and
+    // looking correct.
+    //
+    // So the standing views are consulted too: if `<t>_v` guards any column, the
+    // table is masked, whatever the policy currently says. The union can only ADD
+    // tables, never remove one, so this is monotone in the safe direction — the
+    // worst case is a computed view reading through a mask view unnecessarily,
+    // which costs a little clarity and leaks nothing.
+    for (const table of (
+      await maskedColumnsForTables(this, this.getRegisteredTableNames())
+    ).keys()) {
+      maskedTables.add(table);
     }
     return maskedTables.size > 0 ? { rowVisible: true, maskedTables } : { rowVisible: true };
   }
@@ -2653,6 +2691,11 @@ export class Lattice {
       decryptRow: (table, row) => this._encryption.decryptRow(table, row),
       decryptRows: (table, rows) => this._encryption.decryptRows(table, rows),
       defaultMaxRows: this._defaultMaxRows,
+      // Delegated per call, not captured: the resolver is installed AFTER the
+      // core is first constructed (a member open sets it once the masking views
+      // have been enumerated), so reading it through the SchemaManager each time
+      // is what makes the ordering irrelevant. Identity for owner / SQLite.
+      readRel: (table) => this._schema.readRel(table),
     });
     return this._queryCoreInstance;
   }
@@ -3332,6 +3375,66 @@ export class Lattice {
    */
   setRenderReadRelation(fn: (table: string) => string): void {
     this._schema.setReadRelation(fn);
+  }
+
+  /**
+   * On a cloud MEMBER open, map every base table that has a `<t>_v` view to that
+   * view, so reads land on the relation this role can actually SELECT from.
+   *
+   * Best-effort by design, and never fail-open in the dangerous direction: if the
+   * catalog probe fails the map stays empty, reads keep targeting base tables, and
+   * the member gets a loud `permission denied` rather than quietly reading around
+   * a mask. The failure mode is a broken session, which is visible, not a leak.
+   *
+   * Only views whose stripped base name is a table this member knows about are
+   * adopted, so a user table that merely happens to end in `_v` cannot capture
+   * another table's reads.
+   */
+  /**
+   * Base tables this member connection reads through a `<t>_v` view. Empty for an
+   * owner or a local workspace. Exposed so a serve-time mask can tell "this table
+   * has a read view whose guarded columns I could not determine" (fail closed and
+   * withhold) apart from "this table has no view at all" (nothing to withhold).
+   */
+  /**
+   * The relation THIS connection should read `table` from — the member's `<t>_v`
+   * view, or the table itself for an owner / SQLite. Exposed for the few readers
+   * that build their own SQL instead of going through the query layer (search), so
+   * they inherit the same routing rather than each deciding for themselves.
+   */
+  memberReadRelation(table: string): string {
+    return this._memberReadViews.get(table) ?? table;
+  }
+
+  memberReadViewTables(): ReadonlySet<string> {
+    return new Set(this._memberReadViews.keys());
+  }
+
+  private _memberReadViews = new Map<string, string>();
+
+  private async _installMemberReadRelation(): Promise<void> {
+    if (this.getDialect() !== 'postgres') return;
+    try {
+      const rows = (await allAsyncOrSync(
+        this._exec(),
+        `SELECT c.relname AS name FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = current_schema() AND c.relkind = 'v' AND c.relname LIKE '%\\_v'`,
+      )) as { name: string }[];
+      if (rows.length === 0) return;
+      const known = new Set(this._schema.getTables().keys());
+      const computed = new Set(this.getComputedTableNames());
+      const map = new Map<string, string>();
+      for (const { name } of rows) {
+        if (computed.has(name)) continue; // a computed projection, not a mask view
+        const base = name.slice(0, -2);
+        if (known.has(base)) map.set(base, name);
+      }
+      this._memberReadViews = map;
+      if (map.size > 0) this._schema.setReadRelation((t) => map.get(t) ?? t);
+    } catch {
+      /* catalog unreadable — leave reads on the base table and let them fail loudly */
+    }
   }
 
   /**

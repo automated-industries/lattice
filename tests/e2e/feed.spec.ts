@@ -9,32 +9,23 @@ test.afterEach(async () => {
   await gui.close();
 });
 
-test('a server-side mutation flashes a transient status and logs to the activity popover (not rail pills)', async ({
-  page,
-}) => {
+test('a server-side mutation logs to the activity popover, and nowhere else', async ({ page }) => {
   await page.goto(gui.url + '#/');
   await expect(page.locator('nav.dash-sidebar')).toBeVisible();
-  // The (removed) right rail never showed pills; the header activity popover
-  // starts empty before any mutation.
+  // The activity popover is the ONE place a data change surfaces; it starts empty.
   await expect(page.locator('#activity-popover .feed-item')).toHaveCount(0);
-
-  // The transient status auto-clears, so ARM the visibility watcher BEFORE the
-  // mutation — otherwise a brief flash can clear between createRow resolving and the
-  // assert (a race that only bites under heavy parallelism, never serial CI, but the
-  // armed watcher is event-driven and catches even a momentary flash).
-  const flashSeen = page
-    .waitForSelector('#app-status', { state: 'visible', timeout: 5000 })
-    .then(() => true)
-    .catch(() => false);
 
   await createRow(gui.url, 'items', { name: 'Hello from e2e' });
 
   // The mutation is published to the in-process FeedBus and pushed as a `feed`
   // message over the multiplexed /api/stream WebSocket the page opened on boot.
-  // The client flashes it as a transient note in the top-right status indicator
-  // (it auto-clears) AND logs it to the header activity popover — never a rail pill.
-  expect(await flashSeen).toBe(true);
   await expect(page.locator('#activity-popover .feed-item')).toHaveCount(1);
+
+  // It does NOT also flash a transient header status (that surface is retired)
+  // and it does NOT appear in the conversation, which carries only the user's
+  // messages and the assistant's answers.
+  await expect(page.locator('#app-status')).toHaveCount(0);
+  await expect(page.locator('#rail-feed .feed-item')).toHaveCount(0);
 });
 
 test('a server-side new entity appears in the sidebar without a reload', async ({ page }) => {

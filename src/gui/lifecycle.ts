@@ -35,8 +35,14 @@ import type { RenderProgress } from '../render/progress.js';
 import { readManifest, writeManifest, manifestPath } from '../lifecycle/manifest.js';
 import { isHiddenLinkTable, isJunctionByColumns, isJunctionTable, tableToSummary } from './data.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
-import { physicalTableExists, physicalColumnExists } from './schema-ops.js';
+import {
+  physicalTableExists,
+  physicalColumnExists,
+  renameTablesCarryingPolicy,
+  renameColumnsCarryingPolicy,
+} from './schema-ops.js';
 import { applyComputedSchemaOp, isComputedSchemaOp } from './computed-ops.js';
+import { applyRetypeColumn } from './planner/appliers.js';
 import { buildComputedFillLlm } from './computed-llm.js';
 import { installComputedFieldFill } from './computed-field-fill.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
@@ -381,9 +387,15 @@ export async function openConfig(
   // projection (what get_row_context then serves). Owner / SQLite leave the
   // resolver at identity. Set before any render is started.
   if (memberOpen) {
-    if (maskedReadViews.size > 0) {
-      db.setRenderReadRelation((table) => maskedReadViews.get(table) ?? table);
-    }
+    // NOTE: the read relation itself is installed by `Lattice.init` for every member
+    // open, from the live catalog — so it covers tables this open never enumerated
+    // (native entities, connector tables, anything created since). Re-installing it
+    // from `maskedReadViews` here would REPLACE that complete map with this one,
+    // which is built from a narrower snapshot, and every table missing from it would
+    // fall back to a base-table read the member has no privilege for. That is exactly
+    // how `dashboards` became unreadable to the member sharing their own dashboard.
+    // `maskedReadViews` stays — other call sites still consult it — it just no longer
+    // overrides the resolver.
     // Overlay this member's visible derived enrichments onto the rendered rows.
     db.enableRenderFold();
   }
@@ -1158,6 +1170,79 @@ type FieldPayload = { entity: string; column: string; fieldDef: unknown };
 type LinkPayload = FieldPayload & { relationName?: string; relation?: unknown };
 type RenameEntityPayload = { entity: string };
 type RenameColumnPayload = { entity: string; column: string };
+/** Both sides of a retype entry carry the column's declared type at that point. */
+type RetypeColumnPayload = { entity: string; column: string; type: string };
+
+/** How far back the rename chain is followed when explaining a stale entry.
+ *  A bounded read: this runs only on the refusal path, never on an open. */
+const RENAME_LOOKUP_LIMIT = 500;
+
+/**
+ * The name `entity` goes by NOW — followed through every rename recorded at or
+ * after `entry` — or null when nothing renamed it away.
+ *
+ * A rename entry records the old name on one side and the new name on the
+ * other, so the chain (`orders` → `purchase_orders` → `sales_orders`) is walked
+ * forward from the entry's own point in history to the name the table carries
+ * today. Undone renames are skipped: they no longer describe the workspace.
+ */
+async function renamedNameFor(
+  active: ActiveDb,
+  entry: AuditEntry,
+  entity: string,
+): Promise<string | null> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = (await active.db.query('_lattice_gui_audit', {
+      filters: [
+        { col: 'operation', op: 'eq', val: 'schema.rename_entity' },
+        { col: 'undone', op: 'eq', val: 0 },
+        { col: 'ts', op: 'gte', val: entry.ts },
+      ],
+      orderBy: 'ts',
+      orderDir: 'desc',
+      limit: RENAME_LOOKUP_LIMIT,
+    })) as Record<string, unknown>[];
+  } catch {
+    // This only ENRICHES a refusal that is thrown either way (an unreadable
+    // history costs the caller the rename detail, never the refusal itself), so
+    // a failed lookup degrades to the plain explanation rather than replacing
+    // the real reason with a history-read error.
+    return null;
+  }
+  let current = entity;
+  // Oldest first, so a chain of renames is followed in the order it happened.
+  for (const row of rows.reverse()) {
+    const from = typeof row.before_json === 'string' ? row.before_json : null;
+    const to = typeof row.after_json === 'string' ? row.after_json : null;
+    if (from === null || to === null) continue;
+    try {
+      const oldName = (JSON.parse(from) as { entity?: unknown }).entity;
+      const newName = (JSON.parse(to) as { entity?: unknown }).entity;
+      if (typeof oldName !== 'string' || typeof newName !== 'string') continue;
+      if (oldName === current) current = newName;
+    } catch {
+      continue; // an unparseable image is one link of the chain, not the answer
+    }
+  }
+  return current === entity ? null : current;
+}
+
+/** Plain-words name for what a schema entry did, for a message a person reads. */
+function describeSchemaEntry(entry: AuditEntry, entity: string, column?: string): string {
+  const phrases: Record<string, string> = {
+    'schema.add_column': 'adding the field',
+    'schema.add_link': 'adding the link',
+    'schema.delete_link': 'removing the link',
+    'schema.add_relation': 'adding the relationship',
+    'schema.rename_column': 'renaming the field',
+    'schema.rename_entity': 'renaming the table',
+  };
+  const phrase = phrases[entry.operation] ?? 'this change';
+  return column !== undefined && column !== ''
+    ? `${phrase} "${column}" on "${entity}"`
+    : `${phrase} "${entity}"`;
+}
 
 /**
  * Apply the inverse (revert/undo) or forward (redo) of a schema audit entry:
@@ -1182,6 +1267,31 @@ export async function applySchemaConfig(
     await applyComputedSchemaOp(active, entry, direction);
     return active;
   }
+  // A column retype is a VALUE REWRITE, not a config diff: it moves the storage
+  // class and canonicalizes every value, so — unlike a rename — it cannot be
+  // replayed by editing the config document. Replay it through its own live
+  // applier instead, exactly as the computed-table ops above do, retyping back
+  // to the type recorded on the other side of the entry. Without this the op
+  // was absent from the switch below and Undo failed outright, making retype the
+  // only schema op the history could not reverse.
+  if (entry.operation === 'schema.retype_column') {
+    const side = direction === 'inverse' ? entry.before_json : entry.after_json;
+    const payload = side ? (JSON.parse(side) as Partial<RetypeColumnPayload>) : null;
+    if (!payload?.entity || !payload.column || typeof payload.type !== 'string') {
+      // Loud, not silent: an entry we cannot reverse must say so rather than
+      // report a success that did nothing.
+      throw new Error('Cannot revert this retype: the recorded change is incomplete');
+    }
+    const outcome = await applyRetypeColumn(
+      active,
+      payload.entity,
+      payload.column,
+      payload.type,
+      '',
+    );
+    if (!outcome.ok) throw new Error(outcome.error);
+    return active;
+  }
   const before = entry.before_json
     ? (JSON.parse(entry.before_json) as Record<string, unknown>)
     : null;
@@ -1189,7 +1299,52 @@ export async function applySchemaConfig(
   const doc = loadConfigDoc(active.configPath);
   const inv = direction === 'inverse';
   const ddl: string[] = [];
+  /**
+   * Tables this replay renames, old name → new. Undo and redo of a rename move a
+   * table exactly as the forward rename did, so everything keyed to the table's
+   * NAME — on a hosted workspace that includes the per-table sharing, ownership
+   * and column-masking policy — has to travel with it here too. Collected so the
+   * DDL below can be bracketed by the shared carry rather than left as a bare
+   * ALTER TABLE, which strips the masking and hands every member direct read.
+   */
+  const tableRenames = new Map<string, string>();
+  /**
+   * Columns this replay renames, per table, old name → new. A column name is
+   * keyed exactly as a table name is: on a hosted workspace the per-column
+   * masking policy is `(table, column)`, so replaying a column rename with a
+   * bare ALTER TABLE strands the mask under a name the table no longer has a
+   * column for — and the next rebuild of the member read view serves the
+   * renamed column in cleartext. Collected so the DDL below is bracketed by the
+   * shared carry, exactly as a table rename is.
+   */
+  const columnRenames = new Map<string, Map<string, string>>();
   const has = (path: string[]): boolean => doc.getIn(path) !== undefined;
+
+  /**
+   * The table an entry edits has to still be in the configuration under the name
+   * the entry recorded. History is a stack, and the entries UNDER a rename
+   * describe the table by its old name — reverting one of those directly cannot
+   * work, and the config edit would otherwise be attempted anyway and fail with
+   * the document parser's own complaint ("Expected YAML collection at orders"),
+   * which names neither the change the user clicked nor the rename in the way.
+   * Refusing is correct; this is the refusal in words a person can act on.
+   */
+  const requireDeclaredEntity = async (entity: string, column?: string): Promise<void> => {
+    if (has(['entities', entity])) return;
+    const verb = inv ? 'undo' : 'redo';
+    const what = describeSchemaEntry(entry, entity, column);
+    const renamedTo = await renamedNameFor(active, entry, entity);
+    if (renamedTo !== null) {
+      throw new Error(
+        `Cannot ${verb} ${what}: "${entity}" has since been renamed to "${renamedTo}", so this change ` +
+          `no longer matches the workspace. Undo the rename first, then ${verb} this change.`,
+      );
+    }
+    throw new Error(
+      `Cannot ${verb} ${what}: "${entity}" is no longer part of this workspace, so this change no ` +
+        `longer matches it. Undo the changes made after it first.`,
+    );
+  };
 
   const reAddEntity = async (name: string, def: unknown): Promise<void> => {
     if (has(['entities', name])) {
@@ -1230,6 +1385,7 @@ export async function applySchemaConfig(
     doc.deleteIn(['entities', from]);
     doc.setIn(['entities', to], def);
     ddl.push(`ALTER TABLE "${from}" RENAME TO "${to}"`);
+    tableRenames.set(from, to);
   };
   const renameColumn = (entity: string, from: string, to: string): void => {
     const def: unknown = doc.getIn(['entities', entity, 'fields', from]);
@@ -1239,6 +1395,9 @@ export async function applySchemaConfig(
     doc.deleteIn(['entities', entity, 'fields', from]);
     doc.setIn(['entities', entity, 'fields', to], def);
     ddl.push(`ALTER TABLE "${entity}" RENAME COLUMN "${from}" TO "${to}"`);
+    const forTable = columnRenames.get(entity) ?? new Map<string, string>();
+    forTable.set(from, to);
+    columnRenames.set(entity, forTable);
   };
 
   switch (entry.operation) {
@@ -1257,12 +1416,14 @@ export async function applySchemaConfig(
     }
     case 'schema.add_column': {
       const p = after as unknown as FieldPayload;
+      await requireDeclaredEntity(p.entity, p.column);
       if (inv) removeField(p.entity, p.column);
       else await reAddField(p.entity, p.column, p.fieldDef);
       break;
     }
     case 'schema.add_link': {
       const p = after as unknown as LinkPayload;
+      await requireDeclaredEntity(p.entity, p.column);
       if (inv) {
         removeField(p.entity, p.column);
         removeRelation(p.entity, p.relationName);
@@ -1274,6 +1435,7 @@ export async function applySchemaConfig(
     }
     case 'schema.delete_link': {
       const p = before as unknown as LinkPayload;
+      await requireDeclaredEntity(p.entity, p.column);
       if (inv) {
         await reAddField(p.entity, p.column, p.fieldDef);
         addRelation(p.entity, p.relationName, p.relation);
@@ -1288,6 +1450,7 @@ export async function applySchemaConfig(
       // link fix). The column is real data, so only the RELATION is added/removed
       // — never the field (unlike add_link, which owns the FK column it created).
       const p = after as unknown as { entity: string; relationName?: string; relation?: unknown };
+      await requireDeclaredEntity(p.entity, p.relationName);
       if (inv) removeRelation(p.entity, p.relationName);
       else addRelation(p.entity, p.relationName, p.relation);
       break;
@@ -1295,6 +1458,9 @@ export async function applySchemaConfig(
     case 'schema.rename_entity': {
       const oldN = (before as unknown as RenameEntityPayload).entity;
       const newN = (after as unknown as RenameEntityPayload).entity;
+      // The side this direction renames FROM is the one that has to still be
+      // there — a table renamed again since is the same stale-entry refusal.
+      await requireDeclaredEntity(inv ? newN : oldN);
       if (inv) renameEntity(newN, oldN);
       else renameEntity(oldN, newN);
       break;
@@ -1302,6 +1468,7 @@ export async function applySchemaConfig(
     case 'schema.rename_column': {
       const oldC = (before as unknown as RenameColumnPayload).column;
       const a = after as unknown as RenameColumnPayload;
+      await requireDeclaredEntity(a.entity, inv ? a.column : oldC);
       if (inv) renameColumn(a.entity, a.column, oldC);
       else renameColumn(a.entity, oldC, a.column);
       break;
@@ -1313,8 +1480,43 @@ export async function applySchemaConfig(
   // Run RENAME DDL on the live connection before re-opening, so the physical
   // schema matches the edited config. (Config edits are persisted only after
   // this succeeds; a throw above leaves the on-disk config + `active` intact.)
-  for (const sql of ddl) await execSql(active.db, sql);
-  saveConfigDoc(active.configPath, doc);
+  //
+  // A TABLE rename goes through the shared primitive, which brackets the DDL with
+  // the snapshot + carry that move every name-keyed store — including, on a hosted
+  // workspace, the column-masking policy and the generated masking view. Replaying
+  // a rename backwards is still a rename: a bare ALTER TABLE here leaves the policy
+  // and the view stranded under the name the table no longer has, which reads as
+  // "this table has no secret columns" and grants every member raw SELECT on it.
+  // It REFUSES rather than rebuild a mask from a policy that did not travel, so the
+  // throw propagates (the route reports it) with the masking left standing.
+  const runDdl = async (): Promise<void> => {
+    for (const sql of ddl) await execSql(active.db, sql);
+    saveConfigDoc(active.configPath, doc);
+  };
+  if (tableRenames.size > 0) {
+    // A replay that renames a table can also rename that table's columns (the
+    // link-table key column), so both carries go through the one primitive —
+    // keyed there by the table's NEW name.
+    const byNewName = new Map<string, ReadonlyMap<string, string>>();
+    for (const [table, cols] of columnRenames)
+      byNewName.set(tableRenames.get(table) ?? table, cols);
+    await renameTablesCarryingPolicy(active.db, tableRenames, runDdl, byNewName);
+  } else if (columnRenames.size > 0) {
+    // One carry per table, composed innermost-first: every snapshot is taken
+    // before any DDL runs, and every carry after all of it. A replay only ever
+    // renames columns on ONE table today, but composing rather than special-
+    // casing that means a second table can never silently take the bare path.
+    let run = runDdl;
+    for (const [table, cols] of columnRenames) {
+      const inner = run;
+      run = async (): Promise<void> => {
+        await renameColumnsCarryingPolicy(active.db, table, cols, inner);
+      };
+    }
+    await run();
+  } else {
+    await runDdl();
+  }
   await disposeActive(active);
   const next = await openConfig(active.configPath, active.outputDir, autoRender);
   // Re-render in the background; the caller awaits this reopen (fast) but the

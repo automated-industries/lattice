@@ -2,6 +2,7 @@ import { existsSync, renameSync, unlinkSync } from 'node:fs';
 import { Lattice } from '../lattice.js';
 import { parseConfigFile } from '../config/parser.js';
 import { registerNativeEntities } from './native-entities.js';
+import { getAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Cloud migration — copy a Lattice's data from one backing store to
@@ -58,6 +59,33 @@ function isMigratable(tableName: string): boolean {
   if (tableName.startsWith('_lattice_gui_')) return false;
   if (tableName.startsWith('__lattice_')) return false;
   return true;
+}
+
+/**
+ * Chat rows carry the author in an `owner_user_id` column, and on a cloud the
+ * read path requires it: both the app filter and a RESTRICTIVE, fail-closed RLS
+ * policy demand `owner_user_id = session_user`, treating NULL as owned by
+ * NO ONE. A LOCAL workspace is single-user and has no identity to stamp, so
+ * every locally-written thread and message has `owner_user_id = NULL`.
+ *
+ * Copied verbatim, that history would land in the cloud permanently unreadable —
+ * present in the table, invisible to its own author. Stamp the migrating owner
+ * on the way in, while the target is still empty and before the chat policies
+ * are installed.
+ */
+const CHAT_OWNED_TABLES = new Set(['chat_threads', 'chat_messages']);
+
+/** The target's chat identity (`session_user` on Postgres), or null off-cloud. */
+async function targetChatOwner(target: Lattice): Promise<string | null> {
+  try {
+    const row = (await getAsyncOrSync(target.adapter, 'SELECT session_user AS u')) as
+      | { u?: unknown }
+      | undefined;
+    const u = row?.u;
+    return typeof u === 'string' && u.length > 0 ? u : null;
+  } catch {
+    return null; // not a Postgres target — nothing to stamp
+  }
 }
 
 /**
@@ -134,6 +162,9 @@ export async function migrateLatticeData(
 
   const result: MigrationResult = { tablesCopied: [], rowsCopied: 0 };
   let unreachableLocalBlobs = 0;
+  // Resolved once: the identity every migrated chat row is stamped with (see
+  // CHAT_OWNED_TABLES). Null off-Postgres, where nothing needs stamping.
+  const chatOwner = await targetChatOwner(target);
 
   for (const table of sourceTables) {
     const rows = await source.query(table, {});
@@ -148,6 +179,13 @@ export async function migrateLatticeData(
       const batch = rows.slice(i, i + batchSize);
       for (const row of batch) {
         if (table === 'files' && isOwnedLocalBlob(row)) unreachableLocalBlobs++;
+        // Claim ownerless chat history for the migrating owner. Only ever fills a
+        // NULL — a row that already names an author keeps it, so re-running or
+        // migrating an already-scoped cloud never reassigns someone else's chat.
+        if (chatOwner && CHAT_OWNED_TABLES.has(table) && row.owner_user_id == null) {
+          await target.upsert(table, { ...row, owner_user_id: chatOwner });
+          continue;
+        }
         await target.upsert(table, row);
       }
       copied += batch.length;

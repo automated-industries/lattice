@@ -616,8 +616,62 @@ import { appJs } from '../../src/gui/app/script.js';
 // root and an ingested row shows once and one ✕ clears both; and the Configure → Files
 // tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
 // kept as expandable tile groups. Length + hash recaptured.
-const ORIGINAL_LENGTH = 821091;
-const ORIGINAL_SHA256 = '456ac2541f2d5e3d6f8e2f1bde4e022070df5c8f71607bb351086305f75a772d';
+// 5.5 one background-progress surface: the assistant's separate status region beside
+// the conversation is retired. Its per-tool labels now re-label a single background
+// task in the activity menu (the same tracker ingestion and imports already use), so
+// "what is running" lives in exactly one place. Length + hash recaptured.
+// 5.5 (cont.): the transient top-right status indicator is retired with its whole
+// segment. Its five producers — background render, workspace switch, offline queue,
+// update download, and the per-change activity flash — now report through the
+// activity-menu tracker (or, for the switch, the overlay + button spinner it already
+// had). Length + hash recaptured.
+// 5.5 (cont.): the auth-warning banner — refreshAuthWarningBlock() (connect-wall
+// segment) renders a fixed reconnect notice when /api/assistant/config carries
+// authWarning (a terminal Claude token-refresh failure), wired at boot and on chat SSE
+// config refreshes alongside refreshLimitBlock().
+// 5.5 (cont.): the per-turn data-change cards are retired from the conversation rail;
+// replay renders text only and ignores any `events` array on older persisted rows.
+// Recaptured ONCE for the combined client, not per-change — the composed bundle is a
+// single artifact, so a merge of several client changes has its own length + hash.
+// 5.5 (cont.): the composer + chat send path rewrite — server-side Stop with a
+// four-state Send/Stop/Queue action, the queue tray above the composer (remove +
+// force-push) replacing queued bubbles in the feed, the optimistic user bubble that
+// commits before the ingest, structured attachment payloads instead of filenames as
+// the message, and the shared relative-time ticker that keeps stamped labels moving.
+// Also: the FILES sidebar section (restoring the long-orphaned tree renderer to a real
+// mount) with Configure -> Files retired, dashboard chart click-through to provenance
+// via a narrowed broker action, the connector name ladder + DCR recovery affordance,
+// humanized sign-in errors with a route to the other providers, and the graph search
+// highlight. The inline-import segment now composes INSIDE the client IIFE (it ran at
+// global scope, where its helpers were undefined), so its progress reports through the
+// background-task tracker.
+// Recaptured ONCE for the combined client, not per-change.
+// 5.5 (cont.): a Stop pressed before the send is acknowledged is no longer a
+// click that does nothing — the intent is held and applied the moment the turn is
+// identified, so an alarmed user's press is never dropped into the ack window.
+// 5.5 (cont.): the composer accepts a pasted image, routing it into the same
+// staging flow a picked file uses (text paste is untouched). Recaptured once for
+// the combined client — both the stop-before-ack change and the paste handler
+// move these bytes, so the pin is taken after the merge, not per branch.
+// 5.5 (cont.): durable consent on the wire. buildQuestionCard's onAnswer now
+// receives the clicked option's INDEX as a third argument (-1 for a free-form
+// answer) — a display string cannot identify an option, and the server is what
+// decides which index means yes; the two store-backed callers ignore it. The card
+// also renders an optional server-composed detail list. renderChatQuestion honours
+// a consent question (server headline + lines + two options, no free-form box),
+// remembers its id, and answers with the index. sendChat/enqueueChat/flushChatQueue
+// carry questionId + optionIndex end to end — including through the send queue,
+// where an answer that waited on chatBusy would otherwise lose its id — and EVERY
+// send attaches any open consent id with index -1, so a typed reply or a files-only
+// send explicitly declines instead of leaving a recorded question live. Recaptured.
+// 5.5 (cont.): ...and all of that is REMOVED again. The assistant no longer performs
+// wide or multi-object removals at all, so there is no approval for the client to
+// carry: the consent-card branch of renderChatQuestion, the detail-line rendering,
+// the remembered open-question id, the option INDEX passed to onAnswer, and the
+// questionId/optionIndex fields on the send body + the queued-item copies are all
+// gone. A question is a question again. Recaptured.
+const ORIGINAL_LENGTH = 857213;
+const ORIGINAL_SHA256 = '20201a88755d73f4adb58f126efae031236ac1aa5dc56df71ba07e6e0743f90e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

@@ -36,11 +36,18 @@ export const offlineEditQueueJs = `    // ────────────�
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
       } catch (_) { location.href = UPDATE_DOWNLOAD_PAGE; }
     }
-    function showUpdatePill(text) {
-      setStatus({ id: 'update', kind: 'accent', text: text, priority: 60, sticky: true });
+    // Update DOWNLOAD progress is background work → the activity-menu tracker.
+    // (The actionable "update ready — restart" control is #app-update-link in the
+    // header; it is not progress and stays where the user can click it.)
+    function showUpdatePill(text, frac) {
+      var opts = { label: text };
+      // A known fraction draws the tracker's real progress bar; unknown stays
+      // indeterminate (label only) rather than faking a position.
+      if (frac != null && isFinite(frac)) { opts.total = 100; opts.done = Math.round(frac * 100); }
+      bgTask('update', opts);
     }
     function hideUpdatePill() {
-      clearStatus('update');
+      clearBgTask('update');
     }
     function reloadForUpdate(label) {
       if (reloadingForUpdate) return;
@@ -115,9 +122,7 @@ export const offlineEditQueueJs = `    // ────────────�
           // bar back up from the polled status; live ticks come via update-progress.
           if (s.phase === 'downloading') {
             var frac = (s.totalBytes && s.downloadedBytes != null) ? (s.downloadedBytes / s.totalBytes) : null;
-            var p = frac != null ? ' — ' + Math.round(frac * 100) + '%' : '';
-            setStatus({ id: 'update', kind: 'accent', sticky: true, spinner: true,
-              text: 'Downloading update' + (s.latest ? ' v' + s.latest : '') + p, progress: frac });
+            showUpdatePill('Downloading update' + (s.latest ? ' v' + s.latest : ''), frac);
           }
           var el = document.getElementById('app-update-link');
           if (!el) return;
@@ -153,7 +158,7 @@ export const offlineEditQueueJs = `    // ────────────�
       if (reason !== 'manual' && now - lastForcedUpdateCheck < 15000) return;
       lastForcedUpdateCheck = now;
       if (reason === 'manual') {
-        setStatus({ id: 'update-check', kind: 'info', spinner: true, ttl: 8000, text: 'Checking for updates…' });
+        bgTask('update-check', { label: 'Checking for updates…' });
       }
       fetch('/api/update/check', { method: 'POST' })
         .then(function (r) { return r.ok ? r.json() : null; })
@@ -161,7 +166,7 @@ export const offlineEditQueueJs = `    // ────────────�
           if (s) { updateState = s; applyUpdateBadge(s); }
           checkUpdateAvailable();
           if (reason === 'manual') {
-            clearStatus('update-check');
+            clearBgTask('update-check');
             // A null latest is ambiguous on its own: it means EITHER "checked, you're
             // current" OR "the check couldn't run" (offline / registry unreachable / no
             // update service). lastCheckOk disambiguates — never report up-to-date for a
@@ -176,7 +181,7 @@ export const offlineEditQueueJs = `    // ────────────�
         })
         .catch(function () {
           if (reason === 'manual') {
-            clearStatus('update-check');
+            clearBgTask('update-check');
             if (typeof showToast === 'function') showToast('Update check failed — try again.', {});
           }
         });
@@ -342,10 +347,7 @@ export const offlineEditQueueJs = `    // ────────────�
         // Desktop background installer download — a real progress bar, never a
         // spinner. total may be null early → indeterminate (text only).
         var frac = (data && data.total) ? (data.done / data.total) : null;
-        var pctTxt = frac != null ? ' — ' + Math.round(frac * 100) + '%' : '';
-        setStatus({ id: 'update', kind: 'accent', sticky: true, spinner: true,
-          text: 'Downloading update' + (data && data.version ? ' v' + data.version : '') + pctTxt,
-          progress: frac });
+        showUpdatePill('Downloading update' + (data && data.version ? ' v' + data.version : ''), frac);
         if (updateState) updateState.phase = 'downloading';
       } else if (type === 'update-ready') {
         // Installer staged — swap the progress pill for the actionable link.

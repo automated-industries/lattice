@@ -109,6 +109,24 @@ export interface QueryCoreDeps {
   /** Decrypt applicable columns across rows (query path only). */
   decryptRows: (table: string, rows: Row[]) => Row[];
   /**
+   * Per-viewer READ relation: the object a SELECT for `table` should target.
+   *
+   * A cloud member holds no SELECT on any base table — reads are granted on the
+   * masking view `<table>_v` instead, which re-applies row visibility and blanks
+   * the cells that member may not see. So the member's reads have to be pointed
+   * at the view, and there is exactly one honest place to do that: here, where
+   * every read is already funnelled. Routing it at each call site instead is how
+   * you get a long tail of paths nobody remembered to move.
+   *
+   * ONLY the FROM identifier moves. Every piece of metadata — primary key,
+   * column validation, encrypted-column set — still resolves against the BASE
+   * table, because the view is deliberately unregistered and knows none of it.
+   *
+   * Unset (owner, SQLite, any non-member open) → identity → byte-identical SQL.
+   * Writes never consult this: DML always targets the base table under RLS.
+   */
+  readRel?: ((table: string) => string) | undefined;
+  /**
    * Default bounded-read cap from `LatticeOptions.defaultMaxRows`. When set, a
    * `query()` with no explicit `limit` and no per-call `maxRows` is capped at
    * this many rows and throws `BoundedReadError` if more exist. `undefined`
@@ -126,6 +144,7 @@ export class QueryCore {
   private readonly decryptRow: QueryCoreDeps['decryptRow'];
   private readonly decryptRows: QueryCoreDeps['decryptRows'];
   private readonly defaultMaxRows: number | undefined;
+  private readonly readRel: (table: string) => string;
 
   constructor(deps: QueryCoreDeps) {
     this.adapter = deps.adapter;
@@ -136,6 +155,20 @@ export class QueryCore {
     this.decryptRow = deps.decryptRow;
     this.decryptRows = deps.decryptRows;
     this.defaultMaxRows = deps.defaultMaxRows;
+    this.readRel = deps.readRel ?? ((t) => t);
+  }
+
+  /**
+   * The relation to SELECT from for `table` (see {@link QueryCoreDeps.readRel}).
+   *
+   * The resolved name is interpolated into SQL, so it is validated exactly like
+   * the caller-supplied one — a resolver is code we control, but an identifier
+   * reaching SQL unvalidated is a habit worth not forming.
+   */
+  private fromRel(table: string): string {
+    const rel = this.readRel(table);
+    if (rel !== table) this.assertIdent(rel);
+    return rel;
   }
 
   async query(table: string, opts: QueryOptions = {}): Promise<Row[]> {
@@ -153,7 +186,7 @@ export class QueryCore {
     if (colErr) return colErr;
 
     const selectList = projectionCols ? projectionCols.map((c) => `"${ident(c)}"`).join(', ') : '*';
-    let sql = `SELECT ${selectList} FROM "${table}"`;
+    let sql = `SELECT ${selectList} FROM "${this.fromRel(table)}"`;
     const params: unknown[] = [];
     const whereClauses: string[] = [];
 
@@ -280,14 +313,14 @@ export class QueryCore {
     let rows: Row[];
     if (this.adapter.dialect === 'postgres') {
       // DISTINCT ON requires the ORDER BY to lead with the distinct columns.
-      let sql = `SELECT DISTINCT ON (${distinctList}) ${selectList} FROM "${table}"${whereSql}`;
+      let sql = `SELECT DISTINCT ON (${distinctList}) ${selectList} FROM "${this.fromRel(table)}"${whereSql}`;
       sql += ` ORDER BY ${distinctList}, "${tieCol}" ${dir}`;
       if (opts.limit !== undefined) sql += ` LIMIT ${opts.limit.toString()}`;
       rows = await allAsyncOrSync(this.adapter, sql, params);
     } else {
       const inner =
         `SELECT *, ROW_NUMBER() OVER (PARTITION BY ${distinctList} ORDER BY "${tieCol}" ${dir}) AS __rn ` +
-        `FROM "${table}"${whereSql}`;
+        `FROM "${this.fromRel(table)}"${whereSql}`;
       let sql = `SELECT ${selectList} FROM (${inner}) WHERE __rn = 1`;
       if (opts.orderBy) sql += ` ORDER BY "${ident(opts.orderBy)}" ${dir}`;
       if (opts.limit !== undefined) sql += ` LIMIT ${opts.limit.toString()}`;
@@ -349,7 +382,7 @@ export class QueryCore {
     const selectList = projectionCols
       ? [...new Set([...projectionCols, orderBy, ...pks])].map((c) => `"${ident(c)}"`).join(', ')
       : '*';
-    let sql = `SELECT ${selectList} FROM "${table}"`;
+    let sql = `SELECT ${selectList} FROM "${this.fromRel(table)}"`;
     if (clauses.length > 0) sql += ` WHERE ${clauses.join(' AND ')}`;
     const pkOrder = pks.map((c) => `"${ident(c)}" ${dir}`).join(', ');
     sql += ` ORDER BY "${ident(orderBy)}" ${dir}, ${pkOrder} LIMIT ${(limit + 1).toString()}`;
@@ -377,7 +410,7 @@ export class QueryCore {
     ]);
     if (colErr) return colErr;
 
-    let sql = `SELECT COUNT(*) as n FROM "${table}"`;
+    let sql = `SELECT COUNT(*) as n FROM "${this.fromRel(table)}"`;
     const params: unknown[] = [];
     const whereClauses: string[] = [];
 
@@ -447,7 +480,7 @@ export class QueryCore {
     // The inner `LIMIT cap + 1` bounds the work: the engine stops after cap+1
     // matching rows. Plain ANSI SQL — runs identically on SQLite and Postgres
     // (the adapter rewrites `?` placeholders to `$N` for Postgres).
-    const sql = `SELECT COUNT(*) as n FROM (SELECT 1 FROM "${table}"${where} LIMIT ${String(cap + 1)}) x`;
+    const sql = `SELECT COUNT(*) as n FROM (SELECT 1 FROM "${this.fromRel(table)}"${where} LIMIT ${String(cap + 1)}) x`;
 
     const row = await getAsyncOrSync(this.adapter, sql, params);
     return Number(row?.n ?? 0);
@@ -457,8 +490,11 @@ export class QueryCore {
     this.assertIdent(table);
     const { clause, params } = this.pkWhere(table, id);
     const row =
-      (await getAsyncOrSync(this.adapter, `SELECT * FROM "${table}" WHERE ${clause}`, params)) ??
-      null;
+      (await getAsyncOrSync(
+        this.adapter,
+        `SELECT * FROM "${this.fromRel(table)}" WHERE ${clause}`,
+        params,
+      )) ?? null;
     return row ? this.decryptRow(table, row) : null;
   }
 
@@ -475,7 +511,7 @@ export class QueryCore {
     const page = pageClause(opts);
     return allAsyncOrSync(
       this.adapter,
-      `SELECT * FROM "${table}"${where}${order}${page.sql}`,
+      `SELECT * FROM "${this.fromRel(table)}"${where}${order}${page.sql}`,
       page.params,
     );
   }
@@ -490,7 +526,7 @@ export class QueryCore {
     const where = hasDeletedAt ? ` WHERE deleted_at IS NULL` : '';
     const row = await getAsyncOrSync(
       this.adapter,
-      `SELECT COUNT(*) as cnt FROM "${table}"${where}`,
+      `SELECT COUNT(*) as cnt FROM "${this.fromRel(table)}"${where}`,
     );
     // Postgres returns COUNT(*) as a string; SQLite returns a number. Coerce
     // so the public Promise<number> contract holds across dialects.
@@ -510,7 +546,7 @@ export class QueryCore {
     return (
       (await getAsyncOrSync(
         this.adapter,
-        `SELECT * FROM "${table}" WHERE "${ident(naturalKeyCol)}" = ? AND deleted_at IS NULL`,
+        `SELECT * FROM "${this.fromRel(table)}" WHERE "${ident(naturalKeyCol)}" = ? AND deleted_at IS NULL`,
         [naturalKeyVal],
       )) ?? null
     );
@@ -656,7 +692,7 @@ export class QueryCore {
     for (const g of opts.groupBy ?? []) selectParts.push(`"${ident(g)}"`);
     for (const a of opts.aggregates) selectParts.push(`${aggExpr(a)} AS "${ident(a.as)}"`);
 
-    let sql = `SELECT ${selectParts.join(', ')} FROM "${table}"`;
+    let sql = `SELECT ${selectParts.join(', ')} FROM "${this.fromRel(table)}"`;
     const params: unknown[] = [];
     const whereClauses: string[] = [];
     if (opts.where && Object.keys(opts.where).length > 0) {

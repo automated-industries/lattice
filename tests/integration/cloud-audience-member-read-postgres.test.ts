@@ -158,7 +158,15 @@ describe.skipIf(!PG_URL)('#2.1 member reads a masked table through the GUI', () 
       tables: { name: string }[];
     };
     const names = ents.tables.map((t) => t.name);
-    expect(names).toContain('notes');
-    expect(names.some((n) => n.endsWith('_v'))).toBe(false); // no notes_v leak
+    // The payload is non-empty — otherwise the "no view leaked" assertion below
+    // would pass vacuously on an empty list.
+    expect(names.length).toBeGreaterThan(0);
+    // The generic note store is retired from the entity payload in 5.5, so it is
+    // deliberately absent here. It stays registered and queryable; it is only
+    // hidden from the objects a member browses.
+    expect(names).not.toContain('notes');
+    // The point of this case: the per-table masking view backing that table must
+    // never surface as an object of its own.
+    expect(names.some((n) => n.endsWith('_v'))).toBe(false);
   });
 });

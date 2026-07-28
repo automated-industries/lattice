@@ -17,6 +17,34 @@ export const bootJs = `    // ────────────────�
       setTimeout(function () { el.hidden = true; }, 250);
     }
 
+    // A banner over the connect wall for the one blocked case that is not "you have
+    // not connected anything": the account IS signed in, it has simply run out of
+    // tokens. The wall only offers "pick a provider", which is the wrong first
+    // suggestion for someone whose fastest fix is topping up the account they have.
+    function showModelBlockedNotice(cfg) {
+      if (document.getElementById('model-blocked-notice')) return;
+      var el = document.createElement('div');
+      el.id = 'model-blocked-notice';
+      el.setAttribute('role', 'status');
+      el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:calc(var(--z-wall) + 1);' +
+        'padding:10px 16px;text-align:center;font-size:13px;line-height:1.5;' +
+        'background:var(--surface-2,#1b1b22);color:var(--text,#e6e6ea);border-bottom:1px solid var(--border,#2a2a35)';
+      var url = cfg.topUpUrl || cfg.accountUrl || '';
+      el.innerHTML =
+        'Your Lattice Cloud account has no tokens left, so it cannot answer any requests. ' +
+        (url ? '<a href="#" id="model-blocked-topup">Add tokens</a> to keep using it, or connect a different model below.'
+             : 'Add tokens to that account to keep using it, or connect a different model below.');
+      document.body.appendChild(el);
+      if (url) {
+        var link = document.getElementById('model-blocked-topup');
+        if (link) link.addEventListener('click', function (e) { e.preventDefault(); window.location.assign(url); });
+      }
+    }
+    function removeModelBlockedNotice() {
+      var el = document.getElementById('model-blocked-notice');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    }
+
     function init() {
       // Restore the persisted Outputs-column width synchronously, before any fetch,
       // so it's applied on the first paint (no width flash) and isn't gated behind
@@ -61,7 +89,13 @@ export const bootJs = `    // ────────────────�
           // without the seam behaves exactly as before.
           state.managedWorkspaces = !!(cfg && cfg.managedWorkspaces === true);
           if (cfg && cfg.connected === false && cfg.managedModelAuth !== true) {
-            showConnectWall(function () { continueBoot(wsBoot); });
+            // A signed-in cloud account with nothing left to spend reports
+            // connected:false — every turn would be refused, so booting into the app
+            // would just fail one action at a time. The server decides this so the
+            // gate and the model calls can never disagree; the notice adds the
+            // top-up route the wall itself does not offer.
+            if (cfg.modelAccessBlocked === 'cloud_balance_exhausted') showModelBlockedNotice(cfg);
+            showConnectWall(function () { removeModelBlockedNotice(); continueBoot(wsBoot); });
             hideAppLoading();
             return undefined;
           }
@@ -81,6 +115,8 @@ export const bootJs = `    // ────────────────�
       initAccountMenu();
       // Show the usage-limit banner if Claude is already over its limit at boot.
       refreshLimitBlock();
+      // Show the auth-warning banner if Claude OAuth token refresh failed terminally.
+      refreshAuthWarningBlock();
       if (wsBoot && wsBoot.virgin === true) {
         renderVirginState();
         hideAppLoading();

@@ -1,6 +1,7 @@
 // Auto-composed segment of the GUI client script (see modules/index.ts). The
-// Sources sidebar: Files (a lazy, infinitely-nestable tree of on-disk roots,
-// local-only) + Artifacts (Lattice-created files). MCP connectors live entirely
+// left-sidebar FILES section: a lazy, infinitely-nestable tree of on-disk roots
+// plus the loose ingested files, local-only. It is the SINGLE file home — there
+// is no second file browser in the Configure drawer. MCP connectors live entirely
 // in the Configure drawer's MCP Connectors tab, not the sidebar.
 // renderSources() is called wherever renderSidebar() is. Must stay
 // INSIDE the client IIFE (uses fetchJson/escapeHtml/loadAllRows/openSettingsDrawer),
@@ -119,19 +120,15 @@ export const sourcesJs = `
     }
     // Remove a source from Lattice (never touches disk). A file/folder root → DELETE
     // its root registration; an ingested files-row (a loose file, or a root's twin) →
-    // soft-delete the row; a file that is both → clear both. Refreshes whichever Files
-    // surface is showing on success.
+    // soft-delete the row; a file that is both → clear both. Refreshes the sidebar
+    // FILES section on success (the only surface that lists sources).
     function removeSource(name, rootId, fileId) {
       var doDelete = function () {
         var ps = [];
         if (rootId) ps.push(fetch('/api/sources/roots/' + encodeURIComponent(rootId), { method: 'DELETE' }));
         if (fileId) ps.push(fetch('/api/tables/files/rows/' + encodeURIComponent(fileId), { method: 'DELETE' }));
         return Promise.all(ps).then(function () {
-          if (typeof renderSources === 'function') renderSources();          // sidebar
-          var body = document.getElementById('drawer-body');
-          if (body && document.getElementById('inputs-files-tree') && typeof renderFilesTab === 'function') {
-            renderFilesTab(body);                                            // Configure Files tab, if open
-          }
+          if (typeof renderSources === 'function') renderSources();
         });
       };
       if (typeof showModal === 'function') {
@@ -189,7 +186,7 @@ export const sourcesJs = `
             if (ul0 && !ul0.hidden) openFolders[li.getAttribute('data-path')] = ul0.innerHTML;
           });
           if (!rootsHtml && !looseHtml) {
-            host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below. (Folder imports ingest up to 500 files per add.)</div>';
+            host.innerHTML = '<div class="src-empty">No files yet — add a file or folder to get started.</div>';
             return;
           }
           host.innerHTML = rootsHtml + looseHtml;
@@ -208,98 +205,6 @@ export const sourcesJs = `
             wireSourceTree(ul1);
           });
       });
-    }
-
-    // ── Grid renderer for the Configure → Files tab (grid-only, nested folders) ──
-    // Reuses prepareSourcesData, so the DEDUPE + twin-id + ✕ from the tree come for
-    // free (the dedupe lives in the data prep, not a per-view renderer). Folder roots
-    // render as EXPANDABLE groups (a folder tile → a nested tile grid, lazily loaded
-    // exactly as the tree does); file roots + loose files render as top-level tiles.
-    // fsTileHtml stays shared (also serves the record page) — the ✕ is a hover overlay
-    // added here, not baked into the tile.
-    function srcGridTile(href, icon, name, kind, rootId, fileId, folderPath, depth) {
-      var inner = fsTileHtml(href || '', icon, name, 'files', '', kind === 'folder' ? 'folder' : 'file');
-      var del = srcRemoveBtn(rootId, fileId);
-      // Grid tiles have no .src-name sibling — stamp the name for the confirm dialog.
-      if (del) del = del.replace('<button ', '<button data-name="' + escapeHtml(name) + '" ');
-      var attrs = kind === 'folder'
-        ? ' data-folder-path="' + escapeHtml(folderPath || '') + '" data-depth="' + (depth || 0) + '" data-loaded="0"'
-        : (href ? '' : ' data-open-path="' + escapeHtml(folderPath || '') + '"');
-      return '<div class="ifg-tile-wrap' + (kind === 'folder' ? ' ifg-folder' : '') + '"' + attrs + '>' + inner + del + '</div>';
-    }
-    function renderSourcesGridInto(host, sourceFiles) {
-      if (!host) return;
-      prepareSourcesData(sourceFiles, function (prep) {
-        if (!prep) { host.innerHTML = ''; return; }
-        var groups = [];   // folder-root expandable groups (full-width blocks)
-        var flat = [];     // file-root + loose file tiles
-        prep.topRoots.forEach(function (r) {
-          if (r.kind === 'folder') {
-            groups.push('<div class="ifg-group">' +
-              srcGridTile('', '📁', r.name, 'folder', r.id, r.twinId, r.path, 0) +
-              '<div class="fs-grid ifg-children" hidden></div></div>');
-          } else {
-            var href = r.twinId ? '#/w/file/' + encodeURIComponent(r.twinId) : '';
-            flat.push(srcGridTile(href, '📄', r.name, 'file', r.id, r.twinId, r.path, 0));
-          }
-        });
-        prep.loose.forEach(function (r) {
-          var name = r.name || r.original_name || 'Untitled';
-          flat.push(srcGridTile('#/w/file/' + encodeURIComponent(r.id), fileEmoji(r), name, 'file', '', r.id, '', 0));
-        });
-        if (!groups.length && !flat.length) {
-          host.innerHTML = '<div class="src-empty">No files yet — add files or a whole folder below.</div>';
-          return;
-        }
-        host.innerHTML = groups.join('') +
-          (flat.length ? '<div class="fs-grid inputs-files-grid">' + flat.join('') + '</div>' : '');
-        wireSourcesGrid(host);
-      });
-    }
-    function wireSourcesGrid(scope) {
-      wireSourceRemoval(scope);
-      // Open a file tile (not a folder, not an unresolved on-disk child).
-      scope.querySelectorAll('.ifg-tile-wrap:not(.ifg-folder) .fs-tile[data-href]').forEach(function (t) {
-        if (t.__wired) return; t.__wired = true;
-        t.addEventListener('click', function () { var h = t.getAttribute('data-href'); if (h) location.hash = h; });
-      });
-      // A child file present on disk but not yet a row — ingest-on-open by path.
-      scope.querySelectorAll('.ifg-tile-wrap[data-open-path] .fs-tile').forEach(function (t) {
-        if (t.__wired) return; t.__wired = true;
-        t.addEventListener('click', function () { openSourceFile(t.parentNode.getAttribute('data-open-path')); });
-      });
-      // Expand a folder group (lazy, mirrors the tree's toggleSourceFolder).
-      scope.querySelectorAll('.ifg-tile-wrap.ifg-folder').forEach(function (wrap) {
-        var tile = wrap.querySelector('.fs-tile');
-        if (!tile || tile.__wired) return; tile.__wired = true;
-        tile.addEventListener('click', function () { toggleGridFolder(wrap); });
-      });
-    }
-    function toggleGridFolder(wrap) {
-      var group = wrap.parentNode; // .ifg-group
-      var childGrid = group.querySelector(':scope > .ifg-children');
-      if (!childGrid) return;
-      if (!childGrid.hidden) { childGrid.hidden = true; wrap.classList.remove('ifg-open'); return; }
-      if (wrap.getAttribute('data-loaded') === '1') { childGrid.hidden = false; wrap.classList.add('ifg-open'); return; }
-      var path = wrap.getAttribute('data-folder-path');
-      var depth = Number(wrap.getAttribute('data-depth') || '0') + 1;
-      fetchJson('/api/sources/list?path=' + encodeURIComponent(path))
-        .then(function (data) {
-          var entries = (data && data.entries) || [];
-          childGrid.innerHTML = entries.map(function (e) {
-            if (e.kind === 'folder') {
-              return '<div class="ifg-group">' +
-                srcGridTile('', '📁', e.name, 'folder', '', '', e.path, depth) +
-                '<div class="fs-grid ifg-children" hidden></div></div>';
-            }
-            return srcGridTile('', '📄', e.name, 'file', '', '', e.path, depth);
-          }).join('') + (data && data.truncated ? '<div class="src-note">…more not shown</div>' : '');
-          wrap.setAttribute('data-loaded', '1');
-          childGrid.hidden = false;
-          wrap.classList.add('ifg-open');
-          wireSourcesGrid(group);
-        })
-        .catch(function () {});
     }
 
     function wireSourceTree(scope) {
@@ -394,20 +299,20 @@ export const sourcesJs = `
     }
     function applySidebarGroupStates() {
       [
-        'files', 'connectors', 'databases',
+        'connectors', 'databases',
         'objects', 'system',
-        // Left-sidebar single-layout nav sections (Files is now a table, not a section).
-        'nav-dashboards', 'nav-tables',
+        // Left-sidebar single-layout nav sections.
+        'nav-dashboards', 'nav-tables', 'nav-files',
       ].forEach(applySidebarGroupState);
     }
     // The left-sidebar nav sections behave as a single-open ACCORDION — opening one
-    // collapses the other. The Configure-drawer groups (files/connectors/databases/
+    // collapses the others. The Configure-drawer groups (connectors/databases/
     // objects/system) are NOT in this set, so they stay independent.
-    // The left sidebar has two single-open sections — Dashboards and Tables. TABLES is
-    // the default OPEN one (index 0 → enforceNavAccordion's fallback when none is open):
-    // it's the primary data nav, so a fresh load lands with your tables visible.
-    // (nav-schema-* groups WITHIN Tables are independent — not listed here.)
-    var NAV_ACCORDION_GROUPS = ['nav-tables', 'nav-dashboards'];
+    // FILES is the default OPEN one (index 0 → enforceNavAccordion's fallback when
+    // none is open): on a fresh or file-driven workspace it is the only section with
+    // content, so a first load lands on the add-a-file affordance.
+    // (nav-schema-* groups WITHIN Data are independent — not listed here.)
+    var NAV_ACCORDION_GROUPS = ['nav-files', 'nav-tables', 'nav-dashboards'];
     function toggleSidebarGroup(group) {
       var willExpand = sidebarGroupCollapsed(group); // currently collapsed → about to open
       if (NAV_ACCORDION_GROUPS.indexOf(group) !== -1) {

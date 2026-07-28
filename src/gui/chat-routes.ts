@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import { isCloudChat, resolveChatOwnerId } from './chat-identity.js';
+import type { ChatCancelRegistry } from './chat-cancel.js';
 import type { ChatProgressBus } from './chat-progress.js';
 import type { ChatStreamEvent } from './ai/sse.js';
 import { FeedBus } from './feed.js';
@@ -23,6 +24,7 @@ import { runIntent, type IntentResult } from './ai/intent.js';
 import { type MutationCtx } from './mutations.js';
 import type { FileJunction } from './data.js';
 import { generateHtmlFile } from './ai/html-author.js';
+import { generateMarkdown } from './ai/markdown-author.js';
 import { qaDashboard } from './ai/dashboard-qa.js';
 import { readIdentity } from '../framework/user-config.js';
 import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
@@ -94,12 +96,40 @@ async function traceLinkInlineAnswer(
 }
 
 /** Lifecycle of the assistant row, persisted in content_json so a reload mid-turn can
- *  recover: `pending` (accepted, not started) → `streaming` → `done` | `error`. */
-type ChatMessageStatus = 'pending' | 'streaming' | 'done' | 'error';
+ *  recover: `pending` (accepted, not started) → `streaming` → `done` | `error` |
+ *  `stopped`. `stopped` is terminal like the other two, but is NOT a failure: the user
+ *  asked the turn to stop, and whatever text had streamed by then is kept. */
+type ChatMessageStatus = 'pending' | 'streaming' | 'done' | 'error' | 'stopped';
 
 /** If the intent pass hasn't produced an acknowledgement within this window, publish a
  *  templated one so the user is never left waiting on a blank typing bubble. */
 const INTENT_ACK_WATCHDOG_MS = 8000;
+
+/** Longest a message can be and still be nothing but a go-ahead. */
+const MAX_GO_AHEAD_CHARS = 40;
+/** The whole message, allowing only an affirmation, a go-ahead phrase and politeness. */
+const GO_AHEAD_SHAPE =
+  /^(?:(?:yes|yeah|yep|yup|ok|okay|sure|correct|confirmed|affirmative)\b[\s,.!-]*)?(?:(?:please\s+)?(?:go\s+ahead|do\s+it|do\s+that|proceed|continue|carry\s+on|go\s+for\s+it)\b[\s,.!-]*)?(?:please|thanks|thank\s+you)?[\s,.!-]*$/i;
+/** At least one of those tokens is an actual affirmation, not bare politeness. */
+const GO_AHEAD_CORE =
+  /\b(?:yes|yeah|yep|yup|ok|okay|sure|correct|confirmed|affirmative|go\s+ahead|do\s+it|do\s+that|proceed|continue|carry\s+on|go\s+for\s+it)\b/i;
+
+/**
+ * Is this message NOTHING but a go-ahead — "yes", "yep, do it", "ok go ahead"?
+ *
+ * Two conditions, and both matter. The SHAPE is anchored at both ends and bounded, so
+ * it only matches a message carrying no content of its own — its whole job is to say
+ * "the meaning of this message is in the previous turn". The CORE requires an actual
+ * affirmation, so a plain "thanks" (which the shape allows, as trailing politeness)
+ * stays on the cheap inline path and does not drag the tool loop in for nothing.
+ *
+ * "no" matches neither, which is the direction that has to be right.
+ */
+export function isBareGoAhead(message: string): boolean {
+  const text = message.trim();
+  if (text.length === 0 || text.length > MAX_GO_AHEAD_CHARS) return false;
+  return GO_AHEAD_CORE.test(text) && GO_AHEAD_SHAPE.test(text);
+}
 
 /**
  * POST /api/chat — the assistant chat stream. Resolves the Claude token,
@@ -147,6 +177,10 @@ interface ChatContext {
    *  GUI over /api/stream, gated per user). Chat text lives here, not on a held-open
    *  POST response. */
   chatProgress: ChatProgressBus;
+  /** Per-process registry of running turns, so `POST /api/chat/messages/:id/stop` can
+   *  abort one. The turn is a DETACHED background job, so cancelling the client's fetch
+   *  would stop nothing — the abort has to reach the job here. */
+  chatCancel: ChatCancelRegistry;
   /** Enqueue the heavy chat loop onto the workspace's serialized FIFO (active.chatJobs),
    *  so a second message runs only after the first finishes. Fire-and-forget. */
   enqueueChatJob: (job: () => Promise<void>) => void;
@@ -160,16 +194,71 @@ function asStr(v: unknown, fallback = ''): string {
 }
 
 /**
- * Build the "the user just attached these files" note that connects a chat message
- * to the files the user attached to it (ingested via the composer Send just before
- * the message is sent). Each id is grounded against the VISIBLE files table — so a
- * stale/invisible/invented id is dropped rather than referenced — and the resulting
- * note (empty when nothing valid is attached) is prefixed to the model's turn so it
- * works on exactly those files with its existing file tools. Any file type, any
- * count. Exported for regression testing. Bounded to 25 ids.
+ * What the client's `attachedFiles` payload actually resolved to. The three counts are
+ * kept SEPARATE on purpose: "nothing was attached" and "files were attached but none of
+ * them could be read" are completely different situations, and collapsing them into one
+ * empty string is what let a failed attachment quietly turn into an ordinary text turn
+ * (which the model then answered by asking what the user wanted).
  */
-export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown): Promise<string> {
-  const ids = Array.isArray(attachedFiles)
+export interface AttachedFilesResolution {
+  /** Ids the client supplied (bounded to 25), whether or not they resolved. */
+  suppliedIds: string[];
+  /** Ids that resolved to a readable row in the visible files table. */
+  resolvedIds: string[];
+  /** Supplied ids that did NOT resolve — stale, invisible, or never ingested. */
+  missingIds: string[];
+  /** The note prefixed to the model's turn; '' when nothing resolved. */
+  note: string;
+}
+
+/**
+ * Ground the ids the composer attached to a chat message against the VISIBLE files
+ * table, and build the note that connects the message to those files so the assistant
+ * works on exactly them with its existing file tools. Any file type, any count,
+ * bounded to 25 ids.
+ *
+ * Unresolvable ids are reported, never invented and never silently ignored: the caller
+ * refuses the turn when NOTHING resolved, and the note names the shortfall when only
+ * some did, so the assistant tells the user rather than answering about files it never
+ * read. Exported for regression testing.
+ */
+/**
+ * Make a value safe to interpolate into a server-authored context note.
+ *
+ * A note is a short bracketed sentence the server writes ABOUT the turn ("the user
+ * is viewing the dashboard X", "they attached Y"). Several of the values that go
+ * into one are model-WRITABLE — a dashboard title the assistant chose, a file name
+ * it gave an artifact it created — so anything they can contain, the model can
+ * contain. Brackets and newlines are the two characters that used to matter: a `]`
+ * closed the note early for whatever parsed it next, and a newline let the rest be
+ * read as a fresh line of the user's own words.
+ *
+ * The structural fix (notes travel as their own content blocks, never concatenated
+ * onto the user's message) is what stops a note BECOMING the message. This is the
+ * other half: it stops a note CONTAINING a fabricated bracket for whatever reads it
+ * next — a log line, a prompt template, a future consumer nobody has written yet.
+ * Both, deliberately: either alone leaves the class open.
+ */
+export function noteValue(value: unknown, fallback = 'untitled'): string {
+  const raw = typeof value === 'string' ? value : '';
+  const cleaned = raw
+    // Control characters, including every newline and tab, become spaces.
+    // eslint-disable-next-line no-control-regex -- deliberate: strip C0/C1 controls
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    // The note's own delimiters. Removed rather than escaped: there is no escape
+    // convention a downstream reader is guaranteed to honour.
+    .replace(/[[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned === '') return fallback;
+  return cleaned.length > 80 ? `${cleaned.slice(0, 79).trimEnd()}…` : cleaned;
+}
+
+export async function resolveAttachedFiles(
+  db: Lattice,
+  attachedFiles: unknown,
+): Promise<AttachedFilesResolution> {
+  const suppliedIds = Array.isArray(attachedFiles)
     ? (attachedFiles as unknown[])
         .map((f) =>
           f && typeof (f as { id?: unknown }).id === 'string' ? (f as { id: string }).id : null,
@@ -177,32 +266,76 @@ export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown
         .filter((x): x is string => !!x)
         .slice(0, 25)
     : [];
-  if (!ids.length) return '';
+  if (!suppliedIds.length) {
+    return { suppliedIds, resolvedIds: [], missingIds: [], note: '' };
+  }
   const labels: string[] = [];
-  for (const id of ids) {
+  const resolvedIds: string[] = [];
+  const missingIds: string[] = [];
+  // There is no vision path yet, so an attached image resolves to a row the model
+  // can name but cannot see into. Track that so the note can say so outright.
+  let hasImages = false;
+  for (const id of suppliedIds) {
+    let row: { id: string; name?: string; original_name?: string; mime?: string } | null = null;
     try {
-      const row = (await db.get('files', id)) as {
+      row = (await db.get('files', id)) as {
         id: string;
         name?: string;
         original_name?: string;
+        mime?: string;
       } | null;
-      if (row) {
-        const display =
-          [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0) ??
-          'file';
-        labels.push(`"${display}" (files id ${row.id})`);
-      }
-    } catch {
-      // stale/invisible id — skip rather than invent a reference
+    } catch (e) {
+      console.warn('[chat] could not read attached file', id, (e as Error).message);
     }
+    if (!row) {
+      missingIds.push(id);
+      continue;
+    }
+    // A file's name is MODEL-WRITABLE (an artifact or ingested file it created names
+    // itself), and this label goes straight into a bracketed context note — so it is
+    // sanitized like any other note value, never interpolated raw.
+    const display = noteValue(
+      [row.name, row.original_name].find((n) => typeof n === 'string' && n.length > 0),
+      'file',
+    );
+    labels.push(`"${display}" (files id ${noteValue(row.id, 'unknown')})`);
+    resolvedIds.push(row.id);
+    if (row.mime?.startsWith('image/')) hasImages = true;
   }
-  if (!labels.length) return '';
+  if (!labels.length) return { suppliedIds, resolvedIds, missingIds, note: '' };
   const many = labels.length > 1;
-  return (
+  let note =
     `[The user just attached ${many ? 'these files' : 'this file'} to this message — ` +
-    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. ` +
-    `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`
-  );
+    `${many ? 'they have' : 'it has'} been added to their Files: ${labels.join(', ')}. `;
+  if (hasImages) {
+    // Say it plainly rather than letting the model infer it can see the picture:
+    // an attached image reaches it as a name and whatever text was extracted, and
+    // a confident description of an image nobody looked at is exactly the kind of
+    // invented answer the rest of this release exists to prevent.
+    note +=
+      'Image files are attached — note that you CANNOT view the visual content of images. ' +
+      "You can only work with the file's name, metadata, and any extracted text metadata. ";
+  }
+  note += `Read ${many ? 'them' : 'it'} with your file tools and use ${many ? 'them' : 'it'} to do what the user asks.]\n\n`;
+  if (missingIds.length > 0) {
+    // Partial resolution: name the shortfall so the model says so instead of quietly
+    // answering as if every attachment had been read.
+    note +=
+      `[Note: ${String(missingIds.length)} other file${missingIds.length > 1 ? 's' : ''} the user ` +
+      `attached could NOT be read from their workspace and ${missingIds.length > 1 ? 'are' : 'is'} ` +
+      'not available to you. Tell them plainly which part you could not see; never present a ' +
+      'guess as having read it.]\n\n';
+  }
+  return { suppliedIds, resolvedIds, missingIds, note };
+}
+
+/**
+ * The attached-files note alone. Thin wrapper over {@link resolveAttachedFiles} kept
+ * for callers that only need the prompt text. Empty when nothing resolved — which is
+ * exactly why the route uses the full resolution instead of this.
+ */
+export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown): Promise<string> {
+  return (await resolveAttachedFiles(db, attachedFiles)).note;
 }
 
 /** Env off-switch for auto-ingesting reference material from chat messages
@@ -459,8 +592,13 @@ export function parseActiveContext(
  * view context was sent. For a dashboard it names the page and points at the
  * `investigate` tool, so the model diagnoses a complaint itself instead of
  * interrogating the user for details it can find.
+ *
+ * Every interpolated value is passed through {@link noteValue} first. The dashboard
+ * title in particular is model-writable — the assistant names the pages it creates —
+ * so an unsanitized title could close the note's bracket and have the rest read as
+ * something else. Exported so that property is directly testable.
  */
-async function describeActiveView(
+export async function describeActiveView(
   db: Lattice,
   active: { table: string; id: string } | undefined,
 ): Promise<{ note: string; label: string }> {
@@ -469,7 +607,8 @@ async function describeActiveView(
     const d = (await db.get('dashboards', active.id).catch(() => null)) as {
       title?: string;
     } | null;
-    const name = d?.title ? `"${d.title}"` : 'the one on screen';
+    const title = noteValue(d?.title, '');
+    const name = title ? `"${title}"` : 'the one on screen';
     return {
       label: `the dashboard ${name}`,
       note:
@@ -479,14 +618,17 @@ async function describeActiveView(
         `them what is wrong.]\n\n`,
     };
   }
-  const label = `the ${active.table} record "${active.id}"`;
+  const label = `the ${noteValue(active.table, 'record')} record "${noteValue(active.id, 'unknown')}"`;
   return {
     label,
     note: `[The user is currently viewing ${label} — "this" / "it" refers to it.]\n\n`,
   };
 }
 
-/** Map client-supplied prior turns into the loop's message format. */
+/** Map client-supplied prior turns into the loop's message format. Empty-text turns
+ *  are skipped: a files-only send carries its meaning in the structured attachment
+ *  payload, not in the message field, so its history entry has no text — and an empty
+ *  content block is rejected by the model API. */
 function mapHistory(raw: unknown): LlmMessage[] {
   if (!Array.isArray(raw)) return [];
   const out: LlmMessage[] = [];
@@ -494,7 +636,7 @@ function mapHistory(raw: unknown): LlmMessage[] {
     if (!item || typeof item !== 'object') continue;
     const role = (item as { role?: unknown }).role;
     const text = (item as { text?: unknown }).text;
-    if ((role === 'user' || role === 'assistant') && typeof text === 'string') {
+    if ((role === 'user' || role === 'assistant') && typeof text === 'string' && text.trim()) {
       out.push({ role, content: text });
     }
   }
@@ -695,25 +837,18 @@ async function ensureThread(
   return id;
 }
 
-/** A data-change the assistant made during a turn, captured from the feed bus so
- *  a reloaded conversation replays the same collapsed activity cards the live rail
- *  showed. Reads (list/get) publish no feed event, so only mutations are stored. */
-interface PersistedTurnEvent {
-  op: string;
-  table: string | null;
-  rowId: string | null;
-  summary: string;
-  /** Feed timestamp of the event, so a reloaded turn can show how long the
-   *  run took (first event → last) instead of a relative "ago". */
-  ts?: string;
-}
-/** One assistant turn: its streamed text + the activity it produced, in order. */
+/**
+ * One assistant turn: its streamed text and the tools it ran.
+ *
+ * A turn's data changes are NOT recorded here. They are reported while they
+ * happen — in the activity feed and the background-task tracker — and the
+ * conversation carries only what the user sent and what the assistant answered.
+ * Rows persisted before that change may still carry an `events` array; it is
+ * simply not read, so those threads replay as text.
+ */
 interface PersistedTurn {
   text: string;
-  tools: { name: string; isError: boolean }[];
-  /** Data-change events this turn produced (mutations only). Replayed as the
-   *  per-thread activity cards in the rail. */
-  events?: PersistedTurnEvent[];
+  tools: { name: string; isError: boolean; errorText?: string }[];
   /**
    * Replayable tool detail for cross-turn memory — SERVER-SIDE ONLY (stripped
    * before the GUI reload response). Lets rehydrateHistory rebuild real
@@ -728,6 +863,8 @@ interface PersistedToolCall {
   input: Record<string, unknown>;
   content: string;
   isError: boolean;
+  /** Truncated error text (~500 chars) when isError is true, for thread replay. */
+  errorText?: string;
 }
 
 // Cross-turn rehydration bounds (see rehydrateHistory). Re-sending prior tool
@@ -887,14 +1024,35 @@ export async function dispatchChatRoute(
             if (fs.length > 0) files = fs;
           }
           if (Array.isArray(parsed.turns)) {
-            // Strip toolCalls — the GUI only needs text + the data-change events
-            // (replayed as activity cards); raw tool result content stays
-            // server-side (cross-turn replay only).
-            turns = parsed.turns.map((t) => ({
-              text: t.text,
-              tools: t.tools,
-              ...(t.events ? { events: t.events } : {}),
-            }));
+            // Strip toolCalls body — the GUI only needs the text; raw tool result
+            // content stays server-side (cross-turn replay only). But harvest error
+            // text from toolCalls so the user is told why a tool failed.
+            turns = parsed.turns.map((t) => {
+              const toolsWithErrors: { name: string; isError: boolean; errorText?: string }[] = [];
+              if (Array.isArray(t.tools)) {
+                for (let i = 0; i < t.tools.length; i++) {
+                  const tool = t.tools[i];
+                  if (!tool) continue; // skip undefined entries
+                  const tc = Array.isArray(t.toolCalls) ? t.toolCalls[i] : undefined;
+                  if (tc?.errorText) {
+                    // Add errorText from toolCalls to the tool record for GUI display
+                    toolsWithErrors.push({
+                      name: tool.name,
+                      isError: tool.isError,
+                      errorText: tc.errorText,
+                    });
+                  } else {
+                    toolsWithErrors.push(tool);
+                  }
+                }
+              }
+              // Any per-turn data-change events an older row carries are dropped
+              // here rather than handed back: nothing renders them.
+              return {
+                text: t.text,
+                tools: toolsWithErrors,
+              };
+            });
           }
         } catch {
           /* ignore malformed */
@@ -915,6 +1073,42 @@ export async function dispatchChatRoute(
       })
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
     sendJson(res, { messages });
+    return true;
+  }
+
+  // POST /api/chat/messages/:id/stop — stop a turn that is running in the background.
+  // The turn is a detached job streaming over the realtime socket, NOT a held-open
+  // response, so aborting the client's fetch would stop nothing; the abort has to be
+  // delivered here, to the controller the job is watching.
+  const stopMatch = /^\/api\/chat\/messages\/([^/]+)\/stop$/.exec(ctx.pathname);
+  if (ctx.method === 'POST' && stopMatch) {
+    const stopId = decodeURIComponent(stopMatch[1] ?? '');
+    const entry = ctx.chatCancel.get(stopId);
+    if (!entry) {
+      // Nothing is running under that id — most often the reply simply finished in the
+      // gap between the click and this request. That is a benign no-op, not an error.
+      sendJson(res, { stopped: false, reason: 'not_running' });
+      return true;
+    }
+    // One member of a shared workspace must never be able to stop another's turn. The
+    // app connects BYPASSRLS, so this check is the boundary (fail closed on a cloud
+    // whose identity did not resolve).
+    const ownsTurn = cloud ? ownerUserId != null && entry.ownerUserId === ownerUserId : true;
+    if (!ownsTurn) {
+      sendJson(res, { error: 'That reply belongs to someone else.' }, 403);
+      return true;
+    }
+    ctx.chatCancel.abort(stopId);
+    // Release every client bound to this turn right away. The background job settles
+    // the persisted row (status `stopped`, partial text kept) when it observes the
+    // abort; a second `done` from the job is a no-op for an already-released client.
+    ctx.chatProgress.publish({
+      threadId: entry.threadId,
+      messageId: stopId,
+      ownerUserId: entry.ownerUserId,
+      event: { type: 'done' },
+    });
+    sendJson(res, { stopped: true, messageId: stopId }, 202);
     return true;
   }
 
@@ -943,17 +1137,12 @@ export async function dispatchChatRoute(
   const rawMessage = typeof body.message === 'string' ? body.message.trim() : '';
   const hasAttachments = Array.isArray(body.attachedFiles) && body.attachedFiles.length > 0;
   // A turn needs SOMETHING to act on — a message OR an attachment. A files-only send
-  // (drop a file into the assistant with no text) still gets a response: synthesize a
-  // directive so the model reads the attached files (the attached-files note names them).
+  // (drop a file into the assistant with no text) still gets a response, carried by the
+  // structured attachment payload rather than by the message field.
   if (!rawMessage && !hasAttachments) {
     sendJson(res, { error: 'message is required' }, 400);
     return true;
   }
-  // Files-only send: never fabricate a "take a look at this file" user message. The
-  // client sends the attached file name(s) as the message; if a caller sends none,
-  // fall back to those names here. Either way the attached-files note (below) is what
-  // actually directs the model to read them — this string is only the visible/persisted
-  // label + thread title.
   const attachedNames =
     hasAttachments && Array.isArray(body.attachedFiles)
       ? (body.attachedFiles as unknown[])
@@ -964,7 +1153,13 @@ export async function dispatchChatRoute(
           .filter(Boolean)
       : [];
   const attachedLabel = attachedNames.join(', ');
-  const message = rawMessage || attachedLabel || 'Attached files';
+  // The user's OWN words, and nothing else. A files-only send leaves this empty on
+  // purpose: putting the file NAME here made it the user's apparent message, so the
+  // intent pass judged a bare filename ambiguous and asked what to do with it — while
+  // the file itself was sitting right there, readable. The attachment travels as
+  // structured data (`attachedFiles`), and the note built from it is what directs the
+  // model. `attachedLabel` is now only ever used as a thread-title placeholder.
+  const message = rawMessage;
   const requestedThread = typeof body.threadId === 'string' ? body.threadId : null;
 
   // Fail CLOSED: on a cloud we must know who this is before creating or reading
@@ -990,13 +1185,46 @@ export async function dispatchChatRoute(
     ownerUserId,
   );
 
+  // Connect the request to the files the user just attached (ingested via the
+  // composer Send) so the assistant works on them with its existing file tools.
+  // The FULL resolution is kept, not just the note: "no attachment" and "an
+  // attachment that could not be read" must never collapse into the same state.
+  // Resolved BEFORE anything is persisted, so a refused turn leaves no orphan row.
+  const attached = await resolveAttachedFiles(ctx.db, body.attachedFiles);
+  const attachedNote = attached.note;
+  // Every attachment failed to resolve. Refuse the turn loudly instead of running it
+  // as if the user had sent bare text — that degradation is what produced an answer
+  // about a filename rather than about the file.
+  if (attached.suppliedIds.length > 0 && attached.resolvedIds.length === 0) {
+    sendJson(
+      res,
+      {
+        error:
+          'The files attached to that message could not be read from your workspace, so it was not sent. Attach them again and retry.',
+      },
+      409,
+    );
+    return true;
+  }
+  // A files-only send has no instruction to follow, so say what to do with it here
+  // rather than leaving the model to guess from an empty turn.
+  const filesOnlyDirective =
+    !rawMessage && attached.resolvedIds.length > 0
+      ? '[The user attached the file(s) above without typing a message. Read them and reply ' +
+        'with a short, concrete summary of what they contain and what you can do with them ' +
+        'next. Do not ask what to do with a file you can simply open and read.]\n\n'
+      : '';
+
   // Resolve the thread + persist the user message BEFORE streaming so the
   // thread id can ride back on a header. One thread per conversation; the client
   // reuses it across turns. Every chat row is STAMPED with this user's id so it
   // is private to them (app-layer filter + RLS both key on it).
+  // A thread still needs a human-readable placeholder title, so a files-only send
+  // titles itself from the attachment names (the AI title replaces it later).
+  const threadPlaceholder = rawMessage || attachedLabel || 'Attached files';
   let threadId = '';
   try {
-    threadId = await ensureThread(ctx.db, requestedThread, message, ownerUserId);
+    threadId = await ensureThread(ctx.db, requestedThread, threadPlaceholder, ownerUserId);
     await persistMessage(
       ctx.db,
       threadId,
@@ -1012,10 +1240,6 @@ export async function dispatchChatRoute(
   } catch (e) {
     console.warn('[chat] persist user message failed:', (e as Error).message);
   }
-
-  // Connect the request to the files the user just attached (ingested via the
-  // composer Send) so the assistant works on them with its existing file tools.
-  const attachedNote = await buildAttachedFilesNote(ctx.db, body.attachedFiles);
   // Chat-awareness of in-progress ingestion (client signal): a file/data import is
   // still running as the user asks, so tell the model — it must not answer about data
   // that may still be loading as if it were already complete.
@@ -1051,6 +1275,13 @@ export async function dispatchChatRoute(
   } catch (e) {
     console.warn('[chat] persist pending assistant row failed:', (e as Error).message);
   }
+  // Register the turn as stoppable BEFORE the ack goes out, so a stop that arrives the
+  // instant the client learns the message id always finds a live controller.
+  const cancelEntry = ctx.chatCancel.register(assistantMsgId, threadId, ownerUserId);
+  const abortSignal = cancelEntry.controller.signal;
+  /** Has a stop landed? Read through a call so every check sees the CURRENT value —
+   *  the flag flips asynchronously, long after any earlier check in the same scope. */
+  const stopRequested = (): boolean => cancelEntry.controller.signal.aborted;
   res.writeHead(202, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -1073,32 +1304,62 @@ export async function dispatchChatRoute(
   // tool loop. Mirrors the loop's frame sequence so the client renders it identically and
   // a reload replays it from the persisted row.
   const finishWithAnswer = async (text: string, status: ChatMessageStatus): Promise<void> => {
-    streamStatus = status;
+    // Stopped before the inline answer was published — settle as stopped, keeping
+    // whatever the turn had, rather than painting a reply the user cancelled.
+    const stopped = stopRequested();
+    const settled: ChatMessageStatus = stopped ? 'stopped' : status;
+    const body = stopped ? '' : text;
+    streamStatus = settled;
     publish({ type: 'assistant_message_start', id: assistantMsgId });
-    if (text) publish({ type: 'text_delta', delta: text });
+    if (body) publish({ type: 'text_delta', delta: body });
     publish({ type: 'assistant_message_end' });
     try {
       await persistMessage(
         ctx.db,
         threadId,
         'assistant',
-        text,
+        body,
         ownerUserId,
         [],
         turnStartedAt,
         assistantMsgId,
-        status,
+        settled,
       );
     } catch (e) {
       console.warn('[chat] persist intent answer failed:', (e as Error).message);
     }
     publish({ type: 'done' });
+    ctx.chatCancel.release(assistantMsgId);
   };
 
   // The heavy agentic tool loop — runs on the per-workspace FIFO (serialized) only when the
   // intent pass says the request needs data work. Defined here (not enqueued yet) so the
   // intent orchestrator below can decide whether to run it.
   const runHeavyLoop = async (): Promise<void> => {
+    // Stopped while this turn was still waiting its place in the workspace FIFO. Settle
+    // the row now so it never reads as still running, and end the stream — starting the
+    // loop just to abort it on the first round would burn a schema build for nothing.
+    if (stopRequested()) {
+      streamStatus = 'stopped';
+      try {
+        await persistMessage(
+          ctx.db,
+          threadId,
+          'assistant',
+          '',
+          ownerUserId,
+          [],
+          turnStartedAt,
+          assistantMsgId,
+          'stopped',
+        );
+      } catch (e) {
+        console.warn('[chat] settling a stopped queued turn failed:', (e as Error).message);
+      }
+      publish({ type: 'done' });
+      ctx.chatCancel.release(assistantMsgId);
+      return;
+    }
     // Strip credential-bearing native tables (secrets) so the assistant can
     // neither query them nor be told they exist — it reads rows already decrypted.
     const dispatch: DispatchCtx = {
@@ -1173,6 +1434,18 @@ export async function dispatchChatRoute(
       });
     };
     dispatch.htmlAuthor = authorHtml;
+    // Markdown authoring for large artifacts (spec path in create_artifact).
+    // Uses the same author model as HTML dashboards for consistency.
+    const authorMarkdown = async (spec: string): Promise<string> => {
+      const schema = await buildSchemaContext(dispatch);
+      return generateMarkdown({
+        client: provider.client,
+        schema,
+        spec,
+        model: authorModel,
+      });
+    };
+    dispatch.markdownAuthor = authorMarkdown;
     // Automatic QA for an authored dashboard: run its data queries + check them against the
     // request, repair via the same author, and report residual issues (see dashboard-qa).
     // On by default; LATTICE_DASHBOARD_QA=false disables it (skips the extra queries + judge
@@ -1195,30 +1468,14 @@ export async function dispatchChatRoute(
     // the pending row this job now fills in.
     let assistantText = '';
     // Rebuild the rich structure as it streams: one entry per assistant turn, each
-    // with its text + the data-change events it produced. Persisted so a reloaded
-    // conversation renders the same collapsed activity cards the live stream did.
+    // with its text and the tools it ran. The data changes a turn makes are
+    // reported live in the activity feed as they are published, so the turn record
+    // no longer carries a copy of them.
     const turns: {
       text: string;
       tools: { id: string; name: string; isError: boolean }[];
-      events: PersistedTurnEvent[];
       toolCalls: PersistedToolCall[];
     }[] = [];
-    // Capture the assistant's data-change events from the feed bus, bucketed into
-    // the turn that produced them. feed.publish is synchronous inside the tool's
-    // executeFunction, so each event lands in the current (last-pushed) turn. Only
-    // source='ai' — this assistant's own writes — is captured, never other clients.
-    const unsubscribeFeed = ctx.feed.subscribe((fe) => {
-      if (fe.source !== 'ai') return;
-      const cur = turns[turns.length - 1];
-      if (cur)
-        cur.events.push({
-          op: fe.op,
-          table: fe.table,
-          rowId: fe.rowId,
-          summary: fe.summary ?? '',
-          ts: fe.ts,
-        });
-    });
     // The cloud owner's workspace system prompt, bundled into every member's chat.
     // Best-effort + read through the member's own RLS-scoped connection: a member
     // never sees this text in the UI/API (owner-only there), it's only injected into
@@ -1233,13 +1490,43 @@ export async function dispatchChatRoute(
     let checkpointWarned = false;
     const buildCleanTurns = (): PersistedTurn[] =>
       turns
-        .map((t) => ({
-          text: t.text,
-          tools: t.tools.map((x) => ({ name: x.name, isError: x.isError })),
-          ...(t.events.length > 0 ? { events: t.events } : {}),
-          ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
-        }))
-        .filter((t) => t.text.length > 0 || t.tools.length > 0 || (t.events?.length ?? 0) > 0);
+        .map((t) => {
+          // Harvest error text from toolCalls to include in the tools array for GUI display
+          const toolsWithErrors = t.tools.map((tool, i) => {
+            const toolCall = t.toolCalls[i];
+            return {
+              name: tool.name,
+              isError: tool.isError,
+              ...(toolCall?.errorText ? { errorText: toolCall.errorText } : {}),
+            };
+          });
+          return {
+            text: t.text,
+            tools: toolsWithErrors,
+            ...(t.toolCalls.length > 0 ? { toolCalls: t.toolCalls } : {}),
+          };
+        })
+        .filter((t) => t.text.length > 0 || t.tools.length > 0);
+    // The turn's deterministic outcome notice, held until the turn settles.
+    let outcomeNotice = '';
+    /**
+     * Keep the outcome notice ON the saved reply. A stopped reply is released the
+     * instant the stop is acked — the browser marks it stopped and unbinds it — so
+     * a frame published afterwards lands on a bubble nobody is listening to. That
+     * is precisely the turn whose truth matters most: the user stopped part-way
+     * through destructive work, usually BECAUSE something looked wrong, and the
+     * model never gets an answer round to tell them what already changed. The saved
+     * message is the one channel that survives, so the notice becomes part of it.
+     * Idempotent — appended once, however the turn settles.
+     */
+    const keepOutcomeNotice = (): void => {
+      if (!outcomeNotice) return;
+      assistantText += (assistantText.trim() ? '\n\n' : '') + outcomeNotice;
+      const cur = turns[turns.length - 1];
+      if (cur) cur.text += (cur.text.trim() ? '\n\n' : '') + outcomeNotice;
+      else turns.push({ text: outcomeNotice, tools: [], toolCalls: [] });
+      outcomeNotice = '';
+    };
     const checkpoint = async (force: boolean): Promise<void> => {
       if (!threadId) return;
       const now = Date.now();
@@ -1304,10 +1591,18 @@ export async function dispatchChatRoute(
         client,
         dispatch,
         history,
-        // Prefix the active-view + attached-files + auto-ingest notes (if any) so the model
-        // knows what's on screen and connects the request to what was just added; the
-        // dispatch + tools still see the real message.
-        userMessage: activeView.note + attachedNote + ingestNote + ingestInProgressNote + message,
+        // The user's OWN words — nothing else. The active-view / attached-files /
+        // auto-ingest notes travel as SEPARATE content blocks ahead of it (see
+        // RunChatOptions.contextNotes), so no value interpolated into a note can end
+        // up inside what is later read as the user's message.
+        userMessage: message,
+        contextNotes: [
+          activeView.note,
+          attachedNote,
+          ingestNote,
+          ingestInProgressNote,
+          filesOnlyDirective,
+        ],
         temperature,
         // Give the assistant the operator's name so it addresses them and
         // resolves "me"/"my" without asking for a name it already has.
@@ -1323,9 +1618,17 @@ export async function dispatchChatRoute(
         onToolRecord: (rec) => {
           turns[turns.length - 1]?.toolCalls.push(rec);
         },
+        // What the tools actually did, in the user's terms. Streamed too; held here
+        // so a stopped turn can still carry it on the saved reply.
+        onOutcomeNotice: (notice) => {
+          outcomeNotice = notice;
+        },
+        // Stop: checked at each round boundary and handed to the model stream, so the
+        // turn stops for real instead of running on invisibly after the user gave up.
+        signal: abortSignal,
       })) {
         if (ev.type === 'assistant_message_start') {
-          turns.push({ text: '', tools: [], events: [], toolCalls: [] });
+          turns.push({ text: '', tools: [], toolCalls: [] });
         } else if (ev.type === 'text_delta') {
           assistantText += ev.delta;
           const cur = turns[turns.length - 1];
@@ -1373,9 +1676,26 @@ export async function dispatchChatRoute(
         await checkpoint(false); // throttled mid-stream persist for refresh recovery
       }
       // A completed turn means Claude is answering — clear any stale usage limit.
-      clearClaudeLimit();
-      streamStatus = 'done';
+      // A STOPPED turn proves nothing about the model, so leave the limit state alone.
+      if (stopRequested()) {
+        streamStatus = 'stopped';
+        keepOutcomeNotice();
+      } else {
+        clearClaudeLimit();
+        streamStatus = 'done';
+      }
     } catch (e) {
+      // The user stopped the turn: aborting the model request rejects the in-flight
+      // call, which is not a failure and must not be shown as one. Settle as stopped
+      // (the checkpoint below keeps whatever text had already streamed) and end.
+      if (stopRequested()) {
+        streamStatus = 'stopped';
+        keepOutcomeNotice();
+        publish({ type: 'done' });
+        await checkpoint(true);
+        ctx.chatCancel.release(assistantMsgId);
+        return;
+      }
       // A genuine usage-limit 429 flips the shared limit state and shows the
       // standard notice (so the Configure side blocks too, via /api/assistant/config).
       // A transient or entitlement 429, or any other failure, stays a plain error.
@@ -1400,27 +1720,31 @@ export async function dispatchChatRoute(
         publish({ type: 'error', message });
       }
       publish({ type: 'done' });
-    } finally {
-      unsubscribeFeed();
     }
     // Final checkpoint: persist the complete assistant message (upsert over any
     // mid-stream checkpoints under the same id). The stream is closed now, so a
     // failure here is logged, not surfaced (the mid-stream checkpoints already warn).
     await checkpoint(true);
+    ctx.chatCancel.release(assistantMsgId);
     if (threadId) {
       // Give a newly-created thread an AI-generated short title in place of the
       // truncated-first-message placeholder set by ensureThread. Best-effort and
       // idempotent: only when THIS request created the thread, we have a reply,
       // and the title is still the exact placeholder — so a user rename is never
       // clobbered. The stream has already ended; the new title surfaces on the
-      // next thread-list refresh.
+      // next thread-list refresh. Skipped for a stopped turn: the user asked us to
+      // stop spending model calls on it.
       const createdNew = threadId !== requestedThread;
-      if (createdNew && assistantText.trim()) {
+      if (createdNew && assistantText.trim() && streamStatus !== 'stopped') {
         try {
-          const placeholder = message.slice(0, 60) || 'Chat';
+          const placeholder = threadPlaceholder.slice(0, 60) || 'Chat';
           const cur = (await ctx.db.get('chat_threads', threadId)) as { title?: string } | null;
           if (cur && (cur.title ?? '') === placeholder) {
-            const title = await generateThreadTitle(provider.client, message, assistantText);
+            const title = await generateThreadTitle(
+              provider.client,
+              threadPlaceholder,
+              assistantText,
+            );
             if (title) {
               await ctx.db.update('chat_threads', threadId, { title });
               // The title is written AFTER the stream closed (kept off the response
@@ -1455,6 +1779,21 @@ export async function dispatchChatRoute(
       acked = true;
       publish({ type: 'ack', message: text });
     };
+    // Files attached, nothing typed. There is no message for the intent pass to classify
+    // — running it on the file NAME is precisely what made the assistant ask "what would
+    // you like me to do with report.xlsx?" instead of opening it. Acknowledge from the
+    // attachment itself and go straight to the loop, which can actually read the file.
+    if (!rawMessage && attached.resolvedIds.length > 0) {
+      ackOnce(
+        attachedNames.length === 1 && attachedNames[0]
+          ? `Reading ${attachedNames[0]}…`
+          : attachedNames.length > 1
+            ? `Reading your ${String(attachedNames.length)} files…`
+            : 'Reading your files…',
+      );
+      ctx.enqueueChatJob(runHeavyLoop);
+      return;
+    }
     // Belt-and-suspenders: if the intent model is slow, publish a templated ack so the user
     // is never left on a blank typing bubble past the guarantee window.
     const watchdog = setTimeout(() => {
@@ -1488,7 +1827,11 @@ export async function dispatchChatRoute(
     // the message text, so a file attached to a short/vague message ("here", "thanks") would
     // otherwise be silently dropped by an inline short-circuit. When files are attached, skip
     // the inline branches and run the real loop (which works on the attachment).
-    const hasAttachments = attachedNote.length > 0;
+    // Keyed on the ids the client SUPPLIED, not on whether a note was rendered: keying it on
+    // the note meant an attachment that failed to resolve silently un-gated the clarifying
+    // question, and the user got "what do you want me to do with that?" for a file they had
+    // just attached. (A turn where nothing resolved is refused outright, above.)
+    const turnHasAttachments = attached.suppliedIds.length > 0;
     // An edit/go-ahead request on the object the user is VIEWING must not be short-circuited into
     // an inline clarify. The heavy loop has the full rehydrated thread history + the open-object
     // grounding, so it resolves "what to change" better than the 4-message intent pass — and can
@@ -1500,12 +1843,28 @@ export async function dispatchChatRoute(
       /\b(edit|change|update|modify|revise|adjust|fix|tweak|rename|redo|make (it|that|this)|do (it|that|this)|go ahead|yes,? (do|go|please))\b/i.test(
         message,
       );
-    if (!hasAttachments && intent?.needs_more_info && !looksLikeEditOfOpen) {
+    // A bare go-ahead is an ANSWER to something the assistant just proposed or asked,
+    // and it must reach the tool loop. The intent pass sees only the text, and "Yes,
+    // go ahead" reads as trivial small-talk with no work in it — so it is classified
+    // `!needs_work`, answered inline, and the work the user just approved never runs.
+    // The user watches themselves say yes and nothing happen.
+    //
+    // `looksLikeEditOfOpen` above catches this only while a record is open on screen,
+    // which is the narrower case. This one is keyed on the message being nothing BUT
+    // an affirmation: the loop has the whole rehydrated thread and can see what was
+    // being proposed, so it is the only thing that can act on one.
+    const looksLikeGoAhead = history.length > 0 && isBareGoAhead(message);
+    if (
+      !turnHasAttachments &&
+      !looksLikeGoAhead &&
+      intent?.needs_more_info &&
+      !looksLikeEditOfOpen
+    ) {
       // Ambiguous — the ack_message is a clarifying question; end the turn awaiting a reply.
       await finishWithAnswer(intent.ack_message, 'done');
       return;
     }
-    if (!hasAttachments && intent && !intent.needs_work) {
+    if (!turnHasAttachments && !looksLikeGoAhead && intent && !intent.needs_work) {
       // Trivial / general — the ack_message IS the complete answer; skip the tool loop.
       // An inline answer bypasses the tool loop's trace-link pass, so run it here
       // against the thread's established links — an answer-from-memory must stay
@@ -1523,6 +1882,9 @@ export async function dispatchChatRoute(
     ctx.enqueueChatJob(runHeavyLoop);
   })().catch((e: unknown) => {
     console.error('[chat] intent orchestration failed:', (e as Error).message);
+    // No job will run and no path will settle the turn, so drop its stop registration
+    // rather than leaving a dead controller behind for the rest of the process.
+    ctx.chatCancel.release(assistantMsgId);
   });
   return true;
 }

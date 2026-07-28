@@ -15,15 +15,17 @@ describe('guiAppHtml', () => {
 
     // Configure lives in a slide-over drawer opened by the single #configure-trigger
     // button (the gear + the Ask/Configure view-toggle pair were retired), with one
-    // tab per page: Data Model / Files / Connectors / Databases / Workspace / User.
-    // (The former single "Inputs" tab is split into Files+Connectors+Databases; the
-    // former "Lattice" tab's Workspaces module is folded into User.)
+    // tab per page: Data Model / Graph / Connectors / Databases / Workspace / User.
+    // (The former single "Inputs" tab was split into Files+Connectors+Databases, and
+    // Files then moved out entirely to its own left-sidebar section; the former
+    // "Lattice" tab's Workspaces module is folded into User.)
     expect(guiAppHtml).toContain('id="configure-trigger"');
     expect(guiAppHtml).not.toContain('id="settings-gear"');
     expect(guiAppHtml).toContain('id="settings-drawer"');
     expect(guiAppHtml).toContain('id="drawer-body"');
     expect(guiAppHtml).toContain('data-tab="datamodel"');
-    expect(guiAppHtml).toContain('data-tab="files"');
+    // No Files tab — the left-sidebar FILES section is the single file home.
+    expect(guiAppHtml).not.toContain('data-tab="files"');
     expect(guiAppHtml).toContain('data-tab="connectors"');
     expect(guiAppHtml).toContain('data-tab="databases"');
     expect(guiAppHtml).toContain('data-tab="database"');
@@ -170,10 +172,19 @@ describe('guiAppHtml', () => {
     // real `v<version>` at serve time (so the static bundle stays version-free).
     expect(guiAppHtml).toContain('id="app-version"');
     expect(guiAppHtml).toContain('<!--LATTICE_VERSION-->');
-    // The version moved OUT of the header (its old spot is now the status-pill
-    // slot) and into the Settings drawer footer — so it sits AFTER the gear now.
+    // The version moved OUT of the header and into the Settings drawer footer —
+    // so it sits AFTER the gear now.
     expect(guiAppHtml).toContain('class="drawer-version"');
-    expect(guiAppHtml).toContain('id="header-status-slot"');
+    // No transient status region in the header: progress reports in the activity
+    // menu, and the only header status left is the actionable update link.
+    expect(guiAppHtml).not.toContain('id="header-status-slot"');
+    // That update link is an action, so it sits directly left of Configure.
+    expect(guiAppHtml.indexOf('id="app-update-link"')).toBeLessThan(
+      guiAppHtml.indexOf('id="configure-trigger"'),
+    );
+    expect(guiAppHtml.indexOf('id="account"')).toBeLessThan(
+      guiAppHtml.indexOf('id="app-update-link"'),
+    );
     expect(guiAppHtml.indexOf('id="app-version"')).toBeGreaterThan(
       guiAppHtml.indexOf('id="settings-gear"'),
     );

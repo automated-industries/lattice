@@ -101,6 +101,14 @@ export interface GuiTableSummary {
    * page could only ever error.
    */
   sqlDenied?: boolean;
+  /**
+   * True when the left-hand table nav skips this table even though it stays in the
+   * payload, because it has a dedicated home elsewhere in the GUI (`files` has its
+   * own sidebar section). Deliberately a stamp and not a payload filter: the Data
+   * Model panel and the brain graph still need the table for lineage. From the
+   * display predicate `isNavHiddenNativeEntity`.
+   */
+  navHidden?: boolean;
 }
 
 export interface GuiFileSummary {

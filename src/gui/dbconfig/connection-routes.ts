@@ -5,10 +5,11 @@ import {
   parseSaveBody,
   rewriteDbLine,
   resolveRelativeToConfig,
+  rootForDbConfig,
 } from './shared.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, relative, resolve, sep } from 'node:path';
+import { basename, relative, resolve, sep } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../../lattice.js';
 import { sendJson, readJson, tryHandler } from '../http.js';
@@ -19,7 +20,6 @@ import {
 } from '../../framework/user-config.js';
 import { cloudRlsInstalled, canManageRoles } from '../../framework/cloud-connect.js';
 import { getCloudSetting, CLOUD_SETTING_WORKSPACE_LOGO_ETAG } from '../../cloud/settings.js';
-import { findLatticeRoot } from '../../framework/lattice-root.js';
 import { renameWorkspaceByConfigPath } from '../../framework/workspace.js';
 
 // 1.16.3: the 'cloud-connected' state was removed when the "team" concept was
@@ -234,7 +234,7 @@ export async function dispatchConnection(
       const doc = parseDocument(readFileSync(ctx.configPath, 'utf8'));
       doc.set('name', name);
       writeFileSync(ctx.configPath, doc.toString(), 'utf8');
-      const root = findLatticeRoot(dirname(ctx.configPath));
+      const root = rootForDbConfig(ctx);
       if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
       const info = await describeCurrent(ctx.configPath, ctx.db);
       sendJson(res, { ok: true, kind: info.isCloud ? 'cloud' : 'local', name });

@@ -13,6 +13,7 @@ import { artifactFileRow } from '../../file-row.js';
 import { dashboardRow, extractSourceTables } from '../../dashboard-row.js';
 import { verifyDashboardBinding, bindingFailureMessage } from '../dashboard-qa.js';
 import { sanitizeSandboxedHtml } from '../../artifact-sanitize.js';
+import { validateHtmlWellFormed } from '../../html-well-formed.js';
 
 /**
  * Surface residual dashboard-QA issues to the user via the activity feed. The tool_result
@@ -102,7 +103,10 @@ export function parseBulkFilters(
       throw new Error('each filter clause must be an object {col, op, val}');
     }
     const c = clause as { col?: unknown; op?: unknown; val?: unknown };
-    if (typeof c.col !== 'string' || !(c.col in cols)) {
+    // `c.col in cols` is not "is this a column": every plain object inherits
+    // `constructor`, `toString`, `hasOwnProperty` and the rest, so all of them passed
+    // validation and were handed to the query builder as real column names.
+    if (typeof c.col !== 'string' || !Object.prototype.hasOwnProperty.call(cols, c.col)) {
       throw new Error(`filter references unknown column "${String(c.col)}" on "${table}"`);
     }
     if (typeof c.op !== 'string' || !BULK_FILTER_OPS.has(c.op)) {
@@ -111,6 +115,42 @@ export function parseBulkFilters(
     const needsVal = c.op !== 'isNull' && c.op !== 'isNotNull';
     if (needsVal && !('val' in c)) throw new Error(`filter op "${c.op}" requires a val`);
     out.push(needsVal ? { col: c.col, op: c.op, val: c.val } : { col: c.col, op: c.op });
+  }
+  return out;
+}
+
+/**
+ * Validate + normalize an `unlink` / `link` `values` arg into the {col, val} pairs the
+ * junction row is identified by.
+ *
+ * `db.unlink` builds `DELETE FROM "<t>" WHERE "<key>" = ? AND …` straight from these
+ * keys, so every one of them lands in a SQL IDENTIFIER position — and, unlike
+ * `db.link`, nothing filters them to the table's schema first. This is the same class
+ * already closed for `bulk_update`'s filter and its `set` keys, and the same
+ * `hasOwnProperty` check: `key in cols` is true for `constructor`, `toString` and every
+ * other Object.prototype name, so those all passed as real columns.
+ *
+ * Strict, like `parseBulkFilters`: an unknown column is a recoverable tool error the
+ * model can correct, never a statement handed to the database to reject (or not).
+ * A table with NO registered column set is the one case that cannot be checked —
+ * `cols` is then empty, so every key is rejected, which is the fail-closed direction
+ * and matches what `parseBulkFilters` already does for such a table.
+ */
+export function parseJunctionValues(
+  raw: unknown,
+  table: string,
+  db: Lattice,
+): { col: string; val: unknown }[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('values object (the junction row) is required');
+  }
+  const cols = db.getRegisteredColumns(table) ?? {};
+  const out: { col: string; val: unknown }[] = [];
+  for (const [col, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Object.prototype.hasOwnProperty.call(cols, col)) {
+      throw new Error(`values references unknown column "${col}" on "${table}"`);
+    }
+    out.push({ col, val });
   }
   return out;
 }
@@ -230,17 +270,87 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
     case 'create_artifact': {
       // Save an assistant-authored markdown document as a `files` row (flagged
       // artifact_type='markdown', content inline in extracted_text — see
-      // artifactFileRow). It goes through the same createRow path as create_row,
-      // so private mode forces it private atomically and otherwise it follows
-      // the files table default — identical sharing to any other file. The
-      // result carries open:true so the chat route tells the GUI to open it in
-      // the main viewer.
+      // artifactFileRow). Two paths: (1) content (fast, for small documents),
+      // (2) spec (delegated authoring via ctx.markdownAuthor for large documents).
+      // Exactly one of content/spec is required. It goes through the same createRow
+      // path as create_row, so private mode forces it private atomically and
+      // otherwise it follows the files table default — identical sharing to any
+      // other file. The result carries open:true so the chat route tells the GUI
+      // to open it in the main viewer.
       const table = requireTable('files', ctx.validTables);
       const title = requireString(args.title, 'title');
-      const content = requireString(args.content, 'content');
-      const { row } = await artifactFileRow(ctx.db, title, content);
+      const hasContent = typeof args.content === 'string' && args.content.trim().length > 0;
+      const hasSpec = typeof args.spec === 'string' && args.spec.trim().length > 0;
+      if (!hasContent && !hasSpec) {
+        return {
+          ok: false,
+          error:
+            'create_artifact requires either `content` (for short documents) or `spec` (for long documents); exactly one must be provided.',
+        };
+      }
+      if (hasContent && hasSpec) {
+        return {
+          ok: false,
+          error: 'create_artifact requires exactly one of `content` or `spec`, not both.',
+        };
+      }
+      let markdown: string;
+      if (hasContent) {
+        markdown = args.content as string;
+      } else {
+        // spec path: delegate to the authoring sub-call
+        if (!ctx.markdownAuthor) {
+          return {
+            ok: false,
+            error: 'Markdown authoring is unavailable (no model client configured).',
+          };
+        }
+        markdown = await ctx.markdownAuthor(args.spec as string);
+      }
+      // An authoring sub-call that produced nothing is a FAILURE, not an empty
+      // document to file away silently.
+      if (markdown.trim().length === 0) {
+        return {
+          ok: false,
+          error:
+            `The document "${title}" was NOT saved — the authoring step produced no text. ` +
+            `Tell the user it could not be written; never say it is in their workspace.`,
+        };
+      }
+      const { row } = await artifactFileRow(ctx.db, title, markdown);
       const { id } = await createRow(mctx, table, row, ctx.privateMode ? 'private' : undefined);
-      return { ok: true, result: { id, table: 'files', open: true } };
+      // Verify the write rather than trusting it. The failure this closes is a
+      // document that was never stored while the reply said it was "in your
+      // workspace" — one keyed read, never a scan. When the live `files` schema
+      // carries no text column there is nothing to compare against, so the write
+      // is reported as-authored instead of being flagged on no evidence.
+      const saved = (await ctx.db.get(table, id)) as { extracted_text?: unknown } | null;
+      if (saved === null) {
+        return {
+          ok: false,
+          error:
+            `The document "${title}" was NOT saved — nothing was stored for it. ` +
+            `Tell the user it could not be saved; never say it is in their workspace.`,
+        };
+      }
+      const savedText = saved.extracted_text;
+      if (typeof savedText === 'string' && savedText.length === 0) {
+        return {
+          ok: false,
+          error:
+            `The document "${title}" was NOT saved — its text did not persist. ` +
+            `Tell the user it could not be saved; never say it is in their workspace.`,
+        };
+      }
+      return {
+        ok: true,
+        result: {
+          id,
+          table: 'files',
+          open: true,
+          chars: typeof savedText === 'string' ? savedText.length : markdown.length,
+        },
+      };
     }
     case 'create_dashboard': {
       // Author a live dashboard (a `dashboards` row; the standalone HTML page
@@ -265,6 +375,14 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         const qa = await ctx.qaDashboard(html, spec);
         html = qa.html;
         qaIssues = qa.issues;
+      }
+      // Well-formedness gate (always on): reject a page that is structurally mutilated
+      // (e.g. truncated mid-token by the authoring model). Runs on the AUTHORED text —
+      // before any DOM-based pass that re-serializes (a browser-grade parser would
+      // auto-close broken tags and mask the mutilation). A broken shell is never stored.
+      const wellFormedError = validateHtmlWellFormed(html);
+      if (wellFormedError) {
+        return { ok: false, error: wellFormedError };
       }
       // Strip interactive elements that can only fail inside the strict preview sandbox
       // (print / pop-out / dialog / submit) so the artifact ships with no dead buttons —
@@ -345,6 +463,13 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         const qa = await ctx.qaDashboard(html, intent);
         html = qa.html;
         qaIssues = qa.issues;
+      }
+      // Well-formedness gate (same as create; runs on the AUTHORED text, before any
+      // DOM-based pass that could re-serialize and mask a mutilation): reject a broken
+      // page — the last-good dashboard stays intact rather than being overwritten.
+      const wellFormedError = validateHtmlWellFormed(html);
+      if (wellFormedError) {
+        return { ok: false, error: wellFormedError };
       }
       // Strip preview-sandbox-dead controls (see create_dashboard) from the re-authored
       // page before it replaces the live one.
@@ -582,6 +707,18 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         softDeletable: ctx.softDeletable,
         configPath: ctx.configPath ?? '',
         outputDir: ctx.outputDir ?? '',
+        // Sourced from `mctx`, which already carries the GUI session, so this can
+        // never drift from the session every other assistant write is stamped with.
+        // Two things break without it, and the second is the worse one:
+        //   1. the merge's soft-deletes land outside the session-scoped undo stack,
+        //      so `undo` reports "Nothing to undo" straight after a 400-row merge —
+        //      the ledger's "you can undo this" offer becomes a false promise;
+        //   2. `appendAudit` opens with `purgeRedoStack(db, sessionId)`, and
+        //      `sessionUndoneFilters` DROPS the session filter entirely when the id
+        //      is undefined — so every audited step of an unstamped merge issues a
+        //      GLOBAL redo-stack DELETE, discarding other sessions' (and on a cloud,
+        //      other members') redo history.
+        ...(mctx.sessionId ? { sessionId: mctx.sessionId } : {}),
       };
       const threshold = fuzzy ? aggressivenessToThreshold(ctx.aggressiveness ?? 0) : undefined;
       const groups = await findTableDuplicates(svc, table, {
@@ -620,6 +757,9 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         softDeletable: ctx.softDeletable,
         configPath: ctx.configPath ?? '',
         outputDir: ctx.outputDir ?? '',
+        // See the `dedup` case above: sourced from `mctx` so undo can see the merge,
+        // and so the audit append cannot issue a global redo-stack purge.
+        ...(mctx.sessionId ? { sessionId: mctx.sessionId } : {}),
       };
       const r = await mergeDuplicates(svc, table, survivorId, duplicateIds);
       return {
@@ -745,10 +885,13 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
     case 'link':
     case 'unlink': {
       const table = requireTable(args.table, ctx.junctionTables);
-      if (!args.values || typeof args.values !== 'object') {
-        throw new Error('values object (the junction row) is required');
-      }
-      const values = args.values as Row;
+      // Validated against the junction's REAL columns before anything reaches the
+      // statement builder — `db.unlink` puts these keys in an identifier position and
+      // does not filter them to the schema itself. Rebuilt from the validated pairs
+      // rather than passed through, so only checked keys ever travel on.
+      const values = Object.fromEntries(
+        parseJunctionValues(args.values, table, ctx.db).map((c) => [c.col, c.val]),
+      ) as Row;
       if (name === 'link') await linkRows(mctx, table, values);
       else await unlinkRows(mctx, table, values);
       return { ok: true, result: { ok: true } };

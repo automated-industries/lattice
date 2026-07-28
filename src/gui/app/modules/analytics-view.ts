@@ -208,7 +208,11 @@ export const analyticsViewJs = `
           // fires). This is the "New Dashboard" starting point.
           '<form class="analytics-home-prompt" id="an-home-prompt">' +
           '<textarea id="an-home-input" rows="1" placeholder="Describe a dashboard, or ask a question about your data…"></textarea>' +
-          '<button type="submit" class="btn primary" id="an-home-send">Ask Lattice</button>' +
+          // data-composer-input names the textarea this button speaks for, so the
+          // shared composer state machine can tell whether it has content. Without
+          // it this button never joins the machine and stays a plain Send that goes
+          // dead for the whole reply, with no Stop and no Queue.
+          '<button type="submit" class="btn primary" id="an-home-send" data-composer-input="an-home-input">Ask Lattice</button>' +
           '</form>' +
           '</div>');
         var form = host.querySelector('#an-home-prompt');
@@ -218,6 +222,9 @@ export const analyticsViewJs = `
           input.addEventListener('input', function () {
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+            // Typing is what flips this button between Send and Queue while a
+            // reply is streaming.
+            if (typeof updateComposerAction === 'function') updateComposerAction();
           });
           input.addEventListener('keydown', function (e) {
             if (e.key !== 'Enter') return;
@@ -243,8 +250,13 @@ export const analyticsViewJs = `
             // Hand off to the assistant exactly like the dock composer — the
             // reply (and any dashboard it builds) streams into the Ask Lattice dock.
             if (typeof sendChat === 'function') sendChat(q);
+            if (typeof updateComposerAction === 'function') updateComposerAction();
           });
         }
+        // Join the shared composer state machine so this second composer gets the
+        // same Send / Stop / Queue behaviour as the dock one instead of a Send
+        // button that simply goes dead for the duration of a reply.
+        if (typeof registerComposerAction === 'function') registerComposerAction('an-home-send');
       });
     }
 
@@ -271,6 +283,11 @@ export const analyticsViewJs = `
             (row.description ? '<div class="dash-desc muted">' + escapeHtml(String(row.description)) + '</div>' : '') +
             '<div id="record-history" class="dash-history" hidden></div>' +
             '<iframe id="dash-frame" class="html-frame dash-frame" title="' + escapeHtml(String(row.title || 'Dashboard')) + '" sandbox="allow-scripts"></iframe>' +
+            // Click-through target: clicking a chart opens "where did this come
+            // from" HERE, below the canvas, so the dashboard stays on screen. The
+            // panel is filled by the host broker (never by the frame) and starts
+            // empty; leaving for the underlying table is an explicit link inside it.
+            '<div id="dash-source" class="dash-history dash-source" hidden></div>' +
             '</div>');
           // Sharing: the SAME per-row visibility line + grants panel every
           // record page uses — dashboards are ordinary shareable rows.
@@ -418,50 +435,26 @@ export const analyticsViewJs = `
       list_databases: 'Switching data sources…', switch_database: 'Switching data sources…',
       create_database: 'Switching data sources…'
     };
-    // ONE realtime status STRIP (ordered step rows), rendered in #ask-status —
-    // a distinct region below the feed, NOT chat bubbles. A turn shows "Thinking…"
-    // then one row per tool call (each prior row resolves to ✓); it clears when
-    // the answer starts streaming or the turn ends. Capped so a long tool run
-    // can't grow an unbounded strip.
-    var anStatusSteps = [];
-    function anStatusRender() {
-      var el = document.getElementById('ask-status');
-      if (!el) return;
-      if (!anStatusSteps.length) {
-        el.hidden = true;
-        el.innerHTML = '';
-        el.classList.remove('ask-status-strip');
-        return;
-      }
-      el.classList.add('ask-status-strip');
-      el.innerHTML = anStatusSteps
-        .map(function (s) {
-          var ic = s.state === 'running'
-            ? '<span class="lat-spinner ask-status-spin" aria-hidden="true"></span>'
-            : '<span class="ask-status-ic" aria-hidden="true">✓</span>';
-          return '<span class="ask-status-step ask-status-' + s.state + '">' + ic +
-            '<span class="ask-status-label">' + escapeHtml(s.label) + '</span></span>';
-        })
-        .join('');
-      el.hidden = false;
-    }
-    // Turn started — a "Thinking…" head until a tool or the answer arrives. Only
-    // seeds the head when the strip is empty, so a later round in the same turn
-    // keeps the steps it already accumulated.
+    // The assistant's in-flight work reports through the SAME background-task
+    // tracker every other long-running job uses (bgTask, in the activity menu) —
+    // there is no separate status region beside the conversation. The rail shows
+    // the user's messages and the assistant's answers; "what it is doing right
+    // now" belongs with ingestion, imports and renders, in one place.
+    //
+    // One task per turn, keyed 'assistant', re-labelled as each tool starts
+    // (bgTask upserts by id). Passing no tool name settles it: the answer is
+    // streaming, so the work is done.
+    var anTurnTask = null;
     function anStatusThinking() {
-      if (anStatusSteps.length) return;
-      anStatusSteps = [{ label: 'Thinking…', state: 'running' }];
-      anStatusRender();
+      if (anTurnTask) return; // a later round keeps the turn's existing task
+      anTurnTask = bgTask('assistant', { label: 'Thinking…' });
     }
     function anToolStatus(toolName) {
-      if (!toolName) { anStatusSteps = []; anStatusRender(); return; }
-      // Resolve the current running step, then append the new one.
-      for (var i = 0; i < anStatusSteps.length; i++) {
-        if (anStatusSteps[i].state === 'running') anStatusSteps[i].state = 'done';
+      if (!toolName) {
+        if (anTurnTask) { anTurnTask.done('Finished'); anTurnTask = null; }
+        return;
       }
-      anStatusSteps.push({ label: TOOL_LABELS[toolName] || 'Working on your data…', state: 'running' });
-      if (anStatusSteps.length > 5) anStatusSteps = anStatusSteps.slice(-5);
-      anStatusRender();
+      anTurnTask = bgTask('assistant', { label: TOOL_LABELS[toolName] || 'Working on your data…' });
     }
 
     // Route dispatch for the Analytics side — called by renderRoute after it

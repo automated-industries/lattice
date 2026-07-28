@@ -69,22 +69,26 @@ export const eventStreamJs = `    // ──────────────�
         renderProgress[snap.currentTable].error = true;
       }
     }
-    // Aggregate the per-table render progress into the single top-right status:
-    // "Rendering N%…" while any table is mid-render, cleared once all are done.
+    // Aggregate the per-table render progress into ONE background task in the
+    // activity menu — the same tracker ingestion, imports and the assistant use.
+    // A determinate total draws the tracker's progress bar; the task settles once
+    // every table is done.
+    var renderTask = null;
     function updateRenderStatus() {
       var active = Object.keys(renderProgress).filter(function (t) {
         var s = renderProgress[t];
         return s && !s.done && !s.error;
       });
-      if (!active.length) { clearStatus('render'); return; }
+      if (!active.length) {
+        if (renderTask) { renderTask.done('Objects up to date'); renderTask = null; }
+        return;
+      }
       var sum = 0;
       active.forEach(function (t) { sum += (renderProgress[t].pct || 0); });
-      setStatus({
-        id: 'render',
-        kind: 'accent',
-        text: 'Rendering ' + Math.round(sum / active.length) + '%…',
-        priority: 20,
-        sticky: true,
+      renderTask = bgTask('render', {
+        label: 'Updating your objects…',
+        total: 100,
+        done: Math.round(sum / active.length),
       });
     }
 

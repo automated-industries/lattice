@@ -53,6 +53,19 @@ export interface FtsOptions {
   limitPerTable?: number;
   /** Per-table override of which columns to search (LIKE tier only). */
   textColumns?: Record<string, string[]>;
+  /**
+   * The relation to actually SELECT from for a given table.
+   *
+   * A cloud MEMBER holds no SELECT on any base table — reads are granted on the
+   * `<t>_v` masking view instead. Both search tiers read the table directly, so
+   * without this every per-table query is `permission denied`, and because the
+   * caller swallows a per-table failure to keep one bad table from killing the whole
+   * search, the result is an EMPTY result set rather than an error. Search simply
+   * went dark for members, silently, which is the worst way for a feature to break.
+   *
+   * Identity when unset (owner, SQLite, benchmarks), so their SQL is unchanged.
+   */
+  readRelation?: (table: string) => string;
 }
 
 // Columns excluded from auto-detected text search: identifiers + bookkeeping.
@@ -220,6 +233,7 @@ async function indexedSearchTable(
   q: string,
   limit: number,
   hasDeletedAt: boolean,
+  readRel: string = table,
 ): Promise<FtsGroup | null> {
   const fts = ftsTableName(table);
   const deleted = hasDeletedAt ? `AND b.deleted_at IS NULL` : '';
@@ -233,7 +247,7 @@ async function indexedSearchTable(
               ts_headline('simple', f.body, plainto_tsquery('simple', ?),
                           'StartSel=,StopSel=,MaxWords=18,MinWords=4') AS snippet,
               ts_rank(f.tsv, plainto_tsquery('simple', ?)) AS score
-       FROM "${fts}" f JOIN "${table}" b ON b."id" = f.row_id
+       FROM "${fts}" f JOIN "${readRel}" b ON b."id" = f.row_id
        WHERE f.tsv @@ plainto_tsquery('simple', ?) ${deleted}
        ORDER BY score DESC
        LIMIT ?`,
@@ -280,6 +294,7 @@ async function likeSearchTable(
   limit: number,
   hasDeletedAt: boolean,
   recencyCol: string | null,
+  readRel: string = table,
 ): Promise<FtsGroup | null> {
   // The non-indexed fallback used to ORDER BY recency ONLY, which made a name lookup
   // unreliable: it returned "the most recently added row that mentions the string
@@ -352,7 +367,7 @@ async function likeSearchTable(
   }
   const where = whereClauses.join(' OR ');
 
-  let sql = `SELECT *, (${scoreExpr}) AS __score FROM "${table}" WHERE (${where})`;
+  let sql = `SELECT *, (${scoreExpr}) AS __score FROM "${readRel}" WHERE (${where})`;
   if (hasDeletedAt) sql += ` AND deleted_at IS NULL`;
   sql += ` ORDER BY __score DESC`;
   if (recencyCol) sql += `, "${recencyCol}" DESC`;
@@ -414,10 +429,11 @@ export async function fullTextSearch(
       ['start_at', 'occurred_at', 'happened_at', 'event_date', 'sent_at', 'created_at'].find((c) =>
         cols.includes(c),
       ) ?? null;
+    const readRel = opts.readRelation?.(table) ?? table;
     let group: FtsGroup | null = null;
     try {
       if (await hasFtsIndex(adapter, table)) {
-        group = await indexedSearchTable(adapter, table, q, limit, hasDeletedAt);
+        group = await indexedSearchTable(adapter, table, q, limit, hasDeletedAt, readRel);
       } else {
         const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
         if (searchCols.length > 0) {
@@ -429,6 +445,7 @@ export async function fullTextSearch(
             limit,
             hasDeletedAt,
             recencyCol,
+            readRel,
           );
         }
       }
@@ -443,7 +460,16 @@ export async function fullTextSearch(
         const searchCols = searchableColumns(cols, opts.textColumns?.[table]);
         group =
           searchCols.length > 0
-            ? await likeSearchTable(adapter, table, searchCols, q, limit, hasDeletedAt, recencyCol)
+            ? await likeSearchTable(
+                adapter,
+                table,
+                searchCols,
+                q,
+                limit,
+                hasDeletedAt,
+                recencyCol,
+                readRel,
+              )
             : null;
       } catch {
         group = null;

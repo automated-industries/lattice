@@ -77,6 +77,7 @@ export interface ModelProfile {
 export type PlanClass = 'additive' | 'restructure';
 export type PlanTier = 'auto' | 'propose';
 
+/** Ops that change how the model is BUILT (structure, types, rows). */
 export type PlanOpKind =
   | 'add_relationship'
   | 'document'
@@ -86,10 +87,23 @@ export type PlanOpKind =
   | 'retype_column'
   | 'canonical_rename';
 
-export interface PlanOp {
+/**
+ * Ops that change what a table IS SAID to be rather than how it is built —
+ * recording its role in the model, or giving a placeholder-named table a name.
+ * Separate from {@link PlanOpKind} because they are applied through the
+ * metadata/rename primitives rather than the structural appliers; identical in
+ * every other respect (same shape, same AUTO/PROPOSE tiering, same dismiss key).
+ */
+export type ShapeOpKind = 'assign_role' | 'rename_generic_table';
+
+/** Every kind of op the planner can emit. */
+export type AnyPlanOpKind = PlanOpKind | ShapeOpKind;
+
+/** The shape shared by every planner op, parameterized by its kind. */
+export interface PlanOpOf<K extends AnyPlanOpKind> {
   /** Stable fingerprint (kind + normalized operands) — dedup across passes, dismiss key. */
   id: string;
-  kind: PlanOpKind;
+  kind: K;
   class: PlanClass;
   tier: PlanTier;
   target: { table: string; column?: string; toTable?: string };
@@ -100,10 +114,14 @@ export interface PlanOp {
   evidence: Record<string, unknown>;
 }
 
-/** A PlanOp the AUTO tier actually applied, with the audit id for undo. */
+export type PlanOp = PlanOpOf<PlanOpKind>;
+export type ShapeOp = PlanOpOf<ShapeOpKind>;
+export type AnyPlanOp = PlanOpOf<AnyPlanOpKind>;
+
+/** A planner op the AUTO tier actually applied, with the audit id for undo. */
 export interface AppliedOp {
   id: string;
-  kind: PlanOpKind;
+  kind: AnyPlanOpKind;
   summary: string;
   ok: boolean;
   auditId?: string;
@@ -113,6 +131,13 @@ export interface AppliedOp {
 export interface DataModelPlan {
   autoApplied: AppliedOp[];
   proposals: PlanOp[];
+  /**
+   * Pending {@link ShapeOp} proposals (what a table IS / what it should be
+   * called). Kept in their own list because they are applied through the
+   * metadata + rename primitives rather than the structural appliers; a caller
+   * that does not carry table-role state simply omits the field.
+   */
+  shapeProposals?: ShapeOp[];
   /** Ties a plan to the profile it was computed from. */
   profileHash: string;
 }

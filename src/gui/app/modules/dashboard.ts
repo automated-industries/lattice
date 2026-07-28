@@ -142,7 +142,35 @@ export const dashboardJs = `    // ───────────────
       // Navigation-only, fire-and-forget. The page can ask the host to move the user
       // around the app (open Configure, an add-source flow, or the assistant) — the
       // same things they can do themselves — but NEVER read or write data through it.
-      'act:function(name,arg){window.parent.postMessage({__lattice:true,op:"act",name:String(name||""),arg:(arg==null?"":String(arg))},"*");}};';
+      'act:function(name,arg){window.parent.postMessage({__lattice:true,op:"act",name:String(name||""),arg:(arg==null?"":String(arg))},"*");},' +
+      // Click-through: ask the host to show WHERE a chart got its data. Carries a
+      // table name and, when the clicked mark is exactly one record, that row id.
+      // Both are untrusted hints — the host validates them before opening anything.
+      'showSource:function(t,id){window.parent.postMessage({__lattice:true,op:"act",name:"showSource",table:String(t==null?"":t),rowId:(id==null?"":String(id))},"*");}};' +
+      // Zero-script binding for the common case: a page only has to MARK the element
+      // that renders a chart or table with data-lattice-table (plus data-lattice-row-id
+      // on a mark that is exactly one record) and a click anywhere inside it asks the
+      // host for that source. The nearest row id on the way up wins; with none, the
+      // request is table-scoped. Authored pages that draw marks on a canvas (where a
+      // per-mark element does not exist) call lattice.showSource directly instead.
+      // The page's OWN controls win: hitting a button/link/field on the way up stops
+      // the walk, so a tab, sort or filter inside a bound section still just does its
+      // job instead of being hijacked into opening the source panel.
+      'document.addEventListener("click",function(ev){' +
+      'var el=ev.target;while(el&&el.nodeType!==1)el=el.parentNode;' +
+      'var rid="",tbl="";' +
+      'while(el&&el.nodeType===1){' +
+      'if(!rid&&el.hasAttribute("data-lattice-row-id"))rid=el.getAttribute("data-lattice-row-id")||"";' +
+      'if(el.hasAttribute("data-lattice-table")){tbl=el.getAttribute("data-lattice-table")||"";break;}' +
+      'if(/^(BUTTON|A|INPUT|SELECT|TEXTAREA|LABEL|OPTION)$/.test(el.tagName))return;' +
+      'el=el.parentNode;}' +
+      'if(!tbl)return;' +
+      'window.lattice.showSource(tbl,rid);},false);';
+
+    // Tables a rendered page may never reach through the host, by any op: the
+    // credential store and the assistant conversation. Shared by the read-only data
+    // broker and the source click-through so both refuse exactly the same set.
+    var __LATTICE_DENY_TABLES = { secrets: 1, chat_threads: 1, chat_messages: 1 };
 
     // Parent-side broker: the ONLY bridge between the isolated frame and the data
     // API. Strictly READ-ONLY — it performs exactly three GET/search reads against
@@ -152,7 +180,7 @@ export const dashboardJs = `    // ───────────────
     function __latticeReadOnlyFetch(msg) {
       var op = msg && msg.op;
       var table = String((msg && msg.table) || '');
-      var DENY = { secrets: 1, chat_threads: 1, chat_messages: 1 };
+      var DENY = __LATTICE_DENY_TABLES;
       // Table-LESS ops (search + sql) are handled BEFORE the table guard: they
       // carry no msg.table (search uses msg.query, sql uses msg.sql), so the
       // empty-table check below would wrongly reject them as "forbidden table".
@@ -194,11 +222,72 @@ export const dashboardJs = `    // ───────────────
       }
       return Promise.resolve({ ok: false, error: 'unsupported op' });
     }
-    // Navigation-ONLY host actions a rendered page may request via window.lattice.act().
-    // Every branch just moves the user somewhere they could already reach by hand (open
-    // Configure, an add-source flow, or the assistant with a prefilled question) — there
-    // is deliberately NO data read/write path here, and an unknown name is ignored.
-    function __latticeDashboardAction(name, arg) {
+    // ── Source click-through: is this table one the host will trace? ────────
+    // A table name arriving from a frame is INPUT, not authority. The frame is
+    // untrusted code (an authored page, possibly shaped by row data), and it is
+    // null-origin precisely so it cannot drive the host — so the name is resolved
+    // HERE against the workspace's own table list before anything opens. A name
+    // that is not a plain identifier, is on the shared deny-list, or simply is not
+    // a table in this workspace fails closed. Nothing about the incoming message
+    // can widen this: it decides only WHICH known table, never whether.
+    function __latticeSourceTableAllowed(name) {
+      if (typeof name !== 'string') return false;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+      if (__LATTICE_DENY_TABLES[name]) return false;
+      var tables = (state && state.entities && state.entities.tables) || [];
+      for (var ti = 0; ti < tables.length; ti++) {
+        if (tables[ti] && tables[ti].name === name) return true;
+      }
+      return false;
+    }
+    // Where the in-place source panel goes for a given page frame: the slot the
+    // dashboard page reserves next to its canvas, or one created right after the
+    // frame on a surface that reserves none (the Configure file preview). Scoped to
+    // the POSTING frame's own container, so a second page frame that happens to be
+    // mounted can never be the one that opens.
+    function htmlFrameSourceHost(frame) {
+      var box = frame && frame.parentNode;
+      if (!box || !box.querySelector) return null;
+      var host = box.querySelector('.dash-source');
+      if (!host) {
+        host = document.createElement('div');
+        host.className = 'dash-history dash-source';
+        box.insertBefore(host, frame.nextSibling);
+      }
+      return host;
+    }
+    // Open the record page's provenance view for a source a rendered page named,
+    // IN PLACE (the page stays on screen; the panel carries explicit links out).
+    // Row-scoped when the clicked mark resolved to exactly one record, table-scoped
+    // otherwise. A refused or unopenable request is reported both ways — logged for
+    // whoever is debugging, surfaced to the person who just clicked — never dropped.
+    function __latticeShowSource(frame, table, rowId) {
+      if (!__latticeSourceTableAllowed(table)) {
+        var shown = typeof table === 'string' ? table : typeof table;
+        if (window.console && console.warn) {
+          console.warn('lattice: refused a page source request for an unknown table: ' + shown);
+        }
+        if (typeof showToast === 'function') {
+          showToast('That chart names a data source this workspace does not have', {});
+        }
+        return false;
+      }
+      var host = htmlFrameSourceHost(frame);
+      if (!host) {
+        if (typeof showToast === 'function') showToast('Could not open the data source panel', {});
+        return false;
+      }
+      renderProvenanceSource(host, String(table), rowId == null ? '' : String(rowId));
+      return true;
+    }
+
+    // Host actions a rendered page may request via window.lattice.act(). Every
+    // navigation branch just moves the user somewhere they could already reach by hand
+    // (open Configure, an add-source flow, or the assistant with a prefilled question).
+    // The one non-navigation branch, showSource, opens the read-only provenance panel
+    // for a table THIS host validated first — the page cannot read or write data
+    // through any of it. An unknown name is ignored.
+    function __latticeDashboardAction(name, arg, msg, frame) {
       if (name === 'configure') { if (typeof goConfigure === 'function') goConfigure(); return; }
       if (name === 'analytics') { if (typeof goAnalytics === 'function') goAnalytics(); return; }
       if (name === 'ask') {
@@ -213,17 +302,28 @@ export const dashboardJs = `    // ───────────────
         if (inp) { if (q) inp.value = q; inp.focus(); }
         return;
       }
-      var addBtn = { 'add-file': 'src-add-files' };
-      var addTab = { 'add-file': 'files', 'add-connector': 'connectors', 'add-database': 'databases' };
+      if (name === 'showSource') {
+        __latticeShowSource(frame, msg && msg.table, msg && msg.rowId);
+        return;
+      }
+      if (name === 'add-file') {
+        // Adding a file is a sidebar affordance, not a Configure tab — expand the
+        // FILES section if it is collapsed, then open its add menu in place. No
+        // drawer, no navigation.
+        if (typeof sidebarGroupCollapsed === 'function' && typeof toggleSidebarGroup === 'function' &&
+            sidebarGroupCollapsed('nav-files')) {
+          toggleSidebarGroup('nav-files');
+        }
+        var fileBtn = document.getElementById('src-add-files');
+        if (fileBtn) fileBtn.click();
+        return;
+      }
+      var addTab = { 'add-connector': 'connectors', 'add-database': 'databases' };
       if (Object.prototype.hasOwnProperty.call(addTab, name)) {
-        // The add-source surfaces live in their own Configure tab (Files/MCP
-        // Connectors/Databases) — open the RIGHT one, then click the add button
-        // where one exists. The MCP Connectors and Databases tabs have their add
-        // forms inline, so opening the tab IS the add surface.
+        // The MCP Connectors and Databases tabs have their add forms inline, so
+        // opening the right Configure tab IS the add surface.
         if (typeof openConfigureDrawer === 'function') openConfigureDrawer(addTab[name]);
         else if (typeof goConfigure === 'function') goConfigure();
-        var id = addBtn[name];
-        if (id) setTimeout(function () { var b = document.getElementById(id); if (b) b.click(); }, 90);
         return;
       }
       // Unknown action \\u2014 ignore (fail closed).
@@ -247,11 +347,13 @@ export const dashboardJs = `    // ───────────────
           if (frames[fi].contentWindow && e.source === frames[fi].contentWindow) { frame = frames[fi]; break; }
         }
         if (!frame) return;
-        // Navigation actions (op:'act') are fire-and-forget and need no reply — a
-        // rendered dashboard asking to move the user around the app. Whitelisted +
-        // navigation-only (see __latticeDashboardAction), so nothing sensitive rides
-        // this even though any sandboxed frame can post it.
-        if (d.op === 'act') { __latticeDashboardAction(String(d.name || ''), d.arg); return; }
+        // Action messages (op:'act') are fire-and-forget and need no reply — a
+        // rendered dashboard asking to move the user around the app, or to show where
+        // one of its charts got its data. Whitelisted, and every argument is validated
+        // host-side (see __latticeDashboardAction), so nothing sensitive rides this
+        // even though any sandboxed frame can post it. The resolved frame goes with
+        // the message so a source panel opens beside the page that asked for it.
+        if (d.op === 'act') { __latticeDashboardAction(String(d.name || ''), d.arg, d, frame); return; }
         var rid = d.rid;
         var reply = function (payload) {
           payload.__latticeReply = true;

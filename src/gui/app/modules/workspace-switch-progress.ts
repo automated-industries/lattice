@@ -24,6 +24,9 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       hash = hash || '';
       var m;
       if (hash === '#/analytics' || hash === '#/analytics/') return '#/';
+      // Files left the Configure drawer for the always-visible sidebar section, so a
+      // legacy files/inputs hash lands on the workspace home, where that section lives.
+      if (hash === '#/settings/files' || hash === '#/settings/inputs') return '#/';
       m = /^#\\/analytics\\/(.+)$/.exec(hash);
       if (m) return '#/w/dash/' + m[1];
       // A single file (old #/fs/files/<id> or #/tables/files/<id>) → the file tab.
@@ -57,11 +60,11 @@ export const workspaceSwitchProgressJs = `    // ──────────�
       if (hash === '#/settings/lattice') return { tab: 'user' };
       if (hash === '#/settings/database' || hash === '#/settings/project-config' || hash === '#/settings/data-model')
         return { tab: 'datamodel' };
-      // Inputs split into three tabs; keep the legacy #/settings/inputs → Files.
-      if (hash === '#/settings/files') return { tab: 'files' };
+      // Inputs split into per-surface tabs. (#/settings/files and the legacy
+      // #/settings/inputs are normalized to the workspace home instead — Files is a
+      // sidebar section now, not a drawer tab.)
       if (hash === '#/settings/connectors') return { tab: 'connectors' };
       if (hash === '#/settings/databases') return { tab: 'databases' };
-      if (hash === '#/settings/inputs') return { tab: 'files' };
       if (hash === '#/settings/user-config') return { tab: 'user' };
       return null;
     }

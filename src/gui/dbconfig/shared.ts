@@ -1,11 +1,19 @@
 import type { Lattice } from '../../lattice.js';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
+import { findLatticeRoot } from '../../framework/lattice-root.js';
 
 export interface DbConfigContext {
   db: Lattice;
   configPath: string;
+  /**
+   * The `.lattice` root this session resolved, or null when the GUI was opened
+   * on a plain config outside one. Routes that write to the registry (migrating
+   * a workspace to cloud, renaming one) must use THIS, not a root found by
+   * searching upward from {@link configPath} — see {@link rootForDbConfig}.
+   */
+  latticeRoot: string | null;
   pathname: string;
   method: string;
   /** Tables the open-time cloud converge couldn't manage (owner mismatch, etc.),
@@ -109,4 +117,21 @@ export function parseSaveBody(body: Record<string, unknown>): SavePostgres | Sav
 /** Resolve `path` relative to the config file directory unless it's already absolute. */
 export function resolveRelativeToConfig(configPath: string, candidate: string): string {
   return isAbsolute(candidate) ? candidate : resolve(configPath, '..', candidate);
+}
+
+/**
+ * The root a dbconfig route should write its registry changes to.
+ *
+ * The session's root wins. Searching upward from the config would pick whatever
+ * root sits above it, and an adopted-in-place config can easily live inside a
+ * checkout that still holds a leftover `.lattice` — writing this workspace's
+ * cloud migration or rename into a registry the session never opened. Upward
+ * search remains only as the fallback for an embedder that named no root, which
+ * is the same fallback the server itself uses.
+ */
+export function rootForDbConfig(ctx: {
+  latticeRoot: string | null;
+  configPath: string;
+}): string | null {
+  return ctx.latticeRoot ?? findLatticeRoot(dirname(ctx.configPath));
 }

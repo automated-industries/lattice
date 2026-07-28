@@ -4,6 +4,11 @@ import { transcribe, type SttProvider } from './ai/transcribe.js';
 import { voiceModeFromConfig, type VoiceMode } from './ai/voice-mode.js';
 import { getClaudeLimitState } from './ai/limit-state.js';
 import {
+  setClaudeAuthWarning,
+  clearClaudeAuthWarning,
+  getClaudeAuthWarning,
+} from './ai/auth-warn-state.js';
+import {
   readOAuthConfig,
   oauthConfigured,
   generatePkceVerifier,
@@ -12,6 +17,7 @@ import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   refreshAccessToken,
+  OAuthExchangeError,
 } from './ai/oauth.js';
 import type { ClaudeAuth } from './ai/chat.js';
 import {
@@ -334,6 +340,8 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
   // Managed deployment: the operator provides the credential via env; a user's
   // connected subscription or pasted key must never override it. Short-circuit
   // before any stored-credential read so managed auth is always the env key.
+  // Do NOT set auth warnings on managed deployments — the operator's credential
+  // path is out of the user's hands.
   if (isManagedModelAuth()) {
     const managedKey = process.env.ANTHROPIC_API_KEY ?? null;
     return managedKey ? { apiKey: managedKey } : null;
@@ -362,16 +370,32 @@ export async function resolveClaudeAuth(db: Lattice | null): Promise<ClaudeAuth 
           // Refreshed tokens persist machine-level so the subscription stays
           // connected across every workspace, not just the one that linked it.
           setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+          // A successful refresh clears any prior warning — the subscription is
+          // working and the user can keep chatting.
+          clearClaudeAuthWarning();
         } catch (e) {
-          // Refresh failed (network blip / expired or revoked refresh token).
-          // Do NOT silently fall back to the API key — surface it and keep the
-          // connected subscription. If the existing access token has also expired
-          // the call returns 401, which tells the user to re-connect instead of
-          // quietly running on a different credential.
-          console.warn(
-            '[lattice/assistant] Claude subscription token refresh failed; keeping the connected subscription (re-connect if calls start failing):',
-            (e as Error).message,
-          );
+          // Distinguish terminal failures (refresh token expired/revoked) from
+          // transient failures (network blip, 5xx, timeout). A terminal failure
+          // (invalid_grant) means the refresh token will never work again, so
+          // we signal this to the client so the user sees a reconnect notice
+          // before the current access token expires and calls start failing.
+          const isTerminal = e instanceof OAuthExchangeError && e.kind === 'invalid_grant';
+          if (isTerminal) {
+            setClaudeAuthWarning();
+            console.warn(
+              '[lattice/assistant] Claude subscription token refresh failed with invalid_grant (terminal); setting auth warning:',
+              (e as Error).message,
+            );
+          } else {
+            // Transient failure (network, 5xx, timeout, etc.). Do NOT set the
+            // warning — the current access token may still be valid and the user
+            // may keep chatting. On the next refresh attempt, if the network
+            // recovers or the server comes back, the warning clears automatically.
+            console.warn(
+              '[lattice/assistant] Claude subscription token refresh failed (transient); keeping the connected subscription (re-connect if calls start failing):',
+              (e as Error).message,
+            );
+          }
         }
       }
       if (tokens.access_token) return { authToken: tokens.access_token, betaHeader };
@@ -444,6 +468,8 @@ export async function maybeDisconnectExpiredClaude(
   if (activeProviderKind() === 'openai_compat') return false; // a BYO key, not the OAuth sub
   if ((await claudeAuthKind(db)) !== 'oauth') return false; // no OAuth subscription stored
   deleteAssistantCredential(CLAUDE_OAUTH_KIND);
+  // A confirmed 401/403 means the credential is dead — clear any warning.
+  clearClaudeAuthWarning();
   console.warn(
     '[lattice/assistant] Claude subscription auth failed (401/403) — disconnected the expired subscription; the user must reconnect Claude.',
   );
@@ -519,10 +545,17 @@ export async function dispatchAssistantRoute(
       : latticeCloud
         ? { base: latticeCloud.proxyBaseUrl, key: latticeCloud.token }
         : null;
+    const balanceProbed = Boolean(balanceProbe?.base && balanceProbe.key);
     if (balanceProbe?.base && balanceProbe.key) {
       try {
+        // Bounded on purpose: this response now decides whether the app boots at
+        // all, and it is fetched from a remote proxy. An unbounded wait on a
+        // wedged proxy would hang the boot gate itself with nothing on screen; a
+        // timeout instead yields "balance unknown", which is reported as such and
+        // deliberately does NOT lock the user out.
         const r = await fetch(`${balanceProbe.base.replace(/\/$/, '')}/v1/balance`, {
           headers: { authorization: `Bearer ${balanceProbe.key}` },
+          signal: AbortSignal.timeout(10_000),
         });
         if (r.ok) {
           const b = (await r.json()) as { balance_cents?: number; top_up_url?: string };
@@ -530,9 +563,26 @@ export async function dispatchAssistantRoute(
           topUpUrl = typeof b.top_up_url === 'string' ? b.top_up_url : null;
         }
       } catch {
-        /* balance unavailable — the GUI simply omits it */
+        /* balance unavailable — reported as such below, never shown as zero */
       }
     }
+    // We asked for a balance and got no number back. The GUI must say "unavailable"
+    // instead of formatting the null as $0.00 — "we could not read your balance" and
+    // "you are out of tokens" are different facts and lead to different actions.
+    const balanceUnavailable = balanceProbed && balanceCents === null;
+    // A cloud account with nothing left to spend is NOT a usable backend: every turn
+    // would be refused by the proxy. Treating it as connected boots the app into a
+    // state where all AI work fails, so it counts as not-connected and the client
+    // routes to top-up or another provider.
+    //
+    // Only a balance we actually read counts. An unreadable one is unknown, and
+    // unknown must never lock a paid-up account out of its own app. A managed
+    // deployment is out of scope here: the operator owns that credential, and the
+    // per-user connect flow this unblocks is disabled there anyway.
+    const cloudBalanceExhausted =
+      !isManagedModelAuth() && latticeCloud !== null && balanceCents !== null && balanceCents <= 0;
+    const usableLatticeCloud = latticeCloud !== null && !cloudBalanceExhausted;
+    const connected = claudeConnected || openaiCompat !== null || usableLatticeCloud;
     sendJson(res, {
       hasAnthropicKey,
       hasOpenaiKey,
@@ -550,11 +600,21 @@ export async function dispatchAssistantRoute(
       // The single connected/disconnected truth the client wall reads. True in a
       // managed deployment (operator env credential), when a Claude subscription is
       // connected, when an OpenAI-compatible endpoint is configured, OR when a
-      // Lattice Cloud account model credential is active.
-      connected: claudeConnected || openaiCompat !== null || latticeCloud !== null,
+      // Lattice Cloud account model credential is active AND has balance left.
+      connected,
+      // Why `connected` is false when a backend IS configured, so the client can
+      // offer the specific way out instead of a generic "connect something".
+      // 'cloud_balance_exhausted' = signed in, no tokens left → top up (or switch).
+      modelAccessBlocked:
+        !connected && cloudBalanceExhausted ? ('cloud_balance_exhausted' as const) : null,
       // Claude usage-limit state (null unless the limit was hit). The chat shows
       // it and the Configure side reads it to block ingest/AI while limited.
       limitState: getClaudeLimitState(),
+      // Claude auth-warning state (null unless a terminal token refresh failure
+      // happened). The chat shows it as a reconnect notice so the user sees the
+      // problem before mid-conversation 401 failures. Transient refresh failures
+      // do NOT set this — the current access token may still be valid.
+      authWarning: getClaudeAuthWarning(),
       hasVoiceKey: voice !== null,
       sttProvider: voice?.provider ?? null,
       sttPreference,
@@ -577,9 +637,13 @@ export async function dispatchAssistantRoute(
       // normal install). The header account menu's "Account settings" action opens
       // it — that page owns billing / sign-out. Balance is mirrored here for display.
       accountUrl: process.env.LATTICE_ACCOUNT_URL ?? null,
-      // Prepaid token balance for a managed deployment (cents; null otherwise), plus
-      // where to top up. Shown in the account menu + assistant settings.
+      // Prepaid token balance in cents for a managed deployment OR a per-user cloud
+      // account (null when neither applies, or when the read failed — see
+      // `balanceUnavailable`), plus where to top up. Shown in the account menu.
       balanceCents,
+      // True when a balance was asked for and none came back. The GUI says so
+      // rather than rendering the null as a zero.
+      balanceUnavailable,
       topUpUrl,
     });
     return true;
@@ -1005,6 +1069,8 @@ export async function dispatchAssistantRoute(
       // active when the user linked it (otherwise the OAuth-connect path would
       // re-introduce the per-workspace de-attach bug).
       setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+      // Successful reconnect clears any prior auth warning.
+      clearClaudeAuthWarning();
       redirect('connected');
     } catch {
       redirect('error');
@@ -1081,6 +1147,8 @@ export async function dispatchAssistantRoute(
       const state = pastedState || cookies.lat_oauth_state || undefined;
       const tokens = await exchangeCodeForTokens(cfg, code, verifier, state);
       setAssistantCredential(CLAUDE_OAUTH_KIND, JSON.stringify(tokens));
+      // Successful reconnect clears any prior auth warning.
+      clearClaudeAuthWarning();
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'Set-Cookie': clear,
@@ -1101,6 +1169,8 @@ export async function dispatchAssistantRoute(
   // rather than via /api/assistant/key.)
   if (method === 'DELETE' && pathname === '/api/assistant/oauth') {
     deleteAssistantCredential(CLAUDE_OAUTH_KIND);
+    // Disconnecting clears any auth warning since the subscription no longer exists.
+    clearClaudeAuthWarning();
     sendJson(res, { ok: true });
     return true;
   }

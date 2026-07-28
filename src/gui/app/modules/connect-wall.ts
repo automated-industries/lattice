@@ -3,12 +3,27 @@
 // a Claude account, or any OpenAI-compatible endpoint) → connect it (Connect stays faded
 // until the required fields are filled; the cloud option signs in through the browser) → a
 // "Testing your AI" step runs a real model call. On success the app
-// proceeds to Analytics; on failure it returns to the setup screen with the error. Boot
+// proceeds to Analytics; on failure it returns to the setup screen with the error —
+// and, on the cloud path, with the two backends that do not need the sign-in service
+// offered inline, because a failure here is otherwise a dead end on the first screen. Boot
 // gates on this (boot.ts) BEFORE any workspace loads, and it is suppressed for a managed
 // deployment. One codebase serves both the desktop app and terminal `lattice gui` (the
 // OAuth anchor is surface-agnostic — the desktop link-interceptor opens it in the system
 // browser and keeps the PKCE cookie on the webview), so this wall is NOT forked per surface.
 export const connectWallJs = `    // ── First-run connect wall (wizard) ─────────────────────
+    // Text for a failed connect/sign-in step. The server already humanizes these
+    // (cause named, failing step named, no status code), so the message is shown as
+    // written; the scrub is a backstop for a transport-level failure whose message
+    // never went through the server, and the fallback covers a message-less rejection.
+    function connectErrorText(err, fallback) {
+      var msg = err && err.message ? String(err.message) : '';
+      msg = msg.replace(/\\s*\\(\\s*(?:HTTP\\s*)?[1-5][0-9][0-9]\\s*\\)/gi, '')
+               .replace(/\\s*\\b(?:HTTP|status(?: code)?)\\s*[:=]?\\s*[1-5][0-9][0-9]\\b/gi, '')
+               .replace(/\\s{2,}/g, ' ')
+               .replace(/^\\s+|\\s+$/g, '');
+      return msg || fallback;
+    }
+
     // The Claude "sunburst" mark for the black Connect-with-Claude button. Drawn with
     // currentColor so it inherits the button styling (Claude orange via .connect-claude-btn).
     var CLAUDE_LOGO_SVG = (function () {
@@ -142,7 +157,7 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
               if (cfg && cfg.connected) { state.step = 'testing'; render(); runTest(); }
               else { setStatus('That code did not connect an account \\u2014 use Connect with Claude and try again.', true); sync(); }
             })
-            .catch(function (err) { setStatus('Connect failed: ' + ((err && err.message) || 'try again'), true); sync(); });
+            .catch(function (err) { setStatus('Connect failed: ' + connectErrorText(err, 'try again'), true); sync(); });
         }
         if (connect) connect.addEventListener('click', submit);
         if (code) code.addEventListener('keydown', function (e) { if (e.key === 'Enter' && connect && !connect.disabled) { e.preventDefault(); submit(); } });
@@ -179,7 +194,7 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
               if (cfg && cfg.connected) { state.step = 'testing'; render(); runTest(); }
               else { setStatus('Could not save that endpoint \\u2014 check the URL, key, and model.', true); sync(); }
             })
-            .catch(function (err) { setStatus('Connect failed: ' + ((err && err.message) || 'try again'), true); sync(); });
+            .catch(function (err) { setStatus('Connect failed: ' + connectErrorText(err, 'try again'), true); sync(); });
         }
         if (connect) connect.addEventListener('click', submit);
       }
@@ -204,9 +219,38 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
             actionsHtml() +
           '</div>';
         wireBack();
-        if (state.error) setStatus(state.error, true);
+        // A cloud failure carried back from the AI test is the same dead end as one
+        // raised here, so it gets the same escape hatch.
+        if (state.error) { setStatus(state.error, true); showAlternatives(); }
         var startBtn = document.getElementById('cw-cloud-start');
-        function fail(msg) { setStatus(msg, true); if (startBtn) startBtn.disabled = false; }
+        // This is the FIRST screen: a user who cannot get past it cannot use the app
+        // at all, and Back only returns to a choice they already made. So every failure
+        // on this path also puts the two backends that do NOT depend on the sign-in
+        // service one click away, instead of leaving a red line and a Back button.
+        function showAlternatives() {
+          if (document.getElementById('cw-alt')) return;
+          var card = wall.querySelector('.connect-wall-card');
+          if (!card) return;
+          var box = document.createElement('div');
+          box.id = 'cw-alt';
+          box.innerHTML =
+            '<p class="cw-lead">Lattice needs a model to run. Start with one of these instead \\u2014 you can switch to a Lattice Cloud account later:</p>' +
+            '<div class="cw-choices">' +
+              '<button type="button" class="cw-choice" id="cw-alt-claude"><strong>Claude Account</strong><span>Max, Pro, etc</span></button>' +
+              '<button type="button" class="cw-choice" id="cw-alt-other"><strong>Other AI Endpoint</strong><span>OpenAI, Claude API, Copilot\\u2026</span></button>' +
+            '</div>';
+          var actions = card.querySelector('.cw-actions');
+          if (actions) card.insertBefore(box, actions); else card.appendChild(box);
+          var toClaude = document.getElementById('cw-alt-claude');
+          var toOther = document.getElementById('cw-alt-other');
+          if (toClaude) toClaude.addEventListener('click', function () { state.method = 'claude'; go('claude'); });
+          if (toOther) toOther.addEventListener('click', function () { state.method = 'other'; go('other'); });
+        }
+        function fail(msg) {
+          setStatus(msg, true);
+          if (startBtn) startBtn.disabled = false;
+          showAlternatives();
+        }
         // Activate the cloud provider for the (now) signed-in account, then run the
         // shared "Testing your AI" smoke test — identical tail to the Claude/Other paths.
         function activate() {
@@ -216,17 +260,20 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
               if (r && r.ok) { state.step = 'testing'; render(); runTest(); }
               else { fail((r && r.error) || 'Could not connect your account \\u2014 try signing in again.'); }
             })
-            .catch(function (err) { fail('Connect failed: ' + ((err && err.message) || 'try again')); });
+            .catch(function (err) { fail(connectErrorText(err, 'Could not connect your account \\u2014 try signing in again.')); });
         }
         // After a sign-in attempt, re-check status; activate only if actually linked.
         function afterSignIn() {
           fetchJson('/api/identity/status')
             .then(function (st) {
               if (st && st.linked) activate();
-              else fail('Sign-in did not complete \\u2014 try again.');
+              else fail('Sign-in did not complete \\u2014 nothing was signed in. Try again.');
             })
-            .catch(function () { fail('Sign-in did not complete \\u2014 try again.'); });
+            .catch(function (err) { fail(connectErrorText(err, 'Sign-in did not complete \\u2014 try again.')); });
         }
+        // 'model' tells the server this sign-in is the first-run model choice, so its
+        // failure message names the backends that work without the sign-in service.
+        var SIGNIN_BODY = JSON.stringify({ purpose: 'model' });
         function begin() {
           if (startBtn) startBtn.disabled = true;
           setStatus('Checking your account\\u2026');
@@ -234,13 +281,17 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
             .then(function (st) {
               if (st && st.linked) { activate(); return; }
               if (!st || st.serviceAvailable !== true) {
-                fail('Lattice Cloud sign-in is not available on this deployment.');
+                fail('Lattice Cloud sign-in is not reachable from this machine right now.');
                 return;
               }
               setStatus('Opening your browser to sign in\\u2026');
-              fetchJson('/api/identity/signin/start', { method: 'POST' })
+              fetchJson('/api/identity/signin/start', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: SIGNIN_BODY,
+              })
                 .then(function (r) {
-                  if (!r || !r.verifyUrl) throw new Error('sign-in unavailable');
+                  if (!r || !r.verifyUrl) throw new Error('Lattice Cloud sign-in did not return a sign-in link. Try again shortly.');
                   // Desktop webviews have no tabs — the server-side bridge opens the
                   // system browser; a plain browser tab just opens the URL.
                   window.open(r.verifyUrl, '_blank');
@@ -251,15 +302,15 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
                     fetchJson('/api/identity/signin/complete', {
                       method: 'POST',
                       headers: { 'content-type': 'application/json' },
-                      body: JSON.stringify({ code: code.trim() }),
+                      body: JSON.stringify({ code: code.trim(), purpose: 'model' }),
                     }).then(afterSignIn).catch(function (err) {
-                      fail('Sign-in failed: ' + ((err && err.message) || 'invalid code'));
+                      fail(connectErrorText(err, 'That sign-in code was not accepted \\u2014 start the sign-in again.'));
                     });
                   } else { afterSignIn(); }
                 })
-                .catch(function (err) { fail('Sign-in failed: ' + ((err && err.message) || 'try again')); });
+                .catch(function (err) { fail(connectErrorText(err, 'Lattice Cloud sign-in did not complete. Try again shortly.')); });
             })
-            .catch(function () { fail('Lattice Cloud sign-in is not available on this deployment.'); });
+            .catch(function (err) { fail(connectErrorText(err, 'Lattice Cloud sign-in is not reachable from this machine right now.')); });
         }
         if (startBtn) startBtn.addEventListener('click', begin);
       }
@@ -305,6 +356,30 @@ export const connectWallJs = `    // ── First-run connect wall (wizard) ─�
             document.body.appendChild(el);
           }
           el.textContent = '\\u23F3 ' + (cfg.limitState.message || 'You have hit your usage limit.');
+        } else if (el && el.parentNode) {
+          el.parentNode.removeChild(el);
+        }
+      }).catch(function () {});
+    }
+
+    // ── Claude auth-warning banner ──────────────────────────────────
+    // When a Claude OAuth token refresh fails terminally (invalid_grant), show
+    // a reconnect notice so the user sees the problem BEFORE mid-conversation 401s.
+    // Like the limit banner, this is checked at boot and when config refreshes
+    // (chat SSE frame). Reads /api/assistant/config (which surfaces authWarning).
+    function refreshAuthWarningBlock() {
+      fetchJson('/api/assistant/config').then(function (cfg) {
+        var warning = cfg && cfg.authWarning;
+        var el = document.getElementById('auth-warning-banner');
+        if (warning) {
+          if (!el) {
+            el = document.createElement('div');
+            el.id = 'auth-warning-banner';
+            el.className = 'auth-warning-banner';
+            el.setAttribute('role', 'status');
+            document.body.appendChild(el);
+          }
+          el.textContent = '\\u26A0\\uFE0F ' + (warning.message || 'Your Claude sign-in has expired — reconnect to keep chatting.');
         } else if (el && el.parentNode) {
           el.parentNode.removeChild(el);
         }

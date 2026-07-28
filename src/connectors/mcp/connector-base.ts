@@ -14,6 +14,7 @@
 
 import { ConnectorUnavailableError } from '../errors.js';
 import { sanitizeConnectorLabel } from '../sanitize-label.js';
+import { curatedLabelForServerUrl } from '../prefab/curated.js';
 import type {
   McpConnector,
   ConnectedModelDef,
@@ -47,6 +48,162 @@ import {
 
 /** Hard cap on pages per model, so a paginating tool can never loop unbounded. */
 const MAX_PAGES = 1000;
+
+// --- Display-name ladder -----------------------------------------------------
+
+/**
+ * Self-reported server names that identify nothing. A vendor that hosts several MCP endpoints on
+ * one platform commonly answers every handshake with the same generic word, so taking that name
+ * verbatim renders three different connectors under one identical title. Compared after stripping
+ * case and separators, so "mcp-server", "MCP Server" and "mcp_server" all collapse to one entry.
+ */
+const PLACEHOLDER_SERVER_NAMES = new Set([
+  'statelessserver',
+  'statelessmcpserver',
+  'mcpstatelessserver',
+  'server',
+  'mcp',
+  'mcpserver',
+  'servermcp',
+  'httpserver',
+  'streamablehttpserver',
+  'sseserver',
+  'stdioserver',
+  'default',
+  'defaultserver',
+  'unnamed',
+  'unnamedserver',
+  'unknown',
+  'unknownserver',
+  'untitled',
+  'anonymous',
+  'example',
+  'exampleserver',
+  'service',
+  'app',
+]);
+
+/**
+ * True when a server's self-reported name is absent, empty, or one of the generic placeholders
+ * above. A placeholder must LOSE the name ladder and fall through to a label derived from the
+ * endpoint — otherwise a present-but-worthless name beats every good fallback, which is exactly
+ * how several distinct connections ended up sharing one title.
+ */
+export function isPlaceholderServerName(name: string | null | undefined): boolean {
+  if (name == null) return true;
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[\s._\-/]+/g, '');
+  if (normalized === '') return true;
+  return PLACEHOLDER_SERVER_NAMES.has(normalized);
+}
+
+/** Host labels that name infrastructure rather than a service — never a display name on their own. */
+const GENERIC_HOST_LABELS = new Set([
+  'www',
+  'api',
+  'mcp',
+  'app',
+  'apps',
+  'server',
+  'remote',
+  'gateway',
+  'service',
+  'services',
+  'host',
+  'cloud',
+  'connect',
+  'auth',
+  'oauth',
+  'login',
+  'sso',
+  'edge',
+  'proxy',
+  'endpoint',
+]);
+
+/** Public suffixes whose second label is still part of the suffix (so we don't return "Co"). */
+const TWO_PART_SUFFIXES = new Set(['co', 'com', 'org', 'net', 'gov', 'ac']);
+
+/**
+ * Split a host label into display words: hyphens/underscores separate, and a fused "mcp" prefix or
+ * suffix is split off so "drivemcp" reads as two words rather than one unpronounceable run.
+ */
+function tokenizeHostLabel(label: string): string[] {
+  const out: string[] = [];
+  for (const part of label.split(/[-_]+/).filter(Boolean)) {
+    if (part === 'mcp') {
+      out.push('mcp');
+      continue;
+    }
+    const suffix = /^(.+?)mcp$/.exec(part);
+    const prefix = /^mcp(.+)$/.exec(part);
+    if (suffix?.[1] && suffix[1].length >= 2) out.push(suffix[1], 'mcp');
+    else if (prefix?.[1] && prefix[1].length >= 2) out.push('mcp', prefix[1]);
+    else out.push(part);
+  }
+  return out;
+}
+
+function titleToken(token: string): string {
+  if (token === 'mcp') return 'MCP';
+  if (token === 'api') return 'API';
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+/**
+ * A display label read out of an MCP endpoint's hostname, or null when nothing in the host reads as
+ * a name. A vendor that fans several MCP endpoints out of one domain names the service in the
+ * subdomain, so a subdomain carrying an "mcp" token plus a real word wins; otherwise the
+ * registrable label is the brand. A label that is itself generic infrastructure ("mcp.example"
+ * would read as "Mcp") yields null so the caller falls through to its own label.
+ */
+export function hostnameLabelFor(serverUrl: string | null | undefined): string | null {
+  if (!serverUrl) return null;
+  let host: string;
+  try {
+    host = new URL(serverUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!host) return null;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return null; // an address literal names nothing
+  const labels = host.split('.').filter(Boolean);
+  if (labels.length < 2) return null;
+  const subdomain = tokenizeHostLabel(labels[0] ?? '');
+  if (subdomain.length > 1 && subdomain.includes('mcp')) {
+    return subdomain.map(titleToken).join(' ');
+  }
+  let idx = labels.length - 2;
+  if (idx > 0 && TWO_PART_SUFFIXES.has(labels[idx] ?? '')) idx -= 1;
+  const brand = labels[idx] ?? '';
+  if (brand.length < 2 || /^\d+$/.test(brand) || brand.startsWith('xn--')) return null;
+  if (GENERIC_HOST_LABELS.has(brand)) return null;
+  return tokenizeHostLabel(brand).map(titleToken).join(' ');
+}
+
+/**
+ * The label a connection should carry, resolved down a fixed ladder:
+ *
+ *  1. the curated catalog label for this endpoint (authoritative — it is the only thing that tells
+ *     apart several services of one vendor that all report the same handshake name);
+ *  2. the server's own name, when it is not a generic placeholder (sanitized, since it is
+ *     attacker-controlled text that later reaches an LLM prompt);
+ *  3. a label derived from the hostname;
+ *  4. the caller's fallback (its own toolkit label).
+ */
+export function resolveConnectorDisplayName(opts: {
+  serverUrl?: string | null;
+  serverName?: string | null;
+  fallback?: string | null;
+}): string | null {
+  const curated = curatedLabelForServerUrl(opts.serverUrl);
+  if (curated) return curated;
+  const reported = opts.serverName == null ? '' : sanitizeConnectorLabel(opts.serverName);
+  if (reported !== '' && !isPlaceholderServerName(reported)) return reported;
+  return hostnameLabelFor(opts.serverUrl) ?? opts.fallback ?? null;
+}
 
 /** Binds one connected model to the MCP read tool that feeds it, plus its mapper. */
 export interface McpModelBinding {
@@ -186,7 +343,11 @@ export abstract class McpConnectorBase implements McpConnector {
       return {
         kind: 'connected',
         connectionId,
-        displayName: serverName ? sanitizeConnectorLabel(serverName) : this.displayNameFor(toolkit),
+        displayName: resolveConnectorDisplayName({
+          serverUrl: server.url ?? null,
+          serverName: serverName ?? null,
+          fallback: this.displayNameFor(toolkit),
+        }),
       };
     }
 
@@ -220,9 +381,11 @@ export abstract class McpConnectorBase implements McpConnector {
       return {
         kind: 'connected',
         connectionId,
-        displayName: begin.serverName
-          ? sanitizeConnectorLabel(begin.serverName)
-          : this.displayNameFor(toolkit),
+        displayName: resolveConnectorDisplayName({
+          serverUrl,
+          serverName: begin.serverName ?? null,
+          fallback: this.displayNameFor(toolkit),
+        }),
       };
     }
     putPendingConnect(state, {
@@ -261,12 +424,18 @@ export abstract class McpConnectorBase implements McpConnector {
     const scope = pending.scope ?? this.scope(pending.toolkit);
     if (scope !== undefined) completeArgs.scope = scope;
     const done = await this.oauth.complete(completeArgs);
+    // Echo `serverName` only when the server actually named itself: a generic placeholder is
+    // worse than nothing downstream, where it would beat a host- or catalog-derived label.
+    const reported = done.serverName == null ? '' : sanitizeConnectorLabel(done.serverName);
+    const named = reported !== '' && !isPlaceholderServerName(reported);
     return {
       connectionId: pending.connectionId,
-      displayName: done.serverName
-        ? sanitizeConnectorLabel(done.serverName)
-        : this.displayNameFor(pending.toolkit),
-      ...(done.serverName ? { serverName: sanitizeConnectorLabel(done.serverName) } : {}),
+      displayName: resolveConnectorDisplayName({
+        serverUrl: pending.serverUrl,
+        serverName: done.serverName ?? null,
+        fallback: this.displayNameFor(pending.toolkit),
+      }),
+      ...(named ? { serverName: reported } : {}),
       ...(pending.targetConnectorId ? { targetConnectorId: pending.targetConnectorId } : {}),
     };
   }
