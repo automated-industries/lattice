@@ -30,24 +30,27 @@ import { join } from 'node:path';
  *
  * WHAT THIS FILE CANNOT DO, stated so nobody trusts it further than it goes.
  * It proves a symbol is REFERENCED. It cannot prove a symbol is REACHED. Those come
- * apart whenever a control is guarded by a state the production wiring never builds:
- * the destructive gate's "the user was asked and said no" branch was fully wired —
- * called from `gateDestructive`, which is called from `executeFunction`, which the
- * chat loop calls on every tool call — and still could not run, because the chat
- * route only ever handed the ledger a GRANTED consent record, so the declined status
- * the branch keys on was never constructed. Every reference this file counts was
- * real; the branch was dead anyway.
+ * apart whenever a control is guarded by a state the production wiring never builds.
+ * The destructive gate is the worked example: its "the user was asked and said no"
+ * branch was fully wired — called from `gateDestructive`, which is called from
+ * `executeFunction`, which the chat loop calls on every tool call — and still could
+ * not run, because the chat route only ever handed the ledger a GRANTED consent
+ * record, so the declined status the branch keys on was never constructed. Every
+ * reference this file counted was real; the branch was dead anyway.
  *
- * That gap is not closable here without real dataflow analysis. A grep for the
- * literal 'declined' passes (the store genuinely produces it) — the defect was that
+ * That gap is not closable here without real dataflow analysis. A grep for a literal
+ * would have passed (the store genuinely produced the value) — the defect was that
  * the consumer dropped it, which is a flow property, not a text property. A stricter
  * text rule would fire on ordinary code, and this file's whole value is that it never
  * does. So the guard for the reachability class is behavioural and lives elsewhere:
- * drive the REAL entry point into the state, and assert the control acted. See
- * tests/integration/consent-decline-reaches-gate.test.ts, which answers a consent
- * question with the non-affirming option through POST /api/chat and then checks the
- * records are still there. When a security control keys on a STATE, that is the shape
- * of test it needs; a call-site count is not a substitute for one.
+ * drive the REAL entry point into the state, and assert the control acted. When a
+ * security control keys on a STATE, that is the shape of test it needs; a call-site
+ * count is not a substitute for one.
+ *
+ * The consent machinery that example refers to no longer exists — a wide or
+ * multi-object removal is refused unconditionally, so there is no authorization state
+ * to reach or to miss. The example is kept because the CLASS is not specific to it,
+ * and because it is the clearest one anybody here has hit.
  */
 const SRC = join(import.meta.dirname, '..', '..', 'src');
 

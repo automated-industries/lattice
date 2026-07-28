@@ -345,35 +345,43 @@ feed. No modal, no prompt. The assistant can also de-duplicate any table on
 request with the **`dedup`** tool (`{ table, fuzzy? }`); fuzzy-merge liberalness
 follows the [aggressiveness slider](#inference-aggressiveness).
 
-## Confirming a removal (5.5+)
+## Wide removals are yours to make (5.5+)
 
-Removing a lot of data, or several objects at once, needs your say-so. When the
-assistant proposes one, the service works out what the call would actually do —
-which objects, which kind of removal, and how many records — records that, and
-**writes the question you see itself**. The assistant's own wording is not used.
+The assistant will not remove or clear data across **more than one object**, or
+across **more than a couple of hundred records in a turn** — the exact limit is
+`DESTRUCTIVE_ROW_THRESHOLD` in `src/gui/ai/dispatch.ts`, currently **200**, and
+the rejection always quotes it. Attempting one is rejected before anything runs,
+and it tells you what has to change — which objects, and how many records — so
+you can make the change yourself in the app, where you can see what you are
+changing before it happens.
 
-Your answer is matched against that record, and it covers exactly what it names:
+This is not a permission you can grant it. There is no confirmation, no approval
+and no setting that turns it on. A change that size is made by a person, on a
+screen, where the confirmation is a real action rather than a message in a
+conversation.
 
-- **that object**, not one whose name resembles it;
-- **that kind of removal** — approving "remove the object but keep its data" does
-  not approve a cascade;
-- **at most the number of records you were shown**; if the table has grown since,
-  you are asked again;
-- **once**. Approval covers an act, not a standing permission, so a retry needs a
-  fresh question.
+Small, single-object removals are unaffected — that is the everyday work the
+assistant is for, and every change it makes is recorded in version history and can
+be undone. `dedup` and `merge_rows` count as removals, so a bulk merge is subject
+to the same limit.
 
-Small, single-object removals are not gated — the threshold is about scale.
-`dedup` and `merge_rows` count as removals, bounded by how many rows they could
-remove.
+A `dedup` is judged by a **bound**, not by a measurement: a table with N live
+records can lose at most N−1 to merging, so a table over the limit is refused
+whatever the duplicate scan would actually have found in it. That is deliberately
+conservative, and it means a large table holding only a handful of duplicates is
+refused too. The alternative — running the duplicate scan first, to get the real
+number — was built and removed: that scan is quadratic and synchronous, and on a
+1,200-row `files` table it held the server's event loop for **104 seconds** before
+refusing the call anyway. Nothing else could be served for the whole of that.
+Making the scan cheap enough to run in the gate is the prerequisite for measuring
+this honestly; until then the bound stands, and the rejection says plainly that it
+is a ceiling rather than a count.
 
-On a **shared cloud workspace**, a removal of this size is confirmed by the
-workspace owner. A member who asks for one is told so plainly rather than
-silently getting nothing.
-
-> This replaced a mechanism that inferred consent by re-reading the conversation.
-> Both halves of that evidence — the question and the answer — were text the
-> assistant wrote or could steer, so agreement could be manufactured. Authority
-> now comes from a record the service wrote, which the assistant cannot author.
+> This replaces two attempts at an assistant-side confirmation. The first inferred
+> agreement by re-reading the conversation; the second recorded it server-side as a
+> spendable grant. Both were repeatedly found forgeable — the authority was always
+> derived inside a conversation the assistant can steer, and closing one route
+> opened others. Not offering the capability removes the question entirely.
 
 ## Inference Aggressiveness
 

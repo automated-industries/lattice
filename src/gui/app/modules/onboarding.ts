@@ -7,14 +7,6 @@ export const onboardingJs = `    // ──────────────�
     // ────────────────────────────────────────────────────────────
     var chatHistory = [];
     var chatBusy = false;
-    // The consent question currently open in this conversation — a server-composed
-    // destructive confirmation, set by renderChatQuestion when its event carries an
-    // id. Send state, so it lives here: EVERY send reads and clears it, attaching it
-    // with the clicked option's index (or -1, which is never an option the user was
-    // shown) so a typed reply or a files-only send explicitly declines rather than
-    // leaving a recorded question live for a later message to answer by accident.
-    // Each item in the queue below carries its own copy for the same reason.
-    var qOpenConsentId = null;
     // Follow-ups typed while a turn streams are queued (FIFO) and sent when the turn
     // finishes — never dropped. Each item: { text, files, names, claimed }. They render
     // in a tray above the composer (renderQueueTray), where they can be reordered out of
@@ -895,18 +887,12 @@ export const onboardingJs = `    // ──────────────�
       });
     }
     // Queue a follow-up sent while a turn is streaming: clear the composer (like a real
-    // send) and remember it to flush on turn-done. The answered-question id + option
-    // index are carried on the item: an answer to an inline question waits on chatBusy
-    // and can end up here, and dropping the id would silently turn a recorded yes into
-    // an unattributed message (it degrades closed — the server just re-asks — but it
-    // reads to the user like a button that did nothing).
-    function enqueueChat(text, attachedFiles, questionId, optionIndex) {
+    // send) and remember it to flush on turn-done.
+    function enqueueChat(text, attachedFiles) {
       var fileNames = (attachedFiles || []).map(function (f) { return f && f.name ? f.name : 'file'; });
       clearComposerInput(!!fileNames.length);
       chatQueue.push({
-        text: text, files: attachedFiles, names: fileNames, claimed: false,
-        questionId: questionId || null,
-        optionIndex: typeof optionIndex === 'number' ? optionIndex : -1
+        text: text, files: attachedFiles, names: fileNames, claimed: false
       });
       renderQueueTray();
       updateComposerAction();
@@ -919,14 +905,14 @@ export const onboardingJs = `    // ──────────────�
       if (forcePushItem) {
         var pushed = forcePushItem;
         forcePushItem = null; // consumed here and nowhere else — never twice
-        sendChat(pushed.text, pushed.files, { questionId: pushed.questionId, optionIndex: pushed.optionIndex });
+        sendChat(pushed.text, pushed.files);
         return;
       }
       if (!chatQueue.length) return;
       var item = chatQueue.shift();
       renderQueueTray();
       updateComposerAction();
-      sendChat(item.text, item.files, { questionId: item.questionId, optionIndex: item.optionIndex });
+      sendChat(item.text, item.files);
     }
     // Empty the composer: the textarea (collapsed back to one line via its own
     // auto-grow, so the reset matches the grow logic) and — only when this send is
@@ -956,21 +942,12 @@ export const onboardingJs = `    // ──────────────�
       opts = opts || {};
       var hasFiles = !!(attachedFiles && attachedFiles.length);
       if (!text && !hasFiles) return;
-      // EVERY send settles whatever confirmation is open in this conversation. When the
-      // caller supplied an option index, this send is the user's actual answer to it.
-      // Otherwise the index is -1 — never one of the options they were shown — so a
-      // typed reply or a files-only send explicitly DECLINES rather than leaving a
-      // recorded question live for some later message to answer by accident. Read and
-      // cleared here, before the busy branch, so the queued path carries it too.
-      var consentId = opts.questionId || qOpenConsentId || null;
-      var consentIndex = typeof opts.optionIndex === 'number' ? opts.optionIndex : -1;
-      qOpenConsentId = null;
       // Streaming: don't drop the message — queue it and drain on turn-done. A bubble
       // committed before the ingest is REMOVED here: the message is not sent, so its one
       // surface is the queue tray. Leaving both would show it twice, once as if sent.
       if (chatBusy) {
         if (opts.bubble && opts.bubble.remove) opts.bubble.remove();
-        enqueueChat(text, attachedFiles, consentId, consentIndex);
+        enqueueChat(text, attachedFiles);
         return;
       }
       var fileNames = (attachedFiles || []).map(function (f) { return f && f.name ? f.name : 'file'; });
@@ -1004,9 +981,7 @@ export const onboardingJs = `    // ──────────────�
       fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         // activeContext: the record on screen, so "this file"/"this row" resolves.
-        // questionId/optionIndex: the confirmation this send settles, and which option
-        // was clicked. The server decides what the index means; the client never does.
-        body: JSON.stringify({ message: text || '', history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25), ingestInProgress: (typeof ingestOrImportActive === 'function' && ingestOrImportActive()), questionId: consentId, optionIndex: consentIndex })
+        body: JSON.stringify({ message: text || '', history: historyToSend, threadId: currentThreadId, privateMode: privateMode, activeContext: activeElement(), attachedFiles: (attachedFiles || []).slice(0, 25), ingestInProgress: (typeof ingestOrImportActive === 'function' && ingestOrImportActive()) })
       }).then(function (r) {
         var tid = r.headers.get('x-thread-id');
         if (r.status === 202) {

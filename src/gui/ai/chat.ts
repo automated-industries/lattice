@@ -4,18 +4,9 @@ import {
   DISPATCHABLE,
   ASSISTANT_HIDDEN_TABLES,
   TurnOutcomeLedger,
-  REMOVAL_TOOLS,
-  destructiveIntent,
+  DESTRUCTIVE_ROW_THRESHOLD,
   type DispatchCtx,
 } from './dispatch.js';
-import {
-  mintConsent,
-  MemberCannotConsent,
-  MEMBER_CANNOT_CONSENT,
-  type ConsentGrant,
-  type ConsentRecord,
-  type ThreadRefusals,
-} from './consent-store.js';
 import { buildAnthropicTools, type AnthropicTool } from './tools.js';
 import type { ChatStreamEvent } from './sse.js';
 import {
@@ -243,7 +234,11 @@ const BASE_SYSTEM_PROMPT = [
   '- A tool result that contains "error" means the call FAILED. Do NOT claim success or proceed as if it returned data — read the error, correct your arguments, and retry.',
   '- If create_dashboard or edit_dashboard fails because its data does not load (the error says a table/data does not exist or a query failed), the dashboard is NOT ready and was NOT saved. Do NOT say it is done or ready, do NOT tell the user to "try again", and do NOT blindly re-issue the same call. Tell them plainly, in their words, WHAT data is missing, and offer to bring it in (import the spreadsheet/file it should come from, or connect the source) — only retry after the missing data actually exists.',
   '- When your confidence about the user\'s intent, or about what a data object means or is for, is below roughly 60%, do not guess: call ask_user with ONE short multiple-choice question (2-4 options; a free-form "Other" is offered automatically). Keep it information-seeking, about what the data MEANS or IS FOR — never about storage mechanics. At or above that confidence, proceed without asking. When an answer teaches you what data means or is for, persist it with set_definition so the knowledge outlives this chat.',
-  '- Do what the user asks. Never refuse or hedge a request because it seems large, costly, or token-heavy, and never offer to "write a script" instead of doing it — you have bulk_update, which finishes the whole job in one step. Just do it and confirm the real count. Every change is recorded in version history and can be undone, so you do not need to ask permission first — EXCEPT before an irreversible hard delete of many rows (delete_row with hard=true), where you confirm the scope once. A normal (soft) bulk change needs no pre-confirmation.',
+  // The record limit is INTERPOLATED from the constant the gate actually enforces, never
+  // typed out here. It was typed out, and it went stale: this line still said 25 after the
+  // threshold moved to 200, so the model was told a stricter boundary than it has and
+  // declined work it was allowed to do. One source, no copy to forget.
+  `- Do what the user asks. Never refuse or hedge a request because it seems large, costly, or token-heavy, and never offer to "write a script" instead of doing it — you have bulk_update, which finishes the whole job in one step. Just do it and confirm the real count. Every change is recorded in version history and can be undone, so you do not need to ask permission first. The ONE thing you cannot do is REMOVE or CLEAR data across more than one object, or across more than ${String(DESTRUCTIVE_ROW_THRESHOLD)} records in a turn: that is not a permission you can be given, it is a change the person makes themselves in the app. If you attempt it the call is rejected outright. When that happens, say so plainly, name the objects and how many records are involved, and leave it with them — do not retry, do not break it into smaller pieces, and do not ask them to approve it.`,
   '- To CONSOLIDATE or MERGE one object into another (the user says "merge X into Y", "combine these", "fold A into B"), call delete_entity with move_to=<target> — it moves ALL of the source rows into the target, then removes the now-empty source, and the whole operation is recorded in version history and fully reversible. Because it is reversible, do NOT ask the user to confirm first, and do NOT end by telling them they can now delete the old object — just perform the merge and then tell them, in plain language, that you combined the two and that it can be restored from history if needed. (resolution=delete_data is a separate true-deletion path; a merge never needs it.) If delete_entity reports the object is too large to merge automatically, or otherwise refuses, do NOT retry the same call — relay the reason to the user in plain language and ask how they want to proceed.',
   '- Your user is NOT technical, and your replies must contain NO database or internal jargon. Do whatever they ask using your own tools — including changing who can see a record (set_visibility / set_definition) — then confirm in plain language. Never tell them to run a command, call a database function, use SQL / an API / the command line, or contact a DBA. Never surface implementation details OR internal names: no SQL, function/tool names, Postgres, RLS, schemas, or migrations, and NEVER say the words "table", "column", "junction", "foreign key", or "system table", and NEVER quote a raw internal table/column name (e.g. files, file_states, state_id) or a row id back to the user. Speak ONLY in terms they recognize: their objects by friendly name (e.g. "your Files" or "a new States list"), the fields and values inside them, files, and who can see them. Describe creating or changing structure as adding/updating an object or linking records — not as creating tables/columns. When you make a record clickable use the [label](lattice://<table>/<id>) link form (the user sees only your label, never the raw table/id). Explain the underlying mechanics only if they explicitly ask. Be concise.',
   '- All structural and data work happens silently, behind the scenes. Talk to the user ONLY about what goes INTO a dashboard and what it SHOWS — the question, the data sources in friendly terms, the numbers and charts. While working, give at most a brief plain acknowledgement ("One moment — putting that together."). Never narrate creating objects, linking, importing, or reorganizing data; when structure work was needed, report only the outcome the user cares about.',
@@ -553,37 +548,6 @@ export interface RunChatOptions {
    */
   onOutcomeNotice?: (notice: string) => void;
   /**
-   * Identity of the conversation this turn belongs to, so a consent record minted
-   * mid-turn is scoped to it and cannot be spent from another thread or by another
-   * user. Absent → an `ask_user` carrying `confirm` is refused rather than minting an
-   * unscoped record (fail closed: an unscoped grant is a bearer token).
-   */
-  consentScope?: { threadId: string; ownerUserId?: string | null; askedMsgId?: string | null };
-  /**
-   * The consent record the route resolved for THIS turn's message, when the user
-   * answered an open consent question. Carried here so the destructive gate can be
-   * switched onto it in one place.
-   *
-   * NOT yet read: the gate still runs on the transcript-derived evidence assembled by
-   * `confirmationEvidence`. This field is the plumbing the cutover flips.
-   */
-  consent?: ConsentRecord | null;
-  /**
-   * Durably mark one of `consent`'s grants spent. Supplied by the route, which owns
-   * the database handle; the ledger only ever ASKS to spend and refuses the call when
-   * the answer is false. Spending has to be durable and to happen BEFORE the
-   * destructive call runs, so a crash mid-plan cannot leave a grant reusable.
-   */
-  spendConsentGrant?: (grantIndex: number, by: string) => Promise<boolean>;
-  /**
-   * What this CONVERSATION has refused — and what it has since been asked about again
-   * and approved — read from the consent store rather than from this request.
-   * `consent` above only exists on the turn whose message answered a question, so
-   * without this a refusal lasted exactly one turn and the next message re-ran the
-   * plan the user had just declined.
-   */
-  refusals?: ThreadRefusals;
-  /**
    * Stops the turn when the user asks it to. Checked at the ROUND boundary (so the
    * loop never starts another round) and handed to the model stream (so an abort cuts
    * mid-token). A tool call already awaited inside the current round still finishes —
@@ -624,253 +588,6 @@ export function parseAskUserInput(input: Record<string, unknown>): AskUserInput 
     return { error: 'options must be an array of 2-4 short strings' };
   }
   return { question, options, allowOther: input.allow_other !== false };
-}
-
-/** Most destructive calls one confirmation may authorize. */
-const MAX_CONFIRM_ENTRIES = 4;
-
-/**
- * How long a consent question stays answerable.
- *
- * It has to comfortably cover all three legs: the user READING the card, THINKING
- * (a real person gets interrupted — a call, another tab, lunch), and then the
- * destructive turn actually EXECUTING, because {@link spendGrant} re-checks expiry
- * at the moment the call runs, not at the moment the button is clicked. A turn that
- * asks, waits, and then runs several gated calls through the tool loop can span
- * minutes on its own. Too short fails CLOSED — but confusingly: the user clicks yes
- * and is told they were never asked.
- *
- * 30 minutes is the balance. Long enough that an interrupted user coming back to a
- * card still gets what they clicked; short enough that a card abandoned in a tab
- * overnight is not still live in the morning. The TTL is only the BACKSTOP anyway:
- * the real bound is `expirePendingForThread`, which the chat route runs on every
- * send, so an open question dies the moment the conversation moves on. The TTL only
- * governs a thread nobody ever comes back to.
- */
-export const CONSENT_TTL_MS = 30 * 60 * 1000;
-
-/** The affirming option's index on a server-composed consent card. Server-chosen. */
-const CONSENT_AFFIRM_INDEX = 0;
-
-/** The two options a consent card offers. Composed here; the model's are discarded. */
-const CONSENT_OPTIONS: readonly string[] = ['Yes, go ahead', 'No, cancel'];
-
-/** The card a consent question shows — every word of it composed by this process. */
-export interface ConsentCard {
-  headline: string;
-  lines: string[];
-  affirmIndex: number;
-}
-
-/** What a valid `confirm` resolved to, or the error to hand back as a tool_result. */
-type ConsentPlan = { grants: ConsentGrant[]; card: ConsentCard } | { error: string };
-
-/**
- * Turn an `ask_user` call's `confirm` array into the grants an affirmative answer
- * would authorize, and the card the user is shown.
- *
- * Every value that ends up in either comes from {@link destructiveIntent} — the same
- * pre-flight classifier the gate runs — or from {@link verbKey}, never from the
- * model's prose. The model's contribution is only WHICH CALL it intends to make;
- * what that call destroys, how many records it reaches, and how that is described to
- * the user are all derived here.
- *
- * Validation is strict and fails the whole call rather than dropping bad entries: a
- * partially-honoured `confirm` would show the user a card about two objects and mint
- * a grant covering three, or vice versa. Refused when the tool is not one the gate
- * even watches, when the classifier says the call destroys nothing, or when the
- * target is not a real object the operator can see — a grant must never name a
- * non-object, because the gate compares grants by name and a name that matches
- * nothing today may match something tomorrow.
- */
-async function planConsent(ctx: DispatchCtx, confirm: unknown): Promise<ConsentPlan> {
-  if (!Array.isArray(confirm)) {
-    return { error: 'confirm must be an array of {tool, args} objects' };
-  }
-  if (confirm.length === 0) {
-    return { error: 'confirm must name at least one call, or be omitted entirely' };
-  }
-  if (confirm.length > MAX_CONFIRM_ENTRIES) {
-    return {
-      error: `confirm may name at most ${String(MAX_CONFIRM_ENTRIES)} calls; split the plan up and ask about each part`,
-    };
-  }
-  const grants: ConsentGrant[] = [];
-  for (const raw of confirm) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { error: 'each confirm entry must be an object {tool, args}' };
-    }
-    const entry = raw as { tool?: unknown; args?: unknown };
-    const tool = typeof entry.tool === 'string' ? entry.tool.trim() : '';
-    if (!tool) return { error: 'each confirm entry needs a "tool" name' };
-    if (!REMOVAL_TOOLS.has(tool)) {
-      return {
-        error:
-          `"${tool}" does not remove or clear anything, so it does not need confirming. ` +
-          `Only these do: ${[...REMOVAL_TOOLS].sort().join(', ')}. Ask your question without ` +
-          `confirm, or name the real destructive call.`,
-      };
-    }
-    if (!entry.args || typeof entry.args !== 'object' || Array.isArray(entry.args)) {
-      return { error: `the confirm entry for "${tool}" needs an "args" object` };
-    }
-    const args = entry.args as Record<string, unknown>;
-    let intent;
-    try {
-      intent = await destructiveIntent(ctx, tool, args);
-    } catch (e) {
-      // Loud, never silent: an unclassifiable call cannot be described honestly to
-      // the user, so nothing is minted and the model is told why.
-      console.warn(`[assistant] could not classify a confirm entry for "${tool}":`, e);
-      return {
-        error: `could not work out what "${tool}" would destroy — ask again with the exact call`,
-      };
-    }
-    if (!intent) {
-      return {
-        error:
-          `as written, that "${tool}" call destroys nothing, so there is nothing to confirm. ` +
-          `Either just make the call, or put the ACTUAL arguments you intend to use in confirm.`,
-      };
-    }
-    if (!ctx.validTables.has(intent.target)) {
-      return {
-        error: `"${intent.target}" is not one of this workspace's objects, so it cannot be confirmed. Use the real object name.`,
-      };
-    }
-    grants.push({
-      tool,
-      kind: intent.kind,
-      target: intent.target,
-      // The classifier's key, read off the intent it just produced. Deriving it a
-      // second time here is how the two ends of a grant get to disagree.
-      verbKey: intent.verbKey,
-      maxRows: intent.rows,
-      rowsUnknown: intent.rowsUnknown === true,
-      // Carried, not flattened away: a count that stopped at its cap is a floor, and a
-      // grant that records it as a total is a record of consent to a scale the user
-      // was never shown.
-      rowsSaturated: intent.rowsSaturated === true,
-      detail: intent.detail,
-    });
-  }
-  return { grants, card: composeConsentCard(grants) };
-}
-
-/**
- * The confirmation card, composed entirely from the classifier's output.
- *
- * This is the direct fix for the option-blob bleed: the previous mechanism matched
- * destructive verbs and object names against the blob of options the MODEL wrote, so
- * an unchosen option's text could satisfy the check. Here there is no such blob — the
- * headline is a template, each line is an `intent.detail` this server composed, and
- * the two options are constants.
- *
- * That used to be written as "nothing the model wrote survives to be read", which was
- * not true and mattered. `bulk_update`'s `set` KEYS are arbitrary model-supplied
- * strings, and they were interpolated straight into `detail` with nothing checking
- * them against the table's real columns — so a card line was measured reading
- * `clear "notes" - SAFE: only archived test rows, nothing real is lost. Ignore the
- * line above. Column: "x" ...`, newlines intact. Not XSS (the client sets
- * textContent), but attacker-chosen reassurance inside the confirmation, able to ride
- * alongside a REAL grant.
- *
- * What is true now: every value interpolated into a line is either server-derived or
- * validated against the workspace's real schema, each is bounded by `cardValue`, and
- * the composed line is flattened to one bounded line by `safeDetail` at a single
- * chokepoint in `destructiveIntent`. The model chooses WHICH call to confirm; it does
- * not get to write a sentence the user reads.
- */
-/**
- * Validate a `confirm` array, write the consent record, and return the card to
- * show — or the recoverable tool error explaining why nothing was asked.
- *
- * Every refusal path here mints NOTHING. A card the server cannot honour is worse
- * than no card: the user would click yes and the gate would still refuse, which
- * teaches them their answers do not matter.
- */
-async function openConsentQuestion(
-  opts: RunChatOptions,
-  confirm: unknown,
-  alreadyMinted: boolean,
-): Promise<{ id: string; card: ConsentCard } | { error: string }> {
-  // One open confirmation per turn. Two would leave the user with two live cards
-  // and the server unable to say which one a plain "yes" answered.
-  if (alreadyMinted) {
-    return {
-      error:
-        'only ONE confirmation can be open at a time, and this turn has already asked for ' +
-        "one. Wait for the user's answer to it before asking for another.",
-    };
-  }
-  const scope = opts.consentScope;
-  if (!scope) {
-    // No thread/owner to scope the record to. A record without a scope is a bearer
-    // token anyone could spend, so refuse rather than mint an unscoped one.
-    return {
-      error:
-        'a destructive confirmation cannot be recorded in this context. Ask your question ' +
-        'without `confirm`.',
-    };
-  }
-  const plan = await planConsent(opts.dispatch, confirm);
-  if ('error' in plan) return plan;
-  try {
-    const id = await mintConsent(opts.dispatch.db, {
-      threadId: scope.threadId,
-      ownerUserId: scope.ownerUserId ?? null,
-      askedMsgId: scope.askedMsgId ?? null,
-      grants: plan.grants,
-      affirmIndex: plan.card.affirmIndex,
-      optionCount: CONSENT_OPTIONS.length,
-      ttlMs: CONSENT_TTL_MS,
-    });
-    return { id, card: plan.card };
-  } catch (e) {
-    // A scoped cloud MEMBER cannot hold consent at all — that is a decision, not a
-    // failure, so it gets its own sentence rather than being flattened into "could
-    // not record". Surfaced verbatim so the model repeats the real reason (ask the
-    // owner) instead of inventing one, and never retried into a card nobody can
-    // answer.
-    if (e instanceof MemberCannotConsent) {
-      return {
-        error:
-          `${MEMBER_CANNOT_CONSENT} Do NOT ask the user to confirm and do NOT retry the ` +
-          `destructive call — tell them exactly this.`,
-      };
-    }
-    // The record is what makes an answer mean anything. Loud, never silent.
-    console.warn(`[assistant] could not record consent: ${(e as Error).message}`);
-    return {
-      error:
-        'the confirmation could not be recorded, so it was NOT shown to the user. Do not ' +
-        'proceed and do not retry the destructive call — tell them plainly that you could ' +
-        'not ask them.',
-    };
-  }
-}
-
-export function composeConsentCard(grants: readonly ConsentGrant[]): ConsentCard {
-  const unknown = grants.some((g) => g.rowsUnknown);
-  // Any saturated count makes the TOTAL a floor too — adding a floor to an exact
-  // number gives a floor. Saying "up to 5001" when the object holds 12,000 is the
-  // single most misleading thing this card could print, because it reads as a
-  // reassuringly small, exact number on the screen where the user says yes.
-  const saturated = grants.some((g) => g.rowsSaturated);
-  const total = grants.reduce((n, g) => n + g.maxRows, 0);
-  const scale = unknown
-    ? 'an unknown number of records'
-    : saturated
-      ? `at least ${String(total)} record(s) — more than can be counted here`
-      : `up to ${String(total)} record(s)`;
-  return {
-    headline:
-      grants.length === 1
-        ? `Confirm this change — it affects ${scale}:`
-        : `Confirm these ${String(grants.length)} changes — together they affect ${scale}:`,
-    lines: grants.map((g) => (g.rowsUnknown ? `${g.detail} — record count unknown` : g.detail)),
-    affirmIndex: CONSENT_AFFIRM_INDEX,
-  };
 }
 
 /** A LOCAL Lattice GUI link to a record: `http://127.0.0.1:4317/#/fs/<table>/<id>`
@@ -1054,32 +771,14 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
   // What the tools ACTUALLY do this turn. The model never summarizes a turn
   // without this record in its context, and the user is told the truth on the
   // stream whether or not the model repeats it.
-  // The gate's authority now comes from the server's own consent record — a row
-  // this process wrote from its own pre-flight classification — instead of from
-  // re-reading the transcript, where both the question and the answer were text the
-  // model authored or could steer.
-  const ledger = new TurnOutcomeLedger({
-    ...(opts.consent && opts.consent.status !== 'pending'
-      ? {
-          consent: {
-            status:
-              opts.consent.status === 'granted' ? ('granted' as const) : ('declined' as const),
-            grants: opts.consent.grants,
-            spend: (i: number, by: string) =>
-              opts.spendConsentGrant?.(i, by) ?? Promise.resolve(false),
-          },
-        }
-      : {}),
-    ...(opts.refusals ? { refusals: opts.refusals } : {}),
-  });
+  //
+  // It carries no authorization state: a wide or multi-object removal is refused
+  // outright rather than gated on something this loop could be talked into.
+  const ledger = new TurnOutcomeLedger();
   // The reconciliation already handed to the model, so an unchanged record is not
   // re-injected every round.
   let injectedRecord = '';
   let askedUserThisTurn = false;
-  // At most ONE consent record per turn — set only when a record actually landed,
-  // so a refused `confirm` (a bad target, an unclassifiable call) leaves the model
-  // free to correct it and ask properly.
-  let mintedConsent = false;
 
   let loop = 0;
   let consecutiveAllFailed = 0;
@@ -1377,42 +1076,11 @@ export async function* runChat(opts: RunChatOptions): AsyncGenerator<ChatStreamE
           let content: string;
           let isError: boolean;
           let errorText: string | undefined;
-          // A `confirm` array turns this into a CONSENT question: the server works
-          // out what those calls would destroy, writes it down as a durable record,
-          // and composes the card itself. `question`/`options` are discarded for
-          // those — the model proposes the calls, the server does the asking. Only
-          // reached for a well-formed call, so a malformed one never mints.
-          const consent: { id: string; card: ConsentCard } | { error: string } | null =
-            'error' in parsed || tu.input.confirm === undefined
-              ? null
-              : await openConsentQuestion(opts, tu.input.confirm, mintedConsent);
           if ('error' in parsed) {
             lastToolError = parsed.error;
             errorText = parsed.error;
             content = JSON.stringify({ error: parsed.error });
             isError = true;
-          } else if (consent && 'error' in consent) {
-            // Recoverable: nothing was minted, nothing was shown, the turn goes on.
-            lastToolError = consent.error;
-            errorText = consent.error;
-            content = JSON.stringify({ error: consent.error });
-            isError = true;
-          } else if (consent) {
-            mintedConsent = true;
-            yield {
-              type: 'question',
-              // The SERVER's words in every field — see composeConsentCard.
-              question: consent.card.headline,
-              options: [...CONSENT_OPTIONS],
-              allowOther: false,
-              id: consent.id,
-              consent: consent.card,
-            };
-            askedUser = true;
-            askedUserThisTurn = true;
-            turnAllFailed = false;
-            content = ASK_USER_RESULT;
-            isError = false;
           } else {
             yield {
               type: 'question',

@@ -22,13 +22,6 @@ export const questionsJs = `
     // reads as one broken conversation. The banner keeps the count visible
     // without hijacking the thread; clicking it expands the stack in place.
     var qStackExpanded = false;
-    // qOpenConsentId — the id of the consent question currently open in this
-    // conversation (a server-composed destructive confirmation). Set here by
-    // renderChatQuestion; READ and cleared by sendChat, which is why it is declared
-    // over in the composer module alongside the rest of the send state rather than
-    // here. Attached to the NEXT send whatever that send is: clicking an option
-    // answers it, and a typed reply or a files-only send declines it, so a recorded
-    // question is never left live for some later message to answer by accident.
     function qContainer() { return document.getElementById('question-cards'); }
     // Lazily create the banner + collapsible stack inside the container. Cards
     // append into the stack (never the container root) so collapse is one hide.
@@ -127,21 +120,11 @@ export const questionsJs = `
     }
     // Build one interactive question card: the question text, one button per
     // option, a free-form "Other" input, and (for store-backed cards) a subtle
-    // dismiss. spec: { question, lines?, options, allowOther,
-    // onAnswer(text, card, index), onDismiss(card) | null,
-    // subject?: { table, rowId, label } }. Shared by the pending-store cards
-    // (POST answer/dismiss) and the in-turn chat card (answer = next chat
-    // message). The subject (if present) displays as a secondary line under the
-    // question text, clickable to navigate to that record. The optional "lines"
-    // spec field renders a detail list under the question — used by a consent
-    // card, where each line is one change the server will make if the answer is yes.
-    //
-    // onAnswer's third argument is the INDEX of the option clicked (-1 for a
-    // free-form answer). A display string cannot identify an option: two options
-    // can read alike, and a string is exactly the kind of evidence a consent
-    // decision must not rest on. The index is what the server minted the question
-    // with, so the server decides what it means. Both store-backed callers ignore
-    // the argument, so this is purely additive for them.
+    // dismiss. spec: { question, options, allowOther, onAnswer(text, card),
+    // onDismiss(card) | null, subject?: { table, rowId, label } }. Shared by the
+    // pending-store cards (POST answer/dismiss) and the in-turn chat card (answer =
+    // next chat message). The subject (if present) displays as a secondary line under
+    // the question text, clickable to navigate to that record.
     function buildQuestionCard(spec) {
       var card = document.createElement('div');
       card.className = 'q-card';
@@ -173,20 +156,11 @@ export const questionsJs = `
         head.appendChild(dis);
       }
       card.appendChild(head);
-      // Detail lines (a consent card: one line per change the server would make).
-      // textContent throughout — every line is server-composed, and it stays text.
-      if (spec.lines && spec.lines.length) {
-        var lines = document.createElement('ul'); lines.className = 'q-lines';
-        spec.lines.forEach(function (ln) {
-          var li = document.createElement('li'); li.textContent = ln; lines.appendChild(li);
-        });
-        card.appendChild(lines);
-      }
       var opts = document.createElement('div'); opts.className = 'q-options';
-      (spec.options || []).forEach(function (opt, i) {
+      (spec.options || []).forEach(function (opt) {
         var b = document.createElement('button');
         b.className = 'q-opt'; b.type = 'button'; b.textContent = opt;
-        b.addEventListener('click', function () { spec.onAnswer(opt, card, i); });
+        b.addEventListener('click', function () { spec.onAnswer(opt, card); });
         opts.appendChild(b);
       });
       card.appendChild(opts);
@@ -198,8 +172,7 @@ export const questionsJs = `
         send.className = 'q-other-send'; send.type = 'button'; send.textContent = 'Answer';
         var submitOther = function () {
           var v = (input.value || '').trim();
-          // -1: a free-form answer is not one of the options the user was shown.
-          if (v) spec.onAnswer(v, card, -1);
+          if (v) spec.onAnswer(v, card);
         };
         send.addEventListener('click', submitOther);
         input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitOther(); });
@@ -361,30 +334,18 @@ export const questionsJs = `
     // The model asked mid-turn (the ask_user tool): render the same card inline
     // in the conversation; the chosen option (or free-form text) is sent as the
     // next chat message through the normal composer path.
-    //
-    // When ev.consent is present this is a CONSENT question — a destructive plan
-    // the server has written down. Everything shown then comes from the server:
-    // its headline, its one-line-per-change list, and its two options. The model's
-    // own question and options are not in the event at all, so there is nothing of
-    // the model's here to render even by accident. The answer goes back as the
-    // OPTION INDEX alongside ev.id; the server decides which index meant yes.
     function renderChatQuestion(ev) {
       railEmptyGone();
       var feedEl = railFeedEl(); if (!feedEl) return;
-      var consent = ev.consent || null;
-      if (ev.id) qOpenConsentId = ev.id;
       var wrap = document.createElement('div');
-      wrap.className = 'chat-msg assistant q-inline' + (consent ? ' q-consent' : '');
+      wrap.className = 'chat-msg assistant q-inline';
       var card = buildQuestionCard({
-        question: consent ? consent.headline : ev.question,
-        lines: consent ? (consent.lines || []) : null,
+        question: ev.question,
         options: ev.options || [],
-        // A consent card takes an answer, not an essay: the free-form box would
-        // produce a reply the server can only read as a decline.
-        allowOther: consent ? false : ev.allowOther !== false,
-        onAnswer: function (text, card, index) {
+        allowOther: ev.allowOther !== false,
+        onAnswer: function (text, card) {
           qCardResolve(card, '✓ ' + text);
-          qSendAnswerAsChat(text, 0, ev.id || null, typeof index === 'number' ? index : -1);
+          qSendAnswerAsChat(text, 0);
         },
         onDismiss: null
       });
@@ -394,19 +355,13 @@ export const questionsJs = `
     }
     // The question event lands moments before the stream's 'done'; if the user
     // clicks before the turn fully closes, wait (bounded) for the composer to
-    // free up instead of dropping the answer on sendChat's busy guard. The
-    // question id + option index ride along through that wait — and through the
-    // send queue beyond it — so a click that lands during a busy composer still
-    // answers the question it was a click on.
-    function qSendAnswerAsChat(text, tries, questionId, optionIndex) {
+    // free up instead of dropping the answer on sendChat's busy guard.
+    function qSendAnswerAsChat(text, tries) {
       if (chatBusy && tries < 40) {
-        setTimeout(function () { qSendAnswerAsChat(text, tries + 1, questionId, optionIndex); }, 150);
+        setTimeout(function () { qSendAnswerAsChat(text, tries + 1); }, 150);
         return;
       }
-      sendChat(text, null, {
-        questionId: questionId || null,
-        optionIndex: typeof optionIndex === 'number' ? optionIndex : -1
-      });
+      sendChat(text, null);
     }
 
     // The Configure-view Data Questions page (route #/questions). Lists the pending

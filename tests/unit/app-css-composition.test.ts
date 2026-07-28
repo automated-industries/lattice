@@ -269,8 +269,11 @@ import { css } from '../../src/gui/app/css.js';
 // 5.5 (cont.): consent card styling — .q-lines (the server-composed one-line-per-
 // change detail list under a destructive confirmation) and the .q-consent danger
 // border on its inline card. Recaptured.
-const ORIGINAL_LENGTH = 174185;
-const ORIGINAL_SHA256 = '3f251828752451adc5322659158db611d730cbd466d20e57e0c8d7edccea17e8';
+// 5.5 (cont.): both removed again with the destructive-confirmation card itself —
+// the assistant no longer performs wide or multi-object removals, so no card exists
+// to style. Recaptured.
+const ORIGINAL_LENGTH = 173774;
+const ORIGINAL_SHA256 = '26045ae28b3f12a5b5592f435063b05777a83ada68035b4accdafc9ccd2a1314';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

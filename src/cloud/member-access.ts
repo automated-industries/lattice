@@ -162,6 +162,9 @@ export const OWNER_ONLY_BOOKKEEPING: readonly string[] = [
   // leak the embeddings store turned out to be.
   '__lattice_ai_map',
   '__lattice_ai_cell',
+  // No longer created (the assistant-side destructive-consent store was removed), but
+  // still listed: a workspace that ran a build which DID create it must not have the
+  // table quietly become member-readable because nothing writes to it any more.
   '__lattice_ai_consent',
   '__lattice_computed_state',
   '__lattice_plan_state',

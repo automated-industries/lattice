@@ -5,14 +5,6 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { seedClaudeOAuth } from '../helpers/claude-auth.js';
-import { Lattice } from '../../src/lattice.js';
-import {
-  loadConsent,
-  mintConsent,
-  resolveConsent,
-  spendGrant,
-  type ConsentGrant,
-} from '../../src/gui/ai/consent-store.js';
 
 /**
  * POST /api/chat — the assistant chat stream. Claude access is OAuth-only, and a
@@ -57,14 +49,10 @@ afterEach(async () => {
   }
 });
 
-/** The workspace DB file behind the last {@link boot} — for asserting server state. */
-let lastDbPath = '';
-
 async function boot(): Promise<GuiServerHandle> {
   const root = mkdtempSync(join(tmpdir(), 'lattice-chatpost-'));
   dirs.push(root);
   mkdirSync(join(root, 'data'), { recursive: true });
-  lastDbPath = join(root, 'data', 'test.db');
   const configPath = join(root, 'lattice.config.yml');
   writeFileSync(
     configPath,
@@ -189,27 +177,6 @@ const INLINE_INTENT = [
   }),
   '```',
 ].join('\n');
-
-/** Open a second connection to the booted workspace's DB, for direct assertions. */
-async function openWorkspaceDb(): Promise<Lattice> {
-  const db = new Lattice(lastDbPath);
-  await db.init();
-  return db;
-}
-
-/** A grant the server would have derived for removing `table`. */
-function grantFor(table: string): ConsentGrant {
-  return {
-    tool: 'delete_entity',
-    kind: 'remove_object',
-    target: table,
-    verbKey: 'resolution:delete_data',
-    maxRows: 40,
-    rowsUnknown: false,
-    rowsSaturated: false,
-    detail: `remove "${table}" (40 record(s))`,
-  };
-}
 
 /** Send one chat turn and wait for the route to accept it. */
 async function post(s: GuiServerHandle, body: Record<string, unknown>): Promise<Response> {
@@ -369,29 +336,20 @@ describe('POST /api/chat', () => {
 });
 
 /**
- * DURABLE CONSENT AT THE ROUTE.
+ * A GO-AHEAD REACHES THE TOOL LOOP.
  *
- * Three properties, each closing a way the previous transcript-derived consent could
- * be bypassed or misread:
+ * The fast intent pass classifies a message from its TEXT alone, and the text of an
+ * answer to something the assistant just proposed is "Yes, go ahead" — which reads as
+ * small talk with no work in it. Classified `!needs_work`, it is answered inline and
+ * the loop that was waiting on that yes never runs: the user watches themselves say
+ * yes and nothing happen.
  *
- *  - STALENESS IS SERVER-ENFORCED. Every send CLOSES the questions still open in
- *    the thread. Keyed on nothing the client sends, because the bypass it closes is
- *    precisely a send that carries no user text to go stale — a files-only turn used
- *    to leave an open destructive question live behind it. A card that was still LIVE
- *    when the next message arrived is closed as `declined` rather than `expired`: the
- *    user replied to it with something that was not the affirming click, which is what
- *    the typed-decline path already means by a no. That reading used to depend on the
- *    CLIENT attaching the open card's id — ephemeral in-memory state a reload loses —
- *    so the server answers it from the store instead. Either way the record can never
- *    authorize anything; `declined` additionally keeps the plan refused.
- *  - A BARE "YES" WITH NO HANDLE GRANTS NOTHING. Agreement has to be an answer to a
- *    question the server wrote down, not a word that appeared in a message.
- *  - A GRANTED RECORD REACHES THE TOOL LOOP. The text of an answer to a confirmation
- *    is "Yes, go ahead", which the fast intent pass reads as small talk with no work
- *    in it — so it would be answered inline and the act the user just approved would
- *    never run.
+ * (This was found while building an assistant-side destructive-consent system, where
+ * it was worse than a UX bug — the approval was consumed and the act never happened.
+ * That system is gone; the routing bug was never about consent and is fixed here on
+ * its own terms.)
  */
-describe('POST /api/chat — durable consent', () => {
+describe('POST /api/chat — a bare go-ahead reaches the tool loop', () => {
   let stub: { url: string; calls: () => number; close: () => Promise<void> } | null = null;
 
   afterEach(async () => {
@@ -406,95 +364,7 @@ describe('POST /api/chat — durable consent', () => {
     return ((await r.json()) as { threadId: string }).threadId;
   }
 
-  it('a files-only turn CLOSES a pending consent record as refused (the staleness bypass)', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
-    const s = await boot();
-    seedClaudeOAuth();
-    const threadId = await startThread(s);
-
-    // A real file to attach, so the turn carries an attachment and NO text — the
-    // shape that used to slip past the staleness rule entirely.
-    const fileId = (
-      (await fetch(`${s.url}/api/ingest/text`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'contents', title: 'notes.txt' }),
-      }).then((x) => x.json())) as { id: string }
-    ).id;
-
-    const db = await openWorkspaceDb();
-    try {
-      const id = await mintConsent(db, {
-        threadId,
-        ownerUserId: null,
-        grants: [grantFor('notes')],
-        affirmIndex: 0,
-        optionCount: 2,
-        ttlMs: 60_000,
-      });
-      expect((await loadConsent(db, id))?.status).toBe('pending');
-
-      const r = await post(s, {
-        message: '',
-        threadId,
-        attachedFiles: [{ id: fileId, name: 'notes.txt' }],
-      });
-      expect(r.status).toBe(202);
-
-      expect(await until(async () => (await loadConsent(db, id))?.status !== 'pending')).toBe(true);
-      // Closed as a REFUSAL: the card was still live when the next message arrived, and
-      // that message was not the affirming click. Nothing it described can ever be
-      // authorized — asserted on the behaviour, not on the status alone.
-      expect((await loadConsent(db, id))?.status).toBe('declined');
-      expect((await resolveConsent(db, id, 0, { threadId, ownerUserId: null })).status).toBe(
-        'rejected',
-      );
-      expect((await loadConsent(db, id))?.grants.every((g) => g.spentAt === undefined)).toBe(true);
-      expect(await spendGrant(db, id, 0, 'test')).toBe(false);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('a later bare "yes" with no questionId grants nothing', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:1';
-    const s = await boot();
-    seedClaudeOAuth();
-    const threadId = await startThread(s);
-
-    const db = await openWorkspaceDb();
-    try {
-      const id = await mintConsent(db, {
-        threadId,
-        ownerUserId: null,
-        grants: [grantFor('notes')],
-        affirmIndex: 0,
-        optionCount: 2,
-        ttlMs: 60_000,
-      });
-
-      // The word, with none of the machinery: no handle, no index.
-      const r = await post(s, { message: 'yes, go ahead', threadId });
-      expect(r.status).toBe(202);
-
-      expect(await until(async () => (await loadConsent(db, id))?.status !== 'pending')).toBe(true);
-      const after = await loadConsent(db, id);
-      // Closed as a refusal, never granted — the word in the message is not an answer.
-      expect(after?.status).toBe('declined');
-      expect(after?.answerIndex).toBe(-1); // the "not the affirming click" sentinel
-      expect(after?.grants.every((g) => g.spentAt === undefined)).toBe(true);
-      // ...and it can never become one: the record is answered, so a later click on it
-      // is rejected and no grant on it is spendable.
-      expect((await resolveConsent(db, id, 0, { threadId, ownerUserId: null })).status).toBe(
-        'rejected',
-      );
-      expect(await spendGrant(db, id, 0, 'test')).toBe(false);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('a granted record bypasses the intent short-circuit and reaches the tool loop', async () => {
+  it('answers ordinary small talk inline, but routes "Yes, go ahead" to the loop', async () => {
     stub = await startModelStub(INLINE_INTENT);
     process.env.ANTHROPIC_BASE_URL = stub.url;
     const s = await boot();
@@ -502,44 +372,23 @@ describe('POST /api/chat — durable consent', () => {
     const threadId = await startThread(s);
     await until(async () => Promise.resolve(stub!.calls() >= 1));
 
-    const db = await openWorkspaceDb();
-    try {
-      // BASELINE FIRST: the same message with no consent handle. The stub always
-      // answers "needs_work: false", so this is answered inline — exactly ONE model
-      // call. Run before the record is minted, because this send would (correctly)
-      // sweep it: a message that answers nothing ends every open question.
-      const before = stub.calls();
-      expect((await post(s, { message: 'Yes, go ahead', threadId })).status).toBe(202);
-      await until(async () => Promise.resolve(stub!.calls() > before));
-      await new Promise((r) => setTimeout(r, 300)); // let any further calls land
-      expect(stub.calls() - before).toBe(1);
+    // BASELINE: the stub always answers "needs_work: false", so an ordinary message
+    // is answered inline — exactly ONE model call, and no tool loop.
+    const before = stub.calls();
+    expect((await post(s, { message: 'thanks, that is helpful', threadId })).status).toBe(202);
+    await until(async () => Promise.resolve(stub!.calls() > before));
+    await new Promise((r) => setTimeout(r, 300)); // let any further calls land
+    expect(stub.calls() - before).toBe(1);
 
-      const id = await mintConsent(db, {
-        threadId,
-        ownerUserId: null,
-        grants: [grantFor('notes')],
-        affirmIndex: 0,
-        optionCount: 2,
-        ttlMs: 60_000,
-      });
-
-      // NOW with the handle + the affirming index. Same text, same classification —
-      // but the recorded yes routes it to the tool loop, which calls the model again.
-      const mark = stub.calls();
-      const r = await post(s, {
-        message: 'Yes, go ahead',
-        threadId,
-        questionId: id,
-        optionIndex: 0,
-      });
-      expect(r.status).toBe(202);
-      expect(await until(async () => Promise.resolve(stub!.calls() - mark >= 2))).toBe(true);
-
-      // ...and the answer really was recorded as a grant, not merely observed.
-      expect((await loadConsent(db, id))?.status).toBe('granted');
-      expect((await loadConsent(db, id))?.answerIndex).toBe(0);
-    } finally {
-      db.close();
-    }
+    // Same classification, different message: a bare go-ahead carries no content of
+    // its own, so it is routed to the loop — which calls the model again.
+    const mark = stub.calls();
+    expect((await post(s, { message: 'Yes, go ahead', threadId })).status).toBe(202);
+    const reachedLoop = await until(async () => Promise.resolve(stub!.calls() - mark >= 2));
+    expect(
+      reachedLoop,
+      `"Yes, go ahead" was answered inline — only ${String(stub.calls() - mark)} model call(s) ` +
+        `after it, so the tool loop that was waiting on that yes never ran`,
+    ).toBe(true);
   });
 });

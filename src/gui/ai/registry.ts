@@ -54,6 +54,26 @@ const obj = (
 
 const str = (description: string): JsonSchemaProperty => ({ type: 'string', description });
 
+/**
+ * The sentence every tool that can remove or clear data ends its description with.
+ *
+ * Written ONCE, and deliberately naming no NUMBER. The real boundary is
+ * DESTRUCTIVE_ROW_THRESHOLD in `ai/dispatch.ts`, and this module cannot read it:
+ * dispatch.ts imports THIS file, so importing back would be a cycle whose evaluation
+ * order reads the constant before it is initialized. The alternative — copying the
+ * numeral — is exactly what failed here: five descriptions still said "25" long after
+ * the threshold moved to 200, so the model was told a stricter limit than it actually
+ * has and declined removals it was allowed to perform. A stale limit is worse than no
+ * limit in the description, because the model believes it. The refusal the gate emits
+ * interpolates the real figure, so the exact number still reaches the model — from the
+ * one place that knows it.
+ */
+const REMOVAL_LIMIT_NOTE =
+  ' Removing or clearing across more than one object, or across more records in a turn than the ' +
+  'limit a single small change stays under, is REFUSED — that is a change the person makes ' +
+  'themselves in the app, and no answer from them lets you do it. Ordinary edits are well inside ' +
+  'that limit; a refusal names both the limit and the record counts.';
+
 // The computed-table field shapes, as prose. This minimal JSON-schema helper
 // has no nested object properties (array `items` carry only a description), so
 // every tool that takes a `fields` array documents the per-kind shapes here
@@ -417,8 +437,10 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
       'seeking about what the data MEANS or IS FOR (e.g. "Is this meant to track suppliers?"), ' +
       'never about storage mechanics. A free-form "Other" answer is always offered alongside your ' +
       "options. If the user's answer teaches you what data means or is for, persist it with " +
-      'set_definition so the knowledge is not lost when the conversation ends.' +
-      'This is also the confirmation channel for a destructive plan: name every target and its record count here before removing or clearing more than one object.',
+      'set_definition so the knowledge is not lost when the conversation ends. ' +
+      'This is for QUESTIONS only — it cannot authorize anything. Removing or clearing across ' +
+      'more than one object, or across more records than the limit a single small change stays ' +
+      'under, is refused no matter how the user answers.',
     mutates: false,
     category: 'read',
     args: obj(
@@ -432,22 +454,6 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
         allow_other: {
           type: 'boolean',
           description: 'Offer a free-form "Other" answer. Default true.',
-        },
-        confirm: {
-          type: 'array',
-          description:
-            'ONLY for a destructive confirmation: the exact calls you intend to run if the user ' +
-            'says yes. Up to 4. Each item is {"tool": "<tool name>", "args": {…}} — the literal ' +
-            'tool name and the literal arguments you would pass, identical to the call you will ' +
-            'retry afterwards. When you supply this, the confirmation the user sees is composed ' +
-            'from these calls (your `question` and `options` are not shown), so put the real ' +
-            'arguments here and nothing else. Omit it entirely for an ordinary question.',
-          items: {
-            type: 'object',
-            description:
-              'One intended call: {"tool": "delete_entity" | "delete_row" | "unlink" | ' +
-              '"bulk_update" | "merge_rows" | "dedup", "args": { …the exact arguments… }}.',
-          },
         },
       },
       ['question', 'options'],
@@ -507,7 +513,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
       'a map of field → new value, and/or the special key "visibility" set to "private" or ' +
       '"everyone" to change who can see the matched rows. Only affects rows the user is allowed to ' +
       'change (the database enforces ownership); the returned count is what actually changed.' +
-      'Removing or clearing more than one object, or more than 25 records, is refused until you have called ask_user with a question naming every target and its record count.',
+      REMOVAL_LIMIT_NOTE,
     mutates: true,
     category: 'row',
     args: obj(
@@ -592,9 +598,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
   {
     name: 'delete_row',
     description:
-      'Delete a row. Soft-deletes (sets deleted_at) unless hard is true. ' +
-      'Removing or clearing more than one object, or more than 25 records, is refused until you ' +
-      'have called ask_user with a question naming every target and its record count.',
+      'Delete a row. Soft-deletes (sets deleted_at) unless hard is true.' + REMOVAL_LIMIT_NOTE,
     mutates: true,
     category: 'row',
     args: obj(
@@ -625,7 +629,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
     name: 'unlink',
     description:
       'Remove a many-to-many link by its junction row (the two foreign-key columns + ids).' +
-      'Removing or clearing more than one object, or more than 25 records, is refused until you have called ask_user with a question naming every target and its record count.',
+      REMOVAL_LIMIT_NOTE,
     mutates: true,
     category: 'row',
     args: obj(
@@ -691,7 +695,7 @@ export const REGISTRY: readonly LatticeFunctionDef[] = [
       'the tool returns what would be removed and you must ask the user before calling ' +
       'again. File-attachment link tables are removed automatically with the table and ' +
       'never need a decision of their own. Never deletes built-in tables.' +
-      'Removing or clearing more than one object, or more than 25 records, is refused until you have called ask_user with a question naming every target and its record count.',
+      REMOVAL_LIMIT_NOTE,
     mutates: true,
     category: 'schema',
     args: obj(

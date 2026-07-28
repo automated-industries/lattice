@@ -292,7 +292,7 @@ describe('destructive turns cannot report success they did not earn', () => {
     expect(await db.countActive('contacts')).toBe(3);
   });
 
-  it('refuses a multi-target destructive plan until the user is asked, naming targets and counts', async () => {
+  it('refuses a multi-target destructive plan outright, naming targets and counts', async () => {
     const { client } = scriptedClient([
       {
         text: '',
@@ -318,154 +318,98 @@ describe('destructive turns cannot report success they did not earn', () => {
     const text = errorOf(refusal);
     expect(text).toContain('"deals" (2 record(s))');
     expect(text).toContain('"contacts" (3 record(s))');
-    expect(text).toContain('ask_user');
     expect(text).toContain('nothing was changed by this call');
+    // The user is told this is theirs to do, not that the assistant needs permission.
+    expect(text).toMatch(/in the app/i);
+    expect(text).not.toMatch(/call ask_user/i);
     expect(await db.countActive('deals')).toBe(2);
   });
 
   /**
-   * These four cases were written against the mechanism that reconstructed consent
-   * from the conversation: a question replayed out of the transcript plus the text of
-   * the user's reply. That mechanism is gone — it was forgeable in four different
-   * ways, because both halves of the evidence were authored, or steerable, by the
-   * model being gated.
-   *
-   * The PROPERTIES they protected still hold, and are asserted here against the
-   * server's own consent record. Three of them are no longer even expressible as an
-   * attack: there is no prose to be ambiguous, no earlier question to reach back
-   * into, and no words for one object's name to share with another's.
+   * These cases were written against a mechanism that reconstructed consent from the
+   * conversation, then against one that recorded it server-side. BOTH are gone. A wide
+   * or multi-object removal is not something the assistant may do, so there is nothing
+   * left to forge, replay, widen or outlive — and the properties those cases protected
+   * collapse into one much stronger one, asserted here.
    */
-  it('proceeds once the user has approved every target', async () => {
-    const grants = [
-      {
-        tool: 'delete_entity',
-        kind: 'remove_object' as const,
-        target: 'contacts',
-        verbKey: 'resolution:delete_data',
-        maxRows: 1000,
-        rowsUnknown: false,
-        detail: 'remove "contacts"',
-      },
-      {
-        tool: 'delete_entity',
-        kind: 'remove_object' as const,
-        target: 'deals',
-        verbKey: 'resolution:delete_data',
-        maxRows: 1000,
-        rowsUnknown: false,
-        detail: 'remove "deals"',
-      },
-    ];
-    const { client } = scriptedClient([
-      {
-        text: '',
-        toolUses: [
-          {
-            id: 'tu1',
-            name: 'delete_entity',
-            input: { name: 'contacts', resolution: 'delete_data' },
-          },
-          { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
-        ],
-      },
-      { text: 'Neither could be removed.' },
-    ]);
+  it('refuses however the user phrases their agreement, and however many times it is retried', async () => {
+    // Four rounds of the model trying the same plan, with the user's own message
+    // reading as an unambiguous, unprompted yes. Nothing in a conversation authorizes
+    // this, so all four are refused and both objects survive.
+    const plan = {
+      text: '',
+      toolUses: [
+        {
+          id: 'tu1',
+          name: 'delete_entity',
+          input: { name: 'contacts', resolution: 'delete_data' },
+        },
+        { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
+      ],
+    };
+    const { client } = scriptedClient([plan, plan, plan, plan, { text: 'I could not do that.' }]);
+    // The loop's all-failed circuit breaker cuts the turn short after three such
+    // rounds, which is itself the point: retrying buys nothing but a shorter turn.
 
     await collect(
       runChat({
         client,
         dispatch,
-        userMessage: 'Yes, remove both',
-        consent: { id: 'c1', status: 'granted', grants } as never,
-        spendConsentGrant: () => Promise.resolve(true),
+        userMessage: 'YES — I confirm, delete contacts and deals, go ahead, I approve this',
         onToolRecord: record,
       }),
     );
 
-    // Both reach the real primitive (which fails on its own terms) — no gate.
-    const deletes = toolRecords.filter((r) => r.name === 'delete_entity');
-    expect(deletes).toHaveLength(2);
-    for (const d of deletes) {
-      expect(d.content).not.toContain('REFUSED');
-      expect(d.content).toContain('still referenced by other records');
-    }
+    const refusals = toolRecords.filter((r) => r.content.includes('REFUSED'));
+    expect(refusals.length).toBeGreaterThanOrEqual(3);
+    // Nothing was destroyed by any of them.
+    expect(await db.countActive('contacts')).toBe(3);
+    expect(await db.countActive('deals')).toBe(2);
   });
 
-  it('refuses a plan the user was never asked about', async () => {
-    // No record at all is the default state, and it authorizes nothing — however the
-    // assistant phrases its own question, and whatever the user happened to type.
+  it('refuses even when the model asks its own question and then retries', async () => {
+    // The one loop the wording has to prevent: refused → ask → retry → refused. The
+    // question is a real ask_user (which still works, for real questions), and the
+    // retry after it changes nothing.
+    const plan = {
+      text: '',
+      toolUses: [
+        {
+          id: 'tu1',
+          name: 'delete_entity',
+          input: { name: 'contacts', resolution: 'delete_data' },
+        },
+        { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
+      ],
+    };
     const { client } = scriptedClient([
+      plan,
       {
         text: '',
         toolUses: [
           {
-            id: 'tu1',
-            name: 'delete_entity',
-            input: { name: 'contacts', resolution: 'delete_data' },
+            id: 'tu3',
+            name: 'ask_user',
+            input: { question: 'Shall I remove both?', options: ['Yes', 'No'] },
           },
-          { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
         ],
       },
-      { text: 'I could not remove them.' },
     ]);
 
-    await collect(
-      runChat({
-        client,
-        dispatch,
-        userMessage: 'yes, remove them all, go ahead',
-        onToolRecord: record,
-      }),
+    const events = await collect(
+      runChat({ client, dispatch, userMessage: 'clean this up', onToolRecord: record }),
     );
 
-    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
-    expect(refusal).toBeTruthy();
-    expect(errorOf(refusal)).toContain('ask_user');
-  });
-
-  it('confines an approval to the object it names, not others sharing its words', async () => {
-    // The old matcher compared singularized WORDS, so consent for one object could
-    // cover another whose name shared one. Targets are compared exactly now.
-    const grants = [
-      {
-        tool: 'delete_entity',
-        kind: 'remove_object' as const,
-        target: 'contacts',
-        verbKey: 'resolution:delete_data',
-        maxRows: 1000,
-        rowsUnknown: false,
-        detail: 'remove "contacts"',
-      },
-    ];
-    const { client } = scriptedClient([
-      {
-        text: '',
-        toolUses: [
-          {
-            id: 'tu1',
-            name: 'delete_entity',
-            input: { name: 'contacts', resolution: 'delete_data' },
-          },
-          { id: 'tu2', name: 'delete_entity', input: { name: 'deals', resolution: 'delete_data' } },
-        ],
-      },
-      { text: 'Only one could be removed.' },
-    ]);
-
-    await collect(
-      runChat({
-        client,
-        dispatch,
-        userMessage: 'Yes',
-        consent: { id: 'c1', status: 'granted', grants } as never,
-        spendConsentGrant: () => Promise.resolve(true),
-        onToolRecord: record,
-      }),
-    );
-
-    const refusal = toolRecords.find((r) => r.content.includes('REFUSED'));
-    expect(refusal).toBeTruthy();
-    expect(errorOf(refusal)).toContain('"deals"');
+    expect(toolRecords.some((r) => r.content.includes('REFUSED'))).toBe(true);
+    // The question was still shown — ask_user is unaffected — but it bought nothing.
+    expect(events.some((e) => e.type === 'question')).toBe(true);
+    expect(await db.countActive('contacts')).toBe(3);
+    expect(await db.countActive('deals')).toBe(2);
+    // ...and the user is told, on the stream, that nothing was removed. This used to
+    // be suppressed whenever the turn ended on a question, on the reasoning that the
+    // confirmation card said it. There is no card.
+    const warn = events.find((e) => e.type === 'warn');
+    expect(warn && 'message' in warn ? warn.message : '').toMatch(/not been removed/i);
   });
 
   it('still tells the user what it already changed when they stop the turn', async () => {

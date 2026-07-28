@@ -664,8 +664,14 @@ import { appJs } from '../../src/gui/app/script.js';
 // where an answer that waited on chatBusy would otherwise lose its id — and EVERY
 // send attaches any open consent id with index -1, so a typed reply or a files-only
 // send explicitly declines instead of leaving a recorded question live. Recaptured.
-const ORIGINAL_LENGTH = 862527;
-const ORIGINAL_SHA256 = '5c4ea2bb0cd8d447241fe69f6876be28a56e119939167834bcc315b571a0420b';
+// 5.5 (cont.): ...and all of that is REMOVED again. The assistant no longer performs
+// wide or multi-object removals at all, so there is no approval for the client to
+// carry: the consent-card branch of renderChatQuestion, the detail-line rendering,
+// the remembered open-question id, the option INDEX passed to onAnswer, and the
+// questionId/optionIndex fields on the send body + the queued-item copies are all
+// gone. A question is a question again. Recaptured.
+const ORIGINAL_LENGTH = 857213;
+const ORIGINAL_SHA256 = '20201a88755d73f4adb58f126efae031236ac1aa5dc56df71ba07e6e0743f90e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

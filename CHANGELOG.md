@@ -42,19 +42,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Change history no longer shows members values they cannot read.** Audit images are masked for the
   viewer at the point they are served, so a member browsing history cannot see owner-secret columns of
   a shared row. What is stored is unchanged, so undo and redo still restore completely.
-- **Confirming a destructive action is now recorded, not inferred from the conversation.** Consent was
-  previously reconstructed each turn by re-reading the transcript: the question came from the
-  assistant's own earlier message and the answer from the text of yours. Both are things the assistant
-  writes or can steer, so agreement could be manufactured — an option you never chose counted as part
-  of the question, a document title could put an affirmation into what was read as your words, and
-  agreeing to remove one duplicate record could be read as agreeing to remove the whole list.
+- **The assistant no longer performs wide or multi-object removals at all.** Removing or clearing data
+  across more than one object, or across more than 200 records in a turn, is now rejected before
+  anything runs — and it is not a permission you can grant. There is no confirmation, no approval and
+  no setting that enables it. The rejection names the objects and their record counts so you can make
+  the change yourself in the app.
 
-  When the assistant asks to remove something, the service now records what it would do — which
-  objects, which kind of removal, and how many records — and writes the question you see itself. Your
-  answer is matched to that record. Approval covers exactly what it names: not an object with a
-  similar name, not a wider removal than the one described, not more records than you were shown, and
-  not a second time. On a shared workspace, removals of this size are confirmed by the workspace
-  owner.
+  Two mechanisms preceded this and both are removed. The first inferred your agreement by re-reading
+  the conversation; the second recorded it server-side as a single-use grant matched on object, kind
+  of removal and record count. Both were repeatedly found forgeable — an option you never chose
+  counting as part of the question, a document title putting an affirmation into what was read as your
+  words, one record's removal authorising a whole list, an approval outliving the act it was given
+  for. Each fix closed a route and opened others, because the authority was always derived inside a
+  conversation the assistant can steer. A person still makes every one of these changes, in the app,
+  where the confirmation is a real action on a real screen and no authorisation record has to exist or
+  be defended. Small, single-object removals are unaffected, and remain undoable from version history.
 
 - **Bulk merges are treated as removals.** Deduplicating a table and merging rows remove data, often a
   great deal of it, and were not covered by the confirmation gate at all. They are now, counted by how
@@ -92,12 +94,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Removing a table takes its cloud sharing with it.** A masked table could not be removed at all,
   and the sharing, row visibility and column masking attached to its name outlived it — so a later
   table created with the same name inherited them.
-- **Destructive confirmation can no longer be satisfied by the assistant itself.** Consent was matched
-  against the whole conversation, so merely mentioning a table could authorise destroying it, and the
-  assistant's own question supplied the names it needed. Consent now requires that the assistant asked
-  to remove something, that the question named the target, and that the reply was an explicit
-  affirmative; silence, an unrelated reply and an ambiguous one all leave it closed. The threshold
-  measures everything a turn attempted, so a plan split across several calls still trips it.
+- **Nothing in a conversation can authorise a destructive action.** Merely mentioning a table could
+  authorise destroying it, and the assistant's own question supplied the names it needed. There is now
+  no path at all: a wide or multi-object removal is refused regardless of what was said. The threshold
+  measures everything a turn attempted, so a plan split across several calls still trips it, and an
+  act whose size cannot be measured counts as wide rather than as harmless.
+- **An answer that is only "yes" reaches the tool loop.** A reply carrying nothing but a go-ahead was
+  classified as small talk by the fast intake pass and answered inline, so work the user had just
+  agreed to never ran — they said yes and nothing happened.
 
 ### Breaking
 
