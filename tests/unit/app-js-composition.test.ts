@@ -616,8 +616,24 @@ import { appJs } from '../../src/gui/app/script.js';
 // root and an ingested row shows once and one ✕ clears both; and the Configure → Files
 // tab is now GRID-ONLY (the list/grid toggle retired) with the nested folder structure
 // kept as expandable tile groups. Length + hash recaptured.
-const ORIGINAL_LENGTH = 821091;
-const ORIGINAL_SHA256 = '456ac2541f2d5e3d6f8e2f1bde4e022070df5c8f71607bb351086305f75a772d';
+// Clickable citations feature: open-record navigation action (wired to citation badges),
+// provenance read operation for interactive data-lineage popovers, + guidance in the
+// HTML authoring prompt. Recaptured.
+// Part A - side-by-side record panel: when a dashboard citation is clicked, open the
+// linked record/file in a panel alongside the dashboard (rather than replacing it). The
+// panel reflows the layout (flex row, ~40% width) with a close button (✕) to restore
+// full width. Reuses existing file preview + record renderers (openDashboardRecordPanel,
+// closeDashboardRecordPanel in dashboard.ts module). HTML structure added to renderDashboardPage
+// (wrap the dash-frame + new panel in a .dash-frame-wrap flex row). CSS added for the panel
+// layout, header, scroll area, and record-field display. Part B - honest + robust citation
+// wiring: strengthened html-author.ts guidance to prefer explicit FILE_MAP (mapping labels
+// to file ids) + drop interactive affordances for unresolved citations (no dead controls) +
+// never emit uninterpolated ${} into attributes. Strengthened create_dashboard spec field
+// guidance in registry.ts to enumerate source documents as "Source: <label> = files id <id>"
+// pairs, ensuring citations resolve correctly by id rather than fragile runtime name-matching.
+// Recaptured.
+const ORIGINAL_LENGTH = 826095;
+const ORIGINAL_SHA256 = '63303a67f50df63be498c79f814c483ae59a6440380f356c52a965e97dccbdbf';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

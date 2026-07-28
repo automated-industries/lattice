@@ -270,7 +270,10 @@ export const analyticsViewJs = `
             '</div>' +
             (row.description ? '<div class="dash-desc muted">' + escapeHtml(String(row.description)) + '</div>' : '') +
             '<div id="record-history" class="dash-history" hidden></div>' +
+            '<div class="dash-frame-wrap">' +
             '<iframe id="dash-frame" class="html-frame dash-frame" title="' + escapeHtml(String(row.title || 'Dashboard')) + '" sandbox="allow-scripts"></iframe>' +
+            '<div id="dashboard-record-panel" class="dashboard-record-panel"><div id="dashboard-panel-content"></div></div>' +
+            '</div>' +
             '</div>');
           // Sharing: the SAME per-row visibility line + grants panel every
           // record page uses — dashboards are ordinary shareable rows.

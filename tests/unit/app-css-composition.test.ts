@@ -252,8 +252,12 @@ import { css } from '../../src/gui/app/css.js';
 // tiles, .ifg-group / .ifg-children nested-folder blocks, the tile-corner ✕ overlay);
 // the retired list/grid toggle's .inputs-files-toggle / .ift-btn rules were removed.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 174184;
-const ORIGINAL_SHA256 = '733faecaba35f161d32d02ec62d95e711bddac993a076928527fe05709ad8ff8';
+// 5.4.x dashboard record panel: .dashboard-record-panel side-by-side reflow layout
+// (.dash-frame-wrap flex row, .panel-header/.panel-close/.panel-scroll,
+// .record-fields/.record-field) for the open-record citation click-through.
+// Length + hash recaptured.
+const ORIGINAL_LENGTH = 176203;
+const ORIGINAL_SHA256 = 'bd1864025e13397c3303e5f52016efbb752cb723199787aa026402c2b9484357';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't
