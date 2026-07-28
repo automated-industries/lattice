@@ -716,8 +716,17 @@ import { appJs } from '../../src/gui/app/script.js';
 // date (asOf: autoImport.asOf || '') so a brand-new dataset that reports its own period is filed
 // under that date instead of the import day; only an undated drop falls back to the import day.
 // Length + hash recaptured.
-const ORIGINAL_LENGTH = 856660;
-const ORIGINAL_SHA256 = '7a123f02e77ee39afa7d947e57298dc86941f152cee12975e6163e86289977e0';
+// 5.6 one-click undo for schema changes: the data-model editor's delete-table,
+// delete-link, and rename success toasts now carry an Undo button (schemaUndoFn),
+// pointed at exactly the change the server just recorded by its audit id. The
+// button replays the same per-entry revert the version-history page uses, so it
+// restores THAT change (the table reappears, the link comes back, the old name
+// returns); if the workspace has moved on the server refuses loudly and names the
+// reason instead of a silent no-op. The stale "irreversible from the GUI" /
+// "cannot be undone" copy on those confirmations is corrected to say the change
+// can be undone right after. Length + hash recaptured.
+const ORIGINAL_LENGTH = 858058;
+const ORIGINAL_SHA256 = '2249e28c3f8201c8a347a24310e3200a89f5c362e32b262bfca1a848706bfa08';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

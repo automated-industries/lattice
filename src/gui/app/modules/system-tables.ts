@@ -937,22 +937,42 @@ export const systemTablesJs = `    // ──────────────
       });
     }
 
+    // One-click undo for a schema change the user just made (delete table,
+    // delete link, rename). Points at exactly the change the server just
+    // recorded, by its audit id, and replays the same per-entry revert the
+    // version-history page uses — so it undoes THAT change, never "whatever is
+    // newest". If the workspace has moved on (the change was already reverted,
+    // or the old name is taken again) the server refuses and names the reason,
+    // which we surface loudly instead of a silent no-op. Returns null when no
+    // undo id came back, so the toast simply shows no Undo button.
+    function schemaUndoFn(undoId) {
+      if (!undoId) return null;
+      return function () {
+        fetchJson('/api/history/revert/' + encodeURIComponent(undoId), { method: 'POST' })
+          .then(function () { return afterMutation(); })
+          .then(function () { return dmRefreshPanel(null, true); })
+          .then(function () { showToast('Change undone', {}); })
+          .catch(function (err) { showToast('Undo failed: ' + err.message, {}); });
+      };
+    }
+
     /** Wire up the edit-entity controls in the Data Model side panel. */
     function wireEntityEditPanel(panel, tableName) {
-      // Rename entity — schema change, not in the audit log, so we keep
-      // a confirm (the only kind of warning left in the app).
+      // Rename entity — a light confirm on a structural change, but it is
+      // recorded in the version history and the success toast offers a one-click
+      // undo, so it is reversible.
       panel.querySelector('#dm-rename-btn').addEventListener('click', function () {
         var to = panel.querySelector('#dm-rename-input').value.trim();
         if (!to || to === tableName) return;
-        if (!confirm('Rename entity "' + tableName + '" to "' + to + '"? This is irreversible from the GUI.')) return;
+        if (!confirm('Rename entity "' + tableName + '" to "' + to + '"? You can undo it right after.')) return;
         fetchJson('/api/schema/entities/' + encodeURIComponent(tableName) + '/rename', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ to: to }),
-        }).then(function () {
-          return dmRefreshPanel(to, true);
-        }).then(function () {
-          showToast('Entity renamed to "' + to + '"', {});
+        }).then(function (resp) {
+          return dmRefreshPanel(to, true).then(function () { return resp; });
+        }).then(function (resp) {
+          showToast('Entity renamed to "' + to + '"', { undo: schemaUndoFn(resp && resp.undoId) });
         }).catch(function (err) { showToast('Rename failed: ' + err.message, {}); });
       });
       // Edit icon
@@ -1093,16 +1113,16 @@ export const systemTablesJs = `    // ──────────────
           var lk = dmLinksNow[Number(btn.getAttribute('data-link'))];
           if (!lk) return;
           if (!confirm('Delete the link between "' + tableName + '" and "' + lk.other +
-            '"? It is removed from both tables. This is irreversible from the GUI.')) return;
+            '"? It is removed from both tables. You can undo it right after.')) return;
           var url = lk.kind === 'junction'
             ? '/api/schema/entities/' + encodeURIComponent(lk.delTable)
             : '/api/schema/entities/' + encodeURIComponent(lk.delTable) +
                 '/links/' + encodeURIComponent(lk.delCol);
           withBusy(btn, function () {
             return fetchJson(url, { method: 'DELETE' })
-              .then(function () { return dmRefreshPanel(tableName, true); })
-              .then(function () {
-                showToast('Link to "' + lk.other + '" deleted', {});
+              .then(function (resp) { return dmRefreshPanel(tableName, true).then(function () { return resp; }); })
+              .then(function (resp) {
+                showToast('Link to "' + lk.other + '" deleted', { undo: schemaUndoFn(resp && resp.undoId) });
               }).catch(function (err) { showToast('Delete link failed: ' + err.message, {}); });
           });
         });
@@ -1121,8 +1141,8 @@ export const systemTablesJs = `    // ──────────────
           return (v || '').trim().toLowerCase() === tableName.toLowerCase();
         };
         showModal('Delete table "' + tableName + '"',
-          '<p class="u-m-0 u-mb-2">This permanently drops the table ' + nameTag +
-            ' and all its rows. This cannot be undone.</p>' +
+          '<p class="u-m-0 u-mb-2">This removes the table ' + nameTag +
+            ' and its rows from your workspace. You can undo it right after.</p>' +
           '<p class="hint u-m-0 u-mb-3">' +
             'You can\\'t delete a table while another table links to it — delete those links first ' +
             '(they show in this table\\'s Links section).</p>' +
@@ -1149,11 +1169,11 @@ export const systemTablesJs = `    // ──────────────
             }
             return fetchJson('/api/schema/entities/' + encodeURIComponent(tableName), {
               method: 'DELETE',
-            }).then(function () {
+            }).then(function (resp) {
               gaTrack('table_delete', {}); // event only — never the table name
-              return dmRefreshPanel(null, true);
-            }).then(function () {
-              showToast('Table "' + tableName + '" deleted', {});
+              return dmRefreshPanel(null, true).then(function () { return resp; });
+            }).then(function (resp) {
+              showToast('Table "' + tableName + '" deleted', { undo: schemaUndoFn(resp && resp.undoId) });
             });
           },
         });

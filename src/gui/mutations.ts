@@ -322,10 +322,16 @@ export async function recordSchemaAudit(
   summary: string,
   source: FeedSource = 'gui',
   sessionId?: string,
-): Promise<void> {
+): Promise<string> {
   await purgeRedoStack(db, sessionId);
+  // Return the audit id so a caller that made a single, cleanly-reversible schema
+  // change (delete table / delete link / rename) can offer an immediate one-click
+  // undo pointed at exactly THIS entry — the same per-entry revert the
+  // version-history page uses, targeting the change by id rather than "whatever is
+  // newest", so a later change can't be reverted by mistake.
+  const id = crypto.randomUUID();
   await db.insert('_lattice_gui_audit', {
-    id: crypto.randomUUID(),
+    id,
     // Explicit ISO ts — see buildAuditRow (the SQLite-only strftime DEFAULT
     // rendered "Invalid Date" on the Postgres/cloud path).
     ts: new Date().toISOString(),
@@ -346,6 +352,7 @@ export async function recordSchemaAudit(
     const listener = schemaChangeListeners.get(db);
     if (listener) listener({ table, operation, before, after, summary });
   }
+  return id;
 }
 
 /** Context shared by every mutation primitive. */

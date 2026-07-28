@@ -238,6 +238,102 @@ describe('Schema history — tracking + soft-delete revert', () => {
   });
 });
 
+describe('Schema history — one-click undo affordance (undoId)', () => {
+  // The data-model editor shows an "Undo" button on the success toast right after
+  // a delete/rename. These pin the server half of that affordance: each schema
+  // route returns the audit id of the change it made, and the toast Undo posts it
+  // to the existing per-entry revert route. Modelled on the version-history
+  // Revert path, targeting the change by id (not "whatever is newest") so a later
+  // change can never be reverted by mistake.
+
+  it('delete table returns an undoId that restores the table (the toast Undo)', async () => {
+    const { s } = await boot();
+    await seedRow(s, 'tasks', { title: 'Wire the search bar', status: 'todo' });
+    await seedRow(s, 'tasks', { title: 'Ship 1.16', status: 'doing' });
+
+    const resp = await del(s, '/api/schema/entities/tasks');
+    expect(resp.status).toBe(200);
+    const body = (await j(resp)) as { ok: boolean; undoId?: string };
+    expect(typeof body.undoId).toBe('string');
+    expect(await entityNames(s)).not.toContain('tasks');
+
+    // The Undo button hits the per-entry revert with exactly this id.
+    expect((await post(s, `/api/history/revert/${body.undoId}`)).status).toBe(200);
+    expect(await entityNames(s)).toContain('tasks');
+    expect(await rowTitles(s, 'tasks')).toEqual(['Ship 1.16', 'Wire the search bar']);
+  });
+
+  it('rename returns an undoId that restores the old name', async () => {
+    const { s } = await boot();
+    const resp = await post(s, '/api/schema/entities/tasks/rename', { to: 'jobs' });
+    expect(resp.status).toBe(200);
+    const body = (await j(resp)) as { ok: boolean; undoId?: string };
+    expect(typeof body.undoId).toBe('string');
+    expect(await entityNames(s)).toContain('jobs');
+    expect(await entityNames(s)).not.toContain('tasks');
+
+    expect((await post(s, `/api/history/revert/${body.undoId}`)).status).toBe(200);
+    expect(await entityNames(s)).toContain('tasks');
+    expect(await entityNames(s)).not.toContain('jobs');
+  });
+
+  it('junction-link delete returns an undoId that restores the link (the delete-link toast Undo)', async () => {
+    const { s } = await boot();
+    expect(
+      (await post(s, '/api/schema/junctions', { left: 'tasks', right: 'articles' })).status,
+    ).toBe(200);
+    expect(await entityNames(s)).toContain('tasks_articles');
+
+    const resp = await del(s, '/api/schema/entities/tasks_articles');
+    expect(resp.status).toBe(200);
+    const body = (await j(resp)) as { undoId?: string };
+    expect(typeof body.undoId).toBe('string');
+    expect(await entityNames(s)).not.toContain('tasks_articles');
+
+    expect((await post(s, `/api/history/revert/${body.undoId}`)).status).toBe(200);
+    expect(await entityNames(s)).toContain('tasks_articles');
+  });
+
+  it('undo fails LOUDLY (named conflict) when the workspace has moved on', async () => {
+    const { s } = await boot();
+    // Rename tasks -> jobs, capturing the undo id the toast would carry.
+    const resp = await post(s, '/api/schema/entities/tasks/rename', { to: 'jobs' });
+    const body = (await j(resp)) as { undoId?: string };
+    expect(typeof body.undoId).toBe('string');
+
+    // The name "tasks" is taken again by a fresh table before Undo is clicked.
+    expect((await post(s, '/api/schema/entities', { name: 'tasks' })).status).toBe(200);
+
+    // Undoing the rename would rename "jobs" back to a name that now collides —
+    // the server refuses with a named reason, never a silent no-op or clobber.
+    const undo = await post(s, `/api/history/revert/${body.undoId}`);
+    expect(undo.status).toBe(400);
+    const err = (await j(undo)) as { error: string };
+    expect(err.error).toMatch(/already exists/i);
+
+    // Both tables survive untouched — nothing was silently changed.
+    expect(await entityNames(s)).toContain('tasks');
+    expect(await entityNames(s)).toContain('jobs');
+  });
+
+  it('a second undo of the same change is refused (already undone), not a silent success', async () => {
+    const { s } = await boot();
+    await seedRow(s, 'tasks', { title: 'X', status: 'todo' });
+    const resp = await del(s, '/api/schema/entities/tasks');
+    const body = (await j(resp)) as { undoId?: string };
+    expect(typeof body.undoId).toBe('string');
+
+    // First undo restores the table.
+    expect((await post(s, `/api/history/revert/${body.undoId}`)).status).toBe(200);
+    expect(await entityNames(s)).toContain('tasks');
+
+    // Clicking Undo again (or a stale toast) is refused loudly — the entry is
+    // already undone, so it is not a fresh no-op success.
+    const again = await post(s, `/api/history/revert/${body.undoId}`);
+    expect(again.status).toBe(400);
+  });
+});
+
 describe('Schema history — purge (API only)', () => {
   it('purge physically drops a soft-deleted table; afterwards its revert is refused', async () => {
     const { s, dbFile } = await boot();
