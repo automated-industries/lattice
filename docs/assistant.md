@@ -345,6 +345,36 @@ feed. No modal, no prompt. The assistant can also de-duplicate any table on
 request with the **`dedup`** tool (`{ table, fuzzy? }`); fuzzy-merge liberalness
 follows the [aggressiveness slider](#inference-aggressiveness).
 
+## Confirming a removal (5.5+)
+
+Removing a lot of data, or several objects at once, needs your say-so. When the
+assistant proposes one, the service works out what the call would actually do —
+which objects, which kind of removal, and how many records — records that, and
+**writes the question you see itself**. The assistant's own wording is not used.
+
+Your answer is matched against that record, and it covers exactly what it names:
+
+- **that object**, not one whose name resembles it;
+- **that kind of removal** — approving "remove the object but keep its data" does
+  not approve a cascade;
+- **at most the number of records you were shown**; if the table has grown since,
+  you are asked again;
+- **once**. Approval covers an act, not a standing permission, so a retry needs a
+  fresh question.
+
+Small, single-object removals are not gated — the threshold is about scale.
+`dedup` and `merge_rows` count as removals, bounded by how many rows they could
+remove.
+
+On a **shared cloud workspace**, a removal of this size is confirmed by the
+workspace owner. A member who asks for one is told so plainly rather than
+silently getting nothing.
+
+> This replaced a mechanism that inferred consent by re-reading the conversation.
+> Both halves of that evidence — the question and the answer — were text the
+> assistant wrote or could steer, so agreement could be manufactured. Authority
+> now comes from a record the service wrote, which the assistant cannot author.
+
 ## Inference Aggressiveness
 
 A single **Conservative ↔ Aggressive** slider (Settings → Assistant) tunes how
