@@ -33,7 +33,7 @@ import {
   type GuiTableSummary,
 } from './data.js';
 import { fullTextSearch } from '../search/fts.js';
-import { buildProvenanceGraph, summarizeProvenance } from './provenance.js';
+import { buildProvenanceGraph, summarizeProvenance, type ProvenanceNode } from './provenance.js';
 import { ASSISTANT_HIDDEN_TABLES } from './ai/dispatch.js';
 import { resolveColumnDescription, resolveTableDescription } from './column-descriptions.js';
 import { parseAudit, updateRow, maskEncryptedJson } from './mutations.js';
@@ -1543,7 +1543,36 @@ export async function handleReadRoutes(
         ...(active.outputDir ? { outputDir: active.outputDir } : {}),
       });
       const summary = summarizeProvenance(payload, provTable, provRowId);
-      sendJson(res, summary);
+      // Machine-usable source references for the dashboard provenance inset: the
+      // summary's links are prose-shaped (model-facing), so also surface each
+      // row-backed SOURCE node as {table, id, label} — the label resolved from
+      // the source row's own naming columns. Bounded: one PK lookup per source
+      // node, capped, and never for the object node itself.
+      const sourceNodes = payload.nodes
+        .filter(
+          (n): n is ProvenanceNode & { table: string; rowId: string } =>
+            n.type !== 'object' && typeof n.table === 'string' && typeof n.rowId === 'string',
+        )
+        .slice(0, 20);
+      const sources: { table: string; id: string; label: string }[] = [];
+      for (const n of sourceNodes) {
+        const t = n.table;
+        const id = n.rowId;
+        let label = n.label;
+        try {
+          const srcRow = (await active.db.get(t, id)) as Record<string, unknown> | null;
+          if (srcRow) {
+            const named = [srcRow.name, srcRow.original_name, srcRow.title, srcRow.label].find(
+              (v) => typeof v === 'string' && v.length > 0,
+            );
+            if (typeof named === 'string') label = named;
+          }
+        } catch {
+          // Source row unreadable (RLS or gone) — keep the node label.
+        }
+        sources.push({ table: t, id, label });
+      }
+      sendJson(res, { ...summary, sources });
       return true;
     } catch (err) {
       sendJson(res, { error: String((err && (err as Error).message) ?? err) }, 500);
