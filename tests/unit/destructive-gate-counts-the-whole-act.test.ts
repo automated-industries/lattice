@@ -11,32 +11,36 @@ import {
   DESTRUCTIVE_ROW_THRESHOLD,
   type DispatchCtx,
 } from '../../src/gui/ai/dispatch.js';
+import { undoGroup, type MutationCtx } from '../../src/gui/mutations.js';
 
 /**
  * THE SIZE THE GATE REASONS ABOUT HAS TO BE THE SIZE OF THE ACT.
  *
- * The destructive gate refuses a call that removes from more than one object, or that
- * reaches more records across the turn than DESTRUCTIVE_ROW_THRESHOLD. That refusal is
- * only as good as the number it compares, and every defect below is the same shape:
- * the measured size was smaller than the number of records the call would really
- * destroy, so the call slipped under the threshold — and the sentence the user reads
- * about it, composed from the same classification, understated it too.
+ * The gate now refuses only the IRREVERSIBLE arm — a hard object delete / cascade —
+ * when it spans more than one object or reaches more records across the turn than
+ * DESTRUCTIVE_ROW_THRESHOLD. Reversible acts (a clear/blank, an unlink, a merge) proceed
+ * at any scale, because undo/version-history/trash is the safety net. But the MEASURED
+ * SIZE still has to be the real size in both directions: it is what the irreversible
+ * wall compares, AND it is what the honest outcome report states for a reversible act
+ * that proceeded. Every defect below is the same shape — the measured size was smaller
+ * than what the call really touches, so the sentence the user reads understated it (and,
+ * for the irreversible arm, the wall let a wide act slip under the line).
  *
  *  1. `unlink` was hardcoded to `rows: 1` while `db.unlink` is an UNBOUNDED set
  *     delete (`DELETE FROM t WHERE <every key of values>`). One call can cut every
- *     link a record has.
+ *     link a record has — so the report of what it did has to say so.
  *  2. `unlink`'s `values` KEYS went straight into a SQL identifier position with
  *     nothing checking them against the junction's real columns — the third instance
  *     of a class already closed for `bulk_update`'s filter and its `set` keys.
  *  3. `delete_entity` with `resolution='delete_cascade'` counted only the records in
  *     the object NAMED. The cascade removes the rows of every object pointing at it
- *     as well, and all of that escaped the count.
+ *     as well, and all of that escaped the count — and this is the irreversible arm,
+ *     where the count still decides the wall.
  *  4. The extra column overwrites a `clear` carries alongside it were invisible: the
  *     user read "clear notes" for a call that also rewrote their owner.
  *
  * Every assertion is on the DATA — rows really gone, or really still there — or on the
- * exact sentence the user is shown. A count comparing correctly is what each of these
- * defects already did.
+ * exact sentence the user is shown.
  */
 
 const dirs: string[] = [];
@@ -159,29 +163,27 @@ async function seedLinks(active: ActiveDb, n: number): Promise<void> {
 describe('the destructive gate counts what the call actually destroys', () => {
   // ── 1. unlink is a SET delete, not one row ─────────────────────────────────
 
-  it('refuses an unlink that would cut more links than the threshold, and cuts none of them', async () => {
+  it('cuts however many links the request covers — an unlink is reversible, so no size wall', async () => {
     const active = await boot();
-    // One over the line — the smallest unlink the gate has to refuse. Sized from the
-    // constant so this stays ON the far side of the boundary wherever it is moved to.
+    // Well over the old line. `db.unlink` emits
+    // `DELETE FROM "contacts_deals" WHERE "contact_id" = ?` — every link this contact
+    // has, in one statement. That is recorded in the audit log and the undo re-links it,
+    // so it proceeds whatever its size; undo is the safety net.
     const links = DESTRUCTIVE_ROW_THRESHOLD + 1;
     await seedLinks(active, links);
     const ctx = ctxFor(active);
 
-    // One condition, every one of those rows. `db.unlink` emits
-    // `DELETE FROM "contacts_deals" WHERE "contact_id" = ?` — every link this contact
-    // has, in one statement, while the gate believed it was removing one.
     const r = await executeFunction(
       ctx,
       'unlink',
       { table: 'contacts_deals', values: { contact_id: 'c1' } },
       new TurnOutcomeLedger(),
     );
-    // THE assertion, on the data: every link is still there — c1's, plus the unrelated
-    // one belonging to c2. The set is over the threshold, so it is refused outright,
-    // and only a real count of what the statement will delete knows that.
-    expect(await junctionCount(active)).toBe(links + 1);
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain('REFUSED');
+    expect(r.ok).toBe(true);
+    expect(r.error ?? '').not.toContain('REFUSED');
+    // THE assertion, on the data: all of c1's links are cut, and only the unrelated
+    // link belonging to c2 remains.
+    expect(await junctionCount(active)).toBe(1);
   });
 
   // Deliberately UNDER the line: this one is about the sentence, not the gate. What is
@@ -377,11 +379,16 @@ describe('the destructive gate counts what the call actually destroys', () => {
     expect(injected?.detail).not.toContain('nothing real is lost');
   });
 
-  // ── 5. the wide act is refused, and stays refused for the whole turn ────────
+  // ── 5. a wide REVERSIBLE act proceeds at any scale, and undo is the safety net ─
 
-  it('keeps refusing a wide clear however many times the turn retries it', async () => {
+  it('proceeds on a wide clear at any scale, and undoes the whole thing as one action', async () => {
+    // A clear is reversible: the prior value is kept in the audit image and the undo
+    // restores it. So a clear well over the old line PROCEEDS — there is no size at which
+    // it is refused — and the whole thing reverses as ONE action, which is the safety
+    // net that replaces the refusal.
     const active = await boot();
-    for (let i = 0; i < DESTRUCTIVE_ROW_THRESHOLD + 5; i++) {
+    const rows = DESTRUCTIVE_ROW_THRESHOLD + 5;
+    for (let i = 0; i < rows; i++) {
       await active.db.insert('contacts', {
         id: `c${String(i)}`,
         name: `Contact ${String(i)}`,
@@ -391,23 +398,47 @@ describe('the destructive gate counts what the call actually destroys', () => {
     }
     const ctx = ctxFor(active);
     const ledger = new TurnOutcomeLedger();
-    const wide = { table: 'contacts', set: { body: null } };
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const r = await executeFunction(ctx, 'bulk_update', wide, ledger);
-      expect(r.ok).toBe(false);
-      expect(r.error).toContain('REFUSED');
-    }
-    // THE assertion, on the data: every record still holds its text.
-    const rows = await active.db.query('contacts', {});
-    expect(rows.every((r) => r.body === 'keep me')).toBe(true);
+
+    const r = await executeFunction(
+      ctx,
+      'bulk_update',
+      { table: 'contacts', set: { body: null } },
+      ledger,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.error ?? '').not.toContain('REFUSED');
+    // Every record really was cleared.
+    const cleared = await active.db.query('contacts', { filters: [{ col: 'body', op: 'isNull' }] });
+    expect(cleared).toHaveLength(rows);
+
+    // Every audited change of the one bulk_update shares ONE operation-group id — that
+    // is what makes the wide change undoable as a single action.
+    const audit = (await active.db.query('_lattice_gui_audit', {})) as Record<string, unknown>[];
+    const updates = audit.filter((a) => a.operation === 'update');
+    expect(updates).toHaveLength(rows);
+    const groups = new Set(updates.map((a) => a.op_group));
+    expect(groups.size).toBe(1);
+    const groupId = String([...groups][0]);
+    expect(groupId).toBeTruthy();
+
+    const mctx: MutationCtx = {
+      db: active.db,
+      feed: active.feed,
+      softDeletable: active.softDeletable,
+      source: 'gui',
+    };
+    const undone = await undoGroup(mctx, groupId);
+    expect(undone).toMatchObject({ ok: true, undone: rows });
+    // ...and the whole clear is reversed — every record holds its text again.
+    const restored = await active.db.query('contacts', {});
+    expect(restored.every((row) => row.body === 'keep me')).toBe(true);
   });
 
-  it('counts single-row clears across the turn, so a wide plan cannot be split under the line', async () => {
-    // The gate measures the TURN, not the call. One single-row clear per record is the
-    // same destruction as one bulk_update over all of them, and it must hit the same
-    // wall. The calls are real and separate on purpose: accumulating across the turn IS
-    // the code path under test, so there is no cheaper construction that still
-    // exercises it.
+  it('never refuses a reversible clear, however wide the turn runs it one record at a time', async () => {
+    // One single-row clear per record is the same reversible destruction as one
+    // bulk_update over all of them. Neither has a size wall, so a whole object cleared
+    // record by record proceeds end to end — the calls are real and separate on purpose,
+    // because accumulating across the turn IS the code path that used to refuse.
     const active = await boot();
     const rows = DESTRUCTIVE_ROW_THRESHOLD + 5;
     for (let i = 0; i < rows; i++) {
@@ -433,15 +464,16 @@ describe('the destructive gate counts what the call actually destroys', () => {
         break;
       }
     }
-    expect(refusedAt).toBeGreaterThan(-1);
+    expect(refusedAt).toBe(-1);
     const wiped = (await active.db.query('contacts', { filters: [{ col: 'body', op: 'isNull' }] }))
       .length;
-    expect(wiped).toBeLessThanOrEqual(DESTRUCTIVE_ROW_THRESHOLD + 1);
+    expect(wiped).toBe(rows);
   });
 
-  it('refuses the moment a second object joins the plan, however small both are', async () => {
-    // Two one-record removals. Each is far under the threshold on its own; together
-    // they span two objects, which is the other half of the gate.
+  it('proceeds through a multi-object plan when every step is reversible', async () => {
+    // Two one-record soft deletes, in two different objects. Each goes to the recoverable
+    // trash, so the plan is reversible end to end — and a reversible multi-object plan is
+    // NOT refused: undo is the safety net, not a size or object limit.
     const active = await boot();
     await active.db.insert('contacts', { id: 'c1', name: 'Hub' });
     await active.db.insert('deals', { id: 'd1', name: 'Deal' });
@@ -452,10 +484,11 @@ describe('the destructive gate counts what the call actually destroys', () => {
     expect(first.ok).toBe(true);
 
     const second = await executeFunction(ctx, 'delete_row', { table: 'deals', id: 'd1' }, ledger);
-    expect(second.ok).toBe(false);
-    expect(second.error).toContain('REFUSED');
-    expect(second.error).toContain('more than one object');
-    // The deal is still there.
-    expect((await active.db.get('deals', 'd1'))?.deleted_at ?? null).toBeNull();
+    expect(second.ok).toBe(true);
+    expect(second.error ?? '').not.toContain('REFUSED');
+
+    // Both records are soft-deleted (recoverable from the trash), not left in place.
+    expect((await active.db.get('contacts', 'c1'))?.deleted_at ?? null).not.toBeNull();
+    expect((await active.db.get('deals', 'd1'))?.deleted_at ?? null).not.toBeNull();
   });
 });

@@ -925,22 +925,98 @@ export async function linkRows(
   );
 }
 
+/**
+ * Most junction edges a single unlink can CAPTURE into the audit log so undo can
+ * re-link them.
+ *
+ * An unlink is a SET delete — `db.unlink` runs `DELETE FROM t WHERE <every key in
+ * body>` — and `body` may be a PARTIAL condition (one key of a two-key junction), so
+ * ONE call can remove MANY edges. To keep that reversible we must record each removed
+ * edge (its full row), which means reading them first; that read is BOUNDED here so it
+ * can never load an unbounded set on a hot path. Beyond this many matched edges an
+ * unlink cannot be made fully restorable — the assistant gate classifies such a call
+ * as not-reversible and refuses it before it runs, and a direct (ungated) caller that
+ * reaches this ceiling fails loudly rather than deleting edges it cannot record. Kept
+ * in step with the assistant gate's pre-flight unlink count cap so the two agree on
+ * where "capturable" ends.
+ */
+export const UNLINK_UNDO_MAX_EDGES = 5000;
+
 export async function unlinkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
   assertNotComputedTable(ctx.db, table);
+  const filters = Object.entries(body).map(([col, val]) => ({ col, op: 'eq' as const, val }));
+  // Empty condition ⇒ db.unlink deletes nothing (it returns on no conditions), so
+  // there is nothing to capture — and NOT reading here is what stops an empty body
+  // from turning the capture query into a whole-junction scan.
+  if (filters.length === 0) {
+    await ctx.db.unlink(table, body);
+    return;
+  }
+  // Capture the ACTUAL edges the SET delete will remove, BEFORE removing them. The
+  // condition alone (what the old code recorded) let undo re-link a single partial row,
+  // not the N specific edges cut — silent, wide, unrecoverable relationship loss.
+  // Bounded read: read one past the cap so an over-cap match is detectable, and never
+  // hold an unbounded set.
+  const matched = await ctx.db.query(table, {
+    filters,
+    limit: UNLINK_UNDO_MAX_EDGES + 1,
+  });
+  // A match too large to fully record is one we must not silently delete — every edge
+  // has to be restorable, so fail loudly instead of losing edges from undo. (On the
+  // assistant path this is unreachable: the gate classifies such a call not-reversible
+  // and refuses it first; this guards the direct/HTTP callers that have no gate.)
+  if (matched.length > UNLINK_UNDO_MAX_EDGES) {
+    throw new Error(
+      `Refusing to unlink from "${table}": this condition matches more than ` +
+        `${String(UNLINK_UNDO_MAX_EDGES)} link(s), which is too many to record for undo. ` +
+        `Narrow the unlink so every removed link can be restored.`,
+    );
+  }
+
   await ctx.db.unlink(table, body);
-  await appendAudit(
-    ctx.db,
-    ctx.feed,
+
+  // Nothing matched ⇒ nothing was deleted ⇒ record nothing (an unlink of an absent
+  // edge is a no-op, exactly as db.unlink treats it).
+  if (matched.length === 0) return;
+
+  // One audit entry PER removed edge — each `before` is the FULL edge row, so the
+  // inverse `db.link(before)` re-links exactly that edge — all under ONE op-group so
+  // undoGroup reverses the whole unlink as a single action. A caller-supplied group
+  // (the assistant turn, a merge pass) wins; otherwise a group is minted only for a
+  // MULTI-edge cut — a single fully-specified edge stays ungrouped, exactly as before.
+  const opGroup = ctx.opGroup ?? (matched.length > 1 ? crypto.randomUUID() : undefined);
+  // Purge the redo stack ONCE (a new mutation invalidates pending redos), then write
+  // the N entries directly — appendAudit would publish a feed bubble per entry, and one
+  // unlink must read as ONE activity item, not N.
+  await purgeRedoStack(ctx.db, ctx.sessionId);
+  for (const edge of matched) {
+    await ctx.db.insert(
+      '_lattice_gui_audit',
+      buildAuditRow(
+        table,
+        null,
+        'unlink',
+        edge,
+        null,
+        ctx.sessionId,
+        undefined,
+        ctx.source,
+        opGroup,
+      ),
+    );
+  }
+  // One AGGREGATED feed event for the whole unlink (N edges), never N of them. A
+  // single-edge cut keeps the exact prior bubble ("Unlinked rows in …").
+  ctx.feed.publish({
     table,
-    null,
-    'unlink',
-    body,
-    null,
-    ctx.source,
-    ctx.sessionId,
-    undefined,
-    ctx.opGroup,
-  );
+    op: 'unlink',
+    rowId: null,
+    source: ctx.source,
+    summary:
+      matched.length === 1
+        ? feedSummary('unlink', table, matched[0])
+        : `Unlinked ${String(matched.length)} rows in ${table}`,
+  });
 }
 
 // ── Undo / redo / revert ────────────────────────────────────────────────────
@@ -1225,7 +1301,12 @@ async function applyInverse(ctx: MutationCtx, entry: AuditEntry): Promise<void> 
       if (after) await db.unlink(entry.table_name, after);
       break;
     case 'unlink':
-      if (after) await db.link(entry.table_name, after);
+      // An unlink records the removed edge in `before` (there is no `after` — the
+      // row is gone), mirroring how a delete records the removed row in `before`.
+      // So the inverse RE-LINKS from `before`; reading the always-null `after` here
+      // made undo a no-op that flipped the entry to "undone" and reported success
+      // while restoring nothing.
+      if (before) await db.link(entry.table_name, before);
       break;
   }
 }
