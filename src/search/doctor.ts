@@ -30,7 +30,9 @@ export type HealthIssueKind =
   | 'embedding_stale'
   | 'extension_missing'
   | 'dimension_mismatch'
-  | 'index_stale';
+  | 'index_stale'
+  /** There was no retrieval to check at all — the report establishes nothing. */
+  | 'nothing_to_diagnose';
 
 export interface RetrievalHealthIssue {
   /** Table the issue concerns, or undefined for a global/extension issue. */
@@ -94,10 +96,12 @@ export interface RetrievalHealthSpec {
 
 export interface DiagnoseOptions {
   /**
-   * Tables to diagnose with their expected capabilities. When omitted, the
-   * doctor reports extension availability and embedding coverage for every
-   * table that already has stored embeddings, but cannot flag "missing"
-   * (it has no expectations to compare against).
+   * Tables to diagnose with their expected capabilities. When omitted — or
+   * empty — the doctor reports extension availability and embedding coverage
+   * for every table that already has stored embeddings, but cannot flag
+   * "missing" (it has no expectations to compare against). When even that turns
+   * up nothing, the report carries a `nothing_to_diagnose` error, because a
+   * report about nothing is not a clean bill of health.
    */
   tables?: RetrievalHealthSpec[];
   /**
@@ -337,9 +341,46 @@ export async function diagnoseRetrieval(
   const extensions = await detectExtensions(adapter);
   const globalIssues: RetrievalHealthIssue[] = [];
 
+  // Resolve what to diagnose BEFORE judging anything, because an empty
+  // expectation list is not a verdict — it means the caller handed us nothing to
+  // check. An empty array is treated exactly like an omitted one: fall back to
+  // discovering what the database itself has. Reading `[]` as "diagnose nothing"
+  // is what let a database no one had described report a clean bill of health.
+  let specs = opts.tables;
+  if (!specs || specs.length === 0) {
+    // No expectations given — discover tables that already have embeddings so we
+    // can at least report their coverage.
+    const rows = await (async () => {
+      try {
+        const { allAsyncOrSync } = await import('../db/adapter.js');
+        return (await allAsyncOrSync(
+          adapter,
+          `SELECT DISTINCT table_name FROM "${EMBEDDINGS_TABLE}"`,
+        )) as { table_name: string }[];
+      } catch {
+        return [];
+      }
+    })();
+    specs = rows.map((r) => ({ table: r.table_name, expectEmbeddings: true }));
+  }
+
+  // Nothing declared it, nothing in the database implies it: there is no
+  // retrieval to diagnose, so say so as an error rather than reporting health we
+  // never established. A build step gating on this must fail here — a pass would
+  // mean "checked and fine", which is precisely what did not happen.
+  if (specs.length === 0) {
+    globalIssues.push({
+      kind: 'nothing_to_diagnose',
+      severity: 'error',
+      message:
+        'Nothing to diagnose — no table is configured for full-text or semantic search, and no embeddings are stored. Retrieval health was not assessed.',
+      hint: 'Add `fts:` and/or `embeddings:` to the tables that should be searchable, then run this again.',
+    });
+  }
+
   // Surface a missing-but-needed extension as a global warning. We only know an
   // extension is *needed* when at least one table expects the matching feature.
-  const wantsEmbeddings = (opts.tables ?? []).some((t) => t.expectEmbeddings);
+  const wantsEmbeddings = specs.some((t) => t.expectEmbeddings);
   if (wantsEmbeddings) {
     if (adapter.dialect === 'postgres' && extensions.pgvectorInstalled === false) {
       globalIssues.push({
@@ -362,24 +403,6 @@ export async function diagnoseRetrieval(
         hint: 'Load the sqlite-vec extension for indexed vector search at scale.',
       });
     }
-  }
-
-  let specs = opts.tables;
-  if (!specs) {
-    // No expectations given — discover tables that already have embeddings so we
-    // can at least report their coverage.
-    const rows = await (async () => {
-      try {
-        const { allAsyncOrSync } = await import('../db/adapter.js');
-        return (await allAsyncOrSync(
-          adapter,
-          `SELECT DISTINCT table_name FROM "${EMBEDDINGS_TABLE}"`,
-        )) as { table_name: string }[];
-      } catch {
-        return [];
-      }
-    })();
-    specs = rows.map((r) => ({ table: r.table_name, expectEmbeddings: true }));
   }
 
   const tables: TableHealth[] = [];

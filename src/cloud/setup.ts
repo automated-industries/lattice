@@ -24,7 +24,7 @@ import {
   grantMemberExecuteSql,
 } from './member-access.js';
 import { NATIVE_INTERNAL_NAMES } from '../framework/native-entities.js';
-import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { hasFilePresigner, grantPresignerToMemberGroup } from './file-presign.js';
 
@@ -414,6 +414,37 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
  * filters the table to rows it already owns.
  */
 /**
+ * Does this relation hold rows OF ITS OWN — i.e. is it a table rather than a view?
+ *
+ * Per-row ownership only means something for a relation that stores its own rows.
+ * A view stores none: it reads them from the tables underneath, and those tables
+ * are secured in their own right, so the rows a view exposes are already governed.
+ * Postgres agrees — it rejects both `ALTER … ENABLE ROW LEVEL SECURITY` and a
+ * per-row trigger on a view (and on a materialized view), which is how this
+ * surfaced: reconstructing a view registers it through the same call every table
+ * goes through, and the securing step then failed the whole registration partway
+ * through an import that had already written its rows. Stamping ownership for a
+ * view is wrong on its own terms too — it writes owner records keyed to a relation
+ * that can never have an owner.
+ *
+ * An unknown relation (no row in the catalog) answers TRUE, so a genuinely missing
+ * table still fails loudly at the securing step rather than being skipped here.
+ */
+async function ownsItsRows(db: Lattice, table: string): Promise<boolean> {
+  const row = (await getAsyncOrSync(
+    db.adapter,
+    `SELECT c.relkind AS kind
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relname = ?`,
+    [table],
+  )) as { kind?: unknown } | undefined;
+  const kind = typeof row?.kind === 'string' ? row.kind : null;
+  // 'r' ordinary table, 'p' partitioned table, 'f' foreign table. Anything else
+  // ('v' view, 'm' materialized view, …) does not own rows.
+  return kind === null || kind === 'r' || kind === 'p' || kind === 'f';
+}
+
+/**
  * Secure ONE user table on a cloud: stamp current-role ownership of existing
  * rows, FORCE per-row RLS, and (re)build the audience cell-masking view. Idempotent
  * + additive. The per-table half of {@link secureCloud}, factored out so tables
@@ -421,7 +452,8 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
  * way — otherwise a runtime table on a secured cloud has RLS OFF (wide open).
  * `backfillOwnership` runs BEFORE `enableRlsForTable` so a non-superuser owner can
  * still SELECT every row to stamp it before FORCE RLS filters the table. No-op on
- * SQLite, on bookkeeping tables, or on an unkeyable table.
+ * SQLite, on bookkeeping tables, on an unkeyable table, or on a relation that owns
+ * no rows of its own ({@link ownsItsRows}).
  */
 export async function secureNewCloudTable(
   db: Lattice,
@@ -431,6 +463,7 @@ export async function secureNewCloudTable(
   if (db.getDialect() !== 'postgres') return;
   if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) return;
   if (pk.length === 0) return;
+  if (!(await ownsItsRows(db, table))) return;
   await backfillOwnership(db, table, pk);
   await enableRlsForTable(db, table, pk);
   const cols = db.getRegisteredColumns(table);

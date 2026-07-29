@@ -31,7 +31,6 @@ import {
 } from '../db/adapter.js';
 import type { Lattice } from '../lattice.js';
 import type { ActiveDb } from './active-db.js';
-import { secureNewCloudTable } from '../cloud/setup.js';
 import {
   isRowAudience,
   loadColumnPolicy,
@@ -39,25 +38,7 @@ import {
   regenerateMemberReadView,
   tableNeedsAudienceView,
 } from '../cloud/audience.js';
-import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
-
-/**
- * Secure a table created at RUNTIME (data-model panel / assistant / ingest) the
- * same way `secureCloud` secures declared tables — otherwise a table made on a
- * secured cloud has RLS OFF (wide open), no ownership trigger, and no member
- * grant. No-op off a secured cloud / when the role can't manage it. internal guideline: a
- * failure surfaces (a silently-unsecured table is a data-exposure bug).
- */
-async function secureRuntimeTableIfCloud(
-  active: ActiveDb,
-  name: string,
-  pk: string[],
-): Promise<void> {
-  const db = active.db;
-  if (db.getDialect() !== 'postgres') return;
-  if (!((await cloudRlsInstalled(db)) && (await canManageRoles(db)))) return;
-  await secureNewCloudTable(db, name, pk);
-}
+import { cloudRlsInstalled } from '../framework/cloud-connect.js';
 
 /**
  * Runtime schema-mutation primitives — the shared core behind the GUI's
@@ -295,8 +276,8 @@ export async function materializeJunction(
   active.validTables.add(jName);
   active.junctionTables.add(jName);
   syncCanonicalContexts(active);
-  // Secure the just-created junction on a cloud (RLS + ownership + grant).
-  await secureRuntimeTableIfCloud(active, jName, ['id']);
+  // (The junction was secured on a shared workspace as part of registering it —
+  // see Lattice.defineLate. Nothing to do per-client.)
   await recordSchemaOp(
     active,
     'schema.create_junction',
@@ -558,8 +539,9 @@ export async function createUserEntity(
   // CREATE straddle awaits) and both run CREATE TABLE — the loser throwing "table
   // already exists". Inside the lock the check-then-act is atomic, so the second
   // caller sees the first's just-registered table and reuses it. Reentrant, so the
-  // nested addColumn inside secureRuntimeTableIfCloud (cloud) runs inline. Any throw
-  // propagates to the caller and releases the lock (withSchemaLock advances on settle).
+  // schema work that registering a table performs on a shared workspace runs inline.
+  // Any throw propagates to the caller and releases the lock (withSchemaLock advances
+  // on settle).
   // The closure returns whether THIS call created the table (vs reused a concurrent
   // creator's), so the background description hook below fires only on a fresh create.
   const outcome = await active.db.withSchemaLock(
@@ -624,9 +606,8 @@ export async function createUserEntity(
       // Same step as creation: register the canonical context so the new table
       // renders without a reopen (the subsequent row inserts' auto-render writes it).
       syncCanonicalContexts(active);
-      // Secure the just-created table on a cloud (RLS + ownership + mask view + grant)
-      // so a runtime-created table isn't left wide open.
-      await secureRuntimeTableIfCloud(active, entity, ['id']);
+      // (The table was secured on a shared workspace as part of registering it —
+      // see Lattice.defineLate. Nothing to do per-client.)
       await recordSchemaOp(
         active,
         'schema.create_entity',

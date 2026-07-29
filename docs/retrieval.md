@@ -40,6 +40,12 @@ Read-only health: per-table FTS + embedding coverage (soft-deleted rows excluded
 extension availability (FTS5, sqlite-vec, pgvector, pg_trgm), and severity-ranked
 issues. `lattice doctor [--json]` exits non-zero on any error (deploy gate).
 
+Expectations come from each table's `fts` / `embeddings` config. When there are
+none, the doctor falls back to whatever the database itself has (tables with
+stored vectors) — and when even that is empty it reports a `nothing_to_diagnose`
+**error**, so the command exits non-zero. A report about nothing is not a clean
+bill of health, and a gate that passes on it is worse than no gate at all.
+
 ### `benchmarkRetrieval(opts?)` / `checkSlos(report, slos)`
 
 Reproducible p50/p95/p99 latency for filtered query, FTS, vector, and aggregate,
@@ -73,6 +79,18 @@ db.define('docs', {
     modelId: 'text-embedding-3-small',
   },
 });
+```
+
+From a config file the same thing is declared with an endpoint in place of the
+`embed` function (see `docs/configuration.md` → _Semantic search_):
+
+```yaml
+embeddings:
+  fields: [title, body]
+  url: https://api.example.com/v1/embeddings
+  model: text-embedding-3-small
+  apiKeyEnv: EMBEDDINGS_API_KEY
+  chunk: { maxChars: 1000, overlap: 100 }
 ```
 
 Each row is embedded as several boundary-aware chunks → higher precision@k and

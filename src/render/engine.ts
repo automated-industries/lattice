@@ -675,6 +675,28 @@ export class RenderEngine {
     options: CleanupOptions = {},
     newManifest?: LatticeManifest | null,
   ): Promise<CleanupResult> {
+    // A schema with NO tables at all cannot have dropped the contexts a previous
+    // render recorded — there is nothing here that could have dropped them. It
+    // means this process never learned the layout: a shared workspace whose
+    // layout has not arrived, a config that describes nothing. Against that, the
+    // previous manifest lists every rendered file as removable, and cleanup would
+    // take the whole tree. Deleting on that basis destroys work instead of
+    // reconciling it, so refuse — and say so, rather than reporting a quiet
+    // success over an emptied directory.
+    const priorContexts = prevManifest ? Object.keys(prevManifest.entityContexts).length : 0;
+    if (this._schema.getTables().size === 0 && priorContexts > 0) {
+      return {
+        directoriesRemoved: [],
+        filesRemoved: [],
+        directoriesSkipped: [],
+        warnings: [
+          `${outputDir}: cleanup skipped — this workspace declares no tables, yet ` +
+            `${String(priorContexts)} rendered context(s) exist here. That is a schema that never ` +
+            `loaded, not a layout that was emptied, so nothing was removed. Check the config (and, ` +
+            `for a shared workspace, that its layout is readable) and run this again.`,
+        ],
+      };
+    }
     const entityContexts = this._schema.getEntityContexts();
     const currentSlugsByTable = new Map<string, Set<string>>();
     for (const [table, def] of entityContexts) {

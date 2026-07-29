@@ -18,7 +18,13 @@ import type {
   BelongsToRelation,
   BuiltinTemplateName,
   Row,
+  FtsConfig,
+  EmbeddingsConfig,
+  VectorIndexOptions,
 } from '../types.js';
+import { createHttpEmbedder } from '../search/http-embedder.js';
+import { semanticChunker } from '../search/chunking.js';
+import type { ChunkerFn, SemanticChunkerOptions } from '../search/chunking.js';
 import type { EntityContextDefinition, EntityFileSource } from '../schema/entity-context.js';
 import { assertExternalIdentifier } from '../schema/identifier.js';
 import {
@@ -335,6 +341,21 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
   const description =
     typeof rawDescription === 'string' && rawDescription.trim() ? rawDescription.trim() : undefined;
 
+  const declaredColumns = Object.keys(columns);
+  const relationNames = Object.keys(relations);
+  const fts = parseFtsSpec(
+    entityName,
+    (entity as { fts?: unknown }).fts,
+    declaredColumns,
+    relationNames,
+  );
+  const embeddings = parseEmbeddingsSpec(
+    entityName,
+    (entity as { embeddings?: unknown }).embeddings,
+    declaredColumns,
+    relationNames,
+  );
+
   return {
     columns,
     render,
@@ -345,7 +366,276 @@ function entityToTableDef(entityName: string, entity: LatticeEntityDef): TableDe
     ...(primaryKey !== undefined ? { primaryKey } : {}),
     ...(Object.keys(relations).length > 0 ? { relations } : {}),
     ...(Object.keys(computedFields).length > 0 ? { computedFields } : {}),
+    ...(fts !== undefined ? { fts } : {}),
+    ...(embeddings !== undefined ? { embeddings } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Retrieval (`fts:` / `embeddings:`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a declared field list against the entity's columns.
+ *
+ * A field name that matches no column is rejected here rather than dropped
+ * later: the index builder filters unknown names out, and the embedder reads an
+ * empty string for them, so a typo would otherwise produce an index or a vector
+ * that quietly covers less than it claims.
+ *
+ * The message has to be enough to fix the file by itself, because this runs
+ * while the config is being read — every command reads the config, so an entity
+ * that will not parse is an entity nothing can open until the file is edited.
+ * The two ways to get here are a typo and naming a RELATION, which sits right
+ * next to the fields in the same entity and reads like one; both get told what
+ * this entity's fields actually are.
+ */
+function retrievalFields(
+  entityName: string,
+  block: string,
+  raw: unknown,
+  declaredColumns: string[],
+  relationNames: string[] = [],
+): string[] {
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "${block}.fields" — it must be a list of column names.`,
+    );
+  }
+  if (raw.length === 0) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an empty "${block}.fields" — list at least one column, or remove the key.`,
+    );
+  }
+  const fields: string[] = [];
+  for (const f of raw) {
+    if (typeof f !== 'string' || f.trim().length === 0) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has an invalid entry in "${block}.fields" — every entry must be a column name.`,
+      );
+    }
+    const name = f.trim();
+    if (!declaredColumns.includes(name)) {
+      const choices = declaredColumns.map((c) => `"${c}"`).join(', ');
+      throw new Error(
+        relationNames.includes(name)
+          ? `Lattice: entity "${entityName}" lists "${name}" in "${block}.fields", but "${name}" is ` +
+              `one of its relations, not one of its fields — a relation points at another entity, ` +
+              `there is no text here to index. Name a field of "${entityName}" (${choices}), or the ` +
+              `field the relation is keyed on.`
+          : `Lattice: entity "${entityName}" lists "${name}" in "${block}.fields", but "${entityName}" ` +
+              `has no field by that name. Its fields are: ${choices}.`,
+      );
+    }
+    if (fields.includes(name)) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has an invalid "${block}.fields" — "${name}" is listed twice.`,
+      );
+    }
+    fields.push(name);
+  }
+  return fields;
+}
+
+/** A positive whole number, or a loud error naming the key. */
+function positiveInteger(entityName: string, key: string, raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "${key}" — it must be a whole number greater than zero.`,
+    );
+  }
+  return raw;
+}
+
+/** Parse `fts:` — `true` for auto-detected fields, or an explicit field list. */
+function parseFtsSpec(
+  entityName: string,
+  raw: unknown,
+  declaredColumns: string[],
+  relationNames: string[],
+): FtsConfig | undefined {
+  if (raw === undefined || raw === null || raw === false) return undefined;
+  if (raw === true) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "fts" — use \`fts: true\` to index its text fields, or \`fts: { fields: [...] }\` to choose them.`,
+    );
+  }
+  const spec = raw as Record<string, unknown>;
+  if (spec.fields === undefined) return {};
+  return {
+    fields: retrievalFields(entityName, 'fts', spec.fields, declaredColumns, relationNames),
+  };
+}
+
+/** Parse `embeddings:` into a working embeddings config, endpoint and all. */
+function parseEmbeddingsSpec(
+  entityName: string,
+  raw: unknown,
+  declaredColumns: string[],
+  relationNames: string[],
+): EmbeddingsConfig | undefined {
+  if (raw === undefined || raw === null || raw === false) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "embeddings" — it must be an object naming the fields to embed and the endpoint that embeds them.`,
+    );
+  }
+  const spec = raw as Record<string, unknown>;
+
+  if (spec.apiKey !== undefined) {
+    throw new Error(
+      `Lattice: entity "${entityName}" puts an API key in "embeddings.apiKey". Config files are shared and versioned — name the environment variable holding the key with "apiKeyEnv" instead.`,
+    );
+  }
+
+  const fields = retrievalFields(
+    entityName,
+    'embeddings',
+    spec.fields,
+    declaredColumns,
+    relationNames,
+  );
+
+  if (typeof spec.url !== 'string' || spec.url.trim().length === 0) {
+    throw new Error(
+      `Lattice: entity "${entityName}" declares "embeddings" without a "url" — name the embeddings endpoint its text should be sent to.`,
+    );
+  }
+  const url = spec.url.trim();
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "embeddings.url" — ${JSON.stringify(url)} is not a URL.`,
+    );
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "embeddings.url" — it must be an http or https address (got ${parsedUrl.protocol.replace(':', '')}).`,
+    );
+  }
+
+  if (typeof spec.model !== 'string' || spec.model.trim().length === 0) {
+    throw new Error(
+      `Lattice: entity "${entityName}" declares "embeddings" without a "model" — name the embedding model to request.`,
+    );
+  }
+  const model = spec.model.trim();
+
+  let apiKeyEnv: string | undefined;
+  if (spec.apiKeyEnv !== undefined) {
+    if (typeof spec.apiKeyEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.apiKeyEnv)) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has an invalid "embeddings.apiKeyEnv" — it must be the NAME of an environment variable, not a key.`,
+      );
+    }
+    apiKeyEnv = spec.apiKeyEnv;
+  }
+
+  const timeoutMs =
+    spec.timeoutMs === undefined
+      ? undefined
+      : positiveInteger(entityName, 'embeddings.timeoutMs', spec.timeoutMs);
+  const maxScanChunks =
+    spec.maxScanChunks === undefined
+      ? undefined
+      : positiveInteger(entityName, 'embeddings.maxScanChunks', spec.maxScanChunks);
+
+  const chunker = parseChunkSpec(entityName, spec.chunk);
+  const index = parseVectorIndexSpec(entityName, spec.index);
+
+  const embed = createHttpEmbedder({
+    url,
+    model,
+    ...(apiKeyEnv !== undefined ? { apiKeyEnv } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  });
+
+  return {
+    fields,
+    embed,
+    // The model name doubles as the stored vector's model id, so a model change
+    // is detectable as staleness instead of silently mixing two vector spaces.
+    modelId: model,
+    ...(chunker !== undefined ? { chunker } : {}),
+    ...(maxScanChunks !== undefined ? { maxScanChunks } : {}),
+    ...(index !== undefined ? { index } : {}),
+  };
+}
+
+/** Parse `embeddings.chunk:` into a chunker. */
+function parseChunkSpec(entityName: string, raw: unknown): ChunkerFn | undefined {
+  if (raw === undefined || raw === null || raw === false) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "embeddings.chunk" — it must be an object like { maxChars: 1000, overlap: 100 }.`,
+    );
+  }
+  const spec = raw as Record<string, unknown>;
+  const opts: SemanticChunkerOptions = {};
+  if (spec.maxChars !== undefined) {
+    opts.maxChars = positiveInteger(entityName, 'embeddings.chunk.maxChars', spec.maxChars);
+  }
+  if (spec.overlap !== undefined) {
+    if (typeof spec.overlap !== 'number' || !Number.isInteger(spec.overlap) || spec.overlap < 0) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has an invalid "embeddings.chunk.overlap" — it must be a whole number of characters, zero or more.`,
+      );
+    }
+    opts.overlap = spec.overlap;
+  }
+  if (spec.minChars !== undefined) {
+    if (
+      typeof spec.minChars !== 'number' ||
+      !Number.isInteger(spec.minChars) ||
+      spec.minChars < 0
+    ) {
+      throw new Error(
+        `Lattice: entity "${entityName}" has an invalid "embeddings.chunk.minChars" — it must be a whole number of characters, zero or more.`,
+      );
+    }
+    opts.minChars = spec.minChars;
+  }
+  try {
+    // The chunker validates the combination (e.g. an overlap at least as large
+    // as the chunk would never advance); surface that at parse time.
+    return semanticChunker(opts);
+  } catch (e) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "embeddings.chunk" — ${(e as Error).message}`,
+    );
+  }
+}
+
+/** Parse `embeddings.index:` — native vector index build tuning. */
+function parseVectorIndexSpec(entityName: string, raw: unknown): VectorIndexOptions | undefined {
+  if (raw === undefined || raw === null || raw === false) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      `Lattice: entity "${entityName}" has an invalid "embeddings.index" — it must be an object like { m: 16, efConstruction: 64 }.`,
+    );
+  }
+  const spec = raw as Record<string, unknown>;
+  const out: VectorIndexOptions = {};
+  if (spec.m !== undefined) out.m = positiveInteger(entityName, 'embeddings.index.m', spec.m);
+  if (spec.efConstruction !== undefined) {
+    out.efConstruction = positiveInteger(
+      entityName,
+      'embeddings.index.efConstruction',
+      spec.efConstruction,
+    );
+  }
+  if (spec.quantization !== undefined) {
+    if (spec.quantization !== 'none' && spec.quantization !== 'halfvec') {
+      throw new Error(
+        `Lattice: entity "${entityName}" has an invalid "embeddings.index.quantization" — it must be "none" or "halfvec".`,
+      );
+    }
+    out.quantization = spec.quantization;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 // ---------------------------------------------------------------------------

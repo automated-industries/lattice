@@ -122,7 +122,19 @@ export async function openConfig(
   // catalog synthesis below if nothing was published. (Needs the encryption key to open
   // a short-lived peek connection.)
   if (/^postgres(ql)?:\/\//i.test(parsed.dbPath)) {
-    await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
+    const hydration = await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
+    if (hydration.outcome === 'unavailable') {
+      // Say so, once, in the server log. The browser open does NOT stop here: it
+      // still has the catalog synthesis below to fall back on, and it renders
+      // rather than reconciles, so an incomplete schema shows less — it does not
+      // remove anything. What must not happen is this passing unremarked, which
+      // is what made "the layout never arrived" indistinguishable from "this
+      // workspace has no layout".
+      console.warn(
+        `[lattice] could not read this shared workspace's published layout (${hydration.reason}) — ` +
+          `falling back to what the database itself describes.`,
+      );
+    }
   }
   const db = new Lattice({ config: configPath }, { encryptionKey });
   registerNativeEntities(db);

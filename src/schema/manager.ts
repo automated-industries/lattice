@@ -58,6 +58,25 @@ export type CompiledTableDef = Omit<TableDefinition, 'render' | 'outputFile'> & 
   _renderTemplateName?: BuiltinTemplateName;
 };
 
+/**
+ * The column a definition marks as the primary key inside its own SQL type —
+ * `{ sku: 'TEXT PRIMARY KEY' }` — or null when no column does.
+ *
+ * A definition can say "this column is the key" two ways: the explicit
+ * `primaryKey` field, or the column's own type text. Only the first was read, so
+ * a table keyed on anything other than `id` and written the second way was
+ * recorded as keyed on `id` — a column it does not have. Everything downstream
+ * then addressed its rows through a column that isn't there: the change log, the
+ * per-row ownership records, and the row-security expressions, the last of which
+ * fails outright with "column id does not exist".
+ */
+function inlinePrimaryKeyColumn(columns: Readonly<Record<string, string>>): string | null {
+  for (const [name, spec] of Object.entries(columns)) {
+    if (typeof spec === 'string' && /\bPRIMARY\s+KEY\b/i.test(spec)) return name;
+  }
+  return null;
+}
+
 export class SchemaManager {
   private readonly _tables = new Map<string, CompiledTableDef>();
   /** Normalised primary key columns per table (always an array). */
@@ -100,7 +119,9 @@ export class SchemaManager {
     }
 
     // Normalise primaryKey to string[] and store separately.
-    if (def.primaryKey === undefined || def.primaryKey === 'id') {
+    if (def.primaryKey === undefined) {
+      this._tablePK.set(table, [inlinePrimaryKeyColumn(def.columns) ?? 'id']);
+    } else if (def.primaryKey === 'id') {
       this._tablePK.set(table, ['id']);
     } else if (Array.isArray(def.primaryKey)) {
       if (def.primaryKey.length === 0) {

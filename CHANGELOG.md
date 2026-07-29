@@ -6,6 +6,161 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Search can be turned on from the config file.** Full-text and semantic search were
+  table settings you could only switch on from code, so anyone running Lattice from a
+  config file had them permanently off. Both are now part of the config: `fts:` opts a
+  table into the full-text index, and `embeddings:` names the fields to embed plus the
+  endpoint that embeds them. There is no default endpoint — embedding a field means
+  sending its contents somewhere, so you always write down where — and the key is named
+  by environment variable rather than written into a file you commit.
+
+- **Changing a workspace from a script, not just from the browser.** Adding, editing,
+  deleting and linking rows — plus undo, redo, and reversing an entire bulk change as one
+  action — could only be done through the browser client. They are now part of the package
+  itself, along with the schema editor (create, rename, delete or empty a table; add,
+  rename or drop a column; build or remove a link between tables), computed tables, the
+  preview that shows exactly what an edit would change before you commit it, and the
+  data-model planner. Each one records the same history entry a click does, so a scripted
+  change is as reversible as one made by hand — and none of them needs a server running.
+
+- **The command line takes the workspace name it just printed.** `workspace create <name>`
+  and `workspace use <name>` were the documented forms and neither worked: `create` insisted
+  on a `--name` flag and threw away the name you typed, and `use` compared what you typed
+  against the long identifier only, so the name shown one line earlier in `workspace list`
+  matched nothing. Both now work. A name is matched whatever its capitalisation, and one
+  shared by two workspaces is refused with both identifiers rather than quietly picking
+  one. The identifier is still accepted everywhere a name is, and is still what a script
+  should use, because it survives a rename.
+
+### Fixed
+
+- **Search from the command line no longer quietly ignores half of itself.** Because no
+  config file could turn embeddings on, `search` fell back to keyword matching alone, and
+  `reindex` could never build a vector index. Configure `embeddings:` and both work.
+- **`doctor` no longer passes a workspace it never checked.** With nothing configured for
+  search, it had nothing to inspect and reported a clean bill of health — so a build step
+  gating on it always passed. It now looks at what the database actually contains, and if
+  there is genuinely nothing to assess it says so and exits non-zero.
+
+- **A new table is protected wherever it was made, not only in the browser.** On a shared
+  workspace, a table created from a script, a command, or an import was born readable by
+  everyone: the per-person row permissions were applied only when the table came from the
+  browser's data-model editor, and were otherwise put right only if and when a workspace
+  owner happened to open the browser next. Protection is now applied when the table is
+  registered, which every way of making one goes through, so it no longer depends on which
+  client you used.
+
+- **Opening a workspace without the browser now sees all of it.** The file index, the
+  secret store, and the workspace's other built-in tables were set up only by the browser,
+  so opening a workspace from code or a command produced a partial view — and anything that
+  works through "every table in this workspace", including protecting a shared one, skipped
+  those tables without a word. They are now part of opening a workspace, whichever way you
+  open it. A workspace that defines its own version of one of these tables keeps it exactly
+  as defined.
+
+- **The command line no longer erases a shared workspace's rendered files.** If you belong
+  to someone else's workspace, your machine holds only a pointer to it until Lattice fills
+  in the shared layout. `render` did that first; `reconcile`, `status`, `watch`, `search`,
+  `doctor`, `index status`, and `reindex` did not — so those commands saw a workspace with
+  nothing in it, decided every folder they had previously written was obsolete, and deleted
+  the whole rendered tree. All of them now open a workspace the same way, so the files stay
+  put and search and doctor report on your real data instead of coming back empty.
+
+- **Choosing a workspace from code no longer lands somewhere the app never looks.** How a
+  running Lattice decides which workspace home to serve — the one you named, then the
+  environment setting, then the one in your home folder — was not something the package
+  let you ask, so the guide reached for the nearest thing that was: a lookup that searches
+  upward from the current directory. That answers a different question and frequently a
+  different answer, and nothing reported the difference — a script would register a
+  workspace in one place while the app it was automating read another. The resolver is now
+  exported, and the guide uses it.
+
+- **The member-invite example makes the check it promises.** The written flow says a newly
+  provisioned member is verified to hold no elevated rights before its credentials go to
+  anyone. The browser does exactly that, but the check itself was not part of the package,
+  so the code example beside that promise could not make it. It is exported now and the
+  example runs it.
+
+- **`--help` lists every option the commands accept.** `--json` was honoured by `search`,
+  `doctor` and `index status` while appearing in the help only as part of one command's
+  one-line summary, and neither `search` nor `doctor` had an options section at all — so
+  the machine-readable output existed and could not be discovered. Every flag the command
+  line accepts is now documented next to the command that takes it, and a test keeps it
+  that way.
+
+- **The shared-workspace guide describes what actually happens when one opens.** It said
+  the reconciliation pass runs "when any member opens a cloud". It runs on the owner's
+  browser open only: a member has no rights to reconcile anything and skips it, and opening
+  from code or the command line does not run it at all. The guide now says so, and names
+  the one call that does the same work from a script.
+
+- **A command and the app no longer take turns deleting each other's files.** Opening a
+  workspace from code gives it the built-in tables and the folder-per-table layout; the
+  commands did neither, so `reconcile` and `watch --cleanup` looked at what the app had
+  just written, did not recognise it, and removed it — then the next open wrote it back,
+  indefinitely, with nothing reported at either step. There is now one definition of what
+  an opened workspace contains and every way in uses it. As a backstop, a cleanup driven
+  by a workspace with no tables at all is refused and reported rather than performed: a
+  layout that never loaded cannot have been emptied.
+
+- **A shared workspace whose layout cannot be read stops instead of looking empty.** If
+  the published layout could not be fetched — no access to it, a connection that is down —
+  the failure was logged and the command carried on with a workspace it knew nothing about,
+  which reads as "everything was deleted". Commands now stop and say what failed. The app
+  still opens, reports it, and falls back to describing the database from its own catalog,
+  because it renders rather than reconciles.
+
+- **A shared workspace's layout no longer carries someone else's endpoint or key
+  variable.** The layout an owner publishes is copied into every other person's config and
+  opened with their authority on their machine, and it was being published whole — including
+  an `embeddings:` block, which names an address to send row text to and an environment
+  variable to send as the credential for it. One person's choice of endpoint would have made
+  everyone else's machine post their rows there with whatever their named variable held.
+  Only shape is published now; where a workspace computes embeddings, and with whose key,
+  stays each person's own local declaration.
+
+- **An embeddings endpoint that cannot be reached says so.** Embedding a row happens after
+  the write returns, so its failures were handed to whatever was listening for them — and
+  nothing listens by default. A wrong address or an unset key variable therefore stored no
+  vectors, printed nothing, and exited zero, leaving search quietly keyword-only and no way
+  to tell. Background failures now always reach somebody: a registered listener if there is
+  one, stderr if there is not.
+
+- **A view no longer breaks an import partway through.** Rebuilding a view registers it the
+  same way a table is registered, and on a shared workspace that tried to give it per-person
+  row permissions — which a view cannot have, since it stores no rows of its own and the
+  tables underneath it are already protected. The database refused, and the import failed
+  after it had already written its rows. Protection now applies to what actually holds rows.
+
+- **A table keyed on something other than `id` is protected on that key.** A table can say
+  which column is its key two ways, and only one of them was read — so a table whose key was
+  declared in the column itself was treated as keyed on `id`, a column it does not have, and
+  everything built from that key named a column that was not there. Both forms are read now.
+
+- **A table that could not be protected no longer goes quiet on the second try.** When
+  applying per-person row permissions failed, the table stayed registered, so the next
+  identical attempt returned success over a table that was still readable by everyone. The
+  failure now stays loud on every attempt until it actually succeeds.
+
+- **A workspace is unlocked with the key belonging to the place it lives.** Opening a
+  workspace resolves this machine's encryption key, and it was picking that up from the
+  surroundings rather than from the workspace's own home — so opening the same home by name
+  and by environment setting could land on two different keys, and only whichever one wrote
+  a workspace's encrypted values could read them back.
+
+- **Naming a field that isn't one says which fields there are.** `fts:` and `embeddings:`
+  are read while the config is read, so an entity that will not parse is an entity nothing
+  can open until the file is edited by hand — and "not one of its fields" was not enough to
+  make that edit from. The message now lists the entity's fields, and says specifically when
+  the name given is one of its relations, which sit right beside the fields and read like
+  them.
+
+---
+
 ## [5.6.0] — 2026-07-29
 
 The theme of this release: Lattice stops asking you to decide things it can undo. Almost

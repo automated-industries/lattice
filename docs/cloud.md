@@ -242,7 +242,17 @@ now lives canonically in the DB and the mask view regenerates from it on change.
 
 ## Opening the cloud & the converge
 
-When any member opens a cloud, Lattice runs a **converge** pass: it reads the current Postgres schema against the workspace's registered entities and reconciles them — granting table/column privileges to the member group, rebuilding masking views, installing any missing RLS machinery. Since v3.4, the converge is **per-table fault-isolated**: if the connecting role cannot `ALTER` or `GRANT` a table (most often because it was created by a different Postgres role), that one table is skipped with an actionable reason instead of failing the whole workspace and degrading all objects to "Failed to fetch". The skip is reported in `GET /api/dbconfig` as `convergeWarnings`, for example: `"owned by role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO Y`"`.
+When the **owner** opens a cloud in the GUI (a browser tab or the desktop app), Lattice runs a **converge** pass: it reads the current Postgres schema against the workspace's registered entities and reconciles them — granting table/column privileges to the member group, rebuilding masking views, installing any missing RLS machinery. It is what carries objects added in a later release onto an already-stamped cloud, so a member joining afterwards finds it fully secured and granted.
+
+It runs on the **owner's** open only, and only through the GUI:
+
+- A **member** open skips it. A scoped `lm_*` role holds no `ALTER` or `GRANT` rights, so there is nothing it could converge; it opens against whatever state the owner last converged to.
+- `Lattice.openWorkspace()` and the CLI commands do **not** run it. They open the database; they do not reconcile its cloud objects. The headless equivalent is `secureCloud(db)` on an owner connection — the same idempotent bootstrap the GUI converge performs, callable from a script or a scheduled job. It is a no-op on SQLite.
+- It runs in the **background**, off the open's critical path: the owner is `BYPASSRLS`, so nothing the owner does waits on it.
+
+The converge is **per-table fault-isolated**: if the connecting role cannot `ALTER` or `GRANT` a table (most often because it was created by a different Postgres role), that one table is skipped with an actionable reason instead of failing the whole workspace and degrading all objects to "Failed to fetch". The skip is reported in `GET /api/dbconfig` as `convergeWarnings`, for example: `"owned by role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO Y`"`.
+
+A table created **after** the cloud was secured does not wait for a converge: every path that creates one — the GUI, an import, the planner, a script calling `defineLate` — secures it as it is created, so it is never briefly readable by every member. The converge remains the repair pass for anything created before that was true, or by a different role.
 
 `POST /api/workspaces/reload` re-reads the config and re-registers entities in place without restarting the GUI, so a table added out-of-band surfaces immediately.
 
@@ -392,7 +402,13 @@ only what that member could already see, and the owner can revoke it.
 The same thing from the library:
 
 ```ts
-import { Lattice, memberRoleName, generateMemberPassword, provisionMemberRole } from 'latticesql';
+import {
+  Lattice,
+  memberRoleName,
+  generateMemberPassword,
+  provisionMemberRole,
+  assertScopedMemberRole,
+} from 'latticesql';
 
 // owner connection — must hold CREATEROLE
 const db = new Lattice('postgres://alice:secret@cloud.example.com:5432/app');
@@ -403,8 +419,17 @@ const password = generateMemberPassword(); // 48 hex chars
 await provisionMemberRole(db, role, password);
 // Member is created NOSUPERUSER NOCREATEDB NOCREATEROLE and added to lattice_members.
 
+// Same assertion the invite flow makes before it mints a token: refuse to hand out
+// a role that is superuser / CREATEROLE / BYPASSRLS, or the owner role itself.
+// Throws — never downgrades the role and continues.
+await assertScopedMemberRole(db, role);
+
 // Hand off:  host / port / dbname  +  user=role  +  password
 ```
+
+Run that assertion whether you provisioned the role here or adopted one created out
+of band (`grantMemberAccess`): what makes a member's credentials safe to send is the
+role being scoped and RLS-confined, and only the check proves it still is.
 
 Removing a member is the inverse — `revokeMemberRole(db, role)` drops the role.
 (Rows the departed member owned stay in their tables but become unreachable until
@@ -429,6 +454,30 @@ and works against the rows RLS lets it see. Every query, insert, update, and del
 runs as that role, so RLS scopes the member to their own rows plus whatever has been
 shared with them. Nothing about being a member requires elevated privileges or a
 side channel; the database does all the gatekeeping.
+
+### The shared layout
+
+A member's local config is generated when they join, and its `entities:` block is
+empty — the database has the rows, but nothing on the member's machine yet says how
+those rows are shaped or rendered. So the owner publishes that layout into the
+cloud (a members-readable singleton), and a member's next open reads it into their
+own config file, keeping their own `db:` line and comments. Both surfaces do it, so
+a member's `Context/` tree matches the owner's whether they opened from the browser
+or from a command.
+
+What travels is **shape**: the entity fields, and the render/context layout. What
+does not travel is anything that would act off the receiving machine on the
+publishing person's say-so — specifically `embeddings:`, which names an address to
+send row text to and an environment variable to send as the credential for it. That
+stays a local declaration, made by each person in their own config.
+
+Reading the layout can fail — a role without access to the shared table, a
+connection that is down — and that is **not** the same as a workspace that has no
+layout yet. A command stops rather than opening a workspace it does not know the
+shape of: an open with no entities reports nothing, and a `lattice reconcile` on one
+would treat every already-rendered context as removed. The browser reports it and
+falls back to describing the database from its own catalog, because it renders
+rather than reconciles.
 
 ---
 

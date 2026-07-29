@@ -93,7 +93,8 @@ import {
   resolveWorkspacePaths,
   type WorkspaceRecord,
 } from './framework/workspace.js';
-import { deriveCanonicalContexts } from './framework/canonical-context.js';
+import { applyWorkspaceSchema } from './framework/workspace-schema.js';
+import { getOrCreateMasterKey } from './framework/user-config.js';
 import { EncryptionLayer } from './security/encryption-layer.js';
 import {
   ensureEmbeddingsTable,
@@ -341,6 +342,32 @@ export class Lattice {
     entriesProcessed: number;
   }>[] = [];
   private readonly _errorHandlers: EventHandler<Error>[] = [];
+
+  /**
+   * Report a BACKGROUND failure — one raised by work the caller has already
+   * stopped waiting for (embedding a written row, an automatic render, a write
+   * hook). Such a failure has no caller left to throw into, so it is reported
+   * instead of raised.
+   *
+   * Reported to the registered listeners, and — when there are none — to stderr.
+   * That fallback is the whole point: listeners are registered by a host that
+   * wants to route failures somewhere of its own, and nothing registers one by
+   * default, so "tell the listeners" on its own meant "tell nobody". An
+   * embeddings endpoint that could not be reached then stored no vectors, wrote
+   * no message, exited zero, and left every later search quietly missing the
+   * semantic half of its results.
+   *
+   * @param reported pass true when the caller has ALREADY surfaced this failure
+   *        through a channel of its own, so it is not printed twice.
+   */
+  private _emitError(err: unknown, reported = false): void {
+    const e = err instanceof Error ? err : new Error(String(err));
+    for (const h of this._errorHandlers) h(e);
+    if (this._errorHandlers.length === 0 && !reported) {
+      console.error(`[lattice] ${e.message}`);
+    }
+  }
+
   private readonly _reverseSeedHandlers: EventHandler<{
     table: string;
     rowCount: number;
@@ -486,9 +513,25 @@ export class Lattice {
    * searching upward from the cwd, which would open whichever root happened to
    * sit above the process), looks up the active or named workspace, applies the
    * canonical DB-aligned `Context/` layout for any table lacking an explicit
-   * entity context, runs `init()`, and — by default — enables auto-render and
-   * renders once so the `Context/` tree exists immediately (no "run lattice
-   * render" step). The returned Lattice is initialized and ready to use.
+   * entity context, registers the framework's own tables (the file index, the
+   * secret store, and the rest), runs `init()`, and — by default — enables
+   * auto-render and renders once so the `Context/` tree exists immediately (no
+   * "run lattice render" step). The returned Lattice is initialized and ready to
+   * use.
+   *
+   * The framework tables are registered HERE, not only by the browser, because
+   * every "do this to each table in the workspace" pass reads the registered
+   * list — and securing a shared workspace is one of them. Registering them in
+   * one client only meant a workspace opened any other way was secured against a
+   * list that did not include the file index or the secret store, and those two
+   * were skipped without a word. A workspace that declares its own version of
+   * one of these tables keeps it exactly as declared; the framework never
+   * re-registers over a declaration.
+   *
+   * Those tables store some values encrypted, so opening a workspace resolves
+   * this machine's key when the caller did not supply one — the same key the
+   * browser and the commands use, so all three read the same workspace the same
+   * way rather than each seeing a different half of it.
    */
   static async openWorkspace(
     opts: {
@@ -508,13 +551,16 @@ export class Lattice {
       );
     }
     const paths = resolveWorkspacePaths(root, ws);
-    const db = new Lattice({ config: paths.configPath }, opts.options ?? {});
-    // Apply the canonical, DB-aligned Context/ layout for tables without one.
+    const options: LatticeOptions = { ...opts.options };
+    // Key the workspace from the root it actually lives under, not from whichever
+    // root the surrounding environment happens to name. Otherwise opening the same
+    // root by argument and by environment can resolve two different keys on one
+    // machine, and whichever one wrote the encrypted values is the only one that
+    // can read them back.
+    options.encryptionKey ??= getOrCreateMasterKey(root);
+    const db = new Lattice({ config: paths.configPath }, options);
     const parsed = parseConfigFile(paths.configPath);
-    const existing = db.entityContexts();
-    for (const { table, definition } of deriveCanonicalContexts(parsed.tables)) {
-      if (!existing.has(table)) db.defineEntityContext(table, definition);
-    }
+    applyWorkspaceSchema(db, parsed.tables);
     await db.init();
     if (opts.autoRender !== false) {
       db.enableAutoRender(paths.contextDir);
@@ -562,6 +608,14 @@ export class Lattice {
    * re-registration). Useful for callers that may bootstrap their
    * internal tables on every session start.
    *
+   * On a shared workspace, the new table is also SECURED here — per-row
+   * ownership and the member read path — because this is the one call every
+   * table-creating path funnels through. Doing it anywhere else means it depends
+   * on which client made the table, and a table made from a script or a command
+   * was then born readable by everyone. See `cloud/secure-runtime.ts` for what
+   * that involves and when it correctly does nothing. Imported at the point of
+   * use so a local database never loads the cloud layer at all.
+   *
    * Throws if called before `init()` (use `define()` instead).
    */
   async defineLate(table: string, def: TableDefinition): Promise<this> {
@@ -580,6 +634,21 @@ export class Lattice {
     this._columnCache.set(table, new Set(cols));
     if (def.encrypted) {
       await this._encryption.registerColumns(table, def.encrypted);
+    }
+    if (this.getDialect() === 'postgres') {
+      const { secureRuntimeTable } = await import('./cloud/secure-runtime.js');
+      try {
+        await secureRuntimeTable(this, table, this.getPrimaryKey(table));
+      } catch (e) {
+        // At this point the table exists and is registered, but is NOT protected.
+        // Leaving the registration in place would make the very next identical
+        // call return early — reporting success — and the table would stay
+        // readable by everyone for good, silently. Dropping the registration
+        // keeps the failure loud on every attempt, and a retry re-runs the whole
+        // path (the DDL above is idempotent, so nothing is lost by repeating it).
+        this.unregisterTable(table);
+        throw e;
+      }
     }
     return this;
   }
@@ -2732,7 +2801,7 @@ export class Lattice {
         for (const h of this._renderHandlers) h(r);
       },
       emitError: (e) => {
-        for (const h of this._errorHandlers) h(e);
+        this._emitError(e);
       },
       isInitialized: () => this._initialized,
       // Drain manual file edits into the DB (changelog-versioned, marked
@@ -3692,7 +3761,8 @@ export class Lattice {
       },
       onError: (err) => {
         opts.onError?.(err);
-        for (const h of this._errorHandlers) h(err);
+        // The caller's own onError has already reported this one; don't say it twice.
+        this._emitError(err, opts.onError !== undefined);
       },
     });
     return Promise.resolve(stop);
@@ -3886,9 +3956,9 @@ export class Lattice {
         if (changedColumns) ctx.changedColumns = changedColumns;
         await hook.handler(ctx);
       } catch (err) {
-        // Hook errors must not crash the caller — routed through error
-        // handlers like every other lattice background failure.
-        for (const h of this._errorHandlers) h(err instanceof Error ? err : new Error(String(err)));
+        // Hook errors must not crash the caller — reported like every other
+        // lattice background failure.
+        this._emitError(err);
       }
     }
     // Every mutation schedules an auto-render when one is enabled (workspaces
@@ -3944,9 +4014,11 @@ export class Lattice {
    * Update or remove the embedding for a row.
    * No-op if the table doesn't have `embeddings` configured.
    *
-   * Fire-and-forget: errors are routed through the error handlers, never
-   * thrown. The caller does not await — embedding compute is slow and
-   * shouldn't block the write completion.
+   * Fire-and-forget: the caller does not await, because embedding compute is
+   * slow and must not hold up the write. A failure therefore cannot be thrown at
+   * the caller — it is REPORTED instead, and always reaches somebody: the
+   * registered listeners, or stderr when there are none. An endpoint that cannot
+   * be reached must never look like a successful write with no vector.
    */
   private _syncEmbedding(
     table: string,
@@ -3958,9 +4030,7 @@ export class Lattice {
     if (!def?.embeddings) return;
 
     const handle = (err: unknown): void => {
-      for (const h of this._errorHandlers) {
-        h(err instanceof Error ? err : new Error(String(err)));
-      }
+      this._emitError(err);
     };
 
     // After the store write resolves, mirror the change into the native vector

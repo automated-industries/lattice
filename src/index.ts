@@ -307,6 +307,11 @@ export {
   findLatticeRoot,
   resolveLatticeRoot,
   ensureLatticeRoot,
+  // Which root a SESSION serves — the named root, then LATTICE_ROOT, then the
+  // home root, never an upward search. This is what the CLI, the GUI and
+  // `Lattice.openWorkspace` resolve with, so an embedder that wants to register
+  // a workspace the app will actually see must resolve it the same way.
+  resolveSessionRoot,
   rootConfigDir,
   workspacesDir,
   registryPath,
@@ -319,6 +324,7 @@ export {
   CONFIG_SUBDIR,
   WORKSPACES_SUBDIR,
 } from './framework/lattice-root.js';
+export type { SessionRoot, SessionRootSource } from './framework/lattice-root.js';
 export {
   addWorkspace,
   listWorkspaces,
@@ -340,6 +346,12 @@ export type {
   AddWorkspaceOptions,
 } from './framework/workspace.js';
 export { deriveCanonicalContexts } from './framework/canonical-context.js';
+// The whole schema an opened workspace has — the canonical layout plus the
+// framework's own tables — in one call. Anything that opens a workspace by
+// constructing a Lattice directly (rather than through `openWorkspace`) needs
+// this to see the SAME workspace the library and the browser see; a smaller
+// schema does not merely render less, it reconciles the difference away.
+export { applyWorkspaceSchema } from './framework/workspace-schema.js';
 export { importLegacyUserConfig } from './framework/migrate-to-root.js';
 export type { MigrateResult } from './framework/migrate-to-root.js';
 
@@ -406,6 +418,11 @@ export type {
 // v4.1 — text chunking for higher-precision, lower-token embedding.
 export { semanticChunker, chunkText } from './search/chunking.js';
 export type { TextChunk, ChunkerFn, SemanticChunkerOptions } from './search/chunking.js';
+
+// An embedding function built from an endpoint address instead of code — what a
+// config file declares, and usable directly for any endpoint-backed model.
+export { createHttpEmbedder } from './search/http-embedder.js';
+export type { HttpEmbedderOptions } from './search/http-embedder.js';
 
 // v4.1 — chunk-aware embedding store + incremental refresh + dim-mismatch guard.
 export {
@@ -515,6 +532,9 @@ export {
   grantMemberAccess,
   generateMemberPassword,
   memberRoleName,
+  // Refuses a role that is superuser / CREATEROLE / BYPASSRLS / the owner
+  // itself. Run it before handing a provisioned role's credentials to anyone.
+  assertScopedMemberRole,
   setRowVisibility,
 } from './cloud/members.js';
 export { discoverCloudTables } from './cloud/discover.js';
@@ -622,6 +642,190 @@ export type {
 // Embed the GUI server from a library consumer (no CLI shell-out needed).
 export { startGuiServer } from './gui/server.js';
 export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
+
+// ── The mutating surface, without a browser ────────────────────────────────
+//
+// Everything below is the capability layer the browser client drives: row
+// writes, undo/redo, schema edits, computed tables, and the data-model planner.
+// The HTTP routes are ONE caller of these functions, never their owner — none
+// of the modules re-exported here loads Node's HTTP server, so a program can
+// automate a workspace end to end without a server listening anywhere. Exported
+// so that anything the app can do is also doable from a script.
+
+// A live workspace handle: the DB, its activity feed, the registered/computed
+// table sets, and the render state. `openConfig` builds a fully-wired one from a
+// config on disk (the same call the GUI makes); `disposeActive` tears it down.
+export { openConfig, disposeActive } from './gui/lifecycle.js';
+export type { ActiveDb, RenderStatusSnapshot } from './gui/active-db.js';
+
+// The in-process activity feed every audited mutation publishes to. A caller
+// constructs one for its `MutationCtx`; subscribe to watch changes land.
+export { FeedBus } from './gui/feed.js';
+export type { FeedEvent, FeedEventInput, FeedHandler, FeedOp, FeedSource } from './gui/feed.js';
+
+// Row CRUD + linking + the undo/redo stack. Every one of these appends the same
+// audit entry and publishes the same feed event as a click in the browser, so
+// scripted changes are reversible from the version history exactly like manual
+// ones. `undoGroup` reverses every write sharing one `opGroup` as a single
+// all-or-nothing action.
+export {
+  createRow,
+  updateRow,
+  deleteRow,
+  linkRows,
+  unlinkRows,
+  undoLast,
+  redoLast,
+  revertEntry,
+  undoGroup,
+  parseAudit,
+  GROUP_UNDO_MAX_ENTRIES,
+  UNLINK_UNDO_MAX_EDGES,
+} from './gui/mutations.js';
+export type {
+  MutationCtx,
+  AuditOp,
+  AuditEntry,
+  RevertResult,
+  GroupUndoResult,
+  GroupUndoConflict,
+} from './gui/mutations.js';
+
+// Show what a write WOULD change before making it: resolve a bulk filter to the
+// rows it selects (bounded), diff the proposed values against what is stored,
+// and mask the fields the caller is not allowed to see.
+export {
+  previewRowChanges,
+  bulkSelection,
+  parseBulkFilters,
+  rowFieldDeltas,
+  maskPreviewFields,
+  PREVIEW_DEFAULT_LIMIT,
+} from './gui/change-preview.js';
+export type {
+  ChangePreview,
+  ChangePreviewOptions,
+  RowChangePreview,
+  FieldDelta,
+  BulkSelection,
+  MaskedFieldDelta,
+  MaskedRowPreview,
+  PreviewField,
+} from './gui/change-preview.js';
+
+// Schema editing: create / rename / delete / purge a table, add / rename / drop
+// a column, and create or remove the link tables that express relationships.
+// Each goes through the audited primitives, so a schema change is as reversible
+// as a row edit; the rename helpers carry column policy and cloud access rules
+// across with the name.
+export {
+  createUserEntity,
+  renameUserEntity,
+  softDeleteUserEntity,
+  aiDeleteEntity,
+  purgeUserEntity,
+  addUserColumn,
+  renameUserColumn,
+  dropColumnCarryingPolicy,
+  renameTablesCarryingPolicy,
+  renameColumnsCarryingPolicy,
+  createUserRelation,
+  createUserJunction,
+  createFileJunction,
+  materializeJunction,
+  inboundLinksTo,
+  describeInboundLinks,
+  removeInboundLinks,
+  setTableRole,
+  readTableRoles,
+  ensureRoleColumns,
+  setTableDefinition,
+  applyShapeOp,
+  normalizedEntityName,
+  physicalTableExists,
+  physicalColumnExists,
+  RenameRefused,
+  AI_DELETE_ROW_CAP,
+} from './gui/schema-ops.js';
+export type {
+  UserJunction,
+  DeleteResolution,
+  DeleteEntityOutcome,
+  InboundLink,
+  StoredTableRole,
+  LinkTableRename,
+  RenameCascade,
+  RenameOutcome,
+  TableNamePolicyMove,
+  ColumnRenames,
+} from './gui/schema-ops.js';
+
+// Computed tables — live, read-only SQL projections. Create / update / delete
+// one, preview its output before committing, refresh its model-filled fields,
+// and list what is registered.
+export {
+  createComputedTable,
+  updateComputedTable,
+  deleteComputedTable,
+  previewComputedTable,
+  refreshComputedTable,
+  listComputedTables,
+  reachableFields,
+  assertNotComputedSource,
+  applyComputedSchemaOp,
+  isComputedSchemaOp,
+} from './gui/computed-ops.js';
+export type {
+  ComputedPreview,
+  ComputedRefreshProgress,
+  ComputedTableInfo,
+  ReachableField,
+} from './gui/computed-ops.js';
+
+// Data-model planner: run a plan for a workspace (applying the reversible
+// automatic fixes and returning the rest as proposals), apply a proposal, or
+// dismiss one durably so it is never re-surfaced. Deterministic — no model
+// provider is involved.
+export { applyPlanOp, runAutoTier } from './gui/planner/apply.js';
+export type { ApplyDeps } from './gui/planner/apply.js';
+export {
+  ensurePlan,
+  previewPlan,
+  applyDepsFor,
+  invalidatePlanCache,
+  MAX_PLANNER_TABLES,
+} from './gui/planner/run.js';
+export type {
+  EnsurePlanOptions,
+  PlannerWorkspace,
+  PlanPreview,
+  PlanPreviewItem,
+} from './gui/planner/run.js';
+export { recordDismissal, loadDismissed, PLAN_STATE_TABLE } from './gui/planner/plan-state.js';
+export {
+  applyRenameTable,
+  applyExtractDimension,
+  applyRetypeColumn,
+} from './gui/planner/appliers.js';
+export type { ApplyOutcome } from './gui/planner/appliers.js';
+export type {
+  DataModelPlan,
+  PlanOp,
+  PlanOpOf,
+  PlanOpKind,
+  ShapeOp,
+  ShapeOpKind,
+  AnyPlanOp,
+  AnyPlanOpKind,
+  AppliedOp,
+  PlanClass,
+  PlanTier,
+  ModelProfile,
+  TableProfile,
+  TableTier,
+  ColumnStat,
+  NormalizedRelation,
+} from './gui/planner/types.js';
 
 // Durable file-backed SourceKeyStore for production crypto-shred deployments.
 // The default InMemorySourceKeyStore is process-local — restart implicitly

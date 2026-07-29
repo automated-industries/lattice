@@ -4,7 +4,6 @@ import { execSync } from 'node:child_process';
 import { parse } from 'yaml';
 import type { LatticeConfig } from './config/types.js';
 import { generateAll } from './codegen/generate.js';
-import { parseConfigFile } from './config/parser.js';
 import { Lattice } from './lattice.js';
 import { checkForUpdate } from './update-check.js';
 import { detectInstallContext } from './update-context.js';
@@ -26,11 +25,11 @@ import {
   getActiveWorkspace,
   listWorkspaces,
   resolveWorkspacePaths,
-  setActiveWorkspace,
 } from './framework/workspace.js';
 import { importLegacyUserConfig } from './framework/migrate-to-root.js';
-import { analyticsEnabled, getOrCreateMasterKey } from './framework/user-config.js';
-import { hydrateMemberConfigFromCloud } from './cloud/shared-schema.js';
+import { analyticsEnabled } from './framework/user-config.js';
+import { openConfiguredLattice } from './cli-open.js';
+import { runWorkspaceCommand } from './cli-workspace.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -276,7 +275,7 @@ function printHelp(): void {
       '',
       'Commands:',
       '  init        Create a .lattice root + a default workspace (auto-renders context)',
-      '  workspace   Manage workspaces (list | create --name <n> | use <id>)',
+      '  workspace   Manage workspaces (list | create <name> | use <name-or-id>)',
       '  generate    Generate TypeScript types, SQL migration, and scaffold files',
       '  render      One-shot context generation (writes entity context directories)',
       '  reconcile   Render + cleanup orphaned entity directories and files',
@@ -332,14 +331,37 @@ function printHelp(): void {
       '  --yes, -y              Accept the exposure disclosure without being asked',
       '                         (scripted use; the disclosure is still printed)',
       '',
+      'Options (doctor):',
+      '  Exits non-zero when the report is not healthy — usable as a CI / deploy gate.',
+      '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
+      '  --fix                  Rebuild every stale native vector index, then re-check',
+      '  --json                 Emit the health report as JSON instead of formatted text',
+      '',
+      'Options (search):',
+      '  lattice search "<query>" --table <table>',
+      '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
+      '  --table <table>        Table to search (required)',
+      '  --topk <n>             Number of results to return (default: 10)',
+      '  --explain              Print the per-result score breakdown (vector / fts / rrf)',
+      '  --json                 Emit the results as JSON instead of formatted text',
+      '',
+      'Options (reindex / index status):',
+      '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
+      '  --json                 Emit the index status as JSON (index status)',
+      '',
       'Options (init / workspace / gui):',
       '  --root <dir>           The .lattice root to use (default: ~/.lattice). A root is',
       '                         never picked up by searching upward from the current dir',
-      '  --name <display>       Workspace display name (init default workspace / workspace create)',
+      '  --name <display>       Workspace display name (init default workspace / workspace',
+      '                         create — `workspace create <name>` does the same thing)',
       '',
       'Options (global):',
       '  --help, -h             Show this help message',
       '  --version, -v          Print the version number',
+      '',
+      'Aliases:',
+      '  --output-dir <dir>     Same as --output',
+      '  --assume-yes           Same as --yes',
     ].join('\n'),
   );
 }
@@ -453,29 +475,10 @@ function runGenerate(args: ParsedArgs): void {
 
 async function runRender(args: ParsedArgs): Promise<void> {
   const outputDir = resolve(args.output);
-  const configPath = resolve(args.config);
 
-  let parsed;
+  let db: Lattice | undefined;
   try {
-    parsed = parseConfigFile(configPath);
-  } catch (e) {
-    console.error(`Error: ${(e as Error).message}`);
-    process.exit(1);
-  }
-
-  // Native entities (`secrets`, `files`) carry encrypted columns, so a render that
-  // touches them needs the master key — resolve it once (env var or
-  // `~/.lattice/master.key`), the same source the GUI uses.
-  const encryptionKey = getOrCreateMasterKey();
-  // Cloud member: a scoped member's local config has no entities, so its render
-  // would produce an empty context tree. Hydrate the owner-published entity/render
-  // layout from the cloud BEFORE constructing the Lattice, keeping the member's own
-  // `db:` credential. No-op for a non-postgres config or when nothing was published.
-  await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
-
-  const db = new Lattice({ config: configPath }, { encryptionKey });
-
-  try {
+    db = await openConfiguredLattice(args);
     await db.init();
     const start = Date.now();
     const result = await db.render(outputDir);
@@ -489,13 +492,14 @@ async function runRender(args: ParsedArgs): Promise<void> {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
 async function runDoctor(args: ParsedArgs): Promise<void> {
-  const db = new Lattice({ config: resolve(args.config) });
+  let db: Lattice | undefined;
   try {
+    db = await openConfiguredLattice(args);
     await db.init();
     let report = await db.diagnoseRetrieval();
     if (args.fix) {
@@ -527,7 +531,7 @@ async function runDoctor(args: ParsedArgs): Promise<void> {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -536,8 +540,9 @@ async function runReindex(args: ParsedArgs): Promise<void> {
     console.error('Usage: lattice reindex <table>');
     process.exit(1);
   }
-  const db = new Lattice({ config: resolve(args.config) });
+  let db: Lattice | undefined;
   try {
+    db = await openConfiguredLattice(args);
     await db.init();
     const n = await db.buildVectorIndex(args.table);
     console.log(
@@ -549,7 +554,7 @@ async function runReindex(args: ParsedArgs): Promise<void> {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -559,8 +564,9 @@ async function runIndex(args: ParsedArgs): Promise<void> {
     console.error(`Unknown index subcommand: ${sub} (expected: status)`);
     process.exit(1);
   }
-  const db = new Lattice({ config: resolve(args.config) });
+  let db: Lattice | undefined;
   try {
+    db = await openConfiguredLattice(args);
     await db.init();
     const report = await db.diagnoseRetrieval();
     const { getVectorIndexMeta } = await import('./search/vector-index.js');
@@ -614,7 +620,7 @@ async function runIndex(args: ParsedArgs): Promise<void> {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -627,8 +633,9 @@ async function runSearch(args: ParsedArgs): Promise<void> {
     console.error('Error: --table <table> is required for search');
     process.exit(1);
   }
-  const db = new Lattice({ config: resolve(args.config) });
+  let db: Lattice | undefined;
   try {
+    db = await openConfiguredLattice(args);
     await db.init();
     const results = await db.hybridSearch(args.table, args.query, { topK: args.topK ?? 10 });
     if (args.json) {
@@ -661,16 +668,16 @@ async function runSearch(args: ParsedArgs): Promise<void> {
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
 async function runReconcile(args: ParsedArgs, isDryRun: boolean): Promise<void> {
   const outputDir = resolve(args.output);
 
-  const db = new Lattice({ config: resolve(args.config) });
-
+  let db: Lattice | undefined;
   try {
+    db = await openConfiguredLattice(args);
     await db.init();
     const start = Date.now();
     const reconcileOpts: import('./types.js').ReconcileOptions = {
@@ -721,7 +728,7 @@ async function runReconcile(args: ParsedArgs, isDryRun: boolean): Promise<void> 
     console.error(`Error: ${(e as Error).message}`);
     process.exit(1);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -736,9 +743,9 @@ function formatTimestamp(): string {
 async function runWatch(args: ParsedArgs): Promise<void> {
   const outputDir = resolve(args.output);
 
-  const db = new Lattice({ config: resolve(args.config) });
-
+  let db: Lattice;
   try {
+    db = await openConfiguredLattice(args);
     await db.init();
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
@@ -1039,46 +1046,17 @@ async function runWorkspace(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  const sub = args.subcommand ?? 'list';
-  switch (sub) {
-    case 'list': {
-      const all = listWorkspaces(root);
-      if (all.length === 0) {
-        console.log('No workspaces. Run `lattice workspace create --name <display name>`.');
-        return;
-      }
-      const active = getActiveWorkspace(root);
-      for (const w of all) {
-        const mark = w.id === active?.id ? '*' : ' ';
-        console.log(`${mark} ${w.displayName}  [${w.kind}]  ${w.dir}  ${w.id}`);
-      }
-      return;
-    }
-    case 'create': {
-      if (!args.displayName) {
-        console.error('Usage: lattice workspace create --name <display name>');
-        process.exitCode = 1;
-        return;
-      }
-      const ws = addWorkspace(root, { displayName: args.displayName });
-      const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
-      db.close();
-      console.log(`Created workspace "${ws.displayName}" (${ws.dir})`);
-      return;
-    }
-    case 'use': {
-      if (!args.action) {
-        console.error('Usage: lattice workspace use <id>');
-        process.exitCode = 1;
-        return;
-      }
-      setActiveWorkspace(root, args.action);
-      console.log(`Active workspace set to ${args.action}`);
-      return;
-    }
-    default:
-      console.error(`Unknown workspace subcommand: ${sub}`);
-      process.exitCode = 1;
+  try {
+    const lines = await runWorkspaceCommand({
+      root,
+      subcommand: args.subcommand,
+      action: args.action,
+      displayName: args.displayName,
+    });
+    for (const line of lines) console.log(line);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
   }
 }
 
