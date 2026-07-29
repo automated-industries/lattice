@@ -7,6 +7,7 @@ import {
   deleteRow,
   linkRows,
   unlinkRows,
+  GROUP_UNDO_MAX_ENTRIES,
   type MutationCtx,
 } from '../../mutations.js';
 import { artifactFileRow } from '../../file-row.js';
@@ -801,9 +802,28 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
 
       // Identify the matching rows ONCE. On a cloud this read runs as the
       // member's role, so RLS already scopes it to rows the member can see.
-      const opts: Parameters<typeof ctx.db.query>[1] = { orderBy: pkCol, orderDir: 'asc' };
+      // BOUNDED (Rule: never load an unbounded result set on a hot path): read one
+      // past the cap so an over-cap match is DETECTABLE. Each matched row becomes
+      // one audit entry under a single op_group, so an uncapped "set field=X on
+      // <big table>" would mint a group too large to ever undo (undoGroup would
+      // then egress-load the whole table's before/after images). At the ceiling,
+      // refuse the WHOLE op loudly — bounded and honest, never a silent partial or
+      // an unbounded load.
+      const opts: Parameters<typeof ctx.db.query>[1] = {
+        orderBy: pkCol,
+        orderDir: 'asc',
+        limit: GROUP_UNDO_MAX_ENTRIES + 1,
+      };
       opts.filters = filters as NonNullable<typeof opts.filters>;
       const matched: Row[] = await ctx.db.query(table, opts);
+      if (matched.length > GROUP_UNDO_MAX_ENTRIES) {
+        return {
+          ok: false,
+          error:
+            `This change would touch more than ${String(GROUP_UNDO_MAX_ENTRIES)} rows — too many to ` +
+            `apply as one undoable action. Narrow it with a filter so it affects a smaller set.`,
+        };
+      }
 
       let changedCols = 0;
       let changedVis = 0;

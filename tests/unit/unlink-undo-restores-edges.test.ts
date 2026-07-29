@@ -291,6 +291,51 @@ describe('undo of an unlink restores the removed edge', () => {
     expect(restored.some((l) => l.file_id === 'f1' && l.companies_id === 'c1')).toBe(false);
   });
 
+  it('refuses a group-undo of a wide unlink from a non-author session — no edge re-linked, no entry flipped', async () => {
+    // link/unlink audit entries carry a NULL row_id, which is exactly the shape a
+    // shared-cloud member is allowed to read regardless of who owns the edges — and
+    // the pre-flight conflict check deliberately skips them (a re-link is a safe set
+    // op). So RLS + conflict-check alone do NOT stop a member from reversing another
+    // user's unlink group; AUTHORSHIP does. The author (sess-1) cuts N edges under
+    // one group; a different session must not be able to put them back.
+    const group = 'grp-authz-unlink';
+    const N = 4;
+    for (let i = 0; i < N; i++) {
+      await db.insert('files', { id: `af${String(i)}`, name: `a${String(i)}.pdf` });
+      await linkRows(mctx({ opGroup: `seed-a-${String(i)}` }), 'files_companies', {
+        id: `al${String(i)}`,
+        file_id: `af${String(i)}`,
+        companies_id: 'c1',
+      });
+    }
+    for (let i = 0; i < N; i++) {
+      await unlinkRows(mctx({ opGroup: group }), 'files_companies', {
+        file_id: `af${String(i)}`,
+        companies_id: 'c1',
+      });
+    }
+    const afEdges = (): Promise<Record<string, unknown>[]> =>
+      liveLinks().then((ls) => ls.filter((l) => String(l.file_id).startsWith('af')));
+    expect(await afEdges()).toHaveLength(0);
+
+    // A DIFFERENT session (another member) tries to undo the author's unlink group.
+    const denied = await undoGroup(mctx({ sessionId: 'sess-intruder' }), group);
+    expect(denied).toMatchObject({ ok: false, reason: 'forbidden' });
+
+    // NO edge was re-linked, and NO audit entry was flipped to undone.
+    expect(await afEdges()).toHaveLength(0);
+    const groupEntries = (await db.query('_lattice_gui_audit', {
+      filters: [{ col: 'op_group', op: 'eq', val: group }],
+    })) as Record<string, unknown>[];
+    expect(groupEntries).toHaveLength(N);
+    expect(groupEntries.every((e) => Number(e.undone) === 0)).toBe(true);
+
+    // The AUTHOR (sess-1) can undo their own group — every edge comes back.
+    const allowed = await undoGroup(mctx(), group);
+    expect(allowed).toMatchObject({ ok: true, undone: N });
+    expect(await afEdges()).toHaveLength(N);
+  });
+
   it('undo of a link still removes it (the link inverse is unchanged)', async () => {
     await linkRows(mctx(), 'files_companies', { id: 'l1', file_id: 'f1', companies_id: 'c1' });
     expect(await liveLinks()).toHaveLength(1);

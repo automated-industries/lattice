@@ -177,6 +177,19 @@ export async function handleHistoryRoutes(
         );
         return true;
       }
+      if (result.reason === 'forbidden') {
+        // The group belongs to another session/user (authorship gate in
+        // undoGroup). Refuse loudly — never silently no-op or half-undo it.
+        sendJson(
+          res,
+          {
+            error:
+              "You can only undo a bulk change you made yourself — this one was made in another session and can't be undone from here. Nothing was changed.",
+          },
+          403,
+        );
+        return true;
+      }
       sendJson(
         res,
         {

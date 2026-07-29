@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { FeedBus, type FeedEvent } from '../../src/gui/feed.js';
 import { executeFunction, type DispatchCtx } from '../../src/gui/ai/dispatch.js';
-import { undoGroup, undoLast, type MutationCtx } from '../../src/gui/mutations.js';
+import {
+  undoGroup,
+  undoLast,
+  GROUP_UNDO_MAX_ENTRIES,
+  type MutationCtx,
+} from '../../src/gui/mutations.js';
 
 /**
  * Bulk undo as ONE action. Every row written by a single tool execution is
@@ -27,13 +32,14 @@ describe('bulk undo — operation groups in the audit log', () => {
   let outputDir: string;
 
   /** The canonical MutationCtx a GUI request would build for this session. */
-  function mctx(): MutationCtx {
+  function mctx(overrides: Partial<MutationCtx> = {}): MutationCtx {
     return {
       db,
       feed,
       softDeletable: new Set(['companies']),
       source: 'gui',
       sessionId: 'sess-1',
+      ...overrides,
     };
   }
 
@@ -228,6 +234,80 @@ describe('bulk undo — operation groups in the audit log', () => {
     const out = await undoGroup(mctx(), 'no-such-group');
     expect(out).toMatchObject({ ok: false, reason: 'not_found' });
   });
+
+  it('refuses a group-undo from a session that did NOT author it — flips nothing; the author still can', async () => {
+    // Authorization is app-layer, not RLS: on a shared cloud each member/owner
+    // connects as a distinct process with its own session id, so a group's audit
+    // entries all carry the AUTHOR's session id. A second session must not be able
+    // to reverse it (RLS would otherwise return only the visible slice and a blind
+    // replay would flip the author's entries to undone and desync the audit).
+    //
+    // (This runs on SQLite, so it asserts the ownership gate directly on the
+    // session id every audit row carries; the same gate is what protects a real
+    // cloud member's scoped Postgres connection, where LATTICE_TEST_PG_URL-gated
+    // integration suites exercise the RLS layer. No live member role is reachable
+    // in this harness, so this is the strongest app-layer ownership proof.)
+    const authorCtx: DispatchCtx = { ...ctx, sessionId: 'sess-author' };
+    const res = await executeFunction(authorCtx, 'bulk_update', {
+      table: 'companies',
+      set: { status: 'flagged' },
+    });
+    expect(res.ok).toBe(true);
+    const updates = (await auditRows()).filter((a) => a.operation === 'update');
+    const groupId = String(updates[0]?.op_group);
+    expect(updates).toHaveLength(5);
+    expect(updates.every((a) => a.session_id === 'sess-author')).toBe(true);
+
+    // A DIFFERENT session (another member) tries to undo the author's group.
+    const denied = await undoGroup(mctx({ sessionId: 'sess-intruder' }), groupId);
+    expect(denied).toMatchObject({ ok: false, reason: 'forbidden' });
+
+    // NOTHING was flipped, NOTHING was reversed — a loud refusal, not a silent
+    // no-op or a half-undo.
+    const afterDenied = (await auditRows()).filter((a) => a.op_group === groupId);
+    expect(afterDenied.every((a) => Number(a.undone) === 0)).toBe(true);
+    for (let i = 1; i <= 5; i++) {
+      expect((await db.get('companies', `c${String(i)}`))?.status).toBe('flagged');
+    }
+
+    // The AUTHOR can undo their own group.
+    const allowed = await undoGroup(mctx({ sessionId: 'sess-author' }), groupId);
+    expect(allowed).toMatchObject({ ok: true, undone: 5 });
+    for (let i = 1; i <= 5; i++) {
+      expect((await db.get('companies', `c${String(i)}`))?.status).toBe('active');
+    }
+  });
+
+  it('bounds a bulk_update at the group cap — refuses over-cap, applies nothing, never an unbounded load', async () => {
+    // Seed just past the cap. bulk_update reads the match set BOUNDED (limit =
+    // cap + 1) and must REFUSE the whole op — never load an unbounded set and
+    // never silently apply a slice. 5 rows already exist from beforeEach.
+    const need = GROUP_UNDO_MAX_ENTRIES + 1 - 5;
+    await db.transaction(async () => {
+      for (let i = 0; i < need; i++) {
+        await db.insert('companies', {
+          id: `x${String(i)}`,
+          name: `Co ${String(i)}`,
+          status: 'active',
+          created_at: '2026-02-01T00:00:00Z',
+        });
+      }
+    });
+
+    const auditBefore = (await auditRows()).length;
+    const res = await executeFunction(ctx, 'bulk_update', {
+      table: 'companies',
+      set: { status: 'flagged' },
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('unreachable');
+    expect(res.error).toMatch(/more than|too many/i);
+
+    // Nothing was applied: no audit entries written, no row flipped.
+    expect((await auditRows()).length).toBe(auditBefore);
+    expect((await db.get('companies', 'c1'))?.status).toBe('active');
+    expect((await db.get('companies', 'x0'))?.status).toBe('active');
+  }, 30000);
 
   it('leaves single-record undo untouched: undoLast still steps one entry at a time', async () => {
     const bulk = await executeFunction(ctx, 'bulk_update', {

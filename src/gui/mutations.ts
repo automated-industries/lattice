@@ -1035,6 +1035,14 @@ export interface AuditEntry {
   after_json: string | null;
   undone: number;
   /**
+   * The session (process) that WROTE this entry — the audit authorship key. On a
+   * shared cloud every member and the owner connect as a DISTINCT process with
+   * its own session id, so this identifies the actor's session. {@link undoGroup}
+   * uses it to refuse reversing an operation group another user authored. Null
+   * for a write with no session (a non-GUI / system caller).
+   */
+  session_id: string | null;
+  /**
    * Operation-group id shared by every entry one logical multi-row operation
    * wrote (see {@link MutationCtx.opGroup}), or null for a standalone change.
    */
@@ -1272,6 +1280,7 @@ export function parseAudit(row: Record<string, unknown>): AuditEntry {
     before_json: str(row.before_json),
     after_json: str(row.after_json),
     undone: Number(row.undone),
+    session_id: str(row.session_id),
     op_group: str(row.op_group),
   };
 }
@@ -1441,9 +1450,23 @@ export type GroupUndoResult =
   | { ok: true; undone: number; tables: string[] }
   | {
       ok: false;
-      reason: 'not_found' | 'already_undone' | 'conflict';
+      reason: 'not_found' | 'already_undone' | 'conflict' | 'forbidden';
       conflicts: GroupUndoConflict[];
     };
+
+/**
+ * The most audit entries one operation group may hold and still be undoable as a
+ * SINGLE action. One ceiling, two jobs:
+ *  - {@link undoGroup} loads at most this many entries at once — a BOUNDED read,
+ *    so a group undo never pulls an unbounded set of before/after images into
+ *    memory (egress + heap). A group larger than this is refused, not loaded.
+ *  - a grouped WRITE is capped to it at the source (`bulk_update` bounds its
+ *    matched-row set to this), so one tool call can never mint a group too large
+ *    to undo. Mirrors {@link UNLINK_UNDO_MAX_EDGES}: a change we cannot fully
+ *    record and replay is one we must not make — bounded and loud, never a silent
+ *    partial or an unbounded load.
+ */
+export const GROUP_UNDO_MAX_ENTRIES = 5000;
 
 /** True for an audit-image cell holding the capped derived-text preview (see capAuditImage). */
 function isCappedPreview(v: unknown): boolean {
@@ -1516,18 +1539,59 @@ function errText(e: unknown): string {
  *     or not, the failure is thrown loudly with exact counts — never reported
  *     as success, never left silent.
  *
- * Not session-scoped: like the per-entry revert, a group undo names its target
- * explicitly by id. Row visibility/permissions are enforced by the pre-flight
- * read plus (on a cloud) row-level security on the writes themselves.
+ * AUTHORSHIP-scoped, fail-closed. A group may be undone only by the session that
+ * authored it. RLS alone cannot bound this: on a shared cloud a member's scoped
+ * SELECT returns only the entries row-level security lets that member see (and
+ * link/unlink entries carry a NULL row_id every member is allowed to read), so a
+ * blind replay of "the visible slice" of ANOTHER user's group would flip that
+ * user's entries to undone and desync the audit from reality. The session-id gate
+ * below refuses that; the bounded read keeps a group undo off the unbounded-egress
+ * path. Row visibility for the writes themselves is still enforced by the
+ * pre-flight read plus (on a cloud) row-level security.
  */
 export async function undoGroup(ctx: MutationCtx, opGroup: string): Promise<GroupUndoResult> {
+  // BOUNDED read (Rule: never load an unbounded result set on a hot path). Read
+  // one past the cap so an over-cap group is DETECTABLE, and never hold the whole
+  // before/after image set at once. A grouped write is capped to the same ceiling
+  // at the source (see bulk_update), so a group beyond it is one no single-action
+  // undo can honestly reverse — refuse loudly rather than egress-load a table's
+  // worth of images.
   const rows = (await ctx.db.query('_lattice_gui_audit', {
     filters: [{ col: 'op_group', op: 'eq', val: opGroup }],
     orderBy: 'ts',
     orderDir: 'desc',
+    limit: GROUP_UNDO_MAX_ENTRIES + 1,
   })) as Record<string, unknown>[];
   if (rows.length === 0) return { ok: false, reason: 'not_found', conflicts: [] };
+  if (rows.length > GROUP_UNDO_MAX_ENTRIES) {
+    throw new Error(
+      `This change group has more than ${String(GROUP_UNDO_MAX_ENTRIES)} recorded changes — too ` +
+        `many to undo as one action. Reverse it in smaller pieces from the version history.`,
+    );
+  }
   const entries = rows.map(parseAudit);
+
+  // Authorship gate (app-layer, fail-closed). Every audit row carries the
+  // session id of the process that wrote it; on a shared cloud each member and
+  // the owner connect as a SEPARATE process with a distinct session id, and an
+  // operation-group id is a per-session UUID no other session ever reuses. So a
+  // group belongs entirely to ONE session, and "every entry I can see for this
+  // group carries MY session id" proves both that I authored it AND that I am
+  // looking at the WHOLE group, not an RLS-narrowed slice of someone else's. A
+  // foreign session id anywhere in the loaded set ⇒ refuse; we never flip
+  // `undone` on an entry another session authored, and never half-undo across a
+  // visibility boundary.
+  const callerSession = ctx.sessionId;
+  if (callerSession !== undefined) {
+    if (entries.some((e) => e.session_id !== callerSession)) {
+      return { ok: false, reason: 'forbidden', conflicts: [] };
+    }
+  } else if (ctx.db.isCloudMemberOpen()) {
+    // A shared-cloud member connection with no session identity cannot prove
+    // authorship — fail closed rather than reverse a group blind.
+    return { ok: false, reason: 'forbidden', conflicts: [] };
+  }
+
   const live = entries.filter((e) => e.undone === 0);
   if (live.length === 0) return { ok: false, reason: 'already_undone', conflicts: [] };
 
