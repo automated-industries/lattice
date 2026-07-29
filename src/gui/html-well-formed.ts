@@ -59,5 +59,15 @@ export function validateHtmlWellFormed(html: string): string | null {
     return 'Document ends with an incomplete HTML element or entity. The page may be truncated.';
   }
 
+  // Final check (deliberately LAST so the more specific diagnostics above win):
+  // a full document must actually END. The authors always produce a complete
+  // standalone page, so a document that opens <html and never closes </html> is
+  // truncated — even when the cut lands exactly on a tag boundary with no
+  // scripts involved (a real stored corpse ended mid-<table> with a clean </th>
+  // as its final bytes and zero script tags: every other check passes it).
+  if (/<html[\s>]/i.test(html) && !/<\/html>/i.test(html)) {
+    return 'Document opens <html> but never closes </html>. The page may be truncated.';
+  }
+
   return null;
 }

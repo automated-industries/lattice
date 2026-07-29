@@ -24,8 +24,9 @@ import { seedClaudeOAuth } from '../helpers/claude-auth.js';
  *    second progress surface back in the conversation);
  *  - a running structured import paints NO card into the rail — it registers a
  *    background task and re-labels it from the import stream;
- *  - the import CONFIRM card still renders in the rail. That card asks the user a
- *    question ("import this as a new dataset?"), which is conversation, not progress;
+ *  - a structured drop has no confirm card at all: every case (new dataset, or a
+ *    known-document re-import with no date) imports silently through the same
+ *    background task — there is no question to ask, so nothing lands in the rail;
  *  - a thread row persisted BEFORE the change — one that still carries a per-turn
  *    `events` array — replays as text without throwing and without re-emitting the
  *    events, so old conversations degrade cleanly instead of breaking.
@@ -102,7 +103,7 @@ interface ImportWindow {
   renderRoute: () => void;
   state: Record<string, unknown>;
   runInlineImportSilent: (proposal: Record<string, unknown>) => void;
-  renderInlineImportCard: (proposal: Record<string, unknown>) => void;
+  handleAutoImport: (proposal: Record<string, unknown>) => void;
   document: Document;
 }
 
@@ -212,27 +213,27 @@ describe('one progress surface — a running import (jsdom)', () => {
     expect(tasks[0]!.failed[0]).toContain('kept as a file');
   });
 
-  it('still renders the confirm card — that one asks the user a question', () => {
-    const { win } = loadImportSegment([]);
+  it('routes a needs-confirm re-import to the silent executor — no card, no question', async () => {
+    // A known-document re-import with no detectable date used to render a confirm card asking
+    // for a snapshot date. Zero-decision: handleAutoImport now sends it straight to the silent
+    // executor (the apply route dates it as a new snapshot), so nothing is painted into the rail.
+    const { win, tasks } = loadImportSegment([
+      JSON.stringify({ phase: 'done', result: { rowsByTable: { books: 2 } } }),
+    ]);
 
-    win.renderInlineImportCard({
-      reason: 'needs-confirm',
-      fileId: 'f3',
-      plan: { entities: [{ name: 'books', rowCount: 9, columns: ['id'], naturalKey: 'id' }] },
-      asOfCandidates: [],
-      asOfColumns: [],
-      schemaMatch: {},
-      computedProposals: [],
-    });
+    win.handleAutoImport({ reason: 'needs-confirm', fileId: 'f3', computedProposals: [] });
+    await flush();
+    await flush();
+    await flush();
 
     const rail = win.document.getElementById('rail-feed')!;
-    const card = rail.querySelector('.feed-item.import-confirm');
-    expect(card).not.toBeNull();
-    expect(card!.textContent).toContain('Add a dated snapshot');
-    // The question is answerable: the Import control is present.
-    expect(win.document.getElementById('ii-apply')).not.toBeNull();
-    // …and it carries no progress log of its own.
-    expect(rail.querySelectorAll('.imp-card-log').length).toBe(0);
+    // No confirm card and no question control — the two chat messages are all that remain.
+    expect(rail.querySelectorAll('.feed-item').length).toBe(0);
+    expect(win.document.getElementById('ii-apply')).toBeNull();
+    expect(rail.children.length).toBe(2);
+    // The import ran as a background task instead.
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]!.labels[0]).toBe('Importing your data…');
   });
 });
 

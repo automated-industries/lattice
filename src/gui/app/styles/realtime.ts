@@ -46,6 +46,14 @@ export const realtimeCss = `    /* ── Realtime collaboration cues ───�
     .app-update[hidden] { display: none; }
     #app-update-link { flex: 0 0 auto; margin-left: 8px; color: var(--accent); font-size: 12px; cursor: pointer; white-space: nowrap; }
     #app-update-link[hidden] { display: none; }
+    /* When the update pill is VISIBLE it takes over the header's flexible gap
+       so it sits at the far right, immediately left of Configure — whose own
+       auto margin (analytics-view.ts) would otherwise absorb the free space
+       BETWEEN the pill and Configure, stranding the pill mid-header. The
+       adjacent-sibling rule neutralizes Configure's auto margin only for that
+       case; when the pill is hidden, Configure keeps the auto gap as before. */
+    #app-update-link:not([hidden]) { margin-left: auto; }
+    #app-update-link:not([hidden]) + .configure-trigger { margin-left: 8px; }
     /* Unseen-change count next to a sidebar entity. */
     .nav-badge {
       display: inline-block; min-width: 16px; text-align: center;

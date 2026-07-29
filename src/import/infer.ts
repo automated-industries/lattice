@@ -70,7 +70,10 @@ interface EntitySource {
   naturalKey: string | null;
 }
 
-function profileColumns(records: Record<string, unknown>[]): Map<string, ColumnProfile> {
+async function profileColumns(
+  records: Record<string, unknown>[],
+  tick: () => Promise<void>,
+): Promise<Map<string, ColumnProfile>> {
   const keys = new Set<string>();
   for (const r of records.slice(0, SAMPLE)) for (const k of Object.keys(r)) keys.add(k);
   const out = new Map<string, ColumnProfile>();
@@ -82,6 +85,7 @@ function profileColumns(records: Record<string, unknown>[]): Map<string, ColumnP
     let nonNull = 0;
     let numeric = 0;
     for (const r of records) {
+      await tick();
       const v = r[key];
       if (v === null || v === undefined || v === '') continue;
       nonNull++;
@@ -117,14 +121,16 @@ function profileColumns(records: Record<string, unknown>[]): Map<string, ColumnP
 }
 
 /** Pick a natural key: a unique, non-freetext scalar column, preferring stable names. */
-function pickNaturalKey(
+async function pickNaturalKey(
   records: Record<string, unknown>[],
   profiles: Map<string, ColumnProfile>,
-): string | null {
+  tick: () => Promise<void>,
+): Promise<string | null> {
   const n = records.length;
-  const isUnique = (key: string): boolean => {
+  const isUnique = async (key: string): Promise<boolean> => {
     const seen = new Set<string>();
     for (const r of records) {
+      await tick();
       const v = r[key];
       if (v === null || v === undefined || v === '') return false;
       const k = norm(v);
@@ -135,15 +141,21 @@ function pickNaturalKey(
   };
   // Ingest excludes only NEVER_KEY (a `name`/`title` column CAN be a key here);
   // the shared policy walk is otherwise identical to the planner's.
-  return pickNaturalKeyFrom(
-    [...profiles].map(([key, p]) => ({
+  const candidates: {
+    name: string;
+    type: ColumnProfile['type'];
+    isUnique: boolean;
+    skip: boolean;
+  }[] = [];
+  for (const [key, p] of profiles) {
+    candidates.push({
       name: key,
       type: p.type,
-      isUnique: p.isArray ? false : isUnique(key),
+      isUnique: p.isArray ? false : await isUnique(key),
       skip: p.isArray,
-    })),
-    NEVER_KEY,
-  );
+    });
+  }
+  return pickNaturalKeyFrom(candidates, NEVER_KEY);
 }
 
 export interface InferOptions {
@@ -159,12 +171,39 @@ export interface InferOptions {
    * {@link DEFAULT_LINK_CONFIDENCE}.
    */
   minLinkConfidence?: number;
+  /** Items scanned between event-loop yields (default {@link YIELD_EVERY_ITEMS}). */
+  yieldEvery?: number;
+  /** Called to yield the event loop (default: a `setImmediate` hop). Injectable
+   *  so a test drives the cadence without real waits. */
+  onYield?: () => Promise<void>;
 }
 
-export function inferSchema(
+/** Items scanned between event-loop yields while inferring a schema. Column
+ *  profiling is O(rows) and the linkage/dimension passes are
+ *  O(entities × fields × values); on a very large source either can hold the
+ *  event loop for seconds. Bounding the work between yields keeps the server
+ *  (and the Stop button) responsive — mirrors the bulk loader's cadence. */
+const YIELD_EVERY_ITEMS = 2048;
+
+/** Build the shared "tick" the passes call once per scanned item: it yields the
+ *  event loop every {@link InferOptions.yieldEvery} calls. */
+function makeTick(opts: InferOptions): () => Promise<void> {
+  const onYield = opts.onYield ?? ((): Promise<void> => new Promise((r) => setImmediate(r)));
+  const every = Math.max(1, opts.yieldEvery ?? YIELD_EVERY_ITEMS);
+  let n = 0;
+  return async (): Promise<void> => {
+    if (++n >= every) {
+      n = 0;
+      await onYield();
+    }
+  };
+}
+
+export async function inferSchema(
   data: Record<string, unknown>,
   opts: InferOptions = {},
-): ProposedSchema {
+): Promise<ProposedSchema> {
+  const tick = makeTick(opts);
   const skipped: { key: string; reason: string }[] = [];
 
   // Pass 1 — find columnar pairs (`x` array-of-arrays + `xCols` string[]).
@@ -212,14 +251,14 @@ export function inferSchema(
       continue;
     }
     const name = opts.rename?.[key] ?? normalizeName(key);
-    const profiles = profileColumns(records);
+    const profiles = await profileColumns(records, tick);
     sources.push({
       name,
       sourceKey: key,
       records,
       columnar,
       profiles,
-      naturalKey: pickNaturalKey(records, profiles),
+      naturalKey: await pickNaturalKey(records, profiles, tick),
     });
   }
 
@@ -285,6 +324,7 @@ export function inferSchema(
   for (const pass of ['array', 'scalar'] as const) {
     for (const e of sources) {
       for (const [field, p] of e.profiles) {
+        await tick();
         if (pass === 'array' ? !p.isArray : p.isArray) continue;
         if (pass === 'scalar') {
           if (field === e.naturalKey) continue;
@@ -338,6 +378,7 @@ export function inferSchema(
   const dimColumnNames = new Map<string, EntitySource[]>(); // normalized col name → entities having it as a string col
   for (const e of sources) {
     for (const [field, p] of e.profiles) {
+      await tick();
       if (p.isArray || p.type !== 'text' || p.numericFraction > 0.5) continue;
       const nn = normalizeName(field);
       let arr = dimColumnNames.get(nn);
@@ -352,6 +393,7 @@ export function inferSchema(
   const dimByName = new Map<string, InferredDimension>();
   for (const e of sources) {
     for (const [field, p] of e.profiles) {
+      await tick();
       if (p.isArray || p.type !== 'text' || p.numericFraction > 0.5) continue;
       if (field === e.naturalKey) continue;
       if (consumedFields.get(e.name)?.has(field)) continue; // already a linkage field
@@ -392,6 +434,7 @@ export function inferSchema(
   }
   // Fill dimension distinct counts (union of values across contributing entities).
   for (const dim of dimensions) {
+    await tick();
     const all = new Set<string>();
     for (const name of dim.fromEntities) {
       const e = sources.find((s) => s.name === name);

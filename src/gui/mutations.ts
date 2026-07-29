@@ -9,6 +9,7 @@ import {
   maskedColumnsForTables,
   isRowAudience,
 } from '../cloud/audience.js';
+import { storedValueMatches, rowFieldDeltas } from './change-preview.js';
 
 /**
  * Shared GUI mutation primitives. The HTTP row-CRUD routes write through these
@@ -134,6 +135,7 @@ const AUDIT_COLUMNS = [
   'undone',
   'session_id',
   'source',
+  'op_group',
 ] as const;
 
 /**
@@ -177,6 +179,7 @@ function buildAuditRow(
   sessionId: string | undefined,
   editTs: string | undefined,
   source: FeedSource = 'gui',
+  opGroup?: string,
 ): Record<string, unknown> {
   return {
     id: crypto.randomUUID(),
@@ -189,6 +192,7 @@ function buildAuditRow(
     undone: 0,
     session_id: sessionId ?? null,
     source,
+    op_group: opGroup ?? null,
   };
 }
 
@@ -281,11 +285,12 @@ export async function appendAudit(
   source: FeedSource = 'gui',
   sessionId?: string,
   editTs?: string,
+  opGroup?: string,
 ): Promise<void> {
   await purgeRedoStack(db, sessionId);
   await db.insert(
     '_lattice_gui_audit',
-    buildAuditRow(table, rowId, op, before, after, sessionId, editTs, source),
+    buildAuditRow(table, rowId, op, before, after, sessionId, editTs, source, opGroup),
   );
   publishMutationFeed(feed, table, rowId, op, before, after, source);
 }
@@ -317,10 +322,16 @@ export async function recordSchemaAudit(
   summary: string,
   source: FeedSource = 'gui',
   sessionId?: string,
-): Promise<void> {
+): Promise<string> {
   await purgeRedoStack(db, sessionId);
+  // Return the audit id so a caller that made a single, cleanly-reversible schema
+  // change (delete table / delete link / rename) can offer an immediate one-click
+  // undo pointed at exactly THIS entry — the same per-entry revert the
+  // version-history page uses, targeting the change by id rather than "whatever is
+  // newest", so a later change can't be reverted by mistake.
+  const id = crypto.randomUUID();
   await db.insert('_lattice_gui_audit', {
-    id: crypto.randomUUID(),
+    id,
     // Explicit ISO ts — see buildAuditRow (the SQLite-only strftime DEFAULT
     // rendered "Invalid Date" on the Postgres/cloud path).
     ts: new Date().toISOString(),
@@ -341,6 +352,7 @@ export async function recordSchemaAudit(
     const listener = schemaChangeListeners.get(db);
     if (listener) listener({ table, operation, before, after, summary });
   }
+  return id;
 }
 
 /** Context shared by every mutation primitive. */
@@ -357,6 +369,15 @@ export interface MutationCtx {
    * non-GUI callers (undo/redo then falls back to the whole log).
    */
   sessionId?: string | undefined;
+  /**
+   * Operation-group id: one id shared by EVERY audit entry a single logical
+   * operation writes (e.g. one assistant tool execution that touches many rows).
+   * Lets the whole multi-row change be undone as one action ({@link undoGroup})
+   * and lets the history UI collapse the entries into a single "bulk change"
+   * card. Undefined for callers that make standalone single-row writes — their
+   * entries stay ungrouped, and single-entry undo/redo behaviour is unchanged.
+   */
+  opGroup?: string | undefined;
   /**
    * Fired (un-awaited) by {@link announceAddedColumns} whenever a write
    * auto-adds columns — the single chokepoint for manual, ingest, and AI
@@ -656,25 +677,14 @@ export async function createRow(
     ctx.source,
     ctx.sessionId,
     ctx.clientTs,
+    ctx.opGroup,
   );
   return { id, row, idempotent: false };
 }
 
-/**
- * True when a stored cell value already equals a requested (JSON) value,
- * tolerating the type coercion the DB applies (boolean ↔ 0/1, number ↔ numeric
- * string, null ↔ ''). Used to decide whether an update actually requested a
- * change, so the write-landed guard never false-positives on a no-op edit.
- */
-function storedValueMatches(stored: unknown, requested: unknown): boolean {
-  if (stored === requested) return true;
-  const storedEmpty = stored === null || stored === undefined || stored === '';
-  const reqEmpty = requested === null || requested === undefined || requested === '';
-  if (storedEmpty && reqEmpty) return true;
-  if (typeof requested === 'boolean') return Number(stored) === Number(requested);
-  if (typeof requested === 'number') return Number(stored) === requested;
-  return String(stored) === String(requested);
-}
+// storedValueMatches (the coercion-tolerant "did this edit request a change"
+// compare) lives in change-preview.ts so the write-landed guard, the group-undo
+// conflict check, and the read-only change preview all share one definition.
 
 /** Shallow byte-identical comparison of two rows (same column set from db.get). */
 function rowsEqual(a: Row, b: Row): boolean {
@@ -729,9 +739,9 @@ export async function updateRow(
   // (the new value already equals the stored value) is NOT an error.
   // (before is non-null here — the guard above throws when the row is missing.)
   if (after != null) {
-    const wantedChange = Object.keys(values).some(
-      (k) => !storedValueMatches(before[k], (values as Row)[k]),
-    );
+    // The SAME per-field computation the preview route serves (rowFieldDeltas),
+    // so "would change" in a preview and "wanted a change" here can never drift.
+    const wantedChange = rowFieldDeltas(before, values).some((d) => d.changed);
     if (wantedChange && rowsEqual(before, after)) {
       throw writeConflict('Row update did not persist — the data source may be read-only');
     }
@@ -747,6 +757,7 @@ export async function updateRow(
     ctx.source,
     ctx.sessionId,
     ctx.clientTs,
+    ctx.opGroup,
   );
   return { row: after };
 }
@@ -780,6 +791,7 @@ export async function deleteRow(
       ctx.source,
       ctx.sessionId,
       ctx.clientTs,
+      ctx.opGroup,
     );
   } else {
     await hardDelete(ctx, table, id, before);
@@ -832,6 +844,7 @@ async function hardDelete(
       ctx.source,
       ctx.sessionId,
       ctx.clientTs,
+      ctx.opGroup,
     );
     await ctx.db.delete(table, id);
     return;
@@ -845,11 +858,18 @@ async function hardDelete(
     ctx.sessionId,
     ctx.clientTs,
     ctx.source,
+    ctx.opGroup,
   );
   await purgeRedoStack(ctx.db, ctx.sessionId);
-  const auditCols = AUDIT_COLUMNS.map((c) => `"${c}"`).join(', ');
-  const auditPlaceholders = AUDIT_COLUMNS.map(() => '?').join(', ');
-  const auditValues = AUDIT_COLUMNS.map((c) => auditRow[c]);
+  // `op_group` is included in the raw INSERT only when this delete is actually
+  // part of a group. The column is additive (added to existing DBs by the
+  // schema reconcile at open), and a plain ungrouped delete keeps emitting the
+  // exact pre-existing statement — so an older database that has not been
+  // reopened since the column shipped still hard-deletes cleanly.
+  const rawCols = AUDIT_COLUMNS.filter((c) => c !== 'op_group' || auditRow.op_group != null);
+  const auditCols = rawCols.map((c) => `"${c}"`).join(', ');
+  const auditPlaceholders = rawCols.map(() => '?').join(', ');
+  const auditValues = rawCols.map((c) => auditRow[c]);
   const pkColQuoted = pkCol.replace(/"/g, '""');
   await withClient(async (tx) => {
     await tx.run(
@@ -890,13 +910,113 @@ export async function linkRows(
   } else {
     await ctx.db.link(table, body);
   }
-  await appendAudit(ctx.db, ctx.feed, table, null, 'link', null, body, ctx.source, ctx.sessionId);
+  await appendAudit(
+    ctx.db,
+    ctx.feed,
+    table,
+    null,
+    'link',
+    null,
+    body,
+    ctx.source,
+    ctx.sessionId,
+    undefined,
+    ctx.opGroup,
+  );
 }
+
+/**
+ * Most junction edges a single unlink can CAPTURE into the audit log so undo can
+ * re-link them.
+ *
+ * An unlink is a SET delete — `db.unlink` runs `DELETE FROM t WHERE <every key in
+ * body>` — and `body` may be a PARTIAL condition (one key of a two-key junction), so
+ * ONE call can remove MANY edges. To keep that reversible we must record each removed
+ * edge (its full row), which means reading them first; that read is BOUNDED here so it
+ * can never load an unbounded set on a hot path. Beyond this many matched edges an
+ * unlink cannot be made fully restorable — the assistant gate classifies such a call
+ * as not-reversible and refuses it before it runs, and a direct (ungated) caller that
+ * reaches this ceiling fails loudly rather than deleting edges it cannot record. Kept
+ * in step with the assistant gate's pre-flight unlink count cap so the two agree on
+ * where "capturable" ends.
+ */
+export const UNLINK_UNDO_MAX_EDGES = 5000;
 
 export async function unlinkRows(ctx: MutationCtx, table: string, body: Row): Promise<void> {
   assertNotComputedTable(ctx.db, table);
+  const filters = Object.entries(body).map(([col, val]) => ({ col, op: 'eq' as const, val }));
+  // Empty condition ⇒ db.unlink deletes nothing (it returns on no conditions), so
+  // there is nothing to capture — and NOT reading here is what stops an empty body
+  // from turning the capture query into a whole-junction scan.
+  if (filters.length === 0) {
+    await ctx.db.unlink(table, body);
+    return;
+  }
+  // Capture the ACTUAL edges the SET delete will remove, BEFORE removing them. The
+  // condition alone (what the old code recorded) let undo re-link a single partial row,
+  // not the N specific edges cut — silent, wide, unrecoverable relationship loss.
+  // Bounded read: read one past the cap so an over-cap match is detectable, and never
+  // hold an unbounded set.
+  const matched = await ctx.db.query(table, {
+    filters,
+    limit: UNLINK_UNDO_MAX_EDGES + 1,
+  });
+  // A match too large to fully record is one we must not silently delete — every edge
+  // has to be restorable, so fail loudly instead of losing edges from undo. (On the
+  // assistant path this is unreachable: the gate classifies such a call not-reversible
+  // and refuses it first; this guards the direct/HTTP callers that have no gate.)
+  if (matched.length > UNLINK_UNDO_MAX_EDGES) {
+    throw new Error(
+      `Refusing to unlink from "${table}": this condition matches more than ` +
+        `${String(UNLINK_UNDO_MAX_EDGES)} link(s), which is too many to record for undo. ` +
+        `Narrow the unlink so every removed link can be restored.`,
+    );
+  }
+
   await ctx.db.unlink(table, body);
-  await appendAudit(ctx.db, ctx.feed, table, null, 'unlink', body, null, ctx.source, ctx.sessionId);
+
+  // Nothing matched ⇒ nothing was deleted ⇒ record nothing (an unlink of an absent
+  // edge is a no-op, exactly as db.unlink treats it).
+  if (matched.length === 0) return;
+
+  // One audit entry PER removed edge — each `before` is the FULL edge row, so the
+  // inverse `db.link(before)` re-links exactly that edge — all under ONE op-group so
+  // undoGroup reverses the whole unlink as a single action. A caller-supplied group
+  // (the assistant turn, a merge pass) wins; otherwise a group is minted only for a
+  // MULTI-edge cut — a single fully-specified edge stays ungrouped, exactly as before.
+  const opGroup = ctx.opGroup ?? (matched.length > 1 ? crypto.randomUUID() : undefined);
+  // Purge the redo stack ONCE (a new mutation invalidates pending redos), then write
+  // the N entries directly — appendAudit would publish a feed bubble per entry, and one
+  // unlink must read as ONE activity item, not N.
+  await purgeRedoStack(ctx.db, ctx.sessionId);
+  for (const edge of matched) {
+    await ctx.db.insert(
+      '_lattice_gui_audit',
+      buildAuditRow(
+        table,
+        null,
+        'unlink',
+        edge,
+        null,
+        ctx.sessionId,
+        undefined,
+        ctx.source,
+        opGroup,
+      ),
+    );
+  }
+  // One AGGREGATED feed event for the whole unlink (N edges), never N of them. A
+  // single-edge cut keeps the exact prior bubble ("Unlinked rows in …").
+  ctx.feed.publish({
+    table,
+    op: 'unlink',
+    rowId: null,
+    source: ctx.source,
+    summary:
+      matched.length === 1
+        ? feedSummary('unlink', table, matched[0])
+        : `Unlinked ${String(matched.length)} rows in ${table}`,
+  });
 }
 
 // ── Undo / redo / revert ────────────────────────────────────────────────────
@@ -914,6 +1034,19 @@ export interface AuditEntry {
   before_json: string | null;
   after_json: string | null;
   undone: number;
+  /**
+   * The session (process) that WROTE this entry — the audit authorship key. On a
+   * shared cloud every member and the owner connect as a DISTINCT process with
+   * its own session id, so this identifies the actor's session. {@link undoGroup}
+   * uses it to refuse reversing an operation group another user authored. Null
+   * for a write with no session (a non-GUI / system caller).
+   */
+  session_id: string | null;
+  /**
+   * Operation-group id shared by every entry one logical multi-row operation
+   * wrote (see {@link MutationCtx.opGroup}), or null for a standalone change.
+   */
+  op_group: string | null;
 }
 
 /** Mask for a decrypted value that must never leave the process (audit images, API rows). */
@@ -1147,6 +1280,8 @@ export function parseAudit(row: Record<string, unknown>): AuditEntry {
     before_json: str(row.before_json),
     after_json: str(row.after_json),
     undone: Number(row.undone),
+    session_id: str(row.session_id),
+    op_group: str(row.op_group),
   };
 }
 
@@ -1175,7 +1310,12 @@ async function applyInverse(ctx: MutationCtx, entry: AuditEntry): Promise<void> 
       if (after) await db.unlink(entry.table_name, after);
       break;
     case 'unlink':
-      if (after) await db.link(entry.table_name, after);
+      // An unlink records the removed edge in `before` (there is no `after` — the
+      // row is gone), mirroring how a delete records the removed row in `before`.
+      // So the inverse RE-LINKS from `before`; reading the always-null `after` here
+      // made undo a no-op that flipped the entry to "undone" and reported success
+      // while restoring nothing.
+      if (before) await db.link(entry.table_name, before);
       break;
   }
 }
@@ -1294,4 +1434,235 @@ export async function revertEntry(ctx: MutationCtx, id: string): Promise<RevertR
     summary: reverseSummary('Reverted', entry),
   });
   return { ok: true, entry };
+}
+
+// ── Group undo (one multi-row operation reversed as one action) ─────────────
+
+/** One recorded change a group undo refused to touch, and why. */
+export interface GroupUndoConflict {
+  auditId: string;
+  table: string;
+  rowId: string | null;
+  reason: string;
+}
+
+export type GroupUndoResult =
+  | { ok: true; undone: number; tables: string[] }
+  | {
+      ok: false;
+      reason: 'not_found' | 'already_undone' | 'conflict' | 'forbidden';
+      conflicts: GroupUndoConflict[];
+    };
+
+/**
+ * The most audit entries one operation group may hold and still be undoable as a
+ * SINGLE action. One ceiling, two jobs:
+ *  - {@link undoGroup} loads at most this many entries at once — a BOUNDED read,
+ *    so a group undo never pulls an unbounded set of before/after images into
+ *    memory (egress + heap). A group larger than this is refused, not loaded.
+ *  - a grouped WRITE is capped to it at the source (`bulk_update` bounds its
+ *    matched-row set to this), so one tool call can never mint a group too large
+ *    to undo. Mirrors {@link UNLINK_UNDO_MAX_EDGES}: a change we cannot fully
+ *    record and replay is one we must not make — bounded and loud, never a silent
+ *    partial or an unbounded load.
+ */
+export const GROUP_UNDO_MAX_ENTRIES = 5000;
+
+/** True for an audit-image cell holding the capped derived-text preview (see capAuditImage). */
+function isCappedPreview(v: unknown): boolean {
+  return typeof v === 'string' && v.startsWith('[capped ');
+}
+
+/**
+ * Why `entry` cannot be safely reversed right now, or null when it can.
+ *
+ * The single-entry undo/revert paths deliberately just replay the inverse —
+ * the user is looking at one change and chose to reverse it. A GROUP undo
+ * reverses many rows sight-unseen, so before touching ANY of them it verifies
+ * each row still looks exactly like the recorded result of the group's change.
+ * A row someone edited (or removed) since would otherwise have that later edit
+ * silently overwritten by the blind inverse — the group undo must fail loudly
+ * instead, naming the row.
+ *
+ * link/unlink entries carry no single row id; their inverses are safe set
+ * operations (re-link is insert-or-ignore, re-unlink of a gone edge is a
+ * no-op), so they are not pre-checked.
+ */
+async function groupEntryConflict(db: Lattice, entry: AuditEntry): Promise<string | null> {
+  if (entry.operation === 'link' || entry.operation === 'unlink') return null;
+  if (isSchemaOp(entry.operation)) return null; // handler presence is checked by the caller
+  if (!entry.row_id) return 'the recorded change carries no row id to verify';
+  const current = await db.get(entry.table_name, entry.row_id);
+  if (entry.operation === 'delete') {
+    // Undo re-inserts the removed row — a row with the same id existing again
+    // (recreated since, or restored by someone else) would collide.
+    return current === null ? null : 'a row with this id exists again';
+  }
+  // insert / update — undo removes or overwrites the row, so the row must
+  // still match the recorded result of this change. On a shared cloud this
+  // read runs as the caller's role: a row the caller cannot see reads as
+  // missing and is refused here, never blindly overwritten.
+  if (current === null) return 'the row was removed after this change';
+  const after = entry.after_json ? (JSON.parse(entry.after_json) as Record<string, unknown>) : null;
+  if (!after || typeof after !== 'object' || Array.isArray(after)) {
+    return 'the recorded change has no result snapshot to verify against';
+  }
+  for (const [k, v] of Object.entries(after)) {
+    if (isCappedPreview(v)) continue; // capped derived text is not comparable
+    if (!(k in current)) continue; // column dropped since — nothing to compare
+    if (!storedValueMatches(current[k], v)) {
+      return `the row was edited after this change ("${k}" no longer matches)`;
+    }
+  }
+  return null;
+}
+
+/** Message text for an unknown thrown value (never swallows the original). */
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Undo EVERY live change recorded under one operation-group id as a single,
+ * all-or-nothing action.
+ *
+ * Order of operations:
+ *  1. Load the group's entries (a bounded read — one group is one logical
+ *     operation's writes), newest first.
+ *  2. Pre-flight EVERY entry ({@link groupEntryConflict}) before touching any
+ *     row. Any conflict aborts the whole undo with the full conflict list and
+ *     zero mutations — a group undo never silently skips a row.
+ *  3. Replay inverses newest-first, flipping each entry's `undone` flag as it
+ *     lands.
+ *  4. If an inverse fails mid-flight (despite the pre-flight), roll the
+ *     already-reversed entries forward again. Whether that rollback succeeds
+ *     or not, the failure is thrown loudly with exact counts — never reported
+ *     as success, never left silent.
+ *
+ * AUTHORSHIP-scoped, fail-closed. A group may be undone only by the session that
+ * authored it. RLS alone cannot bound this: on a shared cloud a member's scoped
+ * SELECT returns only the entries row-level security lets that member see (and
+ * link/unlink entries carry a NULL row_id every member is allowed to read), so a
+ * blind replay of "the visible slice" of ANOTHER user's group would flip that
+ * user's entries to undone and desync the audit from reality. The session-id gate
+ * below refuses that; the bounded read keeps a group undo off the unbounded-egress
+ * path. Row visibility for the writes themselves is still enforced by the
+ * pre-flight read plus (on a cloud) row-level security.
+ */
+export async function undoGroup(ctx: MutationCtx, opGroup: string): Promise<GroupUndoResult> {
+  // BOUNDED read (Rule: never load an unbounded result set on a hot path). Read
+  // one past the cap so an over-cap group is DETECTABLE, and never hold the whole
+  // before/after image set at once. A grouped write is capped to the same ceiling
+  // at the source (see bulk_update), so a group beyond it is one no single-action
+  // undo can honestly reverse — refuse loudly rather than egress-load a table's
+  // worth of images.
+  const rows = (await ctx.db.query('_lattice_gui_audit', {
+    filters: [{ col: 'op_group', op: 'eq', val: opGroup }],
+    orderBy: 'ts',
+    orderDir: 'desc',
+    limit: GROUP_UNDO_MAX_ENTRIES + 1,
+  })) as Record<string, unknown>[];
+  if (rows.length === 0) return { ok: false, reason: 'not_found', conflicts: [] };
+  if (rows.length > GROUP_UNDO_MAX_ENTRIES) {
+    throw new Error(
+      `This change group has more than ${String(GROUP_UNDO_MAX_ENTRIES)} recorded changes — too ` +
+        `many to undo as one action. Reverse it in smaller pieces from the version history.`,
+    );
+  }
+  const entries = rows.map(parseAudit);
+
+  // Authorship gate (app-layer, fail-closed). Every audit row carries the
+  // session id of the process that wrote it; on a shared cloud each member and
+  // the owner connect as a SEPARATE process with a distinct session id, and an
+  // operation-group id is a per-session UUID no other session ever reuses. So a
+  // group belongs entirely to ONE session, and "every entry I can see for this
+  // group carries MY session id" proves both that I authored it AND that I am
+  // looking at the WHOLE group, not an RLS-narrowed slice of someone else's. A
+  // foreign session id anywhere in the loaded set ⇒ refuse; we never flip
+  // `undone` on an entry another session authored, and never half-undo across a
+  // visibility boundary.
+  const callerSession = ctx.sessionId;
+  if (callerSession !== undefined) {
+    if (entries.some((e) => e.session_id !== callerSession)) {
+      return { ok: false, reason: 'forbidden', conflicts: [] };
+    }
+  } else if (ctx.db.isCloudMemberOpen()) {
+    // A shared-cloud member connection with no session identity cannot prove
+    // authorship — fail closed rather than reverse a group blind.
+    return { ok: false, reason: 'forbidden', conflicts: [] };
+  }
+
+  const live = entries.filter((e) => e.undone === 0);
+  if (live.length === 0) return { ok: false, reason: 'already_undone', conflicts: [] };
+
+  // Groups are stamped on row mutations only, so a schema entry here means a
+  // caller without schema handlers would crash mid-apply — refuse up front.
+  const schemaEntry = live.find((e) => isSchemaOp(e.operation));
+  if (schemaEntry && !ctx.applySchemaInverse) {
+    throw new Error(
+      `Cannot undo this change group: it contains a schema change ("${schemaEntry.operation}") and no schema handler is available`,
+    );
+  }
+
+  // Pre-flight every entry before mutating anything. Where one row was touched
+  // more than once in the group, only its NEWEST entry is checked against the
+  // current row — the older entries are reached stepwise as the newer inverses
+  // land, so checking them against the current state would false-positive.
+  const conflicts: GroupUndoConflict[] = [];
+  const checkedRows = new Set<string>();
+  for (const e of live) {
+    if (e.row_id) {
+      const key = `${e.table_name} ${e.row_id}`;
+      if (checkedRows.has(key)) continue;
+      checkedRows.add(key);
+    }
+    const reason = await groupEntryConflict(ctx.db, e);
+    if (reason) conflicts.push({ auditId: e.id, table: e.table_name, rowId: e.row_id, reason });
+  }
+  if (conflicts.length > 0) return { ok: false, reason: 'conflict', conflicts };
+
+  const applied: AuditEntry[] = [];
+  try {
+    for (const e of live) {
+      await applyInverse(ctx, e);
+      await ctx.db.update('_lattice_gui_audit', e.id, { undone: 1 });
+      applied.push(e);
+    }
+  } catch (cause) {
+    // All-or-nothing: roll the already-reversed entries forward again, oldest
+    // of the applied first (the reverse of the order they were undone in).
+    let rolledBack = 0;
+    let rollbackFailure: unknown = null;
+    for (const a of [...applied].reverse()) {
+      try {
+        await applyForward(ctx, a);
+        await ctx.db.update('_lattice_gui_audit', a.id, { undone: 0 });
+        rolledBack += 1;
+      } catch (err) {
+        rollbackFailure = err;
+        break;
+      }
+    }
+    if (rollbackFailure === null) {
+      throw new Error(
+        `Undo of this change group failed and was fully rolled back — nothing is undone: ${errText(cause)}`,
+        { cause },
+      );
+    }
+    const stillUndone = applied.length - rolledBack;
+    throw new Error(
+      `Undo of this change group FAILED PART-WAY: ${String(stillUndone)} of ${String(live.length)} changes are undone and could not be rolled back (undo error: ${errText(cause)}; rollback error: ${errText(rollbackFailure)}). Review the version history for this group before retrying.`,
+      { cause },
+    );
+  }
+
+  const tables = [...new Set(live.map((e) => e.table_name))];
+  ctx.feed.publish({
+    table: tables.length === 1 ? (tables[0] ?? null) : null,
+    op: 'undo',
+    rowId: null,
+    source: ctx.source,
+    summary: `Undid a bulk change — ${String(live.length)} change${live.length === 1 ? '' : 's'} across ${tables.join(', ')}`,
+  });
+  return { ok: true, undone: live.length, tables };
 }

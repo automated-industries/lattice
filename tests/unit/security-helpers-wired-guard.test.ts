@@ -48,9 +48,10 @@ import { join } from 'node:path';
  * count is not a substitute for one.
  *
  * The consent machinery that example refers to no longer exists — a wide or
- * multi-object removal is refused unconditionally, so there is no authorization state
- * to reach or to miss. The example is kept because the CLASS is not specific to it,
- * and because it is the clearest one anybody here has hit.
+ * multi-object IRREVERSIBLE removal is refused unconditionally (and a reversible one
+ * simply proceeds, with undo as its safety net), so there is no authorization state to
+ * reach or to miss. The example is kept because the CLASS is not specific to it, and
+ * because it is the clearest one anybody here has hit.
  */
 const SRC = join(import.meta.dirname, '..', '..', 'src');
 

@@ -95,7 +95,7 @@ describe('parseDelimited', () => {
 });
 
 describe('csvToRecords', () => {
-  it('reads a CSV into {entity: rows}, keyed by the file name, coercing clean numbers', () => {
+  it('reads a CSV into {entity: rows}, keyed by the file name, coercing clean numbers', async () => {
     const path = writeFile('customers.csv', 'name,revenue,region\nAcme,300,East\nBeta,500,West\n');
     const out = csvToRecords(path, 'customers.csv');
     expect(Object.keys(out)).toEqual(['customers']);
@@ -104,7 +104,7 @@ describe('csvToRecords', () => {
       { name: 'Beta', revenue: 500, region: 'West' },
     ]);
     // Coerced numbers type the column numerically through the real inference pipeline.
-    const schema = inferSchema(out);
+    const schema = await inferSchema(out);
     const entity = schema.entities.find((e) => e.name === 'customers');
     expect(entity?.columns.find((c) => c.name === 'revenue')?.type).toBe('integer');
   });

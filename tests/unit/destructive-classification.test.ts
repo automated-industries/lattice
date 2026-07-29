@@ -13,24 +13,26 @@ import {
 } from '../../src/gui/ai/dispatch.js';
 
 /**
- * CLASSIFICATION IS WHAT MAKES THE REFUSAL FIRE.
+ * CLASSIFICATION IS WHAT MAKES THE GATE FIRE.
  *
- * The gate refuses a wide or multi-object removal outright — no approval exists that
- * would let it through. That refusal only ever happens for a call the classifier
- * recognises: a tool outside REMOVAL_TOOLS is never measured, so it never counts
- * toward the turn and is never gated by anything. Which makes classification, not
- * authorization, the load-bearing part.
+ * The gate only ever acts on a call the classifier recognises: a tool outside
+ * REMOVAL_TOOLS is never measured, so it never counts toward the turn. What the gate
+ * DOES with a classified call now depends on one property — reversibility. A REVERSIBLE
+ * change (a clear/blank, an unlink, a merge or dedup, a soft row delete to the trash)
+ * proceeds at any scale, because undo/version-history/trash is the safety net. Only an
+ * IRREVERSIBLE hard removal (delete_data / delete_cascade) still hits the size wall.
+ * So classification is load-bearing twice over: it decides whether a call is measured
+ * at all, and it decides which arm — reversible or not — the call falls into.
  *
- * Four ways it was wrong, each measured with rows really gone:
+ * The classification defects this file guards, each measured with rows really gone:
  *
- *  1. `merge_rows` and `dedup` were not classified at all, so a single call could
- *     collapse an arbitrary number of records with nothing in the way. `dedup`'s
- *     `fuzzy` in particular decides whether it merges 0 records or hundreds.
+ *  1. `merge_rows` and `dedup` were not classified at all, so a single call was invisible
+ *     to the gate. `dedup`'s `fuzzy` in particular decides whether it merges 0 records or
+ *     hundreds, and its size is stated as a BOUND, not a scan.
  *  2. `update_row` was not in REMOVAL_TOOLS either, so the identical destruction
- *     `bulk_update` classifies as `clear` was ungated one row at a time — which is
- *     exactly the shape of a wide plan split under the line.
- *  3. A clear whose blast radius could not be COUNTED came back as "not destructive",
- *     so an unmeasurable act ran ungated. Unknown must read as wide.
+ *     `bulk_update` classifies as `clear` was invisible one row at a time.
+ *  3. A clear whose blast radius could not be COUNTED came back as "not destructive"; it
+ *     must still classify (as unknown), even though a reversible clear proceeds anyway.
  *  4. `args.id` — unvalidated model text — was interpolated into the sentence the user
  *     reads, and column names were validated with the `in` operator, so every
  *     Object.prototype name passed as a real column of the table.
@@ -220,13 +222,12 @@ describe('what a destructive call is classified as, and how big it is measured t
     return rows.map((r) => String(r.id)).sort();
   }
 
-  // ── 1. merge_rows and dedup are classified, so a wide one is refused ────────
+  // ── 1. merge_rows and dedup are classified — and, being reversible, proceed ──
 
-  it('refuses a merge that names more records than the threshold, and every one of them is still there', async () => {
-    // One record over the line — the smallest merge the gate has to refuse. Every id
-    // names a record that really exists, which is what makes the measured size the
-    // real size: `countExisting` measures how many of them are records, not how many
-    // the call claims.
+  it('merges however many records the request names — a reversible merge has no size wall', async () => {
+    // Well over the old line. A merge soft-deletes the losers to the recoverable trash
+    // and undoes as one action, so there is no scale at which it is refused — undo is
+    // the safety net. Every id names a record that really exists.
     const dupes = DESTRUCTIVE_ROW_THRESHOLD + 1;
     const merge = {
       table: 'notes',
@@ -234,13 +235,17 @@ describe('what a destructive call is classified as, and how big it is measured t
       duplicate_ids: Array.from({ length: dupes }, (_, i) => `n_archived_${String(i + 1)}`),
     };
     const r = await executeFunction(ctx, 'merge_rows', merge, new TurnOutcomeLedger());
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain('REFUSED');
-    // THE assertion, on the data. Before merge_rows was classified at all, one call
-    // collapsed every one of them with nothing in the way.
-    expect((await liveIds('notes')).filter((id) => id.startsWith('n_archived_'))).toHaveLength(
-      NOTE_HALF,
-    );
+    expect(r.ok).toBe(true);
+    expect(r.error ?? '').not.toContain('REFUSED');
+    // THE assertion, on the data: the merged-away records are gone from the live set
+    // (survivor + the three archived rows the merge did not name remain)...
+    const liveArchived = (await liveIds('notes')).filter((id) => id.startsWith('n_archived_'));
+    expect(liveArchived).toHaveLength(NOTE_HALF - dupes);
+    // ...and they are RECOVERABLE — soft-deleted to the trash, not destroyed.
+    const trashed = (
+      await db.query('notes', { filters: [{ col: 'deleted_at', op: 'isNotNull' }] })
+    ).filter((r) => String(r.id).startsWith('n_archived_'));
+    expect(trashed).toHaveLength(dupes);
   });
 
   it('still merges a handful of named records — the threshold is a size, not a ban', async () => {
@@ -256,15 +261,13 @@ describe('what a destructive call is classified as, and how big it is measured t
     );
   });
 
-  // ── 1b. a dedup is BOUNDED by the table's size, never measured by a scan ─────
+  // ── 1b. a dedup's size is a BOUND — but, being reversible, it is never refused ─
 
-  it('refuses a dedup on a table bigger than the threshold, and merges none of it', async () => {
-    // The bound IS the classification: a table with N live records can lose at most N−1
-    // to merging, so a table this size is over the line whatever the duplicate scan
-    // would have found in it. That is deliberate — the scan is quadratic and
-    // synchronous, and running it in the gate to get a truer number froze the whole
-    // server (see the `dedup` branch in dispatch.ts). Refusing off one bounded COUNT(*)
-    // is the trade.
+  it('dedups a table of any size — a reversible dedup has no size wall', async () => {
+    // The table is well over the old line, and a dedup is reversible: the losers go to
+    // the recoverable trash and the pass undoes as one action, so it proceeds whatever
+    // its size. The exact pass here merges only the byte-identical trio; the rest of the
+    // table is untouched.
     expect(PEOPLE_ROWS - 1).toBeGreaterThan(DESTRUCTIVE_ROW_THRESHOLD);
     const r = await executeFunction(
       ctx,
@@ -272,10 +275,18 @@ describe('what a destructive call is classified as, and how big it is measured t
       { table: 'people', fuzzy: false },
       new TurnOutcomeLedger(),
     );
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain('REFUSED');
-    // THE assertion, on the data: every record is still live, so nothing merged.
-    expect(await liveIds('people')).toHaveLength(PEOPLE_ROWS);
+    expect(r.ok).toBe(true);
+    expect(r.error ?? '').not.toContain('REFUSED');
+    // THE assertion, on the data: the identical trio collapsed to ONE survivor (two
+    // merged away), and every other record is still live.
+    const liveDup = (await liveIds('people')).filter((id) => id.startsWith('p_dup_'));
+    expect(liveDup).toHaveLength(1);
+    expect(await liveIds('people')).toHaveLength(PEOPLE_ROWS - (EXACT_TRIO - 1));
+    // ...and the merged-away pair is recoverable, not destroyed.
+    const trashed = (
+      await db.query('people', { filters: [{ col: 'deleted_at', op: 'isNotNull' }] })
+    ).filter((r) => String(r.id).startsWith('p_dup_'));
+    expect(trashed).toHaveLength(EXACT_TRIO - 1);
   });
 
   it('says WHICH duplicate scan it is describing, and states its size as a BOUND', async () => {
@@ -298,15 +309,18 @@ describe('what a destructive call is classified as, and how big it is measured t
     expect(fuzzy?.detail).toContain(`up to ${String(PEOPLE_ROWS - 1)}`);
   });
 
-  // ── 2. update_row is the same destruction as bulk_update ────────────────────
+  // ── 2. update_row is the same destruction as bulk_update — and reversible ────
 
-  it('counts an update_row clear toward the turn’s destructive plan', async () => {
-    // One single-row clear per record is the same destruction as one bulk_update over
-    // all of them, and must reach the same threshold. Before update_row was classified,
-    // a wide plan split into single-row calls was never gated by anything at all.
+  it('never refuses a reversible clear, however many records the turn spans', async () => {
+    // A single-row clear is the same destruction as one bulk_update over all of them,
+    // and both are reversible — the prior value is kept in the audit image and the undo
+    // restores it. So a whole object cleared one record at a time proceeds end to end,
+    // however far over the old line it runs: undo is the safety net, not a size limit.
     //
     // These are real, separate calls on purpose: accumulating across the turn IS the
-    // code path under test, so there is no cheaper construction that still exercises it.
+    // code path that used to refuse, so there is no cheaper construction that proves it
+    // no longer does.
+    expect(NOTE_HALF).toBeGreaterThan(DESTRUCTIVE_ROW_THRESHOLD);
     const ledger = new TurnOutcomeLedger();
     let refusedAt = -1;
     for (let i = 0; i < NOTE_HALF; i++) {
@@ -321,10 +335,17 @@ describe('what a destructive call is classified as, and how big it is measured t
         break;
       }
     }
-    expect(refusedAt).toBeGreaterThan(-1);
-    // ...and it stopped at the threshold rather than after the object was empty.
-    const wiped = (await db.query('notes', { filters: [{ col: 'body', op: 'isNull' }] })).length;
-    expect(wiped).toBeLessThanOrEqual(DESTRUCTIVE_ROW_THRESHOLD + 1);
+    // Never refused, and every record in the active half really was cleared.
+    expect(refusedAt).toBe(-1);
+    const wiped = (
+      await db.query('notes', {
+        filters: [
+          { col: 'body', op: 'isNull' },
+          { col: 'owner', op: 'eq', val: 'active' },
+        ],
+      })
+    ).length;
+    expect(wiped).toBe(NOTE_HALF);
   });
 
   it('leaves an ordinary one-row edit alone', async () => {
@@ -340,33 +361,44 @@ describe('what a destructive call is classified as, and how big it is measured t
     expect((await db.get('notes', 'n_active_0'))?.body).toBeNull();
   });
 
-  // ── 3. an unmeasurable act is WIDE, never harmless ──────────────────────────
+  // ── 3. an unmeasurable clear still classifies — and, being reversible, proceeds ─
 
-  it('treats a clear whose blast radius cannot be counted as WIDE, not as harmless', async () => {
-    // The pre-flight count is the only thing that says how big a clear is. When it
-    // fails, the classifier used to return null — "not destructive" — and the call
-    // ran ungated. Every other counted branch already treats an uncountable target
-    // as wide; this is the one that did not.
+  it('still classifies an uncountable clear (marks it unknown), but does not refuse it', async () => {
+    // The pre-flight count is the only thing that says how big a clear is. When it fails,
+    // the classifier must still return a destructive intent that reads UNKNOWN — never
+    // null ("not destructive"), which would hide the act from honest reporting. But a
+    // clear is reversible, so an uncountable one is NOT refused: undo is the safety net,
+    // and the size the count could not establish would only ever have governed a wall
+    // that no longer applies to reversible acts.
     const real = db.boundedCount.bind(db);
     (db as unknown as { boundedCount: unknown }).boundedCount = () =>
       Promise.reject(new Error('count exploded'));
     try {
+      // Classified, and honest that it could not measure itself.
+      const intent = await destructiveIntent(ctx, 'bulk_update', {
+        table: 'notes',
+        set: { body: null },
+      });
+      expect(intent).not.toBeNull();
+      expect(intent?.rowsUnknown).toBe(true);
+      expect(intent?.reversible).toBe(true);
+      expect(intent?.detail).toContain('record count unknown');
+
+      // ...and it proceeds rather than being refused.
       const r = await executeFunction(
         ctx,
         'bulk_update',
         { table: 'notes', set: { body: null } },
         new TurnOutcomeLedger(),
       );
-      expect(r.ok).toBe(false);
-      expect(r.error).toContain('REFUSED');
-      // ...and it says so, rather than printing a reassuring zero.
-      expect(r.error).toContain('unknown number of');
+      expect(r.ok).toBe(true);
+      expect(r.error ?? '').not.toContain('REFUSED');
     } finally {
       (db as unknown as { boundedCount: unknown }).boundedCount = real;
     }
-    // Nothing was cleared.
+    // Every record really was cleared — the clear ran in full.
     const wiped = (await db.query('notes', { filters: [{ col: 'body', op: 'isNull' }] })).length;
-    expect(wiped).toBe(0);
+    expect(wiped).toBe(2 * NOTE_HALF + 1);
   });
 
   // ── 4. no model prose in the sentence, and no fake columns ──────────────────

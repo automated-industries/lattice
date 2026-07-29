@@ -143,7 +143,11 @@ export function emitDdlEnvelope(_active: ActiveDb, _table: string | null): Promi
   return Promise.resolve();
 }
 
-/** Record a schema op to the unified history + activity feed + emit a ddl envelope. */
+/**
+ * Record a schema op to the unified history + activity feed + emit a ddl
+ * envelope. Returns the audit-entry id so a caller can wire a one-click undo to
+ * exactly this change (the id feeds the per-entry revert route).
+ */
 export async function recordSchemaOp(
   active: ActiveDb,
   operation: string,
@@ -152,8 +156,8 @@ export async function recordSchemaOp(
   after: unknown,
   summary: string,
   sessionId: string,
-): Promise<void> {
-  await recordSchemaAudit(
+): Promise<string> {
+  const auditId = await recordSchemaAudit(
     active.db,
     active.feed,
     table,
@@ -165,6 +169,7 @@ export async function recordSchemaOp(
     sessionId,
   );
   await emitDdlEnvelope(active, table);
+  return auditId;
 }
 
 /**
@@ -763,7 +768,7 @@ export async function softDeleteUserEntity(
   name: string,
   sessionId: string,
   summary?: string,
-): Promise<void> {
+): Promise<string> {
   // A computed table is not an entity — it is deleted through its own
   // definition path (deleteComputedTable), never soft-deleted like a table.
   if (active.computedTables.has(name)) {
@@ -788,7 +793,7 @@ export async function softDeleteUserEntity(
   active.softDeletable.delete(name);
   active.entityContextByTable.delete(name);
   syncCanonicalContexts(active);
-  await recordSchemaOp(
+  return recordSchemaOp(
     active,
     'schema.delete_entity',
     name,
@@ -1690,7 +1695,9 @@ export interface RenameCascade {
   proposals: number;
 }
 
-export type RenameOutcome = { ok: true; cascade: RenameCascade } | { ok: false; error: string };
+export type RenameOutcome =
+  | { ok: true; cascade: RenameCascade; auditId: string }
+  | { ok: false; error: string };
 
 /** Rename a key in place, preserving the order of every other key. */
 function renameKey<T>(obj: Record<string, T>, from: string, to: string): Record<string, T> {
@@ -2568,7 +2575,7 @@ export async function renameUserEntity(
     cascade.dashboards = await repointDashboards(active, renames);
     cascade.proposals = await repointProposals(active, renames);
 
-    await recordSchemaOp(
+    const auditId = await recordSchemaOp(
       active,
       'schema.rename_entity',
       to,
@@ -2577,7 +2584,7 @@ export async function renameUserEntity(
       `Renamed table ${from} → ${to}`,
       sessionId,
     );
-    return { ok: true, cascade };
+    return { ok: true, cascade, auditId };
   });
 }
 

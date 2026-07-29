@@ -248,9 +248,7 @@ export const questionsJs = `
           });
         },
         onDismiss: function (card) {
-          // Dismissing drops a pending question for good — confirm so a stray
-          // click can't discard it silently.
-          if (typeof confirm === 'function' && !confirm('Dismiss this question?')) return;
+          // Dismissing resolves the card in place — it visibly reads "Dismissed".
           qCardBusy(card, true);
           postQuestionAction(q.id, 'dismiss').then(function () {
             qMarkResolved(q.id, card, 'Dismissed');
@@ -420,7 +418,7 @@ export const questionsJs = `
               }).catch(function (e) { qCardBusy(c, false); qCardError(c, e.message); });
             },
             onDismiss: function (c) {
-              if (typeof confirm === 'function' && !confirm('Dismiss this question?')) return;
+              // Dismissing resolves the card in place — it visibly reads "Dismissed".
               qCardBusy(c, true);
               postQuestionAction(q.id, 'dismiss').then(function () {
                 qCardResolve(c, 'Dismissed');

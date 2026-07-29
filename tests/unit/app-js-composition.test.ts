@@ -670,8 +670,72 @@ import { appJs } from '../../src/gui/app/script.js';
 // the remembered open-question id, the option INDEX passed to onAnswer, and the
 // questionId/optionIndex fields on the send body + the queued-item copies are all
 // gone. A question is a question again. Recaptured.
-const ORIGINAL_LENGTH = 857213;
-const ORIGINAL_SHA256 = '20201a88755d73f4adb58f126efae031236ac1aa5dc56df71ba07e6e0743f90e';
+// Clickable citations feature: open-record navigation action (wired to citation badges),
+// provenance read operation for interactive data-lineage popovers, + guidance in the
+// HTML authoring prompt. Recaptured.
+// Part A - side-by-side record panel: when a dashboard citation is clicked, open the
+// linked record/file in a panel alongside the dashboard (rather than replacing it). The
+// panel reflows the layout (flex row, ~40% width) with a close button (✕) to restore
+// full width. Reuses existing file preview + record renderers (openDashboardRecordPanel,
+// closeDashboardRecordPanel in dashboard.ts module). HTML structure added to renderDashboardPage
+// (wrap the dash-frame + new panel in a .dash-frame-wrap flex row). CSS added for the panel
+// layout, header, scroll area, and record-field display. Part B - honest + robust citation
+// wiring: strengthened html-author.ts guidance to prefer explicit FILE_MAP (mapping labels
+// to file ids) + drop interactive affordances for unresolved citations (no dead controls) +
+// never emit uninterpolated ${} into attributes. Strengthened create_dashboard spec field
+// guidance in registry.ts to enumerate source documents as "Source: <label> = files id <id>"
+// pairs, ensuring citations resolve correctly by id rather than fragile runtime name-matching.
+// Recaptured.
+// 5.6 merge: citations branch integrated on top of the 5.5 client (open-record broker
+// action added ALONGSIDE the retained showSource + sidebar add-file handlers; both the
+// dash-source provenance row and the side-by-side record panel mount under a wrapping
+// .dash-frame-wrap). Recaptured once for the merged client.
+// 5.6 bulk undo: the version-history page collapses audit entries sharing an
+// operation-group id (all the rows one bulk operation wrote) into a single card
+// — what happened, how many records — with one "Undo this change" control that
+// posts to the whole-group undo endpoint (all-or-nothing server-side; a 409
+// conflict is surfaced verbatim, never a silent partial undo). Pure grouping
+// helper (groupHistoryEntries) + group card renderer (historyGroupHtml) +
+// endpoint wiring in renderHistory. Recaptured.
+// 5.6 empty-bucket subheads: renderNavTables always renders all three DATA
+// subheads (TABLES / CONNECTORS / DATABASES) — an empty bucket keeps its group
+// and shows an empty-state line + add affordance (files → the FILES section's
+// add menu; connectors / databases → the matching Configure tab) instead of the
+// whole section body collapsing to a single bare "No tables yet." line on a
+// fresh workspace. Recaptured.
+// 5.6 motion vocabulary + final recapture: spinner call sites now render the
+// shared .lat-spinner primitive (the graph loading ring composes it alongside
+// .graph-spinner), so one keyframe + duration token drives every ring. This
+// recapture covers the merged 5.6 client: bulk-undo affordance, update-pill
+// placement, empty-bucket nav subheads, and the motion vocabulary. Recaptured.
+// 5.6 zero-decision import: the structured-source drop has no confirm card any more. The
+// inline-import segment drops the card renderer + the card-apply path entirely; handleAutoImport
+// routes every case (new dataset, or a known-document re-import with no date) to the silent
+// executor. Length + hash recaptured for the shrunken client.
+// 5.6 import date fidelity: the silent apply now forwards the proposal's detected file-level
+// date (asOf: autoImport.asOf || '') so a brand-new dataset that reports its own period is filed
+// under that date instead of the import day; only an undated drop falls back to the import day.
+// Length + hash recaptured.
+// 5.6 one-click undo for schema changes: the data-model editor's delete-table,
+// delete-link, and rename success toasts now carry an Undo button (schemaUndoFn),
+// pointed at exactly the change the server just recorded by its audit id. The
+// button replays the same per-entry revert the version-history page uses, so it
+// restores THAT change (the table reappears, the link comes back, the old name
+// returns); if the workspace has moved on the server refuses loudly and names the
+// reason instead of a silent no-op. The stale "irreversible from the GUI" /
+// "cannot be undone" copy on those confirmations is corrected to say the change
+// can be undone right after. Length + hash recaptured.
+// 5.6 undo-first UX: now that reversible actions carry a one-click Undo, the
+// confirmations on them are removed — the schema danger-zone type-the-name /
+// delete-link / rename prompts, plus the disconnect-model, forget-cloud,
+// remove-computed-view, remove-dashboard, remove-file-source, disconnect-database,
+// and dismiss-question confirms. Each action now just happens and shows a visible
+// Undo (or relies on the reconnect / history path); the oversized-cascade refusal
+// on a table delete is kept (it prevents a half-applied delete). First run also
+// auto-creates a default local workspace instead of the Create-vs-Join wall (Join
+// via invite stays in the workspace menu). Length + hash recaptured.
+const ORIGINAL_LENGTH = 860435;
+const ORIGINAL_SHA256 = '1adefe936320198d3d094ae8d2184cef0b36b6e935d4d84e92b7e41c2aac262c';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

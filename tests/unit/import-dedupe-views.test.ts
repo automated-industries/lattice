@@ -24,10 +24,10 @@ function data() {
 }
 
 describe('dedupeAndDetectViews', () => {
-  it('recognizes per-fund tabs as views of the master and drops them as tables', () => {
+  it('recognizes per-fund tabs as views of the master and drops them as tables', async () => {
     const d = data();
-    const plan = inferSchema(d);
-    const { plan: next, views } = dedupeAndDetectViews(plan, d);
+    const plan = await inferSchema(d);
+    const { plan: next, views } = await dedupeAndDetectViews(plan, d);
 
     // F1 + F2 detected as views of the master; Sectors + master untouched.
     expect(views.map((v) => v.name).sort()).toEqual(['f1', 'f2']);
@@ -47,7 +47,7 @@ describe('dedupeAndDetectViews', () => {
     expect(names).not.toContain('f2');
   });
 
-  it('leaves tables alone when there is no containing master', () => {
+  it('leaves tables alone when there is no containing master', async () => {
     const d = {
       Alpha: [
         { id: '1', x: 1 },
@@ -55,8 +55,25 @@ describe('dedupeAndDetectViews', () => {
       ],
       Beta: [{ name: 'p', y: 9 }],
     };
-    const { views, plan: next } = dedupeAndDetectViews(inferSchema(d), d);
+    const { views, plan: next } = await dedupeAndDetectViews(await inferSchema(d), d);
     expect(views).toHaveLength(0);
     expect(next.entities.map((e) => e.name).sort()).toEqual(['alpha', 'beta']);
+  });
+
+  it('yields the event loop while normalizing the source (not one un-interrupted pass)', async () => {
+    // The per-row normalize is O(rows × cols); on a giant sheet an un-yielded pass would
+    // freeze the server + Stop button. With a tight cadence every scanned row hands the loop
+    // back, so a real yield happens instead of the whole sheet running in one tick.
+    const rows = Array.from({ length: 64 }, (_, i) => ({ name: 'r' + String(i), amount: i }));
+    const d = { ledger: rows };
+    const plan = await inferSchema(d);
+    let yields = 0;
+    await dedupeAndDetectViews(plan, d, {
+      yieldEvery: 1,
+      onYield: async () => {
+        yields++;
+      },
+    });
+    expect(yields).toBeGreaterThan(0);
   });
 });

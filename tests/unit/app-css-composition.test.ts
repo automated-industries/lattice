@@ -272,8 +272,31 @@ import { css } from '../../src/gui/app/css.js';
 // 5.5 (cont.): both removed again with the destructive-confirmation card itself —
 // the assistant no longer performs wide or multi-object removals, so no card exists
 // to style. Recaptured.
-const ORIGINAL_LENGTH = 173774;
-const ORIGINAL_SHA256 = '26045ae28b3f12a5b5592f435063b05777a83ada68035b4accdafc9ccd2a1314';
+// 5.6 dashboard record panel: .dashboard-record-panel side-by-side reflow layout
+// (.dash-frame-wrap flex row + wrap, .panel-header/.panel-close/.panel-scroll,
+// .record-fields/.record-field) for the open-record citation click-through, plus
+// the full-width .dash-source row under the now-flex wrap. Length + hash recaptured.
+// 5.6 bulk undo: the .op-bulk history pill for the version-history card that
+// collapses one bulk operation's entries into a single row. Recaptured.
+// 5.6 header update-pill placement: a VISIBLE #app-update-link takes over the
+// header's flexible gap (margin-left: auto) and the adjacent .configure-trigger
+// drops its own auto margin for that case, so the pill sits at the far right
+// immediately left of Configure instead of stranded mid-header. Hidden state
+// unchanged. Recaptured.
+// 5.6 empty-bucket subheads: the .nav-add-item add affordance rendered inside an
+// empty TABLES / CONNECTORS / DATABASES group body (muted table-item-shaped
+// button + hover), next to the existing .nav-empty line. Recaptured.
+// 5.6 motion vocabulary + final recapture: the bespoke per-surface spinner
+// keyframes (feed, connect wall, inline import, graph) are retired for the one
+// shared lattice-spin keyframe + --dur-spin duration token + .lat-spinner
+// primitive (reduced-motion kill switch included). This recapture covers the
+// merged 5.6 stylesheet: bulk-undo history pill, update-pill placement,
+// empty-bucket nav subheads, and the motion vocabulary. Recaptured.
+// 5.6 zero-decision import: the inline structured-import confirm card is gone, so its whole
+// stylesheet section (the .cd-* / .imp-* card rules) is removed from the composed sheet. Length
+// + hash recaptured.
+const ORIGINAL_LENGTH = 174231;
+const ORIGINAL_SHA256 = '29a58c536d2ef89770c3f9acb55d936566a29a96704eeb76d689ce482be53244';
 
 describe('css composition', () => {
   // Normalize line endings before pinning so a CRLF (Windows) checkout doesn't

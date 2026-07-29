@@ -62,6 +62,7 @@ describe('auditEntryWithoutImages — undo/redo/revert echoes drop decrypted ima
       before_json: JSON.stringify({ api_token: 'sk-CLEARTEXT' }),
       after_json: JSON.stringify({ api_token: 'sk-CLEARTEXT-2' }),
       undone: 0,
+      op_group: null,
     };
     const out = auditEntryWithoutImages(entry);
     expect(out.before_json).toBeNull();

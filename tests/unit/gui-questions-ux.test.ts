@@ -158,25 +158,31 @@ describe('UX-review bundle wiring (composed client)', () => {
     // logic went with the retired Configure tab strip.)
   });
 
-  it('the pending state has a non-visual signal (aria-label + aria-live) and dismiss confirms', () => {
+  it('the pending state has a non-visual signal (aria-label + aria-live); dismiss resolves in place (no confirm)', () => {
     expect(appJs).toContain(' question waiting');
     expect(appJs).toContain(' questions waiting');
     expect(appJs).toContain("'q-live'");
     expect(appJs).toContain("setAttribute('aria-live', 'polite')");
-    expect(appJs).toContain("confirm('Dismiss this question?')");
+    // Dismiss is reversible-in-effect and visibly resolves the card ("Dismissed"),
+    // so it no longer prompts — the confirm was removed.
+    expect(appJs).not.toContain("confirm('Dismiss this question?')");
   });
 
   // (Removed: the computed-view AI-pending banner lived on the old Formatted/Markdown
   // collection page, which is now the SQL runner — computed tables render through the
   // same runner, so there is no per-collection pending-fill banner.)
 
-  it('deleting a computed table or a dashboard confirms before the DELETE', () => {
-    // Computed-table builder Remove.
-    expect(appJs).toContain("confirm('Remove ' + cbS.name + '? You can undo this from history.')");
-    // Dashboard ⋯ Delete.
-    expect(appJs).toContain(
+  it('deleting a computed table or a dashboard just happens (undo from history, no confirm)', () => {
+    // Both deletes are recorded + reversible, so the confirms were removed — the
+    // Undo toast is the safety net.
+    expect(appJs).not.toContain(
+      "confirm('Remove ' + cbS.name + '? You can undo this from history.')",
+    );
+    expect(appJs).not.toContain(
       `window.confirm('Remove "' + (row.title || 'dashboard') + '"? You can undo this from history.')`,
     );
+    // The computed-view delete still tells the user it is undoable from history.
+    expect(appJs).toContain("Removed ' + name + ' \\u00b7 undo from history");
   });
 });
 

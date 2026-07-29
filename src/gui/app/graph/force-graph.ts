@@ -262,7 +262,7 @@ export function createForceGraph(mount: El, options: ForceGraphOptions = {}): Fo
   const loadingEl = document.createElement('div');
   loadingEl.setAttribute('class', 'graph-loading');
   const spinnerEl = document.createElement('div');
-  spinnerEl.setAttribute('class', 'graph-spinner');
+  spinnerEl.setAttribute('class', 'lat-spinner graph-spinner');
   loadingEl.appendChild(spinnerEl);
   mount.appendChild(loadingEl);
   function reveal(): void {

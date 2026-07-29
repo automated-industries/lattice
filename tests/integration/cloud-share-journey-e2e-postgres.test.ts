@@ -202,6 +202,14 @@ describe.skipIf(!PG_URL)(
     it('drives the full share journey over the HTTP API with RLS-correct visibility', async () => {
       const { ownerDb, cloudUrl } = await makeCloud();
       const owner = await bootOwnerGui(cloudUrl, 'Team Cloud');
+      // The owner-side member grants (RLS + the bookkeeping read-grants, incl. the
+      // `_lattice_gui_meta` read-grant the member render needs) settle in the
+      // BACKGROUND after the owner GUI opens. A member that renders before that
+      // background converge finishes races the grant and fails with "permission
+      // denied for table _lattice_gui_meta". Everything below acts as a member, so
+      // wait for the owner's convergence to settle first — the barrier the GUI
+      // server exposes for exactly this ordering (see GuiServerHandle.whenConverged).
+      await owner.whenConverged();
 
       // ── Owner creates three rows. All start owner-private. ─────────────────────
       // (Owner side runs through the owner's library connection: the render layout

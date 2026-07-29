@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson, readJson, parsePageParam, MAX_ROWS_PAGE } from './http.js';
 import type { Row } from '../types.js';
 import type { GuiRequestContext } from './request-context.js';
+import type { ActiveDb } from './active-db.js';
 import { readRelationFor, attachRowAccess, isRegisteredTable } from './active-db.js';
 import {
   createRow,
@@ -9,9 +10,16 @@ import {
   deleteRow,
   linkRows,
   unlinkRows,
+  loadSecretColumns,
   FILES_BYTE_LOCATION_COLS,
 } from './mutations.js';
+import { previewRowChanges, maskPreviewFields, PREVIEW_DEFAULT_LIMIT } from './change-preview.js';
+import { maskedColumnsForTables } from '../cloud/audience.js';
 import { ROWS_PATH, LINK_PATH } from './route-paths.js';
+
+/** POST /api/tables/:table/preview-changes — read-only change preview. No overlap
+ *  with ROWS_PATH (which requires a `/rows` segment) or any read-route regex. */
+const PREVIEW_CHANGES_PATH = /^\/api\/tables\/([^/]+)\/preview-changes$/;
 
 /** Placeholder shown in place of a framework-encrypted column's decrypted value in an API
  *  response (never ship cleartext credentials over HTTP). */
@@ -64,6 +72,169 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
 }
 
 /**
+ * POST /api/tables/:table/preview-changes — a READ-ONLY preview of a proposed
+ * row change: which records would be affected and the before/after of every
+ * field, without writing anything. Not wired to any approval or confirmation
+ * flow — it is a lens, not a gate.
+ *
+ * Body: { set: {col: value, …}, ids?: string[] | filter?: [{col,op,val}…],
+ *         limit?: number, offset?: number }
+ * — the same change description the row-mutation tools compute internally
+ * (update_row's id + values; bulk_update's filter + set). The row selection and
+ * the per-field deltas run through the SAME functions the execution paths use
+ * (bulkSelection / rowFieldDeltas via previewRowChanges), so the preview cannot
+ * drift from what an execution then does.
+ *
+ * Bounded: one page-sized SELECT (limit clamped to MAX_ROWS_PAGE) plus one
+ * bounded COUNT for the total — never a whole-table scan, however many rows
+ * match. Permission-checked like the row reads: registered-table gate, the
+ * `secrets` refusal, reads through the member's audience-masked view (so RLS
+ * scopes the rows and guarded cells never reach the process), and a serve-time
+ * viewer mask — framework-encrypted columns always, plus every column this
+ * viewer's read views guard on a scoped cloud connection. A masked field ships
+ * as a bare {column, masked:true} marker: no value in either direction and no
+ * changed flag (which would be an equality oracle against the guarded cell).
+ *
+ * Table-level write gates mirror execution: a computed or connected-source
+ * table answers 409 with the same "can't be edited" explanation the write
+ * paths give, so a preview never promises a change execution would refuse.
+ * Column-level write guards (reserved files/dashboards columns) stay at
+ * execution — they refuse specific writes loudly; the preview only reads.
+ */
+async function handlePreviewChanges(
+  req: IncomingMessage,
+  res: ServerResponse,
+  active: ActiveDb,
+  table: string,
+): Promise<void> {
+  if (!isRegisteredTable(active, table)) {
+    sendJson(res, { error: `Unknown table: ${table}` }, 400);
+    return;
+  }
+  if (table === 'secrets') {
+    sendJson(res, { error: `Table not available via this API: ${table}` }, 403);
+    return;
+  }
+  if (active.db.isComputedTable(table)) {
+    sendJson(
+      res,
+      {
+        error: `"${table}" is a computed view and can't be edited directly — there is no change to preview. Change its underlying records or its definition instead.`,
+      },
+      409,
+    );
+    return;
+  }
+  if (active.db.getConnectedSource(table)) {
+    sendJson(
+      res,
+      {
+        error: `"${table}" is a live, read-only view of a connected external source and can't be edited — there is no change to preview.`,
+      },
+      409,
+    );
+    return;
+  }
+
+  const parsed = await readJson<unknown>(req).catch(() => null);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    sendJson(res, { error: 'JSON object body required' }, 400);
+    return;
+  }
+  const body = parsed as {
+    set?: unknown;
+    ids?: unknown;
+    filter?: unknown;
+    limit?: unknown;
+    offset?: unknown;
+  };
+  if (!body.set || typeof body.set !== 'object' || Array.isArray(body.set)) {
+    sendJson(res, { error: 'set object is required (the change to preview)' }, 400);
+    return;
+  }
+  const set = body.set as Record<string, unknown>;
+  if (Object.keys(set).length === 0) {
+    sendJson(res, { error: 'set must contain at least one field' }, 400);
+    return;
+  }
+  if ('visibility' in set) {
+    // Sharing is row-level state, not a column value — there is no field-level
+    // before/after to show for it. Refuse rather than previewing a lie.
+    sendJson(res, { error: 'sharing settings ("visibility") have no field-level preview' }, 400);
+    return;
+  }
+  if (body.ids !== undefined && body.filter !== undefined) {
+    sendJson(res, { error: 'provide ids or filter, not both' }, 400);
+    return;
+  }
+  let ids: string[] | undefined;
+  if (body.ids !== undefined) {
+    if (
+      !Array.isArray(body.ids) ||
+      body.ids.length === 0 ||
+      !body.ids.every((v) => typeof v === 'string')
+    ) {
+      sendJson(res, { error: 'ids must be a non-empty array of row ids' }, 400);
+      return;
+    }
+    if (body.ids.length > MAX_ROWS_PAGE) {
+      sendJson(res, { error: `ids is limited to ${String(MAX_ROWS_PAGE)} rows per preview` }, 400);
+      return;
+    }
+    ids = body.ids;
+  }
+  const pageParam = (v: unknown, name: 'limit' | 'offset'): number | 'invalid' => {
+    if (v === undefined) return name === 'limit' ? PREVIEW_DEFAULT_LIMIT : 0;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return 'invalid';
+    return v;
+  };
+  const limit = pageParam(body.limit, 'limit');
+  const offset = pageParam(body.offset, 'offset');
+  if (limit === 'invalid' || offset === 'invalid') {
+    sendJson(res, { error: 'limit and offset must be non-negative integers' }, 400);
+    return;
+  }
+
+  let preview;
+  try {
+    preview = await previewRowChanges(
+      active.db,
+      table,
+      // #2.1 — a member reads an audience-masked table through its `<table>_v`
+      // view (base SELECT was revoked), so RLS scopes the rows and a guarded
+      // cell never even reaches this process.
+      readRelationFor(active, table),
+      active.softDeletable,
+      set,
+      {
+        ...(ids ? { ids } : {}),
+        ...(body.filter !== undefined ? { filter: body.filter } : {}),
+        limit,
+        offset,
+      },
+    );
+  } catch (err) {
+    // Filter validation (unknown column / bad op) — recoverable input error.
+    sendJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+    return;
+  }
+
+  // Serve-time viewer mask. Framework-encrypted columns are ALWAYS masked (an
+  // HTTP response never ships a decrypted credential — same rule as the row
+  // read route); on a scoped cloud connection, every column the member's read
+  // views guard (plus the gui-flagged secret columns) is masked too — the same
+  // union the row-history serve path applies.
+  const masked = new Set<string>(active.db.getEncryptedColumns(table));
+  if (active.db.isCloudMemberOpen()) {
+    const guarded = await maskedColumnsForTables(active.db, [table]);
+    const flagged = await loadSecretColumns(active.db);
+    for (const c of guarded.get(table) ?? []) masked.add(c);
+    for (const c of flagged.get(table) ?? []) masked.add(c);
+  }
+  sendJson(res, { ...preview, rows: maskPreviewFields(preview.rows, masked) });
+}
+
+/**
  * Ordered, first-match dispatcher for the row-CRUD + link/unlink routes. Returns
  * true iff it handled the request; server.ts calls it right after
  * handleReadRoutes (which has already peeled CONTEXT/ROW_HISTORY/LAST_EDITED off
@@ -97,6 +268,13 @@ export async function handleTablesRoutes(
     mctx.allowReservedFileCols = true;
     await updateRow(mctx, 'files', cid, { extracted_text: body.text });
     sendJson(res, { ok: true });
+    return true;
+  }
+
+  // ── Read-only change preview: /api/tables/:table/preview-changes ──
+  const previewMatch = PREVIEW_CHANGES_PATH.exec(pathname);
+  if (previewMatch && method === 'POST') {
+    await handlePreviewChanges(req, res, active, decodeURIComponent(previewMatch[1] ?? ''));
     return true;
   }
 

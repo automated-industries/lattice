@@ -376,9 +376,12 @@ export async function handleSchemaRoutes(
     // stay intact so the recorded `schema.delete_entity` op can be reverted
     // with no snapshot. No reopen (shared with the assistant's delete tool).
     // Physical removal is a separate, API-only `POST /api/schema/purge`.
-    await softDeleteUserEntity(active, name, sessionId);
+    const undoId = await softDeleteUserEntity(active, name, sessionId);
+    // `undoId` is the delete_entity audit id — the client offers a one-click undo
+    // pointed at exactly this change (restores the table from the recorded def).
     sendJson(res, {
       ok: true,
+      undoId,
       ...(links.cascadedLinkRows > 0 ? { cascadedLinkRows: links.cascadedLinkRows } : {}),
       ...(links.droppedLinkTables.length > 0 ? { droppedLinkTables: links.droppedLinkTables } : {}),
     });
@@ -581,7 +584,9 @@ export async function handleSchemaRoutes(
     }
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
-    sendJson(res, { ok: true, cascade: renamed.cascade });
+    // `undoId` is the rename_entity audit id — the client offers a one-click undo
+    // that renames the table back (fails loudly if the old name is taken again).
+    sendJson(res, { ok: true, cascade: renamed.cascade, undoId: renamed.auditId });
     return true;
   }
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
@@ -981,7 +986,7 @@ export async function handleSchemaRoutes(
     saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
     active = ctx.active();
-    await recordSchemaOp(
+    const undoId = await recordSchemaOp(
       active,
       'schema.delete_link',
       entityName,
@@ -997,7 +1002,9 @@ export async function handleSchemaRoutes(
       `Deleted link ${entityName} → ${target}`,
       sessionId,
     );
-    sendJson(res, { ok: true });
+    // `undoId` is the delete_link audit id — the client offers a one-click undo
+    // that re-adds the link field + relation from the recorded def.
+    sendJson(res, { ok: true, undoId });
     return true;
   }
 

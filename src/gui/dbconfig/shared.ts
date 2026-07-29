@@ -93,25 +93,86 @@ export interface SaveSqlite {
   path: string;
 }
 
-export function parseSaveBody(body: Record<string, unknown>): SavePostgres | SaveSqlite | null {
+/**
+ * Normalize a display label into the credential-key charset [A-Za-z0-9._-] that
+ * the `${LATTICE_DB:<label>}` reference is read back with. Runs of unsupported
+ * characters (spaces, slashes, accents) collapse to a single '-'; leading and
+ * trailing '-' are trimmed. `Strategy Team` -> `Strategy-Team`. Returns '' only
+ * when nothing usable survives (e.g. an all-symbol label), which the caller turns
+ * into a specific field error rather than a silent empty key.
+ */
+export function normalizeLabel(raw: string): string {
+  return raw
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** The offending field on a parse failure, so the caller can report WHICH input was wrong. */
+export type SaveField = 'type' | 'label' | 'host' | 'dbname' | 'user' | 'port' | 'path';
+
+export interface SaveParseError {
+  error: string;
+  field?: SaveField;
+}
+
+export type SaveParseResult =
+  | { ok: true; value: SavePostgres | SaveSqlite }
+  | ({ ok: false } & SaveParseError);
+
+/**
+ * Parse + validate a db-config save body, returning a SPECIFIC reason on failure.
+ *
+ * A single sentinel (the old `null`) forced every caller to report one generic
+ * message, which is how a rejected LABEL surfaced to the user as "Invalid Postgres
+ * credentials" before any connection was even attempted. This returns the offending
+ * field so a validation failure is never mistaken for a credentials/network fault —
+ * that wording is reserved for a real authentication error from the server.
+ *
+ * The postgres label is NORMALIZED (see {@link normalizeLabel}) rather than rejected,
+ * so a label with spaces just works; only a label that normalizes to empty is an error.
+ */
+export function parseSaveBodyResult(body: Record<string, unknown>): SaveParseResult {
   const type = body.type;
   if (type === 'sqlite') {
     const path = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : '';
-    if (!path) return null;
-    return { type: 'sqlite', path };
+    if (!path) return { ok: false, error: 'A database file path is required.', field: 'path' };
+    return { ok: true, value: { type: 'sqlite', path } };
   }
   if (type === 'postgres') {
-    const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim() : '';
+    const rawLabel = typeof body.label === 'string' ? body.label.trim() : '';
+    if (!rawLabel) return { ok: false, error: 'A workspace label is required.', field: 'label' };
+    const label = normalizeLabel(rawLabel);
+    if (!label)
+      return {
+        ok: false,
+        error: 'The label needs at least one letter or number.',
+        field: 'label',
+      };
     const host = typeof body.host === 'string' && body.host.trim() ? body.host.trim() : '';
+    if (!host) return { ok: false, error: 'A host is required.', field: 'host' };
     const dbname = typeof body.dbname === 'string' && body.dbname.trim() ? body.dbname.trim() : '';
-    const user = typeof body.user === 'string' ? body.user : '';
+    if (!dbname) return { ok: false, error: 'A database name is required.', field: 'dbname' };
+    const user = typeof body.user === 'string' && body.user.trim() ? body.user : '';
+    if (!user) return { ok: false, error: 'A user is required.', field: 'user' };
     const password = typeof body.password === 'string' ? body.password : '';
     const port = typeof body.port === 'number' ? body.port : Number(body.port ?? 5432);
-    if (!label || !host || !dbname || !user || Number.isNaN(port)) return null;
-    if (!/^[A-Za-z0-9._-]+$/.test(label)) return null;
-    return { type: 'postgres', label, host, port, dbname, user, password };
+    if (Number.isNaN(port))
+      return { ok: false, error: 'The port must be a number.', field: 'port' };
+    return { ok: true, value: { type: 'postgres', label, host, port, dbname, user, password } };
   }
-  return null;
+  return { ok: false, error: 'Unknown config type.', field: 'type' };
+}
+
+/**
+ * Back-compat wrapper: the parsed config, or null on any failure. Callers that only
+ * branch on success keep working; callers that want to tell the user WHAT was wrong
+ * (and must not mislabel a validation failure as a credentials error) use
+ * {@link parseSaveBodyResult} instead.
+ */
+export function parseSaveBody(body: Record<string, unknown>): SavePostgres | SaveSqlite | null {
+  const r = parseSaveBodyResult(body);
+  return r.ok ? r.value : null;
 }
 
 /** Resolve `path` relative to the config file directory unless it's already absolute. */

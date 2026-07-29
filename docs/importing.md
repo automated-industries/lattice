@@ -66,32 +66,31 @@ A shared name policy backs this everywhere tables are created: anonymous names
 the workspace are exempt), and the assistant's create-table calls reject them
 outright with an instructive error.
 
-## Silent import vs. the inline confirm card
+## Import is automatic — there are no decisions to make
 
-The chat drop chooses a path automatically. **Most drops import silently** — a
-confirm card only appears for the one genuinely ambiguous case:
+Dropping a file imports it. There is no confirmation card, no "what should I
+bring in?" choice, and no follow-up question: every recognized case materializes
+straight away, and what happened is reported in the activity feed (and is
+undoable) rather than asked about up front.
 
-- **Brand-new structured data → silent import.** Tables and rows are created
-  directly (plus any detected computed views), shown as a compact live-progress
-  card with no confirm gate. Uncertain, low-confidence choices still interrupt:
-  a **marginal link** the importer isn't sure about becomes a question in the
-  assistant panel ("connect these?"), rather than being guessed at.
-- **Recognized dataset + a confident date → silent import.** The file matches
-  tables already in the workspace and a date was confidently detected, so it is
-  imported straight away as a dated snapshot and reported in the activity feed.
-- **Recognized dataset but no / ambiguous date → confirm card.** Importing
-  undated would overwrite the prior snapshot — a genuinely low-confidence choice
-  — so an **inline confirm card** proposes the date (and any per-row date column)
-  before anything is written.
+- **Brand-new structured data.** Tables and rows are created directly, along with
+  any detected computed views, shown as a compact live-progress card.
+- **A recognized dataset.** The file matches tables already in the workspace and
+  is imported as a snapshot. When a date is confidently detected it is used;
+  otherwise the import is filed as a **new** snapshot rather than overwriting the
+  previous one, so an undated re-import can never clobber earlier data.
+- **A multi-sheet workbook.** Each sheet is imported as its own unit, so a
+  workbook with many sheets lands sheet by sheet. If one sheet cannot be
+  imported, the rest still are and the result says so ("imported N of M sheets")
+  rather than failing the whole book.
 
-Silent and confirmed imports both apply via `POST /api/import/apply`, which
-streams the materialization progress back as NDJSON. After an import lands, the
-data-model planner runs over the new tables to apply safe normalizations and
-surface further suggestions.
+Imports apply via `POST /api/import/apply`, which streams the materialization
+progress back as NDJSON. After an import lands, the data-model planner runs over
+the new tables to apply safe normalizations.
 
 ## File-size cap
 
-A source file is capped at **50 MB**, and the cap is enforced **on both paths**:
+A source file is capped at **100 MB**, and the cap is enforced **on both paths**:
 the streaming upload rejects an oversized file, and the apply route re-`statSync`s
 the retained bytes before reading them — so an oversized or swapped-on-disk
 source (including one reached via a `local_ref` that never went through the

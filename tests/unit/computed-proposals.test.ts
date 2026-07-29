@@ -40,9 +40,9 @@ function ticketRows(column: string): Record<string, unknown>[] {
 }
 
 describe('buildComputedProposals — calc fields', () => {
-  it('proposes a calc field for a dominant translatable formula column', () => {
+  it('proposes a calc field for a dominant translatable formula column', async () => {
     const data = { Orders: orderRows(20) };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const proposals = buildComputedProposals({
       data,
       plan,
@@ -64,9 +64,9 @@ describe('buildComputedProposals — calc fields', () => {
     ]);
   });
 
-  it('suffixes the table name deterministically on collision', () => {
+  it('suffixes the table name deterministically on collision', async () => {
     const data = { Orders: orderRows(20) };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const proposals = buildComputedProposals({
       data,
       plan,
@@ -77,9 +77,9 @@ describe('buildComputedProposals — calc fields', () => {
     expect(proposals[0]?.table).toBe('orders_computed_3');
   });
 
-  it('names the base table through the schema-match rename', () => {
+  it('names the base table through the schema-match rename', async () => {
     const data = { Orders: orderRows(20) };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const proposals = buildComputedProposals({
       data,
       plan,
@@ -90,13 +90,13 @@ describe('buildComputedProposals — calc fields', () => {
     expect(proposals[0]).toMatchObject({ entity: 'order_lines', table: 'order_lines_computed' });
   });
 
-  it('drops the proposal when a referenced column did not survive as a scalar', () => {
+  it('drops the proposal when a referenced column did not survive as a scalar', async () => {
     // 'Region' is consumed into a dimension (3 distinct over 20 rows), so a
     // formula referencing it has no base column to read.
     const data = {
       Orders: orderRows(20).map((r, i) => ({ ...r, Region: ['NA', 'EU', 'Asia'][i % 3] })),
     };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     expect(plan.dimensions.some((d) => d.name === 'region')).toBe(true);
     const summary: WorkbookFormulaSummary = {
       Orders: {
@@ -122,9 +122,9 @@ describe('buildComputedProposals — calc fields', () => {
     ).toEqual([]);
   });
 
-  it('drops the proposal when the pattern is not dominant or not translatable', () => {
+  it('drops the proposal when the pattern is not dominant or not translatable', async () => {
     const data = { Orders: orderRows(20) };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const notDominant = orderSummary(20);
     notDominant.Orders!.columns.Total!.patterns = { '[B]*[C]': 10, '[B]+[C]': 10 };
     expect(
@@ -151,9 +151,9 @@ describe('buildComputedProposals — calc fields', () => {
 });
 
 describe('buildComputedProposals — classifier fields', () => {
-  it('proposes a classifier for a category-named column just past dimension cardinality', () => {
+  it('proposes a classifier for a category-named column just past dimension cardinality', async () => {
     const data = { Tickets: ticketRows('Issue Type') };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     // Sanity: past the dimension cap, so it stayed a plain scalar column.
     expect(plan.dimensions).toEqual([]);
     const proposals = buildComputedProposals({
@@ -176,11 +176,11 @@ describe('buildComputedProposals — classifier fields', () => {
     expect(field.confidence).toBeLessThanOrEqual(1);
   });
 
-  it('does not propose without a category-suggesting name', () => {
+  it('does not propose without a category-suggesting name', async () => {
     const data = { Tickets: ticketRows('Vendor Ref') };
     const proposals = buildComputedProposals({
       data,
-      plan: inferSchema(data),
+      plan: await inferSchema(data),
       rename: {},
       formulaSummary: null,
       existingTables: [],
@@ -188,7 +188,7 @@ describe('buildComputedProposals — classifier fields', () => {
     expect(proposals).toEqual([]);
   });
 
-  it('does not propose in dimension territory (low cardinality)', () => {
+  it('does not propose in dimension territory (low cardinality)', async () => {
     // 10 distinct values over 150 rows → dimension extraction owns it.
     const data = {
       Tickets: Array.from({ length: 150 }, (_, i) => ({
@@ -196,14 +196,14 @@ describe('buildComputedProposals — classifier fields', () => {
         Status: 'S' + String(i % 10),
       })),
     };
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     expect(plan.dimensions.some((d) => d.name === 'status')).toBe(true);
     expect(
       buildComputedProposals({ data, plan, rename: {}, formulaSummary: null, existingTables: [] }),
     ).toEqual([]);
   });
 
-  it('does not propose for near-unique or oversized value sets', () => {
+  it('does not propose for near-unique or oversized value sets', async () => {
     // 300 distinct over 600 rows is within ratio but past the 256 cap.
     const oversized = {
       Tickets: Array.from({ length: 600 }, (_, i) => ({
@@ -214,7 +214,7 @@ describe('buildComputedProposals — classifier fields', () => {
     expect(
       buildComputedProposals({
         data: oversized,
-        plan: inferSchema(oversized),
+        plan: await inferSchema(oversized),
         rename: {},
         formulaSummary: null,
         existingTables: [],
@@ -230,7 +230,7 @@ describe('buildComputedProposals — classifier fields', () => {
     expect(
       buildComputedProposals({
         data: nearUnique,
-        plan: inferSchema(nearUnique),
+        plan: await inferSchema(nearUnique),
         rename: {},
         formulaSummary: null,
         existingTables: [],
@@ -238,7 +238,7 @@ describe('buildComputedProposals — classifier fields', () => {
     ).toEqual([]);
   });
 
-  it('does not propose for small tables', () => {
+  it('does not propose for small tables', async () => {
     // Same shape but under the 50-row floor.
     const data = {
       Tickets: Array.from({ length: 40 }, (_, i) => ({
@@ -253,7 +253,7 @@ describe('buildComputedProposals — classifier fields', () => {
     expect(
       buildComputedProposals({
         data,
-        plan: inferSchema(data),
+        plan: await inferSchema(data),
         rename: {},
         formulaSummary: null,
         existingTables: [],
@@ -261,7 +261,7 @@ describe('buildComputedProposals — classifier fields', () => {
     ).toEqual([]);
   });
 
-  it('caps classifiers at one per entity and three per import', () => {
+  it('caps classifiers at one per entity and three per import', async () => {
     // One entity with TWO qualifying columns → only the first proposes.
     const twoColumns = {
       Tickets: Array.from({ length: 150 }, (_, i) => ({
@@ -272,7 +272,7 @@ describe('buildComputedProposals — classifier fields', () => {
     };
     const perEntity = buildComputedProposals({
       data: twoColumns,
-      plan: inferSchema(twoColumns),
+      plan: await inferSchema(twoColumns),
       rename: {},
       formulaSummary: null,
       existingTables: [],
@@ -290,7 +290,7 @@ describe('buildComputedProposals — classifier fields', () => {
     const fourEntities = { A1: rows('A'), B1: rows('B'), C1: rows('C'), D1: rows('D') };
     const capped = buildComputedProposals({
       data: fourEntities,
-      plan: inferSchema(fourEntities),
+      plan: await inferSchema(fourEntities),
       rename: {},
       formulaSummary: null,
       existingTables: [],

@@ -10,15 +10,37 @@ import { columnLetter, normalizeRowFormula, type ColumnFormulaStats } from './fo
  * Real financial/CRM workbooks rarely use formal Excel Table objects, so the
  * header row + data region are DETECTED, not read from declared metadata: title
  * / disclaimer preamble rows are skipped, the first sufficiently-dense row is
- * taken as the header, and data runs until the first blank row. Navigation /
- * prose sheets (no detectable table) are omitted. Best-effort by design — the
- * importer's review step is the safety valve.
+ * taken as the header, and data runs until the first blank row. Merged-cell
+ * layouts are read the way a human reads them: a one-value title merged across
+ * the sheet is skipped, and a band row of merged group labels sitting on the
+ * label row combines into the column names ("Q1" over "Revenue" → "Q1
+ * Revenue"). Navigation / prose sheets (no detectable table) are omitted.
+ * Best-effort by design — the importer's review step is the safety valve.
  *
  * `exceljs` is an OPTIONAL dependency loaded lazily, so installing latticesql
  * without it still works for every non-Excel path.
  */
 
 const HEADER_SCAN_ROWS = 25;
+
+/** Rows scanned between event-loop yields while extracting a sheet. A giant sheet
+ *  is parsed with several O(rows×cols) synchronous passes; without periodic yields
+ *  one of them can hold the event loop for seconds, wedging the server and the
+ *  Stop button. Bounding the rows scanned between yields keeps every pass
+ *  responsive — the same chunked-yield cadence the bulk loader uses. */
+const YIELD_EVERY_ROWS = 2000;
+
+/** A hook the extractor awaits periodically so a very large sheet cannot freeze
+ *  the event loop. Defaults to a `setImmediate` macrotask hop; injectable so a
+ *  test can drive the cadence without real waits (and assert that it fired). */
+export type ExtractYield = () => Promise<void>;
+
+export interface ExtractOptions {
+  /** Rows scanned between yields (default {@link YIELD_EVERY_ROWS}). */
+  yieldEvery?: number;
+  /** Called to yield the event loop (default: a `setImmediate` hop). */
+  onYield?: ExtractYield;
+}
 
 /** Flatten an exceljs cell value into a scalar (or null). */
 function cellValue(v: CellValue): unknown {
@@ -69,11 +91,35 @@ interface FormulaCell {
   sharedFormula?: unknown;
 }
 
+/** One maximal run of filled cells in a row sharing a merge master (an unmerged
+ *  filled cell is its own group of width 1). `extendsDown` marks a merge that
+ *  also covers the row below — header glue like a two-row "Region" stub cell,
+ *  not a band label over columns. */
+interface RowGroup {
+  start: number;
+  width: number;
+  merged: boolean;
+  extendsDown: boolean;
+}
+
 /** Detect the single primary table in a worksheet and return its rows as
  *  records, capturing each column's formula usage along the way. Values are
  *  read from the cached formula RESULTS exactly as before — the formula text
  *  feeds only the summary. */
-function extractSheet(ws: Worksheet): SheetExtract {
+async function extractSheet(ws: Worksheet, opts: ExtractOptions = {}): Promise<SheetExtract> {
+  const onYield = opts.onYield ?? ((): Promise<void> => new Promise((r) => setImmediate(r)));
+  const yieldEvery = Math.max(1, opts.yieldEvery ?? YIELD_EVERY_ROWS);
+  // A single counter shared across every row-scanning pass: whichever pass is
+  // running, the loop is yielded once `yieldEvery` rows have been touched since
+  // the last yield. This bounds the synchronous work between yields to
+  // ~`yieldEvery × colCount` cell reads regardless of which pass we are in.
+  let sinceYield = 0;
+  const tick = async (): Promise<void> => {
+    if (++sinceYield >= yieldEvery) {
+      sinceYield = 0;
+      await onYield();
+    }
+  };
   const empty: SheetExtract = { records: [], summary: { columnLetters: {}, columns: {} } };
   const rowCount = ws.rowCount;
   const colCount = ws.columnCount;
@@ -93,6 +139,84 @@ function extractSheet(ws: Worksheet): SheetExtract {
   const headerThreshold = (width: number): number =>
     Math.max(width <= 2 ? 2 : 3, Math.floor(width * 0.4));
 
+  // ── Merged-cell awareness (grouped two-row headers + merged titles) ────────
+  // exceljs proxies a merged range's value onto every covered cell, so a band
+  // label like "Q1" merged across two columns already reads as filled in each
+  // of them — the forward-fill across the span is inherent to the cell model.
+  // What the proxying breaks is density-based header detection: a one-value
+  // title merged across the sheet reads as a full row of filled cells. Both
+  // concerns need a row's merge GROUPS, computed once per row and cached.
+  // Sheets without merges never take any of these paths — their detection is
+  // exactly the pre-existing single-row behavior.
+  const hasMerges = ws.hasMerges;
+  const groupCache = new Map<number, RowGroup[]>();
+  const rowGroups = (r: number): RowGroup[] => {
+    const cached = groupCache.get(r);
+    if (cached) return cached;
+    const groups: RowGroup[] = [];
+    let key: string | null = null; // the last group's merge-master (or own) address
+    for (let c = 1; c <= colCount; c++) {
+      const cell = ws.getCell(r, c);
+      if (!isFilled(cellValue(cell.value))) {
+        key = null; // a gap always closes the current group
+        continue;
+      }
+      const k = cell.isMerged ? cell.master.address : cell.address;
+      const last = groups[groups.length - 1];
+      if (last && key === k) {
+        last.width++;
+        continue;
+      }
+      key = k;
+      groups.push({
+        start: c,
+        width: 1,
+        merged: cell.isMerged,
+        extendsDown:
+          cell.isMerged &&
+          r < rowCount &&
+          ws.getCell(r + 1, c).isMerged &&
+          ws.getCell(r + 1, c).master.address === k,
+      });
+    }
+    groupCache.set(r, groups);
+    return groups;
+  };
+  // A row whose entire filled content is ONE multi-column merged cell is a
+  // banner (sheet title), never a header or a band: however many cells the
+  // merge visually fills, it carries a single value.
+  const isMergedBanner = (r: number): boolean => {
+    if (!hasMerges) return false;
+    const g = rowGroups(r);
+    const only = g.length === 1 ? g[0] : undefined;
+    return only !== undefined && only.merged && only.width >= 2;
+  };
+  // Is header-candidate row `hr` a BAND row over the real label row (a grouped
+  // two-row header) rather than the header itself? True only when `hr` holds
+  // two or more distinct filled groups (a single merged cell spanning the row
+  // is a title, handled above), at least one of them a multi-column merge
+  // confined to `hr` with two or more sub-labels filled beneath its span, and
+  // the row below is itself dense enough to be the header with a data row
+  // after it (the same successor guard as the single-row path). Anchoring the
+  // check to the row the scan already chose keeps a merged cell deep in a data
+  // region from ever starting a two-row header, and a cosmetic width-merge
+  // header cell (one data cell beneath its span) never qualifies.
+  const isBandOver = (hr: number, blockEnd: number, threshold: number): boolean => {
+    if (!hasMerges || hr + 1 >= blockEnd) return false;
+    const groups = rowGroups(hr);
+    if (groups.length < 2) return false;
+    const banded = groups.some((g) => {
+      if (!g.merged || g.width < 2 || g.extendsDown) return false;
+      let labeled = 0;
+      for (let c = g.start; c < g.start + g.width; c++) {
+        if (isFilled(cellValue(ws.getCell(hr + 1, c).value))) labeled++;
+      }
+      return labeled >= 2;
+    });
+    if (!banded) return false;
+    return nonEmpty(hr + 1) >= threshold && nonEmpty(hr + 2) >= 2 && !isMergedBanner(hr + 1);
+  };
+
   // A tab may hold a small SUMMARY block, a blank spacer, then the DETAIL table (or several
   // stacked tables). Reading only until the FIRST blank row keeps the summary and silently
   // drops the detail. Instead: split the sheet into blank-row-delimited blocks and import the
@@ -105,6 +229,7 @@ function extractSheet(ws: Worksheet): SheetExtract {
   const runs: { start: number; end: number }[] = [];
   let runStart = -1;
   for (let r = 1; r <= rowCount; r++) {
+    await tick();
     if (nonEmpty(r) > 0) {
       if (runStart < 0) runStart = r;
     } else if (runStart >= 0) {
@@ -121,26 +246,43 @@ function extractSheet(ws: Worksheet): SheetExtract {
   // 1-cell row → dense row) is structurally identical to a dense banner sitting above the
   // real header, so any rule that accepts one mis-maps the other. Both are rare; neither is
   // worth trading a silent mis-mapping for. See reference_lattice_excel_importer_known_limits.
-  const candidates = blocks
-    .map((b) => {
-      // This block's width = its widest row's filled-cell count (a stray 1-cell note row
-      // elsewhere on the sheet can't inflate it), which sets a sane header threshold.
-      let blockWidth = 0;
-      for (let r = b.start; r <= b.end; r++) blockWidth = Math.max(blockWidth, nonEmpty(r));
-      const threshold = headerThreshold(blockWidth);
-      let hr = -1;
-      for (let r = b.start; r <= Math.min(b.start + HEADER_SCAN_ROWS, b.end); r++) {
-        if (nonEmpty(r) >= threshold && r < b.end && nonEmpty(r + 1) >= 2) {
-          hr = r;
-          break;
-        }
+  const candidates: { headerRow: number; bandRow: number; end: number; dataRows: number }[] = [];
+  for (const b of blocks) {
+    // This block's width = its widest row's filled-cell count (a stray 1-cell note row
+    // elsewhere on the sheet can't inflate it), which sets a sane header threshold.
+    // Banner rows are excluded: a merged title proxies one value into every covered
+    // cell, inflating the apparent width without adding a single real column.
+    let blockWidth = 0;
+    for (let r = b.start; r <= b.end; r++) {
+      await tick();
+      if (isMergedBanner(r)) continue;
+      blockWidth = Math.max(blockWidth, nonEmpty(r));
+    }
+    const threshold = headerThreshold(blockWidth);
+    let hr = -1;
+    for (let r = b.start; r <= Math.min(b.start + HEADER_SCAN_ROWS, b.end); r++) {
+      if (isMergedBanner(r)) continue; // a title is one value, however wide its merge
+      if (nonEmpty(r) >= threshold && r < b.end && nonEmpty(r + 1) >= 2) {
+        hr = r;
+        break;
       }
-      if (hr < 0) return null;
-      let dataRows = 0;
-      for (let r = hr + 1; r <= b.end; r++) if (nonEmpty(r) > 0) dataRows++;
-      return { headerRow: hr, end: b.end, dataRows };
-    })
-    .filter((c): c is { headerRow: number; end: number; dataRows: number } => c !== null);
+    }
+    if (hr < 0) continue;
+    // Grouped (two-row) header: when the detected row is a BAND of merged group
+    // labels sitting on the real label row, the label row is the header and the
+    // band row feeds the combined column names.
+    let bandRow = -1;
+    if (isBandOver(hr, b.end, threshold)) {
+      bandRow = hr;
+      hr += 1;
+    }
+    let dataRows = 0;
+    for (let r = hr + 1; r <= b.end; r++) {
+      await tick();
+      if (nonEmpty(r) > 0) dataRows++;
+    }
+    candidates.push({ headerRow: hr, bandRow, end: b.end, dataRows });
+  }
   if (candidates.length === 0) return empty; // no table detected (prose / navigation sheet)
 
   // Import the largest table; note the rows any OTHER real table block on the sheet holds.
@@ -148,6 +290,7 @@ function extractSheet(ws: Worksheet): SheetExtract {
   const best = candidates[0];
   if (!best) return empty; // unreachable (length checked above) — satisfies the type
   const headerRow = best.headerRow;
+  const bandRow = best.bandRow;
   const blockEnd = best.end;
   const droppedRows = candidates.slice(1).reduce((n, c) => n + c.dataRows, 0);
   const warning =
@@ -157,13 +300,26 @@ function extractSheet(ws: Worksheet): SheetExtract {
         `block(s) on the same sheet were not imported.`
       : null;
 
-  // Column map: only header cells that carry a name; de-dup repeated names.
+  // Column map: only header cells that carry a name; de-dup repeated names. With a
+  // grouped header the name is the band label + column label combined the way a human
+  // reads the sheet ("Q1" over "Revenue" → "Q1 Revenue"); a vertical stub cell merged
+  // through both header rows proxies the same value into each, so band === label
+  // collapses to the single name.
   const cols: { c: number; name: string }[] = [];
   const seen = new Set<string>();
   for (let c = 1; c <= colCount; c++) {
-    const hv = cellValue(ws.getCell(headerRow, c).value);
-    if (!isFilled(hv)) continue;
-    const base = String(hv).replace(/\s+/g, ' ').trim();
+    let base: string;
+    if (bandRow >= 0) {
+      const bandV = cellValue(ws.getCell(bandRow, c).value);
+      const labelV = cellValue(ws.getCell(headerRow, c).value);
+      const band = isFilled(bandV) ? String(bandV).replace(/\s+/g, ' ').trim() : '';
+      const label = isFilled(labelV) ? String(labelV).replace(/\s+/g, ' ').trim() : '';
+      base = band && label && band !== label ? band + ' ' + label : label || band;
+    } else {
+      const hv = cellValue(ws.getCell(headerRow, c).value);
+      if (!isFilled(hv)) continue;
+      base = String(hv).replace(/\s+/g, ' ').trim();
+    }
     if (!base) continue;
     let name = base;
     let i = 2;
@@ -205,6 +361,7 @@ function extractSheet(ws: Worksheet): SheetExtract {
   const records: Record<string, unknown>[] = [];
   const filledRows = new Map<string, number>(); // column → rows carrying anything
   for (let r = headerRow + 1; r <= blockEnd; r++) {
+    await tick();
     const row: Record<string, unknown> = {};
     const cells: { c: number; name: string; raw: CellValue; v: unknown }[] = [];
     let any = false;
@@ -265,8 +422,8 @@ function extractSheet(ws: Worksheet): SheetExtract {
 }
 
 /** Detect the single primary table in a worksheet and return its rows as records. */
-function sheetToRecords(ws: Worksheet): Record<string, unknown>[] {
-  return extractSheet(ws).records;
+async function sheetToRecords(ws: Worksheet): Promise<Record<string, unknown>[]> {
+  return (await extractSheet(ws)).records;
 }
 
 // The dropped title/preamble text of the last-parsed workbook, keyed by absolute
@@ -305,6 +462,28 @@ export function excelFormulaSummary(absPath: string): WorkbookFormulaSummary {
   return formulaCache.get(resolve(absPath)) ?? {};
 }
 
+/** The formula summary of ONE sheet of the last-read workbook, keyed by
+ *  (absPath, sheet) rather than the whole file — for a per-sheet import unit that
+ *  models a single sheet on its own. Shaped as a single-sheet
+ *  {@link WorkbookFormulaSummary} so it plugs straight into the computed-table
+ *  proposer. Empty when the sheet had no formulas (or was never read). */
+export function excelFormulaSummaryForSheet(
+  absPath: string,
+  sheet: string,
+): WorkbookFormulaSummary {
+  const summary = formulaCache.get(resolve(absPath))?.[sheet];
+  return summary ? { [sheet]: summary } : {};
+}
+
+/** The reconciliation warnings for ONE sheet of the last-read workbook, keyed by
+ *  (absPath, sheet). Each cached warning is prefixed with its sheet as `"<sheet>": …`
+ *  (see {@link excelToRecords}), so a sheet's own warnings are selected by that
+ *  prefix. Empty when the sheet imported cleanly. */
+export function excelImportWarningsForSheet(absPath: string, sheet: string): string[] {
+  const prefix = `"${sheet}": `;
+  return (importWarningsCache.get(resolve(absPath)) ?? []).filter((w) => w.startsWith(prefix));
+}
+
 /** First few rows of a sheet as text, for preamble/title scanning. */
 function sheetPreamble(ws: Worksheet): string {
   const lines: string[] = [];
@@ -321,7 +500,10 @@ function sheetPreamble(ws: Worksheet): string {
   return lines.join('\n');
 }
 
-export async function excelToRecords(absPath: string): Promise<Record<string, unknown[]>> {
+export async function excelToRecords(
+  absPath: string,
+  opts: ExtractOptions = {},
+): Promise<Record<string, unknown[]>> {
   let mod: typeof import('exceljs') & { default?: typeof import('exceljs') };
   try {
     mod = await import('exceljs');
@@ -343,7 +525,7 @@ export async function excelToRecords(absPath: string): Promise<Record<string, un
   if (props?.title) preamble.push(props.title);
   for (const ws of wb.worksheets) {
     preamble.push(ws.name, sheetPreamble(ws));
-    const { records, summary, warning } = extractSheet(ws);
+    const { records, summary, warning } = await extractSheet(ws, opts);
     if (records.length > 0) {
       out[ws.name] = records;
       formulas[ws.name] = summary;

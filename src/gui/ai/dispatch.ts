@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { getFunction } from './registry.js';
-import type { MutationCtx } from '../mutations.js';
+import { UNLINK_UNDO_MAX_EDGES, type MutationCtx } from '../mutations.js';
 import { handleRead } from './handlers/read.js';
 import { handleRowMutations } from './handlers/row-mutations.js';
 import { handleCollaboration } from './handlers/collaboration.js';
@@ -177,21 +178,24 @@ export interface ClaimVerifier {
 }
 
 /**
- * How many records a single-object removal or clear may touch before the assistant
+ * How many records a single-object IRREVERSIBLE removal may touch before the assistant
  * refuses it outright.
  *
  * This is a HARD BOUNDARY, not a confirmation trigger — there is no answer that
  * makes a refused removal proceed. That is what makes the number a product
  * decision rather than a tuning knob.
  *
- * It was 25 while a confirmation existed: too small to matter, because the cost of
- * being over it was one question. As a wall, 25 is the wrong number — clearing a
- * field on thirty rows is an ordinary edit, and refusing it removes the only route
- * a person has, since the app has no way to select many rows and act on them.
+ * It governs the IRREVERSIBLE arm ONLY — a hard object delete / cascade, or a merge /
+ * dedup / row delete whose loser has no trash to fall into, where no recovery exists.
+ * Reversible changes (a bulk clear/blank, an unlink, a merge or dedup or row delete whose
+ * losers go to the recoverable trash) proceed at ANY scale: they land in the undo stack,
+ * version history, and the recoverable trash, so a mistake is one undo away and a size
+ * wall would only remove the sole route a person has — the app cannot select many rows
+ * and act on them. See {@link DestructiveIntent.reversible}.
  *
  * 200 is chosen to sit above ordinary editing and below anything anyone would call
- * a bulk operation. Multi-OBJECT destruction is refused at any size regardless, so
- * this bound only ever governs a single object, where the blast radius is legible.
+ * a bulk operation. A multi-OBJECT irreversible plan is refused at any size regardless,
+ * so this bound only ever governs a single object, where the blast radius is legible.
  */
 export const DESTRUCTIVE_ROW_THRESHOLD = 200;
 /**
@@ -252,6 +256,27 @@ export interface DestructiveIntent {
    * whether it may be stated as a fact ("5001") or only as a bound ("at least 5001").
    */
   rowsSaturated?: boolean;
+  /**
+   * Whether this exact call can be taken back after it runs.
+   *
+   * REVERSIBLE (true) — the change lands in the session undo/redo stack and version
+   * history, and any removed record goes to the recoverable trash (a soft-delete):
+   * a bulk clear/blank, an unlink (the inverse re-links), a merge or dedup (losers
+   * soft-deleted to trash), a soft row delete (`deleted_at` stamped, restorable). A
+   * mistake is one undo away, so there is no scale at which the assistant has to
+   * refuse — undo is the safety net, not a size limit.
+   *
+   * IRREVERSIBLE (false) — a HARD removal with no recovery path: an object delete
+   * that drops the records outright (`delete_data`), a cascade that also drops every
+   * record pointing at them (`delete_cascade`), a permanent single-row delete that
+   * bypasses the trash, or a merge/dedup on an object that has NO trash (the loser is
+   * hard-deleted, so — like a hard row delete — it cannot be called recoverable). There
+   * is no undo to fall back on, so the size wall still applies here and only here.
+   *
+   * The gate reads this, not the row count, to decide whether the size wall applies:
+   * the wall governs the irreversible arm alone.
+   */
+  reversible: boolean;
   /** One phrase naming this call's exact target + count, for the refusal text. */
   detail: string;
 }
@@ -588,6 +613,11 @@ async function countCascade(ctx: DispatchCtx, target: string): Promise<RowCount>
  *
  * No `deleted_at IS NULL` clause: the DELETE is a HARD one and takes trashed junction
  * rows with it, so filtering them out would under-count.
+ *
+ * Capped at {@link UNLINK_UNDO_MAX_EDGES} — the exact ceiling above which `unlinkRows`
+ * can no longer CAPTURE every removed edge for undo — so `saturated` here means
+ * precisely "too many edges to record for undo", which is what makes such an unlink
+ * irreversible (see the classifier below).
  */
 async function countUnlink(
   ctx: DispatchCtx,
@@ -596,11 +626,11 @@ async function countUnlink(
 ): Promise<RowCount> {
   try {
     const opts: NonNullable<Parameters<typeof ctx.db.boundedCount>[1]> = {
-      cap: DESTRUCTIVE_COUNT_CAP,
+      cap: UNLINK_UNDO_MAX_EDGES,
     };
     opts.filters = conditions.map((c) => ({ col: c.col, op: 'eq' as const, val: c.val }));
     const n = await ctx.db.boundedCount(table, opts);
-    return { n, unknown: false, saturated: n > DESTRUCTIVE_COUNT_CAP };
+    return { n, unknown: false, saturated: n > UNLINK_UNDO_MAX_EDGES };
   } catch (e) {
     console.warn(
       `[assistant] could not pre-count an unlink on "${table}": ${(e as Error).message}`,
@@ -666,6 +696,10 @@ async function classifyDestructive(
       kind: 'remove_object',
       target,
       rows: total.n,
+      // A resolved object delete HARD-removes its records (delete_data) and, for a
+      // cascade, everything pointing at them — with no trash and no undo. This is the
+      // one arm the size wall still guards.
+      reversible: false,
       ...(total.unknown ? { rowsUnknown: true } : {}),
       ...(total.saturated ? { rowsSaturated: true } : {}),
       detail:
@@ -690,15 +724,21 @@ async function classifyDestructive(
     // "delete record n_1 (a test copy — the real data is untouched, safe) from
     // notes". A sentence is not a record.
     if ((await countExisting(ctx, target, [id])) === 0) return null;
+    // Mirrors what deleteRow() actually does: a default delete on a soft-deletable
+    // object stamps `deleted_at` and lands the record in the recoverable trash
+    // (reversible); a `hard` delete, or any delete on an object that is not
+    // soft-deletable, is a permanent DELETE with no trash (irreversible).
+    const softDelete = args.hard !== true && ctx.softDeletable.has(target);
     // Names WHICH record, so a refusal the user acts on themselves points at the
     // right one.
     return {
       kind: 'delete_records',
       target,
       rows: 1,
+      reversible: softDelete,
       detail:
         `delete ${idPhrase(id, '1 record')} from "${target}"` +
-        `${args.hard === true ? ' permanently' : ''} — this one record, not any other`,
+        `${softDelete ? ' (recoverable from the trash)' : ' permanently'} — this one record, not any other`,
     };
   }
   if (name === 'update_row') {
@@ -720,6 +760,9 @@ async function classifyDestructive(
       kind: 'clear',
       target,
       rows: 1,
+      // An overwrite/clear is an ordinary edit: the prior value is kept in the audit
+      // image and the undo restores it. Reversible at any scale.
+      reversible: true,
       detail:
         `clear ${named.map((c) => `"${cardValue(c, 'a field')}"`).join(', ')} ` +
         alsoOverwrites(writeMap(args.values), known) +
@@ -755,16 +798,28 @@ async function classifyDestructive(
     // Nothing matches ⇒ nothing is destroyed. Never reached when the count failed:
     // that comes back `unknown`, which is wide, not zero.
     if (rows.n === 0 && !rows.unknown) return null;
+    // An unlink is reversible ONLY when every removed edge was captured for undo:
+    // `unlinkRows` records each matched edge and the inverse re-links it, but that
+    // capture is a bounded read (UNLINK_UNDO_MAX_EDGES). A match beyond that ceiling
+    // (`saturated`) cannot be fully recorded, and a count that could not run at all
+    // (`unknown`) cannot be confirmed capturable — both fail CLOSED to not-reversible,
+    // so the size wall gates them and an un-restorable wide unlink never slips through
+    // as reversible.
+    const capturable = !rows.saturated && !rows.unknown;
     return {
       kind: 'unlink',
       target,
       rows: rows.n,
+      reversible: capturable,
       ...(rows.unknown ? { rowsUnknown: true } : {}),
       ...(rows.saturated ? { rowsSaturated: true } : {}),
       detail: rows.unknown
-        ? `remove links from "${target}" — link count unknown`
-        : `remove ${rows.saturated ? 'at least ' : ''}${String(rows.n)} link(s) from "${target}" — ` +
-          `EVERY link matching this one, not just one`,
+        ? `remove links from "${target}" — link count unknown, too many to record for undo, so this cannot be reversed`
+        : capturable
+          ? `remove ${String(rows.n)} link(s) from "${target}" — ` +
+            `EVERY link matching this one, not just one`
+          : `remove at least ${String(rows.n)} link(s) from "${target}" — ` +
+            `too many to record for undo, so this cannot be reversed`,
     };
   }
   if (name === 'merge_rows') {
@@ -791,62 +846,49 @@ async function classifyDestructive(
     // beside a count that excludes some of them would put two different numbers of
     // things on one line, and the card is the screen where a person decides.
     const shown = real === ids.length ? idListPhrase(ids, 3) : '';
+    // Mirrors what a merge's loser delete actually does (deleteRow(..., hard=false)):
+    // on a soft-deletable object the loser is stamped `deleted_at` and lands in the
+    // recoverable trash (reversible); on an object with NO trash it is a permanent
+    // DELETE with no recovery path — so, like a hard row delete, it is irreversible
+    // and the size wall still applies. Claiming "recoverable from the trash" for that
+    // hard case would be a false statement on the one screen the user acts from.
+    const softDelete = ctx.softDeletable.has(target);
     return {
       kind: 'delete_records',
       target,
       rows: real,
+      reversible: softDelete,
       detail:
         `merge ${String(real)} named record(s) into 1 in "${target}"` +
         (shown ? ` (${shown})` : '') +
-        ` — only these, and the merged-away records are moved to the trash (recoverable)`,
+        (softDelete
+          ? ` — only these, and the merged-away records are moved to the trash (recoverable)`
+          : ` — only these, and the merged-away records are removed permanently (this object has no trash)`),
     };
   }
   if (name === 'dedup') {
-    // ── THIS NUMBER IS A BOUND, NOT A MEASUREMENT — AND IT HAS TO STAY ONE ──────
+    // ── THIS NUMBER IS A BOUND, NOT A MEASUREMENT — AND IT REPORTS, IT DOES NOT GATE ──
     //
     // The duplicate scan is NOT run here. The live row count bounds the loss instead:
     // a table with N live rows can lose at most N−1 to merging, because every group
     // keeps its survivor. That is deliberately conservative and it is deliberately
     // cheap — one `COUNT(*)`, SQL-side, no rows read.
     //
-    // Measuring it honestly would mean running `findTableDuplicates` pre-flight. That
-    // was built and then reverted, because the scan is QUADRATIC and SYNCHRONOUS, so
-    // running it inside the gate stops the entire server:
+    // A dedup is REVERSIBLE: the merged-away records go to the recoverable trash and the
+    // whole pass undoes as one action. So this bound is not deciding a refusal — a
+    // reversible act proceeds at any scale, undo is the safety net. The bound is here to
+    // state the POSSIBLE scale honestly in the classification, nothing more.
     //
-    //   • `groupNear` (src/dedup/index.ts) blocks candidates by the first 4 characters
-    //     of the key, then compares EVERY PAIR inside a block with `bigramDice`. There
-    //     is no `await` anywhere in that double loop, so the block is O(k²) of
-    //     uninterrupted CPU.
-    //   • `fileContentGroups` (src/gui/dedup-service.ts) builds a fuzzy `files` key as
-    //     `'txt:' + normalizeText(extracted_text).slice(0, 2000)`. Every file row
-    //     therefore shares the 4-character prefix `txt:` — the blocking degenerates,
-    //     the whole table lands in ONE block, and each of the k²/2 comparisons is over
-    //     strings up to 2000 characters long.
+    // The real duplicate scan runs later, in the handler, and it is BOUNDED there —
+    // `findTableDuplicates` blocks candidates, then scores pairs under a per-block pair
+    // cap and an overall time budget, re-partitioning a pathological block on a longer
+    // prefix and yielding to the event loop as it goes (see `groupNearBounded` in
+    // src/dedup/index.ts). An unbounded pairwise pass once froze the loop for ~104s on a
+    // large fuzzy `files` scan; the bounded pass is why a large dedup can now run without
+    // stalling every other session — so do NOT reintroduce an unbounded pairwise scan on
+    // any path, gate or handler.
     //
-    // Measured: a fuzzy `dedup` on a 1,200-row `files` table blocked the Node event
-    // loop for 104 SECONDS. A 50ms heartbeat fired zero times across it. For that whole
-    // stretch every HTTP request, every WebSocket and SSE stream, every other user's
-    // session, and the Stop button are dead — and the call is then REFUSED anyway,
-    // because a table that size is over the threshold on any reading of it. The bound
-    // refuses that exact call instantly off a bounded `COUNT(*)`, which is what keeps
-    // the quadratic path unreachable from the gate at any table size.
-    //
-    // WHAT THE BOUND COSTS, stated plainly so nobody rediscovers it as a surprise: a
-    // table over DESTRUCTIVE_ROW_THRESHOLD is refused even when only a handful of its
-    // records are really duplicates, and the model cannot narrow the call — `dedup`
-    // takes a table name and a `fuzzy` flag and nothing else. That is a real product
-    // limitation and it is the accepted trade: freezing the server for two minutes is
-    // far worse than refusing a de-duplication the person can run from the app.
-    //
-    // FIXING THE SCAN IS THE PREREQUISITE for measuring this honestly. Not the gate —
-    // the scan. It needs a blocking key that actually partitions (`files` must not key
-    // every row on a constant `txt:` prefix), a per-block size cap so one pathological
-    // block cannot go quadratic, and a yield to the event loop between blocks. Until
-    // all three exist, do NOT re-introduce a pre-flight scan here, and do not "just
-    // guard it" with an allowlist or a row cap — the cost is in the scan, and any
-    // reachable path to it is a path to a frozen server.
-    //
-    // One more property the bound has to carry: it is only a true UPPER bound while the
+    // One property the bound has to carry: it is only a true UPPER bound while the
     // count is a true total. Past DESTRUCTIVE_COUNT_CAP it is not — `boundedCount` stops
     // there, so a 12,000-row table reports 5001 and "up to 5000" is SMALLER than the real
     // answer, not larger. Saturation is carried rather than asserted away, and the
@@ -861,10 +903,16 @@ async function classifyDestructive(
     // apart — that is exactly what makes it a bound — but the sentence still has to say
     // which one was refused, because it is what the person goes and does themselves.
     const fuzzy = args.fuzzy === true;
+    // A dedup's losers go through the same loser delete a merge does: to the recoverable
+    // trash on a soft-deletable object (reversible), or a permanent DELETE with no trash
+    // on an object that has none (irreversible — the size wall still applies, and the
+    // sentence must not promise a trash the object does not have).
+    const softDelete = ctx.softDeletable.has(target);
     return {
       kind: 'delete_records',
       target,
       rows: most,
+      reversible: softDelete,
       ...(rows.unknown ? { rowsUnknown: true } : {}),
       ...(rows.saturated ? { rowsSaturated: true } : {}),
       detail:
@@ -875,7 +923,9 @@ async function classifyDestructive(
           : rows.saturated
             ? `at least ${String(most)} record(s), possibly far more`
             : `up to ${String(most)} record(s)`) +
-        ` could be merged away, and those go to the trash (recoverable)`,
+        (softDelete
+          ? ` could be merged away, and those go to the trash (recoverable)`
+          : ` could be merged away permanently (this object has no trash)`),
     };
   }
   // bulk_update is destructive only when it CLEARS values — the "unlink 40 rows
@@ -933,8 +983,11 @@ async function classifyDestructive(
     kind: 'clear',
     target,
     rows: rows.n,
-    // Carried, so an uncountable clear reads as WIDE at the gate and as "record count
-    // unknown" in the refusal — never as a clear of zero records.
+    // A clear/overwrite keeps the prior value in the audit image and the undo restores
+    // it, so it is reversible at any scale — no size wall.
+    reversible: true,
+    // Carried for HONEST reporting of the clear's scale (never as a clear of zero
+    // records) even though a reversible clear is not gated on it.
     ...(rows.unknown ? { rowsUnknown: true } : {}),
     ...(rows.saturated ? { rowsSaturated: true } : {}),
     // Says WHAT is at stake without claiming more precision than was measured: the
@@ -1205,15 +1258,24 @@ export class TurnOutcomeLedger {
   }
 
   /**
-   * PRE-FLIGHT GATE. Returns an instructive refusal when this call is part of a
-   * destructive plan that spans more than one object, or that has grown wider than
-   * {@link DESTRUCTIVE_ROW_THRESHOLD} records ACROSS the turn — otherwise null.
-   * Enforced as a rejected tool call, not as a prompt rule, because a prompt rule is
-   * exactly what failed here.
+   * PRE-FLIGHT GATE. Returns an instructive refusal when this call is part of an
+   * IRREVERSIBLE destructive plan that spans more than one object, or that has grown
+   * wider than {@link DESTRUCTIVE_ROW_THRESHOLD} records ACROSS the turn — otherwise
+   * null. Enforced as a rejected tool call, not as a prompt rule, because a prompt rule
+   * is exactly what failed here.
    *
-   * The refusal is UNCONDITIONAL. There is no approval, no confirmation, no record the
-   * assistant can obtain that makes a wide or multi-object removal runnable, because
-   * the capability is not offered at all.
+   * The wall applies to the IRREVERSIBLE arm ONLY. A reversible change — a bulk
+   * clear/blank, an unlink, a merge or dedup or row delete whose losers go to the trash,
+   * and any multi-object plan whose every step is reversible — proceeds at ANY scale: it
+   * lands in the session undo/redo stack, version history, and the recoverable trash, so a
+   * mistake is one undo away. Undo is the safety net, so there is nothing to refuse; the
+   * turn's honest outcome trail still reports exactly what changed. Only a HARD removal
+   * with no recovery (a `delete_data` / `delete_cascade` object delete, a permanent row
+   * delete, or a merge/dedup on an object that has no trash) hits the wall.
+   *
+   * For that irreversible arm the refusal is UNCONDITIONAL. There is no approval, no
+   * confirmation, no record the assistant can obtain that makes a wide or multi-object
+   * hard removal runnable, because the capability is not offered at all.
    *
    * That is a deliberate retreat from an assistant-side consent system, which was
    * built and then removed: seven adversarial review rounds each found a way to forge,
@@ -1225,8 +1287,8 @@ export class TurnOutcomeLedger {
    * the capability collapses forged approval, identity binding, decline durability and
    * spend semantics into a question nobody has to answer.
    *
-   * Small, single-object removals under the threshold are untouched: they are what the
-   * assistant is for, they are already recorded in version history, and they are the
+   * Small, single-object hard removals under the threshold are untouched: they are what
+   * the assistant is for, they are already recorded in version history, and they are the
    * boundary this gate has always drawn.
    */
   async gateDestructive(
@@ -1237,6 +1299,13 @@ export class TurnOutcomeLedger {
     const intent = await destructiveIntent(ctx, name, args);
     if (!intent) return null;
     this.intents.set(args, intent);
+
+    // Reversible changes proceed at any scale — undo/version-history/trash is the safety
+    // net, so the size wall does not apply and nothing is refused. The change is still
+    // recorded and reported honestly (see reconciliation/userNotice); only the refusal
+    // is lifted. record() likewise counts only irreversible acts toward the wall, so a
+    // reversible change earlier in the turn never pushes a later hard removal over it.
+    if (intent.reversible) return null;
 
     const targets = new Map(this.touched);
     targets.set(intent.target, Math.max(targets.get(intent.target) ?? 0, intent.rows));
@@ -1305,10 +1374,16 @@ export class TurnOutcomeLedger {
       ...(intent ? { destructive: intent } : {}),
     };
     this.attempts.push(attempt);
-    if (intent) {
+    // Only IRREVERSIBLE acts count toward the wall the gate enforces. A reversible
+    // change proceeds at any scale on its own (undo is the safety net), and it must not
+    // push a later hard removal over the multi-object / size wall either — mixing a
+    // reversible clear on one object with a hard delete of another is not a two-object
+    // IRREVERSIBLE plan. The full attempt (reversible or not) is still recorded above,
+    // so honest outcome reporting sees everything; only the wall's accounting is scoped.
+    if (intent && !intent.reversible) {
       // The target AND its records count toward the plan's size whether or not the
-      // call landed — an attempted removal is still part of the plan the user must
-      // agree to, and a failed one is usually about to be retried.
+      // call landed — an attempted hard removal is still part of the plan, and a failed
+      // one is usually about to be retried.
       this.touched.set(intent.target, Math.max(this.touched.get(intent.target) ?? 0, intent.rows));
       this.plannedRows += Math.max(intent.rows, res.ok ? affectedRows(attempt) : 0);
     }
@@ -1425,7 +1500,7 @@ export async function executeFunction(
     try {
       refusal = await ledger.gateDestructive(ctx, name, args);
     } catch (e) {
-      refusal = `Could not check whether this change needs the user's confirmation: ${(e as Error).message}. Nothing was changed. Ask the user before retrying.`;
+      refusal = `Could not run the safety check for this change: ${(e as Error).message}. Nothing was changed. Tell the user the check could not run, and do not retry until it can.`;
       console.warn(`[assistant] destructive gate failed for ${name}: ${(e as Error).message}`);
     }
     if (refusal !== null) {
@@ -1464,6 +1539,11 @@ async function runFunction(
     // the user can undo what they asked the assistant to do.
     ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     ...(ctx.onColumnsAdded ? { onColumnsAdded: ctx.onColumnsAdded } : {}),
+    // One operation-group id per tool execution: every audit entry this single
+    // call writes shares it, so a multi-row change (bulk_update, dedup,
+    // merge_rows) is undoable as ONE action and renders as one history card.
+    // Read-only tools simply never write an entry carrying it.
+    opGroup: randomUUID(),
   };
 
   try {

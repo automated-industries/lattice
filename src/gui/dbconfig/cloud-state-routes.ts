@@ -2,7 +2,7 @@ import {
   type DbConfigContext,
   buildPostgresUrl,
   parsePostgresUrl,
-  parseSaveBody,
+  parseSaveBodyResult,
   rewriteDbLine,
   rootForDbConfig,
 } from './shared.js';
@@ -259,11 +259,17 @@ export async function dispatchCloudState(
   if (pathname === '/api/dbconfig/probe' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const parsed = parseSaveBody(body);
-      if (parsed?.type !== 'postgres') {
-        sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
+      const parsedResult = parseSaveBodyResult(body);
+      if (!parsedResult.ok || parsedResult.value.type !== 'postgres') {
+        // A validation failure is NOT a credentials failure — surface the specific
+        // field so the user isn't sent to double-check correct host/port/user/password.
+        // "Invalid Postgres credentials" is reserved for a real auth error from the server.
+        const msg = !parsedResult.ok ? parsedResult.error : 'Expected Postgres connection details.';
+        const field = !parsedResult.ok ? parsedResult.field : undefined;
+        sendJson(res, { error: msg, field }, 400);
         return;
       }
+      const parsed = parsedResult.value;
       const url = buildPostgresUrl({
         host: parsed.host,
         port: Number(parsed.port),
@@ -280,11 +286,17 @@ export async function dispatchCloudState(
   if (pathname === '/api/dbconfig/migrate-to-cloud' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const parsed = parseSaveBody(body);
-      if (parsed?.type !== 'postgres') {
-        sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
+      const parsedResult = parseSaveBodyResult(body);
+      if (!parsedResult.ok || parsedResult.value.type !== 'postgres') {
+        // A validation failure is NOT a credentials failure — surface the specific
+        // field so the user isn't sent to double-check correct host/port/user/password.
+        // "Invalid Postgres credentials" is reserved for a real auth error from the server.
+        const msg = !parsedResult.ok ? parsedResult.error : 'Expected Postgres connection details.';
+        const field = !parsedResult.ok ? parsedResult.field : undefined;
+        sendJson(res, { error: msg, field }, 400);
         return;
       }
+      const parsed = parsedResult.value;
       const url = buildPostgresUrl({
         host: parsed.host,
         port: Number(parsed.port),
@@ -376,11 +388,17 @@ export async function dispatchCloudState(
   if (pathname === '/api/dbconfig/connect-existing' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const parsed = parseSaveBody(body);
-      if (parsed?.type !== 'postgres') {
-        sendJson(res, { error: 'Invalid Postgres credentials' }, 400);
+      const parsedResult = parseSaveBodyResult(body);
+      if (!parsedResult.ok || parsedResult.value.type !== 'postgres') {
+        // A validation failure is NOT a credentials failure — surface the specific
+        // field so the user isn't sent to double-check correct host/port/user/password.
+        // "Invalid Postgres credentials" is reserved for a real auth error from the server.
+        const msg = !parsedResult.ok ? parsedResult.error : 'Expected Postgres connection details.';
+        const field = !parsedResult.ok ? parsedResult.field : undefined;
+        sendJson(res, { error: msg, field }, 400);
         return;
       }
+      const parsed = parsedResult.value;
       try {
         // Join = connect DIRECTLY with the scoped credentials the owner issued
         // (the "invite" is those credentials). joinCloudAsMember probes, saves,

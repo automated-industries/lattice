@@ -4,6 +4,7 @@ import {
   htmlAuthorModelForAuth,
   HTML_AUTHOR_MODEL,
   HTML_AUTHOR_STRONG_MODEL,
+  stripFences,
 } from '../../src/gui/ai/html-author.js';
 import { DEFAULT_MODEL } from '../../src/gui/ai/chat.js';
 import type { LlmClient, TurnParams } from '../../src/gui/ai/chat.js';
@@ -153,5 +154,26 @@ describe('htmlAuthorModelForAuth', () => {
   it('uses the chat model for an OAuth subscription (no api key)', () => {
     expect(htmlAuthorModelForAuth({})).toBe(HTML_AUTHOR_MODEL);
     expect(htmlAuthorModelForAuth({ apiKey: null })).toBe(HTML_AUTHOR_MODEL);
+  });
+});
+
+describe('stripFences', () => {
+  const NL = String.fromCharCode(10);
+  const FENCE = String.fromCharCode(96, 96, 96);
+
+  it('strips a complete fence pair', () => {
+    const input = FENCE + 'html' + NL + '<!doctype html><html></html>' + NL + FENCE;
+    expect(stripFences(input)).toBe('<!doctype html><html></html>');
+  });
+
+  it('strips a LEADING fence even when the closing fence is missing (truncated output)', () => {
+    // Regression: an all-or-nothing fence regex no-oped on truncated output and the
+    // opening fence rendered as literal text at the top of a stored page.
+    const input = FENCE + 'html' + NL + '<!doctype html><html><body>cut off';
+    expect(stripFences(input)).toBe('<!doctype html><html><body>cut off');
+  });
+
+  it('leaves unfenced output untouched', () => {
+    expect(stripFences('<!doctype html><html></html>')).toBe('<!doctype html><html></html>');
   });
 });

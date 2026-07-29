@@ -10,6 +10,7 @@ import {
 } from '../../src/index.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { inferSchema } from '../../src/import/infer.js';
+import { MAX_INGEST_BYTES } from '../../src/gui/http.js';
 import { materializeImport } from '../../src/import/materialize.js';
 import { allAsyncOrSync } from '../../src/db/adapter.js';
 import { LINEAGE_TABLE } from '../../src/gui/lineage-store.js';
@@ -91,7 +92,7 @@ describe('import: infer → materialize → query (canonical)', () => {
     const configPath = resolveWorkspacePaths(root, ws).configPath;
 
     const data = fixture();
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const result = await materializeImport({ db, configPath }, data, plan);
 
     // Entities + rows, with keyless dedup (13 source investments → 12 after the dup).
@@ -131,7 +132,7 @@ describe('import: infer → materialize → query (canonical)', () => {
     const configPath = resolveWorkspacePaths(root, ws).configPath;
 
     const data = fixture();
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
     const views = [
       {
         name: 'company_zero',
@@ -188,7 +189,7 @@ describe('import: infer → materialize → query (canonical)', () => {
     dbs.push(db);
     const configPath = resolveWorkspacePaths(root, ws).configPath;
     const data = fixture();
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
 
     await materializeImport({ db, configPath }, data, plan);
     await materializeImport({ db, configPath }, data, plan); // re-apply
@@ -208,7 +209,7 @@ describe('import: infer → materialize → query (canonical)', () => {
     dbs.push(db);
     const configPath = resolveWorkspacePaths(root, ws).configPath;
     const data = fixture();
-    const plan = inferSchema(data);
+    const plan = await inferSchema(data);
 
     // schema: tables exist, dimension VALUES (taxonomy) are seeded, but NO entity
     // rows and NO links.
@@ -248,10 +249,10 @@ describe('import: infer → materialize → query (canonical)', () => {
     const configPath = resolveWorkspacePaths(root, ws).configPath;
     const data = fixture();
 
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+    await materializeImport({ db, configPath }, data, await inferSchema(data), [], {
       asOf: '2025-06-30',
     });
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+    await materializeImport({ db, configPath }, data, await inferSchema(data), [], {
       asOf: '2026-03-31',
     });
 
@@ -267,7 +268,7 @@ describe('import: infer → materialize → query (canonical)', () => {
     expect((await db.query('funds', { where: { as_of: '2026-03-31' } })).length).toBe(2);
 
     // Re-importing the SAME date is idempotent (no third snapshot).
-    await materializeImport({ db, configPath }, data, inferSchema(data), [], {
+    await materializeImport({ db, configPath }, data, await inferSchema(data), [], {
       asOf: '2025-06-30',
     });
     expect(await db.count('funds')).toBe(4);
@@ -322,8 +323,7 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     autoImport?: {
       reason?: string;
       fileId?: string;
-      lowConfidence?: boolean;
-      guardReason?: string;
+      asOf?: string | null;
       plan?: { entities: { name: string }[] };
       views?: { name: string; master: string }[];
       linkConfidence?: number;
@@ -411,6 +411,92 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     expect(files.rows.some((r) => r.original_name === 'data.json')).toBe(true);
   });
 
+  it('a brand-new dataset with a confident file-level date is dated by the document, not the import day', async () => {
+    const { server } = await freshServer('lattice-import-filedate-');
+    const today = new Date().toISOString().slice(0, 10);
+    // A non-array top-level value carries an explicit "as of" phrase, so the file-level snapshot
+    // date is detected deterministically (no model needed) and rides back on the proposal's asOf.
+    const doc = {
+      report_period: 'As of 2026-03-31',
+      funds: [
+        { code: 'EP', name: 'Early Plays' },
+        { code: 'GG', name: 'Global Growth' },
+      ],
+    };
+    const up = await uploadFile(
+      server,
+      'funds.json',
+      'application/json',
+      Buffer.from(JSON.stringify(doc), 'utf8'),
+    );
+    expect(up.autoImport?.reason).toBe('new-dataset');
+    // The date was detected and is available for the (fixed) client to forward on apply.
+    expect(up.autoImport?.asOf).toBe('2026-03-31');
+
+    // Forwarding autoImport.asOf as the apply date (what the silent client now does) files the rows
+    // under the document's OWN reporting date — never the day the import happened to run.
+    const events = await applyImport(server, up.autoImport!.fileId!, { asOf: up.autoImport!.asOf });
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    const rows = (await (await fetch(`${server.url}/api/tables/funds/rows`)).json()) as {
+      rows: { as_of?: string }[];
+    };
+    expect(rows.rows.length).toBe(2);
+    expect(rows.rows.every((r) => r.as_of === '2026-03-31')).toBe(true);
+    expect(rows.rows.some((r) => r.as_of === today)).toBe(false);
+  });
+
+  it('an undated re-import of a known document files a NEW snapshot — never overwrites the prior', async () => {
+    const { server } = await freshServer('lattice-import-reimport-');
+    // A dataset with a natural key ('code') and a value that can change between periods.
+    const fundsDoc = (size: number): Record<string, unknown> => ({
+      funds: [
+        { code: 'EP', name: 'Early Plays', size },
+        { code: 'GG', name: 'Global Growth', size: size * 2 },
+      ],
+    });
+
+    // First import, explicitly dated to a PAST period → the base is a dated snapshot.
+    const up1 = await uploadFile(
+      server,
+      'funds.json',
+      'application/json',
+      Buffer.from(JSON.stringify(fundsDoc(100)), 'utf8'),
+    );
+    expect(up1.autoImport?.reason).toBe('new-dataset');
+    const applied1 = await applyImport(server, up1.autoImport!.fileId!, { asOf: '2025-06-30' });
+    expect(applied1.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+
+    // Re-drop the SAME dataset with CHANGED values (so it is not a byte-duplicate) and NO date
+    // anywhere. The server recognizes it as the known document…
+    const up2 = await uploadFile(
+      server,
+      'funds.json',
+      'application/json',
+      Buffer.from(JSON.stringify(fundsDoc(999)), 'utf8'),
+    );
+    expect(up2.autoImport?.reason).toBe('needs-confirm'); // known doc, no detectable date
+    // …and the silent apply (no asOf sent) files it as a new dated snapshot rather than
+    // upserting in place. The stream says so.
+    const applied2 = await applyImport(server, up2.autoImport!.fileId!);
+    expect(applied2.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    expect(
+      applied2.some(
+        (e) => (e.message ?? '').includes('new snapshot') && (e.message ?? '').includes('prior'),
+      ),
+    ).toBe(true);
+
+    // The prior snapshot is intact AND a new one was added — two snapshots, nothing overwritten.
+    const rows = (await (await fetch(`${server.url}/api/tables/funds/rows?limit=50`)).json()) as {
+      rows: { code: string; size: number; as_of: string }[];
+    };
+    expect(rows.rows).toHaveLength(4); // 2 (2025-06-30) + 2 (import date)
+    const oldSnap = rows.rows.filter((r) => r.as_of === '2025-06-30');
+    expect(oldSnap.map((r) => r.size).sort((a, b) => a - b)).toEqual([100, 200]); // ORIGINAL values kept
+    const today = new Date().toISOString().slice(0, 10);
+    const newSnap = rows.rows.filter((r) => r.as_of === today);
+    expect(newSnap.map((r) => r.size).sort((a, b) => a - b)).toEqual([999, 1998]); // the re-import
+  });
+
   it('apply with no fileId is a 400, not a 500', async () => {
     const { server } = await freshServer('lattice-import-bad-');
     const bad = await fetch(`${server.url}/api/import/apply`, {
@@ -421,10 +507,11 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     expect(bad.status).toBe(400);
   });
 
-  it('caps a runaway import (many tables) unless the user explicitly confirms (override)', async () => {
+  it('caps a runaway single-source import (many tables) at apply time — no override, no create', async () => {
     const { server } = await freshServer('lattice-import-tablecap-');
-    // 55 distinct arrays → 55 entities, over MAX_IMPORT_TABLES (50) and over the silent scale
-    // guard — the exact over-fragmentation shape (Bug 1) that pegged a workspace at ~740 tables.
+    // 55 distinct arrays in ONE JSON → 55 entities, over MAX_IMPORT_TABLES (50). This is not a
+    // multi-sheet workbook (no per-sheet split), so it cannot be spread under the cap: the apply
+    // route must refuse it LOUDLY rather than silently materializing ~55 tables from a passive drop.
     const many: Record<string, unknown> = {};
     for (let i = 0; i < 55; i++) {
       many['t' + String(i)] = [
@@ -439,10 +526,9 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
       Buffer.from(JSON.stringify(many), 'utf8'),
     );
     expect(up.autoImport?.reason).toBe('new-dataset');
-    expect(up.autoImport?.lowConfidence).toBe(true); // scale guard → client shows the card
     const fileId = up.autoImport!.fileId!;
 
-    // No override → hard cap blocks it, materializes nothing.
+    // The silent path sends no override → hard cap blocks it, materializes nothing.
     const blocked = await applyImport(server, fileId);
     expect(blocked.some((e) => e.phase === 'error' && /safe limit/i.test(e.message ?? ''))).toBe(
       true,
@@ -508,7 +594,7 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     expect(view.rows).toHaveLength(6);
   });
 
-  it('apply refuses an oversized source (the 50MB cap) instead of OOM-ing', async () => {
+  it('apply refuses an oversized source (the ingest byte cap) instead of OOM-ing', async () => {
     const { server, base } = await freshServer('lattice-import-cap-');
     const up = await uploadFile(
       server,
@@ -527,16 +613,18 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     const blobPath = filesRows.rows.find((r) => r.id === fileId)?.blob_path;
     expect(typeof blobPath).toBe('string');
     // Locate the content-addressed blob wherever it landed under the workspace
-    // (resolution-independent) and grow it past the cap.
+    // (resolution-independent) and grow it one MB past the cap. `truncateSync`
+    // makes a sparse file, so this stays cheap even at hundreds of MB — and the
+    // route statSyncs (never reads) the bytes, so the sparse size is what matters.
     const sha = blobPath!.split(/[/\\]/).pop()!;
     const rel = (readdirSync(base, { recursive: true }) as string[]).find(
       (e) => e.split(/[/\\]/).pop() === sha,
     );
     expect(rel).toBeTruthy();
-    truncateSync(join(base, rel!), 51_000_000);
+    truncateSync(join(base, rel!), MAX_INGEST_BYTES + 1_000_000);
 
     // The route statSyncs before reading and fails loudly rather than streaming
-    // 51MB into memory.
+    // an over-cap file into memory.
     const events = await applyImport(server, fileId!);
     expect(events.some((e) => e.phase === 'error' && /too large/i.test(e.message ?? ''))).toBe(
       true,
@@ -668,7 +756,7 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
     questions: { id: string; question: string; options: string[]; source: string }[];
   }
 
-  it('asks about marginal links; answering "Yes, connect them" creates the junction', async () => {
+  it('leaves a marginal link unconnected and reports it — never asks, never fabricates', async () => {
     const { server } = await freshServer('lattice-import-marginal-');
     const up = await uploadFile(
       server,
@@ -680,45 +768,28 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
 
     const events = await applyImport(server, up.autoImport!.fileId!);
     expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
-    expect(
-      events.some((e) => e.phase === 'questions' && (e.message ?? '').includes('1 question')),
-    ).toBe(true);
-    // The marginal link was NOT materialized…
+    // Zero decisions: the low-confidence link is NOT connected (no uncertain junction is
+    // fabricated) and NO clarification question is asked…
     expect((await fetch(`${server.url}/api/tables/orders_vendors/rows`)).status).not.toBe(200);
-    // …a clarification question was enqueued instead.
     const pending = (await (
       await fetch(`${server.url}/api/questions/pending`)
     ).json()) as PendingQuestions;
-    expect(pending.questions).toHaveLength(1);
-    expect(pending.questions[0]).toMatchObject({
-      source: 'import',
-      question: 'Is "vendor" in orders meant to refer to your vendors records?',
-      options: ['Yes, connect them', "No, it's just text"],
-    });
-
-    // Answering "Yes, connect them" creates + fills the junction: the 10 order
-    // rows whose vendor value resolves (V0–V4 twice each) get linked.
-    const answered = await fetch(`${server.url}/api/questions/${pending.questions[0]!.id}/answer`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ answer: 'Yes, connect them' }),
-    });
-    expect(answered.status).toBe(200);
-    expect((await answered.json()) as { action?: string }).toMatchObject({
-      status: 'answered',
-      action: 'import_link',
-    });
-    const links = (await (
-      await fetch(`${server.url}/api/tables/orders_vendors/rows?limit=50`)
-    ).json()) as { rows: { orders_id: string; vendors_id: string }[] };
-    expect(links.rows).toHaveLength(10);
-    expect(links.rows.every((r) => r.orders_id && r.vendors_id)).toBe(true);
+    expect(pending.questions).toHaveLength(0);
+    // …but it is REPORTED on the import stream (and, in-process, on the activity feed), so the
+    // choice is visible and can be made later from the Data Model panel — transparency, not a gate.
+    expect(
+      events.some(
+        (e) =>
+          (e.message ?? '').includes('1 possible link') &&
+          (e.message ?? '').includes('unconnected'),
+      ),
+    ).toBe(true);
   });
 
-  it('answering "No" leaves everything untouched, and questions are capped at 5', async () => {
-    const { server } = await freshServer('lattice-import-marginal-cap-');
-    // Seven marginal references from one entity to seven target entities —
-    // only the 5 highest-confidence candidates become questions.
+  it('leaves MANY marginal links unconnected and reports the count (no per-question cap)', async () => {
+    const { server } = await freshServer('lattice-import-marginal-many-');
+    // Seven marginal references from one entity to seven target entities. The old flow asked
+    // about the top 5; the zero-decision flow connects none, asks nothing, and reports all seven.
     const data: Record<string, unknown> = {
       orders: Array.from({ length: 20 }, (_, i) => {
         const row: Record<string, unknown> = { sku: 'SKU-' + String(i) };
@@ -741,25 +812,25 @@ describe('import: over the HTTP endpoints (chat-drop flow)', () => {
       Buffer.from(JSON.stringify(data), 'utf8'),
     );
     const events = await applyImport(server, up.autoImport!.fileId!);
-    expect(
-      events.some((e) => e.phase === 'questions' && (e.message ?? '').includes('5 questions')),
-    ).toBe(true);
+    expect(events.some((e) => e.phase === 'done' && e.ok)).toBe(true);
+    // No questions enqueued at all.
     const pending = (await (
       await fetch(`${server.url}/api/questions/pending`)
     ).json()) as PendingQuestions;
-    expect(pending.questions).toHaveLength(5);
-
-    // "No, it's just text" resolves the question without creating anything.
-    const first = pending.questions[0]!;
-    const junction = /"(\w+)" in orders .* your (\w+) records/.exec(first.question);
-    const answered = await fetch(`${server.url}/api/questions/${first.id}/answer`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ answer: "No, it's just text" }),
-    });
-    expect(answered.status).toBe(200);
+    expect(pending.questions).toHaveLength(0);
+    // All seven are reported as left unconnected (not capped at five).
     expect(
-      (await fetch(`${server.url}/api/tables/orders_${junction?.[2] ?? ''}/rows`)).status,
-    ).not.toBe(200);
+      events.some(
+        (e) =>
+          (e.message ?? '').includes('7 possible links') &&
+          (e.message ?? '').includes('unconnected'),
+      ),
+    ).toBe(true);
+    // None of the seven candidate junctions were created.
+    for (let t = 1; t <= 7; t++) {
+      expect(
+        (await fetch(`${server.url}/api/tables/orders_targets${String(t)}/rows`)).status,
+      ).not.toBe(200);
+    }
   });
 });

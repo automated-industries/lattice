@@ -286,6 +286,47 @@ describe('turn outcome ledger', () => {
     expect(await db.countActive('deals')).toBe(2);
   });
 
+  it('never emits a consent or approval card — reversible proceeds, irreversible refuses, neither asks', async () => {
+    // The property the removed consent system kept failing: no card, no grant, no
+    // approval state anywhere. A reversible act just runs and returns a plain outcome;
+    // an irreversible one is refused with text that explicitly forbids asking to approve.
+    const rows = DESTRUCTIVE_ROW_THRESHOLD + 5;
+    for (let i = 0; i < rows; i++) {
+      await db.insert('deals', { id: `k${String(i)}`, name: `Deal ${String(i)}`, owner: 'u1' });
+    }
+    const reversible = await executeFunction(
+      ctx,
+      'bulk_update',
+      { table: 'deals', set: { owner: null } },
+      ledgerFor(),
+    );
+    expect(reversible.ok).toBe(true);
+    // The result is a plain outcome — no field a forged/widened approval could live in.
+    const keys = Object.keys(reversible as Record<string, unknown>).join(' ');
+    expect(keys).not.toMatch(/consent|approv|confirm|card|grant/i);
+
+    // The irreversible arm refuses, and the refusal tells the model there is no approval
+    // to seek — never a card to fill in.
+    const led = ledgerFor();
+    await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'contacts', resolution: 'delete_data' },
+      led,
+    );
+    const refused = await executeFunction(
+      ctx,
+      'delete_entity',
+      { name: 'deals', resolution: 'delete_data' },
+      led,
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('REFUSED');
+    expect(refused.error).not.toMatch(/call ask_user/i);
+    expect(refused.error).toMatch(/do not ask them to confirm or approve/i);
+    expect(refused.error).toMatch(/no answer they\s+can give/i);
+  });
+
   it('has no constructor argument that could open the gate', async () => {
     // The shape of the old bypasses was always "hand the ledger a state that means
     // yes". There is no such state to hand it: the only way to build one is with no
@@ -326,8 +367,12 @@ describe('turn outcome ledger', () => {
     expect(await db.countActive('deals')).toBe(2);
   });
 
-  it('does not let a mention in the request authorize a wide clear of that object', async () => {
-    for (let i = 0; i < DESTRUCTIVE_ROW_THRESHOLD + 5; i++) {
+  it('runs a wide reversible clear without any authorization, because undo is the safety net', async () => {
+    // A wide clear is reversible — the prior value is kept in the audit image and the undo
+    // restores it — so it simply proceeds. There is no authorization involved and nothing
+    // to refuse: the safety net is undo, not a permission the request could imply.
+    const rows = DESTRUCTIVE_ROW_THRESHOLD + 5;
+    for (let i = 0; i < rows; i++) {
       await db.insert('deals', { id: `bulk${String(i)}`, name: `Deal ${String(i)}`, owner: 'u1' });
     }
     const ledger = ledgerFor();
@@ -337,11 +382,12 @@ describe('turn outcome ledger', () => {
       { table: 'deals', set: { owner: null } },
       ledger,
     );
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain('REFUSED');
-    // Asking a question about an object must never be what empties it.
+    expect(r.ok).toBe(true);
+    expect(r.error ?? '').not.toContain('REFUSED');
+    // Every record really was cleared — the `rows` just inserted, plus the two deals the
+    // fixture seeds (this unfiltered clear covers every record in the object).
     const cleared = (await db.query('deals', { filters: [{ col: 'owner', op: 'isNull' }] })).length;
-    expect(cleared).toBe(0);
+    expect(cleared).toBe(rows + 2);
   });
 
   it('still lets a small single-object removal through', async () => {

@@ -174,14 +174,51 @@ describe('set_definition + dedup assistant tools', () => {
 
     const res = await executeFunction(ctx, 'dedup', { table: 'files' });
     expect(res.ok).toBe(true);
-    const result = res.result as { table: string; duplicateGroups: number; rowsMerged: number };
+    const result = res.result as {
+      table: string;
+      duplicateGroups: number;
+      rowsMerged: number;
+      scanComplete: boolean;
+      scanNote?: string;
+    };
     expect(result.duplicateGroups).toBe(1);
     expect(result.rowsMerged).toBe(1);
+    // A scan this small covers everything — and the result says so plainly.
+    expect(result.scanComplete).toBe(true);
+    expect(result.scanNote).toBeUndefined();
 
     // Oldest (f1) survives; the newer copy (f2) is soft-deleted.
     expect((await db.get('files', 'f1')) as Record<string, unknown>).toBeTruthy();
     const f2 = (await db.get('files', 'f2')) as { deleted_at?: string | null } | null;
     expect(f2?.deleted_at).toBeTruthy();
     expect(events.some((e) => e.source === 'system' && e.table === 'files')).toBe(true);
+  });
+
+  it('dedup reports a partial fuzzy scan honestly instead of presenting it as exhaustive', async () => {
+    // 250 rows whose key shares a 16+ char prefix defeat both blocking and the
+    // refinement split: 250·249/2 = 31,125 candidate pairs exceeds the default
+    // per-block cap, so the scan MUST truncate — and the tool result must say
+    // so, because "0 duplicates found" from a partial pass would be a silent
+    // truncation the model would repeat to the user as a completed cleanup.
+    for (let i = 0; i < 250; i++) {
+      await db.insert('widgets', {
+        id: `w${String(i).padStart(3, '0')}`,
+        sku: `same sku prefix ${i.toString(36).padStart(3, '0')}`,
+      });
+    }
+    const res = await executeFunction(ctx, 'dedup', { table: 'widgets', fuzzy: true });
+    expect(res.ok).toBe(true);
+    const result = res.result as {
+      duplicateGroups: number;
+      rowsMerged: number;
+      scanComplete: boolean;
+      scanNote?: string;
+    };
+    expect(result.scanComplete).toBe(false);
+    expect(result.scanNote).toMatch(/did not cover everything/i);
+    expect(result.scanNote).toMatch(/skipped/i);
+    // At the default near-exact threshold these skus are not duplicates — the
+    // partial scan merged nothing, it just could not certify the whole table.
+    expect(result.rowsMerged).toBe(0);
   });
 });

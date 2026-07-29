@@ -21,5 +21,6 @@
 export const ROWS_PATH = /^\/api\/tables\/([^/]+)\/rows(?:\/(.+))?$/;
 export const CONTEXT_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/context$/;
 export const ROW_HISTORY_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/history$/;
+export const PROVENANCE_PATH = /^\/api\/tables\/([^/]+)\/rows\/([^/]+)\/provenance$/;
 export const LAST_EDITED_PATH = /^\/api\/tables\/([^/]+)\/last-edited$/;
 export const LINK_PATH = /^\/api\/tables\/([^/]+)\/(link|unlink)$/;

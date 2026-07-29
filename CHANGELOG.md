@@ -6,6 +6,74 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.6.0] — 2026-07-29
+
+The theme of this release: Lattice stops asking you to decide things it can undo. Almost
+every confirmation, "are you sure?", and "type the name to delete" ceremony guarded an
+action that was already reversible, so those are gone — the app just does the thing, and
+you can undo it. What still stops to ask is the small set that genuinely cannot be taken
+back or that affects other people.
+
+### Changed
+
+- **Confirmations on reversible actions are removed.** Removing a dashboard, a computed
+  view, a file source, or an external-database connection; disconnecting the model; and
+  dismissing a question now just happen, each with an Undo. The prompts that remain guard
+  the few things that truly cannot be undone or that reach other people: deleting a whole
+  local workspace, removing a teammate, and migrating a workspace to a cloud.
+- **The assistant makes large reversible changes instead of refusing them.** It used to
+  decline any bulk change over a couple hundred records, or anything spanning several
+  objects, and tell you to do it yourself — even when the change was fully recoverable. It
+  now judges by reversibility, not size: clearing a field, unlinking, merging, de-duplicating,
+  and moving records to the trash proceed at any scale because a single Undo puts them back.
+  A permanent delete — one that does not go to the trash — is the one thing it still refuses,
+  and it never asks you to approve a removal in chat.
+- **Bulk changes undo as one action.** A change the assistant makes across hundreds of rows
+  is a single entry in the history with one Undo, rather than something reversed a row at a
+  time. The undo checks every affected row first and refuses loudly rather than half-restoring
+  if the data has moved on since, is scoped to the person who made the change, and is bounded
+  so a very large change cannot be undone in one unbounded load.
+- **Dropping a spreadsheet just works — no questions.** Importing a spreadsheet no longer
+  shows a confirmation card, a "what should I bring in?" choice, or follow-up questions.
+  Every sheet is read, the tables and computed tables are built, and it is filed —
+  automatically. What happened is visible in the activity trail and fully undoable.
+- **First run drops you straight into a workspace** instead of asking you to create or join
+  one; joining a team is still available from the workspace menu.
+
+### Added
+
+- **One-click undo for schema changes.** Deleting a table, deleting a link, or renaming an
+  object now shows an Undo that restores it — and the misleading "this cannot be undone"
+  warnings are gone, because these were always reversible.
+- **Large spreadsheets import.** A workbook with many sheets (dozens or more) imports sheet
+  by sheet rather than failing on a table-count limit; very large single sheets stay
+  responsive while they load, and a per-sheet failure is reported honestly ("imported N of
+  M sheets") instead of aborting the whole book.
+- **Clickable source citations on dashboards.** A citation opens the underlying record, and
+  a figure can show where it came from.
+- **A change preview** the app can show for a proposed bulk change — the affected records
+  with their before-and-after — computed by the same code path that performs the change.
+
+### Fixed
+
+- **A cloud-workspace label with a space no longer reports a credentials error.** Entering a
+  label containing a space failed with "Invalid Postgres credentials" before any connection
+  was attempted — blaming the credentials and the network for a formatting issue. Labels are
+  now normalized (a space becomes a hyphen) so they simply work, and any real validation
+  problem names the specific field instead of the connection.
+- **Cutting many relationships at once is genuinely reversible now.** Undo of an unlink
+  silently restored nothing; it now records and re-links every relationship it removed.
+- **The duplicate finder no longer freezes the app.** Scanning a large list for duplicates
+  could block the whole server for a minute or more; the scan is bounded, yields the event
+  loop, and reports honestly when a list is too large to scan exhaustively.
+- **A truncated authored page can no longer render broken.** A document the assistant writes
+  that is cut off at its output limit is caught rather than stored half-formed.
+- Assorted polish: the update notice sits at the right of the header next to Configure, a
+  fresh workspace shows its section headers, spreadsheet columns under a grouped/two-row
+  header are named correctly, and the desktop release pipeline verifies its own version.
+
+---
+
 ## [5.5.0] — 2026-07-27
 
 ### Security

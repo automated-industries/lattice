@@ -130,7 +130,7 @@ export const configureDrawerJs = `
         '<div class="graph-tab">' +
         graphToolbarHtml('') +
         '<div class="brain-graph"><div id="graph-mount">' +
-        '<div class="graph-loading"><div class="graph-spinner"></div></div></div></div>' +
+        '<div class="graph-loading"><div class="lat-spinner graph-spinner"></div></div></div></div>' +
         '</div>';
       wireGraphToolbar();
       // A plain node click drills into that table's rows (shown visually as a graph).
@@ -147,7 +147,7 @@ export const configureDrawerJs = `
             '<span class="graph-drill-label">' + d.icon + ' ' + escapeHtml(d.label) + '</span>',
         ) +
         '<div class="brain-graph entity-graph"><div id="graph-mount">' +
-        '<div class="graph-loading"><div class="graph-spinner"></div></div></div></div>' +
+        '<div class="graph-loading"><div class="lat-spinner graph-spinner"></div></div></div></div>' +
         '</div>';
       var back = document.getElementById('graph-back');
       if (back) back.addEventListener('click', function () { renderGraphSchema(body); });

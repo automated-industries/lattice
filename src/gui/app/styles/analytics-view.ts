@@ -114,6 +114,13 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .nav-item-ic { flex: 0 0 auto; }
     .nav-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .nav-empty { font-size: 12px; padding: 8px 12px; }
+    /* Add affordance inside an empty subhead group (empty bucket / fresh workspace). */
+    .nav-add-item {
+      width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+      padding: 2px 10px 6px 14px; border: 0; border-radius: var(--r-sm); background: none;
+      color: var(--text-muted); font-size: 12px; cursor: pointer;
+    }
+    .nav-add-item:hover { background: var(--surface-2); color: var(--text); }
     #nav-tables-list { padding-bottom: 6px; }
 
     /* ── Column headers (identical style to the Configure view) ── */
@@ -193,6 +200,25 @@ export const analyticsViewCss = `    /* ── Single workspace layout ───
     .dash-menu-wrap { margin-left: auto; position: relative; }
     .dash-desc { font-size: 13px; }
     .dash-history { flex: 0 0 auto; max-height: 40%; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-md); padding: 4px 8px; background: var(--surface); }
+    .dash-frame-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+    /* Chart-click provenance target: a full-width row BELOW the canvas (the record
+       panel is the side-by-side one; this one must never sit beside the iframe). */
+    .dash-frame-wrap > .dash-source { flex: 1 0 100%; }
     .dash-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
+    /* Side-by-side record panel for dashboard citations. Starts hidden; opens when
+       a citation is clicked. When open, the panel (~40% width) and dashboard share
+       the available space (flex row layout reflows). Panel has a close control (✕). */
+    .dashboard-record-panel { flex: 0 0 0; min-width: 0; display: none; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; }
+    .dashboard-record-panel.open { flex: 0 0 40%; display: flex; }
+    .dashboard-record-panel .panel-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+    .dashboard-record-panel .panel-title { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dashboard-record-panel .panel-close { flex: 0 0 auto; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; background: none; cursor: pointer; color: var(--text-muted); font-size: 16px; line-height: 1; border-radius: var(--r-md); }
+    .dashboard-record-panel .panel-close:hover { background: var(--row-hover); color: var(--text); }
+    .dashboard-record-panel .panel-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 16px; }
+    .dashboard-record-panel .file-preview { padding: 0; }
+    .dashboard-record-panel .record-fields { display: flex; flex-direction: column; gap: 16px; }
+    .dashboard-record-panel .record-field { display: flex; flex-direction: column; gap: 4px; }
+    .dashboard-record-panel .record-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+    .dashboard-record-panel .record-value { font-size: 14px; line-height: 1.5; word-break: break-word; }
 
 `;

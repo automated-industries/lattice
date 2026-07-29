@@ -96,18 +96,19 @@ describe('the default model id is defined in exactly one place', () => {
     expect(DEFAULT_MODEL.length).toBeGreaterThan(0);
   });
 
-  it('does not drift from the copy the chat loop still declares', () => {
-    // The chat loop declares its own copy of the same id. Until it imports the
-    // shared constant instead, this guard fails the moment one of them is bumped
-    // without the other — a split default would silently send different features
-    // to different models.
-    const chat = definitions[1]?.literal;
-    if (chat !== null) {
-      expect(
-        chat,
-        'src/gui/ai/chat.ts still declares its own DEFAULT_MODEL — it must re-export ' +
-          'DEFAULT_MODEL from src/ai/llm-client.ts instead of restating the id',
-      ).toBe(DEFAULT_MODEL);
-    }
+  it('is re-exported by the chat loop, never restated', async () => {
+    // A second literal is a silent-drift hazard: bump one copy and half the
+    // features quietly move to a different model. The chat loop must import the
+    // shared constant and re-export it for its own downstream importers.
+    expect(
+      definitions[1]?.literal,
+      'src/gui/ai/chat.ts still declares its own DEFAULT_MODEL — it must re-export ' +
+        'DEFAULT_MODEL from src/ai/llm-client.ts instead of restating the id',
+    ).toBeNull();
+    // The import direction that cannot cycle: llm-client.ts is a leaf module.
+    expect(read('src/gui/ai/chat.ts')).toContain("from '../../ai/llm-client.js'");
+    // And the re-exported binding is the shared one, at runtime.
+    const chat = await import('../../src/gui/ai/chat.js');
+    expect(chat.DEFAULT_MODEL).toBe(DEFAULT_MODEL);
   });
 });
