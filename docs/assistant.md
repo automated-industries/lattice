@@ -279,14 +279,13 @@ keeps a **dated snapshot** beside the prior one; a re-upload is fingerprinted an
 matched to the tables already in the workspace, so it lands as a new snapshot
 rather than duplicate tables.
 
-A **brand-new dataset imports silently** (base tables + rows + any detected
-computed views, shown as a live-progress card), as does a **recognized dataset with
-a confident date** (a dated snapshot, reported in the activity feed). Only a
-recognized dataset with **no confident date** surfaces an **inline confirm card** —
-importing undated would overwrite the prior snapshot — proposing the as-of date
-(and any per-row date column) before it is written; genuinely uncertain links in a
-silent import become questions in the assistant panel instead of being guessed at.
-Applied via `POST /api/import/apply`. The same inference +
+**Importing asks nothing.** A brand-new dataset materializes directly (base
+tables + rows + any detected computed views, shown as a live-progress card), and
+a recognized dataset lands as a snapshot — using a confidently detected date when
+there is one, and otherwise filing a **new** snapshot rather than overwriting the
+previous one. A multi-sheet workbook imports sheet by sheet, reporting honestly if
+some sheets could not be imported. Everything is reported in the activity feed and
+is undoable. Applied via `POST /api/import/apply`. The same inference +
 materialization functions (`inferSchema`, `materializeImport`, `detectAsOf*`,
 `excelToRecords`, `dedupeAndDetectViews`, …) are exported from `latticesql` for
 library use. See [importing.md](importing.md) for the full walkthrough.
@@ -345,43 +344,44 @@ feed. No modal, no prompt. The assistant can also de-duplicate any table on
 request with the **`dedup`** tool (`{ table, fuzzy? }`); fuzzy-merge liberalness
 follows the [aggressiveness slider](#inference-aggressiveness).
 
-## Wide removals are yours to make (5.5+)
+## Scale is governed by reversibility, not size (5.6+)
 
-The assistant will not remove or clear data across **more than one object**, or
-across **more than a couple of hundred records in a turn** — the exact limit is
-`DESTRUCTIVE_ROW_THRESHOLD` in `src/gui/ai/dispatch.ts`, currently **200**, and
-the rejection always quotes it. Attempting one is rejected before anything runs,
-and it tells you what has to change — which objects, and how many records — so
-you can make the change yourself in the app, where you can see what you are
-changing before it happens.
+The assistant makes **reversible** changes at any scale, and refuses the
+**irreversible** ones outright. Size is not the test — a recoverable change to ten
+thousand records is safer than an unrecoverable change to ten.
 
-This is not a permission you can grant it. There is no confirmation, no approval
-and no setting that turns it on. A change that size is made by a person, on a
-screen, where the confirmation is a real action rather than a message in a
-conversation.
+Reversible work proceeds without a limit: clearing or blanking fields, unlinking,
+`merge_rows`, `dedup`, and deleting records on an object that has a trash. Each of
+these lands in version history and in the trash where applicable, and a change made
+across many rows in one call is undone as **one action** from the history — so a
+mistake costs one Undo, not a row-by-row repair. Undo of a group is scoped to
+whoever made the change, checks every affected row before touching anything, and
+refuses loudly rather than half-restoring if the data has moved on.
 
-Small, single-object removals are unaffected — that is the everyday work the
-assistant is for, and every change it makes is recorded in version history and can
-be undone. `dedup` and `merge_rows` count as removals, so a bulk merge is subject
-to the same limit.
+What is still refused is a **permanent** removal — a hard delete that does not go
+to the trash, and `delete_data` / `delete_cascade` — when it spans more than one
+object or more than a couple of hundred records in a turn (the ceiling is
+`DESTRUCTIVE_ROW_THRESHOLD` in `src/gui/ai/dispatch.ts`, currently **200**). That
+rejection happens before anything runs and names what it would have touched, so you
+can make the change deliberately in the app.
 
-A `dedup` is judged by a **bound**, not by a measurement: a table with N live
-records can lose at most N−1 to merging, so a table over the limit is refused
-whatever the duplicate scan would actually have found in it. That is deliberately
-conservative, and it means a large table holding only a handful of duplicates is
-refused too. The alternative — running the duplicate scan first, to get the real
-number — was built and removed: that scan is quadratic and synchronous, and on a
-1,200-row `files` table it held the server's event loop for **104 seconds** before
-refusing the call anyway. Nothing else could be served for the whole of that.
-Making the scan cheap enough to run in the gate is the prerequisite for measuring
-this honestly; until then the bound stands, and the rejection says plainly that it
-is a ceiling rather than a count.
+This is not a permission you can grant it: there is no confirmation, no approval,
+and no setting that turns it on. Approval is never inferred from a message in a
+conversation. For everything recoverable, undo — not a prompt — is the safety net.
 
-> This replaces two attempts at an assistant-side confirmation. The first inferred
-> agreement by re-reading the conversation; the second recorded it server-side as a
-> spendable grant. Both were repeatedly found forgeable — the authority was always
-> derived inside a conversation the assistant can steer, and closing one route
-> opened others. Not offering the capability removes the question entirely.
+`dedup` is now judged by a real measurement rather than a worst-case bound: the
+duplicate scan is bounded (a cheap grouping key, a per-block comparison cap, a time
+budget, and event-loop yields) so a cleanup's true size can be counted without
+freezing the server, and a truncated scan reports honestly what it did not cover
+instead of presenting a partial result as complete.
+
+> Two earlier attempts at an assistant-side confirmation were built and removed. The
+> first inferred agreement by re-reading the conversation; the second recorded it
+> server-side as a spendable grant. Both were repeatedly found forgeable — the
+> authority was always derived inside a conversation the assistant can steer, and
+> closing one route opened others. The answer is not a better prompt: make the change
+> recoverable and let Undo settle it, and refuse outright the small set that cannot be
+> recovered.
 
 ## Inference Aggressiveness
 
