@@ -258,6 +258,11 @@ export const dataModelJs = `    // ───────────────
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                // The move landed but this session could not reconnect to the
+                // shared database, so the server closed it rather than let
+                // anything keep writing to the file it just retired. A reload
+                // opens the moved workspace.
+                if (r.body.sessionRestartRequired) window.location.reload();
               });
           });
         }
@@ -1302,6 +1307,10 @@ export const dataModelJs = `    // ───────────────
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                // Same as the create-cloud path: a completed move whose session
+                // could not reconnect is served by a reload, not by re-rendering
+                // against a database this session no longer holds.
+                if (r.body.sessionRestartRequired) { window.location.reload(); return; }
                 // The active DB just swapped to the cloud server-side. Re-fetch +
                 // re-render EVERYTHING (entities, rows with per-row _access sharing,
                 // realtime) so the new state shows immediately — no manual refresh.

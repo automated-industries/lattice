@@ -1,8 +1,8 @@
 import type { Lattice } from '../../lattice.js';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
-import { parseDocument } from 'yaml';
+import { dirname } from 'node:path';
 import { findLatticeRoot } from '../../framework/lattice-root.js';
+import { normalizeLabel } from '../../framework/db-pointer.js';
+import type { CloudWorkspaceCreator } from '../../cloud/join.js';
 
 export interface DbConfigContext {
   db: Lattice;
@@ -27,56 +27,38 @@ export interface DbConfigContext {
    */
   swap: () => Promise<void>;
   /**
+   * Stop serving the current workspace and fall back to the welcome state.
+   *
+   * For the one case {@link DbConfigContext.swap} cannot recover from: the store
+   * this session holds open is no longer the store the workspace points at, so
+   * continuing to serve it would write into a file nothing will ever read again.
+   * Closing it makes the next request say so instead.
+   */
+  retire: () => Promise<void>;
+  /**
    * Join a cloud as a NEW workspace: save the credential under `key`, scaffold a
    * new cloud workspace named `displayName` pointing at `${LATTICE_DB:key}`, then
    * open + activate it. Atomic (rolls back on failure). Returns the new workspace
    * id. Used by the member join/redeem path so it never repoints (hijacks) the
    * currently-open workspace.
    */
-  createCloudWorkspace: (displayName: string, key: string, url: string) => Promise<string>;
+  createCloudWorkspace: CloudWorkspaceCreator;
 }
 
-/** Build a Postgres URL from form fields. Percent-encodes user + password. */
-export function buildPostgresUrl(params: {
-  host: string;
-  port: number;
-  dbname: string;
-  user: string;
-  password: string;
-}): string {
-  const u = encodeURIComponent(params.user);
-  const p = encodeURIComponent(params.password);
-  return `postgres://${u}:${p}@${params.host}:${String(params.port)}/${params.dbname}`;
-}
+// The connection-string helpers moved to the cloud layer, where the join and
+// invite capabilities can reach them without importing anything that serves
+// requests. Re-exported here so every existing importer keeps resolving.
+export { buildPostgresUrl, parsePostgresUrl } from '../../cloud/url.js';
 
-/** Parse a Postgres URL back into its component fields (no password). */
-export function parsePostgresUrl(url: string): {
-  host: string;
-  port: number;
-  dbname: string;
-  user: string;
-} | null {
-  try {
-    const u = new URL(url);
-    if (!/^postgres(ql)?:$/i.test(u.protocol)) return null;
-    const dbname = u.pathname.replace(/^\//, '');
-    return {
-      host: u.hostname,
-      port: u.port ? Number(u.port) : 5432,
-      dbname,
-      user: decodeURIComponent(u.username),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Replace the `db:` line in a YAML config while preserving comments + order. */
-export function rewriteDbLine(configPath: string, newValue: string): void {
-  const doc = parseDocument(readFileSync(configPath, 'utf8'));
-  doc.set('db', newValue);
-  writeFileSync(configPath, doc.toString(), 'utf8');
-}
+// Which database a config points at — the credential key charset, the `db:` line
+// rewrite, and the config-relative path resolution — moved to the framework for
+// the same reason: repointing a workspace is what a migration does, and a
+// migration must be callable with no server in the process.
+export {
+  rewriteDbLine,
+  normalizeLabel,
+  resolveRelativeToConfig,
+} from '../../framework/db-pointer.js';
 
 export interface SavePostgres {
   type: 'postgres';
@@ -91,21 +73,6 @@ export interface SavePostgres {
 export interface SaveSqlite {
   type: 'sqlite';
   path: string;
-}
-
-/**
- * Normalize a display label into the credential-key charset [A-Za-z0-9._-] that
- * the `${LATTICE_DB:<label>}` reference is read back with. Runs of unsupported
- * characters (spaces, slashes, accents) collapse to a single '-'; leading and
- * trailing '-' are trimmed. `Strategy Team` -> `Strategy-Team`. Returns '' only
- * when nothing usable survives (e.g. an all-symbol label), which the caller turns
- * into a specific field error rather than a silent empty key.
- */
-export function normalizeLabel(raw: string): string {
-  return raw
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 /** The offending field on a parse failure, so the caller can report WHICH input was wrong. */
@@ -173,11 +140,6 @@ export function parseSaveBodyResult(body: Record<string, unknown>): SaveParseRes
 export function parseSaveBody(body: Record<string, unknown>): SavePostgres | SaveSqlite | null {
   const r = parseSaveBodyResult(body);
   return r.ok ? r.value : null;
-}
-
-/** Resolve `path` relative to the config file directory unless it's already absolute. */
-export function resolveRelativeToConfig(configPath: string, candidate: string): string {
-  return isAbsolute(candidate) ? candidate : resolve(configPath, '..', candidate);
 }
 
 /**

@@ -17,6 +17,8 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
     - [Which root gets opened](#which-root-gets-opened)
     - [Serving on a network](#serving-on-a-network---host----allow-remote)
 - [Cloud](#cloud)
+  - [`lattice cloud`](#lattice-cloud)
+  - [From the library](#from-the-library)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -396,33 +398,176 @@ shows the data already in your database.
 
 ## Cloud
 
-There are **no `lattice teams` (or `lattice serve`) subcommands**. A Lattice cloud
-is a shared Postgres database secured by Postgres Row-Level Security — there is no
-server process to run and nothing to bootstrap from the CLI. The three cloud flows
-(migrate a local Lattice in, join an existing cloud with the scoped credentials the
-owner gave you, invite a member) are driven from `lattice gui` or directly from the
-library API:
+A Lattice cloud is a shared Postgres database secured by Postgres Row-Level
+Security. There is **no server process to run** — no `lattice serve` — and
+nothing to bootstrap: members connect straight to the database as the scoped
+role the owner provisioned for them.
+
+Running one is a command, a click in `lattice gui`, or a function call, and all
+three do the same thing. **You never need to start the GUI, and you never need
+to bind it to a network address, to administer a cloud.**
+
+### `lattice cloud`
+
+```sh
+lattice cloud <verb> [options]
+```
+
+| Verb                       | What it does                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `status`                   | Owner or member, whether row security is installed, and anything unprotected |
+| `members`                  | Who is on this cloud — the owner, joined members, and pending invites        |
+| `secure`                   | Turn this Postgres into a cloud (owner only). Idempotent                     |
+| `invite --email <address>` | Provision a scoped role and print its invite token, once                     |
+| `join --token <token>`     | Redeem an invite and land in a NEW workspace                                 |
+| `revoke <member>`          | Remove somebody, named by role, email, or display name                       |
+| `share --table … --pk … …` | Change who can see one row                                                   |
+| `migrate --url-stdin`      | Move this local workspace onto a shared database                             |
+| `probe --url-stdin`        | Check a database before pointing a workspace at it                           |
+
+`status` is the one to reach for first, and the reason the group exists: the
+answer to "why is this workspace broken" used to live only in the browser app,
+which is the thing that stops working when the answer is bad. It changes
+nothing, so a damaged cloud can be inspected without also being altered.
+
+**Options:**
+
+| Option             | Short | Default              | Description                                                 |
+| ------------------ | ----- | -------------------- | ----------------------------------------------------------- |
+| `--config <path>`  | `-c`  | the active workspace | Which workspace to operate on                               |
+| `--root <dir>`     | –     | `~/.lattice`         | The `.lattice` root holding it                              |
+| `--json`           | –     | off                  | Machine-readable output (`status`, `members`, `probe`)      |
+| `--email <addr>`   | –     | –                    | The invitee (`invite`); who the invite was sent to (`join`) |
+| `--token <token>`  | –     | –                    | The invite being redeemed, for `join`                       |
+| `--name <label>`   | –     | –                    | Name for the workspace, for `join` and `migrate`            |
+| `--table <name>`   | –     | –                    | The row's table, for `share`                                |
+| `--pk <value>`     | –     | –                    | The row's primary key, for `share`                          |
+| `--visibility <v>` | –     | –                    | `private` or `everyone`, for `share`                        |
+| `--to <member>`    | –     | –                    | Share with one person instead of setting a visibility       |
+| `--revoke`         | –     | off                  | With `--to`, take the access away instead of giving it      |
+| `--url-stdin`      | –     | off                  | Read the connection string from stdin (`migrate`, `probe`)  |
+
+**Example:**
+
+```sh
+# The owner, on the machine that has the workspace today:
+lattice cloud migrate --url-stdin < db-url.txt   # or: ... | lattice cloud migrate -
+lattice cloud invite --email bob@example.com     # prints the token once
+lattice cloud members
+lattice cloud share --table notes --pk n-42 --to bob@example.com
+lattice cloud revoke bob@example.com
+
+# Bob, on a machine that has never seen this database:
+lattice cloud join --token <the-token> --email bob@example.com
+lattice cloud status
+```
+
+**Never put the connection string in the command itself.** It contains the owner
+password — the role that can create members — and an argument is public on the
+machine it runs on: any other user can read it out of the process list while the
+command runs, and your shell writes it into its history file afterwards. That is
+the same class of exposure this whole command group exists to remove, so `migrate`
+and `probe` take the URL three ways: `--url-stdin` (or `-` in place of the URL)
+reads it from standard input, the `LATTICE_CLOUD_URL` environment variable is read
+when nothing was typed, and the plain argument still works but prints a warning,
+because a password that has been in a process list has to be treated as exposed.
+
+Two things about `invite`: the token IS the credential — it is bound to that
+email address, it expires in about a week, and it is never stored, so the single
+printing is the only one there will be. And `share --visibility` (who can see the
+row at all) and `share --to` (one named person) are separate operations; passing
+both is refused rather than resolved, because silently picking one is how a row
+ends up shared with everybody.
+
+`join` needs no workspace to already exist — it makes one, creating the
+`.lattice` root if the machine has none. It never repoints the workspace you
+already have open, and `--email` defaults to this machine's identity, because
+the address is half of what decrypts the token rather than a lookup. A token
+that has already been spent, was revoked, or has expired is refused _before_ any
+workspace is created, so there is nothing half-made to clean up.
+
+`migrate` moves the workspace you are in: it copies every row into the target,
+builds its search indexes, installs row security, publishes the layout members
+render with, and only then repoints this workspace's config, updates the
+registry, and renames the local database file to `<db>.local-bak`. Those last
+three are one reversible sequence — if any of them fails, all of them are undone
+and you are left exactly where you started, with a loud error rather than a
+half-moved workspace. It refuses a target that is already somebody's cloud
+(join it instead), and it keeps the local file rather than deleting it. The
+connection is stored under the name you pass to `--name`, or the target database's
+own name when you do not — and if that name is already stored for a DIFFERENT
+database it is given a numbered variant instead, because reusing it would point
+whichever workspace already read that name at this database. The name actually
+used is printed.
+
+### From the library
+
+Every verb above is a plain function call:
 
 ```ts
 import {
   Lattice,
-  // migrate
+  // Where do I stand on this cloud? Is anything left unprotected? Read-only.
+  cloudStatus,
+  // Secure a Postgres database as a cloud — and keep it secured as it grows.
+  // secureNewCloudTable covers a table created after the fact; without it that
+  // table has row security off. publishSharedSchema hands members the layout
+  // their own workspace renders with.
+  secureCloud,
+  secureNewCloudTable,
+  reconcileCloudMemberAccess,
+  publishSharedSchema,
+  // Move a local workspace in. migrateWorkspaceToCloud is the whole move: copy
+  // the rows into the target and secure it — then repoint the config and update
+  // the registry and retire the local file as one reversible sequence. Any
+  // failure in that last part undoes all of it. cutOverWorkspaceToCloud is that
+  // last part on its own for data copied some other way.
+  probeCloud,
+  migrateWorkspaceToCloud,
+  cutOverWorkspaceToCloud,
   openTargetLatticeForMigration,
   migrateLatticeData,
-  installCloudRls,
-  backfillOwnership,
-  enableRlsForTable,
   archiveLocalSqlite,
-  // invite / membership
-  memberRoleName,
-  generateMemberPassword,
-  provisionMemberRole,
-  revokeMemberRole,
-  // sharing + probe
-  setRowVisibility,
-  probeCloud,
+  // Invite someone: provision a scoped role and mint the single email-bound
+  // token that carries its credential. Then see who is on the cloud — and take
+  // someone off it.
+  inviteMember,
+  listCloudMembers,
+  removeMember,
+  // Join. redeemCloudInvite takes an email and a token and leaves you with a
+  // working workspace; joinCloud is the same path for credentials handed over
+  // directly. Pass your own createCloudWorkspace to hook the new workspace into
+  // a session that already has a database open.
+  redeemCloudInvite,
+  joinCloud,
+  createCloudWorkspace,
+  // Decide who sees which rows. shareRow sets a row's audience; grantRowAccess
+  // gives (or takes back) one person's access to it; batchRowAccess settles a
+  // whole audience in one call. Use these — a shared dashboard has to drag the
+  // data it reads along with it, and these are the versions that do. The raw
+  // database calls underneath do not, so a dashboard shared with them opens to
+  // an empty page for the recipient.
+  shareRow,
+  grantRowAccess,
+  batchRowAccess,
 } from 'latticesql';
 ```
+
+The steps each of those is built from are exported too, for a caller assembling
+its own variant: `mintInviteToken` / `redeemInviteToken` / `claimMemberInvite`
+for the token itself, `memberRoleName` / `generateMemberPassword` /
+`provisionMemberRole` / `assertScopedMemberRole` / `revokeMemberRole` for the
+role behind it, and `setRowVisibility` / `grantRow` / `revokeRow` /
+`batchRowGrants` for the bare row-access calls. Those last four are single
+database calls and nothing more: they change who may read the named row and stop
+there. Reach for one only when you are handling the follow-on yourself.
+
+**None of this grants authority the GUI does not.** Permission is the Postgres
+role you connect as, not a session the caller can set: the owner checks read
+`rolcreaterole` for the live role, and every mutating step is a `SECURITY
+DEFINER` function that raises for a member. A member running `lattice cloud
+invite` — or calling `inviteMember` — is refused by the database, whether the
+call came from a browser, a script, or a command line.
 
 See [docs/cloud.md](./cloud.md) for the full architecture, the three flows, the
 RLS / role model, and how sharing works.

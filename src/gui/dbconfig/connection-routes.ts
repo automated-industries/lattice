@@ -3,21 +3,17 @@ import {
   buildPostgresUrl,
   parsePostgresUrl,
   parseSaveBody,
-  rewriteDbLine,
   resolveRelativeToConfig,
   rootForDbConfig,
 } from './shared.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { basename, relative, resolve, sep } from 'node:path';
+import { basename } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Lattice } from '../../lattice.js';
 import { sendJson, readJson, tryHandler } from '../http.js';
-import {
-  getDbCredential,
-  saveDbCredential,
-  listDbCredentials,
-} from '../../framework/user-config.js';
+import { pointConfigAtDatabase } from '../../framework/db-pointer.js';
+import { getDbCredential, listDbCredentials } from '../../framework/user-config.js';
 import { cloudRlsInstalled, canManageRoles } from '../../framework/cloud-connect.js';
 import { getCloudSetting, CLOUD_SETTING_WORKSPACE_LOGO_ETAG } from '../../cloud/settings.js';
 import { renameWorkspaceByConfigPath } from '../../framework/workspace.js';
@@ -127,8 +123,7 @@ export async function dispatchConnection(
     return true;
   }
 
-  // @headless-debt saving a connection stores the credential AND repoints the config at it;
-  // only the credential half is on the library surface.
+  // @capability workspace.point-at-database
   if (pathname === '/api/dbconfig/save' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -138,28 +133,24 @@ export async function dispatchConnection(
         return;
       }
       if (parsed.type === 'postgres') {
-        const url = buildPostgresUrl({
-          host: parsed.host,
-          port: Number(parsed.port),
-          dbname: parsed.dbname,
-          user: parsed.user,
-          password: parsed.password,
+        pointConfigAtDatabase(ctx.configPath, {
+          type: 'postgres',
+          key: parsed.label,
+          url: buildPostgresUrl({
+            host: parsed.host,
+            port: Number(parsed.port),
+            dbname: parsed.dbname,
+            user: parsed.user,
+            password: parsed.password,
+          }),
         });
-        saveDbCredential(parsed.label, url);
-        rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         sendJson(res, { ok: true, type: 'postgres', label: parsed.label });
         return;
       }
-      // sqlite: write the path verbatim. Store relative form when the
-      // candidate sits under the config-file's directory so the YAML
-      // stays portable.
-      const abs = resolveRelativeToConfig(ctx.configPath, parsed.path);
-      const rel = relative(resolve(ctx.configPath, '..'), abs);
-      // Always write a POSIX-separated relative path so the YAML is portable
-      // and stable across platforms (path.relative yields backslashes on
-      // Windows, which would otherwise leak into the committed config).
-      const dbLine = rel.startsWith('..') ? abs : './' + rel.split(sep).join('/');
-      rewriteDbLine(ctx.configPath, dbLine);
+      const { dbLine } = pointConfigAtDatabase(ctx.configPath, {
+        type: 'sqlite',
+        path: parsed.path,
+      });
       sendJson(res, { ok: true, type: 'sqlite', path: dbLine });
     });
     return true;

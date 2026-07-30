@@ -3,6 +3,7 @@ import { runAsyncOrSync, allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js
 import { memberGroupFor } from './rls.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { revokeMemberRole } from './members.js';
+import { MAX_ROWS_PAGE } from '../ops/paging.js';
 
 /**
  * Who is on this cloud, and the invite records behind them — a capability, not a
@@ -25,6 +26,18 @@ import { revokeMemberRole } from './members.js';
 
 /** The invite ledger. Owner-only; a scoped member has no grant on it. */
 const INVITES_TABLE = '__lattice_member_invites';
+
+/**
+ * Largest roster page a single call will read.
+ *
+ * Both reads behind the roster are bounded rather than open-ended: the member
+ * group has no natural ceiling, and the invite ledger grows with every invite
+ * ever issued, so an unbounded scan of either is one very popular cloud away
+ * from reading far more than anybody asked for. Callers that genuinely have more
+ * members than this page past them with `offset`; nothing becomes unreachable.
+ * The same number the row reads use, for the same reason.
+ */
+const MAX_MEMBER_PAGE = MAX_ROWS_PAGE;
 
 /** One row of the member roster. */
 export interface CloudMember {
@@ -64,8 +77,17 @@ async function ownerIdentity(db: Lattice): Promise<{ name: string; email: string
   return { name: trimmed, email: row?.email ?? '' };
 }
 
-/** Roles in this cloud's member group, excluding `exceptRole`, sorted by name. */
-async function memberGroupRoles(db: Lattice, exceptRole: string): Promise<string[]> {
+/**
+ * One bounded page of roles in this cloud's member group, excluding
+ * `exceptRole`, sorted by name. Ordered before it is limited, so paging with
+ * `offset` walks a stable sequence.
+ */
+async function memberGroupRoles(
+  db: Lattice,
+  exceptRole: string,
+  limit: number,
+  offset: number,
+): Promise<string[]> {
   const group = await memberGroupFor(db);
   const rows = (await allAsyncOrSync(
     db.adapter,
@@ -74,8 +96,9 @@ async function memberGroupRoles(db: Lattice, exceptRole: string): Promise<string
        JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = ?
        JOIN pg_roles m ON m.oid = am.member
       WHERE m.rolname <> ?
-      ORDER BY m.rolname`,
-    [group, exceptRole],
+      ORDER BY m.rolname
+      LIMIT ? OFFSET ?`,
+    [group, exceptRole, limit, offset],
   )) as { role: string }[];
   return rows.map((r) => r.role);
 }
@@ -88,31 +111,57 @@ export interface InviteRecord {
 }
 
 /**
- * Latest non-revoked invite per role. `redeemed_at` null means the person was
- * invited but has not joined yet.
+ * Latest non-revoked invite for each of `roles`. `redeemed_at` null means the
+ * person was invited but has not joined yet.
+ *
+ * Scoped to the roles asked about rather than reading the whole ledger: the
+ * caller already holds a bounded page of roles, and the ledger keeps a row for
+ * every invite ever issued. Passing no roles reads nothing.
  */
-export async function latestInvitesByRole(db: Lattice): Promise<Map<string, InviteRecord>> {
+export async function latestInvitesByRole(
+  db: Lattice,
+  roles: readonly string[],
+): Promise<Map<string, InviteRecord>> {
+  if (roles.length === 0) return new Map();
   // The ledger is absent on a cloud that never issued an invite; an empty
   // roster-decoration is the right answer there, not a failed listing.
   const invites = (await allAsyncOrSync(
     db.adapter,
     `SELECT DISTINCT ON ("role") "role", "email", "redeemed_at"
        FROM "${INVITES_TABLE}"
-      WHERE "revoked_at" IS NULL
+      WHERE "revoked_at" IS NULL AND "role" = ANY(?::text[])
       ORDER BY "role", "created_at" DESC`,
+    [[...roles]],
   ).catch(() => [])) as InviteRecord[];
   return new Map(invites.map((r) => [r.role, r]));
 }
 
+/** Which slice of the roster to read. */
+export interface ListCloudMembersOptions {
+  /** Members per page, clamped to the roster page ceiling. */
+  limit?: number;
+  /** Members to skip, for reading past the first page. */
+  offset?: number;
+}
+
 /**
- * The cloud's roster: the owner plus every role in its member group, each named
- * from its latest invite.
+ * The cloud's roster: the owner plus a bounded page of the roles in its member
+ * group, each named from its latest invite.
  *
  * Returns `[]` off a secured cloud — a local single-user workspace has no
  * members to list. A scoped member sees only itself, because enumerating the
  * group is an owner privilege.
+ *
+ * The owner row is prepended to every page and does not count against `limit`:
+ * it identifies the caller, and a roster whose second page did not say who was
+ * asking would be harder to read, not more correct.
  */
-export async function listCloudMembers(db: Lattice): Promise<CloudMember[]> {
+export async function listCloudMembers(
+  db: Lattice,
+  opts: ListCloudMembersOptions = {},
+): Promise<CloudMember[]> {
+  const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? MAX_MEMBER_PAGE)), MAX_MEMBER_PAGE);
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
   if (db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(db))) return [];
 
   const ownerRole = await currentDatabaseRole(db);
@@ -134,8 +183,8 @@ export async function listCloudMembers(db: Lattice): Promise<CloudMember[]> {
 
   // The owner is prepended above, so exclude it from the group query — listing it
   // from both places double-counted it.
-  const roles = await memberGroupRoles(db, ownerRole);
-  const inviteByRole = await latestInvitesByRole(db);
+  const roles = await memberGroupRoles(db, ownerRole, limit, offset);
+  const inviteByRole = await latestInvitesByRole(db, roles);
   return [
     owner,
     ...roles.map((role): CloudMember => {

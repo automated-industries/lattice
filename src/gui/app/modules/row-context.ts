@@ -253,6 +253,10 @@ export const rowContextJs = `    // ──────────────�
               }).then(function (r2) { return r2.json().then(function (b) { return { status: r2.status, body: b }; }); });
             }).then(function (r) {
               if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              // A completed move whose session could not reconnect: the server
+              // closed the old handle so nothing writes to the retired file, and
+              // a reload picks the moved workspace up.
+              if (r.body.sessionRestartRequired) { window.location.reload(); return; }
               finishOnboarding();
             }).catch(function (e) { setMsg('Failed: ' + e.message); });
           });

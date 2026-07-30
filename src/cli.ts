@@ -30,6 +30,7 @@ import { importLegacyUserConfig } from './framework/migrate-to-root.js';
 import { analyticsEnabled } from './framework/user-config.js';
 import { openConfiguredLattice } from './cli-open.js';
 import { runWorkspaceCommand } from './cli-workspace.js';
+import { resolveCloudTarget, runCloudCommand } from './cli-cloud.js';
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -87,6 +88,20 @@ interface ParsedArgs {
   explain: boolean;
   /** --fix — let `doctor` rebuild stale native vector indexes it finds. */
   fix: boolean;
+  /** --email <address> — the invitee for `cloud invite`, the redeemer for `cloud join`. */
+  email?: string | undefined;
+  /** --token <token> — the invite being redeemed by `cloud join`. */
+  token?: string | undefined;
+  /** --pk <value> — the row's primary key for `cloud share`. */
+  pk?: string | undefined;
+  /** --visibility <private|everyone> — the row audience for `cloud share`. */
+  visibility?: string | undefined;
+  /** --to <member> — share one row with one person (`cloud share`). */
+  to?: string | undefined;
+  /** --revoke — with `--to`, take the access away instead of giving it. */
+  revoke: boolean;
+  /** --url-stdin — read a connection string from standard input instead of argv. */
+  urlStdin: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -120,6 +135,13 @@ function parseArgs(argv: string[]): ParsedArgs {
   let topK: number | undefined;
   let explain = false;
   let fix = false;
+  let email: string | undefined;
+  let token: string | undefined;
+  let pk: string | undefined;
+  let visibility: string | undefined;
+  let to: string | undefined;
+  let revoke = false;
+  let urlStdin = false;
 
   let i = 0;
   if (argv[0] !== undefined && !argv[0].startsWith('-')) {
@@ -131,6 +153,17 @@ function parseArgs(argv: string[]): ParsedArgs {
       i = 2;
       // `lattice workspace <subcommand> <action>` — third positional for
       // two-level subcommands like `workspace use <id>`.
+      if (argv[2] !== undefined && !argv[2].startsWith('-')) {
+        action = argv[2];
+        i = 3;
+      }
+    }
+    // `lattice cloud <subcommand>` — pick up the second positional, and the
+    // third for the verbs that name a thing (`cloud revoke <member>`,
+    // `cloud probe <url>`).
+    if (command === 'cloud' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      subcommand = argv[1];
+      i = 2;
       if (argv[2] !== undefined && !argv[2].startsWith('-')) {
         action = argv[2];
         i = 3;
@@ -217,6 +250,25 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--table' && i + 1 < argv.length) {
       i++;
       table = argv[i];
+    } else if (arg === '--email' && i + 1 < argv.length) {
+      i++;
+      email = argv[i];
+    } else if (arg === '--token' && i + 1 < argv.length) {
+      i++;
+      token = argv[i];
+    } else if (arg === '--pk' && i + 1 < argv.length) {
+      i++;
+      pk = argv[i];
+    } else if (arg === '--visibility' && i + 1 < argv.length) {
+      i++;
+      visibility = argv[i];
+    } else if (arg === '--to' && i + 1 < argv.length) {
+      i++;
+      to = argv[i];
+    } else if (arg === '--revoke') {
+      revoke = true;
+    } else if (arg === '--url-stdin') {
+      urlStdin = true;
     } else if (arg === '--topk' && i + 1 < argv.length) {
       i++;
       const parsed = parseInt(argv[i] ?? '10', 10);
@@ -258,6 +310,13 @@ function parseArgs(argv: string[]): ParsedArgs {
     topK,
     explain,
     fix,
+    email,
+    token,
+    pk,
+    visibility,
+    to,
+    revoke,
+    urlStdin,
   };
 }
 
@@ -282,6 +341,8 @@ function printHelp(): void {
       '  status      Dry-run reconcile — show what would change without writing',
       '  watch       Poll for changes and re-render on each cycle',
       '  gui         Start a local browser GUI for exploring Lattice context',
+      '  cloud       Run a shared workspace (status | members | secure | invite | join |',
+      '              revoke | share | migrate | probe) — no browser, no network bind',
       '  doctor      Report retrieval health (coverage, extensions; --fix rebuilds stale indexes)',
       '  search      Hybrid search a table (--table <t> [--explain] [--topk N])',
       "  reindex     Rebuild a table's native vector index (reindex <table>)",
@@ -330,6 +391,36 @@ function printHelp(): void {
       '                         so this also requires --root and a typed confirmation',
       '  --yes, -y              Accept the exposure disclosure without being asked',
       '                         (scripted use; the disclosure is still printed)',
+      '',
+      'Options (cloud):',
+      '  A cloud is a shared Postgres database secured by row-level security. There is',
+      '  no server to run: permission is the Postgres role you connect as, so every',
+      '  verb below is refused by the database itself when you are not allowed it.',
+      '  lattice cloud status                    Owner or member, whether row security is',
+      '                                          installed, and anything left unprotected',
+      '  lattice cloud members                   Who is on this cloud',
+      '  lattice cloud secure                    Turn this Postgres into a cloud (owner)',
+      '  lattice cloud invite --email <address>  Mint one invite token, printed once',
+      '  lattice cloud join --token <token>      Redeem an invite into a NEW workspace',
+      '  lattice cloud revoke <member>           Remove somebody, by role, email, or name',
+      '  lattice cloud share --table <t> --pk <id> --visibility <private|everyone>',
+      '  lattice cloud share --table <t> --pk <id> --to <member> [--revoke]',
+      '  lattice cloud migrate --url-stdin       Move this workspace onto a shared database',
+      '  lattice cloud probe --url-stdin         Check a database before pointing at it',
+      '  --config, -c <path>    Workspace to operate on (default: the active workspace)',
+      '  --root <dir>           The .lattice root holding that workspace',
+      '  --json                 Machine-readable output (status, members, probe)',
+      '  --token <token>        The invite being redeemed (join)',
+      '  --email <address>      The invitee (invite), or who the invite was sent to (join;',
+      '                         defaults to this machine identity)',
+      '  --name <label>         Name for the workspace (join, migrate)',
+      '  --url-stdin            Read the connection string for migrate/probe from standard',
+      '                         input. A connection string contains the owner password, and',
+      '                         an argument is readable from the process list by anyone on',
+      '                         the machine and is kept in your shell history — so pipe it:',
+      '                           lattice cloud migrate --url-stdin < db-url.txt',
+      '                         LATTICE_CLOUD_URL is read when neither is given. Passing the',
+      '                         URL as an argument still works, and warns.',
       '',
       'Options (doctor):',
       '  Exits non-zero when the report is not healthy — usable as a CI / deploy gate.',
@@ -1061,6 +1152,59 @@ async function runWorkspace(args: ParsedArgs): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// cloud
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a `lattice cloud` verb against the workspace the flags name.
+ *
+ * The thin half of the command: resolve which workspace is meant, hand the
+ * parsed flags to the subcommand module, print what it returns. Everything with
+ * a decision in it lives in that module, where a test can reach it — `main()`
+ * runs at import time here, so this file cannot be imported by one.
+ *
+ * A refusal is not a crash: it prints the reason and sets a non-zero exit code
+ * rather than throwing, so a script sees a clean failure and the process still
+ * exits normally.
+ */
+async function runCloud(args: ParsedArgs): Promise<void> {
+  if (args.root) process.env.LATTICE_ROOT = args.root;
+  try {
+    // `probe` and `join` must work before a workspace exists — one checks a
+    // database nothing points at yet, the other makes the first one — so
+    // resolving a target is skipped for them rather than failing ahead of the work.
+    const needsWorkspace = args.subcommand !== 'probe' && args.subcommand !== 'join';
+    const target = needsWorkspace
+      ? resolveCloudTarget({
+          config: args.config,
+          explicitConfig: args.config !== './lattice.config.yml',
+          ...(args.root !== undefined ? { root: args.root } : {}),
+        })
+      : null;
+    const lines = await runCloudCommand({
+      subcommand: args.subcommand,
+      action: args.action,
+      configPath: target?.configPath,
+      latticeRoot: target?.latticeRoot ?? null,
+      json: args.json,
+      email: args.email,
+      token: args.token,
+      displayName: args.displayName,
+      table: args.table,
+      pk: args.pk,
+      visibility: args.visibility,
+      to: args.to,
+      revoke: args.revoke,
+      urlStdin: args.urlStdin,
+    });
+    for (const line of lines) console.log(line);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1117,6 +1261,9 @@ function main(): void {
       break;
     case 'workspace':
       void runWorkspace(args);
+      break;
+    case 'cloud':
+      void runCloud(args);
       break;
     case 'update':
       void runUpdate();

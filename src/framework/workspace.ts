@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -124,14 +131,45 @@ export function toSafeDirName(displayName: string): string {
   return name;
 }
 
-/** Derive a dir name unique among `existing` by appending ` (2)`, ` (3)`, … */
+/**
+ * Derive a dir name unique among `existing` by appending ` (2)`, ` (3)`, …
+ *
+ * Compared case-INSENSITIVELY, because the comparison has to mean "will this
+ * collide on disk" and the two most common developer filesystems — APFS as macOS
+ * ships it, and NTFS — treat `Team` and `team` as the same folder. A
+ * case-sensitive check reports no collision there and then scaffolds into
+ * somebody else's directory.
+ */
 function uniqueDirName(displayName: string, existing: ReadonlySet<string>): string {
+  const taken = new Set([...existing].map((d) => d.toLowerCase()));
   const base = toSafeDirName(displayName);
-  if (!existing.has(base)) return base;
+  if (!taken.has(base.toLowerCase())) return base;
   for (let n = 2; ; n++) {
     const candidate = `${base} (${String(n)})`;
-    if (!existing.has(candidate)) return candidate;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
   }
+}
+
+/**
+ * Every directory name a new workspace must not take: the ones the registry
+ * knows about, plus the ones actually sitting under `Workspaces/`.
+ *
+ * The registry alone is not the answer to "is this name free". Removing a
+ * workspace only splices its registry record — the directory, its config and its
+ * database file all stay on disk — so a rolled-back create leaves a scaffold the
+ * registry has forgotten. Choosing that name again lands the new workspace on the
+ * old one's config, and because the scaffold refuses to overwrite an existing
+ * config, the new record points at the old database while claiming to be the new
+ * one. Reading the directory too is what makes the name genuinely free.
+ */
+function takenDirNames(root: string, reg: WorkspaceRegistry): Set<string> {
+  const taken = new Set(reg.workspaces.map((w) => w.dir));
+  const dir = workspacesDir(root);
+  if (!existsSync(dir)) return taken;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) taken.add(entry.name);
+  }
+  return taken;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,8 +322,7 @@ export function addWorkspace(root: string, opts: AddWorkspaceOptions): Workspace
   }
 
   const reg = readRegistry(root);
-  const existingDirs = new Set(reg.workspaces.map((w) => w.dir));
-  const dir = uniqueDirName(opts.displayName, existingDirs);
+  const dir = uniqueDirName(opts.displayName, takenDirNames(root, reg));
   const db = opts.db ?? LOCAL_DB_RELPATH;
   const record: WorkspaceRecord = {
     id: uuidv4(),
@@ -354,11 +391,10 @@ export function addAdoptedWorkspace(root: string, opts: AdoptWorkspaceOptions): 
     return existing;
   }
   const reg = readRegistry(root);
-  const existingDirs = new Set(reg.workspaces.map((w) => w.dir));
   const record: WorkspaceRecord = {
     id: uuidv4(),
     displayName: opts.displayName,
-    dir: uniqueDirName(opts.displayName, existingDirs),
+    dir: uniqueDirName(opts.displayName, takenDirNames(root, reg)),
     db: opts.db,
     kind: isCloudDb(opts.db) ? 'cloud' : 'local',
     createdAt: new Date().toISOString(),

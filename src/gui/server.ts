@@ -24,6 +24,8 @@ import {
   removeWorkspace,
   resolveWorkspacePaths,
 } from '../framework/workspace.js';
+import { createCloudWorkspace as createCloudWorkspaceRecord } from '../framework/cloud-workspace.js';
+import type { CloudWorkspaceCreator } from '../cloud/join.js';
 import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
 import { feedOpForChange } from './realtime.js';
@@ -87,12 +89,7 @@ import {
   type WorkspacesRoutesDeps,
 } from './workspaces-routes.js';
 import { handleDatabasesRoutes, type DatabasesRoutesDeps } from './databases-routes.js';
-import {
-  readIdentity,
-  writeIdentity,
-  deleteDbCredential,
-  saveDbCredential,
-} from '../framework/user-config.js';
+import { readIdentity, writeIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
   /**
@@ -492,40 +489,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   };
 
   // Open + activate a cloud workspace joined/created via an invite or a migration.
-  // Tolerates the virgin state (no prior active to dispose). Atomic: on open
-  // failure it rolls back the half-created workspace + credential and rethrows.
-  // Shared by the dbconfig dispatcher (redeem/connect) and the virgin onboarding.
-  const createCloudWorkspace = async (
-    displayName: string,
-    key: string,
-    url: string,
-  ): Promise<string> => {
-    if (!latticeRoot) throw new Error('No .lattice root — cannot create a cloud workspace');
-    saveDbCredential(key, url);
-    let created;
-    try {
-      created = addWorkspace(latticeRoot, {
-        displayName,
-        db: '${LATTICE_DB:' + key + '}',
-        makeActive: false,
-      });
-    } catch (e) {
-      deleteDbCredential(key);
-      throw e;
-    }
-    const paths = resolveWorkspacePaths(latticeRoot, created);
-    let next: ActiveDb;
-    try {
-      next = await openConfig(paths.configPath, paths.contextDir, autoRender);
-    } catch (e) {
-      removeWorkspace(latticeRoot, created.id);
-      deleteDbCredential(key);
-      throw e;
-    }
-    setActiveWorkspace(latticeRoot, created.id);
+  // Tolerates the virgin state (no prior active to dispose). The registry work +
+  // rollback live in the framework so a headless caller can join a cloud too;
+  // what this adds is the part only a live session has — opening the database and
+  // making it the served one. Shared by the dbconfig dispatcher (redeem/connect)
+  // and the virgin onboarding.
+  const createCloudWorkspace: CloudWorkspaceCreator = (displayName, key, url, auth) =>
+    createCloudWorkspaceRecord<ActiveDb>(latticeRoot, displayName, key, url, {
+      ...auth,
+      open: (paths) => openConfig(paths.configPath, paths.contextDir, autoRender),
+      adopt: async (next, workspaceId) => {
+        await disposeActiveIfAny();
+        setActive(next, workspaceId);
+      },
+    });
+
+  // Give up the served workspace entirely: close it and enter the welcome state.
+  //
+  // Used when the store the session is holding open is no longer the store the
+  // workspace points at — a migration that completed while the reconnect failed.
+  // Keeping the old handle would mean every later write landed in a file nothing
+  // reads again, silently, so the honest move is to stop serving and say so.
+  const retireActive = async (): Promise<void> => {
     await disposeActiveIfAny();
-    setActive(next, created.id);
-    return created.id;
+    setActive(null, null);
   };
 
   // Reopen the currently-served config (after an in-place config edit). The
@@ -663,7 +650,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       sendJson(res, { ok: true, switchedTo: null });
       return true;
     }
-    // @headless-debt redeeming an invite with no workspace open is only reachable here.
+    // @capability cloud.redeem-invite
     if (method === 'POST' && pathname === '/api/cloud/redeem-invite') {
       await redeemInvite(createCloudWorkspace, req, res);
       return true;
@@ -1461,6 +1448,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // reflected in `activeRef` for the next request (not just the local
                 // `active`), and so the same logic serves the virgin onboarding path.
                 swap: reopenActive,
+                retire: retireActive,
                 createCloudWorkspace,
               });
             },

@@ -14,8 +14,8 @@ import {
   CLOUD_SETTING_WORKSPACE_LOGO,
   CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from '../../cloud/settings.js';
-import { setRowVisibility, grantRow, revokeRow, batchRowGrants } from '../../cloud/members.js';
-import { cascadeDashboardDataShare } from '../dashboard-share-cascade.js';
+import { shareRow, grantRowAccess, batchRowAccess } from '../../cloud/sharing.js';
+import { cloudCall } from './cloud-status.js';
 import { listCloudMembers } from '../../cloud/member-directory.js';
 
 /** Generous upper bound on the stored chat system prompt — well past any real
@@ -141,32 +141,20 @@ export async function dispatchCloudSettings(
     return true;
   }
 
-  // POST /api/cloud/share — set a row's visibility (private | everyone) via the
-  // owner-only RLS function. Only the row's owner may change its sharing; the
-  // database raises for anyone else, which surfaces as a 403-ish error here.
+  // POST /api/cloud/share — set a row's visibility (private | everyone). Only the
+  // row's owner may change its sharing; the database raises for anyone else.
   // @capability cloud.row-visibility
   if (pathname === '/api/cloud/share' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
-      const visibility = typeof body.visibility === 'string' ? body.visibility : '';
-      if (!table || !pk || !visibility) {
-        sendJson(res, { error: 'table, pk and visibility are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      await setRowVisibility(ctx.db, table, pk, visibility);
-      // Sharing a dashboard cascades to the data it reads so recipients don't get an
-      // empty page. One-way: only when it becomes visible to everyone — never on
-      // 'private' (unsharing a dashboard leaves its data shared).
-      if (table === 'dashboards' && visibility === 'everyone') {
-        await cascadeDashboardDataShare(ctx.db, pk, 'everyone');
-      }
-      sendJson(res, { ok: true, table, pk, visibility });
+      const result = await cloudCall(() =>
+        shareRow(ctx.db, {
+          table: typeof body.table === 'string' ? body.table : '',
+          pk: typeof body.pk === 'string' ? body.pk : '',
+          visibility: typeof body.visibility === 'string' ? body.visibility : '',
+        }),
+      );
+      sendJson(res, { ok: true, ...result });
     });
     return true;
   }
@@ -175,31 +163,19 @@ export async function dispatchCloudSettings(
   // grants (or revokes) one member access to one row (table + pk), flipping the
   // row to `custom` visibility. Owner-only — the SECURITY DEFINER function raises
   // for a non-owner (and for a never-share table), surfaced here as an error.
-  // @headless-debt granting or revoking one person access to one row is exported from the
-  // members module but not re-exported from the package entry point.
+  // @capability cloud.row-grant
   if (pathname === '/api/cloud/row-grant' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
-      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
-      const revoke = body.revoke === true;
-      if (!table || !pk || !grantee) {
-        sendJson(res, { error: 'table, pk and grantee are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Per-row sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      if (revoke) await revokeRow(ctx.db, table, pk, grantee);
-      else await grantRow(ctx.db, table, pk, grantee);
-      // Cascade a dashboard grant to its data for the SAME person. One-way: only on
-      // grant, never on revoke (unsharing a dashboard leaves its data shared).
-      if (table === 'dashboards' && !revoke) {
-        await cascadeDashboardDataShare(ctx.db, pk, 'custom', [grantee]);
-      }
-      sendJson(res, { ok: true, table, pk, grantee, revoked: revoke });
+      const result = await cloudCall(() =>
+        grantRowAccess(ctx.db, {
+          table: typeof body.table === 'string' ? body.table : '',
+          pk: typeof body.pk === 'string' ? body.pk : '',
+          grantee: typeof body.grantee === 'string' ? body.grantee : '',
+          revoke: body.revoke === true,
+        }),
+      );
+      sendJson(res, { ok: true, ...result });
     });
     return true;
   }
@@ -212,32 +188,21 @@ export async function dispatchCloudSettings(
   // rejected by the database (surfaced here as an error). The first grant flips
   // the row to `custom` server-side. The single-grantee route above stays for
   // any other caller.
-  // @headless-debt granting or revoking access to many rows at once is exported from the
-  // members module but not re-exported from the package entry point.
+  // @capability cloud.row-grant-batch
   if (pathname === '/api/cloud/row-grants' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
       const strList = (v: unknown): string[] =>
         Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
-      const grant = strList(body.grant);
-      const revoke = strList(body.revoke);
-      if (!table || !pk) {
-        sendJson(res, { error: 'table and pk are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Per-row sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      await batchRowGrants(ctx.db, table, pk, grant, revoke);
-      // Cascade a dashboard's newly-granted people to its data. One-way: only the
-      // `grant` list cascades — the `revoke` list never un-shares the data.
-      if (table === 'dashboards' && grant.length > 0) {
-        await cascadeDashboardDataShare(ctx.db, pk, 'custom', grant);
-      }
-      sendJson(res, { ok: true, table, pk, granted: grant, revoked: revoke });
+      const result = await cloudCall(() =>
+        batchRowAccess(ctx.db, {
+          table: typeof body.table === 'string' ? body.table : '',
+          pk: typeof body.pk === 'string' ? body.pk : '',
+          grant: strList(body.grant),
+          revoke: strList(body.revoke),
+        }),
+      );
+      sendJson(res, { ok: true, ...result });
     });
     return true;
   }

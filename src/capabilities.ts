@@ -230,35 +230,90 @@ export const CAPABILITIES: readonly Capability[] = [
 
   // ── Cloud ───────────────────────────────────────────────────────────────
   {
+    id: 'cloud.status',
+    summary:
+      'Report where the connected role stands on a cloud and what is left unprotected, changing nothing.',
+    library: 'cloud/status.ts#cloudStatus',
+    cli: 'cloud',
+  },
+  {
     id: 'cloud.secure',
     summary: 'Install row-level security and the member role model on a cloud database.',
     library: 'cloud/setup.ts#secureCloud',
+    cli: 'cloud',
   },
   {
     id: 'cloud.probe',
     summary:
       'Check whether a connection string reaches a usable cloud, without connecting for real.',
     library: 'framework/cloud-connect.ts#probeCloud',
+    cli: 'cloud',
   },
   {
     id: 'cloud.migrate',
-    summary: 'Copy a local workspace into a cloud database.',
-    library: 'framework/cloud-migration.ts#migrateLatticeData',
+    // Deliberately the WHOLE move, not the copy. The copy has been a library
+    // call for a long time; what only a request handler could do was the last
+    // mile — repoint the config, update the registry, retire the local file —
+    // which is also the half where a partial failure loses data. Pointing this
+    // entry at the copy alone would have been the "reassemble it from three
+    // exports" claim the manifest's own bar rules out.
+    summary:
+      'Move a local workspace onto a shared database: copy it in, secure it, and cut this workspace over — all of it or none of it.',
+    library: 'cloud/migrate.ts#migrateWorkspaceToCloud',
+    cli: 'cloud',
+  },
+  {
+    id: 'cloud.cutover',
+    summary: 'Repoint an existing workspace at an already-populated shared database, reversibly.',
+    library: 'cloud/migrate.ts#cutOverWorkspaceToCloud',
+  },
+  {
+    id: 'cloud.join',
+    summary:
+      'Join a cloud with a scoped credential: probe it, then register and activate it as a workspace.',
+    library: 'cloud/join.ts#joinCloud',
+  },
+  {
+    id: 'cloud.redeem-invite',
+    summary: 'Redeem an email-bound invite token and join the cloud it points at.',
+    library: 'cloud/join.ts#redeemCloudInvite',
+    cli: 'cloud',
+  },
+  {
+    id: 'cloud.list-members',
+    summary: 'List who is on this cloud — the owner, joined members, and pending invites.',
+    library: 'cloud/member-directory.ts#listCloudMembers',
+    cli: 'cloud',
   },
   {
     id: 'cloud.invite-member',
-    summary: 'Provision a scoped member role a person can connect as.',
-    library: 'cloud/members.ts#provisionMemberRole',
+    summary:
+      'Provision a scoped member role and mint the email-bound token that carries its credential.',
+    library: 'cloud/membership.ts#inviteMember',
+    cli: 'cloud',
   },
   {
-    id: 'cloud.revoke-member',
-    summary: "Revoke a member's role so their credentials stop working.",
-    library: 'cloud/members.ts#revokeMemberRole',
+    id: 'cloud.remove-member',
+    summary: "Revoke a member's role so their credentials stop working, and close their invites.",
+    library: 'cloud/membership.ts#removeMember',
+    cli: 'cloud',
   },
   {
     id: 'cloud.row-visibility',
-    summary: 'Set who can see one row.',
-    library: 'cloud/members.ts#setRowVisibility',
+    summary: "Set who can see one row, carrying a newly-shared dashboard's data with it.",
+    library: 'cloud/sharing.ts#shareRow',
+    cli: 'cloud',
+  },
+  {
+    id: 'cloud.row-grant',
+    summary: 'Give one person access to one row, or take it away.',
+    library: 'cloud/sharing.ts#grantRowAccess',
+    cli: 'cloud',
+  },
+  {
+    id: 'cloud.row-grant-batch',
+    summary: "Settle a whole row's audience at once — grant several people, revoke several others.",
+    library: 'cloud/sharing.ts#batchRowAccess',
   },
   {
     id: 'cloud.table-default-visibility',
@@ -282,6 +337,18 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Register a new workspace and scaffold its directory tree, config, and database.',
     library: 'framework/workspace.ts#addWorkspace',
     cli: 'workspace',
+  },
+  {
+    id: 'workspace.create-cloud',
+    summary:
+      'Register a reachable cloud database as its own workspace, rolling back a half-made one.',
+    library: 'framework/cloud-workspace.ts#createCloudWorkspace',
+  },
+  {
+    id: 'workspace.point-at-database',
+    summary:
+      'Point a workspace at a different database — store the credential, rewrite the config line, and hand back the way back.',
+    library: 'framework/db-pointer.ts#pointConfigAtDatabase',
   },
   {
     id: 'workspace.set-active',

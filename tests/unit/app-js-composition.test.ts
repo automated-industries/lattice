@@ -734,8 +734,8 @@ import { appJs } from '../../src/gui/app/script.js';
 // on a table delete is kept (it prevents a half-applied delete). First run also
 // auto-creates a default local workspace instead of the Create-vs-Join wall (Join
 // via invite stays in the workspace menu). Length + hash recaptured.
-const ORIGINAL_LENGTH = 860435;
-const ORIGINAL_SHA256 = '1adefe936320198d3d094ae8d2184cef0b36b6e935d4d84e92b7e41c2aac262c';
+const ORIGINAL_LENGTH = 861417;
+const ORIGINAL_SHA256 = 'd098c96a66ab3a6655cb9c8387c4458fd5819ff5a43cf002b0273705ad21aa0a';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

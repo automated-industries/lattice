@@ -345,6 +345,22 @@ export type {
   WorkspacePaths,
   AddWorkspaceOptions,
 } from './framework/workspace.js';
+// A workspace is a config plus the store its `db:` line names, and moving it to
+// another store is two writes that have to agree. Doing one without the other
+// leaves a key nobody names or a name with nothing behind it — so the pair is one
+// call, and it hands back the way back for a caller (a migration) that has more
+// steps to take after it.
+export {
+  pointConfigAtDatabase,
+  rewriteDbLine,
+  readDbLine,
+  normalizeLabel,
+  isCredentialKey,
+  credentialRef,
+  portableDbPath,
+  resolveRelativeToConfig,
+} from './framework/db-pointer.js';
+export type { DatabasePointer, PointConfigResult } from './framework/db-pointer.js';
 export { deriveCanonicalContexts } from './framework/canonical-context.js';
 // The whole schema an opened workspace has — the canonical layout plus the
 // framework's own tables — in one call. Anything that opens a workspace by
@@ -510,10 +526,95 @@ export type {
   MigrationResult,
   MigrationOptions,
 } from './framework/cloud-migration.js';
-export { probeCloud, cloudRlsInstalled, canManageRoles } from './framework/cloud-connect.js';
+export {
+  probeCloud,
+  cloudRlsInstalled,
+  canManageRoles,
+  // The second half of redeeming an invite: connect as the new member role and
+  // atomically mark the invite used. Without it on this surface, a caller could
+  // read a token but never spend it, so joining had no library path at all.
+  claimMemberInvite,
+} from './framework/cloud-connect.js';
 export type { CloudProbeResult } from './framework/cloud-connect.js';
 
-export { isPostgresUrl } from './cloud/url.js';
+export { isPostgresUrl, buildPostgresUrl, parsePostgresUrl } from './cloud/url.js';
+
+// Managing a shared cloud without a browser: who is on it, adding and removing
+// people, joining one, and sharing a row with them. Every one of these used to
+// exist only inside a request handler, which made a headless machine reach for
+// binding the browser app to a network address — a surface its own help text
+// calls unauthenticated. Authorization is unchanged and still the database's:
+// the owner checks read the connected Postgres role, and the mutating steps are
+// definer functions that raise for a member on their own.
+export { createCloudWorkspace } from './framework/cloud-workspace.js';
+export type { CloudWorkspaceHandlers } from './framework/cloud-workspace.js';
+// Where do I stand on this cloud, and is anything unprotected? The question every
+// other cloud operation depends on the answer to — and the one the browser app
+// could not answer for you, because the browser app is what stops working when
+// the answer is bad. Strictly read-only, so a damaged cloud can be inspected
+// without also being changed.
+export { cloudStatus } from './cloud/status.js';
+export type { CloudStatus, CloudStanding, CloudStatusWarning } from './cloud/status.js';
+// Moving a local workspace onto a shared database, whole. `migrateLatticeData`
+// above copies the rows; this is the MOVE — copy, secure, publish the layout,
+// then repoint the config, update the registry, and retire the local file as one
+// reversible sequence. That last mile existed only inside a request handler and
+// had no unwind, which made a half-failed migration a data-integrity event;
+// `cutOverWorkspaceToCloud` is that mile on its own, for a caller that copied the
+// data some other way.
+export { migrateWorkspaceToCloud, cutOverWorkspaceToCloud } from './cloud/migrate.js';
+export type {
+  MigrateWorkspaceInput,
+  MigrateWorkspaceResult,
+  CloudCutoverInput,
+  CloudCutoverResult,
+} from './cloud/migrate.js';
+export { joinCloud, redeemCloudInvite } from './cloud/join.js';
+export type {
+  CloudJoinFields,
+  CloudJoinOptions,
+  CloudJoinResult,
+  CloudWorkspaceCreator,
+  RedeemInviteInput,
+} from './cloud/join.js';
+export { inviteMember, removeMember, cloudCoordsForConfig } from './cloud/membership.js';
+export type {
+  CloudCoords,
+  InviteMemberOptions,
+  InviteMemberResult,
+  RemoveMemberOptions,
+  RemoveMemberResult,
+} from './cloud/membership.js';
+export {
+  listCloudMembers,
+  latestInvitesByRole,
+  recordMemberInvite,
+  markInvitesRevoked,
+  reclaimStaleInviteRoles,
+  currentDatabaseRole,
+} from './cloud/member-directory.js';
+export type {
+  CloudMember,
+  InviteRecord,
+  ListCloudMembersOptions,
+} from './cloud/member-directory.js';
+export { shareRow, grantRowAccess, batchRowAccess } from './cloud/sharing.js';
+export type {
+  ShareRowInput,
+  ShareRowResult,
+  GrantRowInput,
+  GrantRowResult,
+  BatchRowAccessInput,
+  BatchRowAccessResult,
+} from './cloud/sharing.js';
+export { cloudError, cloudErrorCode } from './cloud/errors.js';
+export type { CloudError, CloudErrorCode } from './cloud/errors.js';
+export { mintInviteToken, redeemInviteToken, poolerAwareUser } from './cloud/invite.js';
+export type { InvitePayload, InviteCoords, MintInput } from './cloud/invite.js';
+// The owner-published layout a joined member hydrates its own config from. An
+// owner running headlessly has to publish it after a migrate or a schema change,
+// or every member renders an empty context tree against rows they can read.
+export { publishSharedSchema } from './cloud/shared-schema.js';
 
 // v3.0 — shared-cloud Row-Level Security. A cloud is a Postgres DB each user
 // connects to directly as their own scoped role; these install RLS + provision
@@ -536,6 +637,12 @@ export {
   // itself. Run it before handing a provisioned role's credentials to anyone.
   assertScopedMemberRole,
   setRowVisibility,
+  // Per-row sharing at the database level: each one calls a definer function
+  // that raises for a caller who does not own the row, so exporting them moves
+  // no authority — it only removes the requirement to be a browser.
+  grantRow,
+  revokeRow,
+  batchRowGrants,
 } from './cloud/members.js';
 export { discoverCloudTables } from './cloud/discover.js';
 export type { DiscoveredTable } from './cloud/discover.js';
@@ -570,7 +677,16 @@ export {
 } from './cloud/shred.js';
 export type { SourceKeyStore } from './cloud/shred.js';
 export { FoldCache } from './cloud/fold-cache.js';
-export { secureCloud } from './cloud/setup.js';
+export {
+  secureCloud,
+  // Securing a cloud is not one-shot: `reconcileCloudMemberAccess` re-converges
+  // the member grants a workspace's tables need, and `secureNewCloudTable` does
+  // the same for a single table created after the fact. A table made outside the
+  // browser and never passed through these has row security OFF.
+  reconcileCloudMemberAccess,
+  secureNewCloudTable,
+} from './cloud/setup.js';
+export type { CloudMemberAccessReport } from './cloud/setup.js';
 // v4.1 — seamless cloud file-byte access: in-database SigV4 presigner so a keyless
 // member fetches/uploads bytes with zero config (Postgres cloud only).
 export {

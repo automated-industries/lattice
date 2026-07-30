@@ -69,8 +69,13 @@ describe('every symbol a doc imports from the package is exported by it', () => 
     let match: RegExpExecArray | null;
     while ((match = blocks.exec(src)) !== null) {
       if (match[1]) continue; // `import type` — erased, nothing to resolve at runtime
-      for (const raw of (match[2] ?? '').split(',')) {
-        const name = raw.replace(/\/\/.*$/gm, '').trim();
+      // Comments come off BEFORE the split, not after. Splitting first meant a
+      // comma inside an explanatory comment became a name — so a doc block could
+      // only be annotated in comma-free prose, and writing an ordinary sentence
+      // failed the test with a fragment of itself as the missing export.
+      const names = (match[2] ?? '').replace(/\/\/.*$/gm, '');
+      for (const raw of names.split(',')) {
+        const name = raw.trim();
         if (name === '' || name.startsWith('type ')) continue;
         imported.set(name, [...(imported.get(name) ?? []), file]);
       }

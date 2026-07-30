@@ -27,6 +27,95 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   data-model planner. Each one records the same history entry a click does, so a scripted
   change is as reversible as one made by hand — and none of them needs a server running.
 
+- **Running a shared workspace from the command line: `lattice cloud`.** Seeing who is on a
+  shared workspace, inviting somebody, taking them off, sharing a single row, and securing
+  the database in the first place were all clicks in the browser app. On a machine with no
+  display that left one workaround — publish the browser app on a network address, which
+  its own help text calls unauthenticated — so the price of administering a shared
+  workspace on a server was exposing an unauthenticated admin panel on it. There are now
+  nine verbs: `cloud status`, `cloud members`, `cloud secure`, `cloud invite --email`,
+  `cloud join --token`, `cloud revoke <member>`, `cloud share`, `cloud migrate <url>`, and
+  `cloud probe <url>`. `status` is the one that was most missing: diagnosing a broken
+  shared workspace previously required the browser app, which is exactly the thing that
+  stops working when something is wrong. It reads only — it will tell you which side of
+  the workspace you are on, whether row security is installed, and which tables are left
+  unprotected, without changing any of it. The read verbs take `--json`.
+
+  **`migrate` and `join` complete the arc.** A server could not become a shared workspace
+  and could not join one, so the two ends of the story were the two that still needed a
+  browser. `cloud migrate` moves the workspace you are in onto a shared database;
+  `cloud join --token <token>` redeems an invite and lands in a NEW workspace, creating the
+  root if the machine has none, and never repointing whatever was already open. A spent,
+  revoked, or expired token is refused without leaving a workspace behind.
+
+  **The connection string never has to appear in the command.** A shared database's
+  connection string contains the owner password, and an argument is public on the machine
+  it runs on — any other user can read it out of the process list while the command runs,
+  and your shell keeps it in a history file afterwards. That is the same exposure these
+  verbs exist to remove, so `migrate` and `probe` read the URL from standard input
+  (`--url-stdin`, or `-` in place of the URL), or from `LATTICE_CLOUD_URL`. Passing it as
+  an argument still works and warns, because a password that has been in a process list
+  has to be treated as exposed.
+
+  **No new authority comes with them, and no refusal is dropped.** Permission on a shared
+  workspace is the database role you connect as, not a session a caller can assert, so a
+  member typing `lattice cloud invite` is refused by the database itself — the same
+  refusal the browser app got. Every refusal the browser app made is made here too,
+  including the one for a deployment whose workspace manager owns membership: the check
+  now lives in one place that all three surfaces call, rather than as a copy inside each
+  request handler, which is how `cloud secure` came to be missing it. Members can be named
+  the way they appear in `cloud members` (role, email, or name), and a name two people
+  share is refused with both roles rather than resolved to whichever came first.
+  `cloud invite` prints its token exactly once, because the token is the credential and is
+  never stored anywhere.
+
+- **Fixed: joining a shared workspace could repoint or delete a different one.** Stored
+  connections are keyed by name in one list for the whole machine, and the name comes from
+  the workspace's display name — so joining a second shared workspace called "Acme", or
+  moving onto a second database called `postgres` (which is what every project's database
+  is called on most managed hosts), quietly overwrote the first one's connection. The
+  first workspace then opened somebody else's database, with nothing reporting it. A name
+  already holding a DIFFERENT database now gets a numbered variant, and the name actually
+  used is reported. The matching failure on the way out is fixed too: a join that failed
+  part-way used to delete that name outright, taking the existing connection with it —
+  whatever the name held is now put back instead.
+
+- **Fixed: a failed join could spend an invite and throw away what it bought.** An invite
+  is single-use and its password is written down nowhere else, but it was claimed BEFORE
+  the workspace was created — so a momentary network failure while opening the database
+  left the invite spent, the connection deleted, and the member locked out until the owner
+  issued a new one. The claim now happens once the workspace exists and before it is
+  opened: a refused invite still unwinds everything, and a failure after the claim keeps
+  the workspace and its connection, which is exactly what the invite bought. Relatedly, a
+  join could register a workspace marked "shared" over a config file that still opened a
+  local database — the two now have to agree or the join is refused, and a new workspace
+  no longer lands in a directory an earlier one left behind.
+
+- **Fixed: a completed move was reported as a failed one.** Moving a workspace onto a
+  shared database ends with the browser session reconnecting to it. If only that last
+  reconnect failed, the move was reported as failed — while the session carried on writing
+  into the local file that had just been renamed out of the way, so that work disappeared
+  at the next start. The move is now reported as the success it is, and the session that
+  can no longer be trusted is closed and reloaded instead of quietly writing to a retired
+  file. A copy that fails part-way through now says what is sitting in the target database
+  and whether row security got installed on it, rather than reporting only the underlying
+  fault: a copy interrupted before securing finishes is a full copy of the workspace with
+  nothing protecting it, and the operator has to be told to drop it.
+
+- **Fixed: a migration that failed halfway used to leave the workspace broken.** Moving a
+  local workspace onto a shared database ends in four writes — store the credential,
+  repoint the config, update the workspace registry, retire the local database file — and
+  they ran in order with nothing to undo them. A failure in the middle left a config naming
+  a credential that was never stored, a registry that disagreed with the config, or a
+  config pointing at a local file that had just been renamed out from under it. None of
+  those announce themselves; the next open simply finds an empty workspace. Those four
+  writes are now one reversible sequence: any failure unwinds every step already taken and
+  reports why, so the workspace is either fully moved or exactly as it was, with its rows
+  still readable. The local database is still retired by renaming rather than deleting, so
+  the bytes remain recoverable either way. If an unwind step itself cannot complete, that
+  is named in the error rather than swallowed. The whole move is also a single library
+  call now (`migrateWorkspaceToCloud`), where before only the row copy was.
+
 - **The command line takes the workspace name it just printed.** `workspace create <name>`
   and `workspace use <name>` were the documented forms and neither worked: `create` insisted
   on a `--name` flag and threw away the name you typed, and `use` compared what you typed

@@ -100,7 +100,7 @@ const SRC = join(ROOT, 'src');
  * {@link HEADLESS_DEBT} — the actual list of what is missing — and not a count
  * made comfortable by relabelling.
  */
-const DEBT_BUDGET = 49;
+const DEBT_BUDGET = 43;
 
 /**
  * When a human last looked at the budget and agreed with it, and the release it
@@ -138,13 +138,8 @@ const HEADLESS_DEBT: string[] = [
   'src/gui/databases-routes.ts — POST /api/databases/delete',
   'src/gui/db-sources-routes.ts — POST /api/db-sources/connect',
   'src/gui/db-sources-routes.ts — POST sub === (reconnect)',
-  'src/gui/dbconfig/cloud-settings-routes.ts — POST /api/cloud/row-grant',
-  'src/gui/dbconfig/cloud-settings-routes.ts — POST /api/cloud/row-grants',
   'src/gui/dbconfig/cloud-settings-routes.ts — POST /api/cloud/s3-config',
-  'src/gui/dbconfig/cloud-state-routes.ts — POST /api/cloud/redeem-invite',
-  'src/gui/dbconfig/cloud-state-routes.ts — POST /api/dbconfig/connect-existing',
   'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/rename',
-  'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/save',
   'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/test',
   'src/gui/identity/routes.ts — POST /api/identity/signin/complete',
   'src/gui/identity/routes.ts — POST /api/identity/signin/start',
@@ -162,7 +157,6 @@ const HEADLESS_DEBT: string[] = [
   'src/gui/schema-routes.ts — DELETE /api/schema/entities/[^/]+/links/[^/]+$',
   'src/gui/schema-routes.ts — POST /api/schema/entities/[^/]+/links$',
   'src/gui/schema-routes.ts — PUT /api/gui-meta/columns/[^/]+/[^/]+$',
-  'src/gui/server.ts — POST /api/cloud/redeem-invite',
   'src/gui/server.ts — POST /api/update/apply',
   'src/gui/server.ts — POST /api/update/check',
   'src/gui/server.ts — POST /api/workspaces/delete',

@@ -200,6 +200,13 @@ await db.init();
 await setRowVisibility(db, 'items', 'item-42', 'everyone');
 ```
 
+`setRowVisibility` is the bare call and nothing more — it changes who may read
+that one row and stops there. Prefer `shareRow` / `grantRowAccess` /
+`batchRowAccess` unless you are handling the follow-on yourself: sharing a
+dashboard has to carry the data it reads along with it, and those are the versions
+that do. A dashboard shared with the bare call opens to an empty page for whoever
+receives it.
+
 Because sharing lives in `__lattice_owners` (out of band), opting a row in or out
 never touches your table's columns.
 
