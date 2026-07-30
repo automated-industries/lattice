@@ -59,9 +59,14 @@ export type CapabilityArea =
   | 'data-model'
   | 'cloud'
   | 'workspace'
+  | 'account'
   | 'user'
+  | 'ingest'
+  | 'source-root'
   | 'import'
   | 'connector'
+  | 'model'
+  | 'voice'
   | 'app';
 
 export interface Capability {
@@ -356,6 +361,80 @@ export const CAPABILITIES: readonly Capability[] = [
       'Point the registry at a workspace, so every later open without an explicit id resolves to it.',
     library: 'framework/workspace.ts#setActiveWorkspace',
   },
+  // ── The account ─────────────────────────────────────────────────────────
+  //
+  // Signing in looks like the one thing that could never leave a browser, and
+  // that impression is what kept all of this inside request handlers. Only the
+  // approval page needs a person and a browser, and that page belongs to the
+  // account service, not to us. Everything on either side of it — asking for a
+  // request, finishing one with the code that approval produced, signing out,
+  // pulling invited workspaces down, administering a hosted one — is an ordinary
+  // call, and a machine with no display can now make every one of them.
+  {
+    id: 'account.status',
+    summary:
+      'Report whether this machine is signed in, as whom, and whether an account service exists at all.',
+    library: 'ops/account.ts#readAccountStatus',
+    cli: 'account',
+  },
+  {
+    id: 'account.signin-start',
+    summary:
+      'Start a sign-in and return the URL to approve, remembering the half of the handshake this machine keeps.',
+    library: 'ops/account.ts#startAccountSignIn',
+    cli: 'account',
+  },
+  {
+    id: 'account.signin-complete',
+    // The WHOLE completion, including adopting the account email as this
+    // machine's identity where none was set. Pointing this entry at the bare
+    // exchange call would be the "reassemble it from three exports" claim the
+    // manifest's own bar rules out — and would leave a signed-in machine whose
+    // writes are attributed to nobody.
+    summary:
+      'Finish a sign-in with the approved one-time code: store the session and adopt its identity.',
+    library: 'ops/account.ts#completeAccountSignIn',
+    cli: 'account',
+  },
+  {
+    id: 'account.signout',
+    summary:
+      'Sign this machine out and revoke its account-side access, reporting whether the service confirmed it.',
+    library: 'ops/account.ts#signOutAccount',
+    cli: 'account',
+  },
+  {
+    id: 'account.sync-memberships',
+    summary:
+      'Materialize every active membership this machine does not hold yet as a workspace, and report revoked ones.',
+    library: 'ops/account.ts#syncAccountMemberships',
+    cli: 'account',
+  },
+  {
+    id: 'account.list-members',
+    summary: 'List who is on this hosted workspace, including invites nobody has accepted yet.',
+    library: 'ops/account.ts#listManagedMembers',
+    cli: 'account',
+  },
+  {
+    id: 'account.invite-member',
+    summary: 'Invite somebody to this hosted workspace by email, through its workspace manager.',
+    library: 'ops/account.ts#inviteToManagedWorkspace',
+    cli: 'account',
+  },
+  {
+    id: 'account.remove-member',
+    summary: 'Remove somebody from this hosted workspace, through its workspace manager.',
+    library: 'ops/account.ts#revokeManagedMembership',
+    cli: 'account',
+  },
+  {
+    id: 'account.create-workspace',
+    summary: 'Create another hosted workspace on this account, through its workspace manager.',
+    library: 'ops/account.ts#createManagedWorkspace',
+    cli: 'account',
+  },
+
   {
     id: 'user.identity',
     summary: 'Write the machine-local identity (display name + email) writes are attributed to.',
@@ -367,7 +446,81 @@ export const CAPABILITIES: readonly Capability[] = [
     library: 'framework/user-config.ts#writePreferences',
   },
 
+  // ── Bringing documents in ───────────────────────────────────────────────
+  //
+  // Every one of these was a request handler, which meant a browser and a
+  // drag-and-drop were the only way to get a document into a workspace — for the
+  // operation whose most natural caller is a script: a folder of contracts, a
+  // nightly export, a pipeline handed a file by something else. The one part
+  // that genuinely needs a person is CHOOSING the path, and a caller that
+  // already knows the path does not need to be asked.
+  {
+    id: 'ingest.path',
+    // The WHOLE ingest of one named file, not the read: extract, describe,
+    // deduplicate, import the data inside it, and link it to the records it is
+    // about. Pointing this entry at the extraction alone would be the
+    // "reassemble it from three exports" claim the manifest's own bar rules out.
+    summary:
+      'Bring in one document named by its path — read it, describe it, and link it to the records it is about.',
+    library: 'ops/ingest-file.ts#ingestPath',
+    cli: 'ingest',
+  },
+  {
+    id: 'ingest.bytes',
+    summary:
+      'Bring in a document from bytes the caller already holds — no path, no filesystem — through the same pipeline.',
+    library: 'ops/ingest-file.ts#ingestBytes',
+  },
+  {
+    id: 'ingest.text',
+    summary:
+      'Keep a block of text as a document, reading the page at the other end when the text is a web address.',
+    library: 'ops/ingest-file.ts#ingestText',
+    cli: 'ingest',
+    ai: 'ingest_text',
+  },
+  {
+    id: 'source-root.add',
+    summary:
+      'Register a folder or file on this machine as a source of the workspace, and bring in what is there.',
+    library: 'ops/source-roots.ts#addSourceRoot',
+    cli: 'ingest',
+  },
+  {
+    id: 'source-root.remove',
+    summary:
+      'Stop treating a registered folder as a source. The documents already ingested from it are kept.',
+    library: 'ops/source-roots.ts#removeSourceRoot',
+    cli: 'ingest',
+  },
+  {
+    id: 'source-root.ingest-folder',
+    summary:
+      'Walk a registered folder and ingest its files — bounded on depth, on files collected, and on files brought in.',
+    library: 'ops/source-roots.ts#ingestSourceFolder',
+    cli: 'ingest',
+  },
+
   // ── Import + connectors ─────────────────────────────────────────────────
+  {
+    id: 'import.read-source',
+    summary:
+      'Read a structured file into records — spreadsheet, CSV, JSON, or a document with tables in it.',
+    library: 'ops/import-apply.ts#readImportSource',
+    cli: 'import',
+  },
+  {
+    id: 'import.apply',
+    // The WHOLE apply, not the materialize inside it. A caller that only
+    // materialized would have to infer the schema, match it against what the
+    // workspace already holds, split an over-large workbook per sheet, and
+    // re-derive the date rule that stops a re-import overwriting the last one —
+    // which is exactly the "reassemble it yourself" claim the bar above rules out.
+    summary:
+      'Turn a source that has been read into tables, rows, and relationships — inference, snapshot dating, and all.',
+    library: 'ops/import-apply.ts#applyImport',
+    cli: 'import',
+  },
   {
     id: 'import.materialize',
     summary: 'Turn an inferred schema and its records into tables, rows, and junctions.',
@@ -375,9 +528,43 @@ export const CAPABILITIES: readonly Capability[] = [
     ai: 'import_spreadsheet',
   },
   {
+    id: 'connector.connect',
+    // The WHOLE connect, including the half that cannot be automated — and saying
+    // so is the point. A source that connects with credentials, or an MCP server
+    // that is open or local, connects outright from this one call. One that needs
+    // a person's approval gets the URL to approve back instead of a pretence, and
+    // `connector.complete-authorization` finishes it. Pointing this entry at the
+    // validation alone would be the "reassemble it from three exports" claim the
+    // manifest's own bar rules out.
+    summary:
+      'Connect an external source: validate it, record it, define and secure its tables, and run the first sync.',
+    library: 'ops/connect-source.ts#connectSource',
+  },
+  {
+    id: 'connector.complete-authorization',
+    summary:
+      'Finish an authorization a person approved elsewhere: record the connection, define its tables, and sync it.',
+    library: 'ops/connect-source.ts#completeMcpConnection',
+  },
+  {
+    id: 'connector.connect-database',
+    summary:
+      'Attach an external Postgres database as a source: introspect its schema, register it, and import its tables.',
+    library: 'ops/connect-source.ts#connectDatabaseSource',
+    cli: 'connector',
+  },
+  {
+    id: 'connector.reconnect-database',
+    summary:
+      'Re-point an attached database at edited credentials and re-sync it, keeping its imported tables where they are.',
+    library: 'ops/connect-source.ts#reconnectDatabaseSource',
+    cli: 'connector',
+  },
+  {
     id: 'connector.sync',
     summary: 'Pull the current state of one connected source into its mirrored tables.',
     library: 'connectors/sync.ts#syncConnector',
+    cli: 'connector',
   },
   {
     id: 'connector.sync-stale',
@@ -385,12 +572,147 @@ export const CAPABILITIES: readonly Capability[] = [
     library: 'connectors/sync.ts#syncStaleConnectors',
   },
   {
+    id: 'connector.refresh-all',
+    // The whole pass, not the sync inside it. A caller that only synced would
+    // leave a connection made before the current table layout stranded on the old
+    // one forever, and would skip securing tables a member's session created on a
+    // shared database — two one-time repairs that used to happen only because
+    // somebody opened the app.
+    summary:
+      'Bring every stale source up to date, repairing any that predate the current table layout first.',
+    library: 'ops/connect-source.ts#refreshStaleSources',
+    cli: 'connector',
+  },
+  {
     id: 'connector.disconnect',
     summary: 'Disconnect a source and tear down what it created.',
     library: 'connectors/teardown.ts#disconnectConnector',
+    cli: 'connector',
+  },
+
+  // ── Which model answers ─────────────────────────────────────────────────
+  //
+  // Every one of these was a request handler, which made a browser the only way
+  // to point a machine at a model — the FIRST thing anyone has to do, and the
+  // one step a server with no display could not take. They are machine-local
+  // writes: nothing about them ever needed a request.
+  {
+    id: 'model.status',
+    summary:
+      'Report how this machine reaches a model — which credentials exist, which backend is active, and what is blocking a turn.',
+    library: 'ops/ai-config.ts#readModelStatus',
+    cli: 'model',
+  },
+  {
+    id: 'model.connect-endpoint',
+    // The WHOLE connect, including the verify-and-revert: a bad edit putting back
+    // the working configuration it replaced is the half that makes this safe to
+    // run unattended, and pointing this entry at the bare setter would be exactly
+    // the "reassemble it yourself" claim the manifest's own bar rules out.
+    summary:
+      'Connect an OpenAI-compatible endpoint as the assistant backend, verifying it answers before keeping it.',
+    library: 'ops/ai-config.ts#connectModelEndpoint',
+    cli: 'model',
+  },
+  {
+    id: 'model.disconnect-endpoint',
+    summary: 'Forget the OpenAI-compatible endpoint and fall back to Claude.',
+    library: 'ops/ai-config.ts#disconnectModelEndpoint',
+    cli: 'model',
+  },
+  {
+    id: 'model.connect-account',
+    summary:
+      "Activate the signed-in account's hosted model by minting a scoped, short-lived proxy credential from its session.",
+    library: 'ops/ai-config.ts#connectAccountModel',
+    cli: 'model',
+  },
+  {
+    id: 'model.disconnect-account',
+    summary: "Stop using the account's hosted model and fall back to Claude.",
+    library: 'ops/ai-config.ts#disconnectAccountModel',
+    cli: 'model',
+  },
+  {
+    id: 'model.select',
+    summary:
+      'Choose which already-configured backend answers turns, refusing one that has nothing stored.',
+    library: 'ops/ai-config.ts#selectModelProvider',
+    cli: 'model',
+  },
+  {
+    id: 'model.test',
+    summary: 'Ask the active backend to answer one trivial prompt, and report what happened.',
+    library: 'ops/ai-config.ts#testModelProvider',
+    cli: 'model',
+  },
+  {
+    id: 'model.set-key',
+    summary:
+      "Save a speech credential machine-level, retiring any legacy copy left in a workspace's secrets.",
+    library: 'ops/ai-config.ts#setAssistantApiKey',
+    cli: 'model',
+  },
+  {
+    id: 'model.clear-key',
+    summary:
+      'Clear a speech credential and suppress the environment fallback, so it stays cleared across restarts.',
+    library: 'ops/ai-config.ts#clearAssistantApiKey',
+    cli: 'model',
+  },
+  {
+    id: 'model.disconnect-subscription',
+    summary: 'Disconnect the linked Claude subscription and clear any standing auth warning.',
+    library: 'ops/ai-config.ts#disconnectClaudeSubscription',
+    cli: 'model',
+  },
+  {
+    id: 'subscription.signin-start',
+    // Connecting a subscription looked like the one backend a browser had to own,
+    // and the reason was a cookie rather than the flow: the verifier was kept in
+    // the browser session, which bound the exchange to the process that started
+    // it. Kept in the machine-local store instead, the two legs are two ordinary
+    // calls that need not even run on the same machine.
+    summary:
+      'Begin connecting a Claude subscription: remember this attempt and return the URL to approve.',
+    library: 'ops/subscription.ts#startSubscriptionSignIn',
+    cli: 'model',
+  },
+  {
+    id: 'subscription.signin-complete',
+    // The WHOLE completion: checking the returned code against the attempt in
+    // progress, redeeming it, storing the token machine-level, and clearing any
+    // standing reconnect warning. Pointing this at the bare exchange call would be
+    // the "reassemble it from three exports" claim the manifest's own bar rules
+    // out — and would leave a redeemed token nothing had stored.
+    summary:
+      'Finish connecting a Claude subscription with the approved one-time code, and store the token.',
+    library: 'ops/subscription.ts#completeSubscriptionSignIn',
+    cli: 'model',
+  },
+  {
+    id: 'voice.transcribe',
+    summary:
+      'Turn a recording into text using whichever speech credential this machine has, from bytes rather than an upload.',
+    library: 'ops/voice.ts#transcribeRecording',
   },
 
   // ── The app itself ──────────────────────────────────────────────────────
+  {
+    id: 'app.assistant-turn',
+    // The WHOLE turn, not the model call. Deciding which tables the assistant may
+    // touch, wiring the primitives it may call, saving the reference material the
+    // message carried, running the tool loop, and stopping with an answer — all of
+    // it, from one call. What the chat route keeps is transport: the immediate
+    // acknowledgement, the socket the browser listens on, the per-workspace queue,
+    // the stop registry, and storing the conversation so a reload can replay it.
+    // None of that is something a script, a command, or a job needs — it already
+    // holds the answer as a value and owns the abort handle for the turn it started.
+    summary:
+      'Run one assistant turn to completion — its tools, its writes, and its answer — with no browser and no server.',
+    library: 'ops/assistant-turn.ts#runAssistantTurn',
+    cli: 'ask',
+  },
   {
     id: 'app.self-update',
     // Scoped deliberately to what the named function really does: it reads the

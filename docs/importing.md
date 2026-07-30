@@ -5,11 +5,21 @@ latticesql 4.2 can turn a **structured file** — a JSON object or an Excel
 materialize it into a workspace. Everything here is **additive and opt-in**:
 absent a file drop, behavior is byte-identical to 4.1.
 
-The feature is reachable **only by dropping a file into the assistant rail** in
-`lattice gui`. There is no CLI verb and no separate endpoint to call by hand —
-the upload pipeline builds a proposal, and a confirmed proposal is applied via
-`POST /api/import/apply`. The same inference and materialization functions are
-also exported from `latticesql` for library use (see [Library API](#library-api)).
+There are **three doors and one pipeline**. Dropping a file into the assistant
+rail in `lattice gui` builds a proposal, which is applied over
+`POST /api/import/apply`. `lattice import <file>` does the same apply from a
+terminal — no browser, no server, no upload. And `applyImport` is exported from
+`latticesql` for a job or a library caller (see [Library API](#library-api)).
+All three run the same inference, the same match-to-existing, and the same
+snapshot dating; none of them is a reduced version of another.
+
+```sh
+lattice import ./exports/2026-07.xlsx --dry-run   # what would this create?
+lattice import ./exports/2026-07.xlsx
+lattice import ./big-book.xlsx --sheet "Q3"
+```
+
+See the [CLI reference](cli.md#lattice-import) for every option.
 
 ## What it does
 
@@ -84,9 +94,11 @@ undoable) rather than asked about up front.
   imported, the rest still are and the result says so ("imported N of M sheets")
   rather than failing the whole book.
 
-Imports apply via `POST /api/import/apply`, which streams the materialization
-progress back as NDJSON. After an import lands, the data-model planner runs over
-the new tables to apply safe normalizations.
+Imports apply through `applyImport`. The browser reaches it over
+`POST /api/import/apply`, which streams the materialization progress back as
+NDJSON; `lattice import` calls it directly and prints the same lines to stderr.
+After an import lands, the data-model planner runs over the new tables to apply
+safe normalizations.
 
 ## File-size cap
 
@@ -98,8 +110,30 @@ upload) cannot be streamed whole into memory.
 
 ## Library API
 
-The inference + materialization functions are exported from `latticesql` and run
-GUI-independently:
+The whole apply is one call. `readImportSource` turns a file into records;
+`applyImport` takes it from there — inference, match-to-existing, the per-sheet
+split for an over-large workbook, snapshot dating, computed opt-ins, and the
+report of low-confidence links it deliberately left unconnected:
+
+```ts
+import { readImportSource, applyImport } from 'latticesql';
+
+const source = await readImportSource('./exports/2026-07.xlsx', '2026-07.xlsx');
+const result = await applyImport(
+  { db, configPath, latticeRoot, validTables, softDeletable, feed },
+  source,
+  { mode: 'both' },
+  (event) => console.error(event.message), // progress, as it happens
+);
+// result: { mode, asOf, asOfColumn, tablesCreated, rowsByTable, links, views }
+```
+
+A refusal arrives as an `Error` carrying a `code` — read it with
+`ingestErrorCode(e)` — rather than a status: `not_found` when the bytes are not
+there, `too_large` past the cap, `invalid_request` for an unreadable source or a
+plan over the safe table limit.
+
+The individual stages are exported too, and run GUI-independently:
 
 ```ts
 import {

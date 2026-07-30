@@ -5,6 +5,14 @@ import { describe } from '../gui/ai/extract.js';
 import { fileIdentity, requiredFileDefaults } from '../gui/file-row.js';
 import { enrichWithLlm, type DroppedExtraction } from '../gui/ai/enrich.js';
 import { type ClassifyMatch } from '../gui/ai/summarize.js';
+import { normalizeUserUrl } from '../sources/url-safety.js';
+
+/** A pasted body that is exactly one web address — a candidate to crawl. Accepts a scheme-prefixed
+ *  URL OR a bare domain the user typed (no scheme); still single-token (no internal whitespace). */
+export function looksLikeUrl(s: string): boolean {
+  const t = s.trim();
+  return !/\s/.test(t) && normalizeUserUrl(t) !== null;
+}
 
 /**
  * Ingest a block of text as a file — a capability, not a route.

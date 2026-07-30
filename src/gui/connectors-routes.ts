@@ -4,23 +4,16 @@ import { countItemsBySourceConnector } from '../connectors/item-counts.js';
 import { sendJson, readJson } from './http.js';
 import type { Connector, CredentialField } from '../connectors/types.js';
 import { isCredentialConnector, isMcpConnector } from '../connectors/types.js';
-import type { McpConnector } from '../connectors/types.js';
 import type { PrefabCatalog } from '../connectors/prefab/index.js';
 import {
   listConnectors,
   getConnector,
-  createConnector,
   getConnectorByToolkit,
-  updateConnectorConnection,
   classifyConnectorFailure,
   isSetupIncomplete,
 } from '../connectors/registry.js';
-import { isPlaceholderServerName, hostnameLabelFor } from '../connectors/mcp/connector-base.js';
-import { curatedLabelForServerUrl } from '../connectors/prefab/curated.js';
-import { sanitizeConnectorLabel } from '../connectors/sanitize-label.js';
-import { syncConnector, syncStaleConnectors, collectConnectorKeys } from '../connectors/sync.js';
+import { syncConnector } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
-import { enableConnectorRls, secureConnectorTables } from '../connectors/acl.js';
 import { ConnectorUnavailableError } from '../connectors/errors.js';
 import {
   peekPendingConnect,
@@ -28,8 +21,33 @@ import {
   clearMcpConnection,
   getMcpServerUrl,
 } from '../connectors/mcp/oauth.js';
-import { mcpToolkitFor, connectionIdFromToolkit } from '../connectors/mcp/schema-cache.js';
-import { brandFromHost } from '../connectors/describe-connected.js';
+import { connectionIdFromToolkit } from '../connectors/mcp/schema-cache.js';
+import {
+  connectSource,
+  completeMcpConnection,
+  mcpConnectionLabel,
+  refreshStaleSources,
+  type SourceConnectRequest,
+} from '../ops/connect-source.js';
+import { connectorErrorCode, type ConnectorErrorCode } from '../ops/connector-errors.js';
+
+/**
+ * What a tagged connect-a-source failure means on this transport.
+ *
+ * The capability layer refuses with a situation, not a number, because the same
+ * call serves a command line and a library caller that have no statuses at all.
+ * Turning one into the other is this adapter's job, and it is the only place the
+ * mapping exists.
+ */
+const STATUS_FOR_CONNECTOR_ERROR: Record<ConnectorErrorCode, number> = {
+  invalid_request: 400,
+  unsupported: 400,
+  connector_not_found: 404,
+  source_rejected: 422,
+  source_unavailable: 422,
+  setup_failed: 500,
+  import_failed: 500,
+};
 
 /**
  * Connectors settings routes — connect/refresh/disconnect external sources and
@@ -193,166 +211,6 @@ function hostnameOf(serverUrl: string | null | undefined): string | null {
   }
 }
 
-/**
- * A server's self-reported name, or null when it is absent or one of the generic placeholders
- * several services of one vendor all answer with. Sanitized here because it is attacker-controlled
- * text that becomes a stored label.
- */
-function namedServer(raw: string | null | undefined): string | null {
-  if (raw == null) return null;
-  const name = sanitizeConnectorLabel(raw);
-  return name !== '' && !isPlaceholderServerName(name) ? name : null;
-}
-
-/**
- * Record an established MCP connection, define + secure its connected tables,
- * and run the initial sync. Shared by the direct connect path (open/stdio
- * server) and the OAuth callback. Every NEW connect creates its own registry
- * row — a member can connect several MCP servers side by side. A reconnect
- * (`targetConnectorId`) repoints the existing row instead, after an ownership
- * check, retiring the old connection's secrets.
- */
-async function finishMcpConnection(
-  deps: ConnectorsRouteDeps,
-  connector: McpConnector,
-  _toolkit: string,
-  connectionId: string,
-  displayName: string | null,
-  targetConnectorId?: string,
-): Promise<{ connectorId: string; result: unknown }> {
-  const { db, connectedBy } = deps;
-  // MCP is modeled PER CONNECTION (like db_source:<id>): the toolkit carries the connection id,
-  // so each server groups under its own schema header + gets its own typed tables.
-  const toolkit = mcpToolkitFor(connectionId);
-  // The server brand (from its host) names the tables + the sidebar group.
-  let host: string | null = null;
-  try {
-    host = new URL(getMcpServerUrl(connectionId) ?? '').hostname || null;
-  } catch {
-    /* stdio / no stored URL */
-  }
-  const brand = brandFromHost(host);
-  // Introspect the server into a typed schema descriptor — one table per record kind. Best-effort:
-  // on failure the connection still works via the flat `mcp_items` fallback (models() returns it
-  // when no descriptor exists).
-  if (connector.introspect) {
-    try {
-      await connector.introspect(
-        connectionId,
-        toolkit,
-        brand ?? displayName ?? connector.connector,
-      );
-    } catch (e) {
-      console.warn(
-        `[connectors] MCP introspection failed for ${connectionId} (flat fallback): ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
-  }
-  let connectorId: string;
-  if (targetConnectorId) {
-    const existing = await getConnector(db, targetConnectorId);
-    // Ownership AND kind must match — a member may only repoint their own row,
-    // and only a row of THIS connector kind (never a db_source or retired row
-    // reached by id through the MCP route).
-    if (existing?.connectedBy !== connectedBy || existing.connector !== connector.connector) {
-      throw new ConnectorUnavailableError('Connector not found — it may have been removed.');
-    }
-    if (existing.connectionRef && existing.connectionRef !== connectionId) {
-      // The old connection is fully superseded (the new connectionId carries its
-      // own stored URL), so PURGE it — a plain disconnect would leave the old
-      // connection's server-URL key orphaned with nothing referencing it.
-      await (connector.purgeConnection?.(existing.connectionRef) ??
-        connector.disconnect(existing.connectionRef));
-    }
-    // Re-key the toolkit to the new connection (its typed tables live under mcp:<newId>), and
-    // re-stamp the label this connect resolved. A row created before the connection ever
-    // authenticated can be carrying the generic name its server reported; without this it would
-    // keep that useless title forever, even once the connection finally works.
-    await updateConnectorConnection(
-      db,
-      existing.id,
-      connectionId,
-      toolkit,
-      displayName ?? brand ?? undefined,
-    );
-    connectorId = existing.id;
-  } else {
-    connectorId = await createConnector(db, {
-      connector: connector.connector,
-      toolkit,
-      displayName: displayName ?? brand ?? connector.connector,
-      connectionRef: connectionId,
-      connectedBy,
-    });
-  }
-  for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-  await enableConnectorRls(db, connector, toolkit);
-  const result = await syncConnector(db, connector, connectorId);
-  return { connectorId, result };
-}
-
-/**
- * Migrate a LEGACY MCP connection (flat `mcp_items`, toolkit `mcp`) to typed per-kind tables:
- * introspect the server, re-key the row's toolkit to `mcp:<connId>`, register the typed tables,
- * and force a sync to populate them. Idempotent + best-effort — returns false (leaving the flat
- * connection untouched) if the connector can't introspect or the server exposes nothing modelable.
- * Runs on the GUI-load sync-if-stale path (NOT the open hot path), so its network introspection
- * never blocks a workspace open. Once migrated, reopen re-registers the typed tables with no network.
- */
-async function migrateLegacyMcpConnection(
-  deps: ConnectorsRouteDeps,
-  connector: McpConnector,
-  row: { id: string; connectionRef: string | null; displayName: string | null },
-): Promise<boolean> {
-  const { db } = deps;
-  const connectionId = row.connectionRef;
-  if (!connectionId || !connector.introspect) return false;
-  const toolkit = mcpToolkitFor(connectionId);
-  let host: string | null = null;
-  try {
-    host = new URL(getMcpServerUrl(connectionId) ?? '').hostname || null;
-  } catch {
-    /* stdio / no stored URL */
-  }
-  const brand = brandFromHost(host);
-  const descriptor = await connector.introspect(
-    connectionId,
-    toolkit,
-    brand ?? row.displayName ?? connector.connector,
-  );
-  if (!descriptor) return false; // nothing modelable → keep the flat mcp_items fallback
-  // The re-key must happen BEFORE syncConnector (which reads the toolkit off the row to pick the
-  // typed models). But the re-key is the only step the retry gate keys on (it re-selects
-  // `toolkit==='mcp'`), so if any later step fails after re-keying, roll the toolkit back to
-  // `mcp` — otherwise the row is left typed-but-empty with its data stranded in mcp_items and the
-  // migration never retries. Better a retriable flat connection than a silent half-migration.
-  await updateConnectorConnection(db, row.id, connectionId, toolkit);
-  try {
-    for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-    await enableConnectorRls(db, connector, toolkit);
-    await syncConnector(db, connector, row.id); // force-populate the typed tables now
-    // Retire the pre-migration flat `mcp_items` rows for this connection: their data now lives in
-    // the typed tables, so leaving them would double the data live, inflate the item count, and
-    // survive a later disconnect (which tears down only the current toolkit's typed tables).
-    // Soft-delete (never hard) so they stay recoverable and drop out of context/search/counts.
-    // Skip cleanly when there is no mcp_items table; a real DB error propagates to the rollback.
-    if (db.getRegisteredTableNames().includes('mcp_items')) {
-      const now = new Date().toISOString();
-      const staleKeys = await collectConnectorKeys(db, 'mcp_items', 'item_id', row.id);
-      for (const key of staleKeys) await db.update('mcp_items', key, { deleted_at: now });
-    }
-  } catch (e) {
-    // Roll the re-key back so the ENTIRE migration retries on the next load (idempotently:
-    // introspect re-sets the descriptor, syncConnector upserts). The caller logs the failure —
-    // and with the row back on `mcp`, its "flat fallback kept" message is now accurate.
-    await updateConnectorConnection(db, row.id, connectionId, 'mcp');
-    throw e;
-  }
-  return true;
-}
-
 export async function dispatchConnectorsRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -446,42 +304,12 @@ export async function dispatchConnectorsRoute(
       return true;
     }
 
-    // POST /api/connectors/sync-if-stale — GUI-load refresh hook. Loops every
-    // connector; each filters to its own registry rows, so no cross-talk.
-    // @capability connector.sync-stale
+    // POST /api/connectors/sync-if-stale — GUI-load refresh hook. The whole pass
+    // (legacy-layout repair, securing, then the stale syncs) is one capability
+    // call, so a scheduled job does exactly what loading the page does.
+    // @capability connector.refresh-all
     if (pathname === '/api/connectors/sync-if-stale' && method === 'POST') {
-      let synced = 0;
-      let failed = 0;
-      // First, migrate any legacy flat-`mcp_items` connections to typed per-kind tables
-      // (introspect once, re-key the toolkit, populate). One-time per connection; fault-isolated
-      // so a slow/unreachable server never fails the load refresh.
-      const mcpImpl = byToolkit.get('mcp');
-      if (mcpImpl && isMcpConnector(mcpImpl)) {
-        const legacy = (await listConnectors(db, connectedBy)).filter(
-          (c) => c.connector === 'mcp' && c.toolkit === 'mcp' && c.status !== 'disconnected',
-        );
-        for (const row of legacy) {
-          try {
-            await migrateLegacyMcpConnection(deps, mcpImpl, row);
-          } catch (e) {
-            console.warn(
-              `[connectors] MCP typed-table migration failed for ${row.id} (flat fallback kept): ${
-                e instanceof Error ? e.message : String(e)
-              }`,
-            );
-          }
-        }
-      }
-      for (const connector of connectors) {
-        // Owner-only no-op: ensure connected tables created in any member's session
-        // are RLS-secured on the cloud (the owner auto-secures on open).
-        await secureConnectorTables(db, connector);
-        // Scope to THIS member — never sync another member's connectors as ourselves.
-        const r = await syncStaleConnectors(db, connector, undefined, connectedBy);
-        synced += r.synced.length;
-        failed += r.failed.length;
-      }
-      sendJson(res, { synced, failed });
+      sendJson(res, await refreshStaleSources(db, connectors, connectedBy));
       return true;
     }
 
@@ -529,24 +357,19 @@ export async function dispatchConnectorsRoute(
       try {
         const done = await mcp.completeConnect(state, { code });
         exchangedConnectionId = done.connectionId;
-        // Name ladder: the curated catalog label for this endpoint, then the server's own name
-        // when it is not a generic placeholder, then whatever the connector resolved (which
-        // already falls back through a host-derived label), then the host itself. A placeholder
-        // must not win — several services of one vendor report the SAME name, so taking it
-        // renders every one of them under one identical, useless title.
-        const name =
-          curatedLabelForServerUrl(pending.serverUrl) ??
-          namedServer(done.serverName) ??
-          done.displayName ??
-          hostnameLabelFor(pending.serverUrl);
-        await finishMcpConnection(
-          deps,
-          mcp,
-          pending.toolkit,
-          done.connectionId,
-          name,
-          done.targetConnectorId,
-        );
+        const name = mcpConnectionLabel({
+          serverUrl: pending.serverUrl,
+          serverName: done.serverName,
+          displayName: done.displayName,
+        });
+        await completeMcpConnection(db, mcp, {
+          connectionId: done.connectionId,
+          connectedBy,
+          displayName: name,
+          ...(done.targetConnectorId !== undefined
+            ? { targetConnectorId: done.targetConnectorId }
+            : {}),
+        });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(
           oauthResultPage(
@@ -611,46 +434,20 @@ export async function dispatchConnectorsRoute(
       // POST /api/connectors/<toolkit>/connect — validate credentials, store them,
       // record the connection + run the initial sync. Idempotent: reconnecting
       // reuses this (toolkit, member)'s registry row and retires the old creds.
-      // @headless-debt connecting a source covers both a credential handshake and a browser
-      // authorization handshake; neither entry point is on the library surface.
+      // An MCP server that needs a person's approval answers with the URL to
+      // approve rather than a connection, and the callback below finishes it.
+      // @capability connector.connect
       if (action === 'connect' && method === 'POST') {
-        // MCP connectors: begin per-server OAuth (return a redirect the GUI opens),
-        // or — for an open/stdio server — connect + sync immediately.
+        const raw = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+        const str = (k: string): string | undefined =>
+          typeof raw[k] === 'string' && raw[k].trim() ? raw[k].trim() : undefined;
+        let request: SourceConnectRequest;
         if (isMcpConnector(connector)) {
-          const raw = await readJson(req).catch(() => ({}) as Record<string, unknown>);
-          const str = (k: string): string | undefined =>
-            typeof raw[k] === 'string' && raw[k].trim() ? raw[k].trim() : undefined;
           let serverUrl = str('serverUrl');
-          const clientId = str('clientId');
-          const clientSecret = str('clientSecret');
-          // Reconnect: re-authorize an EXISTING row (ownership-checked). Its
-          // server URL was retained across the disconnect, so the caller need
-          // not resend it.
-          const targetConnectorId = str('connectorId');
-          if (targetConnectorId) {
-            const rec = await getConnector(db, targetConnectorId);
-            // Ownership AND connector-kind must match: the MCP route may never
-            // reach a db_source or retired-kind row by id.
-            if (rec?.connectedBy !== connectedBy || rec.connector !== connector.connector) {
-              sendJson(res, { error: 'connector not found' }, 404);
-              return true;
-            }
-            if (!serverUrl && rec.connectionRef) {
-              serverUrl = getMcpServerUrl(rec.connectionRef) ?? undefined;
-            }
-            if (!serverUrl) {
-              sendJson(
-                res,
-                { error: 'This connector has no stored server URL — add it again.' },
-                422,
-              );
-              return true;
-            }
-          }
+          let scope: string | undefined;
           // A prefab catalog card connects by id: the entry's URL + scope are AUTHORITATIVE
           // (resolved server-side — a page cannot fabricate a scope or endpoint for a curated entry).
           const catalogId = str('catalogId');
-          let scope: string | undefined;
           if (catalogId) {
             const entry = deps.catalog?.getEntries().find((e) => e.id === catalogId);
             if (!entry) {
@@ -660,112 +457,27 @@ export async function dispatchConnectorsRoute(
             serverUrl = entry.serverUrl;
             scope = entry.scope;
           }
-          let begin;
-          try {
-            begin = await connector.beginConnect(connectedBy, toolkit, {
-              redirectUri: mcpOAuthRedirectUri(req),
-              ...(serverUrl ? { serverUrl } : {}),
-              ...(scope ? { scope } : {}),
-              ...(clientId
-                ? {
-                    clientInfo: {
-                      client_id: clientId,
-                      ...(clientSecret ? { client_secret: clientSecret } : {}),
-                    },
-                  }
-                : {}),
-              ...(targetConnectorId ? { targetConnectorId } : {}),
-            });
-          } catch (e) {
-            // The terminal "no way to identify this client" failures. The classification is
-            // SHARED with the sync path (see the connector registry), so the member reads the
-            // same actionable message whichever path hit it, and the distinct code lets the GUI
-            // switch the form into pre-registered-client mode instead of dead-ending. Anything
-            // unrecognized is rethrown to the loud 500.
-            const known = classifyConnectorFailure(e instanceof Error ? e.message : String(e));
-            if (known) {
-              sendJson(res, { error: known.message, code: known.code }, 422);
-              return true;
-            }
-            throw e;
-          }
-          if (begin.kind === 'redirect') {
-            sendJson(res, { redirectUrl: begin.redirectUrl, pendingId: begin.pendingId });
-            return true;
-          }
-          const out = await finishMcpConnection(
-            deps,
-            connector,
-            toolkit,
-            begin.connectionId,
-            // Same ladder as the OAuth callback: a curated label for a known endpoint outranks
-            // whatever the server called itself, and a host-derived label backs both up.
-            curatedLabelForServerUrl(serverUrl) ?? begin.displayName ?? hostnameLabelFor(serverUrl),
-            targetConnectorId,
-          );
-          sendJson(res, out);
-          return true;
-        }
-        if (!isCredentialConnector(connector)) {
-          sendJson(
-            res,
-            { error: `Toolkit "${toolkit}" does not support credential connect.` },
-            400,
-          );
-          return true;
-        }
-        // Generic credential read: collect every declared field by key, coercing
-        // to string + trimming. Presence-check the required fields here (400);
-        // format/auth validation lives in the connector's connect() (→ 422).
-        const raw = await readJson(req).catch(() => ({}) as Record<string, unknown>);
-        const fields = connector.credentialFields();
-        const creds: Record<string, string> = {};
-        const missing: string[] = [];
-        for (const f of fields) {
-          const v = typeof raw[f.key] === 'string' ? (raw[f.key] as string).trim() : '';
-          creds[f.key] = v;
-          if (f.required !== false && !v) missing.push(f.key);
-        }
-        if (missing.length > 0) {
-          sendJson(
-            res,
-            { error: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required` },
-            400,
-          );
-          return true;
-        }
-        let connection: { connectionId: string; displayName: string | null };
-        try {
-          connection = await connector.connect(creds);
-        } catch (e) {
-          // Bad credentials / bad input / unreachable source — surface the reason.
-          sendJson(res, { error: (e as Error).message }, 422);
-          return true;
-        }
-        const existing = await getConnectorByToolkit(db, toolkit, connectedBy);
-        let connectorId: string;
-        if (existing) {
-          // Retire the prior connection's stored credentials before repointing.
-          if (existing.connectionRef && existing.connectionRef !== connection.connectionId) {
-            await connector.disconnect(existing.connectionRef);
-          }
-          await updateConnectorConnection(db, existing.id, connection.connectionId);
-          connectorId = existing.id;
+          request = {
+            kind: 'mcp',
+            redirectUri: mcpOAuthRedirectUri(req),
+            serverUrl,
+            scope,
+            clientId: str('clientId'),
+            clientSecret: str('clientSecret'),
+            // Reconnect: re-authorize an EXISTING row (ownership-checked in the
+            // capability). Its server URL was retained across the disconnect, so
+            // the caller need not resend it.
+            targetConnectorId: str('connectorId'),
+          };
         } else {
-          connectorId = await createConnector(db, {
-            connector: connector.connector,
-            toolkit,
-            displayName: connection.displayName ?? toolkit,
-            connectionRef: connection.connectionId,
-            connectedBy,
-          });
+          request = { kind: 'credential', credentials: raw };
         }
-        // Define + (owner-only) secure the connected tables before ingest, so a
-        // cloud owner's rows are RLS-stamped on insert. No-op off-cloud/non-owner.
-        for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-        await enableConnectorRls(db, connector, toolkit);
-        const result = await syncConnector(db, connector, connectorId);
-        sendJson(res, { connectorId, result });
+        const out = await connectSource(db, connector, toolkit, connectedBy, request);
+        if (out.kind === 'authorize') {
+          sendJson(res, { redirectUrl: out.redirectUrl, pendingId: out.pendingId });
+          return true;
+        }
+        sendJson(res, { connectorId: out.connectorId, result: out.result });
         return true;
       }
 
@@ -825,6 +537,14 @@ export async function dispatchConnectorsRoute(
 
     return false;
   } catch (err) {
+    // A capability's own refusal is already the final answer: it named the
+    // situation, so translate it and stop. Checked FIRST so its wording is never
+    // re-read as one of the connector-level failure patterns below.
+    const tagged = connectorErrorCode(err);
+    if (tagged) {
+      sendJson(res, { error: (err as Error).message }, STATUS_FOR_CONNECTOR_ERROR[tagged]);
+      return true;
+    }
     // A classified failure answers with its code wherever it surfaced — including from a step
     // AFTER the connect call itself (the initial sync), which otherwise reached the caller as an
     // opaque 500 with no hint that supplying a client id is the fix.

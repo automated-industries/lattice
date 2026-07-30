@@ -51,14 +51,17 @@ afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
   for (const db of dbs.splice(0)) db.close();
   for (const s of stubs.splice(0)) await new Promise((r) => s.close(r));
+  // Both resets BEFORE the environment goes back: a half-finished sign-in is a
+  // file in the config directory now, so clearing one after LATTICE_CONFIG_DIR
+  // has been restored would be reaching into the developer's real store.
+  resetIdentityDiscovery();
+  resetPendingSignIn();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   for (const k of ENV_KEYS) {
     const v = savedEnv[k];
     if (v === undefined) Reflect.deleteProperty(process.env, k);
     else process.env[k] = v;
   }
-  resetIdentityDiscovery();
-  resetPendingSignIn();
 });
 
 function isolateConfig(): string {

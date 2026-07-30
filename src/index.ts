@@ -980,3 +980,214 @@ export type {
   InferredType,
   DetectedView,
 } from './import/types.js';
+
+// The assistant, headless. `runAssistantTurn` runs ONE turn to completion against
+// an open workspace — its tools, its writes, and its answer — with no browser and
+// no server; `streamAssistantTurn` is the same turn with its events as they happen.
+// Every write it makes goes through the audited mutation chokepoint under one
+// operation-group id per tool call, so `undoGroup` reverses it as a single action.
+export {
+  runAssistantTurn,
+  streamAssistantTurn,
+  buildTurnDispatch,
+  assistantTurnError,
+  assistantTurnErrorCode,
+  NO_MODEL_CONNECTED_MESSAGE,
+} from './ops/assistant-turn.js';
+export type {
+  AssistantTurnWorkspace,
+  AssistantTurnInput,
+  AssistantTurnResult,
+  AssistantTurnToolCall,
+  AssistantTurnError,
+  AssistantTurnErrorCode,
+} from './ops/assistant-turn.js';
+
+// Which model answers, headless. Pointing a machine at a model used to be a
+// browser-only step — the FIRST step, and the one a server with no display could
+// not take. These are the machine-local writes behind it: connect or forget an
+// OpenAI-compatible endpoint, activate or drop the hosted account model, choose
+// which configured backend is active, save or clear a speech key, disconnect a
+// subscription, and check that the active backend actually answers. A refusal
+// arrives as an Error carrying a `code` (see `modelErrorCode`) rather than a
+// status, because the same call serves a request, a command, and a library.
+export {
+  readModelStatus,
+  connectModelEndpoint,
+  disconnectModelEndpoint,
+  connectAccountModel,
+  disconnectAccountModel,
+  selectModelProvider,
+  testModelProvider,
+  setAssistantApiKey,
+  clearAssistantApiKey,
+  disconnectClaudeSubscription,
+} from './ops/ai-config.js';
+export type { ModelStatus, ModelEndpointInput, ModelEndpointResult } from './ops/ai-config.js';
+// Connecting a Claude subscription, headless. Only ONE leg of it needs a person
+// and a browser — approving the consent screen on the provider's own page, which
+// they can open on any machine at all. Everything on either side is here: start a
+// connection and get the URL to approve, then finish it with the one-time code
+// that approval produced. The attempt's verifier is kept in the machine-local
+// encrypted store rather than a browser session, so the two legs need not run in
+// the same process.
+export {
+  startSubscriptionSignIn,
+  completeSubscriptionSignIn,
+  pendingSubscriptionSignIn,
+  readPendingSubscription,
+  clearPendingSubscription,
+  PENDING_SUBSCRIPTION_TTL_MS,
+} from './ops/subscription.js';
+export type {
+  StartedSubscriptionSignIn,
+  StartSubscriptionSignInInput,
+  PendingSubscription,
+  PendingSubscriptionSignIn,
+} from './ops/subscription.js';
+export {
+  modelError,
+  modelErrorCode,
+  MANAGED_MODEL_REFUSAL,
+  MANAGED_CREDENTIAL_REFUSAL,
+} from './ops/model-errors.js';
+export type { ModelError, ModelErrorCode } from './ops/model-errors.js';
+// The account, headless. Signing in looks like the one step that could never
+// leave a browser — and only ONE leg of it needs one: approving the request on
+// the account service's own page, which a person can open on any machine at all.
+// Everything on either side of that leg is here: start a sign-in and get the URL
+// to approve, finish it with the one-time code that approval produced, sign out
+// (revoking this device's spendable model credential at the service, not just
+// forgetting it locally), pull down the workspaces this account was invited to,
+// and administer a hosted workspace through its manager. A refusal arrives as an
+// Error carrying a `code` (see `accountErrorCode`) rather than a status, because
+// the same call serves a request, a command, and a library.
+export {
+  readAccountStatus,
+  pendingAccountSignIn,
+  startAccountSignIn,
+  completeAccountSignIn,
+  signOutAccount,
+  syncAccountMemberships,
+  listManagedMembers,
+  inviteToManagedWorkspace,
+  revokeManagedMembership,
+  createManagedWorkspace,
+} from './ops/account.js';
+export type {
+  AccountStatus,
+  PendingAccountSignIn,
+  StartedAccountSignIn,
+  StartAccountSignInInput,
+  CompletedAccountSignIn,
+  SyncAccountMembershipsInput,
+  ManagedMember,
+  ManagedMembers,
+  ManagedResult,
+  ModelAccessRevocation,
+  MembershipSyncResult,
+} from './ops/account.js';
+export { accountError, accountErrorCode, NO_WORKSPACE_MANAGER } from './ops/account-errors.js';
+export type { AccountError, AccountErrorCode } from './ops/account-errors.js';
+// A recording becomes text from BYTES, so a folder of voice memos or a job with a
+// call recording reaches the same speech credential the app uses.
+export { transcribeRecording, filenameForMimeType } from './ops/voice.js';
+export type { RecordingInput } from './ops/voice.js';
+// Attaching an external source. Syncing one, refreshing it, and tearing it down
+// were library calls already; CONNECTING one was not, so a machine could keep a
+// database up to date forever and could not add one. These close that: attach an
+// external database, edit its stored credentials, run the whole refresh pass, and
+// finish an MCP authorization. The ONE leg that still needs a person — approving
+// an MCP server's consent page — is not pretended away: `connectSource` hands
+// back the URL to approve and stops, and `completeMcpConnection` takes it from
+// there. A refusal arrives as an Error carrying a `code` (see
+// `connectorErrorCode`) rather than a status, because the same call serves a
+// request, a command, and a library.
+export {
+  connectSource,
+  completeMcpConnection,
+  mcpConnectionLabel,
+  namedMcpServer,
+  migrateLegacyMcpConnection,
+  refreshStaleSources,
+  connectDatabaseSource,
+  reconnectDatabaseSource,
+} from './ops/connect-source.js';
+export type {
+  SourceConnectRequest,
+  SourceConnectResult,
+  SourceConnected,
+  SourceAuthorizationRequired,
+  CompleteMcpConnectionInput,
+  StaleRefreshResult,
+  DatabaseSourceInput,
+  DatabaseSourceReconnectInput,
+  DatabaseSourceConnected,
+} from './ops/connect-source.js';
+export { connectorError, connectorErrorCode } from './ops/connector-errors.js';
+export type { ConnectorError, ConnectorErrorCode } from './ops/connector-errors.js';
+
+// Bringing documents in, headless. Dropping a file into the app was the only
+// door, which made the most scriptable thing this product does unscriptable: a
+// folder of contracts, a nightly export, a pipeline handed a file by something
+// else. These are the same pipeline that door runs — read it, extract it,
+// describe it, import the data inside it, recognise a document already held, and
+// link it to the records it is about — reachable from a path, from bytes the
+// caller already holds, or from text (which may be a web address to read).
+// Registering a folder as a standing source of the workspace, walking it, and
+// forgetting it are here too: the one step that genuinely needs a person is
+// CHOOSING the path, and a caller that already knows the path is not asking.
+// A refusal arrives as an Error carrying a `code` (see `ingestErrorCode`) rather
+// than a status, because the same call serves a request, a command, and a library.
+export {
+  ingestPath,
+  ingestBytes,
+  ingestText,
+  ingestLocalFile,
+  ingestMutationCtx,
+  shouldRetainUploadBlob,
+  mimeFor,
+} from './ops/ingest-file.js';
+export type {
+  IngestContext,
+  PathIngestResult,
+  LocalFileIngestResult,
+  UploadIngestInput,
+  UploadIngestResult,
+} from './ops/ingest-file.js';
+export { ingestTextAsFile, looksLikeUrl } from './ops/ingest-text.js';
+export type { TextIngestDeps } from './ops/ingest-text.js';
+export {
+  addSourceRoot,
+  removeSourceRoot,
+  ingestSourceFolder,
+  listSourceRoots,
+  listSourceFolder,
+  resolveInsideRoots,
+  ingestFolder,
+  shouldPublishIngestProgress,
+} from './ops/source-roots.js';
+export type {
+  SourceRoot,
+  SourceRootDeps,
+  AddSourceRootResult,
+  IngestFolderResult,
+  DirEntry,
+} from './ops/source-roots.js';
+export { ingestError, ingestErrorCode } from './ops/ingest-errors.js';
+export type { IngestError, IngestErrorCode } from './ops/ingest-errors.js';
+
+// Applying a structured import, headless. Reading a spreadsheet / CSV / JSON
+// export / document-with-tables into records, and turning those records into
+// tables, rows, and relationships — including the no-overwrite guarantee that
+// files a dateless import under today's date, so re-running it next month
+// appends a snapshot instead of clobbering the last one.
+export { readImportSource, applyImport, existingDataTables } from './ops/import-apply.js';
+export { countMarginalLinks, publishMarginalLinksNote } from './ops/import-apply.js';
+export type {
+  ImportSource,
+  ImportApplyDeps,
+  ImportApplyOptions,
+  ImportApplyEvent,
+  ComputedSelection,
+} from './ops/import-apply.js';

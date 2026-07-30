@@ -25,12 +25,10 @@
  * The invite token rides out as one of those lines, which is how it reaches
  * stdout exactly once.
  */
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import type { Lattice } from './lattice.js';
 import { openConfiguredLattice } from './cli-open.js';
-import { ensureRootAt, resolveSessionRoot, rootConfigDir } from './framework/lattice-root.js';
-import { getActiveWorkspace, resolveWorkspacePaths } from './framework/workspace.js';
+import { ensureRootAt, resolveSessionRoot } from './framework/lattice-root.js';
+import { resolveWorkspaceTarget } from './cli-target.js';
 import { NATIVE_ENTITY_NAMES } from './framework/native-entities.js';
 import { normalizeLabel } from './framework/db-pointer.js';
 import { readIdentity } from './framework/user-config.js';
@@ -193,40 +191,15 @@ export interface CloudTargetInput {
 /**
  * Decide which workspace a cloud command is about.
  *
- * A cloud command is far more likely to be typed from an arbitrary directory
- * than a `render` is — you administer a cloud from wherever you happen to be —
- * so an explicit `--config` wins, a config file sitting in the current directory
- * is used next, and otherwise the command falls back to the ACTIVE workspace in
- * the root. Nothing here creates a root or a workspace: a read-only diagnosis
- * must not leave anything behind on a machine that had none.
+ * The resolution is shared with every other command that takes `--config` (see
+ * {@link resolveWorkspaceTarget}); a cloud command has no rendered tree to open,
+ * so it keeps only the two fields it uses.
  *
  * @throws when the named config does not exist, or when nothing resolves.
  */
 export function resolveCloudTarget(input: CloudTargetInput): CloudTarget {
-  const named = resolve(input.config);
-  const session = resolveSessionRoot({ explicitRoot: input.root });
-  const root = existsSync(rootConfigDir(session.root)) ? session.root : null;
-
-  if (input.explicitConfig) {
-    if (!existsSync(named)) throw new Error(`No config file at ${named}.`);
-    return { configPath: named, latticeRoot: root };
-  }
-  if (existsSync(named)) return { configPath: named, latticeRoot: root };
-
-  if (root === null) {
-    throw new Error(
-      `No workspace to operate on: there is no config at ${named} and no .lattice root ` +
-        `at ${session.root}. Pass --config <path>, or run \`lattice init\` first.`,
-    );
-  }
-  const active = getActiveWorkspace(root);
-  if (!active) {
-    throw new Error(
-      `No active workspace in ${root}. Run \`lattice workspace use <name>\` to pick one, ` +
-        `or pass --config <path>.`,
-    );
-  }
-  return { configPath: resolveWorkspacePaths(root, active).configPath, latticeRoot: root };
+  const target = resolveWorkspaceTarget(input);
+  return { configPath: target.configPath, latticeRoot: target.latticeRoot };
 }
 
 /**

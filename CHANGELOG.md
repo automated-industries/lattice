@@ -10,6 +10,217 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Bringing documents in without a browser: `lattice ingest` and `lattice import`.**
+  Dropping a file into the app was the only door, which made the most scriptable thing
+  this product does unscriptable. A folder of contracts, a nightly export, a workspace
+  prepared the same way twice, a pipeline handed a file by something else — every one of
+  them had to drive a browser or do without.
+
+  `lattice ingest <file>` reads one document where it sits. `lattice ingest <folder>`
+  registers the folder as a source of the workspace and walks it, which is exactly what
+  adding a folder in the app does — so the app shows the folder a script added, and
+  re-running the command brings in whatever appeared since (`--once` walks without
+  registering). `lattice ingest <url>` reads a web page through the same address-safety,
+  policy, and rate-limit path the app uses. `lattice ingest --stdin --title <name>` keeps
+  piped text as a document. `lattice ingest sources` lists what is registered and
+  `lattice ingest forget <id>` stops watching one, keeping every document already in.
+
+  `lattice import <file>` turns a spreadsheet, CSV, JSON export, or a document with tables
+  in it into real tables, rows, and relationships — the same apply the confirm in the app
+  runs, including the no-overwrite guarantee: an import carrying no date of its own is
+  filed under today's, so running it again next month appends a snapshot instead of
+  clobbering the last one. `--dry-run` reports what a file would create and writes nothing,
+  which is how you point a job at an unfamiliar source safely. A large multi-sheet workbook
+  is still imported sheet by sheet, and still says how many landed.
+
+  All of it is on the package surface: `ingestPath`, `ingestBytes` (for a caller that holds
+  the bytes and never touches a disk), `ingestText`, `addSourceRoot`, `ingestSourceFolder`,
+  `listSourceRoots`, `removeSourceRoot`, `readImportSource`, and `applyImport`. Refusals
+  arrive as an `Error` carrying a `code` (`ingestErrorCode`) — `not_found`, `too_large`,
+  `outside_roots`, `source_unreachable`, `invalid_request` — rather than a status, because
+  the same call now serves a request, a command, and a library. The one thing that stays
+  browser-only is the native file picker: it opens an operating-system dialog and waits for
+  a person, and a caller that already knows the path is not asking.
+
+- **Attaching an external source without a browser: `lattice connector`.** Keeping a
+  connected source up to date was always a library call. ATTACHING one was not — the whole
+  handshake lived inside a request handler — so a machine could sync a database forever and
+  could not add one. That is exactly backwards for the places it matters most: a container
+  image being prepared, a fleet configured the same way twice, a job that has to notice a
+  source went stale.
+
+  `lattice connector list` shows what is attached and how each is doing, `sync` brings every
+  stale source up to date (or forces one by id, which is how you retry a failed import),
+  `connect-database` attaches a Postgres database and imports its tables, `reconnect-database`
+  fixes a rotated password or a corrected address, and `disconnect` detaches one and tears
+  down what it made. Credentials are given as parts rather than a connection string — a
+  pasted URL invites reusing an owner account wholesale — and `--password-stdin` keeps the
+  password out of your shell history and the process list.
+
+  **The two ways a connect fails are now told apart in the answer, not just in prose.**
+  A setup failure rolls the connection back completely and reports `setup_failed`: nothing
+  was kept and there is nothing to clean up. An import failure KEEPS the connection, in an
+  error state, and reports `import_failed` carrying the `connectorId` it left behind — because
+  the alternative, discarding rows that already imported, is the "data imports and then
+  silently vanishes" failure, and reporting a failure that left something behind without
+  naming it is the quiet half of a loud one.
+
+  Authorizing an MCP server that uses OAuth is deliberately not a command: it ends with a
+  person approving a consent page and a code bound to that browser's session, so there is
+  nothing for a command line to complete. The library does not pretend otherwise —
+  `connectSource` hands back the URL to approve and stops, and `completeMcpConnection`
+  finishes the job once the code comes back from wherever it was approved.
+
+  All of it is on the package surface — `connectSource`, `completeMcpConnection`,
+  `connectDatabaseSource`, `reconnectDatabaseSource`, `refreshStaleSources` — with refusals
+  arriving as an `Error` carrying a `code` (`connectorErrorCode`) rather than a status,
+  because the same call now serves a request, a command, and a library.
+
+### Changed
+
+- **The connectors refresh a page load used to trigger is one call, `refreshStaleSources`.**
+  It was not only a sync: it also repaired connections made before the current per-source
+  table layout, and secured tables a member's session created on a shared database. Both
+  ran only because somebody happened to open the app, so a scheduled refresh silently did
+  less than a page load did. Now the whole pass is a capability the route calls, and the
+  route keeps nothing but the response.
+
+- **Pointing a machine at a model without a browser: `lattice model`.** Saying which
+  model answers was the FIRST thing anyone has to do on a new machine, and the only way
+  to do it was to open the settings screen and click. A server with no display, a
+  container image being prepared, a fleet meant to be configured the same way twice —
+  none of them could take that step at all, which made every other headless surface moot:
+  the assistant was reachable from a script only on a machine somebody had already
+  configured by hand.
+
+  `lattice model status` reports what is connected and what is blocking a turn.
+  `lattice model connect --base-url <url> --model <id>` connects an OpenAI-compatible
+  endpoint, `lattice model account` uses the signed-in account's hosted model,
+  `lattice model use <backend>` picks which configured one answers, `lattice model test`
+  makes it prove it, `lattice model key <openai|elevenlabs>` saves or clears a speech
+  key, and `lattice model disconnect <what>` forgets one. Every value is machine-local
+  and encrypted, the same store the app writes, so a machine configured here and one
+  configured by clicking are indistinguishable afterwards — and every verb works before
+  any workspace exists, which is when you need them. Where a workspace IS given, it is
+  opened properly before any of them reads or tidies it: an earlier build constructed it
+  without opening it, so on a machine that had one, `status`, `test` and `key` all died at
+  their first query — and `key` died having already written the credential, reporting
+  failure for a change that had landed.
+
+  **A connect is verified before it is kept.** The endpoint is asked to answer; one that
+  does not leaves the machine exactly as it was and exits non-zero. Reporting success on
+  an endpoint that never answered would leave a machine configured and broken, with a
+  failing turn as the first symptom. An edit behaves the same way: a bad one puts back the
+  configuration it replaced. Keys can be piped in with `--key-stdin` so a secret never has
+  to sit in a shell history or the process list.
+
+  **Connecting a Claude subscription is here too, and that was not obvious.** It looked
+  like the one backend a browser had to own — but the reason was a cookie, not the flow.
+  The attempt's PKCE verifier was kept in the browser session, so only the process that
+  started the handshake could finish it. It lives in the machine-local encrypted store
+  now, with a twenty-minute life, and the two legs became two ordinary commands:
+  `lattice model subscription` prints a URL to approve, and `lattice model code <code>`
+  finishes it with the code that page shows. The single leg that genuinely needs a person
+  and a browser is the consent screen itself, which is the provider's own page and can be
+  opened on any machine at all. The app's redirect-back path is now a caller of the same
+  exchange rather than a second mechanism, `status` reports an attempt that was started
+  and never finished, and `disconnect subscription` forgets a connected one.
+
+  Underneath, all of it is on the package surface — `readModelStatus`,
+  `connectModelEndpoint`, `selectModelProvider`, `testModelProvider`, `setAssistantApiKey`,
+  `clearAssistantApiKey`, `disconnectClaudeSubscription`, `startSubscriptionSignIn`,
+  `completeSubscriptionSignIn`, and the two account verbs — so a
+  library caller reaches them the same way the command does. A refusal arrives as an Error
+  carrying a `code` (`modelErrorCode`) instead of a status, because the same call has to
+  serve a request, a command line, and a direct caller. A managed deployment refuses
+  per-user configuration in the capability itself, not only in the request handler, so
+  reaching past the browser cannot reach past the policy.
+
+- **Transcribing a recording from bytes.** Speech-to-text ran only on audio a browser tab
+  had just recorded. `transcribeRecording(db, { audio, mimeType })` takes the bytes
+  directly, so a folder of voice memos or a job holding a call recording reaches the same
+  speech credential the app uses, with no upload and no server.
+
+- **Signing a machine in to an account without a browser on it: `lattice account`.**
+  Signing in looked like the one step that could never leave the browser, so all of it
+  lived in request handlers: starting a sign-in, finishing one, signing out, pulling down
+  the workspaces an account was invited to, and running a hosted workspace. A server being
+  prepared over ssh could do none of it, which also meant it could not reach the hosted
+  model that sign-in pays for.
+
+  Only one leg of the handshake actually needs a person and a browser — approving the
+  request — and that page belongs to the account service, not to Lattice. So the flow is
+  start, approve anywhere, paste back: `lattice account signin` prints the link,
+  `lattice account code <code>` finishes it, and the machine is signed in. The two halves
+  are separate runs on purpose, because the machine being signed in is usually not the
+  machine the person is sitting at. `--code-stdin` keeps the code out of the process list
+  and shell history.
+
+  The app's loopback hand-back is unchanged and is now what it always was: a convenience
+  for a machine that has a browser attached, not a second mechanism. Both paths make the
+  same exchange call and write the same encrypted session.
+
+  `lattice account sync` materializes every invited workspace this machine does not hold
+  yet and reports the ones the service says were revoked; a pass that lost a membership
+  exits non-zero carrying the whole report, rather than printing "no new workspaces" over
+  a failure. `lattice account signout` revokes at the service instead of merely forgetting
+  locally — the account's model credential is spendable, and a copy that already left the
+  machine has to stop working — and says so, exiting non-zero, when the service will not
+  confirm it. `status`, `members`, `invite`, `revoke`, and `create-workspace` complete the
+  set, the last four acting on a hosted workspace through its manager.
+
+  **The unfinished handshake now lives on disk, encrypted with the same key as the
+  session.** It has to: the two halves are different processes. It expires on its own, so
+  an abandoned attempt does not leave a usable secret behind — and a sign-in interrupted
+  by a restart is no longer silently thrown away.
+
+  Underneath, all of it is on the package surface — `readAccountStatus`,
+  `startAccountSignIn`, `completeAccountSignIn`, `signOutAccount`,
+  `syncAccountMemberships`, `listManagedMembers`, `inviteToManagedWorkspace`,
+  `revokeManagedMembership`, `createManagedWorkspace` — so a library caller reaches them
+  the same way the command does. A refusal arrives as an Error carrying a `code`
+  (`accountErrorCode`) instead of a status, because the same call has to serve a request,
+  a command line, and a direct caller.
+
+- **Asking the assistant from a terminal: `lattice ask`.** The assistant answered only in
+  the browser. Everything else Lattice does had a way to do it from a script — reading,
+  writing, the schema editor, running a shared workspace — but the one surface that ties
+  them together needed a display, so a scheduled job, a build step, or a machine with no
+  browser could not use it at all. `lattice ask "<prompt>"` runs one full turn against the
+  workspace and prints the answer.
+
+  It is the SAME turn, not a reduced one. The model gets the workspace's real schema, the
+  tools it calls really run, and a change it makes is recorded and reversible exactly like
+  a change made by hand — every write in one tool call shares an operation group, so the
+  whole thing is undone as a single action from the version history. Reference material in
+  the prompt (a pasted document, a link) is saved and linked first, the way it is when you
+  paste it into the app. The refusal that stops a wide permanent removal is unchanged and
+  applies here as it does anywhere: it lives with the tools, not with the browser, and
+  there is no flag that turns it off.
+
+  The answer goes to standard output and nothing else does, so it pipes; which tools ran
+  goes to standard error. `--json` puts the answer plus what the turn did on stdout
+  instead. It uses whatever model is already configured on the machine: a Claude
+  subscription, an OpenAI-compatible endpoint, or a Lattice Cloud account — and a machine
+  with none is told the command that connects each one, rather than being sent to a
+  settings screen it may have no display for.
+
+  **The exit code means "it did the job", not "it produced prose".** A script has one
+  channel for this and normally reads it as `command || alert`, so every way a turn can
+  end without having done what it was asked reaches that number: it errored, it asked a
+  clarifying question instead of acting (nobody is there to answer one), it ran out of
+  tool rounds with work outstanding, its work was refused — including by the gate on wide
+  permanent removals — or it produced no answer at all. The reason is always on standard
+  error too, so a person watching sees which of those it was. `--json` carries the same
+  judgement as `finished`, plus the turn's own `warnings`, so a caller reading the result
+  and a caller reading the exit code cannot disagree.
+
+  Underneath, running a turn is now a capability the package exports (`runAssistantTurn`,
+  or `streamAssistantTurn` for the events as they happen), so a library caller reaches it
+  the same way the command does. The chat request handler keeps only what serving a
+  browser needs — the acknowledgement, the socket, the queue, the stop button, and storing
+  the conversation for a reload.
+
 - **Search can be turned on from the config file.** Full-text and semantic search were
   table settings you could only switch on from code, so anyone running Lattice from a
   config file had them permanently off. Both are now part of the config: `fts:` opts a
@@ -126,6 +337,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   should use, because it survives a rename.
 
 ### Fixed
+
+- **`lattice model` works on a machine that has a workspace.** Every verb that can reach
+  the workspace's secret store — `status`, `test`, `key` — failed there with a message
+  about a database adapter, because the workspace was constructed but never opened. The
+  worst shape was `key`: it saved the credential machine-side first and only then tidied
+  the workspace copy, so it wrote the key, threw, and reported that it had failed. `status`,
+  the one way to check, was broken in the same way. The workspace is now opened before any
+  verb reads it, and closed afterwards rather than left holding the database open.
+
+- **A write from the command line can no longer be reversed by somebody claiming your
+  name.** Undo, redo, and reversing a whole change group are scoped to the session that
+  authored the entries — the gate that stops one person on a shared workspace walking back
+  another's work. A command-line session was spelled out of the identity it was told, which
+  is an environment variable: a second member could set it to a colleague's address and
+  undo their changes, and two machines that had configured no identity at all shared one
+  value with no spoofing required. The session is now derived from a machine-local random
+  secret, so it is still stable across runs — a later command can still undo an earlier
+  one — but it cannot be produced by anything a caller merely asserts about themselves.
+
+- **`lattice ingest` reports a document it could not process, whichever way it arrived.**
+  A row that lands carrying an extraction or enrichment failure is not a success: the
+  document is recorded and everything recording it was for — reading it, describing it,
+  linking it — did not happen. That was reported correctly for a file and not for text on
+  standard input or a web address, so the identical failure exited 1 from one door and 0
+  from another, and a nightly job piping text in reported a clean run every night.
+
+- **A turn that ran out of steps no longer looks finished to a script.** When the
+  assistant hits the limit on tool rounds for one message, it says so on the same stream a
+  browser renders as a warning — and the headless path dropped it. So the person watching
+  in the app saw "the task may be incomplete" and the script that ran the same turn saw an
+  answer and a zero exit. Those warnings now come back with the result (`warnings`), are
+  printed to standard error, and count against the exit code.
 
 - **Search from the command line no longer quietly ignores half of itself.** Because no
   config file could turn embeddings on, `search` fell back to keyword matching alone, and

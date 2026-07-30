@@ -2,16 +2,21 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
 import type { FeedBus } from './feed.js';
 import { sendJson, readJson } from './http.js';
-import { listConnectors, getConnector, createConnector } from '../connectors/registry.js';
+import { listConnectors, getConnector } from '../connectors/registry.js';
 import { syncConnector, syncStaleConnectors } from '../connectors/sync.js';
 import { disconnectConnector } from '../connectors/teardown.js';
-import { enableConnectorRls } from '../connectors/acl.js';
 import { ConnectorUnavailableError } from '../connectors/errors.js';
 import {
   DatabaseConnector,
   describeDbSourceConnection,
 } from '../connectors/db-source/connector.js';
 import { getSchemaDescriptor } from '../connectors/db-source/schema-cache.js';
+import {
+  connectDatabaseSource,
+  reconnectDatabaseSource,
+  type DatabaseSourceConnected,
+} from '../ops/connect-source.js';
+import { connectorErrorCode, type ConnectorError } from '../ops/connector-errors.js';
 
 /**
  * External-database "db-source" routes (`/api/db-sources`) — connect / list /
@@ -38,6 +43,46 @@ export interface DbSourcesRouteDeps {
 }
 
 const ID_RE = /^[a-z0-9-]+$/i;
+
+/**
+ * What a tagged connect-a-database failure means on this transport.
+ *
+ * The capability refuses with a situation rather than a number, because the same
+ * call serves a command line and a library caller that have no statuses at all.
+ * The two 500s are the ones that are genuinely ours: a setup that had to be
+ * rolled back, and an import that failed after rows were already landing.
+ */
+const STATUS_FOR_CONNECTOR_ERROR: Record<string, number> = {
+  invalid_request: 400,
+  unsupported: 400,
+  connector_not_found: 404,
+  source_rejected: 422,
+  source_unavailable: 422,
+  setup_failed: 500,
+  import_failed: 500,
+};
+
+/**
+ * Answer a tagged refusal, or rethrow anything that is not one.
+ *
+ * `connectorId` rides along when the failure LEFT the connection in place — the
+ * import half — because the caller needs its id to retry or remove it. A failure
+ * that kept something and did not say what would be the quiet part of a loud
+ * failure.
+ */
+function sendConnectorError(res: ServerResponse, err: unknown): void {
+  const code = connectorErrorCode(err);
+  if (!code) throw err;
+  const tagged = err as ConnectorError;
+  sendJson(
+    res,
+    {
+      error: tagged.message,
+      ...(tagged.connectorId !== undefined ? { connectorId: tagged.connectorId } : {}),
+    },
+    STATUS_FOR_CONNECTOR_ERROR[code] ?? 500,
+  );
+}
 
 export async function dispatchDbSourcesRoute(
   req: IncomingMessage,
@@ -78,84 +123,29 @@ export async function dispatchDbSourcesRoute(
   }
 
   // Connect a new external database → validate, introspect, register, import.
-  // @headless-debt connecting an external database orchestrates credential storage, model
-  // definition, access control, and a first sync. The pieces exist; the orchestration
-  // lives in this route.
+  // The two failure halves (a rolled-back setup, a kept-but-errored import) are
+  // the capability's to distinguish; this route only turns each into a status.
+  // @capability connector.connect-database
   if (pathname === '/api/db-sources/connect' && method === 'POST') {
     const raw = (await readJson(req).catch(() => ({}))) as Record<string, unknown>;
-    const creds: Record<string, string> = {};
-    for (const f of connector.credentialFields()) {
-      const v = raw[f.key];
-      creds[f.key] = typeof v === 'string' ? v.trim() : '';
-    }
-    const schemaVal = raw.schema;
-    if (typeof schemaVal === 'string' && schemaVal.trim()) creds.schema = schemaVal.trim();
-
-    let connection: { connectionId: string; displayName: string | null };
+    let out: DatabaseSourceConnected;
     try {
-      connection = await connector.connect(creds);
+      out = await connectDatabaseSource(db, {
+        credentials: raw,
+        connectedBy,
+        outputDir,
+        ...(deps.connectorOverride ? { connector: deps.connectorOverride } : {}),
+      });
     } catch (e) {
-      // Bad credentials / unreachable / unsupported dialect / no tables.
-      sendJson(res, { error: (e as Error).message }, 422);
+      sendConnectorError(res, e);
       return true;
     }
-    const toolkit = `db_source:${connection.connectionId}`;
-    // Always a NEW row — multiple databases coexist (never upsert-by-toolkit).
-    const connectorId = await createConnector(db, {
-      connector: 'db_source',
-      toolkit,
-      displayName: connection.displayName ?? 'Database',
-      connectionRef: connection.connectionId,
-      connectedBy,
+    publishImportSummary(deps.feed, out.displayName ?? 'database', out.result.upserted);
+    sendJson(res, {
+      connectorId: out.connectorId,
+      displayName: out.displayName,
+      result: out.result,
     });
-    // Phase 1 — SETUP (pre-persistence): define the tables + RLS. A failure here
-    // means NO rows or connection data ever landed, so roll the whole connection
-    // back (registry row, creds, descriptor) — a failed setup must leave NOTHING
-    // behind (no phantom entry in the Databases list). A rollback failure is
-    // appended to the error rather than swallowed.
-    try {
-      for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-      await enableConnectorRls(db, connector, toolkit);
-    } catch (e) {
-      let rollbackNote = '';
-      try {
-        await disconnectConnector(db, connector, connectorId, { outputDir, mode: 'hard' });
-      } catch (re) {
-        rollbackNote = ` (cleanup also failed: ${(re as Error).message} — remove the connection from Databases manually)`;
-      }
-      sendJson(
-        res,
-        { error: `Connection setup failed: ${(e as Error).message}${rollbackNote}` },
-        isActionable(e) ? 422 : 500,
-      );
-      return true;
-    }
-
-    // Phase 2 — IMPORT (post-persistence): sync the rows. A failure here must NOT
-    // discard rows that already imported, nor the connection itself — that
-    // all-or-nothing rollback is exactly the "data imports then silently vanishes"
-    // bug (a late/derived step throwing after thousands of rows are committed wiped
-    // every one of them). syncConnector's own catch has already stamped the
-    // registry row status='error' + last_error, and GET /api/db-sources returns
-    // every status, so the connection stays visible with its error and the user can
-    // Refresh (retry) or Disconnect. Surface the error loudly (never a silent
-    // reset) and log the raw error server-side first — the registry's last_error
-    // is sanitized, so this is the only full-fidelity trace.
-    try {
-      const result = await syncConnector(db, connector, connectorId);
-      publishImportSummary(deps.feed, connection.displayName ?? 'database', result.upserted);
-      sendJson(res, { connectorId, displayName: connection.displayName, result });
-    } catch (e) {
-      console.error(`[latticesql] db-source import failed for connection ${connectorId}:`, e);
-      sendJson(
-        res,
-        {
-          error: `Import failed: ${(e as Error).message} — the connection is kept with this error; use Refresh to retry.`,
-          connectorId,
-        },
-        isActionable(e) ? 422 : 500,
-      );
-    }
     return true;
   }
 
@@ -212,59 +202,24 @@ export async function dispatchDbSourcesRoute(
     // POST /<id>/reconnect — edit the stored credentials (rotated password,
     // corrected host/port) and re-sync. Reuses the same connection id + table
     // prefix so the imported objects stay put and rows upsert idempotently.
-    // @headless-debt reconnecting an external database re-runs the same orchestration as
-    // connecting one, and is only reachable through this route.
+    // @capability connector.reconnect-database
     if (sub === 'reconnect' && method === 'POST') {
-      if (!rec.connectionRef) {
-        sendJson(res, { error: 'This connection cannot be edited.' }, 400);
-        return true;
-      }
       const raw = (await readJson(req).catch(() => ({}))) as Record<string, unknown>;
-      const creds: Record<string, string> = {};
-      for (const f of connector.credentialFields()) {
-        const v = raw[f.key];
-        creds[f.key] = typeof v === 'string' ? v.trim() : '';
-      }
-      const schemaVal = raw.schema;
-      if (typeof schemaVal === 'string' && schemaVal.trim()) creds.schema = schemaVal.trim();
-
-      let connection: { connectionId: string; displayName: string | null };
+      let out: DatabaseSourceConnected;
       try {
-        connection = await connector.reconnect(rec.connectionRef, creds);
+        out = await reconnectDatabaseSource(db, {
+          connectorId: id,
+          credentials: raw,
+          connectedBy,
+          outputDir,
+          ...(deps.connectorOverride ? { connector: deps.connectorOverride } : {}),
+        });
       } catch (e) {
-        // Bad credentials / unreachable → actionable; surface it, keep the old
-        // connection intact (the stored creds are only overwritten on success).
-        sendJson(res, { error: (e as Error).message }, 422);
+        sendConnectorError(res, e);
         return true;
       }
-      // Register any tables the re-introspection ADDED (existing ones no-op) and
-      // re-apply RLS, mirroring the connect path's setup phase.
-      try {
-        const toolkit = `db_source:${rec.connectionRef}`;
-        for (const m of connector.models(toolkit)) await db.defineLate(m.table, m.definition);
-        await enableConnectorRls(db, connector, toolkit);
-      } catch (e) {
-        sendJson(
-          res,
-          { error: `Reconnect setup failed: ${(e as Error).message}` },
-          isActionable(e) ? 422 : 500,
-        );
-        return true;
-      }
-      // Re-sync under the refreshed credentials. syncConnector's recordSync
-      // stamps status='connected' + clears last_error on success, so a reconnect
-      // that fixes a broken connection also clears its error state.
-      try {
-        const result = await syncConnector(db, connector, id);
-        publishImportSummary(
-          deps.feed,
-          connection.displayName ?? rec.displayName ?? 'database',
-          result.upserted,
-        );
-        sendJson(res, { ok: true, result });
-      } catch (e) {
-        sendJson(res, { error: (e as Error).message }, isActionable(e) ? 422 : 500);
-      }
+      publishImportSummary(deps.feed, out.displayName ?? 'database', out.result.upserted);
+      sendJson(res, { ok: true, result: out.result });
       return true;
     }
 

@@ -100,7 +100,7 @@ const SRC = join(ROOT, 'src');
  * {@link HEADLESS_DEBT} — the actual list of what is missing — and not a count
  * made comfortable by relabelling.
  */
-const DEBT_BUDGET = 43;
+const DEBT_BUDGET = 16;
 
 /**
  * When a human last looked at the budget and agreed with it, and the release it
@@ -122,35 +122,11 @@ const BUDGET_REVIEWED = { date: '2026-07-29', version: '5.7.0' };
  * "no change": both show as diffs, one line removed and one added.
  */
 const HEADLESS_DEBT: string[] = [
-  'src/gui/assistant-routes.ts — DELETE /api/assistant/key',
-  'src/gui/assistant-routes.ts — DELETE /api/assistant/oauth',
-  'src/gui/assistant-routes.ts — DELETE /api/assistant/provider/lattice-cloud',
-  'src/gui/assistant-routes.ts — DELETE /api/assistant/provider/openai-compat',
-  'src/gui/assistant-routes.ts — POST /api/assistant/provider/lattice-cloud',
-  'src/gui/assistant-routes.ts — POST /api/assistant/provider/openai-compat',
-  'src/gui/assistant-routes.ts — POST /api/assistant/test',
-  'src/gui/assistant-routes.ts — POST /api/assistant/transcribe',
-  'src/gui/assistant-routes.ts — PUT /api/assistant/key',
-  'src/gui/assistant-routes.ts — PUT /api/assistant/provider',
-  'src/gui/chat-routes.ts — POST /api/chat',
-  'src/gui/connectors-routes.ts — POST action === (connect)',
   'src/gui/databases-routes.ts — POST /api/databases/create',
   'src/gui/databases-routes.ts — POST /api/databases/delete',
-  'src/gui/db-sources-routes.ts — POST /api/db-sources/connect',
-  'src/gui/db-sources-routes.ts — POST sub === (reconnect)',
   'src/gui/dbconfig/cloud-settings-routes.ts — POST /api/cloud/s3-config',
   'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/rename',
   'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/test',
-  'src/gui/identity/routes.ts — POST /api/identity/signin/complete',
-  'src/gui/identity/routes.ts — POST /api/identity/signin/start',
-  'src/gui/identity/routes.ts — POST /api/identity/signout',
-  'src/gui/identity/routes.ts — POST /api/identity/sync',
-  'src/gui/identity/routes.ts — POST op === (create)',
-  'src/gui/identity/routes.ts — POST op === (invite)',
-  'src/gui/identity/routes.ts — POST op === (revoke)',
-  'src/gui/ingest-routes.ts — POST /api/ingest/text',
-  'src/gui/ingest-routes.ts — POST /api/ingest/upload',
-  'src/gui/ingest-routes.ts — POST INGEST_PATHS',
   'src/gui/question-routes.ts — POST answerMatch',
   'src/gui/question-routes.ts — POST dismissMatch',
   'src/gui/read-routes.ts — POST /api/analytics/sql',
@@ -161,9 +137,6 @@ const HEADLESS_DEBT: string[] = [
   'src/gui/server.ts — POST /api/update/check',
   'src/gui/server.ts — POST /api/workspaces/delete',
   'src/gui/server.ts — PUT /api/gui-meta/*',
-  'src/gui/sources-routes.ts — DELETE delMatch',
-  'src/gui/sources-routes.ts — POST /api/sources/ingest-folder',
-  'src/gui/sources-routes.ts — POST /api/sources/roots',
   'src/gui/workspaces-routes.ts — POST /api/workspaces/delete',
 ];
 
@@ -193,11 +166,11 @@ const NOT_A_ROUTE: string[] = [
  */
 const GUI_ONLY_SNAPSHOT: string[] = [
   'src/gui/assistant-routes.ts — GET /api/assistant/oauth/callback — interactive-consent',
-  'src/gui/assistant-routes.ts — POST /api/assistant/oauth/exchange — interactive-consent',
   'src/gui/chat-routes.ts — POST stopMatch — session-state',
   'src/gui/databases-routes.ts — POST /api/databases/switch — session-state',
   'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/connect — session-state',
   'src/gui/files-routes.ts — POST openMatch — desktop-shell',
+  'src/gui/identity/routes.ts — GET /lattice/device-code — interactive-consent',
   'src/gui/sources-routes.ts — POST /api/sources/pick — local-file-picker',
   'src/gui/workspaces-routes.ts — POST /api/workspaces/reload — session-state',
 ];
@@ -312,6 +285,9 @@ const WRITE_HELPERS = [
   'syncStaleConnectors',
   'disconnectConnector',
   'setAssistantCredential',
+  'completeAccountSignIn',
+  'startSubscriptionSignIn',
+  'completeSubscriptionSignIn',
   'ingestTextAsFile',
   'recordSchemaAudit',
   'upsertColumnMeta',

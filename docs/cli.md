@@ -16,6 +16,12 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice gui`](#lattice-gui)
     - [Which root gets opened](#which-root-gets-opened)
     - [Serving on a network](#serving-on-a-network---host----allow-remote)
+  - [`lattice ask`](#lattice-ask)
+  - [`lattice model`](#lattice-model)
+  - [`lattice account`](#lattice-account)
+  - [`lattice connector`](#lattice-connector)
+  - [`lattice ingest`](#lattice-ingest)
+  - [`lattice import`](#lattice-import)
 - [Cloud](#cloud)
   - [`lattice cloud`](#lattice-cloud)
   - [From the library](#from-the-library)
@@ -393,6 +399,393 @@ These tables are filtered out of `/api/entities`, the dashboard, and rendered
 context output. They are not part of your declared schema and do not affect any
 `Lattice` API calls. No fictional / demo rows are ever inserted — the GUI only
 shows the data already in your database.
+
+---
+
+### `lattice ask`
+
+Ask the assistant one question and print the answer. No browser, no server, no
+port.
+
+```sh
+lattice ask "<prompt>" [options]
+```
+
+| Option           | Default              | Description                                     |
+| ---------------- | -------------------- | ----------------------------------------------- |
+| `--config`, `-c` | the active workspace | The workspace to ask about                      |
+| `--root`         | `~/.lattice`         | The root holding that workspace                 |
+| `--json`         | `false`              | Emit the answer plus what the turn did, as JSON |
+
+This is the same assistant `lattice gui` runs, over the same tools and the same
+workspace. It answers, and it acts: a change it makes is recorded in the version
+history and reversible exactly like a change made by hand, and every write in one
+tool call shares an operation group, so the whole thing is undone as a single
+action. The refusal that stops a wide permanent removal applies here too — it
+belongs to the tools, not to the browser.
+
+**Output goes to two places on purpose.** The answer goes to standard output and
+nothing else does, so the command pipes. Which tools ran goes to standard error,
+so watching a turn work costs a pipeline nothing.
+
+```sh
+lattice ask "which invoices are unpaid?" > answer.txt   # the answer alone
+lattice ask "add a note about the Acme renewal"         # it acts, reversibly
+lattice ask "how many customers?" --json | jq .answer   # structured
+```
+
+**It exits non-zero unless it did the job.** That is stricter than "did it
+produce prose", deliberately: a script has one channel for this and normally
+reads it as `command || alert`, so every way a turn can end without having done
+what it was asked exits `1`:
+
+- the turn failed, or the machine has no model connected (that one names the
+  command that connects each kind);
+- it asked a clarifying question instead of acting. There is nobody to answer
+  one, so the question is printed — it is the useful part — and the job is not
+  done;
+- it ran out of tool rounds with work outstanding. This is what the app shows as
+  "the task may be incomplete"; it comes back in `warnings` and goes to standard
+  error;
+- something it was asked to do did not happen — a failed call, a change refused
+  by the guard on wide permanent removals, or work that was half-applied. The
+  turn's outcome notice says what, in plain terms;
+- there was no answer at all.
+
+The reason is always on standard error as well, so a person watching sees which
+of those it was. With `--json`, the same judgement comes back as `finished`, so a
+caller reading the result and a caller reading the exit code cannot disagree.
+
+**The model is whatever this machine already has.** A connected Claude
+subscription, an OpenAI-compatible endpoint, or a Lattice Cloud account — the
+same choice the app uses, stored on the machine. Nothing is asked interactively:
+a command that stopped to prompt would hang a scheduled job.
+
+**From the library.** The same turn is one call — `runAssistantTurn(workspace,
+{ message })` for the finished result, or `streamAssistantTurn` for its events as
+they happen.
+
+---
+
+### `lattice model`
+
+Say which model this machine uses. No browser, no settings screen.
+
+```sh
+lattice model <verb> [options]
+```
+
+| Verb                                           | What it does                                             |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `status`                                       | What is connected, and what is blocking a turn           |
+| `connect`                                      | Connect an OpenAI-compatible endpoint                    |
+| `subscription`                                 | Start connecting a Claude subscription                   |
+| `code <code>`                                  | Finish connecting one, with the code you were shown      |
+| `account`                                      | Use the signed-in Lattice Cloud account for model access |
+| `use <anthropic\|openai_compat>`               | Pick which configured backend answers                    |
+| `test`                                         | Ask the active backend to answer once                    |
+| `key <openai\|elevenlabs>`                     | Save a speech key (`--revoke` clears it)                 |
+| `disconnect <endpoint\|account\|subscription>` | Forget one backend                                       |
+
+| Option        | Description                                                   |
+| ------------- | ------------------------------------------------------------- |
+| `--base-url`  | The endpoint to connect (`connect`)                           |
+| `--model`     | The model id that endpoint should be asked for                |
+| `--key-stdin` | Read the API key — or the one-time code — from standard input |
+| `--token`     | The API key inline, when that exposure is acceptable          |
+| `--revoke`    | With `key`, clear the named credential instead of setting     |
+| `--json`      | Machine-readable output (`status`, `subscription`)            |
+
+**Which model answers is a property of the MACHINE**, stored encrypted, not of a
+workspace — so every verb works before any workspace exists, which is exactly
+when you need them. A machine configured here and one configured by clicking are
+indistinguishable afterwards.
+
+```sh
+lattice model connect --base-url https://api.example.com --model gpt-4o --key-stdin < key.txt
+lattice model status --json | jq .connected
+lattice model use anthropic
+```
+
+**A connect is always verified before it is kept.** The endpoint is asked to
+answer, and a `connect` that fails changes nothing and exits non-zero — a command
+that reported success on an endpoint that never answered would leave the machine
+configured and broken, and the next thing to notice would be a failing turn. The
+same is true of an edit: a bad one puts back the configuration it replaced.
+
+**Pipe secrets, do not type them.** `--key-stdin` reads the key from standard
+input, so it stays out of your shell history and out of the process list, where
+anyone else on the machine can read it. `--token` is there for the cases where
+that exposure is acceptable.
+
+**A Claude subscription connects in two commands.** Only one leg of that flow
+needs a person and a browser — approving the consent screen — and that page is
+the provider's, so it can be opened on any machine at all. Everything on either
+side of it is a command:
+
+```sh
+lattice model subscription        # prints a URL to approve
+# …approve it in any browser; the page shows a one-time code…
+lattice model code <code>         # this machine is connected
+```
+
+The two halves are separate runs on purpose: a server being prepared over ssh has
+no browser to hand the code back through, and the person approving may not even
+be at that machine. The unfinished attempt is kept, encrypted, for twenty minutes,
+and `status` reports one that was started and never finished. `--key-stdin` reads
+the code from standard input, and `disconnect subscription` forgets a connected
+one.
+
+**From the library.** Every verb is one call: `readModelStatus(db)`,
+`connectModelEndpoint(db, { baseUrl, model, apiKey, test })`,
+`selectModelProvider(kind)`, `setAssistantApiKey(db, name, key)`,
+`startSubscriptionSignIn()`, `completeSubscriptionSignIn(code)`,
+`disconnectClaudeSubscription()`. A refusal arrives as an `Error` carrying a
+`code` — read it with `modelErrorCode(e)` — rather than a status, because the same
+call serves a request, a command, and a library. Speech is the same shape:
+`transcribeRecording(db, { audio, mimeType })` takes bytes, so a folder of
+recordings reaches the credential this machine already has.
+
+---
+
+### `lattice account`
+
+Sign this machine in to an account — from a terminal, over ssh, on a machine with
+no browser at all.
+
+```sh
+lattice account <verb> [options]
+```
+
+| Verb                       | What it does                                            |
+| -------------------------- | ------------------------------------------------------- |
+| `status`                   | Signed in or not, as whom, and whether a service exists |
+| `signin`                   | Start a sign-in and print the link to approve           |
+| `code <code>`              | Finish it with the code the approval page showed        |
+| `signout`                  | Sign out and revoke this device at the service          |
+| `sync`                     | Pull down workspaces this account was invited to        |
+| `members`                  | Who is on this hosted workspace                         |
+| `invite --email <address>` | Invite somebody to it                                   |
+| `revoke <membership-id>`   | Remove somebody from it                                 |
+| `create-workspace --name`  | Create another hosted workspace                         |
+
+| Option         | Description                                                     |
+| -------------- | --------------------------------------------------------------- |
+| `--code-stdin` | Read the one-time code from standard input                      |
+| `--root`       | The root that `sync` registers arriving workspaces in           |
+| `--json`       | Machine-readable output (`status`, `signin`, `sync`, `members`) |
+
+**A sign-in needs a person, not a browser on this machine.** The approval happens
+on the account service's own page, which the person can open anywhere — their
+laptop, their phone — and everything on either side of it is an ordinary command:
+
+```sh
+lattice account signin            # prints a link to approve
+#  …approve it in any browser; the page shows a one-time code…
+lattice account code AB12-CD34    # this machine is now signed in
+lattice account sync              # its invited workspaces arrive
+```
+
+The two halves are separate runs on purpose: the machine being signed in is often
+not the machine the person is sitting at, and there may be minutes between them.
+The half-finished handshake is kept encrypted on the machine and expires by
+itself, so an abandoned attempt does not leave a usable secret lying around.
+
+**Pipe the code, do not type it.** `--code-stdin` keeps it out of your shell
+history and out of the process list, the same reason the model and cloud verbs
+read a key or a connection string that way.
+
+**Signing out revokes, it does not just forget.** The account's model credential
+is spendable and was minted from this session, so signing out asks the service to
+kill it — a copy that already left the machine has to stop working too. If the
+service does not confirm that, the command says so and exits non-zero rather than
+reporting a revocation that did not happen.
+
+**The last four verbs are for a HOSTED workspace**, where a deployment's own
+workspace manager owns membership; they say plainly when a session has none. A
+self-hosted shared database uses [`lattice cloud`](#lattice-cloud) instead, where
+permission is the Postgres role you connect as.
+
+**From the library.** Every verb is one call: `readAccountStatus()`,
+`startAccountSignIn()`, `completeAccountSignIn(code)`, `signOutAccount()`,
+`syncAccountMemberships({ latticeRoot })`, `listManagedMembers()`,
+`inviteToManagedWorkspace(email)`, `revokeManagedMembership(id)`,
+`createManagedWorkspace(name)`. A refusal arrives as an `Error` carrying a `code`
+— read it with `accountErrorCode(e)` — rather than a status, because the same call
+serves a request, a command, and a library.
+
+---
+
+### `lattice connector`
+
+Attach and tend external sources — an imported Postgres database, an MCP server —
+from a terminal, a container build, or a scheduled job.
+
+```sh
+lattice connector <verb> [options]
+```
+
+| Verb                      | What it does                                              |
+| ------------------------- | --------------------------------------------------------- |
+| `list`                    | What is attached, and how each one is doing               |
+| `sync`                    | Bring every stale source up to date                       |
+| `sync <id>`               | Force one, stale or not — this is how you retry           |
+| `connect-database`        | Attach a Postgres database and import its tables          |
+| `reconnect-database <id>` | Fix a rotated password or a corrected address, and resync |
+| `disconnect <id>`         | Detach a source and tear down what it created             |
+
+| Option             | Description                                             |
+| ------------------ | ------------------------------------------------------- |
+| `--db-host`        | Database host (name only — not a connection string)     |
+| `--db-port`        | Database port (default `5432`)                          |
+| `--db-name`        | Database name                                           |
+| `--db-user`        | Database user — ideally a read-only one                 |
+| `--db-schema`      | Schema to import (default `public`)                     |
+| `--password-stdin` | Read the database password from standard input          |
+| `--config`, `-c`   | Workspace to operate on (default: the active workspace) |
+| `--root`           | The root holding that workspace                         |
+| `--json`           | Machine-readable output (`list`, `sync`)                |
+
+**Keeping a source fresh was always scriptable; attaching one is what this adds.**
+Before it, a machine could sync a database forever and could not add one — exactly
+backwards for an image being prepared or a fleet configured the same way twice.
+
+```sh
+lattice connector connect-database \
+  --db-host db.example.com --db-name shop --db-user reader --password-stdin < pw.txt
+lattice connector list
+lattice connector sync            # every stale source
+```
+
+**The credentials are entered as parts, not as a URL.** A pasted connection string
+invites reusing an owner account wholesale; a data source wants a read-only user
+chosen on purpose. **Pipe the password** — an argument is readable from the
+process list by anyone on the machine and is kept in your shell history.
+
+**Authorizing an MCP server that uses OAuth is not a verb here**, because it ends
+with a person approving a consent page and a code bound to that browser's session;
+there is nothing for a command to complete. The library call says so plainly
+rather than pretending otherwise (below).
+
+**From the library.** `connectSource(db, connector, toolkit, connectedBy, request)`
+performs the whole connect and returns either the finished connection or — for a
+server that needs approval — the URL to approve, which
+`completeMcpConnection(db, connector, input)` then finishes.
+`connectDatabaseSource(db, input)` and `reconnectDatabaseSource(db, input)` attach
+and re-point an external database; `refreshStaleSources(db, connectors, connectedBy)`
+runs the whole refresh pass. A refusal arrives as an `Error` carrying a `code` —
+read it with `connectorErrorCode(e)` — rather than a status. The two codes worth
+branching on are `setup_failed`, which means the connection was rolled back and
+nothing was kept, and `import_failed`, which means the connection **was** kept in
+an error state and carries its `connectorId` so you can retry or remove it.
+
+---
+
+### `lattice ingest`
+
+Bring a document into the workspace — from a path, a folder, a web address, or
+text on standard input.
+
+```sh
+lattice ingest <path|folder|url> [options]
+lattice ingest --stdin [--title <name>]
+```
+
+| Form                     | What it does                                              |
+| ------------------------ | --------------------------------------------------------- |
+| `ingest <file>`          | One document, read where it sits (no copy is made)        |
+| `ingest <folder>`        | Register the folder as a source of the workspace, walk it |
+| `ingest <folder> --once` | Walk it without registering it                            |
+| `ingest <url>`           | Read a web page and keep what it says                     |
+| `ingest --stdin`         | Keep text piped in as a document                          |
+| `ingest sources`         | The folders and files registered as sources here          |
+| `ingest forget <id>`     | Stop watching one — documents already in are kept         |
+
+| Option           | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `--once`         | Walk a folder without registering it as a standing source  |
+| `--private`      | Keep the document, and everything derived from it, private |
+| `--title <name>` | What a `--stdin` document is filed under                   |
+| `--config`, `-c` | Workspace to ingest into (default: the active workspace)   |
+| `--root`         | The root holding that workspace                            |
+| `--json`         | Machine-readable result instead of the summary line        |
+
+**This is the same pipeline a drop into the app runs** — read it, extract its
+text, describe it, import the data inside it, recognise a document already held,
+and link what it is about to the records it belongs with. Nothing here is a
+reduced version of the drop.
+
+```sh
+lattice ingest ./contracts              # register the folder, then walk it
+lattice ingest ./contracts              # again next month: picks up what changed
+lattice ingest https://example.com/spec
+pbpaste | lattice ingest --stdin --title "Kickoff notes"
+```
+
+**A folder becomes a standing source by default**, which is what adding a folder
+in the app does — so the app shows the folder a script added, and re-running the
+command brings in what has appeared since. `--once` is for a directory that is
+not a standing source.
+
+The walk is **bounded** in every direction: eight levels deep, 5000 files
+collected, 500 brought in per run, four at a time, skipping `.git`,
+`node_modules`, and the rest. When a run stops at a cap it says so — a folder
+that was only half read never reports as if it were finished.
+
+**From the library.** `ingestPath(ctx, mctx, path)` ingests one named file;
+`ingestBytes(ctx, mctx, input)` does the same from bytes you already hold, with no
+filesystem at all; `ingestText(ctx, mctx, text)` keeps a block of text, reading
+the page at the other end when the text is a web address. `addSourceRoot`,
+`ingestSourceFolder`, `listSourceRoots`, and `removeSourceRoot` are the registry.
+A refusal arrives as an `Error` carrying a `code` — read it with
+`ingestErrorCode(e)` — rather than a status: `not_found`, `too_large`,
+`outside_roots`, `source_unreachable`, `invalid_request`.
+
+---
+
+### `lattice import`
+
+Turn a spreadsheet, a CSV, a JSON export, or a document with tables in it into
+real tables, rows, and relationships.
+
+```sh
+lattice import <file> [options]
+```
+
+| Option               | Description                                                |
+| -------------------- | ---------------------------------------------------------- |
+| `--sheet <name>`     | One sheet of a multi-sheet workbook                        |
+| `--as-of <date>`     | File-level date (`YYYY-MM-DD`) for the whole import        |
+| `--as-of-column <c>` | The column the source dates each row by                    |
+| `--mode <m>`         | `schema`, `contents`, or `both` (default)                  |
+| `--dry-run`          | Report what it would create; write nothing                 |
+| `--yes`, `-y`        | Proceed past the safe table cap, having reviewed the scope |
+| `--config`, `-c`     | Workspace to import into (default: the active workspace)   |
+| `--json`             | Machine-readable result instead of the summary line        |
+
+**Re-importing never overwrites.** An import that carries no date of its own is
+filed under today's, which makes it a dated snapshot — so running the same
+command next month appends a snapshot beside the last one rather than clobbering
+it. A same-day re-run of identical data is idempotent. A source that dates itself
+(`--as-of`, or a per-row `--as-of-column`) keeps its own dating.
+
+```sh
+lattice import ./exports/2026-07.xlsx --dry-run   # what would this create?
+lattice import ./exports/2026-07.xlsx
+lattice import ./big-book.xlsx --sheet "Q3"
+```
+
+A **large multi-sheet workbook is not refused** — it is imported sheet by sheet,
+each its own unit under the table cap, and the result says how many sheets landed
+and names any that could not. A sheet that fails does not sink the ones that
+worked.
+
+**From the library.** `readImportSource(path, name, sheet?)` reads a file into
+records; `applyImport(deps, source, options, onProgress?)` runs the whole apply —
+inference, match-to-existing, per-sheet split, snapshot dating, computed opt-ins,
+and the report of low-confidence links it deliberately left unconnected.
+`materializeImport` remains available for a caller that has already inferred a
+plan and wants only the write.
 
 ---
 

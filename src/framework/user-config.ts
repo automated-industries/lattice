@@ -354,6 +354,45 @@ export function getOrCreateAnalyticsId(): string {
   });
 }
 
+const SESSION_SECRET_FILENAME = 'session.key';
+
+/**
+ * A machine-local RANDOM secret used to derive the session identity a
+ * command-line run's writes are attributed to.
+ *
+ * It has to be a secret rather than a name, because that session identity is the
+ * authorship gate on reversing a change: undo, redo, and group-revert only touch
+ * entries carrying the caller's own session. Deriving that from anything the
+ * caller merely ASSERTS — an email in a config file, a display name, an
+ * environment variable — means a second person on the same shared workspace can
+ * assert somebody else's and reverse their work. This is 32 random bytes,
+ * readable only by its owner, so the derived identity cannot be guessed or
+ * spoofed by anyone who is not already this user on this machine.
+ *
+ * Generated once and reused forever: STABLE is the other half of the
+ * requirement, since every command is a fresh process and one run has to be able
+ * to undo what the previous one did.
+ */
+export function getOrCreateSessionSecret(): string {
+  const dir = ensureConfigDir();
+  const keyPath = join(dir, SESSION_SECRET_FILENAME);
+  if (existsSync(keyPath)) {
+    const v = readFileSync(keyPath, 'utf8').trim();
+    if (v) return v;
+  }
+  // Created under the cross-process lock with a re-check, so two fresh processes
+  // don't write divergent secrets (mirrors getOrCreateMasterKey).
+  return withCredentialLock(() => {
+    if (existsSync(keyPath)) {
+      const v = readFileSync(keyPath, 'utf8').trim();
+      if (v) return v;
+    }
+    const secret = randomBytes(32).toString('base64');
+    writeFileAtomic(keyPath, secret);
+    return secret;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Identity — `~/.lattice/identity.json` { display_name, email }
 // ---------------------------------------------------------------------------
