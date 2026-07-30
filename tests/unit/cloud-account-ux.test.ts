@@ -86,13 +86,23 @@ describe('the default model id is defined in exactly one place', () => {
   const read = (rel: string): string => readFileSync(join(HERE, '../../', rel), 'utf8');
   // The model id each of these files declares for itself (null when it declares
   // none — which is the end state for everything but the first entry).
+  // Matches the declaration in either shape: a bare literal, or an environment
+  // override falling back to one (`process.env.X ?? 'id'`). Both are a single
+  // definition site; what this guards against is a SECOND file declaring its own.
+  const DECLARES_MODEL = /export const DEFAULT_MODEL =[^;]*?'([^']+)'/;
   const definitions = (['src/ai/llm-client.ts', 'src/gui/ai/chat.ts'] as const).map((rel) => ({
     rel,
-    literal: /export const DEFAULT_MODEL = '([^']+)'/.exec(read(rel))?.[1] ?? null,
+    literal: DECLARES_MODEL.exec(read(rel))?.[1] ?? null,
   }));
 
   it('is exported from the shared model-client module', () => {
-    expect(definitions[0]?.literal).toBe(DEFAULT_MODEL);
+    // The module resolves an environment override first, so compare against
+    // whichever source actually applies in this process — otherwise a runner
+    // that happens to set the override would fail a guard about drift.
+    const override = process.env.LATTICE_DEFAULT_MODEL;
+    expect(DEFAULT_MODEL).toBe(
+      override && override.length > 0 ? override : definitions[0]?.literal,
+    );
     expect(DEFAULT_MODEL.length).toBeGreaterThan(0);
   });
 
