@@ -88,6 +88,7 @@ export async function dispatchQuestionRoute(
   }
 
   const answerMatch = ANSWER_RE.exec(pathname);
+  // @headless-debt answering a pending clarifying question is only reachable here.
   if (method === 'POST' && answerMatch) {
     const id = decodeURIComponent(answerMatch[1] ?? '');
     let body: Record<string, unknown>;
@@ -115,6 +116,7 @@ export async function dispatchQuestionRoute(
   }
 
   const dismissMatch = DISMISS_RE.exec(pathname);
+  // @headless-debt dismissing a pending clarifying question is only reachable here.
   if (method === 'POST' && dismissMatch) {
     const id = decodeURIComponent(dismissMatch[1] ?? '');
     try {

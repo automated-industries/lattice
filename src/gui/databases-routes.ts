@@ -58,6 +58,8 @@ export async function handleDatabasesRoutes(
     });
     return true;
   }
+  // @gui-only session-state: swaps which sibling database this server process has open.
+  // Same reasoning as switching a workspace — a direct caller opens the config it wants.
   if (method === 'POST' && pathname === '/api/databases/switch') {
     const body = (await readJson<unknown>(req)) as { path?: unknown };
     if (typeof body.path !== 'string') {
@@ -93,6 +95,8 @@ export async function handleDatabasesRoutes(
     sendJson(res, { ok: true, path: next.configPath });
     return true;
   }
+  // @headless-debt creating a sibling database scaffolds a blank config next to the current
+  // one; that scaffolding lives in this route rather than on the library surface.
   if (method === 'POST' && pathname === '/api/databases/create') {
     const body = (await readJson<unknown>(req)) as { name?: unknown };
     if (typeof body.name !== 'string' || !body.name.trim()) {
@@ -110,6 +114,8 @@ export async function handleDatabasesRoutes(
     sendJson(res, { ok: true, path: next.configPath });
     return true;
   }
+  // @headless-debt deleting a sibling database removes its config and data files; that
+  // cleanup lives in this route rather than on the library surface.
   if (method === 'POST' && pathname === '/api/databases/delete') {
     const body = (await readJson<unknown>(req)) as { path?: unknown };
     if (typeof body.path !== 'string' || !body.path.trim()) {

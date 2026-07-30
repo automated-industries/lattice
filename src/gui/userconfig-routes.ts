@@ -104,6 +104,7 @@ export async function dispatchUserConfigRoute(
     return true;
   }
 
+  // @capability user.identity
   if (pathname === '/api/userconfig/identity' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -134,6 +135,7 @@ export async function dispatchUserConfigRoute(
     return true;
   }
 
+  // @capability user.preferences
   if (pathname === '/api/userconfig/preferences' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);

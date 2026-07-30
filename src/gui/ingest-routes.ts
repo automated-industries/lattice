@@ -18,7 +18,8 @@ import { resolveActiveS3Config } from '../framework/s3-config.js';
 import { createHash } from 'node:crypto';
 import { resolveVisionAuth } from './ai/provider.js';
 import { type ClassifyMatch } from './ai/summarize.js';
-import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
+import { sendJson, readJson } from './http.js';
+import { MAX_INGEST_BYTES } from '../ops/paging.js';
 // LLM enrichment (description + auto-link + object extraction) is a shared leaf
 // module so both the ingest routes and the assistant's URL-ingest tool reuse it.
 import { enrichWithLlm, type DroppedExtraction } from './ai/enrich.js';
@@ -526,88 +527,11 @@ export async function ingestLocalFile(
   }
 }
 
-/** Enrichment wiring for {@link ingestTextAsFile} (mirrors the ingest routes' ctx). */
-export interface TextIngestDeps {
-  db: Lattice;
-  mctx: MutationCtx;
-  /** Existing files↔entity junctions, so enrich reuses them instead of re-creating. */
-  fileJunctions: FileJunction[];
-  /** Per-entity descriptions to sharpen link classification. */
-  entityDescriptions: Record<string, string>;
-  /** Inference aggressiveness (link/extract gating). Omit → the ingest default. */
-  aggressiveness?: number;
-  /** Create a new user entity (extract → new object). Omit → no entity creation. */
-  createEntity?: (entity: string, columns: string[]) => Promise<string | null>;
-  /** Create/return the files↔<otherTable> junction for auto-linking. */
-  createJunction?: (otherTable: string) => Promise<FileJunction | null>;
-  /** Create/return a junction between two USER entities, to cross-link co-extracted objects. */
-  createObjectJunction?: (
-    tableA: string,
-    tableB: string,
-  ) => Promise<{
-    junction: string;
-    tableA: string;
-    aFk: string;
-    tableB: string;
-    bFk: string;
-  } | null>;
-  /** Force every derived write private (matches a private source). */
-  privateMode?: boolean;
-}
-
-/**
- * Ingest a block of TEXT exactly the way a dropped file is ingested: save it as a
- * `files` row, then run the SHARED enrichment engine ({@link enrichWithLlm}) over it —
- * which links it to the existing records it refers to and extracts + links the objects
- * it is about. This is the single entry point that BOTH the `/api/ingest/text` route
- * and the chat assistant's `ingest_text` tool go through, so pasted chat content is
- * enriched/linked identically to a file — no separate, prompt-driven linking logic.
- */
-export async function ingestTextAsFile(
-  deps: TextIngestDeps,
-  text: string,
-  title: string,
-): Promise<{ id: string; suggestedLinks: ClassifyMatch[]; dropped: DroppedExtraction[] }> {
-  const { db, mctx } = deps;
-  const mime = 'text/plain';
-  const fileId = crypto.randomUUID();
-  const row: Record<string, unknown> = {
-    id: fileId,
-    ...fileIdentity(title, fileId),
-    original_name: title,
-    mime,
-    size_bytes: Buffer.byteLength(text, 'utf8'),
-    extracted_text: text.slice(0, 200_000),
-    description: describe(text, mime, title),
-    extraction_status: 'extracted',
-  };
-  const { id } = await createRow(
-    mctx,
-    'files',
-    { ...(await requiredFileDefaults(db, title, fileId, row)), ...row },
-    deps.privateMode ? 'private' : undefined,
-  );
-  const suggestedLinks = await enrichWithLlm(
-    mctx,
-    db,
-    id,
-    text,
-    title,
-    deps.fileJunctions,
-    deps.entityDescriptions,
-    deps.createJunction,
-    deps.aggressiveness,
-    deps.createEntity,
-    false,
-    deps.privateMode,
-    deps.createObjectJunction,
-  );
-  // `dropped` rides on the enrich result as a non-index property of an array,
-  // which JSON.stringify omits. Lift it onto a plain field so a caller can
-  // report a partial ingest instead of a clean one.
-  const dropped = (suggestedLinks as Partial<{ dropped: DroppedExtraction[] }>).dropped ?? [];
-  return { id, suggestedLinks, dropped };
-}
+// The shared text-ingest body (used by BOTH this route and the assistant's
+// paste tool) is a capability, so it lives outside the HTTP adapter. Re-exported
+// here so callers that predate the move keep working unchanged.
+export { ingestTextAsFile } from '../ops/ingest-text.js';
+export type { TextIngestDeps } from '../ops/ingest-text.js';
 
 // ── Ingest as a detached background job ────────────────────────────────────
 //
@@ -1126,6 +1050,11 @@ export async function dispatchIngestRoute(
     sendJson(res, job);
     return true;
   }
+  // This gate admits THREE operations. Two of them branch on the path below and carry
+  // their own note; the third — /api/ingest/file — is the fallthrough at the end of this
+  // function, so it is the one this note is about.
+  // @headless-debt ingesting a file the caller names by local path — read, parse, extract,
+  // describe, deduplicate, write rows — is only reachable through this route.
   if (ctx.method !== 'POST' || !INGEST_PATHS.has(ctx.pathname)) return false;
 
   const mctx: MutationCtx = ingestMutationCtx(ctx);
@@ -1141,6 +1070,8 @@ export async function dispatchIngestRoute(
   // Raw-bytes upload (drag-drop / paperclip from the browser, which can't
   // expose a local path). Extract then discard the bytes — we keep the text +
   // description, not the file (path stays null, like a text paste).
+  // @headless-debt ingesting bytes the caller already holds — no path, no filesystem — is
+  // the shape a script or a job wants most, and it exists only as this request handler.
   if (ctx.pathname === '/api/ingest/upload') {
     const forcePrivate = headerPrivate;
     const rawName =
@@ -1280,6 +1211,8 @@ export async function dispatchIngestRoute(
   // or, like the upload path, as the header — accept either.
   const forcePrivate = headerPrivate || body.private === true;
 
+  // @headless-debt the body of this one is already a capability module — but it is not
+  // re-exported from the package entry point, so a library consumer still cannot call it.
   if (ctx.pathname === '/api/ingest/text') {
     const rawText = typeof body.text === 'string' ? body.text : '';
     if (!rawText.trim()) {

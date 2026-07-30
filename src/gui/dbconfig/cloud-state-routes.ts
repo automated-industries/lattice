@@ -35,7 +35,12 @@ import {
 import { mintInviteToken, redeemInviteToken, poolerAwareUser } from '../../cloud/invite.js';
 import { isManagedWorkspaces } from '../identity/managed.js';
 import { slugify } from '../../render/markdown.js';
-import { getAsyncOrSync, runAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
+import {
+  currentDatabaseRole,
+  markInvitesRevoked,
+  recordMemberInvite,
+  reclaimStaleInviteRoles,
+} from '../../cloud/member-directory.js';
 import {
   archiveLocalSqlite,
   migrateLatticeData,
@@ -68,42 +73,6 @@ function updateActiveWorkspaceToCloud(
     db: '${LATTICE_DB:' + key + '}',
     makeActive: true,
   });
-}
-
-/**
- * #3.4 — orphan-role cleanup, run by the owner at invite time (the owner holds
- * CREATEROLE here). Two passes, both stamping `revoked_at` and dropping the scoped
- * role so it can never be redeemed and never piles up:
- *   1. RE-INVITE: any still-PENDING invite for THIS email (un-redeemed,
- *      un-revoked) — re-inviting mints a fresh suffixed role, so without this the
- *      prior role is orphaned AND its old token stays live. Revoking it makes the
- *      newest invite the only valid one.
- *   2. SWEEP: any pending invite that has EXPIRED — its role would otherwise
- *      linger forever (invites have a TTL but nothing dropped the role on expiry).
- * `revokeMemberRole` is idempotent on an already-gone role, so a stale invite
- * whose role was dropped elsewhere just gets its `revoked_at` stamped. Failures
- * surface (internal guideline) — a re-invite must not silently leave a live orphan behind.
- */
-async function reclaimStaleInviteRoles(
-  db: DbConfigContext['db'],
-  emailHash: string,
-): Promise<void> {
-  const stale = (await allAsyncOrSync(
-    db.adapter,
-    `SELECT DISTINCT "role" FROM "__lattice_member_invites"
-       WHERE "redeemed_at" IS NULL AND "revoked_at" IS NULL
-         AND ("email_hash" = ? OR "expires_at" <= now())`,
-    [emailHash],
-  )) as { role: string }[];
-  for (const { role } of stale) {
-    await revokeMemberRole(db, role);
-    await runAsyncOrSync(
-      db.adapter,
-      `UPDATE "__lattice_member_invites" SET "revoked_at" = now()
-         WHERE "role" = ? AND "revoked_at" IS NULL`,
-      [role],
-    );
-  }
 }
 
 /**
@@ -256,6 +225,7 @@ export async function dispatchCloudState(
 ): Promise<boolean> {
   const { pathname, method } = ctx;
 
+  // @capability cloud.probe
   if (pathname === '/api/dbconfig/probe' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -283,6 +253,7 @@ export async function dispatchCloudState(
     return true;
   }
 
+  // @capability cloud.migrate
   if (pathname === '/api/dbconfig/migrate-to-cloud' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -385,6 +356,8 @@ export async function dispatchCloudState(
     return true;
   }
 
+  // @headless-debt joining an existing cloud as a member resolves the invite and registers
+  // the workspace; that sequence is only reachable through this route.
   if (pathname === '/api/dbconfig/connect-existing' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -428,6 +401,7 @@ export async function dispatchCloudState(
   // member redeems it with their email in "Join a cloud"). Requires the connected
   // role to hold CREATEROLE (a cloud owner); members get a 403. No plaintext
   // credential leaves in the response except inside the opaque token.
+  // @capability cloud.invite-member
   if (pathname === '/api/cloud/invite' && method === 'POST') {
     await tryHandler(res, async () => {
       // In a MANAGED session the workspace manager is the only member minter:
@@ -496,23 +470,16 @@ export async function dispatchCloudState(
         expiresAt,
         ...(ownerWs?.displayName ? { workspaceName: ownerWs.displayName } : {}),
       });
-      // Owner-only audit row. Plaintext email + password are NEVER stored — only a
-      // hash of the email and the role name (for later revocation).
-      await runAsyncOrSync(
-        ctx.db.adapter,
-        `INSERT INTO "__lattice_member_invites" ("id","role","email_hash","email","expires_at")
-           VALUES (?, ?, ?, ?, ?)`,
-        [
-          randomUUID(),
-          role,
-          emailHash,
-          // Plaintext email stored ONLY in this owner-only table so the owner's
-          // Members list can show who each member is (the hash above stays for
-          // tamper-evident audit; the password is still never stored anywhere).
-          email.trim().toLowerCase(),
-          expiresAt.toISOString(),
-        ],
-      );
+      // Owner-only audit row. The password is NEVER stored; the email is kept
+      // only in that owner-only ledger so the members list can show who each
+      // member is, alongside the hash that keeps the record tamper-evident.
+      await recordMemberInvite(ctx.db, {
+        id: randomUUID(),
+        role,
+        emailHash,
+        email,
+        expiresAt,
+      });
       sendJson(res, { ok: true, token, role, email });
     });
     return true;
@@ -520,6 +487,7 @@ export async function dispatchCloudState(
 
   // POST /api/cloud/remove-member — owner-only: revoke a member's scoped role
   // (the GUI "Kick" control). Wires the previously-unreachable revokeMemberRole.
+  // @capability cloud.revoke-member
   if (pathname === '/api/cloud/remove-member' && method === 'POST') {
     await tryHandler(res, async () => {
       // Managed sessions delegate ALL member management to the manager (whose
@@ -549,10 +517,7 @@ export async function dispatchCloudState(
         sendJson(res, { error: 'A member role is required' }, 400);
         return;
       }
-      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
-        | { u?: string }
-        | undefined;
-      if (role === (me?.u ?? '')) {
+      if (role === (await currentDatabaseRole(ctx.db))) {
         sendJson(res, { error: 'You cannot remove yourself (the owner)' }, 400);
         return;
       }
@@ -561,11 +526,7 @@ export async function dispatchCloudState(
       // objects" — instead of swallowing them; tryHandler turns a throw into a
       // 500 the GUI shows. If it succeeds, mark the audit invites revoked.
       await revokeMemberRole(ctx.db, role);
-      await runAsyncOrSync(
-        ctx.db.adapter,
-        `UPDATE "__lattice_member_invites" SET "revoked_at" = now() WHERE "role" = ? AND "revoked_at" IS NULL`,
-        [role],
-      ).catch((e: unknown) => {
+      await markInvitesRevoked(ctx.db, role).catch((e: unknown) => {
         // Best-effort audit only — the role IS already revoked; log, don't fail.
         console.error('[cloud] mark invite revoked failed:', (e as Error).message);
       });
@@ -580,6 +541,8 @@ export async function dispatchCloudState(
   // only ever handles email + token — never a postgres:// string. Delegated to
   // the exported `redeemInvite` so the GUI server can serve it from the virgin
   // state too (it depends only on createCloudWorkspace, not the active DB).
+  // @headless-debt redeeming an invite provisions the local workspace from an invite code,
+  // and is only reachable through this route.
   if (pathname === '/api/cloud/redeem-invite' && method === 'POST') {
     await redeemInvite(ctx.createCloudWorkspace, req, res);
     return true;
@@ -591,6 +554,7 @@ export async function dispatchCloudState(
   // Owner-only (needs CREATEROLE + table ownership). Use this when you already
   // have data in a Postgres database and want to turn it INTO a Lattice cloud
   // without migrating from a local SQLite store first.
+  // @capability cloud.secure
   if (pathname === '/api/cloud/secure' && method === 'POST') {
     await tryHandler(res, async () => {
       // A managed session's tenant is already provisioned + secured by the

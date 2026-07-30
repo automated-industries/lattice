@@ -4,7 +4,7 @@ import type { GuiRequestContext } from './request-context.js';
 import { getGuiEntities, type GuiTableSummary } from './data.js';
 import { upsertColumnMeta } from './column-descriptions.js';
 import { recordSchemaAudit } from './mutations.js';
-import { execSql, loadConfigDoc, saveConfigDoc } from './config-io.js';
+import { loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { reopenSameConfig } from './lifecycle.js';
 import {
   physicalTableExists,
@@ -145,6 +145,7 @@ export async function handleSchemaRoutes(
   const sessionId = ctx.sessionId;
 
   // ── Create entity (additive — not in audit log, irreversible from GUI) ──
+  // @capability schema.create-table
   if (method === 'POST' && pathname === '/api/schema/entities') {
     if (await denyIfNotCloudOwner(active.db, res, 'create a table')) return true;
     const body = (await readJson<unknown>(req)) as { name?: unknown; icon?: unknown };
@@ -194,6 +195,7 @@ export async function handleSchemaRoutes(
   // ── Create a many-to-many relationship (junction table) ──────────
   // Creates a junction table with two ref columns linking `left` and
   // `right`, so it surfaces as an m2m edge in the Data Model graph.
+  // @capability schema.create-junction
   if (method === 'POST' && pathname === '/api/schema/junctions') {
     if (await denyIfNotCloudOwner(active.db, res, 'create a link table')) return true;
     const body = (await readJson<unknown>(req)) as {
@@ -304,6 +306,7 @@ export async function handleSchemaRoutes(
   // DELETE /api/schema/junctions/:name route (which dropped a "junction"
   // inferred only from FK count, and so could drop a misclassified first-class
   // entity) has been removed.
+  // @capability schema.delete-table
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+$/.test(pathname)) {
     const name = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(name)) {
@@ -388,6 +391,8 @@ export async function handleSchemaRoutes(
     return true;
   }
 
+  // @headless-debt marking a column secret and writing its description is one call here;
+  // setColumnAudience is on the library surface but the column-metadata write is not.
   if (method === 'PUT' && /^\/api\/gui-meta\/columns\/[^/]+\/[^/]+$/.test(pathname)) {
     const parts = pathname.split('/');
     const tableName = decodeURIComponent(parts[4] ?? '');
@@ -459,6 +464,7 @@ export async function handleSchemaRoutes(
   // ── Cloud table policy: per-table default row visibility + never-share ──
   // Owner-only (Postgres cloud); the underlying SQL functions also raise for
   // a non-owner, so the gate here is defense-in-depth + a clean error.
+  // @capability cloud.table-default-visibility
   if (
     method === 'POST' &&
     /^\/api\/schema\/entities\/[^/]+\/default-row-visibility$/.test(pathname)
@@ -486,6 +492,7 @@ export async function handleSchemaRoutes(
     sendJson(res, { ok: true, table, visibility });
     return true;
   }
+  // @capability cloud.table-never-share
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/never-share$/.test(pathname)) {
     const table = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(table)) {
@@ -514,6 +521,7 @@ export async function handleSchemaRoutes(
   // All three mutate the YAML + apply a SQL ALTER, then re-open the
   // Lattice instance so the in-memory schema matches the new config.
   // We don't audit-log schema changes (they're structural, not data).
+  // @capability schema.rename-table
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/rename$/.test(pathname)) {
     if (await denyIfNotCloudOwner(active.db, res, 'rename a table')) return true;
     const oldName = decodeURIComponent(pathname.split('/')[4] ?? '');
@@ -589,6 +597,7 @@ export async function handleSchemaRoutes(
     sendJson(res, { ok: true, cascade: renamed.cascade, undoId: renamed.auditId });
     return true;
   }
+  // @capability schema.add-column
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/columns$/.test(pathname)) {
     if (await denyIfNotCloudOwner(active.db, res, "change a table's columns")) return true;
     const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
@@ -646,8 +655,34 @@ export async function handleSchemaRoutes(
       sendJson(res, { error: `Column "${colName}" already exists on ${entityName}` }, 400);
       return true;
     }
+    // A column can be present in the database while the config no longer declares
+    // it — removing a link deliberately leaves its column behind so the removal
+    // stays revertible, and a config can drift for other reasons too. addColumn()
+    // is idempotent: it skips the ALTER when the column is already there. So
+    // declaring a field over one of those would quietly adopt whatever the old
+    // column still holds, and the user would see the previous values appear under
+    // a name they just created. Refuse, and say which situation this is.
+    if ((await active.db.introspectColumns(entityName)).includes(colName)) {
+      sendJson(
+        res,
+        {
+          error:
+            `"${colName}" already exists on ${entityName} in the database, left behind by an ` +
+            `earlier definition, and still holds its values. Revert that change to get the ` +
+            `column back with its data, or choose a different name.`,
+        },
+        409,
+      );
+      return true;
+    }
     const sqliteType = fieldToSqliteBaseType(colType as LatticeFieldDef['type']);
-    await execSql(active.db, `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${sqliteType}`);
+    // Route the DDL through the library's own add-column capability rather than
+    // emitting the statement here. It asserts both identifiers, takes the schema
+    // lock so a concurrent add of the same column can't race, refreshes the
+    // registered column set, and — on a cloud where the caller is a scoped member
+    // with no ALTER privilege — goes through the owner-side helper instead of
+    // failing. All of that is the database's job, not the request handler's.
+    await active.db.addColumn(entityName, colName, sqliteType);
     const fieldDef: Record<string, unknown> = { type: colType };
     if (body.required === true) fieldDef.required = true;
     doc.setIn(['entities', entityName, 'fields', colName], fieldDef);
@@ -666,6 +701,7 @@ export async function handleSchemaRoutes(
     sendJson(res, { ok: true });
     return true;
   }
+  // @capability schema.rename-column
   if (
     method === 'POST' &&
     /^\/api\/schema\/entities\/[^/]+\/columns\/[^/]+\/rename$/.test(pathname)
@@ -778,6 +814,8 @@ export async function handleSchemaRoutes(
   // A "link" is a relationship, distinct from a scalar column: it adds a
   // uuid FK column referencing `target`. Links can't be edited once
   // created — only destroyed (below). Owner-gated.
+  // @headless-debt adding a link means adding the foreign-key column AND declaring the
+  // relation over it; only the second half (createUserRelation) is on the library surface.
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/links$/.test(pathname)) {
     const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(entityName)) {
@@ -846,13 +884,23 @@ export async function handleSchemaRoutes(
       );
       return true;
     }
-    // Name the FK <target>_id, de-duplicating against existing columns.
-    const existingCols = new Set(Object.keys(active.db.getRegisteredColumns(entityName) ?? {}));
+    // Name the FK <target>_id, de-duplicating against existing columns — the ones
+    // the config declares AND the ones the table really has. Those differ after a
+    // link is removed: the removal drops the field and the relation but leaves the
+    // column in place so it can be reverted with its values. addColumn() is
+    // idempotent, so reusing that name here would silently resurrect the removed
+    // link's foreign keys under a freshly declared relation. Skipping past it gives
+    // the new link its own empty column and leaves the old one revertible.
+    const existingCols = new Set([
+      ...Object.keys(active.db.getRegisteredColumns(entityName) ?? {}),
+      ...(await active.db.introspectColumns(entityName)),
+    ]);
     let colName = `${target}_id`;
     let n = 2;
     while (existingCols.has(colName)) colName = `${target}_id_${String(n++)}`;
     const linkType = fieldToSqliteBaseType('uuid');
-    await execSql(active.db, `ALTER TABLE "${entityName}" ADD COLUMN "${colName}" ${linkType}`);
+    // Same reasoning as the scalar column add above: the library owns the DDL.
+    await active.db.addColumn(entityName, colName, linkType);
     // Write a plain FK field plus an explicit entity-level belongsTo relation
     // (the per-field `ref:` shorthand was removed in 4.0). The relation name
     // mirrors the old derivation: the column with a trailing `_id` stripped.
@@ -892,6 +940,7 @@ export async function handleSchemaRoutes(
   // mutation primitives, so the whole merge is reversible from history. The
   // delete leg unregisters the source in place (no reopen), exactly as the chat
   // delete_entity path does, so the bound `active` stays consistent. Owner-gated.
+  // @capability schema.merge-tables
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/merge$/.test(pathname)) {
     const source = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(source)) {
@@ -938,6 +987,8 @@ export async function handleSchemaRoutes(
   // dropping one only drops THAT foreign-key column (ALTER TABLE DROP
   // COLUMN), never a table. To remove a whole table, use
   // DELETE /api/schema/entities/:name.
+  // @headless-debt removing a link hides the field and its relation without dropping the
+  // column, so revert restores the values. No exported function does that pair.
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)) {
     if (await denyIfNotCloudOwner(active.db, res, 'remove a link')) return true;
     const parts = pathname.split('/');
@@ -1013,6 +1064,7 @@ export async function handleSchemaRoutes(
   // reverted. This is the escape hatch to physically DROP an orphaned
   // (soft-deleted) object and reclaim space. Irreversible — after a purge,
   // the prior soft-delete can no longer be reverted (its data is gone).
+  // @capability schema.purge
   if (method === 'POST' && pathname === '/api/schema/purge') {
     if (await denyIfNotCloudOwner(active.db, res, 'purge tables')) return true;
     const body = (await readJson<unknown>(req)) as {

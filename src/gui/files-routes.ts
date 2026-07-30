@@ -326,6 +326,9 @@ export async function dispatchFilesRoute(
   }
 
   const openMatch = OPEN_RE.exec(ctx.pathname);
+  // @gui-only desktop-shell: hands a path to the operating system so the desktop file
+  // browser reveals it. The effect is a window on somebody’s screen, not a change to any
+  // data, so there is nothing for a headless caller to want.
   if (openMatch && ctx.method === 'POST') {
     if (!localFileOpenEnabled()) {
       sendJson(res, { enabled: false });

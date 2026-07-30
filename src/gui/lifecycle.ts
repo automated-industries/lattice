@@ -48,7 +48,7 @@ import { installComputedFieldFill } from './computed-field-fill.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
 import { installDashboardRepair } from './dashboard-repair.js';
 import type { AuditEntry } from './mutations.js';
-import { retireLegacyPreferenceSecrets } from './assistant-routes.js';
+import { retireLegacyPreferenceSecrets } from '../ops/ai-config.js';
 import type { ActiveDb } from './active-db.js';
 import { isFeedHiddenTable } from './active-db.js';
 

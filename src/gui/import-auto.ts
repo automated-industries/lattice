@@ -19,7 +19,7 @@ import { checkSourceIsDuplicate } from '../import/duplicate-source.js';
 import { planSourceFor } from '../import/plan-source.js';
 import type { NameAssist } from './import-naming.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
-import { getClarifyThreshold } from './assistant-routes.js';
+import { getClarifyThreshold } from '../ops/ai-config.js';
 import { isAnyProviderConfigured } from './ai/provider.js';
 import { detectImportAsOf } from './import-detect.js';
 import { detectAsOfColumns } from '../import/asof-columns.js';

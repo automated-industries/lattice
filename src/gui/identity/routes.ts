@@ -161,6 +161,8 @@ export async function dispatchIdentityRoute(
     return true;
   }
 
+  // @headless-debt starting a device sign-in returns a URL a person approves; the shape suits
+  // a command line, but the sign-in client is not on the library or command surface.
   if (pathname === '/api/identity/signin/start' && method === 'POST') {
     const body = await readJson(req);
     const endpoints = await discoverIdentityService();
@@ -197,6 +199,8 @@ export async function dispatchIdentityRoute(
     return true;
   }
 
+  // @headless-debt completing a device sign-in exchanges the approval code; the sign-in
+  // client is not on the library or command surface.
   if (pathname === '/api/identity/signin/complete' && method === 'POST') {
     const body = await readJson(req);
     try {
@@ -216,6 +220,8 @@ export async function dispatchIdentityRoute(
   // says plainly whether the service confirmed the revoke: the device is signed
   // out either way, but an unconfirmed revocation must not be reported as a
   // completed one, because a live token would be left drawing on the balance.
+  // @headless-debt signing this device out, and revoking its model credential at the service,
+  // is only reachable through this route.
   if (pathname === '/api/identity/signout' && method === 'POST') {
     pending = null;
     const revocation = await revokeDeviceAccess();
@@ -227,6 +233,8 @@ export async function dispatchIdentityRoute(
     return true;
   }
 
+  // @headless-debt syncing account memberships into the local workspace registry is only
+  // reachable through this route.
   if (pathname === '/api/identity/sync' && method === 'POST') {
     const result = await syncMemberships(deps);
     sendJson(res, result);
@@ -247,6 +255,8 @@ export async function dispatchIdentityRoute(
         sendJson(res, await managerCall('members', 'GET'));
         return true;
       }
+      // @headless-debt inviting someone to a hosted workspace is delegated to the session manager
+      // endpoint, which nothing outside this route can call.
       if (op === 'invite' && method === 'POST') {
         const body = await readJson(req);
         sendJson(
@@ -257,6 +267,8 @@ export async function dispatchIdentityRoute(
         );
         return true;
       }
+      // @headless-debt revoking a hosted-workspace membership is delegated to the session manager
+      // endpoint, which nothing outside this route can call.
       if (op === 'revoke' && method === 'POST') {
         const body = await readJson(req);
         sendJson(
@@ -267,6 +279,8 @@ export async function dispatchIdentityRoute(
         );
         return true;
       }
+      // @headless-debt creating a hosted workspace is delegated to the session manager endpoint,
+      // which nothing outside this route can call.
       if (op === 'create' && method === 'POST') {
         const body = await readJson(req);
         sendJson(

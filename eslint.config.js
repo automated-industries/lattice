@@ -27,6 +27,63 @@ export default tseslint.config(
     },
   },
   {
+    // Layering: the HTTP server is one client, never a requirement.
+    //
+    // Files that speak HTTP (`*routes.ts`, the server, the shared request/response
+    // helpers) translate a request into a call on the product and a response back
+    // out. Everything else IS the product, and has to stay callable without a
+    // server — from a command line, a library call, or a background job. So a route
+    // may import a capability, and a capability may never import a route. When that
+    // inverts, the imported logic can only be reached by booting a server, and
+    // headless support quietly rots.
+    //
+    // Overridden below for the adapters themselves and for the entry points whose
+    // job is to START the server. The matching test (tests/unit/headless-layering)
+    // checks the same thing against the whole tree, including dynamic imports,
+    // which this rule cannot see.
+    files: ['src/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/*routes.js', '**/routes.js', '**/server.js', '**/http.js'],
+              message:
+                'This file serves HTTP, so importing it forces a server into a code path that may never listen on a port. Move the shared logic into a capability module under src/ops/ and re-export it from the route file so existing importers keep working.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // The adapters themselves: routes call each other and share the HTTP helpers,
+    // and the server dispatches to every route. That direction is the allowed one.
+    files: ['src/**/*routes.ts', 'src/gui/server.ts', 'src/gui/http.ts'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  {
+    // Process entry points may import the server module in order to start it —
+    // that is the opposite of the problem above. They still may not reach into a
+    // route file for logic.
+    files: ['src/cli.ts', 'src/index.ts', 'src/desktop-entry.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/*routes.js', '**/routes.js', '**/http.js'],
+              message:
+                'An entry point may start the server, but must not reach into a route file for logic. Import the capability module under src/ops/ instead.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Test files: relax rules that are overly strict for test code
     files: ['tests/**/*.ts'],
     rules: {

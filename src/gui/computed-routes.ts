@@ -72,6 +72,7 @@ export async function handleComputedRoutes(
   }
 
   // ── Preview: dry-run a definition (no DDL, no persist, no audit) ──
+  // @capability computed-table.preview
   if (method === 'POST' && pathname === '/api/computed-tables/preview') {
     if (await denyIfNotCloudOwner(active.db, res, 'preview a computed table')) return true;
     const body = (await readJson<unknown>(req)) as { def?: unknown; limit?: unknown };
@@ -86,6 +87,7 @@ export async function handleComputedRoutes(
   }
 
   // ── Create ──
+  // @capability computed-table.create
   if (method === 'POST' && pathname === '/api/computed-tables') {
     if (await denyIfNotCloudOwner(active.db, res, 'create a computed table')) return true;
     const body = (await readJson<unknown>(req)) as { name?: unknown; def?: unknown };
@@ -123,6 +125,7 @@ export async function handleComputedRoutes(
   }
 
   // ── Update ──
+  // @capability computed-table.update
   if (!sub && method === 'PUT') {
     if (await denyIfNotCloudOwner(active.db, res, 'update a computed table')) return true;
     const body = (await readJson<unknown>(req)) as { def?: unknown };
@@ -137,6 +140,7 @@ export async function handleComputedRoutes(
   }
 
   // ── Delete (refused while other computed tables are built on it) ──
+  // @capability computed-table.delete
   if (!sub && method === 'DELETE') {
     if (await denyIfNotCloudOwner(active.db, res, 'delete a computed table')) return true;
     try {
@@ -149,6 +153,7 @@ export async function handleComputedRoutes(
   }
 
   // ── Refresh: run the AI fill, streaming per-field progress as NDJSON ──
+  // @capability computed-table.refresh
   if (sub === 'refresh' && method === 'POST') {
     if (await denyIfNotCloudOwner(active.db, res, 'refresh a computed table')) return true;
     const body = (await readJson<unknown>(req).catch(() => ({}))) as { fields?: unknown };

@@ -68,6 +68,7 @@ export async function handleDataModelRoutes(
     return true;
   }
 
+  // @capability data-model.apply
   if (method === 'POST' && pathname === '/api/data-model/apply') {
     if (await denyIfNotCloudOwner(active.db, res, 'apply data-model changes')) return true;
     const body = await readJson<{ id?: unknown; all?: unknown }>(req);
@@ -102,6 +103,7 @@ export async function handleDataModelRoutes(
     return true;
   }
 
+  // @capability data-model.dismiss
   if (method === 'POST' && pathname === '/api/data-model/dismiss') {
     if (await denyIfNotCloudOwner(active.db, res, 'dismiss data-model proposals')) return true;
     const body = await readJson<{ id?: unknown }>(req);

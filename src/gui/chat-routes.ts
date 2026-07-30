@@ -1081,6 +1081,9 @@ export async function dispatchChatRoute(
   // response, so aborting the client's fetch would stop nothing; the abort has to be
   // delivered here, to the controller the job is watching.
   const stopMatch = /^\/api\/chat\/messages\/([^/]+)\/stop$/.exec(ctx.pathname);
+  // @gui-only session-state: aborts a turn that this server process is streaming right now.
+  // A direct caller owns the abort handle for the turn it started, so there is nothing for
+  // it to look up; the route exists only because the client runs in a different process.
   if (ctx.method === 'POST' && stopMatch) {
     const stopId = decodeURIComponent(stopMatch[1] ?? '');
     const entry = ctx.chatCancel.get(stopId);
@@ -1112,6 +1115,8 @@ export async function dispatchChatRoute(
     return true;
   }
 
+  // @headless-debt a full assistant turn — tool loop, persistence, streaming — is only
+  // reachable through this route. The single largest gap in the headless surface.
   if (!(ctx.method === 'POST' && ctx.pathname === '/api/chat')) return false;
 
   const provider = await resolveLlmProvider(ctx.db);

@@ -17,7 +17,7 @@ import {
   type RowChangePreview,
   type FieldDelta,
 } from '../../src/gui/change-preview.js';
-import { MAX_ROWS_PAGE } from '../../src/gui/http.js';
+import { MAX_ROWS_PAGE } from '../../src/ops/paging.js';
 
 /**
  * Change preview — a read-only, bounded, permission-checked lens on a proposed

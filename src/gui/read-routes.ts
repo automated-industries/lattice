@@ -8,11 +8,12 @@ import {
   statSync,
 } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
-import { sendJson, readJson, parsePageParam, sendHtmlCompressed } from './http.js';
+import { sendJson, readJson, sendHtmlCompressed } from './http.js';
+import { parsePageParam } from '../ops/paging.js';
 import { isRegisteredTable } from './active-db.js';
 import { Lattice } from '../lattice.js';
 import { isConnectedInternalColumn } from '../schema/connected.js';
-import { allAsyncOrSync, type StorageAdapter } from '../db/adapter.js';
+import { type StorageAdapter } from '../db/adapter.js';
 import { runDashboardSql, isSqlProtectedTable } from './dashboard-sql.js';
 import { classifySchema } from './schema-classify.js';
 import { listConnectors } from '../connectors/registry.js';
@@ -20,7 +21,8 @@ import { getMcpServerUrl } from '../connectors/mcp/oauth.js';
 import { brandFromHost } from '../connectors/describe-connected.js';
 import { touchConnectorTable } from '../connectors/freshness.js';
 import type { Connector } from '../connectors/types.js';
-import { LINEAGE_TABLE } from './lineage-store.js';
+import { listDerivedTables } from './lineage-store.js';
+import { isSystemTableName, listSystemTables, readSystemTableRows } from '../ops/system-tables.js';
 import type { GuiRequestContext } from './request-context.js';
 import {
   buildGuiGraph,
@@ -55,7 +57,7 @@ import {
   isLegacyNativeEntity,
   NATIVE_INTERNAL_NAMES,
 } from '../framework/native-entities.js';
-import { countManyPostgres, exactCountMany } from './count-many.js';
+import { countManyPostgres, exactCountMany, tableFreshness } from './count-many.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { getAllTablePolicies } from '../cloud/table-policy.js';
 import {
@@ -183,26 +185,12 @@ async function enrichEntityTables(
   // in this number; per-table drill-in still shows the filtered count.
   const adapter = (db as unknown as { _adapter: StorageAdapter })._adapter;
 
-  // Provenance origin: ONE bounded query over the (small) lineage table per
-  // request — which tables were materialized FROM ingested data (a structured
-  // import or a file extraction). Those get stamped `origin: 'derived'` below;
-  // tables carrying a direct ingestion signal get `origin: 'source'` instead.
-  // `__lattice_lineage` is an unregistered raw-DDL table → read it with raw SQL.
-  let derivedTables = new Set<string>();
-  try {
-    const lin = await allAsyncOrSync(
-      adapter,
-      `SELECT DISTINCT "object_table" FROM "${LINEAGE_TABLE}" WHERE "source_kind" IN ('import','file')`,
-    );
-    derivedTables = new Set(lin.map((r) => String(r.object_table)));
-  } catch (err) {
-    // A fresh workspace has no lineage table yet, and a scoped cloud member has
-    // no SELECT grant on `__lattice_*` bookkeeping tables — neither may fail the
-    // entities route (origin is an enrichment; the tables simply stay unstamped).
-    // A genuine fault (syntax, dropped connection) still surfaces.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/no such table|does not exist|permission denied/i.test(msg)) throw err;
-  }
+  // Provenance origin: which tables were materialized FROM ingested data (a
+  // structured import or a file extraction). Those get stamped
+  // `origin: 'derived'` below; tables carrying a direct ingestion signal get
+  // `origin: 'source'` instead. The lineage read itself belongs to the lineage
+  // store, not to this route.
+  const derivedTables = await listDerivedTables(adapter);
 
   const useBatched = adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function';
   const approxCounts = useBatched
@@ -389,43 +377,7 @@ async function entitiesSummary(
   };
 }
 
-const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
 const DASHBOARD_STALE_DAYS = 14;
-
-/**
- * Per-table "last touched" timestamp — the MAX of the first present freshness
- * column (`updated_at` / `created_at` / `ts`). Postgres runs ONE `UNION ALL`
- * query to stay pool-safe (same concern that drove the batched count in
- * {@link entitiesWithCounts}); SQLite runs in-process. Tables with none of
- * those columns are omitted (no freshness signal). Table/column names come from
- * the registered schema (introspected), not user input, so they are safe to
- * interpolate as identifiers.
- */
-async function tableFreshness(
-  adapter: StorageAdapter,
-  tables: { name: string; columns: string[] }[],
-): Promise<Map<string, string | null>> {
-  const out = new Map<string, string | null>();
-  const withCol = tables
-    .map((t) => ({ name: t.name, col: FRESHNESS_COLS.find((c) => t.columns.includes(c)) }))
-    .filter((t): t is { name: string; col: string } => t.col !== undefined);
-  if (withCol.length === 0) return out;
-  if (adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function') {
-    const sql = withCol
-      .map((t) => `SELECT '${t.name}' AS t, MAX("${t.col}")::text AS m FROM "${t.name}"`)
-      .join(' UNION ALL ');
-    const rows = (await adapter.allAsync(sql)) as { t: string; m: string | null }[];
-    for (const r of rows) out.set(r.t, r.m);
-  } else {
-    for (const t of withCol) {
-      const rows = adapter.all(`SELECT MAX("${t.col}") AS m FROM "${t.name}"`) as {
-        m: string | null;
-      }[];
-      out.set(t.name, rows[0]?.m ?? null);
-    }
-  }
-  return out;
-}
 
 interface DashboardEntity extends GuiTableSummary {
   lastUpdatedAt: string | null;
@@ -690,6 +642,8 @@ export async function handleReadRoutes(
   //     view), and on Postgres it additionally runs inside a READ ONLY
   //     transaction so a data-modifying CTE cannot slip a write through;
   //  4. the result is wrapped + capped server-side (no unbounded egress).
+  // @headless-debt running an analytics query with the dashboard guardrails (protected
+  // tables, bounded reads) is only reachable through this route.
   if (method === 'POST' && pathname === '/api/analytics/sql') {
     const body = (await readJson<unknown>(req)) as { sql?: unknown };
     const raw = typeof body.sql === 'string' ? body.sql : '';
@@ -969,69 +923,12 @@ export async function handleReadRoutes(
     // column meta). Shown in the Objects sidebar under "System" so the
     // user can browse but not edit them.
     //
-    // The pre-1.13.4 implementation listed tables via `sqlite_master`
-    // and columns via `PRAGMA table_info` — both SQLite-only. On a
-    // Postgres-backed Lattice (a migrated cloud) those queries threw
-    // and the System sidebar silently rendered empty.
-    // We dispatch on adapter.dialect for the listing query and
-    // delegate column enumeration to `Lattice.introspectColumns()`,
-    // which is already dialect-portable.
-    type Adapter = {
-      allAsync?: (sql: string) => Promise<unknown[]>;
-      dialect: 'sqlite' | 'postgres';
-    };
-    const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
-    let rows: { name: string }[] = [];
-    if (adapter.allAsync) {
-      const listSql =
-        adapter.dialect === 'postgres'
-          ? // pg_tables is the public-schema-only counterpart to
-            // sqlite_master. We filter to public + the same `\_%`
-            // ESCAPE pattern so the result is identical to SQLite.
-            // Underscore is a LIKE wildcard in both engines.
-            `SELECT tablename AS name FROM pg_tables ` +
-            `WHERE schemaname = 'public' AND tablename LIKE '\\_%' ESCAPE '\\' ` +
-            `ORDER BY tablename`
-          : `SELECT name FROM sqlite_master ` +
-            `WHERE type='table' AND name LIKE '\\_%' ESCAPE '\\' ` +
-            `ORDER BY name`;
-      rows = (await adapter.allAsync(listSql)) as { name: string }[];
-    }
     // Native conversation-storage tables (chat_threads/chat_messages) are
     // hidden from the Objects list + Data Model graph, but ARE browsable
     // read-only here under "System" so the user can inspect chat history.
     // Only list ones that are actually registered on this DB.
-    for (const n of NATIVE_INTERNAL_NAMES) {
-      if (active.validTables.has(n) && !rows.some((r) => r.name === n)) {
-        rows.push({ name: n });
-      }
-    }
-    const tables: { name: string; columns: string[]; rowCount: number | null }[] = [];
-    for (const r of rows) {
-      // Lattice.introspectColumns dispatches on dialect internally:
-      // PRAGMA table_info on SQLite, information_schema.columns on
-      // Postgres. Returns string[] of column names either way.
-      try {
-        const cols = await active.db.introspectColumns(r.name);
-        const rowCount = await active.db.count(r.name);
-        tables.push({ name: r.name, columns: cols, rowCount });
-      } catch (err) {
-        // A scoped cloud member has no SELECT grant on the owner-only
-        // bookkeeping tables (__lattice_owners, member_roles, cloud_settings,
-        // member_invites, changes, …) — those are reached only via SECURITY
-        // DEFINER functions, by design — and a NATIVE_INTERNAL_NAME we list
-        // optimistically (chat_threads/…) may not be physically present on a
-        // given cloud. Neither must 500 the whole System sidebar: show the
-        // name, mark the count unknown (null), and continue. A genuine fault
-        // (syntax, dropped connection) still surfaces.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/permission denied|does not exist/i.test(msg)) {
-          tables.push({ name: r.name, columns: [], rowCount: null });
-        } else {
-          throw err;
-        }
-      }
-    }
+    const alsoInclude = [...NATIVE_INTERNAL_NAMES].filter((n) => active.validTables.has(n));
+    const tables = await listSystemTables(active.db, alsoInclude);
     sendJson(res, { tables });
     return true;
   }
@@ -1039,9 +936,11 @@ export async function handleReadRoutes(
     const parts = pathname.split('/');
     const sysTable = decodeURIComponent(parts[3] ?? '');
     // Accept underscore-prefixed internals OR the native conversation
-    // tables surfaced under "System". Both are fixed/validated names, so
-    // the interpolation into the SELECT below stays injection-safe.
-    if (!/^_+[a-zA-Z0-9_]+$/.test(sysTable) && !isInternalNativeEntity(sysTable)) {
+    // tables surfaced under "System". Both are fixed/validated names, which
+    // is what keeps the read below injection-safe. The same predicate the
+    // read itself enforces, so the 400 here and the throw there can never
+    // disagree about what counts as a system table.
+    if (!isSystemTableName(sysTable)) {
       sendJson(res, { error: 'Not a system table' }, 400);
       return true;
     }
@@ -1053,14 +952,7 @@ export async function handleReadRoutes(
       sendJson(res, { error: 'limit must be a non-negative integer' }, 400);
       return true;
     }
-    const rowsResult = (await (async () => {
-      type Adapter = { allAsync?: (sql: string) => Promise<unknown[]> };
-      const adapter = (active.db as unknown as { _adapter: Adapter })._adapter;
-      return (
-        adapter.allAsync?.(`SELECT * FROM "${sysTable}" LIMIT ${String(limit)}`) ??
-        Promise.resolve([])
-      );
-    })()) as Record<string, unknown>[];
+    const rowsResult = await readSystemTableRows(active.db, sysTable, limit);
     // System tables that hold row SNAPSHOTS get the same treatment as GET /api/history:
     // those payloads are `db.get` images, which DECRYPT encrypted columns, so serving
     // them raw hands back cleartext credentials — and, to a cloud member, another
@@ -1150,6 +1042,7 @@ export async function handleReadRoutes(
     const [, rawCtxTable, rawCtxId] = ctxMatch;
     const ctxTable = decodeURIComponent(rawCtxTable ?? '');
     const ctxId = decodeURIComponent(rawCtxId ?? '');
+    // @capability row.update
     if (method !== 'GET' && method !== 'PUT') {
       sendJson(res, { error: `Method ${method} not allowed` }, 405);
       return true;
@@ -1188,6 +1081,7 @@ export async function handleReadRoutes(
     // primitive (so the edit is reversible from history). Free-form prose that
     // parses to no known column is a deliberate no-op (`updated: 0`) — a value is
     // never guessed at, so a custom/lossy render can't corrupt the row.
+    // @capability row.update
     if (method === 'PUT') {
       const putBody = (await readJson<unknown>(req)) as { content?: unknown };
       const content = typeof putBody.content === 'string' ? putBody.content : '';

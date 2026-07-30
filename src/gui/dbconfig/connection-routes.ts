@@ -127,6 +127,8 @@ export async function dispatchConnection(
     return true;
   }
 
+  // @headless-debt saving a connection stores the credential AND repoints the config at it;
+  // only the credential half is on the library surface.
   if (pathname === '/api/dbconfig/save' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -163,6 +165,8 @@ export async function dispatchConnection(
     return true;
   }
 
+  // @gui-only session-state: swaps the database this server process is serving from. A direct
+  // caller opens the connection it wants and holds the handle, so there is nothing to swap.
   if (pathname === '/api/dbconfig/connect' && method === 'POST') {
     await tryHandler(res, async () => {
       await ctx.swap();
@@ -171,6 +175,8 @@ export async function dispatchConnection(
     return true;
   }
 
+  // @headless-debt testing a connection string before saving it is only reachable here for a
+  // local database; the cloud half has an exported probe.
   if (pathname === '/api/dbconfig/test' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -216,6 +222,8 @@ export async function dispatchConnection(
   // The cloud has no shared name in v3 (no team-identity row); the name is the
   // operator's own workspace label. So rename always writes the local YAML
   // `name:` key + the workspace registry, for both local and cloud configs.
+  // @headless-debt renaming a workspace by its config path edits the config and the registry,
+  // and is only reachable through this route.
   if (pathname === '/api/dbconfig/rename' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);

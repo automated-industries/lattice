@@ -464,6 +464,8 @@ export async function dispatchSourcesRoute(
   }
 
   // POST /api/sources/roots {path, kind} — register a root + ingest on add.
+  // @headless-debt registering a local folder as a source, and ingesting what is in it, is
+  // only reachable through this route.
   if (pathname === '/api/sources/roots' && method === 'POST') {
     const body = await readJson<{ path?: unknown; kind?: unknown }>(req).catch(() => ({}) as never);
     const path = typeof body.path === 'string' ? body.path.trim() : '';
@@ -505,6 +507,7 @@ export async function dispatchSourcesRoute(
 
   // DELETE /api/sources/roots/:id — drop a root from the sidebar (never disk).
   const delMatch = /^\/api\/sources\/roots\/([^/]+)$/.exec(pathname);
+  // @headless-debt removing a registered local source root is only reachable here.
   if (delMatch && method === 'DELETE') {
     const id = decodeURIComponent(delMatch[1] ?? '');
     const roots = readRoots(configPath).filter((r) => r.id !== id);
@@ -514,6 +517,9 @@ export async function dispatchSourcesRoute(
   }
 
   // POST /api/sources/pick {kind} — native OS picker; null path = cancelled.
+  // @gui-only local-file-picker: opens the operating system file chooser and waits for a
+  // person to select something. There is nothing to call headlessly — a caller that already
+  // knows the path does not need a picker, and one that does not cannot be answered.
   if (pathname === '/api/sources/pick' && method === 'POST') {
     const body = await readJson<{ kind?: unknown }>(req).catch(() => ({}) as never);
     const kind = body.kind === 'file' ? 'file' : 'folder';
@@ -544,6 +550,8 @@ export async function dispatchSourcesRoute(
   }
 
   // POST /api/sources/ingest-folder {path} — bounded BFS ingest, root-contained.
+  // @headless-debt ingesting every file under a registered folder walks the tree and drives
+  // the shared ingest core, and is only reachable through this route.
   if (pathname === '/api/sources/ingest-folder' && method === 'POST') {
     const body = await readJson<{ path?: unknown }>(req).catch(() => ({}) as never);
     const target = typeof body.path === 'string' ? body.path : '';

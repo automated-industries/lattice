@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJson, readJson, parsePageParam, MAX_ROWS_PAGE } from './http.js';
+import { sendJson, readJson } from './http.js';
+import { parsePageParam, MAX_ROWS_PAGE } from '../ops/paging.js';
 import type { Row } from '../types.js';
 import type { GuiRequestContext } from './request-context.js';
 import type { ActiveDb } from './active-db.js';
@@ -257,6 +258,7 @@ export async function handleTablesRoutes(
   // new file. The reserved-file-col guard is relaxed for this trusted GUI path.
   // Must precede ROWS_PATH, whose greedy :id would otherwise swallow "/content".
   const contentMatch = /^\/api\/tables\/files\/rows\/([^/]+)\/content$/.exec(pathname);
+  // @capability row.update
   if (contentMatch && method === 'PUT') {
     const cid = decodeURIComponent(contentMatch[1] ?? '');
     const body = await readJson<{ text?: unknown }>(req).catch(() => ({}) as { text?: unknown });
@@ -273,6 +275,7 @@ export async function handleTablesRoutes(
 
   // ── Read-only change preview: /api/tables/:table/preview-changes ──
   const previewMatch = PREVIEW_CHANGES_PATH.exec(pathname);
+  // @capability row.preview-changes
   if (previewMatch && method === 'POST') {
     await handlePreviewChanges(req, res, active, decodeURIComponent(previewMatch[1] ?? ''));
     return true;
@@ -380,6 +383,7 @@ export async function handleTablesRoutes(
         }
         return true;
       }
+      // @capability row.create
       if (method === 'POST') {
         const body = (await readJson<unknown>(req)) as Row;
         if (rejectForgedFilesLocation(table, body, res)) return true;
@@ -419,6 +423,7 @@ export async function handleTablesRoutes(
         sendJson(res, row);
         return true;
       }
+      // @capability row.update
       if (method === 'PATCH') {
         const body = (await readJson<unknown>(req)) as Partial<Row>;
         if (rejectForgedFilesLocation(table, body, res)) return true;
@@ -426,6 +431,7 @@ export async function handleTablesRoutes(
         sendJson(res, { ok: true });
         return true;
       }
+      // @capability row.delete
       if (method === 'DELETE') {
         const hard = url.searchParams.get('hard') === 'true';
         await deleteRow(mctx, table, id, hard);
@@ -446,6 +452,7 @@ export async function handleTablesRoutes(
       sendJson(res, { error: `Not a junction table: ${table}` }, 400);
       return true;
     }
+    // @capability row.link
     if (method !== 'POST') {
       sendJson(res, { error: `Method ${method} not allowed` }, 405);
       return true;

@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Lattice } from '../lattice.js';
 import type { ComputedTableDef, ComputedFieldDef } from '../config/types.js';
-import { getAsyncOrSync } from '../db/adapter.js';
-import { sendJson, readJson, MAX_INGEST_BYTES } from './http.js';
+import { sendJson, readJson } from './http.js';
+import { MAX_INGEST_BYTES } from '../ops/paging.js';
 import { inferSchema } from '../import/infer.js';
 import { dedupeAndDetectViews } from '../import/dedupe-views.js';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../import/materialize.js';
 import { MAX_IMPORT_TABLES, applySourceNameFallback } from '../import/name-policy.js';
 import { localPathOf } from './files-routes.js';
+import { loadStoredFileLocation } from './file-row.js';
 import { matchSchemaToExisting, renameEntities, type ExistingTable } from '../import/match.js';
 import {
   excelFormulaSummary,
@@ -70,15 +71,6 @@ export interface ImportRouteDeps {
   createComputed?: (name: string, def: ComputedTableDef) => Promise<void>;
 }
 
-interface FileRow {
-  id: string;
-  original_name?: string | null;
-  mime?: string | null;
-  ref_kind?: string | null;
-  ref_uri?: string | null;
-  blob_path?: string | null;
-}
-
 /** A 400-carrying error so the handler answers a client mistake with 400. */
 function badRequest(message: string): Error & { statusCode: number } {
   const e = new Error(message) as Error & { statusCode: number };
@@ -127,12 +119,7 @@ export async function readImportSourceFromFile(
   // A reference may name the whole file (a bare files-row id) or a single sheet of a
   // multi-sheet workbook (`<id>#<sheet>`), so one sheet can be re-read + applied on its own.
   const { fileId, sheet } = parseSheetFileRef(fileRef);
-  const row = (await getAsyncOrSync(
-    db.adapter,
-    `SELECT "id","original_name","mime","ref_kind","ref_uri","blob_path"
-       FROM "files" WHERE "id" = ? AND "deleted_at" IS NULL LIMIT 1`,
-    [fileId],
-  )) as FileRow | undefined;
+  const row = await loadStoredFileLocation(db, fileId);
   if (!row) throw badRequest('Unknown import file: ' + fileId);
   const path = localPathOf(row, latticeRoot);
   if (!path || !existsSync(path)) {
@@ -448,6 +435,7 @@ export async function dispatchImportRoute(
   deps: ImportRouteDeps,
 ): Promise<boolean> {
   const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+  // @capability import.materialize
   if (req.method !== 'POST' || pathname !== '/api/import/apply') return false;
 
   const body = await readJson<{

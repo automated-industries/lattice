@@ -16,8 +16,7 @@ import {
 } from '../../cloud/settings.js';
 import { setRowVisibility, grantRow, revokeRow, batchRowGrants } from '../../cloud/members.js';
 import { cascadeDashboardDataShare } from '../dashboard-share-cascade.js';
-import { memberGroupFor } from '../../cloud/rls.js';
-import { getAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
+import { listCloudMembers } from '../../cloud/member-directory.js';
 
 /** Generous upper bound on the stored chat system prompt — well past any real
  *  house-style/domain preamble, but it stops an accidental multi-MB paste from
@@ -137,80 +136,7 @@ export async function dispatchCloudSettings(
   // (the panel then just shows the local single-user state).
   if (pathname === '/api/cloud/members' && method === 'GET') {
     await tryHandler(res, async () => {
-      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
-        sendJson(res, { members: [] });
-        return;
-      }
-      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
-        | { u?: string }
-        | undefined;
-      const ownerRole = me?.u ?? '';
-      // The operator's own identity (mirrored into __lattice_user_identity on open)
-      // — so the owner row shows a real name/email, not the bare Postgres role.
-      const idRow = (await getAsyncOrSync(
-        ctx.db.adapter,
-        `SELECT display_name, email FROM "__lattice_user_identity" WHERE id = 'singleton'`,
-      ).catch(() => undefined)) as { display_name?: string; email?: string } | undefined;
-      // An EMPTY trimmed name must fall back to the role (not just a null one).
-      const trimmedOwnerName = idRow?.display_name?.trim() ?? '';
-      const ownerName = trimmedOwnerName.length > 0 ? trimmedOwnerName : ownerRole;
-      const ownerEmail = idRow?.email ?? '';
-
-      // Only an owner can enumerate roles; a scoped member just sees itself.
-      if (!(await canManageRoles(ctx.db))) {
-        sendJson(res, {
-          members: ownerRole
-            ? [
-                {
-                  role: ownerRole,
-                  name: ownerName,
-                  email: ownerEmail,
-                  status: 'member',
-                  isYou: true,
-                },
-              ]
-            : [],
-        });
-        return;
-      }
-      // Member-group roles — EXCLUDING the owner (it was double-counted: prepended
-      // AND listed again from the group). Scoped to THIS cloud's own member group.
-      const group = await memberGroupFor(ctx.db);
-      const rows = (await allAsyncOrSync(
-        ctx.db.adapter,
-        `SELECT m.rolname AS role
-           FROM pg_auth_members am
-           JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = ?
-           JOIN pg_roles m ON m.oid = am.member
-          WHERE m.rolname <> ?
-          ORDER BY m.rolname`,
-        [group, ownerRole],
-      )) as { role: string }[];
-      // role → its latest non-revoked invite (email + whether it's been redeemed)
-      // for human-readable display + accurate status. An invite with redeemed_at
-      // NULL means the person was invited but hasn't joined yet → "Invited"; once
-      // they redeem (redeemed_at set) → "Member". A member-group role with no
-      // invite row (e.g. a DBA-created role) is treated as a redeemed member.
-      const invites = (await allAsyncOrSync(
-        ctx.db.adapter,
-        `SELECT DISTINCT ON ("role") "role", "email", "redeemed_at"
-           FROM "__lattice_member_invites"
-          WHERE "revoked_at" IS NULL
-          ORDER BY "role", "created_at" DESC`,
-      ).catch(() => [])) as { role: string; email?: string; redeemed_at?: string | null }[];
-      const inviteByRole = new Map(invites.map((r) => [r.role, r]));
-      const members = [
-        { role: ownerRole, name: ownerName, email: ownerEmail, status: 'owner', isYou: true },
-        ...rows.map((r) => {
-          const inv = inviteByRole.get(r.role);
-          const email = inv?.email ?? '';
-          const name = email ? (email.split('@')[0] ?? r.role) : r.role;
-          // Pending (un-redeemed) invite → Invited; redeemed or no invite → Member.
-          const status = inv && inv.redeemed_at == null ? 'invited' : 'member';
-          return { role: r.role, name, email, status, isYou: false };
-        }),
-      ];
-      sendJson(res, { members });
+      sendJson(res, { members: await listCloudMembers(ctx.db) });
     });
     return true;
   }
@@ -218,6 +144,7 @@ export async function dispatchCloudSettings(
   // POST /api/cloud/share — set a row's visibility (private | everyone) via the
   // owner-only RLS function. Only the row's owner may change its sharing; the
   // database raises for anyone else, which surfaces as a 403-ish error here.
+  // @capability cloud.row-visibility
   if (pathname === '/api/cloud/share' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -248,6 +175,8 @@ export async function dispatchCloudSettings(
   // grants (or revokes) one member access to one row (table + pk), flipping the
   // row to `custom` visibility. Owner-only — the SECURITY DEFINER function raises
   // for a non-owner (and for a never-share table), surfaced here as an error.
+  // @headless-debt granting or revoking one person access to one row is exported from the
+  // members module but not re-exported from the package entry point.
   if (pathname === '/api/cloud/row-grant' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -283,6 +212,8 @@ export async function dispatchCloudSettings(
   // rejected by the database (surfaced here as an error). The first grant flips
   // the row to `custom` server-side. The single-grantee route above stays for
   // any other caller.
+  // @headless-debt granting or revoking access to many rows at once is exported from the
+  // members module but not re-exported from the package entry point.
   if (pathname === '/api/cloud/row-grants' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -336,6 +267,8 @@ export async function dispatchCloudSettings(
     });
     return true;
   }
+  // @headless-debt configuring cloud file storage writes the machine-local store and installs
+  // the presigner; the store write is not on the library surface.
   if (pathname === '/api/cloud/s3-config' && method === 'POST') {
     await tryHandler(res, async () => {
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
@@ -425,6 +358,7 @@ export async function dispatchCloudSettings(
     });
     return true;
   }
+  // @capability cloud.setting
   if (pathname === '/api/cloud/system-prompt' && method === 'POST') {
     await tryHandler(res, async () => {
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
@@ -501,6 +435,7 @@ export async function dispatchCloudSettings(
   // POST /api/cloud/workspace-logo — owner-only. Empty body removes the logo
   // (clears both keys → readers report null → the default Lattice mark returns).
   // Otherwise validates a square PNG/JPEG data: URI and stores blob-then-etag.
+  // @capability cloud.setting
   if (pathname === '/api/cloud/workspace-logo' && method === 'POST') {
     await tryHandler(res, async () => {
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {

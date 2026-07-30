@@ -78,6 +78,9 @@ export async function dispatchDbSourcesRoute(
   }
 
   // Connect a new external database → validate, introspect, register, import.
+  // @headless-debt connecting an external database orchestrates credential storage, model
+  // definition, access control, and a first sync. The pieces exist; the orchestration
+  // lives in this route.
   if (pathname === '/api/db-sources/connect' && method === 'POST') {
     const raw = (await readJson(req).catch(() => ({}))) as Record<string, unknown>;
     const creds: Record<string, string> = {};
@@ -157,6 +160,7 @@ export async function dispatchDbSourcesRoute(
   }
 
   // Refresh on GUI load — sync every stale db-source for this member.
+  // @capability connector.sync-stale
   if (pathname === '/api/db-sources/sync-if-stale' && method === 'POST') {
     const r = await syncStaleConnectors(db, connector, undefined, connectedBy);
     sendJson(res, { synced: r.synced, failed: r.failed });
@@ -208,6 +212,8 @@ export async function dispatchDbSourcesRoute(
     // POST /<id>/reconnect — edit the stored credentials (rotated password,
     // corrected host/port) and re-sync. Reuses the same connection id + table
     // prefix so the imported objects stay put and rows upsert idempotently.
+    // @headless-debt reconnecting an external database re-runs the same orchestration as
+    // connecting one, and is only reachable through this route.
     if (sub === 'reconnect' && method === 'POST') {
       if (!rec.connectionRef) {
         sendJson(res, { error: 'This connection cannot be edited.' }, 400);
@@ -263,6 +269,7 @@ export async function dispatchDbSourcesRoute(
     }
 
     // POST /<id>/refresh — re-sync this connection.
+    // @capability connector.sync
     if (sub === 'refresh' && method === 'POST') {
       try {
         const result = await syncConnector(db, connector, id);
@@ -276,6 +283,7 @@ export async function dispatchDbSourcesRoute(
 
     // DELETE /<id> — disconnect: soft-delete imported rows, clear stored creds +
     // schema (connector.disconnect), prune context files, and remove the row.
+    // @capability connector.disconnect
     if (!sub && method === 'DELETE') {
       const result = await disconnectConnector(db, connector, id, { outputDir, mode: 'hard' });
       sendJson(res, { ok: true, result });

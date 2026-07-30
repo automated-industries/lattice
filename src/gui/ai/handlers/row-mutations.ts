@@ -625,7 +625,7 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
         typeof args.title === 'string' && args.title.trim() ? args.title.trim() : 'Pasted note';
       // Lazy import (mirrors ingest_url) to keep the chat→dispatch→ingest→enrich→chat
       // module graph acyclic.
-      const { ingestTextAsFile } = await import('../../ingest-routes.js');
+      const { ingestTextAsFile } = await import('../../../ops/ingest-text.js');
       try {
         const result = await ingestTextAsFile(
           {

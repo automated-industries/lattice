@@ -40,8 +40,8 @@ vi.mock('../../src/gui/ai/chat.js', async (importOriginal) => {
     }),
   };
 });
-vi.mock('../../src/gui/assistant-routes.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/gui/assistant-routes.js')>();
+vi.mock('../../src/ops/ai-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/ops/ai-config.js')>();
   return { ...actual, resolveClaudeAuth: () => Promise.resolve({ apiKey: 'test-key' }) };
 });
 

@@ -9,7 +9,7 @@ import {
   clarifyFloor,
   getClarifyThreshold,
   DEFAULT_AGGRESSIVENESS,
-} from '../assistant-routes.js';
+} from '../../ops/ai-config.js';
 import { enqueueQuestion } from '../questions.js';
 import { resolveLlmClient } from './provider.js';
 import {

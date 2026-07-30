@@ -596,6 +596,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       sendJson(res, readIdentity());
       return true;
     }
+    // @capability user.identity
     if (method === 'POST' && pathname === '/api/userconfig/identity') {
       const body = (await readJson<unknown>(req)) as { display_name?: unknown; email?: unknown };
       const next = {
@@ -607,6 +608,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       sendJson(res, next);
       return true;
     }
+    // @capability workspace.create
     if (method === 'POST' && pathname === '/api/workspaces/create') {
       const body = (await readJson<unknown>(req)) as { name?: unknown };
       const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -622,6 +624,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       }
       return true;
     }
+    // @headless-debt removing a workspace with none open unregisters it and deletes its files;
+    // the registry removal is not on the library surface.
     if (method === 'POST' && pathname === '/api/workspaces/delete') {
       // Deletion operates on the registry, not the open DB, so it must work with
       // no active workspace too. Otherwise a workspace whose database fails to
@@ -659,6 +663,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       sendJson(res, { ok: true, switchedTo: null });
       return true;
     }
+    // @headless-debt redeeming an invite with no workspace open is only reachable here.
     if (method === 'POST' && pathname === '/api/cloud/redeem-invite') {
       await redeemInvite(createCloudWorkspace, req, res);
       return true;
@@ -737,6 +742,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const method = req.method ?? 'GET';
 
         // Reject cross-site / rebound-Host state changes before any routing.
+        // @not-a-route the central predicate that classifies a request as state-changing, used by
+        // the cross-site check below. It selects no operation of its own.
         const mutating =
           method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
         if (mutating && !requestIsSameOrigin(req)) {
@@ -841,6 +848,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           );
           return;
         }
+        // @headless-debt applying a downloaded update is the update service's apply(), and the
+        // service is not on the public surface. The npm-install helper that IS exported cannot
+        // stand in for it: a packaged app has no node_modules to install into.
         if (method === 'POST' && pathname === '/api/update/apply') {
           // Manual trigger behind the "update available" pill. The right action
           // depends on the surface (reported as `status.action`):
@@ -877,6 +887,9 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           return;
         }
+        // @headless-debt asking "is there a newer version, and can this install take it?" is the
+        // update service's checkNow(), which is not exported. The npm-install helper installs
+        // rather than reports, so it cannot answer the question a caller is asking here.
         if (method === 'POST' && pathname === '/api/update/check') {
           // On-demand "check for updates now": force an immediate check so a user who
           // knows a release exists doesn't have to wait for the next background poll (or
@@ -991,6 +1004,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // ── GUI-only metadata (per-entity icon overrides) ──
           {
             handle: async (req, res) => {
+              // @headless-debt setting a table icon writes presentation metadata through a helper that is
+              // not on the library surface.
               if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
               const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
               if (!isRegisteredTable(active, entityName)) {
@@ -1060,6 +1075,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // so Connect itself can always run.
           {
             handle: async (req, res) => {
+              // @not-a-route part of the gate that decides whether a request needs a configured model
+              // provider. The routes it names are handled elsewhere; this selects no operation.
               const gated =
                 pathname.startsWith('/api/chat') ||
                 pathname.startsWith('/api/ingest/') ||
@@ -1265,6 +1282,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 method,
               });
               // After a data-changing ingest, keep the model a clean star schema.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (ingestHandled && method === 'POST') triggerDataModelPlan();
               return ingestHandled;
             },
@@ -1306,6 +1325,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 feed: active.feed,
               });
               // After a folder ingest, keep the model a clean star schema.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (sourcesHandled && method === 'POST') triggerDataModelPlan();
               return sourcesHandled;
             },
@@ -1331,6 +1352,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // After a data-changing import, tidy the model into a clean star schema —
               // server-side (like the ingest/sources routes) so it runs even if the client
               // disconnects before the apply stream's 'done'. Debounced + fail-soft.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (importHandled && method === 'POST') triggerDataModelPlan();
               return importHandled;
             },
@@ -1357,6 +1380,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // the star schema (debounced + fail-soft; a no-op if nothing changed).
               // Skip the boot-time automatic sync-if-stale (fired on every GUI load,
               // usually syncs nothing) — only a real connect/refresh should design.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (connectorsHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
                 triggerDataModelPlan();
               }
@@ -1380,6 +1405,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               });
               // After connecting an external database, normalize its imported tables.
               // Skip the boot-time automatic sync-if-stale (see the connectors route).
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (dbSourcesHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
                 triggerDataModelPlan();
               }

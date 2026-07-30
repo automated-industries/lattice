@@ -548,6 +548,91 @@ describe('Data Model — junction relationships', () => {
     );
   });
 
+  it('re-adding a removed link gets a fresh column, not the removed one back', async () => {
+    // Removing a link deliberately leaves its SQL column in place so the removal
+    // can be reverted with its values. The add path must therefore not reuse that
+    // name: the library's add-column is idempotent, so it would skip the ALTER and
+    // the old foreign keys would be live again under a relation just created —
+    // silently, with a 200 and no hint that the values are not new.
+    const s = await boot();
+    const dbPath = join(dirs[dirs.length - 1]!, 'data', 'test.db');
+    const addLink = async (): Promise<{ ok?: boolean; column?: string }> =>
+      (await (
+        await fetch(`${s.url}/api/schema/entities/articles/links`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ target: 'tags' }),
+        })
+      ).json()) as { ok?: boolean; column?: string };
+    const columnsOf = (table: string): string[] => {
+      const raw = new Database(dbPath, { readonly: true });
+      const cols = (raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+        (c) => c.name,
+      );
+      raw.close();
+      return cols;
+    };
+
+    expect((await addLink()).column).toBe('tags_id');
+
+    const write = new Database(dbPath);
+    write.prepare("INSERT INTO articles (id, title, tags_id) VALUES ('a1', 'A', 't1')").run();
+    write.close();
+
+    expect(
+      (await fetch(`${s.url}/api/schema/entities/articles/links/tags_id`, { method: 'DELETE' }))
+        .status,
+    ).toBe(200);
+    expect(columnsOf('articles'), 'the column survives the removal, by design').toContain(
+      'tags_id',
+    );
+
+    const second = await addLink();
+    expect(second.ok).toBe(true);
+    expect(second.column, 'a fresh column, not the one still holding the old values').toBe(
+      'tags_id_2',
+    );
+
+    const raw = new Database(dbPath, { readonly: true });
+    const row = raw.prepare("SELECT tags_id, tags_id_2 FROM articles WHERE id = 'a1'").get() as {
+      tags_id: string | null;
+      tags_id_2: string | null;
+    };
+    raw.close();
+    expect(row.tags_id_2, 'the new link starts empty').toBeNull();
+    expect(row.tags_id, "the removed link's values stay put, so a revert restores them").toBe('t1');
+  });
+
+  it('refuses to declare a column over one the database already has', async () => {
+    // The same idempotence, on the scalar path, where the name is the user's and
+    // renaming past it would be wrong. Adding the field would adopt the existing
+    // column's contents, so the answer is a plain refusal rather than a 200 that
+    // makes old data look new.
+    const s = await boot();
+    const dbPath = join(dirs[dirs.length - 1]!, 'data', 'test.db');
+    const raw = new Database(dbPath);
+    raw.exec('ALTER TABLE articles ADD COLUMN leftover TEXT');
+    raw.prepare("INSERT INTO articles (id, title, leftover) VALUES ('a1', 'A', 'stale')").run();
+    raw.close();
+
+    const res = await fetch(`${s.url}/api/schema/entities/articles/columns`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'leftover', type: 'text' }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error, 'the message has to say why, not just refuse').toContain('leftover');
+
+    const doc = parse(readFileSync(join(dirs[dirs.length - 1]!, 'lattice.config.yml'), 'utf8')) as {
+      entities: Record<string, { fields: Record<string, unknown> }>;
+    };
+    expect(
+      Object.keys(doc.entities.articles!.fields),
+      'and the config is untouched — no field declared over the stale column',
+    ).not.toContain('leftover');
+  });
+
   it('enforces column-editing restrictions on the backend (bad data models 400)', async () => {
     const s = await boot();
     const post = (path: string, body: unknown) =>

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Lattice } from '../lattice.js';
-import { allAsyncOrSync } from '../db/adapter.js';
+import { countItemsBySourceConnector } from '../connectors/item-counts.js';
 import { sendJson, readJson } from './http.js';
 import type { Connector, CredentialField } from '../connectors/types.js';
 import { isCredentialConnector, isMcpConnector } from '../connectors/types.js';
@@ -383,28 +383,13 @@ export async function dispatchConnectorsRoute(
       // report 0 for every typed connection. Resolve each connection's real tables via its
       // connector impl and sum a bounded COUNT(*) per table (never a row load), de-duped so a
       // table is scanned once. A legacy flat connection resolves to `mcp_items` as before.
-      const itemCounts = new Map<string, number>();
-      const countedTables = new Set<string>();
+      const countedTables: string[] = [];
       for (const c of connected) {
         const impl = connectorForRowToolkit(byToolkit, c.toolkit);
         if (!impl) continue;
-        for (const m of impl.models(c.toolkit)) {
-          if (countedTables.has(m.table)) continue;
-          countedTables.add(m.table);
-          try {
-            const rows = (await allAsyncOrSync(
-              db.adapter,
-              `SELECT "_source_connector_id" AS cid, COUNT(*) AS n FROM "${m.table}" WHERE "deleted_at" IS NULL GROUP BY "_source_connector_id"`,
-              [],
-              // Postgres returns COUNT(*) as a string, SQLite as a number — coerce.
-            )) as { cid: string; n: number | string }[];
-            for (const r of rows)
-              if (r.cid) itemCounts.set(r.cid, (itemCounts.get(r.cid) ?? 0) + Number(r.n));
-          } catch {
-            // Table not created yet (no sync) — contributes zero.
-          }
-        }
+        for (const m of impl.models(c.toolkit)) countedTables.push(m.table);
       }
+      const itemCounts = await countItemsBySourceConnector(db.adapter, countedTables);
       const toolkits: ReturnType<typeof toolkitDescriptor>[] = [];
       for (const c of connectors) {
         for (const tk of c.toolkits()) toolkits.push(toolkitDescriptor(c, tk));
@@ -463,6 +448,7 @@ export async function dispatchConnectorsRoute(
 
     // POST /api/connectors/sync-if-stale — GUI-load refresh hook. Loops every
     // connector; each filters to its own registry rows, so no cross-talk.
+    // @capability connector.sync-stale
     if (pathname === '/api/connectors/sync-if-stale' && method === 'POST') {
       let synced = 0;
       let failed = 0;
@@ -625,6 +611,8 @@ export async function dispatchConnectorsRoute(
       // POST /api/connectors/<toolkit>/connect — validate credentials, store them,
       // record the connection + run the initial sync. Idempotent: reconnecting
       // reuses this (toolkit, member)'s registry row and retires the old creds.
+      // @headless-debt connecting a source covers both a credential handshake and a browser
+      // authorization handshake; neither entry point is on the library surface.
       if (action === 'connect' && method === 'POST') {
         // MCP connectors: begin per-server OAuth (return a redirect the GUI opens),
         // or — for an open/stdio server — connect + sync immediately.
@@ -803,6 +791,7 @@ export async function dispatchConnectorsRoute(
       };
 
       // POST /api/connectors/<toolkit>/refresh — manual re-sync.
+      // @capability connector.sync
       if (action === 'refresh' && method === 'POST') {
         const body = await readJson<{ connectorId?: unknown }>(req).catch(
           () => ({}) as { connectorId?: unknown },
@@ -818,6 +807,7 @@ export async function dispatchConnectorsRoute(
       }
 
       // DELETE /api/connectors/<toolkit> — disconnect + teardown.
+      // @capability connector.disconnect
       if (!action && method === 'DELETE') {
         const body = await readJson<{ connectorId?: unknown }>(req).catch(
           () => ({}) as { connectorId?: unknown },

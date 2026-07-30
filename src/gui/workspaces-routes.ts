@@ -114,6 +114,12 @@ export async function handleWorkspacesRoutes(
     });
     return true;
   }
+  // Swap which workspace this server process has open. The DURABLE half is the
+  // registry pointer written below — every later open with no explicit id resolves
+  // to it, from a command, a job, or a library call — and that half is an ordinary
+  // exported function. What stays here is the in-process handle swap, which a direct
+  // caller does not need because it holds the handle it opened.
+  // @capability workspace.set-active
   if (method === 'POST' && pathname === '/api/workspaces/switch') {
     if (!latticeRoot) {
       sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
@@ -179,6 +185,9 @@ export async function handleWorkspacesRoutes(
   // re-register entities (so a table added out-of-band surfaces) WITHOUT a full
   // process restart. Reuses reopenSameConfig — same connection target, fresh
   // schema registration + converge. Lighter than killing the server.
+  // @gui-only session-state: re-opens the workspace this server process already has open, so
+  // connected clients pick up an out-of-band change. A direct caller re-opens by calling
+  // openConfig again; the concept only exists because the server holds one shared handle.
   if (method === 'POST' && pathname === '/api/workspaces/reload') {
     let next: ActiveDb;
     try {
@@ -192,6 +201,7 @@ export async function handleWorkspacesRoutes(
     sendJson(res, { ok: true, tables, convergeWarnings: next.convergeWarnings });
     return true;
   }
+  // @capability workspace.create
   if (method === 'POST' && pathname === '/api/workspaces/create') {
     if (!latticeRoot) {
       sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
@@ -231,6 +241,8 @@ export async function handleWorkspacesRoutes(
     sendJson(res, { ok: true, id: created.id });
     return true;
   }
+  // @headless-debt removing a workspace unregisters it and deletes its files; the registry
+  // removal is not on the library surface and the file cleanup lives in this route.
   if (method === 'POST' && pathname === '/api/workspaces/delete') {
     if (!latticeRoot) {
       sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);

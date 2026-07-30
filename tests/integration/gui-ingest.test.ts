@@ -27,7 +27,7 @@ vi.mock('../../src/ai/vision.js', async (orig) => {
 
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { Lattice } from '../../src/lattice.js';
-import { MAX_INGEST_BYTES } from '../../src/gui/http.js';
+import { MAX_INGEST_BYTES } from '../../src/ops/paging.js';
 import { seedClaudeOAuth } from '../helpers/claude-auth.js';
 
 const dirs: string[] = [];
