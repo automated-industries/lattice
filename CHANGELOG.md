@@ -529,6 +529,11 @@ back or that affects other people.
 
 ### Added
 
+- **Configurable default model IDs via environment variables.** The `DEFAULT_MODEL` and
+  `CHEAPEST_MODEL` constants can now be overridden via `LATTICE_DEFAULT_MODEL` and
+  `LATTICE_CHEAPEST_MODEL` environment variables, allowing downstream consumers to customize
+  AI model selection without editing source code. When unset, the hardcoded defaults remain
+  unchanged (`claude-haiku-4-5`).
 - **One-click undo for schema changes.** Deleting a table, deleting a link, or renaming an
   object now shows an Undo that restores it — and the misleading "this cannot be undone"
   warnings are gone, because these were always reversible.
