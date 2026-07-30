@@ -17,19 +17,25 @@ import { createRequire } from 'node:module';
  * than restating the id, so bumping the default is a one-line change and two
  * halves of the app can never end up on different models.
  *
+ * Override via the `LATTICE_DEFAULT_MODEL` environment variable. When unset,
+ * defaults to `claude-haiku-4-5`.
+ *
  * This module is the right home for it: it has no imports of its own beyond
  * `node:module`, so anything (library AI features, GUI features, the assistant
  * loop) can depend on it without an import cycle.
  */
-export const DEFAULT_MODEL = 'claude-haiku-4-5';
+export const DEFAULT_MODEL = process.env.LATTICE_DEFAULT_MODEL ?? 'claude-haiku-4-5';
 /**
  * Cheapest capable model, pinned for high-volume background passes (e.g. the
  * enrichment fold) where the customer bears the token cost. Deliberately its OWN
  * literal rather than an alias of {@link DEFAULT_MODEL}: they happen to be equal
  * today, and writing it as an alias would silently make every bulk pass expensive
  * the day the default is upgraded to a larger model.
+ *
+ * Override via the `LATTICE_CHEAPEST_MODEL` environment variable. When unset,
+ * defaults to `claude-haiku-4-5`.
  */
-export const CHEAPEST_MODEL = 'claude-haiku-4-5';
+export const CHEAPEST_MODEL = process.env.LATTICE_CHEAPEST_MODEL ?? 'claude-haiku-4-5';
 const MAX_TOKENS = 2048;
 
 /** A content block in the Anthropic message format used here. */
