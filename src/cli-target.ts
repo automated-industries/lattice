@@ -14,7 +14,7 @@
  * helpfully inventing an empty workspace to run against.
  */
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { resolveSessionRoot, rootConfigDir } from './framework/lattice-root.js';
 import {
   findWorkspaceByConfigPath,
@@ -48,7 +48,16 @@ export interface WorkspaceTargetInput {
  * A registered workspace records its own, which is the only answer that can be
  * right for one — its tree may sit anywhere. A standalone config has no record,
  * so the usual probe of the conventional locations decides, exactly as it does
- * when the app is started on one.
+ * when the app is started on one — but rooted at the CONFIG's own directory, not
+ * at whatever directory the shell was in.
+ *
+ * That distinction is the whole of this function's safety. Probing from the shell
+ * answers with whichever nearby directory happens to hold a rendered tree, which
+ * for a config named by absolute path from somewhere else is an unrelated
+ * workspace's: the command then renders one workspace into another's tree and
+ * sweeps the contexts of the workspace it was not even asked about — a
+ * reconciliation being asked "which of these two do you mean" and taking the
+ * shell's word for it.
  */
 function contextDirFor(configPath: string, root: string | null): string {
   if (root !== null) {
@@ -60,7 +69,7 @@ function contextDirFor(configPath: string, root: string | null): string {
       // which is the honest answer to the question being asked here.
     }
   }
-  return resolve(discoverOutputDir('./context', false));
+  return resolve(discoverOutputDir('./context', false, dirname(configPath)));
 }
 
 /**

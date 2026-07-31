@@ -32,7 +32,13 @@ export type HealthIssueKind =
   | 'dimension_mismatch'
   | 'index_stale'
   /** There was no retrieval to check at all — the report establishes nothing. */
-  | 'nothing_to_diagnose';
+  | 'nothing_to_diagnose'
+  /**
+   * The schema was read in full and none of it configures search. Unlike
+   * `nothing_to_diagnose` this is an answer, not an absence of one, so it is
+   * reported at `info` and leaves the report healthy.
+   */
+  | 'no_retrieval_configured';
 
 export interface RetrievalHealthIssue {
   /** Table the issue concerns, or undefined for a global/extension issue. */
@@ -104,6 +110,22 @@ export interface DiagnoseOptions {
    * report about nothing is not a clean bill of health.
    */
   tables?: RetrievalHealthSpec[];
+  /**
+   * The caller enumerated everything that could declare retrieval, so `tables`
+   * is the complete truth about this database rather than as much of it as the
+   * caller happened to know.
+   *
+   * It only changes the meaning of an EMPTY result, and it changes it from a
+   * question into an answer. Without it, finding nothing means "nothing was
+   * assessed", which is an error a deploy gate must fail on. With it, finding
+   * nothing means "the whole schema was read and none of it configures search" —
+   * a fact about the workspace, reported at `info`, leaving the report healthy.
+   *
+   * Only a caller that actually walked the schema may set this. Opening a
+   * workspace does; a bare `diagnoseRetrieval(adapter)` cannot, and keeps the
+   * error.
+   */
+  expectationsComplete?: boolean;
   /**
    * Coverage below which a partially-indexed/embedded table is flagged stale.
    * Default 1 — anything short of full coverage is a `warning`.
@@ -364,18 +386,35 @@ export async function diagnoseRetrieval(
     specs = rows.map((r) => ({ table: r.table_name, expectEmbeddings: true }));
   }
 
-  // Nothing declared it, nothing in the database implies it: there is no
-  // retrieval to diagnose, so say so as an error rather than reporting health we
-  // never established. A build step gating on this must fail here — a pass would
-  // mean "checked and fine", which is precisely what did not happen.
+  // Nothing declared it, nothing in the database implies it. What that MEANS
+  // depends entirely on whether the caller was in a position to know, and the
+  // two readings are opposites:
+  //
+  //  - a caller that enumerated the whole schema has an answer — this workspace
+  //    configures no search — which is a fact worth stating and not a fault. A
+  //    freshly made workspace is exactly this, and calling it unhealthy told
+  //    every new user their install was broken on their first health check;
+  //  - a caller that described nothing has no answer at all, and reporting
+  //    health here would mean "checked and fine" when nothing was checked. A
+  //    build step gating on retrieval must fail on that.
   if (specs.length === 0) {
-    globalIssues.push({
-      kind: 'nothing_to_diagnose',
-      severity: 'error',
-      message:
-        'Nothing to diagnose — no table is configured for full-text or semantic search, and no embeddings are stored. Retrieval health was not assessed.',
-      hint: 'Add `fts:` and/or `embeddings:` to the tables that should be searchable, then run this again.',
-    });
+    globalIssues.push(
+      opts.expectationsComplete
+        ? {
+            kind: 'no_retrieval_configured',
+            severity: 'info',
+            message:
+              'No search is configured here — no table is configured for full-text or semantic search, and no embeddings are stored.',
+            hint: 'Add `fts:` and/or `embeddings:` to the tables that should be searchable.',
+          }
+        : {
+            kind: 'nothing_to_diagnose',
+            severity: 'error',
+            message:
+              'Nothing to diagnose — no table is configured for full-text or semantic search, and no embeddings are stored. Retrieval health was not assessed.',
+            hint: 'Add `fts:` and/or `embeddings:` to the tables that should be searchable, then run this again.',
+          },
+    );
   }
 
   // Surface a missing-but-needed extension as a global warning. We only know an

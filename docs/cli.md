@@ -8,6 +8,9 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
 
 - [Installation](#installation)
 - [Commands](#commands)
+  - [`lattice init`](#lattice-init)
+  - [`lattice workspace`](#lattice-workspace)
+  - [`lattice database`](#lattice-database)
   - [`lattice generate`](#lattice-generate)
   - [`lattice render`](#lattice-render)
   - [`lattice reconcile`](#lattice-reconcile)
@@ -24,6 +27,8 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice import`](#lattice-import)
   - [`lattice schema`](#lattice-schema)
   - [`lattice questions`](#lattice-questions)
+  - [`lattice search` / `reindex` / `index status` / `doctor`](#lattice-search--reindex--index-status--doctor)
+  - [`lattice update`](#lattice-update)
 - [Cloud](#cloud)
   - [`lattice cloud`](#lattice-cloud)
   - [From the library](#from-the-library)
@@ -68,6 +73,98 @@ lattice --help
 
 ## Commands
 
+### `lattice init`
+
+Create a `.lattice` root and a default workspace inside it, then render its context
+tree. This is the first command on a new machine; everything below opens the
+workspace it makes.
+
+```sh
+lattice init [--root <dir>] [--name "<display name>"]
+```
+
+A **root** is never found by searching upward from the current directory — it is
+`--root` if you pass one, otherwise `LATTICE_ROOT`, otherwise `~/.lattice`. A
+project-local root is perfectly usable; it just has to be named. See
+[workspaces.md](workspaces.md#which-root-a-session-uses).
+
+---
+
+### `lattice workspace`
+
+Manage the workspaces registered under a root.
+
+```sh
+lattice workspace list                                # the active one is marked *
+lattice workspace create <name>                       # or: create --name "<display name>"
+lattice workspace use <name-or-id>                    # the display name, or the stable UUID
+lattice workspace rename <name-or-id> --name "<new>"
+lattice workspace delete <name-or-id> --yes
+```
+
+| Option          | Short | Default      | Description                                      |
+| --------------- | ----- | ------------ | ------------------------------------------------ |
+| `--root <dir>`  | –     | `~/.lattice` | The root these workspaces live under             |
+| `--name <name>` | –     | –            | Display name, for `create` and `rename`          |
+| `--yes`         | `-y`  | off          | Confirm `delete`. There is no prompt — see below |
+
+A name is matched however it is capitalised, and one shared by two workspaces is
+refused with both identifiers rather than resolved to whichever came first. The
+identifier is accepted everywhere a name is and is what a script should use, because
+it survives a rename.
+
+`rename` writes **both** places a workspace name lives — the `name:` key in its own
+configuration and the display name in the registry the switcher reads — and says when
+there was no registry record to update, rather than letting a caller assume there was.
+
+`delete` requires `--yes` rather than asking, deliberately: these commands exist so
+the work can run with nobody watching, and a prompt in that setting is a hang, not a
+safeguard. The workspace you named is resolved **before** the flag is checked, so a
+typo reads as a typo instead of sending you back to re-run an irreversible command
+with the safeguard removed. What it removes depends on the kind: a workspace we
+scaffolded loses its folder, one whose files you only ever pointed at keeps every one
+of them, and a shared workspace loses its local pointer **and** the credentials this
+machine kept in order to reconnect — because forgetting only the pointer leaves a
+machine able to reach a database its operator was told it had been disconnected from.
+The shared database itself is never touched.
+
+On the package surface as `deleteWorkspace`, with refusals arriving as an `Error`
+carrying a `code` (`workspaceErrorCode`).
+
+---
+
+### `lattice database`
+
+A workspace holds a set of database configs in one directory and opens one at a
+time. `lattice database` manages that set; `lattice workspace` manages the workspaces
+themselves.
+
+```sh
+lattice database list                          # the set, the active one marked *
+lattice database create <name>                 # or: create --name "<name>"
+lattice database delete <name-or-path> --yes
+```
+
+| Option            | Short | Default              | Description                     |
+| ----------------- | ----- | -------------------- | ------------------------------- |
+| `--config <path>` | `-c`  | the active workspace | Whose databases these are       |
+| `--root <dir>`    | –     | `~/.lattice`         | The root holding that workspace |
+| `--name <name>`   | –     | –                    | Name for the new database       |
+| `--yes`           | `-y`  | off                  | Confirm `delete`                |
+
+`create` writes the name you typed into the new database's own file, which is what
+every later reference reads — so `delete` finds what `create` made, by the name you
+gave it. `delete` accepts the label printed by `list` as well as a path, refuses
+anything outside this workspace's own set rather than unlinking it, and refuses to
+remove the **last** database in a workspace (remove the workspace instead if that is
+what you meant). It also says where the rows actually were: a file removed, a shared
+database untouched, a local database with nothing yet written, and a store that is not
+a file are four different outcomes and are reported as four.
+
+On the package surface as `createDatabase` / `deleteDatabase`.
+
+---
+
 ### `lattice generate`
 
 Generate TypeScript interface types, a SQL migration file, and (optionally) scaffold render output files from a `lattice.config.yml`.
@@ -109,12 +206,20 @@ One-shot context generation. Reads the config, connects to the database, and wri
 lattice render [options]
 ```
 
+**Which workspace, and where it writes.** With no `--config`, a `lattice.config.yml` in the
+current directory is used, and otherwise the ACTIVE workspace — the same resolution every
+other workspace command uses. With no `--output`, the tree is written to that workspace's own
+rendered-context directory rather than beside your shell. For a config that is not a
+registered workspace, that directory is looked for next to the CONFIG FILE — not next to
+the shell, which for a config named by path from elsewhere would be a different
+workspace's tree entirely.
+
 **Options:**
 
-| Option            | Short | Default                | Description                                        |
-| ----------------- | ----- | ---------------------- | -------------------------------------------------- |
-| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                       |
-| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files |
+| Option            | Short | Default                              | Description                                        |
+| ----------------- | ----- | ------------------------------------ | -------------------------------------------------- |
+| `--config <path>` | `-c`  | the active workspace                 | Which workspace to render                          |
+| `--output <dir>`  | –     | the workspace's rendered-context dir | Output directory for rendered entity context files |
 
 **Exit codes:**
 
@@ -146,16 +251,25 @@ Render + orphan cleanup. Writes entity context directories and then removes any 
 lattice reconcile [options]
 ```
 
+**When it refuses.** Cleanup works by difference, so a process that opened without part of
+the workspace's layout would read every context it does not know as "removed" and delete it.
+Two cases are refused instead, with nothing touched and a non-zero exit: the workspace renders
+no layout of its own at all, and a rendered tree that belongs to a connected external source
+this machine could not load. The first also happens when a workspace really did delete its
+last table — pass `--layout-emptied` to say that is what happened and let the leftover tree be
+swept. `lattice watch --cleanup` applies the same rules and prints the same refusals.
+
 **Options:**
 
-| Option              | Short | Default                | Description                                              |
-| ------------------- | ----- | ---------------------- | -------------------------------------------------------- |
-| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                             |
-| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files       |
-| `--dry-run`         | –     | off                    | Report orphans but do not delete anything                |
-| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories              |
-| `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity directories |
-| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames              |
+| Option              | Short | Default                              | Description                                              |
+| ------------------- | ----- | ------------------------------------ | -------------------------------------------------------- |
+| `--config <path>`   | `-c`  | the active workspace                 | Which workspace to reconcile                             |
+| `--output <dir>`    | –     | the workspace's rendered-context dir | Output directory for rendered entity context files       |
+| `--dry-run`         | –     | off                                  | Report orphans but do not delete anything                |
+| `--no-orphan-dirs`  | –     | off                                  | Skip removal of orphaned entity directories              |
+| `--no-orphan-files` | –     | off                                  | Skip removal of orphaned files inside entity directories |
+| `--layout-emptied`  | –     | off                                  | Confirm this workspace renders nothing now on purpose    |
+| `--protected <csv>` | –     | –                                    | Comma-separated list of protected filenames              |
 
 **Exit codes:**
 
@@ -189,10 +303,10 @@ lattice status [options]
 
 **Options:**
 
-| Option            | Short | Default                | Description                                        |
-| ----------------- | ----- | ---------------------- | -------------------------------------------------- |
-| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                       |
-| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files |
+| Option            | Short | Default                              | Description                                        |
+| ----------------- | ----- | ------------------------------------ | -------------------------------------------------- |
+| `--config <path>` | `-c`  | the active workspace                 | Which workspace to report on                       |
+| `--output <dir>`  | –     | the workspace's rendered-context dir | Output directory for rendered entity context files |
 
 **Example:**
 
@@ -218,15 +332,16 @@ lattice watch [options]
 
 **Options:**
 
-| Option              | Short | Default                | Description                                                              |
-| ------------------- | ----- | ---------------------- | ------------------------------------------------------------------------ |
-| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                                             |
-| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files                       |
-| `--interval <ms>`   | –     | `5000`                 | Poll interval in milliseconds                                            |
-| `--cleanup`         | –     | off                    | Enable orphan cleanup after each render cycle                            |
-| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories (requires `--cleanup`)       |
-| `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity dirs (requires `--cleanup`) |
-| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames (requires `--cleanup`)       |
+| Option              | Short | Default                              | Description                                                              |
+| ------------------- | ----- | ------------------------------------ | ------------------------------------------------------------------------ |
+| `--config <path>`   | `-c`  | the active workspace                 | Which workspace to watch                                                 |
+| `--output <dir>`    | –     | the workspace's rendered-context dir | Output directory for rendered entity context files                       |
+| `--interval <ms>`   | –     | `5000`                               | Poll interval in milliseconds                                            |
+| `--cleanup`         | –     | off                                  | Enable orphan cleanup after each render cycle                            |
+| `--no-orphan-dirs`  | –     | off                                  | Skip removal of orphaned entity directories (requires `--cleanup`)       |
+| `--no-orphan-files` | –     | off                                  | Skip removal of orphaned files inside entity dirs (requires `--cleanup`) |
+| `--layout-emptied`  | –     | off                                  | Confirm this workspace renders nothing now on purpose                    |
+| `--protected <csv>` | –     | –                                    | Comma-separated list of protected filenames (requires `--cleanup`)       |
 
 Sends `SIGINT` or `SIGTERM` to stop gracefully.
 
@@ -593,6 +708,10 @@ not the machine the person is sitting at, and there may be minutes between them.
 The half-finished handshake is kept encrypted on the machine and expires by
 itself, so an abandoned attempt does not leave a usable secret lying around.
 
+**A `sync` that lost a membership exits non-zero, carrying the whole report** — with or
+without `--json`. Three of four workspaces arriving is not a clean pass, and a script that
+read it as one would carry on without the fourth.
+
 **Pipe the code, do not type it.** `--code-stdin` keeps it out of your shell
 history and out of the process list, the same reason the model and cloud verbs
 read a key or a connection string that way.
@@ -658,6 +777,17 @@ lattice connector connect-database \
 lattice connector list
 lattice connector sync            # every stale source
 ```
+
+**A refresh pass that lost a source exits non-zero, and says which one.** The report is
+printed either way — including with `--json`, on standard output — so a scheduled job can
+both notice the failure and report it:
+
+```sh
+lattice connector sync --json > sync.json || alert-somebody < sync.json
+```
+
+`--json` gives `{ synced, failed, failures: [{ connectorId, displayName, error }] }`. A pass
+with nothing stale to do exits `0`.
 
 **The credentials are entered as parts, not as a URL.** A pasted connection string
 invites reusing an owner account wholesale; a data source wants a read-only user
@@ -881,6 +1011,91 @@ lattice questions answer 7f3c… --text "Yes"
 `enqueueQuestion(db, feed, input)` is how a producer asks. A question that is
 missing or already resolved raises an `Error` carrying a `code` (`not_found`,
 `not_pending`) rather than a status.
+
+---
+
+### `lattice search` / `reindex` / `index status` / `doctor`
+
+Retrieval, its indexes, and a health report a deploy can gate on. All four resolve
+the workspace the same way every other command does — a `--config` you typed wins, a
+config in the current directory is next, and otherwise the **active** workspace — so
+a bare `lattice doctor` reports on the workspace this machine is using, from wherever
+it is typed.
+
+```sh
+lattice search "quarterly revenue" --table reports [--topk 10] [--explain] [--json]
+lattice reindex <table>                # rebuild that table's native vector index
+lattice index status [--json]          # what is indexed, and what is stale
+lattice doctor [--fix] [--json]        # coverage, extensions, ranked issues
+```
+
+| Option            | Short | Default              | Description                                           |
+| ----------------- | ----- | -------------------- | ----------------------------------------------------- |
+| `--config <path>` | `-c`  | the active workspace | Which workspace to act on                             |
+| `--table <name>`  | –     | –                    | The table to search (required for `search`)           |
+| `--topk <n>`      | –     | `10`                 | How many results                                      |
+| `--explain`       | –     | off                  | Per-result score breakdown (vector / fts / rrf)       |
+| `--fix`           | –     | off                  | `doctor` rebuilds every stale vector index, re-checks |
+| `--json`          | –     | off                  | Machine-readable output                               |
+
+**What search does depends on the workspace file.** Full-text and semantic search are
+per-table settings declared in the config — `fts:` opts a table into the full-text
+index, and `embeddings:` names the fields to embed plus the endpoint that embeds them.
+Without an `embeddings:` block there is no vector index to build, so `search` matches
+on keywords alone and `reindex` has nothing to rebuild. There is deliberately **no
+default endpoint** — embedding a field means sending its contents somewhere, so the
+destination is always written down, and the key is named by environment variable
+rather than written into a file you commit. See
+[configuration.md](configuration.md#semantic-search-embeddings).
+
+**`doctor` exits non-zero when the report is not healthy**, which is what makes it
+usable as a deploy gate — and it will not call a workspace healthy that it never
+examined. With nothing configured for search it falls back to what the database
+itself contains.
+
+When even that is empty, what it reports depends on whether it was in a position to
+know, because the two cases are opposites. A **workspace** it opened has had its whole
+schema read, so "nothing configures search" is an answer about that workspace: it says
+`no search is configured here` as an `INFO`, stays healthy, and exits `0`. A freshly
+made workspace is exactly this, and `lattice init` followed by `lattice doctor` is a
+clean run rather than a failing one. A **library caller** that hands
+`diagnoseRetrieval` no expectations never walked the schema, so an empty result means
+nothing was assessed — that remains a `nothing to diagnose` error and a non-zero exit,
+rather than returning a clean bill of health a build step would pass on. Passing
+`tables: []` explicitly is the caller's own list and keeps the error too.
+See [retrieval.md](retrieval.md).
+
+---
+
+### `lattice update`
+
+Upgrade this copy of `latticesql` in place, or — with `--check` — report what an
+upgrade would do and change nothing.
+
+```sh
+lattice update            # install the newer version, if there is one
+lattice update --check    # report only; installs nothing
+```
+
+| Option    | Default | Description                                                       |
+| --------- | ------- | ----------------------------------------------------------------- |
+| `--check` | off     | Report the published version and what this copy could do about it |
+
+`--check` reports **both** halves, because either alone is useless: a version with no
+install context says a release exists but not whether this machine can move to it.
+Safe on a start-up path, a health check, or an inventory pass — it never installs
+anything.
+
+**A check that could not run is reported as unrun**, and exits non-zero. A registry
+answering with something other than an answer — a proxy's 403, a mirror's 404 for the
+package name — used to resolve to the same value a current copy produces, so an
+inventory recorded a machine as current having learned nothing. "Already up to date"
+is now only ever said about a check that actually happened. The packaged desktop
+application asks **its own** release channel rather than the package registry: the two
+advance separately, and asking the wrong one can name a release that surface cannot
+install.
+
+From the library: `checkForNewerVersion({ currentVersion })`.
 
 ---
 

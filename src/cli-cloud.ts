@@ -395,7 +395,10 @@ async function runSecure(db: Lattice, args: CloudCommandArgs): Promise<string[]>
   if (before.standing === 'member') {
     throw new Error('Only a cloud owner can secure a cloud — this connection is a member.');
   }
-  await secureCloud(db);
+  // Hand the same answer down rather than letting the operation re-derive one:
+  // a caller that was told which kind of session this is and then let the
+  // operation guess is exactly how two surfaces disagree about the same thing.
+  await secureCloud(db, ...(args.managed === undefined ? [] : [{ managed: args.managed }]));
 
   const after = await cloudStatus(db);
   if (!after.secured) {

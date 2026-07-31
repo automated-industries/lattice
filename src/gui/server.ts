@@ -70,7 +70,7 @@ import {
 import { freshnessConnectors } from '../connectors/catalog.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
-import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
+import { handleSchemaRoutes, denyIfNotCloudOwner, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
 import { handleDataModelRoutes, type DataModelRoutesDeps } from './data-model-routes.js';
 import {
@@ -86,7 +86,7 @@ import { handleWorkspacesRoutes, type WorkspacesRoutesDeps } from './workspaces-
 import { deleteWorkspace } from '../ops/workspace-lifecycle.js';
 import { workspaceErrorCode } from '../ops/workspace-errors.js';
 import { handleDatabasesRoutes, type DatabasesRoutesDeps } from './databases-routes.js';
-import { readIdentity, writeIdentity } from '../framework/user-config.js';
+import { readIdentity, suggestedDisplayName, writeIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
   /**
@@ -577,7 +577,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       return true;
     }
     if (method === 'GET' && pathname === '/api/userconfig/identity') {
-      sendJson(res, readIdentity());
+      // Same shape the workspace-side route answers with. This is the branch
+      // first-run onboarding actually hits — before any workspace exists — so the
+      // name to offer has to be here too, or the very screen that needs it is the
+      // one screen that never receives it.
+      sendJson(res, { ...readIdentity(), suggested_display_name: suggestedDisplayName() });
       return true;
     }
     // @capability user.identity
@@ -1003,6 +1007,11 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // not have.
               // @capability schema.set-table-meta
               if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
+              // This row is what everybody on a shared database sees when they
+              // look at the table, so changing it is owner-only — the same rule
+              // the operation itself now carries, answered here as a status
+              // before a body is read that will not be used.
+              if (await denyIfNotCloudOwner(active.db, res, 'describe a table')) return true;
               const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
               if (!isRegisteredTable(active, entityName)) {
                 sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
@@ -1200,6 +1209,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                     ({ data, name }) =>
                       importDataFaithfully(active.db, active.configPath, data, {
                         sourceName: name,
+                        // Give it the feed so the import lands in the change log with
+                        // the same honest entry every other import door writes —
+                        // including that it cannot be undone in one step.
+                        feed: active.feed,
                       }),
                   ),
                 // Computed tables: tagged read-only in the schema context, and

@@ -1,9 +1,17 @@
-# Structured-source import (v4.2)
+# Structured-source import (v4.2+)
 
-latticesql 4.2 can turn a **structured file** — a JSON object or an Excel
-`.xlsx` workbook — into a Lattice schema (entities, dimensions, junctions) and
-materialize it into a workspace. Everything here is **additive and opt-in**:
-absent a file drop, behavior is byte-identical to 4.1.
+latticesql turns a **file with tables in it** into a Lattice schema (entities,
+dimensions, junctions) and materializes it into a workspace. The reader accepts:
+
+| Source               | Read as                                              |
+| -------------------- | ---------------------------------------------------- |
+| `.xlsx` / `.xls`     | every sheet, or one named sheet (`--sheet`)          |
+| `.csv` / `.tsv`      | one delimited table                                  |
+| `.docx` (Word)       | embedded tables, named from the document (see below) |
+| `.pptx` (PowerPoint) | embedded tables, named from the slide title          |
+| `.json`              | a JSON object whose keys are record arrays           |
+
+Everything here is **additive and opt-in**: absent a file, behavior is unchanged.
 
 There are **three doors and one pipeline**. Dropping a file into the assistant
 rail in `lattice gui` builds a proposal, which is applied over
@@ -17,13 +25,16 @@ snapshot dating; none of them is a reduced version of another.
 lattice import ./exports/2026-07.xlsx --dry-run   # what would this create?
 lattice import ./exports/2026-07.xlsx
 lattice import ./big-book.xlsx --sheet "Q3"
+lattice import ./rates.csv
+lattice import ./quarterly-report.docx
 ```
 
 See the [CLI reference](cli.md#lattice-import) for every option.
 
 ## What it does
 
-When you drop a recognized JSON / `.xlsx` source into the chat:
+When any of those sources arrives — dropped into the chat, named on the command
+line, or handed to `applyImport`:
 
 1. **Infer a schema.** `inferSchema` reads the source and proposes **entities**
    (record collections that become tables), **dimensions** (small repeated value
@@ -80,8 +91,7 @@ outright with an instructive error.
 
 Dropping a file imports it. There is no confirmation card, no "what should I
 bring in?" choice, and no follow-up question: every recognized case materializes
-straight away, and what happened is reported in the activity feed (and is
-undoable) rather than asked about up front.
+straight away, and what happened is recorded rather than asked about up front.
 
 - **Brand-new structured data.** Tables and rows are created directly, along with
   any detected computed views, shown as a compact live-progress card.
@@ -99,6 +109,40 @@ Imports apply through `applyImport`. The browser reaches it over
 NDJSON; `lattice import` calls it directly and prints the same lines to stderr.
 After an import lands, the data-model planner runs over the new tables to apply
 safe normalizations.
+
+## Taking an import back
+
+Every import — from the browser, from `lattice import`, from a library call —
+writes **one entry into the change log** (`schema.import`), whatever door it came
+through. The entry names the file, the tables it wrote, the tables it _created_,
+the row counts and the snapshot date, and it is still there tomorrow: it is not
+only a live activity bubble that scrolls away.
+
+**An import cannot be undone in one step, and the entry says so.** Undo replays
+recorded per-row inverses under a bounded ceiling; an import creates tables,
+declares them in the workspace file, seeds shared value sets, builds junctions and
+loads rows in bulk — a single sheet is designed to carry a hundred thousand of
+them — and none of that is a row inverse. So rather than offer a control that
+would fail, the entry states plainly what an undo will **not** restore and what to
+do instead, and that advice follows what the import actually did:
+
+- **It created the tables** → _"Undo will not remove the tables it created or the
+  rows in them. To take this import back, delete those tables."_
+- **It added rows to tables that were already there** (a recognised re-import,
+  filed as a new snapshot) → _"Undo will not remove the rows it added. To take this
+  import back, delete the rows it added (the `YYYY-MM-DD` snapshot)."_ Deleting the
+  table there would take every earlier snapshot in it too, so the entry never
+  suggests it.
+
+The card in version history shows that sentence and offers no Revert button, and
+asking to reverse the entry anyway (`POST /api/history/revert/<id>`) is **refused
+in the same words** rather than reported as a success that restored nothing. An
+import carries no operation-group id either, so there is no group undo to offer —
+`POST /api/history/undo-group/...` finds nothing.
+
+The payload on the entry carries `reversible: false` alongside the sentence, so a
+caller reading the log programmatically does not have to parse the promise back
+out of prose.
 
 ## File-size cap
 
@@ -152,18 +196,19 @@ import {
   materializeImport,
 } from 'latticesql';
 
-// JSON object → proposed schema
-const plan = inferSchema(data); // { entities, dimensions, junctions, skipped }
+// Parsed source (keys → record arrays) → proposed schema
+const plan = await inferSchema(data); // { entities, dimensions, junctions, skipped }
 
 // Detect the as-of date and any per-row date column
 const asOf = detectAsOf(fileName); // ISO YYYY-MM-DD | null
 const asOfColumns = detectAsOfColumns(data, plan);
 
-// Detect read-only views (per-slice tabs that mirror a master)
-const { views } = dedupeAndDetectViews(data, plan);
+// Detect read-only views (per-slice tabs that mirror a master). Plan first, then
+// the data it was inferred from; the returned plan is the deduped one.
+const { plan: deduped, views } = await dedupeAndDetectViews(plan, data);
 
 // Materialize into a workspace
-const result = await materializeImport({ db, configPath }, data, plan, views, {
+const result = await materializeImport({ db, configPath }, data, deduped, views, {
   mode: 'both',
   asOf,
   asOfColumn: null,

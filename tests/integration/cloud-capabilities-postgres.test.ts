@@ -87,12 +87,28 @@ function dbUrl(dbname: string, user?: string, password?: string): string {
   return u.toString();
 }
 
-/** A minimal user table the owner and the member both write into. */
-function defineNotes(db: Lattice): void {
+/**
+ * The user tables these clouds carry. `notes` holds the data — the owner and the
+ * members both write into it — and `dashboards` holds a page that reads it. Two
+ * tables rather than one because sharing the page is only half the operation: the
+ * sharing tests below assert that the data behind it travels too.
+ */
+function defineTables(db: Lattice): void {
   db.define('notes', {
     columns: { id: 'TEXT PRIMARY KEY', body: 'TEXT', deleted_at: 'TEXT' },
     render: () => '',
     outputFile: 'notes.md',
+  });
+  db.define('dashboards', {
+    columns: {
+      id: 'TEXT PRIMARY KEY',
+      title: 'TEXT',
+      html: 'TEXT',
+      source_tables: 'TEXT',
+      deleted_at: 'TEXT',
+    },
+    render: () => '',
+    outputFile: 'dashboards.md',
   });
 }
 
@@ -157,10 +173,20 @@ describe.skipIf(!PG_URL)('cloud capabilities, called directly', () => {
 
     const owner = new Lattice(dbUrl(dbname));
     opened.push(owner);
-    defineNotes(owner);
+    defineTables(owner);
     await owner.init();
     await secureCloud(owner);
     return { owner, dbname, configPath: configFor(dbname) };
+  }
+
+  /** A dashboard row whose page reads `sources`, owned by whoever writes it. */
+  async function makeDashboard(db: Lattice, pk: string, sources: string[]): Promise<void> {
+    await db.insert('dashboards', {
+      id: pk,
+      title: 'Report',
+      html: '<div></div>',
+      source_tables: JSON.stringify(sources),
+    });
   }
 
   /** Provision a scoped member on `cloud` and open a Lattice as that role. */
@@ -174,7 +200,7 @@ describe.skipIf(!PG_URL)('cloud capabilities, called directly', () => {
     await provisionMemberRole(cloud.owner, role, pw);
     const member = new Lattice(dbUrl(cloud.dbname, role, pw));
     opened.push(member);
-    defineNotes(member);
+    defineTables(member);
     await member.init();
     return { member, role };
   }
@@ -519,6 +545,78 @@ describe.skipIf(!PG_URL)('cloud capabilities, called directly', () => {
       await codeOf(() => batchRowAccess(member, { table: 'notes', pk: 'o5', grant: [role] })),
     ).toMatch(/^untagged:/);
     expect(await member.get('notes', 'o5')).toBeNull();
+  });
+
+  // ── sharing a dashboard carries its data ─────────────────────────────────
+
+  // Sharing a dashboard row is only half the operation: the page reads other
+  // tables, so a recipient who gets the row and nothing else opens it to an empty
+  // page. Carrying the data along is what makes these three functions rather than
+  // the bare database primitives, and it is asserted HERE — through the calls a
+  // caller actually makes — because a test that invoked the cascade directly would
+  // keep passing if no caller ever reached it. Each case is read back from a
+  // scoped member connection, the only instrument that can tell shared from
+  // merely-marked-shared.
+
+  it('sharing a dashboard to everyone carries the data its page reads', async () => {
+    const cloud = await freshCloud();
+    const { member: observer } = await addMember(cloud, 'obs');
+    await cloud.owner.insert('notes', { id: 'n1', body: 'behind the page' });
+    await makeDashboard(cloud.owner, 'd1', ['notes']);
+    expect(await observer.get('notes', 'n1')).toBeNull();
+
+    // Narrowing is not sharing: the same call with `private` must leave the data
+    // exactly as it found it, or unsharing a page would quietly hand its tables out.
+    await shareRow(cloud.owner, { table: 'dashboards', pk: 'd1', visibility: 'private' });
+    expect(await observer.get('notes', 'n1')).toBeNull();
+
+    await shareRow(cloud.owner, { table: 'dashboards', pk: 'd1', visibility: 'everyone' });
+    expect((await observer.get('dashboards', 'd1'))?.title).toBe('Report');
+    expect((await observer.get('notes', 'n1'))?.body, 'the page is not empty').toBe(
+      'behind the page',
+    );
+  });
+
+  it('granting one person a dashboard carries the data to that person only', async () => {
+    const cloud = await freshCloud();
+    const invitee = await addMember(cloud, 'ga');
+    const bystander = await addMember(cloud, 'gb');
+    await cloud.owner.insert('notes', { id: 'n2', body: 'behind the page' });
+    await makeDashboard(cloud.owner, 'd2', ['notes']);
+
+    await grantRowAccess(cloud.owner, { table: 'dashboards', pk: 'd2', grantee: invitee.role });
+    expect((await invitee.member.get('notes', 'n2'))?.body).toBe('behind the page');
+    expect(await bystander.member.get('notes', 'n2'), 'nobody else was named').toBeNull();
+
+    // Taking the page back never strips the data from whoever still has it. The
+    // standing share is keyed to the table, not to this one dashboard, so a revoke
+    // that undid it would also empty every other page of yours reading that table.
+    await grantRowAccess(cloud.owner, {
+      table: 'dashboards',
+      pk: 'd2',
+      grantee: invitee.role,
+      revoke: true,
+    });
+    expect(await invitee.member.get('dashboards', 'd2')).toBeNull();
+    expect((await invitee.member.get('notes', 'n2'))?.body).toBe('behind the page');
+  });
+
+  it('a batch grant carries the data to everyone in the batch and nobody outside it', async () => {
+    const cloud = await freshCloud();
+    const first = await addMember(cloud, 'na');
+    const second = await addMember(cloud, 'nb');
+    const outsider = await addMember(cloud, 'nc');
+    await cloud.owner.insert('notes', { id: 'n3', body: 'behind the page' });
+    await makeDashboard(cloud.owner, 'd3', ['notes']);
+
+    await batchRowAccess(cloud.owner, {
+      table: 'dashboards',
+      pk: 'd3',
+      grant: [first.role, second.role],
+    });
+    expect((await first.member.get('notes', 'n3'))?.body).toBe('behind the page');
+    expect((await second.member.get('notes', 'n3'))?.body).toBe('behind the page');
+    expect(await outsider.member.get('notes', 'n3'), 'not in the batch').toBeNull();
   });
 
   // ── joining ──────────────────────────────────────────────────────────────

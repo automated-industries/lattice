@@ -14,9 +14,11 @@ import {
   uniqueCredentialKey,
 } from '../framework/db-pointer.js';
 import {
+  findWorkspaceByConfigPath,
   readRegistry,
   registerOrUpdateCloudWorkspace,
   writeRegistry,
+  type WorkspaceRecord,
 } from '../framework/workspace.js';
 import { resolveContextDirForConfig } from '../framework/gui-bootstrap.js';
 import { probeCloud } from '../framework/cloud-connect.js';
@@ -63,9 +65,6 @@ import { cloudError } from './errors.js';
  * full copy of the workspace with nothing protecting it.
  */
 
-/** The workspace registry state, captured so a failed cutover can restore it. */
-type RegistrySnapshot = ReturnType<typeof readRegistry>;
-
 /** One reversible step of the cutover, and how to take it back. */
 interface Unwind {
   what: string;
@@ -95,11 +94,18 @@ function unwindAll(steps: Unwind[]): string[] {
 function cutoverFailure(cause: unknown, unwound: string[], targetUrlHost: string): Error {
   const why = (cause as Error).message;
   if (unwound.length === 0) {
+    // Say what came back, by name, and stop there. The older wording claimed the
+    // workspace was "unchanged and still open on its local database", and both
+    // halves overreached: a full copy of it is now sitting in the target, and the
+    // command path hands its database handle over to be closed BEFORE the cutover
+    // runs, so nothing here can promise the workspace is still open on anything.
     return new Error(
       `Migration cutover failed and was rolled back: ${why}\n` +
-        `This workspace is unchanged and still open on its local database. The data was ` +
-        `already copied to ${targetUrlHost}, so that database now holds a secured copy — ` +
-        `drop it, or point a workspace at it deliberately, before trying again.`,
+        `Put back: the config's db: line, the stored credential, and this workspace's ` +
+        `registry record — which still names its local database file, and was not archived. ` +
+        `No other workspace in the registry was touched. NOT put back: the copy. ` +
+        `${targetUrlHost} now holds a secured copy of this workspace — drop it, or point a ` +
+        `workspace at it deliberately, before trying again.`,
     );
   }
   return new Error(
@@ -109,6 +115,53 @@ function cutoverFailure(cause: unknown, unwound: string[], targetUrlHost: string
       `db: line, the workspace registry, and whether the local database file was renamed ` +
       `to <db>.local-bak. The data was copied to ${targetUrlHost}.`,
   );
+}
+
+/**
+ * Put ONE workspace's registry record back, leaving everything else in the file
+ * exactly as it is NOW.
+ *
+ * The registry is shared machine state: one file listing every workspace, which
+ * any Lattice process rewrites when somebody registers one or switches between
+ * them. A migration is the longest operation holding a claim on it, so the odds
+ * of another process writing during the window are not small.
+ *
+ * Restoring a whole-file snapshot taken at the start of the cutover would
+ * therefore undo this record correctly and, in the same write, delete every
+ * record anybody else added meanwhile. Their configs, databases and rendered
+ * trees all survive on disk — nothing lists them any more, so nothing opens
+ * them, and the only symptom is a workspace missing from the switcher. That is
+ * the silent kind of loss this whole sequence exists to prevent, so the unwind
+ * re-reads the registry and touches only what this operation wrote:
+ *
+ *   - a record this operation CREATED (`before` is null) is removed;
+ *   - a record it UPDATED is put back field-for-field;
+ *   - a record that has since disappeared is re-added rather than left unlisted,
+ *     because an unlisted workspace is worse than a stale one;
+ *   - the active pointer is handed back only if this operation is what moved it
+ *     AND it still points here. A switch made since is newer than ours and wins.
+ */
+function restoreRegistryRecord(
+  root: string,
+  id: string,
+  before: WorkspaceRecord | null,
+  priorActiveId: string | null,
+): void {
+  const reg = readRegistry(root);
+  const idx = reg.workspaces.findIndex((w) => w.id === id);
+  if (before === null) {
+    if (idx >= 0) reg.workspaces.splice(idx, 1);
+  } else if (idx >= 0) {
+    reg.workspaces[idx] = { ...before };
+  } else {
+    reg.workspaces.push({ ...before });
+  }
+  if (reg.activeWorkspaceId === id && priorActiveId !== id) {
+    const priorStillExists =
+      priorActiveId !== null && reg.workspaces.some((w) => w.id === priorActiveId);
+    reg.activeWorkspaceId = priorStillExists ? priorActiveId : (reg.workspaces[0]?.id ?? null);
+  }
+  writeRegistry(root, reg);
 }
 
 /** Close `db`, returning why it would not close rather than hiding it. */
@@ -233,13 +286,15 @@ export function cutOverWorkspaceToCloud(input: CloudCutoverInput): CloudCutoverR
     });
     steps.push({ what: "the config's db: line and the stored credential", run: pointed.undo });
 
-    // 3 — the registry, which is what the workspace switcher reads. Snapshotted
-    // whole rather than diffed: restoring the file we read is exact, and the
-    // record may be created OR updated in place depending on whether this
-    // workspace was already registered.
+    // 3 — the registry, which is what the workspace switcher reads. What is kept
+    // for the unwind is THIS workspace's own record and the active pointer as
+    // they stood, never a copy of the whole file — see restoreRegistryRecord for
+    // why writing the file back is not an option.
     let workspaceId: string | null = null;
     if (root !== null) {
-      const before: RegistrySnapshot = readRegistry(root);
+      const priorActiveId = readRegistry(root).activeWorkspaceId;
+      const priorRecord = findWorkspaceByConfigPath(root, configPath);
+      const before = priorRecord === null ? null : { ...priorRecord };
       const record = registerOrUpdateCloudWorkspace(root, {
         configPath,
         contextDir: resolveContextDirForConfig(configPath),
@@ -251,7 +306,7 @@ export function cutOverWorkspaceToCloud(input: CloudCutoverInput): CloudCutoverR
       steps.push({
         what: 'the workspace registry record',
         run: () => {
-          writeRegistry(root, before);
+          restoreRegistryRecord(root, record.id, before, priorActiveId);
         },
       });
     }
@@ -366,7 +421,14 @@ export async function migrateWorkspaceToCloud(
     // The migrating connection owns the target, so it installs row security and
     // stamps itself owner of every copied row. Members then see only what they
     // are given, and chat / secrets / history are isolated the same way.
-    await secureCloud(target);
+    //
+    // Stated as unmanaged, because the TARGET is: the managed refusal is about
+    // re-securing a database somebody else provisioned for this account, and this
+    // one is a database the person just supplied and is moving their own local
+    // workspace onto. Reading it off the session instead would refuse every
+    // migration started from a managed session — a move that has nothing to do
+    // with the managed database, and one that worked before this guard existed.
+    await secureCloud(target, { managed: false });
     targetSecured = true;
     // Publish the layout a joined member hydrates their own config from; without
     // it a member renders an empty context tree against rows they can read.

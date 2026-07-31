@@ -29,7 +29,7 @@ import { basename, extname, resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Lattice } from '../lattice.js';
 import type { FeedBus } from '../gui/feed.js';
-import { createRow, updateRow, type MutationCtx } from '../gui/mutations.js';
+import { createRow, recordImportActivity, updateRow, type MutationCtx } from '../gui/mutations.js';
 import { parseFile, describe, type ExtractResult } from '../gui/ai/extract.js';
 import { gateExtractionByPath } from '../gui/ai/extract-gate.js';
 import { describeImage, describePdf } from '../ai/vision.js';
@@ -900,16 +900,20 @@ export async function ingestBytes(
       e instanceof Error ? e.message : String(e),
     );
   }
-  // Auto-import outcome → a feed line so the snapshot is visible without any
-  // chat round-trip (the assistant "door" working automatically).
+  // Auto-import outcome → the SAME change-log entry every other import door
+  // writes: what landed, and the plain statement that it cannot be undone in one
+  // step. This door materializes directly rather than through `applyImport`, so
+  // until now its imports were the ones that left no record at all — visible only
+  // as a live feed bubble, gone the moment the rail scrolled. The entry publishes
+  // its own feed line, so the snapshot is still announced without a chat
+  // round-trip. Reconciliation warnings ride the separate heads-up line below.
   if (autoImport?.imported) {
-    const note = importWarnings.length > 0 ? ` (note: ${importWarnings.join(' ')})` : '';
-    ctx.feed.publish({
-      table: autoImport.tables[0] ?? 'files',
-      op: 'insert',
-      rowId: null,
-      source: 'system',
-      summary: `Imported the ${autoImport.asOf ?? ''} snapshot of "${name}" — ${String(autoImport.rows)} rows across ${String(autoImport.tables.length)} tables${note}`,
+    await recordImportActivity(ctx.db, ctx.feed, {
+      source: name,
+      tablesCreated: autoImport.tablesCreated ?? [],
+      rowsByTable: autoImport.rowsByTable ?? {},
+      asOf: autoImport.asOf,
+      asOfColumn: null,
     });
   }
   // Anything that changed what the user ended up with — a partially-read sheet, or

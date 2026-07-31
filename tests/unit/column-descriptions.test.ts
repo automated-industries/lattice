@@ -10,6 +10,7 @@ import {
   builtinTableDescription,
   upsertColumnMeta,
   upsertTableMeta,
+  writeColumnMetaRow,
   generateAndStoreColumnDescriptions,
   generateAndStoreTableDescription,
 } from '../../src/gui/column-descriptions.js';
@@ -118,8 +119,11 @@ describe('column + table definitions', () => {
       expect(rows[0]?.description).toBe('Stock-keeping unit');
       expect(rows[0]?.secret).toBe(0);
 
-      // A secret-only update must not wipe the description.
-      await upsertColumnMeta(db, 'widgets', 'sku', { secret: 1 });
+      // A secret-only update must not wipe the description. Written through the
+      // internal row writer, because the exported definition writer refuses the
+      // flag outright — marking a column secret has to install the database mask
+      // first, which is setColumnMeta's job.
+      await writeColumnMetaRow(db, 'widgets', 'sku', { secret: 1 });
       rows = (await db.query('_lattice_gui_column_meta', {
         filters: [
           { col: 'table_name', op: 'eq', val: 'widgets' },

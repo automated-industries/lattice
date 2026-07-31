@@ -151,7 +151,7 @@ describe('row-write mutations refuse connected external tables', () => {
       source: 'gui',
     } as unknown as MutationCtx;
     await expect(
-      updateRow(mctx, m.table, 'row1', { legal_name: 'Automated Industries — AI consulting' }),
+      updateRow(mctx, m.table, 'row1', { legal_name: 'Acme Widgets Ltd — pretend widgetry' }),
     ).rejects.toThrow(/read-only view of a connected external source/i);
     await expect(createRow(mctx, m.table, { id: 'row2', display_name: 'X' })).rejects.toThrow(
       /read-only view of a connected external source/i,

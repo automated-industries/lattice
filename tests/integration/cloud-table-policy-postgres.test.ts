@@ -16,7 +16,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, backfillOwnership, enableRlsForTable } from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable } from '../../src/cloud/rls.js';
 import {
   setTableDefaultVisibility,
   setTableNeverShare,
@@ -80,7 +80,6 @@ describe.skipIf(!PG_URL)(
       await owner.init();
       await installCloudRls(owner);
       const pk = owner.getPrimaryKey('notes');
-      await backfillOwnership(owner, 'notes', pk);
       await enableRlsForTable(owner, 'notes', pk);
       return owner;
     }

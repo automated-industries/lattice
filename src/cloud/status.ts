@@ -54,8 +54,9 @@ export interface CloudStatus {
   /** Owner, member, or not a cloud at all. */
   standing: CloudStanding;
   /**
-   * Drift a convergence pass would repair, in the order the tables are
-   * registered. Empty on a healthy cloud.
+   * Drift a convergence pass would repair: the registered tables in the order
+   * they are registered, then anything else the database turns out to hold.
+   * Empty on a healthy cloud.
    */
   warnings: CloudStatusWarning[];
 }
@@ -84,30 +85,27 @@ function quoteIdent(name: string): string {
 }
 
 /**
- * The user tables this workspace declares — the ones a cloud has to protect.
- * Bookkeeping tables are excluded: they are the mechanism, they are secured by
- * the installer rather than per-table, and listing them would bury the real
- * answer under rows nobody can act on.
- */
-function declaredUserTables(db: Lattice): string[] {
-  return db
-    .getRegisteredTableNames()
-    .filter((t) => !t.startsWith('__lattice_') && !t.startsWith('_lattice_'));
-}
-
-/**
- * What the catalog says about each of `tables`, keyed by name.
+ * What the catalog holds, keyed by name: the workspace's declared `tables`, AND
+ * every ordinary relation physically present in the schema.
  *
- * Bounded by construction: the query asks about exactly the tables the workspace
- * declares and nothing else, so it can never widen into a scan of a catalog on a
- * database that happens to hold thousands of relations. Asking about none reads
- * nothing.
+ * Both halves are load-bearing. Declared-only cannot see a table nobody
+ * declared, which is the one most likely to be unprotected — see
+ * {@link driftWarnings}. Physical-only cannot see a declared table that is
+ * missing. One query answers both, and it stays ONE query: the four columns
+ * here are the four the warnings are built from, so nothing needs a per-table
+ * follow-up round trip — which matters on a database billed for what it reads
+ * out.
+ *
+ * Bookkeeping is excluded by the leading underscore every internal table
+ * carries: it is the mechanism, the installer secures it rather than the
+ * per-table pass, and listing it would bury the real answer under rows nobody
+ * can act on. A declared name matches whatever it looks like, so a workspace
+ * that declares a view still gets the ownership check on it.
  */
 async function catalogRelations(
   db: Lattice,
   tables: readonly string[],
 ): Promise<Map<string, CatalogRelation>> {
-  if (tables.length === 0) return new Map();
   const rows = (await allAsyncOrSync(
     db.adapter,
     `SELECT c.relname AS name,
@@ -117,7 +115,8 @@ async function catalogRelations(
        FROM pg_class c
        JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = current_schema()
-        AND c.relname = ANY(?::text[])`,
+        AND (c.relname = ANY(?::text[])
+             OR (c.relkind IN ('r','p','f') AND c.relname NOT LIKE '\\_%' ESCAPE '\\'))`,
     [[...tables]],
   )) as { name: string; owner: string | null; kind: string | null; forced: boolean | null }[];
   return new Map(
@@ -144,23 +143,44 @@ async function catalogRelations(
  *  3. row security not forced on a secured cloud, which means every member can
  *     read every row of that table. This one is reported to a member too: they
  *     cannot repair it, but they are entitled to know their rows are not private.
+ *
+ * The third is also what catches a table nobody declared. Securing walks the
+ * REGISTERED tables, so a table restored from a dump, created by hand, or left
+ * behind by a schema nobody opens any more is never walked — and a table
+ * securing never reached is precisely a table with row security off. A keyless
+ * one arrives at the same place from the other side, because per-row ownership
+ * needs a key and securing skips what it cannot key. Both read `forced=false`
+ * here, so both land in the third warning; neither needs one of its own.
+ *
+ * For an undeclared table that overstates things slightly on the day it is
+ * reported: no member holds a grant on it, so no member can read it yet. It is
+ * still the right thing to say — the table is outside the row ownership model,
+ * and the grant is the easy half. Registering it, restoring over it, or one
+ * GRANT is all it takes, and none of those produces a second warning.
  */
 async function driftWarnings(
   db: Lattice,
   opts: { secured: boolean; isOwner: boolean; role: string },
 ): Promise<CloudStatusWarning[]> {
-  const tables = declaredUserTables(db);
-  const catalog = await catalogRelations(db, tables);
+  const declared = db
+    .getRegisteredTableNames()
+    .filter((t) => !t.startsWith('__lattice_') && !t.startsWith('_lattice_'));
+  const catalog = await catalogRelations(db, declared);
   const warnings: CloudStatusWarning[] = [];
-  for (const table of tables) {
+  for (const table of new Set([...declared, ...catalog.keys()])) {
     const rel = catalog.get(table);
     if (!rel) {
-      warnings.push({
-        table,
-        reason:
-          'declared by this workspace but not present in the database — it was never created, ' +
-          'or it was dropped outside Lattice',
-      });
+      // Only a declared name can be missing from the catalog — every other name
+      // in this loop came OUT of the catalog. Saying that out loud is what keeps
+      // the wording below true if this set ever grows a third source.
+      if (declared.includes(table)) {
+        warnings.push({
+          table,
+          reason:
+            'declared by this workspace but not present in the database — it was never created, ' +
+            'or it was dropped outside Lattice',
+        });
+      }
       continue;
     }
     if (opts.isOwner && rel.owner !== opts.role) {

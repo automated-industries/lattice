@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Lattice } from '../../src/lattice.js';
 import { createConnector } from '../../src/connectors/registry.js';
-import { reregisterMcpConnectorTables } from '../../src/connectors/mcp/reregister.js';
+import { replayConnectedSourceSchema } from '../../src/connectors/connected-schema.js';
 import {
   describeConnectedSources,
   brandFromHost,
@@ -37,7 +37,7 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-describe('reregisterMcpConnectorTables', () => {
+describe('connected-source schema replay', () => {
   let db: Lattice | undefined;
   afterEach(() => {
     db?.close();
@@ -56,7 +56,7 @@ describe('reregisterMcpConnectorTables', () => {
     });
     // Simulates a reopen: mcp_items is NOT in the live registry yet.
     expect(db.getRegisteredTableNames()).not.toContain('mcp_items');
-    await reregisterMcpConnectorTables(db);
+    await replayConnectedSourceSchema(db);
     // Now it IS — so it flows into the sidebar table list + the assistant's catalog.
     expect(db.getRegisteredTableNames()).toContain('mcp_items');
   });
@@ -72,14 +72,14 @@ describe('reregisterMcpConnectorTables', () => {
       connectedBy: 'local',
     });
     await db.update('__lattice_connectors', { id }, { status: 'disconnected' });
-    await reregisterMcpConnectorTables(db);
+    await replayConnectedSourceSchema(db);
     expect(db.getRegisteredTableNames()).not.toContain('mcp_items');
   });
 
   it('does nothing when no MCP connectors exist', async () => {
     db = new Lattice(':memory:');
     await db.init();
-    await reregisterMcpConnectorTables(db); // must not throw
+    await replayConnectedSourceSchema(db); // must not throw
     expect(db.getRegisteredTableNames()).not.toContain('mcp_items');
   });
 });

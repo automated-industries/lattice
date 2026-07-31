@@ -535,18 +535,12 @@ export async function handleRowMutations(deps: HandlerDeps): Promise<GroupResult
             'CSV, or TSV), or it has no rows. For pasted or unstructured content use ingest_text instead.',
         };
       }
-      // Signal the data change so the workspace view refreshes (new tables/rows appear).
-      if (imported.tables[0]) {
-        mctx.feed.publish({
-          table: imported.tables[0],
-          op: 'insert',
-          rowId: null,
-          source: 'ai',
-          summary: `Imported ${String(imported.rows)} rows from the spreadsheet into ${String(
-            imported.tables.length,
-          )} ${imported.tables.length === 1 ? 'table' : 'tables'}`,
-        });
-      }
+      // The import itself publishes the change: one change-log entry saying what
+      // landed AND that it cannot be undone in one step, whose feed event is a
+      // schema event — which refreshes the whole workspace view, so new tables and
+      // rows appear without a second announcement here. A separate bubble at this
+      // point would only restate the same import in words that leave the reversal
+      // question open, right beside the entry that answers it.
       return { ok: true, result: { tables: imported.tables, rows: imported.rows } };
     }
     case 'ingest_url': {

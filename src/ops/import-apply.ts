@@ -58,6 +58,7 @@ import {
 } from '../import/computed-proposals.js';
 import type { ProposedSchema } from '../import/types.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
+import { recordImportActivity } from '../gui/mutations.js';
 import { getClarifyThreshold } from './ai-config.js';
 import { ingestError } from './ingest-errors.js';
 
@@ -281,6 +282,38 @@ export function publishMarginalLinksNote(deps: ImportApplyDeps, count: number): 
 }
 
 /**
+ * Write the import into the workspace's change log, once, whatever door it came
+ * through — so an import is still there tomorrow, and not only as a live bubble
+ * that scrolls away.
+ *
+ * The entry is deliberately HONEST about reversal rather than reassuring: an
+ * import creates tables, declares them, and loads rows in bulk, and none of that
+ * can be replayed backwards from recorded per-row inverses, so the entry says
+ * plainly that it cannot be undone in one step and what to do instead (see
+ * `recordImportActivity`). Asking to reverse it refuses in the same words.
+ *
+ * An import that made no table and wrote no row has nothing to record — that is a
+ * no-op, not an event, and logging it would only add noise to the change log.
+ */
+async function recordImportInHistory(
+  deps: ImportApplyDeps,
+  sourceName: string,
+  result: MaterializeResult,
+): Promise<MaterializeResult> {
+  if (result.tablesCreated.length === 0 && Object.keys(result.rowsByTable).length === 0) {
+    return result;
+  }
+  await recordImportActivity(deps.db, deps.feed, {
+    source: sourceName,
+    tablesCreated: result.tablesCreated,
+    rowsByTable: result.rowsByTable,
+    asOf: result.asOf,
+    asOfColumn: result.asOfColumn,
+  });
+  return result;
+}
+
+/**
  * Report the marginal (low-confidence) links of one materialized plan: count them, then publish
  * the activity note. Returns how many were reported (0 ⇒ nothing published).
  */
@@ -501,13 +534,17 @@ export async function applyImport(
   const workbookJobs = /\.xlsx?$/i.test(name) ? splitSheetJobs(data) : [];
   if (workbookJobs.length > MAX_IMPORT_TABLES) {
     emit({ phase: 'infer', message: 'Analyzing schema…' });
-    return materializeWorkbookPerSheet(deps, workbookJobs, {
-      linkConfidence,
-      asOf: effectiveAsOf,
-      asOfColumn,
-      mode,
-      emit,
-    });
+    return recordImportInHistory(
+      deps,
+      name,
+      await materializeWorkbookPerSheet(deps, workbookJobs, {
+        linkConfidence,
+        asOf: effectiveAsOf,
+        asOfColumn,
+        mode,
+        emit,
+      }),
+    );
   }
   emit({ phase: 'infer', message: 'Analyzing schema…' });
   const { plan: inferredPlan, views: inferredViews } = await dedupeAndDetectViews(
@@ -534,13 +571,17 @@ export async function applyImport(
   // sheet rather than dead-ending — the whole-workbook inference above was needed to learn
   // the exact count (a sheet count under the cap can still fan out past it via dimensions).
   if (workbookJobs.length > 1 && plannedTables > MAX_IMPORT_TABLES) {
-    return materializeWorkbookPerSheet(deps, workbookJobs, {
-      linkConfidence,
-      asOf: effectiveAsOf,
-      asOfColumn,
-      mode,
-      emit,
-    });
+    return recordImportInHistory(
+      deps,
+      name,
+      await materializeWorkbookPerSheet(deps, workbookJobs, {
+        linkConfidence,
+        asOf: effectiveAsOf,
+        asOfColumn,
+        mode,
+        emit,
+      }),
+    );
   }
   if (plannedTables > MAX_IMPORT_TABLES && options.override !== true) {
     throw ingestError(
@@ -678,5 +719,5 @@ export async function applyImport(
         `unconnected (low confidence) — connect from the Data Model panel if they belong.`,
     });
   }
-  return result;
+  return recordImportInHistory(deps, name, result);
 }

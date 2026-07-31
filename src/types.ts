@@ -1435,6 +1435,14 @@ export interface ReconcileOptions {
   /** Called for each orphan before removal. */
   onOrphan?: (path: string, kind: 'directory' | 'file') => void;
   /**
+   * State that this workspace renders nothing now BY INTENT — its last table was
+   * deleted, rather than its layout having failed to load. A config that lost its
+   * entities and one whose entities were removed on purpose are the same file, so
+   * the check that guards against the first refuses until somebody who knows says
+   * which it is. Never disables the protection of a connected source's tree.
+   */
+  layoutEmptied?: boolean;
+  /**
    * Enable reverse-sync: detect external file edits and sync them back to the DB
    * before rendering. Only applies to entity context files that define a
    * `reverseSync` function on their file spec.

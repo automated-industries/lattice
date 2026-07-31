@@ -490,10 +490,28 @@ export async function migrateLegacyMcpConnection(
   return true;
 }
 
-/** How many sources a refresh pass brought up to date, and how many refused. */
+/** One source a refresh pass could not bring up to date, and the reason it gave. */
+export interface StaleRefreshFailure {
+  connectorId: string;
+  /** The name the source is known by, when it has one — an id alone identifies nothing. */
+  displayName: string | null;
+  error: string;
+}
+
+/**
+ * What a refresh pass did.
+ *
+ * The counts are the headline; `failures` is the part a caller can act on. They
+ * were once the counts alone, which meant every reason the pass collected was
+ * summed and discarded — a pass where all three sources lost their authorization
+ * was indistinguishable from a pass where three servers were briefly down, and a
+ * caller reading the result had nothing to report but a number.
+ */
 export interface StaleRefreshResult {
   synced: number;
   failed: number;
+  /** One entry per source that refused. Always present; empty on a clean pass. */
+  failures: StaleRefreshFailure[];
 }
 
 /**
@@ -515,10 +533,14 @@ export async function refreshStaleSources(
   connectedBy: string,
 ): Promise<StaleRefreshResult> {
   let synced = 0;
-  let failed = 0;
+  const failures: StaleRefreshFailure[] = [];
+  // Listed once, up front: the legacy pass needs the rows, and a failure needs
+  // the name its source is known by rather than the id the registry gave it.
+  const known = await listConnectors(db, connectedBy);
+  const nameOf = new Map(known.map((c) => [c.id, c.displayName ?? c.toolkit]));
   const mcpImpl = connectors.find((c) => c.toolkits().includes(LEGACY_MCP_TOOLKIT));
   if (mcpImpl && isMcpConnector(mcpImpl)) {
-    const legacy = (await listConnectors(db, connectedBy)).filter(
+    const legacy = known.filter(
       (c) =>
         c.connector === LEGACY_MCP_TOOLKIT &&
         c.toolkit === LEGACY_MCP_TOOLKIT &&
@@ -543,9 +565,15 @@ export async function refreshStaleSources(
     // Scope to THIS member — never sync another member's connectors as ourselves.
     const r = await syncStaleConnectors(db, connector, undefined, connectedBy);
     synced += r.synced.length;
-    failed += r.failed.length;
+    for (const f of r.failed) {
+      failures.push({
+        connectorId: f.connectorId,
+        displayName: nameOf.get(f.connectorId) ?? null,
+        error: f.error,
+      });
+    }
   }
-  return { synced, failed };
+  return { synced, failed: failures.length, failures };
 }
 
 // ── External databases ──────────────────────────────────────────────────────

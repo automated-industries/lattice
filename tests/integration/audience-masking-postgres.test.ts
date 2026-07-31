@@ -12,7 +12,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable } from '../../src/cloud/rls.js';
 import { enableAudienceView } from '../../src/cloud/audience.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 
@@ -75,7 +75,6 @@ describe.skipIf(!PG_URL)('cloud audience masking — owner secret column', () =>
 
     await installCloudRls(owner);
     const pk = owner.getPrimaryKey('person');
-    await backfillOwnership(owner, 'person', pk);
     await enableRlsForTable(owner, 'person', pk);
     await enableAudienceView(
       owner,

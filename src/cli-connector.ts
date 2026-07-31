@@ -23,8 +23,16 @@
  * could never finish.
  *
  * Nothing here writes to stdout or exits the process. Output is RETURNED as lines
- * and errors are THROWN, so the same logic serves the command wrapper (which
- * prints and sets an exit code) and a caller that wants the outcome as a value.
+ * with the exit code that goes with them, and errors are THROWN, so the same
+ * logic serves the command wrapper (which prints and exits) and a caller that
+ * wants the outcome as a value.
+ *
+ * A verb can FAIL while still having something worth printing — a refresh pass
+ * that got three sources back and lost two has a report either way — which is
+ * why an exit code travels beside the lines instead of every failure being a
+ * thrown error. A thrown error carries a message and no report; that is right
+ * for "this cannot be done" and wrong for "here is what happened, and it was
+ * not good enough".
  */
 import type { Lattice } from './lattice.js';
 import { openConfiguredLattice } from './cli-open.js';
@@ -142,6 +150,19 @@ function formatConnector(c: ConnectorRecord): string {
   return `  ${c.id}  ${name} [${c.connector}] ${c.status}, last sync ${when}${trailer}`;
 }
 
+/**
+ * What one verb produced: the lines to print, and the code to exit with.
+ *
+ * The two are separate because they are separate facts. A refresh pass prints a
+ * report whether or not every source came back, and the code says which of those
+ * it was.
+ */
+export interface ConnectorCommandResult {
+  lines: string[];
+  /** 0 when the verb did what it was asked; non-zero when it did not. */
+  exitCode: number;
+}
+
 /** How many rows a sync brought in, as a sentence. */
 function formatSync(upserted: Record<string, number>): string {
   const tables = Object.keys(upserted);
@@ -153,13 +174,15 @@ function formatSync(upserted: Record<string, number>): string {
 /**
  * Run one `lattice connector` verb.
  *
- * @returns the lines to print.
+ * @returns the lines to print and the code to exit with.
  * @throws when the verb is unknown, its arguments are wrong, or the operation is
  * refused. Every one of those is a non-zero exit for the caller: a command that
  * printed a reassuring line after failing to attach anything would be worse than
  * useless to the script that ran it.
  */
-export async function runConnectorCommand(args: ConnectorCommandArgs): Promise<string[]> {
+export async function runConnectorCommand(
+  args: ConnectorCommandArgs,
+): Promise<ConnectorCommandResult> {
   const sub = args.subcommand ?? 'list';
   if (!(CONNECTOR_SUBCOMMANDS as readonly string[]).includes(sub)) {
     throw new Error(
@@ -172,13 +195,15 @@ export async function runConnectorCommand(args: ConnectorCommandArgs): Promise<s
   const db = await (args.open ?? openReady)(args.configPath);
   const connectedBy = await connectingIdentity(db);
   const asJson = (value: unknown): string[] => [JSON.stringify(value, null, 2)];
+  /** A verb that did what it was asked. */
+  const ok = (lines: string[]): ConnectorCommandResult => ({ lines, exitCode: 0 });
 
   switch (sub) {
     case 'list': {
       const rows = await listConnectors(db, connectedBy);
-      if (args.json) return asJson(rows);
-      if (rows.length === 0) return ['No connected sources.'];
-      return [`Connected sources (${String(rows.length)}):`, ...rows.map(formatConnector)];
+      if (args.json) return ok(asJson(rows));
+      if (rows.length === 0) return ok(['No connected sources.']);
+      return ok([`Connected sources (${String(rows.length)}):`, ...rows.map(formatConnector)]);
     }
 
     case 'sync': {
@@ -187,13 +212,22 @@ export async function runConnectorCommand(args: ConnectorCommandArgs): Promise<s
       // syncs exactly that one, stale or not, which is what a retry is.
       if (args.action === undefined) {
         const r = await refreshStaleSources(db, builtinConnectors(), connectedBy);
-        if (args.json) return asJson(r);
-        return [`Synced ${String(r.synced)} sources; ${String(r.failed)} failed.`];
+        // The report is worth printing either way, so it is PRINTED either way
+        // and the exit code carries the verdict. A pass that lost sources leaves
+        // as a failure: a nightly job told "0 synced, 3 failed" and handed a zero
+        // would carry on as though the data it depends on had arrived.
+        const lines = args.json
+          ? asJson(r)
+          : [
+              `Synced ${String(r.synced)} sources; ${String(r.failed)} failed.`,
+              ...r.failures.map((f) => `  ${f.displayName ?? f.connectorId}: ${f.error}`),
+            ];
+        return { lines, exitCode: r.failures.length > 0 ? 1 : 0 };
       }
       const { record, impl } = await resolveOwned(db, args.action, connectedBy);
       const result = await syncConnector(db, impl, record.id);
-      if (args.json) return asJson(result);
-      return [`${record.displayName ?? record.toolkit}: ${formatSync(result.upserted)}`];
+      if (args.json) return ok(asJson(result));
+      return ok([`${record.displayName ?? record.toolkit}: ${formatSync(result.upserted)}`]);
     }
 
     case 'connect-database': {
@@ -203,10 +237,10 @@ export async function runConnectorCommand(args: ConnectorCommandArgs): Promise<s
         connectedBy,
         outputDir: args.outputDir,
       });
-      return [
+      return ok([
         `Connected "${out.displayName ?? 'database'}" as ${out.connectorId}.`,
         `  ${formatSync(out.result.upserted)}`,
-      ];
+      ]);
     }
 
     case 'reconnect-database': {
@@ -223,10 +257,10 @@ export async function runConnectorCommand(args: ConnectorCommandArgs): Promise<s
         connectedBy,
         outputDir: args.outputDir,
       });
-      return [
+      return ok([
         `Reconnected "${out.displayName ?? 'database'}" (${out.connectorId}).`,
         `  ${formatSync(out.result.upserted)}`,
-      ];
+      ]);
     }
 
     case 'disconnect': {
@@ -241,10 +275,10 @@ export async function runConnectorCommand(args: ConnectorCommandArgs): Promise<s
         ...(record.connector === 'db_source' ? { mode: 'hard' as const } : {}),
       });
       const retired = Object.values(result.softDeleted).reduce((a, b) => a + b, 0);
-      return [
+      return ok([
         `Disconnected "${record.displayName ?? record.toolkit}" (${result.mode}).`,
         `  ${String(retired)} rows retired across ${String(Object.keys(result.softDeleted).length)} tables.`,
-      ];
+      ]);
     }
   }
   // Unreachable: the verb was checked against the list above.

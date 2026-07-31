@@ -32,10 +32,20 @@
  *     tree reads the difference as "these were removed" and deletes them — the
  *     same destruction as an un-hydrated open, arriving through a different door.
  *
- * Throws if the config cannot be read or parsed, and if the workspace is shared
- * but its layout could not be read; callers report that and exit.
+ * And WHICH workspace is opened is decided in one place too — the same
+ * resolution every command added since gets: a path that was typed wins, a
+ * config sitting in the current directory is next, and otherwise the workspace
+ * this machine is ACTIVELY using. Resolving the literal default path against
+ * wherever the shell happens to be standing is not a resolution at all: it names
+ * a file that exists almost nowhere, including inside the workspace directory
+ * (whose file is called something else), so the read-and-render commands could
+ * only ever be run by somebody who typed a path.
+ *
+ * Throws if the workspace cannot be resolved, if the config cannot be read or
+ * parsed, and if the workspace is shared but its layout could not be read;
+ * callers report that and exit.
  */
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { Lattice } from './lattice.js';
 import { parseConfigFile } from './config/parser.js';
 import { getOrCreateMasterKey } from './framework/user-config.js';
@@ -44,6 +54,7 @@ import { applyWorkspaceSchema } from './framework/workspace-schema.js';
 import { registerNativeEntities } from './framework/native-entities.js';
 import { findLatticeRoot, resolveSessionRoot } from './framework/lattice-root.js';
 import { findWorkspaceByConfigPath } from './framework/workspace.js';
+import { resolveWorkspaceTarget } from './cli-target.js';
 
 /**
  * The `.lattice` root that has `configPath` registered as one of its workspaces,
@@ -69,8 +80,29 @@ function owningRoot(configPath: string): string | null {
   return null;
 }
 
-export async function openConfiguredLattice(args: { config: string }): Promise<Lattice> {
-  const configPath = resolve(args.config);
+/** Which workspace to open, in the terms the command line describes one. */
+export interface OpenConfiguredLatticeArgs {
+  /** `--config` as parsed, which carries a default the user may not have typed. */
+  config: string;
+  /**
+   * True only when `--config` was actually passed.
+   *
+   * Omitting it means "this path is already resolved" — which is what a caller
+   * that has run the resolution itself passes, and why the default is `true`:
+   * such a path must be opened or fail, never quietly swapped for a different
+   * workspace because the file it names has gone missing.
+   */
+  explicitConfig?: boolean;
+  /** `--root`, when given. */
+  root?: string | undefined;
+}
+
+export async function openConfiguredLattice(args: OpenConfiguredLatticeArgs): Promise<Lattice> {
+  const { configPath } = resolveWorkspaceTarget({
+    config: args.config,
+    explicitConfig: args.explicitConfig ?? true,
+    ...(args.root !== undefined ? { root: args.root } : {}),
+  });
   // Parsed only for the database location hydration needs — the Lattice reads
   // the config file itself, AFTER hydration has had its chance to rewrite it.
   const parsed = parseConfigFile(configPath);

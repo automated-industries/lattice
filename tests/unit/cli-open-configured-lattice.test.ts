@@ -200,9 +200,13 @@ describe('openConfiguredLattice', () => {
   });
 
   it('surfaces an unreadable config instead of returning a half-open handle', async () => {
+    // A path that names nothing is refused by the resolution now, one step
+    // earlier than the parser used to refuse it — and refused it must stay: a
+    // caller that hands over a path it resolved itself must get that workspace
+    // or an error, never a different workspace chosen on its behalf.
     hydration.payload = null;
     await expect(openConfiguredLattice({ config: join(scratch, 'nope.yml') })).rejects.toThrow(
-      /cannot read config file/,
+      /No config file at .*nope\.yml/,
     );
   });
 
@@ -228,10 +232,18 @@ describe('openConfiguredLattice', () => {
 
 describe('opening with a schema that never loaded', () => {
   // The destructive half of the same bug, from the other direction: whatever the
-  // reason a process ends up with no tables — an un-hydrated shared workspace, a
-  // config that describes nothing — the previous manifest lists every rendered
-  // file as removable, and cleanup would take all of them. A schema with no
-  // tables cannot have dropped anything, so this is refused and reported.
+  // reason a process ends up without the workspace's layout — an un-hydrated
+  // shared workspace, a config that describes nothing — the previous manifest
+  // lists every rendered file as removable, and cleanup would take all of them.
+  // A process holding no layout of its own cannot have dropped one, so this is
+  // refused and reported.
+  //
+  // NOTE this case constructs the Lattice DIRECTLY, which is the one way of
+  // opening a workspace that skips the schema every real opener applies — so on
+  // its own it can pass while the refusal is unreachable in the field, which is
+  // exactly what happened. The binding coverage is the real-command suite in
+  // `tests/integration/cli-reconcile-cleanup-backstop.test.ts`; this stays as the
+  // narrow unit-level statement of the same rule.
   it('refuses cleanup instead of deleting the rendered tree', async () => {
     const ws = await buildMemberShapedWorkspace('member-unhydrated');
 
@@ -251,7 +263,7 @@ describe('opening with a schema that never loaded', () => {
     expect(existsSync(join(ws.outputDir, RENDER_ROOT, 'bravo', 'AGENT.md'))).toBe(true);
     expect(result.cleanup.filesRemoved).toEqual([]);
     expect(result.cleanup.directoriesRemoved).toEqual([]);
-    expect(result.cleanup.warnings.join('\n')).toMatch(/declares no tables/);
+    expect(result.cleanup.warnings.join('\n')).toMatch(/renders no layout of its own/);
   });
 });
 

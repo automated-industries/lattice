@@ -16,6 +16,7 @@ import {
 import type { ComputedFieldState, FieldFillResult } from '../schema/computed-fill.js';
 import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import { assertCloudOwner } from '../cloud/owner-gate.js';
 import { isNativeEntity, isInternalNativeEntity } from '../framework/native-entities.js';
 import { memberGroupFor } from '../cloud/rls.js';
 import { publishSharedSchema } from '../cloud/shared-schema.js';
@@ -485,6 +486,11 @@ export async function createComputedTable(
   def: ComputedTableDef,
   sessionId: string,
 ): Promise<void> {
+  // Authorization first: a computed table is registered in the OWNER's workspace
+  // configuration and compiled into a view on the shared database, so a scoped
+  // member is refused here — from any door, not only the one that answers with a
+  // status. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a computed table');
   const trimmed = name.trim();
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(trimmed)) {
     throw new Error('Computed-table name must be a valid identifier');
@@ -523,6 +529,11 @@ export async function updateComputedTable(
   def: ComputedTableDef,
   sessionId: string,
 ): Promise<void> {
+  // Authorization first: a computed table is registered in the OWNER's workspace
+  // configuration and compiled into a view on the shared database, so a scoped
+  // member is refused here — from any door, not only the one that answers with a
+  // status. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'update a computed table');
   const { oldDef } = await applyUpdateComputed(active, name, def);
   await recordComputedOp(
     active,
@@ -545,6 +556,11 @@ export async function deleteComputedTable(
   name: string,
   sessionId: string,
 ): Promise<void> {
+  // Authorization first: a computed table is registered in the OWNER's workspace
+  // configuration and compiled into a view on the shared database, so a scoped
+  // member is refused here — from any door, not only the one that answers with a
+  // status. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete a computed table');
   const def = await applyDeleteComputed(active, name);
   await recordComputedOp(
     active,
@@ -589,6 +605,11 @@ export async function previewComputedTable(
   def: ComputedTableDef,
   limit = 50,
 ): Promise<ComputedPreview> {
+  // Authorization first: a computed table is registered in the OWNER's workspace
+  // configuration and compiled into a view on the shared database, so a scoped
+  // member is refused here — from any door, not only the one that answers with a
+  // status. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'preview a computed table');
   const n = Math.max(1, Math.min(500, Math.floor(limit)));
   const schema = active.db.computedSchemaLookup();
   // Throwaway compile name — never DDL'd, only embedded in the returned SQL
@@ -640,6 +661,11 @@ export async function refreshComputedTable(
   opts: { fields?: string[]; sessionId?: string } = {},
   onProgress?: (p: ComputedRefreshProgress) => void,
 ): Promise<FieldFillResult[]> {
+  // Authorization first: a computed table is registered in the OWNER's workspace
+  // configuration and compiled into a view on the shared database, so a scoped
+  // member is refused here — from any door, not only the one that answers with a
+  // status. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'refresh a computed table');
   if (!active.computedTables.has(name)) {
     throw new Error(`Unknown computed table "${name}"`);
   }

@@ -91,9 +91,18 @@ const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
  *
  * These routes mutate the OWNER's on-disk config (saveConfigDoc is a raw
  * writeFileSync, which several run BEFORE any DB DDL) and/or run schema DDL —
- * neither of which Postgres RLS protects. So every config/DDL-mutating schema
- * route must gate here, not rely on RLS alone; a scoped member could otherwise
+ * neither of which Postgres RLS protects. So a scoped member could otherwise
  * corrupt the owner's config over HTTP even though RLS blocks the DB write.
+ *
+ * THIS IS NO LONGER THE RULE — it is this transport's early answer to it. The
+ * rule itself now travels with each operation (see the shared owner gate), which
+ * is what makes it apply to a command, to the assistant, and to a library call
+ * as well; for a long time it lived only here, and a member refused in the
+ * browser could perform the identical change from a terminal. What is left for
+ * a route is refusing before it parses a body it will not use, and knowing that
+ * "owner only" is 403 on HTTP. The wording is built from the same sentence the
+ * operation raises, so the two cannot say different things about the same
+ * situation.
  */
 export async function denyIfNotCloudOwner(
   db: Parameters<typeof isScopedCloudMember>[0],
@@ -114,7 +123,7 @@ export async function denyIfNotCloudOwner(
  * caller inherit it. What is left for the adapter is the part only the adapter
  * knows: that "owner only" is 403 on HTTP.
  */
-function denyOwnerOnly(e: unknown, res: ServerResponse): boolean {
+export function denyOwnerOnly(e: unknown, res: ServerResponse): boolean {
   if (cloudErrorCode(e) !== 'cloud_owner_only') return false;
   sendJson(res, { error: (e as Error).message }, 403);
   return true;
@@ -396,12 +405,21 @@ export async function handleSchemaRoutes(
       secret?: unknown;
       description?: unknown;
     };
-    const outcome = await setColumnMeta(active, tableName, colName, {
-      ...('secret' in body ? { secret: body.secret === true } : {}),
-      ...('description' in body
-        ? { description: typeof body.description === 'string' ? body.description : null }
-        : {}),
-    });
+    let outcome;
+    try {
+      outcome = await setColumnMeta(active, tableName, colName, {
+        ...('secret' in body ? { secret: body.secret === true } : {}),
+        ...('description' in body
+          ? { description: typeof body.description === 'string' ? body.description : null }
+          : {}),
+      });
+    } catch (e) {
+      // The gate travels with the operation, and it words its own refusal (which
+      // reads differently for masking than for defining). Asking it, rather than
+      // re-deciding here, is what keeps the two surfaces saying one thing.
+      if (denyOwnerOnly(e, res)) return true;
+      throw e;
+    }
     if (!outcome.ok) {
       sendJson(res, { error: outcome.error }, 400);
       return true;

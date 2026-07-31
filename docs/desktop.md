@@ -123,6 +123,26 @@ unsigned artifacts):
 | `NOTARY_KEY_P8`                                                  | App Store Connect API key (base64 `.p8`)                 |
 | `NOTARY_KEY_ID` / `NOTARY_ISSUER_ID`                             | the API key's id + issuer id                             |
 
+### Windows signing (maintainers)
+
+The released `.msi` is signed with a trusted certificate and an RFC-3161
+timestamp, so Windows no longer presents a first-run install as coming from an
+unknown publisher. The workflow signs the built installer through a hosted
+signing service; the credentials are these repository secrets:
+
+| Secret                                                    | Contents                                      |
+| --------------------------------------------------------- | --------------------------------------------- |
+| `AZURE_SIGNING_TENANT_ID`                                 | directory (tenant) id of the signing identity |
+| `AZURE_SIGNING_CLIENT_ID` / `AZURE_SIGNING_CLIENT_SECRET` | the service principal that may sign           |
+| `AZURE_SIGNING_ENDPOINT`                                  | regional endpoint of the signing account      |
+| `AZURE_SIGNING_ACCOUNT_NAME`                              | the signing account                           |
+| `AZURE_SIGNING_CERT_PROFILE`                              | the certificate profile to sign with          |
+
+The signing step is skipped when `AZURE_SIGNING_TENANT_ID` is unset — the same
+way the macOS one is — so a fork, and a tag cut before the credentials exist,
+still build a working (unsigned) installer instead of failing the release.
+A build you make yourself is never signed.
+
 ## Limitations
 
 - **Image processing (`sharp`) and `sqlite-vec` acceleration are unavailable** in
@@ -130,11 +150,10 @@ unsigned artifacts):
   search falls back to an in-process scan; image-dependent features are disabled.
   Use the npm/Node build if you need them.
 - The build is large — it embeds its runtime + dependencies.
-- **The Windows `.msi` is unsigned.** There is no Authenticode certificate in the
-  release pipeline, so Windows SmartScreen shows an "unrecognized app" warning on
-  first run (choose **More info → Run anyway**). The released macOS artifacts are
-  not affected: the `.app`, `.pkg` and `.dmg` published on
-  [latticesql.com/install](https://latticesql.com/install) are Developer ID
-  signed, notarized by Apple, and stapled.
 - Builds you make yourself are a separate case — see _Code signing_ above. They
-  are ad-hoc (unsigned) unless you supply your own credentials, on both OSes.
+  are ad-hoc (unsigned) unless you supply your own credentials, and on Windows
+  they are never signed, so your own `.msi` will still raise the SmartScreen
+  "unrecognized app" warning. The published installers on
+  [latticesql.com/install](https://latticesql.com/install) are signed on both
+  platforms — the macOS `.app`, `.pkg` and `.dmg` are Developer ID signed,
+  notarized by Apple and stapled; the Windows `.msi` is signed and timestamped.

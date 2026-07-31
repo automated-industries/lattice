@@ -673,7 +673,6 @@ export {
   installCloudRls,
   enableRlsForTable,
   enableChangelogRls,
-  backfillOwnership,
   memberGroupFor,
   LEGACY_MEMBER_GROUP,
 } from './cloud/rls.js';
@@ -1254,6 +1253,7 @@ export type {
   SourceAuthorizationRequired,
   CompleteMcpConnectionInput,
   StaleRefreshResult,
+  StaleRefreshFailure,
   DatabaseSourceInput,
   DatabaseSourceReconnectInput,
   DatabaseSourceConnected,

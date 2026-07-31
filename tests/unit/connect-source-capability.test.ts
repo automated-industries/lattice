@@ -479,22 +479,50 @@ describe('the refresh pass is one call, not a page load', () => {
     });
     // Just synced, so nothing is stale — the pass runs and reports honestly.
     const fresh = await refreshStaleSources(db, [impl], 'tester');
-    expect(fresh).toEqual({ synced: 0, failed: 0 });
+    expect(fresh).toEqual({ synced: 0, failed: 0, failures: [] });
+  });
+
+  it('hands back the reason each refusal gave, not only how many there were', async () => {
+    // A connection with no authorization behind it — what a machine is left with
+    // once its stored credentials are revoked. The count alone would say three
+    // sources are broken and nothing about why or which.
+    const impl = new FakeCredentialConnector();
+    await createConnector(db, {
+      connector: impl.connector,
+      toolkit: 'demo',
+      displayName: 'Demo Source',
+      connectedBy: 'tester-unauthorized',
+    });
+
+    const pass = await refreshStaleSources(db, [impl], 'tester-unauthorized');
+
+    expect(pass.synced).toBe(0);
+    expect(pass.failed).toBe(1);
+    expect(pass.failures).toHaveLength(1);
+    expect(pass.failures[0]?.displayName).toBe('Demo Source');
+    expect(pass.failures[0]?.error).toMatch(/no connection/);
   });
 });
 
 describe('the connector command drives the same capabilities', () => {
-  const cmd = (
+  const run = (
     args: Parameters<typeof runConnectorCommand>[0] extends infer A
       ? Omit<A & object, 'configPath' | 'outputDir' | 'open'>
       : never,
-  ): Promise<string[]> =>
+  ): ReturnType<typeof runConnectorCommand> =>
     runConnectorCommand({
       ...args,
       configPath: join(tmp, 'lattice.config.yml'),
       outputDir: tmp,
       open: () => Promise.resolve(db),
     });
+
+  /** The lines a verb printed, asserting it also reported success. */
+  const cmd = async (args: Parameters<typeof run>[0]): Promise<string[]> => {
+    const result = await run(args);
+    expect(result.exitCode, result.lines.join('\n')).toBe(0);
+    return result.lines;
+  };
 
   it('lists nothing on a workspace with no sources, and the attached one after', async () => {
     expect(await cmd({ subcommand: 'list' })).toEqual(['No connected sources.']);
@@ -519,6 +547,23 @@ describe('the connector command drives the same capabilities', () => {
     const out = await cmd({ subcommand: 'disconnect', action: connected.connectorId });
     expect(out[0]).toContain('Disconnected');
     expect(await listConnectors(db)).toEqual([]);
+  });
+
+  it('reports a refresh pass that lost every source as a failure, with the reasons', async () => {
+    // The exit code the wrapper hands the shell — the one a nightly job branches
+    // on, and the one this pass used to report as success.
+    await createConnector(db, {
+      connector: 'mcp',
+      toolkit: 'mcp:unauthorized',
+      displayName: 'Unauthorized Source',
+      connectedBy: await connectedByForCommand(),
+    });
+
+    const result = await run({ subcommand: 'sync' });
+
+    expect(result.exitCode, result.lines.join('\n')).not.toBe(0);
+    expect(result.lines.join('\n')).toContain('Unauthorized Source');
+    expect(result.lines.join('\n')).toMatch(/no connection/);
   });
 
   it('refuses an id that is not this machine’s, rather than acting on it', async () => {

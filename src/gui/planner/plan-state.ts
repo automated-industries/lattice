@@ -1,6 +1,7 @@
 import type { Lattice } from '../../lattice.js';
 import type { TableDefinition } from '../../types.js';
 import { NOOP_RENDER } from '../../render/engine.js';
+import { assertCloudOwner } from '../../cloud/owner-gate.js';
 
 /**
  * Durable planner state — currently the set of proposals the user waved off.
@@ -86,6 +87,11 @@ export async function loadDismissed(db: Lattice): Promise<string[]> {
  * twice is a no-op, not an error (the id is the primary key).
  */
 export async function recordDismissal(db: Lattice, opId: string, kind?: string): Promise<void> {
+  // Authorization first, and it has to be an explicit refusal rather than the
+  // structural skip below it. A member reached this and got `undefined` back —
+  // indistinguishable from a stored dismissal, so the caller reported success for
+  // a write that never happened. See assertCloudOwner.
+  await assertCloudOwner(db, 'dismiss data-model proposals');
   if (!(await ensureTable(db))) return;
   await db.upsert(PLAN_STATE_TABLE, {
     op_id: opId,

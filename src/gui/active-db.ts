@@ -106,9 +106,11 @@ export interface ActiveDb {
    */
   eagerRenderWired?: boolean;
   /**
-   * Tables the open-time cloud converge could not manage (e.g. owned by a
-   * different Postgres role). Empty on a clean open. Surfaced via /api/dbconfig so
-   * the user gets a specific, actionable message instead of a partial converge.
+   * Degraded-but-not-fatal conditions this open hit: a table the cloud converge
+   * could not manage (e.g. owned by a different Postgres role), or a piece of
+   * open-time setup that did not land. Empty on a clean open. Surfaced via
+   * /api/dbconfig so the user gets a specific, actionable message instead of a
+   * partial open presented as a clean one.
    */
   convergeWarnings: { table: string; reason: string }[];
   /**

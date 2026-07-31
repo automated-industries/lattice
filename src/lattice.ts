@@ -48,6 +48,9 @@ import {
 } from './cloud/shred.js';
 import { isEncrypted } from './security/encryption.js';
 import { manifestPath, readManifest, writeManifest } from './lifecycle/manifest.js';
+import type { LatticeManifest } from './lifecycle/manifest.js';
+import type { CleanupOptions, CleanupResult } from './lifecycle/cleanup.js';
+import { cleanupRefusal, refusedCleanup } from './lifecycle/cleanup-backstop.js';
 import { computeRenderCursor, cursorIsFresh } from './lifecycle/render-cursor.js';
 import { existsSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -94,6 +97,7 @@ import {
   type WorkspaceRecord,
 } from './framework/workspace.js';
 import { applyWorkspaceSchema } from './framework/workspace-schema.js';
+import { NATIVE_ENTITY_NAMES } from './framework/native-entities.js';
 import { getOrCreateMasterKey } from './framework/user-config.js';
 import { EncryptionLayer } from './security/encryption-layer.js';
 import {
@@ -476,7 +480,13 @@ export class Lattice {
     });
     this._reverseSync = new ReverseSyncEngine(this._schema, this._adapter);
     this._reverseSeedEngine = new ReverseSeedEngine(this._schema, this._adapter);
-    this._loop = new SyncLoop(this._render);
+    // The watch loop deletes through the same door as everything else. It used to
+    // hold the render engine and call its cleanup directly, which made it the one
+    // caller no check applied to — and the unattended one, sweeping on a timer
+    // with nobody reading the result.
+    this._loop = new SyncLoop(this._render, (dir, prev, opts, next) =>
+      this._runCleanup(dir, prev, opts, next),
+    );
     this._writeback = new WritebackPipeline();
 
     if (options.encryptionKey) this._encryptionKeyRaw = options.encryptionKey;
@@ -949,6 +959,215 @@ export class Lattice {
     // Computed tables register LAST — their views are projections of the
     // entity tables the schema application above just converged.
     await this._registerConfigComputedTables(false);
+
+    // Replay the schema of every connected external source (an imported external
+    // database, an MCP server). Those tables are registered at connect time, in
+    // that process only — what survives is the registry row plus the local schema
+    // descriptor, so each open has to replay from them or its schema is simply
+    // missing those tables. This lives in init() rather than at each open site
+    // because the open sites are exactly what drifted: the browser replayed, a
+    // command did not, and the command then read the browser's rendered trees for
+    // those tables as removed and deleted them. Every opener calls init().
+    await this._replayConnectedSources();
+  }
+
+  /**
+   * Bring the tables (and rendered layout) of this workspace's connected external
+   * sources back into the live schema. See `connectors/connected-schema.ts`.
+   *
+   * Imported at the point of use so a workspace that never connected anything
+   * never loads the connector layer. Never runs for a scoped cloud member, which
+   * holds no privilege to create anything — the introspect-only branch of init()
+   * returns before this point.
+   *
+   * A failure here does NOT stop the open: the workspace's own tables are already
+   * live and the rest of the session is useful. It is reported, and it cannot
+   * turn into silent deletion — the cleanup backstop asks the same module the
+   * same question and refuses to sweep a tree it cannot account for.
+   */
+  private async _replayConnectedSources(): Promise<void> {
+    try {
+      const { replayConnectedSourceSchema } = await import('./connectors/connected-schema.js');
+      const { unresolved } = await replayConnectedSourceSchema(this);
+      if (unresolved.length > 0) {
+        console.warn(
+          `[latticesql] connected source(s) ${unresolved.join(', ')} could not be fully loaded on ` +
+            `this machine. What is missing is missing from this session only, and their rendered ` +
+            `context will not be reconciled until the connection is restored — nothing of theirs ` +
+            `is removed on that account.`,
+        );
+      }
+    } catch (e) {
+      // Deliberately does not claim the workspace is open "without it": part of a
+      // replay can land before this throws, and saying so would describe a state
+      // the process is not in.
+      console.warn(
+        '[latticesql] connected-source schema replay did not complete: ' +
+          (e instanceof Error ? e.message : String(e)) +
+          '. The rendered context of any connected source will not be reconciled this session.',
+      );
+    }
+  }
+
+  /**
+   * The ONE way a cleanup pass is run — every path that reconciles a rendered
+   * tree goes through here so the backstop cannot be bypassed by adding another
+   * caller. See `lifecycle/cleanup-backstop.ts` for what it refuses and why.
+   *
+   * All FOUR callers: {@link reconcile}, {@link reconcileRenderedTree}, the
+   * background pass behind auto-render, and the watch loop — which held the
+   * render engine and called its cleanup directly until this said "every path"
+   * and meant three of them.
+   */
+  private async _runCleanup(
+    outputDir: string,
+    prevManifest: LatticeManifest | null,
+    options: CleanupOptions = {},
+    newManifest?: LatticeManifest | null,
+  ): Promise<CleanupResult> {
+    const refusal = await this._cleanupRefusal(outputDir, prevManifest, options.layoutEmptied);
+    if (!refusal) return this._render.cleanup(outputDir, prevManifest, options, newManifest);
+
+    // These callers ran a render first, which rewrote the record of what has
+    // been rendered here — dropping exactly the output this process does not
+    // know about. Left that way the refusal lasts one pass: the NEXT run finds
+    // no record of it, so there is nothing left to refuse over and the tree
+    // goes. Put it back, so the refusal stands until the layout loads.
+    //
+    // EVERY refused pass, including the ones below that could never have deleted
+    // anything. A dry run renders too, and its render rewrites the record exactly
+    // as any other does — so a "read-only" pass that skipped this would quietly
+    // disarm the protection and hand the next ordinary run an empty baseline.
+    this._preserveUnknownRenderRecord(outputDir, prevManifest);
+
+    // A pass that CANNOT delete has no deletion to refuse. Every removal in the
+    // sweep is gated on one of these three, so a dry run and a pass with both
+    // sweeps turned off are already incapable of touching the tree.
+    //
+    // Refusing them anyway is what made the refusal impossible to investigate: a
+    // dry run is exactly the command somebody reaches for to find out what is
+    // being protected, and it answered with nothing at all. So it runs — removing
+    // nothing, as it would have anyway — and reports BOTH what a sweep would
+    // target and why a real one will not do it.
+    const couldDelete =
+      options.dryRun !== true &&
+      (options.removeOrphanedDirectories !== false || options.removeOrphanedFiles !== false);
+    if (!couldDelete) {
+      const reported = await this._render.cleanup(outputDir, prevManifest, options, newManifest);
+      return { ...reported, warnings: [...reported.warnings, refusal] };
+    }
+
+    return refusedCleanup(refusal);
+  }
+
+  /**
+   * The reason a cleanup of `outputDir` must not run, or null. Announces a new
+   * reason once through the render notice channel: a command prints the warning
+   * and exits non-zero, but the background reconciliation the app runs after
+   * every write reads no result at all — so without this the refusal would happen
+   * there and say nothing, which is the failure mode the check exists to end.
+   * Announced once per distinct reason per directory, so a standing condition is
+   * stated rather than repeated on every write.
+   */
+  private async _cleanupRefusal(
+    outputDir: string,
+    prevManifest: LatticeManifest | null,
+    layoutEmptied = false,
+  ): Promise<string | null> {
+    const refusal = cleanupRefusal({
+      outputDir,
+      prevManifest,
+      liveContexts: new Set(this._schema.getEntityContexts().keys()),
+      // Every registered table renders a file, so this is the live half of the
+      // rendered layout for a workspace that renders files and no per-record
+      // directories — the shape that has no entity contexts at all.
+      liveFileTables: new Set(this._schema.getTables().keys()),
+      // Declared BY NAME, which is what the manifest records a multi's files
+      // under and what retires them when it goes. Not a table name, and never
+      // findable among the tables.
+      liveMultis: new Set(this._schema.getMultis().keys()),
+      frameworkTables: NATIVE_ENTITY_NAMES,
+      layoutEmptied,
+      ...(await this._connectedSourceTables()),
+    });
+    if (refusal === null) {
+      // Recovered: a later refusal here is news again, so it is announced again.
+      this._cleanupRefusalNoticed.delete(outputDir);
+      return null;
+    }
+    if (this._cleanupRefusalNoticed.get(outputDir) !== refusal) {
+      this._cleanupRefusalNoticed.set(outputDir, refusal);
+      this._render.notice(refusal);
+    }
+    return refusal;
+  }
+
+  /**
+   * Put back the record of rendered output a just-completed render did not know
+   * about.
+   *
+   * The manifest is what the NEXT pass compares against. A render by a process
+   * with a narrower schema writes a narrower manifest, which silently converts
+   * "this output exists and I do not understand it" into "it never existed" —
+   * and the pass after that deletes it with nothing left to object to. Only
+   * entries the fresh manifest lacks are restored, so everything this render did
+   * record still wins.
+   *
+   * ALL THREE SHAPES, or the repair is only as durable as the shape it covers.
+   * It restored entity contexts and table rollups and dropped multi-outputs, so
+   * a workspace whose rendered baseline was a multi got a refusal that lasted
+   * exactly one pass: the write that was supposed to preserve the record was
+   * itself what erased the key the next pass needed, and that pass swept the
+   * tree without a word. A guard that fires once and then clears itself is the
+   * failure this repair exists to prevent, not a smaller version of it.
+   *
+   * Best-effort: the tree itself was already left alone, which is the guarantee
+   * that matters; a manifest that could not be written is retried next pass.
+   */
+  private _preserveUnknownRenderRecord(
+    outputDir: string,
+    prevManifest: LatticeManifest | null,
+  ): void {
+    if (!prevManifest) return;
+    const fresh = readManifest(outputDir);
+    if (!fresh) return;
+    const entityContexts = { ...prevManifest.entityContexts, ...fresh.entityContexts };
+    const tableFiles = { ...(prevManifest.tableFiles ?? {}), ...(fresh.tableFiles ?? {}) };
+    const multiFiles = { ...(prevManifest.multiFiles ?? {}), ...(fresh.multiFiles ?? {}) };
+    try {
+      writeManifest(outputDir, { ...fresh, entityContexts, tableFiles, multiFiles });
+    } catch {
+      /* the tree is intact either way; the next pass restores the record */
+    }
+  }
+
+  /** Last cleanup refusal announced per output directory (see {@link _cleanupRefusal}). */
+  private readonly _cleanupRefusalNoticed = new Map<string, string>();
+
+  /**
+   * Which tables a currently-connected external source owns, for the backstop.
+   *
+   * A read failure is NOT reported as "no connected sources" — that is the answer
+   * that would let a wrongly-narrow schema delete a connected source's rendered
+   * tree. It comes back as one unnamed unresolved source, which makes the
+   * backstop refuse and say so.
+   */
+  private async _connectedSourceTables(): Promise<{
+    externalTables: Set<string>;
+    unresolvedSources: string[];
+  }> {
+    try {
+      const { connectedSourceTables } = await import('./connectors/connected-schema.js');
+      const { tables, unresolved } = await connectedSourceTables(this);
+      return { externalTables: tables, unresolvedSources: unresolved };
+    } catch (e) {
+      return {
+        externalTables: new Set<string>(),
+        unresolvedSources: [
+          `unreadable connector registry (${e instanceof Error ? e.message : String(e)})`,
+        ],
+      };
+    }
   }
 
   /**
@@ -2795,7 +3014,7 @@ export class Lattice {
   private get _autoRender(): AutoRenderScheduler {
     this._autoRenderScheduler ??= new AutoRenderScheduler({
       render: (dir, opts) => this._render.render(dir, opts),
-      cleanup: (dir, prev, opts, next) => this._render.cleanup(dir, prev, opts, next),
+      cleanup: (dir, prev, opts, next) => this._runCleanup(dir, prev, opts, next),
       readManifest,
       emitRender: (r) => {
         for (const h of this._renderHandlers) h(r);
@@ -3024,7 +3243,15 @@ export class Lattice {
           expectFts: !!def.fts,
           expectEmbeddings: !!def.embeddings,
         }));
-    return diagnoseRetrieval(this._adapter, { tables: specs });
+    // When the list was derived here it is the whole truth about this workspace:
+    // every registered table was read. So an empty one means "none of it
+    // configures search" — an answer — rather than "nobody said what to expect",
+    // which is what makes a report an error. A list the CALLER supplied carries
+    // no such promise, so it does not get the benefit of it.
+    return diagnoseRetrieval(this._adapter, {
+      tables: specs,
+      expectationsComplete: opts.tables === undefined,
+    });
   }
 
   /**
@@ -3361,7 +3588,21 @@ export class Lattice {
     const notInit = this._notInitError<RenderResult>();
     if (notInit) return notInit;
 
+    // The thing that destroys the record a refusal stands on is the RENDER, not
+    // the sweep — so the repair belongs to every render, not only the ones a
+    // sweep follows. Bound to the sweep alone, ONE bare render between two
+    // reconciliations was enough to clear the protection: the first refused, the
+    // render rewrote the record without the output it does not understand, and
+    // the second deleted the tree and reported success. That is the command an
+    // operator reaches for next, precisely because the refusal makes the other
+    // one render nothing. Every caller of this method is covered at once — the
+    // command, the targeted re-renders the app runs after a write, and any
+    // embedder driving the render itself.
+    const prevManifest = readManifest(outputDir);
     const result = await this._render.render(outputDir, opts);
+    if (prevManifest && (await this._cleanupRefusal(outputDir, prevManifest))) {
+      this._preserveUnknownRenderRecord(outputDir, prevManifest);
+    }
     for (const h of this._renderHandlers) h(result);
     return result;
   }
@@ -3637,12 +3878,58 @@ export class Lattice {
     // Read previous manifest BEFORE render so cleanup can detect orphans
     const prevManifest = readManifest(outputDir);
 
+    // Whether this process knows the workspace well enough to be reconciling it
+    // (see `lifecycle/cleanup-backstop.ts`).
+    const refusal = await this._cleanupRefusal(outputDir, prevManifest, options.layoutEmptied);
+
+    // Whether this pass could delete anything at all. Every removal in the sweep
+    // is gated on one of these three: a dry run removes nothing, and neither does
+    // a pass with both sweeps turned off.
+    const couldDelete =
+      options.dryRun !== true &&
+      (options.removeOrphanedDirectories !== false || options.removeOrphanedFiles !== false);
+
+    // Refuse the WHOLE pass, before anything is written, only when there is a
+    // deletion to refuse. Checked before the render because a render would first
+    // rewrite the record of what has been rendered here — dropping the very
+    // output being protected.
+    //
+    // A pass that cannot delete has no deletion to stop, and stopping it anyway
+    // reported NOTHING: a dry run is the command somebody reaches for to find out
+    // what the refusal is about, and it answered with an empty render and a
+    // failure. So those passes go the whole way and come back with a report — the
+    // sweep at the end still refuses, so still nothing is removed, and the record
+    // the render rewrote is put back there.
+    if (refusal && couldDelete) {
+      return {
+        filesWritten: [],
+        filesSkipped: 0,
+        durationMs: 0,
+        cleanup: refusedCleanup(refusal),
+        reverseSync: null,
+        reverseSeed: null,
+        reverseSeedRequired: [],
+      };
+    }
+    // The sweep at the end of this method asks again, through the one wrapper
+    // every cleanup path goes through. Deliberately not skipped as redundant:
+    // the wrapper is what makes the check impossible to get around by adding a
+    // caller, and asking twice costs one small read of a table with one row per
+    // connection.
+
     // Reverse-seed phase: detect or recover rows from files into empty tables.
     // Default: detect only (flag to human). With `reverseSeed: 'auto'`: auto-recover.
+    //
+    // Skipped entirely while the refusal stands, whichever way the pass got here:
+    // both of these phases write the rendered tree back INTO the database, and
+    // the whole reason for the refusal is that this process's schema is missing
+    // tables the tree was rendered from.
     let reverseSeedResult: ReverseSeedResult | null = null;
     let reverseSeedRequired: import('./types.js').ReverseSeedDetection[] = [];
 
-    if (options.reverseSeed === 'auto') {
+    if (refusal) {
+      /* nothing is written back into a schema known to be incomplete */
+    } else if (options.reverseSeed === 'auto') {
       // Auto-recovery mode: parse files and insert rows
       const result = await this._reverseSeedEngine.process(outputDir);
       for (const tableResult of result.tables) {
@@ -3660,7 +3947,7 @@ export class Lattice {
     // Runs before render so the render phase writes from the now-updated DB state.
     // Disabled by `reverseSync: false`. Dry-run with `reverseSync: 'dry-run'`.
     let reverseSyncResult: import('./types.js').ReverseSyncResult | null = null;
-    if (options.reverseSync !== false) {
+    if (!refusal && options.reverseSync !== false) {
       const dryRun = options.reverseSync === 'dry-run';
       reverseSyncResult = await this._reverseSync.process(outputDir, prevManifest, dryRun);
     }
@@ -3675,7 +3962,7 @@ export class Lattice {
     // Run cleanup after render, passing both old and new manifests.
     // Old manifest: detects orphaned directories (deleted entities).
     // New manifest: detects stale files in surviving entities (omitIfEmpty, removed files).
-    const cleanup = await this._render.cleanup(outputDir, prevManifest, options, newManifest);
+    const cleanup = await this._runCleanup(outputDir, prevManifest, options, newManifest);
 
     return {
       ...renderResult,
@@ -3736,7 +4023,7 @@ export class Lattice {
   ): Promise<import('./lifecycle/cleanup.js').CleanupResult> {
     const notInit = this._notInitError<import('./lifecycle/cleanup.js').CleanupResult>();
     if (notInit) return notInit;
-    return this._render.cleanup(outputDir, prevManifest, {}, newManifest);
+    return this._runCleanup(outputDir, prevManifest, {}, newManifest);
   }
 
   async reverseSyncFromFiles(

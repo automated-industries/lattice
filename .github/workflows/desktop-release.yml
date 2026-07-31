@@ -115,6 +115,10 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    # Lifted to the job so the signing step can ASK whether signing is configured.
+    # A step-level `if:` cannot read the secrets context; an env var it sets can.
+    env:
+      SIGNING_TENANT: ${{ secrets.AZURE_SIGNING_TENANT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -126,7 +130,16 @@ jobs:
           deno-version: canary
       - run: npm ci
       - run: npm run desktop:build:win
-      - name: Sign Windows installer
+      # Skipped (no-op) on forks / when unset, exactly like the macOS signing
+      # preparation above — the build then produces a working unsigned installer.
+      # Unconditional, this step put the whole tag on the critical path of a
+      # secret: with the signing credentials absent the action fails, the Windows
+      # build fails with it, no Release is created, and the npm publish (which
+      # deliberately waits for the desktop channel) times out and refuses. A tag
+      # cut before the credentials exist would have shipped NOTHING, on either
+      # channel, after a three-quarter-hour wait.
+      - name: Sign Windows installer (no-op without secrets)
+        if: env.SIGNING_TENANT != ''
         uses: azure/artifact-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_SIGNING_TENANT_ID }}

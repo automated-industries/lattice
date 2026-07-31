@@ -238,8 +238,11 @@ export async function runAccountCommand(args: AccountCommandArgs): Promise<strin
     case 'sync': {
       const root = resolveAccountRoot(args.root);
       const result = await syncAccountMemberships({ latticeRoot: root });
-      if (args.json) return asJson(result);
-      const lines = formatSyncResult(result);
+      // The report is built in whichever form was asked for FIRST, and the check
+      // runs after — on both forms. It used to return the machine-readable form
+      // before reaching the check below, so the one caller that cannot read a
+      // printed report was the one told a partial pass had gone fine.
+      const lines = args.json ? asJson(result) : formatSyncResult(result);
       // A pass that lost some memberships leaves as a failure, carrying the whole
       // report. Exiting zero after three of four workspaces failed to arrive would
       // tell the script that ran it something untrue.

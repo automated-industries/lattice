@@ -38,7 +38,7 @@ import { resolveCloudTarget, runCloudCommand } from './cli-cloud.js';
 import { runAskCommand, askFailureMessage } from './cli-ask.js';
 import { runModelCommand, resolveModelTarget } from './cli-model.js';
 import { runConnectorCommand } from './cli-connector.js';
-import { resolveWorkspaceTarget } from './cli-target.js';
+import { resolveWorkspaceTarget, type WorkspaceTarget } from './cli-target.js';
 import { runAccountCommand } from './cli-account.js';
 import { runIngestCommand } from './cli-ingest.js';
 import { runImportCommand } from './cli-import.js';
@@ -70,6 +70,13 @@ interface ParsedArgs {
   dryRun: boolean;
   noOrphanDirs: boolean;
   noOrphanFiles: boolean;
+  /**
+   * --layout-emptied — this workspace really does render nothing now, because
+   * its last table was deleted. A config that lost its entities and one whose
+   * entities were removed on purpose are the same file, so a reconciliation
+   * refuses to sweep on its own; this is how the operator says which it is.
+   */
+  layoutEmptied: boolean;
   protected: string[];
   interval: number;
   cleanup: boolean;
@@ -166,10 +173,19 @@ interface ParsedArgs {
   mode?: string | undefined;
 }
 
+/**
+ * The value `--config` carries when nobody typed one.
+ *
+ * Compared against, rather than assumed: seeing it means the workspace has to be
+ * RESOLVED (a config in the current directory, else the active workspace) instead
+ * of opened as a literal path, and every command decides that the same way.
+ */
+const DEFAULT_CONFIG_PATH = './lattice.config.yml';
+
 function parseArgs(argv: string[]): ParsedArgs {
   let command: string | undefined;
   let action: string | undefined;
-  let config = './lattice.config.yml';
+  let config = DEFAULT_CONFIG_PATH;
   let out = './generated';
   let output = './context';
   let outputExplicit = false;
@@ -178,6 +194,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let version = false;
   let dryRun = false;
   let noOrphanDirs = false;
+  let layoutEmptied = false;
   let noOrphanFiles = false;
   const protectedFiles: string[] = [];
   let interval = 5000;
@@ -379,6 +396,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       noOrphanDirs = true;
     } else if (arg === '--no-orphan-files') {
       noOrphanFiles = true;
+    } else if (arg === '--layout-emptied') {
+      layoutEmptied = true;
     } else if (arg === '--protected' && i + 1 < argv.length) {
       i++;
       const csv = argv[i] ?? '';
@@ -513,6 +532,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     dryRun,
     noOrphanDirs,
     noOrphanFiles,
+    layoutEmptied,
     protected: protectedFiles,
     interval,
     cleanup,
@@ -621,6 +641,8 @@ function printHelp(): void {
       '  --dry-run              Report orphans but do not delete anything',
       '  --no-orphan-dirs       Skip removal of orphaned entity directories',
       '  --no-orphan-files      Skip removal of orphaned files inside entity dirs',
+      '  --layout-emptied       Confirm this workspace renders nothing now on purpose,',
+      '                         so its leftover rendered tree may be swept',
       '  --protected <csv>      Comma-separated list of protected filenames',
       '',
       'Options (status):',
@@ -634,6 +656,7 @@ function printHelp(): void {
       '  --cleanup              Enable orphan cleanup after each render cycle',
       '  --no-orphan-dirs       Skip removal of orphaned entity directories (with --cleanup)',
       '  --no-orphan-files      Skip removal of orphaned files inside entity dirs (with --cleanup)',
+      '  --layout-emptied       Confirm this workspace renders nothing now on purpose',
       '  --protected <csv>      Comma-separated list of protected filenames (with --cleanup)',
       '',
       'Options (gui):',
@@ -993,12 +1016,42 @@ function runGenerate(args: ParsedArgs): void {
   }
 }
 
-async function runRender(args: ParsedArgs): Promise<void> {
-  const outputDir = resolve(args.output);
+/**
+ * How a command names the workspace it was asked about.
+ *
+ * One shape, passed to every opener, so a bare command and a `--config` one are
+ * resolved by the same rules rather than by whichever line each command wrote.
+ */
+function workspaceArgs(args: ParsedArgs): {
+  config: string;
+  explicitConfig: boolean;
+  root?: string | undefined;
+} {
+  return {
+    config: args.config,
+    explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
+    ...(args.root !== undefined ? { root: args.root } : {}),
+  };
+}
 
+/**
+ * Where a tree-writing command writes.
+ *
+ * `--output` wins when it was typed. Otherwise it is the rendered-context
+ * directory belonging to the workspace that was resolved — NOT `./context` under
+ * whatever directory the shell was in. Opening the right workspace and writing
+ * its context somewhere else would be a worse answer than failing was: the tree
+ * a reconciliation compares against lives with the workspace.
+ */
+function outputDirFor(args: ParsedArgs, target: WorkspaceTarget): string {
+  return args.outputExplicit ? resolve(args.output) : target.contextDir;
+}
+
+async function runRender(args: ParsedArgs): Promise<void> {
   let db: Lattice | undefined;
   try {
-    db = await openConfiguredLattice(args);
+    const outputDir = outputDirFor(args, resolveWorkspaceTarget(workspaceArgs(args)));
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
     const start = Date.now();
     const result = await db.render(outputDir);
@@ -1019,7 +1072,7 @@ async function runRender(args: ParsedArgs): Promise<void> {
 async function runDoctor(args: ParsedArgs): Promise<void> {
   let db: Lattice | undefined;
   try {
-    db = await openConfiguredLattice(args);
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
     let report = await db.diagnoseRetrieval();
     if (args.fix) {
@@ -1062,7 +1115,7 @@ async function runReindex(args: ParsedArgs): Promise<void> {
   }
   let db: Lattice | undefined;
   try {
-    db = await openConfiguredLattice(args);
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
     const n = await db.buildVectorIndex(args.table);
     console.log(
@@ -1086,7 +1139,7 @@ async function runIndex(args: ParsedArgs): Promise<void> {
   }
   let db: Lattice | undefined;
   try {
-    db = await openConfiguredLattice(args);
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
     const report = await db.diagnoseRetrieval();
     const { getVectorIndexMeta } = await import('./search/vector-index.js');
@@ -1155,7 +1208,7 @@ async function runSearch(args: ParsedArgs): Promise<void> {
   }
   let db: Lattice | undefined;
   try {
-    db = await openConfiguredLattice(args);
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
     const results = await db.hybridSearch(args.table, args.query, { topK: args.topK ?? 10 });
     if (args.json) {
@@ -1193,17 +1246,17 @@ async function runSearch(args: ParsedArgs): Promise<void> {
 }
 
 async function runReconcile(args: ParsedArgs, isDryRun: boolean): Promise<void> {
-  const outputDir = resolve(args.output);
-
   let db: Lattice | undefined;
   try {
-    db = await openConfiguredLattice(args);
+    const outputDir = outputDirFor(args, resolveWorkspaceTarget(workspaceArgs(args)));
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
     const start = Date.now();
     const reconcileOpts: import('./types.js').ReconcileOptions = {
       dryRun: isDryRun,
       removeOrphanedDirectories: !args.noOrphanDirs,
       removeOrphanedFiles: !args.noOrphanFiles,
+      layoutEmptied: args.layoutEmptied,
     };
     if (args.protected.length > 0) {
       reconcileOpts.protectedFiles = args.protected;
@@ -1223,14 +1276,18 @@ async function runReconcile(args: ParsedArgs, isDryRun: boolean): Promise<void> 
     const { cleanup } = result;
     const totalRemoved = cleanup.directoriesRemoved.length + cleanup.filesRemoved.length;
     if (totalRemoved > 0 || cleanup.directoriesSkipped.length > 0) {
+      // A dry run deletes nothing, so it reports what a real run WOULD take.
+      // Printing the same past tense either way told somebody investigating that
+      // their files had just been removed, in the one mode that never removes any.
+      const verb = isDryRun ? 'Would remove' : 'Removed';
       console.log(
-        `Cleanup: removed ${String(cleanup.directoriesRemoved.length)} directories, ${String(cleanup.filesRemoved.length)} files`,
+        `Cleanup: ${isDryRun ? 'would remove' : 'removed'} ${String(cleanup.directoriesRemoved.length)} directories, ${String(cleanup.filesRemoved.length)} files`,
       );
       for (const d of cleanup.directoriesRemoved) {
-        console.log(`  ✓ Removed ${d}`);
+        console.log(`  ✓ ${verb} ${d}`);
       }
       for (const f of cleanup.filesRemoved) {
-        console.log(`  ✓ Removed ${f}`);
+        console.log(`  ✓ ${verb} ${f}`);
       }
       for (const d of cleanup.directoriesSkipped) {
         console.log(`  ✗ Left ${d} (protected files remain)`);
@@ -1261,11 +1318,11 @@ function formatTimestamp(): string {
 }
 
 async function runWatch(args: ParsedArgs): Promise<void> {
-  const outputDir = resolve(args.output);
-
   let db: Lattice;
+  let outputDir: string;
   try {
-    db = await openConfiguredLattice(args);
+    outputDir = outputDirFor(args, resolveWorkspaceTarget(workspaceArgs(args)));
+    db = await openConfiguredLattice(workspaceArgs(args));
     await db.init();
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
@@ -1276,9 +1333,19 @@ async function runWatch(args: ParsedArgs): Promise<void> {
     ? {
         removeOrphanedDirectories: !args.noOrphanDirs,
         removeOrphanedFiles: !args.noOrphanFiles,
+        layoutEmptied: args.layoutEmptied,
         ...(args.protected.length > 0 ? { protectedFiles: args.protected } : {}),
       }
     : undefined;
+
+  /**
+   * The last thing a cleanup pass said that was worth saying, so a standing
+   * condition is stated rather than repeated every few seconds. Watching is the
+   * one command that runs cleanup over and over, unattended — reporting only the
+   * two counts is how a refusal, or a file left in place because somebody had
+   * edited it, could happen on a loop and never reach the operator.
+   */
+  let lastCleanupComplaint = '';
 
   const stop = await db.watch(outputDir, {
     interval: args.interval,
@@ -1297,6 +1364,16 @@ async function runWatch(args: ParsedArgs): Promise<void> {
             console.log(
               `[${formatTimestamp()}] Cleanup: removed ${String(result.directoriesRemoved.length)} dirs, ${String(result.filesRemoved.length)} files`,
             );
+            const complaint = [
+              ...result.warnings,
+              ...result.directoriesSkipped.map((d) => `Left ${d} (protected files remain)`),
+            ].join('\n');
+            if (complaint === lastCleanupComplaint) return;
+            lastCleanupComplaint = complaint;
+            for (const w of result.warnings) console.warn(`[${formatTimestamp()}]   ! ${w}`);
+            for (const d of result.directoriesSkipped) {
+              console.warn(`[${formatTimestamp()}]   ✗ Left ${d} (protected files remain)`);
+            }
           },
         }
       : {}),
@@ -1452,7 +1529,7 @@ function bindTargetFor(args: ParsedArgs, port: number): GuiBindTarget {
   const boot = ensureRootForGui({
     startDir: args.root ?? process.cwd(),
     configPath: resolve(args.config),
-    explicitConfig: args.config !== './lattice.config.yml',
+    explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
     ...(args.root !== undefined ? { root: args.root } : {}),
   });
   const activeWs = boot.workspaceId
@@ -1591,7 +1668,7 @@ async function runDatabase(args: ParsedArgs): Promise<void> {
   try {
     const target = resolveWorkspaceTarget({
       config: args.config,
-      explicitConfig: args.config !== './lattice.config.yml',
+      explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
       ...(args.root !== undefined ? { root: args.root } : {}),
     });
     const lines = await runDatabaseCommand({
@@ -1619,7 +1696,7 @@ async function runSchema(args: ParsedArgs): Promise<void> {
   try {
     const target = resolveWorkspaceTarget({
       config: args.config,
-      explicitConfig: args.config !== './lattice.config.yml',
+      explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
       ...(args.root !== undefined ? { root: args.root } : {}),
     });
     const lines = await runSchemaCommand({
@@ -1647,7 +1724,7 @@ async function runQuestions(args: ParsedArgs): Promise<void> {
   try {
     const target = resolveWorkspaceTarget({
       config: args.config,
-      explicitConfig: args.config !== './lattice.config.yml',
+      explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
       ...(args.root !== undefined ? { root: args.root } : {}),
     });
     const lines = await runQuestionsCommand({
@@ -1696,7 +1773,7 @@ async function runAsk(args: ParsedArgs): Promise<void> {
       {
         prompt: args.prompt,
         config: args.config,
-        explicitConfig: args.config !== './lattice.config.yml',
+        explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
         ...(args.root !== undefined ? { root: args.root } : {}),
         json: args.json,
       },
@@ -1728,7 +1805,7 @@ async function runModel(args: ParsedArgs): Promise<void> {
   try {
     const configPath = resolveModelTarget({
       config: args.config,
-      explicitConfig: args.config !== './lattice.config.yml',
+      explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
       ...(args.root !== undefined ? { root: args.root } : {}),
     });
     const lines = await runModelCommand({
@@ -1781,10 +1858,10 @@ async function runConnector(args: ParsedArgs): Promise<void> {
   try {
     const target = resolveWorkspaceTarget({
       config: args.config,
-      explicitConfig: args.config !== './lattice.config.yml',
+      explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
       ...(args.root !== undefined ? { root: args.root } : {}),
     });
-    const lines = await runConnectorCommand({
+    const result = await runConnectorCommand({
       subcommand: args.subcommand,
       action: args.action,
       configPath: target.configPath,
@@ -1797,7 +1874,10 @@ async function runConnector(args: ParsedArgs): Promise<void> {
       passwordStdin: args.passwordStdin,
       json: args.json,
     });
-    for (const line of lines) console.log(line);
+    // The report goes to standard output even when the verb failed — it is the
+    // thing a script asked for — and the exit code says whether to trust it.
+    for (const line of result.lines) console.log(line);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
   } catch (e) {
     console.error((e as Error).message);
     process.exitCode = 1;
@@ -1814,7 +1894,7 @@ async function runCloud(args: ParsedArgs): Promise<void> {
     const target = needsWorkspace
       ? resolveCloudTarget({
           config: args.config,
-          explicitConfig: args.config !== './lattice.config.yml',
+          explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
           ...(args.root !== undefined ? { root: args.root } : {}),
         })
       : null;
@@ -1854,7 +1934,7 @@ async function runIngest(args: ParsedArgs): Promise<void> {
         target: args.subcommand,
         action: args.action,
         config: args.config,
-        explicitConfig: args.config !== './lattice.config.yml',
+        explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
         root: args.root,
         json: args.json,
         title: args.title,
@@ -1888,7 +1968,7 @@ async function runImport(args: ParsedArgs): Promise<void> {
       {
         target: args.subcommand,
         config: args.config,
-        explicitConfig: args.config !== './lattice.config.yml',
+        explicitConfig: args.config !== DEFAULT_CONFIG_PATH,
         root: args.root,
         json: args.json,
         dryRun: args.dryRun,

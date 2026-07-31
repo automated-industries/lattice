@@ -1,12 +1,30 @@
 import type { RenderEngine } from '../render/engine.js';
 import type { WatchOptions, StopFn, RenderResult } from '../types.js';
+import type { CleanupOptions, CleanupResult } from '../lifecycle/cleanup.js';
+import type { LatticeManifest } from '../lifecycle/manifest.js';
 import { readManifest } from '../lifecycle/manifest.js';
+
+/**
+ * How this loop runs a cleanup pass. Injected rather than reached for, because
+ * the loop must not be able to reach one: this is the long-running, unattended
+ * caller — it sweeps a rendered tree every few seconds with nobody watching, so
+ * it is the LAST place that should get its own private door to the deletion.
+ * It gets the same one every other path uses, and the checks that live behind it.
+ */
+export type CleanupRunner = (
+  outputDir: string,
+  prevManifest: LatticeManifest | null,
+  options: CleanupOptions,
+  newManifest: LatticeManifest | null,
+) => Promise<CleanupResult>;
 
 export class SyncLoop {
   private readonly _engine: RenderEngine;
+  private readonly _cleanup: CleanupRunner;
 
-  constructor(engine: RenderEngine) {
+  constructor(engine: RenderEngine, cleanup: CleanupRunner) {
     this._engine = engine;
+    this._cleanup = cleanup;
   }
 
   watch(outputDir: string, options: WatchOptions = {}): StopFn {
@@ -68,7 +86,7 @@ export class SyncLoop {
             // previous manifest but could not detect stale files in surviving entities
             // (omitIfEmpty / removed files), leaving them on disk.
             const newManifest = readManifest(outputDir);
-            const cleanupResult = await this._engine.cleanup(
+            const cleanupResult = await this._cleanup(
               outputDir,
               prevManifest,
               options.cleanup,

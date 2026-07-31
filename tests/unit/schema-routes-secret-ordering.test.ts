@@ -15,9 +15,9 @@ import type { SchemaRoutesDeps } from '../../src/gui/schema-routes.js';
  * assistant while a scoped member's Postgres connection can still SELECT it.
  */
 
-const { setColumnAudienceMock, upsertColumnMetaMock } = vi.hoisted(() => ({
+const { setColumnAudienceMock, writeColumnMetaRowMock } = vi.hoisted(() => ({
   setColumnAudienceMock: vi.fn(),
-  upsertColumnMetaMock: vi.fn(async () => {}),
+  writeColumnMetaRowMock: vi.fn(async () => {}),
 }));
 
 vi.mock('../../src/cloud/audience.js', async (importOriginal) => {
@@ -26,7 +26,7 @@ vi.mock('../../src/cloud/audience.js', async (importOriginal) => {
 });
 vi.mock('../../src/gui/column-descriptions.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/gui/column-descriptions.js')>();
-  return { ...actual, upsertColumnMeta: upsertColumnMetaMock };
+  return { ...actual, writeColumnMetaRow: writeColumnMetaRowMock };
 });
 vi.mock('../../src/gui/http.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/gui/http.js')>();
@@ -69,6 +69,10 @@ function makeActive(): ActiveDb {
       getDialect: () => 'postgres',
       getRegisteredColumns: () => ({ id: {}, ssn: {} }),
       getPrimaryKey: () => ['id'],
+      // An ordinary Postgres, not a secured shared one: the bookkeeping table
+      // the owner check looks for is absent, so the caller is nobody's member and
+      // the ordering under test is what decides the outcome.
+      adapter: { getAsync: () => Promise.resolve(undefined) },
     },
   } as unknown as ActiveDb;
 }
@@ -100,7 +104,7 @@ describe('mark-column-secret ordering (C6 — DB mask before local flag)', () =>
     await expect(handleSchemaRoutes(req, res, ctx, deps)).rejects.toThrow(/audience view failed/);
 
     expect(setColumnAudienceMock).toHaveBeenCalledTimes(1); // mask attempted first
-    expect(upsertColumnMetaMock).not.toHaveBeenCalled(); // local flag never written
+    expect(writeColumnMetaRowMock).not.toHaveBeenCalled(); // local flag never written
   });
 
   it('applies the DB mask strictly BEFORE the local flag on success', async () => {
@@ -111,9 +115,9 @@ describe('mark-column-secret ordering (C6 — DB mask before local flag)', () =>
     const handled = await handleSchemaRoutes(req, res, ctx, deps);
     expect(handled).toBe(true);
     expect(setColumnAudienceMock).toHaveBeenCalledTimes(1);
-    expect(upsertColumnMetaMock).toHaveBeenCalledTimes(1);
+    expect(writeColumnMetaRowMock).toHaveBeenCalledTimes(1);
     expect(setColumnAudienceMock.mock.invocationCallOrder[0]!).toBeLessThan(
-      upsertColumnMetaMock.mock.invocationCallOrder[0]!,
+      writeColumnMetaRowMock.mock.invocationCallOrder[0]!,
     );
   });
 });

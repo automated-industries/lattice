@@ -8,6 +8,7 @@ import {
   listDbCredentials,
   readIdentity,
   readPreferences,
+  suggestedDisplayName,
   writeIdentity,
   writePreferences,
   type UserIdentity,
@@ -98,7 +99,16 @@ export async function dispatchUserConfigRoute(
       // Include a stable, anonymized analytics client id (no PII) so the GUI can
       // pin GA's client_id to ONE value per machine — otherwise the webview
       // counts every reload/relaunch as a new user.
-      sendJson(res, { ...readIdentity(), analyticsClientId: getOrCreateAnalyticsId() });
+      //
+      // suggested_display_name is a name to OFFER when none is stored, so the
+      // interface can fill the field instead of stopping to demand it. It is
+      // carried separately from display_name because an empty display_name still
+      // has to mean "not set" for every other reader.
+      sendJson(res, {
+        ...readIdentity(),
+        suggested_display_name: suggestedDisplayName(),
+        analyticsClientId: getOrCreateAnalyticsId(),
+      });
       return Promise.resolve();
     });
     return true;

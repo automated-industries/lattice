@@ -104,6 +104,8 @@ export function feedSummary(op: string, table: string, row?: unknown): string {
       return `Refreshed computed table ${table}`;
     case 'schema.purge':
       return `Purged ${table}`;
+    case IMPORT_AUDIT_OP:
+      return `Imported data into ${table}`;
     default:
       return `${op} on ${table}`;
   }
@@ -121,6 +123,66 @@ function sessionUndoneFilters(undone: 0 | 1, sessionId?: string) {
   ];
   if (sessionId) filters.push({ col: 'session_id', op: 'eq', val: sessionId });
   return filters;
+}
+
+/** The change log's table name — the one place it is spelled for definition. */
+export const AUDIT_TABLE = '_lattice_gui_audit';
+
+/**
+ * The change log's shape. Declared HERE, beside the code that reads and writes
+ * it, and used by the workspace open that defines the table — one definition, so
+ * a writer can also make sure the table is there (see {@link ensureAuditTable})
+ * without restating the columns and letting the two drift.
+ */
+export const AUDIT_TABLE_COLUMNS: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  ts: "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+  table_name: 'TEXT NOT NULL',
+  row_id: 'TEXT',
+  operation: 'TEXT NOT NULL',
+  before_json: 'TEXT',
+  after_json: 'TEXT',
+  undone: 'INTEGER NOT NULL DEFAULT 0',
+  // The GUI session (one per server process) that made the change. The
+  // header undo/redo stack is scoped to the current session — you undo
+  // YOUR OWN recent actions, not another cloud user's edit — while the
+  // version-history per-entry Revert can revert any entry regardless of
+  // session. Nullable + additive (back-compat with pre-1.16 rows); added
+  // idempotently to existing DBs by the schema reconcile.
+  session_id: 'TEXT',
+  // Who/what triggered the mutation (gui|command|ai|ingest|cli|system|
+  // file-edit). Nullable + additive — added idempotently by the schema
+  // reconcile. Persisted from MutationCtx.source (previously recorded only
+  // on the live feed event); powers the provenance "observation" tier
+  // (rows last touched by the `ai` actor).
+  source: 'TEXT',
+  // Operation-group id: one id shared by every entry a single logical
+  // operation wrote (e.g. one assistant tool execution updating N rows), so
+  // the whole change can be undone as one action and the history UI can
+  // collapse it into a single card. Nullable + additive — added
+  // idempotently by the schema reconcile; null for standalone edits.
+  op_group: 'TEXT',
+};
+
+/**
+ * Make sure the change log exists before writing to it.
+ *
+ * A workspace opened the ordinary way already has it. A caller that opened a bare
+ * `Lattice` and drove an import through the library does not — and an import that
+ * lands rows while quietly failing to record itself is the exact thing being fixed
+ * here, while an import that throws AFTER its rows are in would report a failure
+ * for work that succeeded. So the writer creates the table if it is missing.
+ * Idempotent (a `CREATE TABLE IF NOT EXISTS` over an existing one).
+ */
+async function ensureAuditTable(db: Lattice): Promise<void> {
+  if (db.getRegisteredTableNames().includes(AUDIT_TABLE)) return;
+  await db.defineLate(AUDIT_TABLE, {
+    // A fresh object each time: the definition is shared, and a table
+    // registration must never be able to mutate the shared declaration.
+    columns: { ...AUDIT_TABLE_COLUMNS },
+    primaryKey: 'id',
+    render: () => '',
+  });
 }
 
 /** Columns of a `_lattice_gui_audit` row, in insert order. */
@@ -352,6 +414,145 @@ export async function recordSchemaAudit(
     const listener = schemaChangeListeners.get(db);
     if (listener) listener({ table, operation, before, after, summary });
   }
+  return id;
+}
+
+// ── An import in the change log ─────────────────────────────────────────────
+//
+// An import brings in tables and rows nobody was asked to approve, and the whole
+// justification for asking nothing is that a mistake can be taken back. So what
+// the change log says about taking one back has to match what taking it back
+// actually does.
+//
+// It cannot be taken back in one action, and pretending otherwise would be the
+// worse failure. An import creates tables, declares them in the workspace file,
+// loads rows in bulk (one sheet is designed to carry a hundred thousand of them),
+// seeds shared value sets, builds junctions and may reconstruct views. The
+// one-action reversal in this module replays RECORDED PER-ROW inverses under a
+// bounded ceiling ({@link GROUP_UNDO_MAX_ENTRIES}); recording an image per
+// imported row would blow through that ceiling on any real spreadsheet, and no
+// recorded row inverse removes a table that did not exist before.
+//
+// What an import gets instead is ONE entry that says what it made, states plainly
+// that it cannot be undone in one step, names what an undo will NOT restore, and
+// says what to do instead. Asking to reverse that entry refuses in those same
+// words (see applySchemaConfig) rather than reporting a success that restored
+// nothing.
+
+/** The audit operation one import records. Carries the `schema.` prefix because
+ *  its payload is a data-model document (tables, counts), not a row snapshot. */
+export const IMPORT_AUDIT_OP = 'schema.import';
+
+/** What one import did, in the terms the change-log entry is written from. */
+export interface ImportActivity {
+  /** The file the rows came from. */
+  source: string;
+  /** Tables this import CREATED — new to the workspace before it ran. */
+  tablesCreated: string[];
+  /** Every table the import wrote, with the row count it ended up holding. */
+  rowsByTable: Record<string, number>;
+  /** The snapshot date stamped on the rows, or null when there is none. */
+  asOf: string | null;
+  /** The per-row date column, when the source dated each record itself. */
+  asOfColumn: string | null;
+}
+
+/** Comma list, or a dash when there is nothing to list. */
+function nameList(names: readonly string[]): string {
+  return names.length > 0 ? names.join(', ') : '—';
+}
+
+/**
+ * The sentence the change-log entry carries: what the import made, that it cannot
+ * be undone in one step, what an undo will NOT restore, and what to do instead.
+ *
+ * Pure and synchronous — same import in, same sentence out — so what the product
+ * promises is testable without a database or a file.
+ */
+export function importActivityNote(detail: ImportActivity): string {
+  const written = Object.keys(detail.rowsByTable);
+  const rows = Object.values(detail.rowsByTable).reduce((a, b) => a + b, 0);
+  const dated = detail.asOfColumn
+    ? `, dated row by row from "${detail.asOfColumn}"`
+    : detail.asOf
+      ? `, filed as the ${detail.asOf} snapshot`
+      : '';
+  const made = detail.tablesCreated.length > 0 ? ` New: ${nameList(detail.tablesCreated)}.` : '';
+  // What an undo will NOT restore, and the thing to do instead — which differs
+  // depending on whether the import MADE the tables or added to ones already there.
+  const remedy =
+    detail.tablesCreated.length > 0
+      ? 'Undo will not remove the tables it created or the rows in them. ' +
+        'To take this import back, delete those tables.'
+      : `Undo will not remove the rows it added. To take this import back, delete the rows it added${
+          detail.asOf ? ` (the ${detail.asOf} snapshot)` : ''
+        }.`;
+  return (
+    `Imported "${detail.source}" — ${String(rows)} row${rows === 1 ? '' : 's'} across ` +
+    `${nameList(written)}${dated}.${made} ` +
+    `This cannot be undone in one step: ${remedy}`
+  );
+}
+
+/**
+ * Record one import in the change log and publish it to the activity feed.
+ *
+ * Two deliberate departures from {@link recordSchemaAudit}, both because this
+ * entry is a RECORD of something that happened rather than a step that can be
+ * replayed:
+ *
+ *  - **No redo-stack purge.** An import does not invalidate anyone's pending
+ *    redo, and purging without a session id would delete every undone entry in
+ *    the workspace — another session's redo stack included.
+ *  - **No session id.** Step-back undo picks the newest live entry of the calling
+ *    session; if an import were in that stack it would be picked, refuse (it is
+ *    not reversible), and stay newest — leaving step-back undo permanently stuck
+ *    on it. Standing outside the stack keeps the entry visible in the history
+ *    list and out of a stack it can never be popped from.
+ *
+ * @returns the id of the entry written.
+ */
+export async function recordImportActivity(
+  db: Lattice,
+  feed: FeedBus,
+  detail: ImportActivity,
+  source: FeedSource = 'system',
+): Promise<string> {
+  const written = Object.keys(detail.rowsByTable);
+  const rows = Object.values(detail.rowsByTable).reduce((a, b) => a + b, 0);
+  const note = importActivityNote(detail);
+  await ensureAuditTable(db);
+  const id = crypto.randomUUID();
+  // The entry files under the first table the import made, or failing that the
+  // first it wrote, so the history page's per-object filter can reach it.
+  const table = detail.tablesCreated[0] ?? written[0] ?? 'files';
+  await db.insert('_lattice_gui_audit', {
+    id,
+    // Explicit ISO ts — see buildAuditRow (the SQLite-only strftime DEFAULT
+    // rendered "Invalid Date" on the Postgres/cloud path).
+    ts: new Date().toISOString(),
+    table_name: table,
+    row_id: null,
+    operation: IMPORT_AUDIT_OP,
+    before_json: null,
+    after_json: JSON.stringify({
+      source: detail.source,
+      tablesCreated: detail.tablesCreated,
+      tablesWritten: written,
+      rowsByTable: detail.rowsByTable,
+      rows,
+      asOf: detail.asOf,
+      asOfColumn: detail.asOfColumn,
+      // Machine-readable, so nothing has to parse the promise back out of the
+      // sentence: this entry cannot be reversed.
+      reversible: false,
+      note,
+    }),
+    undone: 0,
+    session_id: null,
+    source,
+  });
+  feed.publish({ table, op: 'schema', rowId: null, source, summary: note });
   return id;
 }
 
@@ -1612,7 +1813,10 @@ export async function undoGroup(ctx: MutationCtx, opGroup: string): Promise<Grou
   const checkedRows = new Set<string>();
   for (const e of live) {
     if (e.row_id) {
-      const key = `${e.table_name} ${e.row_id}`;
+      // The separator is a NUL, written as an escape rather than a literal byte:
+      // one raw NUL makes text scanners treat this whole file as binary and
+      // skip it, so nothing that greps the tree would ever read this module.
+      const key = `${e.table_name}\u0000${e.row_id}`;
       if (checkedRows.has(key)) continue;
       checkedRows.add(key);
     }

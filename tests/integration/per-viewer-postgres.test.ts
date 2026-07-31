@@ -19,12 +19,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import {
-  installCloudRls,
-  enableRlsForTable,
-  enableChangelogRls,
-  backfillOwnership,
-} from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable, enableChangelogRls } from '../../src/cloud/rls.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -124,7 +119,6 @@ describe.skipIf(!PG_URL)(
       await enableChangelogRls(owner);
       for (const t of ['contact', 'files']) {
         const pk = owner.getPrimaryKey(t);
-        await backfillOwnership(owner, t, pk);
         await enableRlsForTable(owner, t, pk);
       }
       const bobPw = generateMemberPassword();

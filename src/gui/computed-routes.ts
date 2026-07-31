@@ -3,7 +3,7 @@ import { sendJson, readJson } from './http.js';
 import type { GuiRequestContext } from './request-context.js';
 import { narrowComputedDef } from '../config/parser.js';
 import type { ComputedTableDef } from '../config/types.js';
-import { denyIfNotCloudOwner } from './schema-routes.js';
+import { denyIfNotCloudOwner, denyOwnerOnly } from './schema-routes.js';
 import {
   createComputedTable,
   updateComputedTable,
@@ -66,6 +66,9 @@ export async function handleComputedRoutes(
     try {
       sendJson(res, { fields: reachableFields(active, base) });
     } catch (e) {
+      // No owner mapping here on purpose: this reads what a definition COULD
+      // reference and changes nothing, so it is not owner-gated and can never
+      // raise that refusal. A branch for it would be one that never runs.
       sendJson(res, { error: (e as Error).message }, 400);
     }
     return true;
@@ -81,6 +84,10 @@ export async function handleComputedRoutes(
       const limit = typeof body.limit === 'number' ? body.limit : 50;
       sendJson(res, await previewComputedTable(active, def, limit));
     } catch (e) {
+      // An owner-only refusal is not a bad request. The operation raises it
+      // tagged now, so map it to the status it means rather than letting it read
+      // as a malformed definition.
+      if (denyOwnerOnly(e, res)) return true;
       sendJson(res, { error: (e as Error).message }, 400);
     }
     return true;
@@ -101,6 +108,10 @@ export async function handleComputedRoutes(
       await createComputedTable(active, name, def, sessionId);
       sendJson(res, { ok: true, name });
     } catch (e) {
+      // An owner-only refusal is not a bad request. The operation raises it
+      // tagged now, so map it to the status it means rather than letting it read
+      // as a malformed definition.
+      if (denyOwnerOnly(e, res)) return true;
       sendJson(res, { error: (e as Error).message }, 400);
     }
     return true;
@@ -134,6 +145,10 @@ export async function handleComputedRoutes(
       await updateComputedTable(active, name, def, sessionId);
       sendJson(res, { ok: true });
     } catch (e) {
+      // An owner-only refusal is not a bad request. The operation raises it
+      // tagged now, so map it to the status it means rather than letting it read
+      // as a malformed definition.
+      if (denyOwnerOnly(e, res)) return true;
       sendJson(res, { error: (e as Error).message }, 400);
     }
     return true;
@@ -147,6 +162,10 @@ export async function handleComputedRoutes(
       await deleteComputedTable(active, name, sessionId);
       sendJson(res, { ok: true });
     } catch (e) {
+      // An owner-only refusal is not a bad request. The operation raises it
+      // tagged now, so map it to the status it means rather than letting it read
+      // as a malformed definition.
+      if (denyOwnerOnly(e, res)) return true;
       sendJson(res, { error: (e as Error).message }, 400);
     }
     return true;

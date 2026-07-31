@@ -67,12 +67,24 @@
  * WHAT THIS CANNOT DO. It proves a route has an ANSWER, not that the answer is
  * right — a mislabelled `@capability` pointing at a real but unrelated export
  * passes. And a branch that selects a request in none of the recognised ways AND
- * calls no recognised write is not seen at all; the write list below is checked to
- * name real functions, but it is a list, so an entirely new persistence helper
+ * calls no recognised write is not seen at all; the write lists below are checked
+ * to name real things, but they are lists, so an entirely new persistence helper
  * reaching the tree at the same moment as a path-only handler would slip through
  * until it is added. What it does close is the ordinary silent path: no new way to
  * change data can be added, in any of the shapes this tree actually uses, without
  * someone writing down whether a script can do the same thing.
+ *
+ * That "they are lists" caveat is not theoretical, and it already cost something.
+ * The write list started as this repo's OWN wrappers, so it never described the
+ * shortest way to change data: calling the database directly. A branch selected by
+ * pathname alone, with no method comparison and a single `active.db.delete(...)` in
+ * it, matched nothing and was not a site — so it was not unannotated, it was
+ * invisible, and the debt number reported zero while a route deleted rows. That
+ * shape is covered now, by markers checked against the live database prototype
+ * rather than against a name (see {@link TYPED_API_WRITES}), and pinned by tests
+ * that write the shape out. The lesson generalises past this one gap: a guard that
+ * has only ever been checked for EXISTING has not been checked at all. Each list
+ * here has a case below proving it still FIRES.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -81,6 +93,7 @@ import { join, relative, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripCommentsForScan } from '../support/scan-text.js';
 import { CAPABILITIES, capability, splitLibraryRef } from '../../src/capabilities.js';
+import { Lattice } from '../../src/lattice.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..', '..');
@@ -106,6 +119,14 @@ const SRC = join(ROOT, 'src');
  * {@link GUI_ONLY_SNAPSHOT}. It does NOT mean the work cannot regress — a single
  * new handler that owns its logic puts a line back — and at zero the ratchet is
  * at its most useful, because the very next line added is visible immediately.
+ *
+ * Zero is only worth as much as the scan behind it, and this one has now been
+ * re-measured after that scan was widened to see writes made directly against the
+ * database rather than through this repo's wrappers. The widening added fifteen
+ * recognised write lines across the adapters and moved the census by nothing: all
+ * fifteen already sat inside branches counted some other way, so no route was
+ * hiding behind the old list. The number was right, and it was right by luck until
+ * it was checked.
  */
 const DEBT_BUDGET = 0;
 
@@ -119,7 +140,7 @@ const DEBT_BUDGET = 0;
  * past the review fails, which is roughly "you shipped twice without asking whether
  * this is still the plan".
  */
-const BUDGET_REVIEWED = { date: '2026-07-29', version: '5.7.0' };
+const BUDGET_REVIEWED = { date: '2026-07-31', version: '5.7.0' };
 
 /**
  * Every acknowledged headless gap, as `<file> — <route>`, sorted.
@@ -288,6 +309,7 @@ const WRITE_HELPERS = [
   'ingestTextAsFile',
   'recordSchemaAudit',
   'upsertColumnMeta',
+  'writeColumnMetaRow',
   'saveConfigDoc',
   'execSql',
 ];
@@ -304,7 +326,103 @@ const FS_WRITERS = [
   'copyFileSync',
 ];
 
-const WRITES = new RegExp(`\\b(?:${[...WRITE_HELPERS, ...FS_WRITERS].join('|')})\\s*[(<]`);
+/**
+ * The same idea again for the DATA LAYER'S OWN API — the methods on the database
+ * handle that persist something.
+ *
+ * This list is why the two above were not enough, and the gap it closes was a real
+ * one: every marker in {@link WRITE_HELPERS} is a wrapper this repo wrote, so a
+ * handler that skipped the wrappers and called the database directly —
+ * `await active.db.delete(table, id)` — wrote nothing the census recognised. Put
+ * that in a branch selected by pathname alone, the shape a browser-only handler
+ * naturally takes, and there was no method comparison to catch it either. The
+ * branch was invisible: not annotated, not counted, not failing. A route that
+ * deletes rows read exactly like a route that renders a page.
+ *
+ * Checked below against the real `Lattice.prototype`, not against the source text,
+ * so a renamed or removed method cannot leave a marker here that matches nothing.
+ */
+const TYPED_API_WRITES = [
+  // rows
+  'insert',
+  'insertReturning',
+  'insertForcingVisibility',
+  'upsert',
+  'upsertBy',
+  'upsertByNaturalKey',
+  'enrichByNaturalKey',
+  'update',
+  'updateReturning',
+  'delete',
+  'softDeleteMissing',
+  'link',
+  'unlink',
+  'seed',
+  'observe',
+  'reward',
+  'verifyRow',
+  'markRowForReview',
+  'rollback',
+  // schema
+  'defineLate',
+  'addColumn',
+  'migrate',
+  'registerComputedTablesLive',
+  // derived data the store persists
+  'fillComputedFields',
+  'refreshComputedColumns',
+  'refreshMaterializedRollups',
+  'refreshEmbeddings',
+  'buildVectorIndex',
+  'rebuildFtsIndexes',
+  'pruneChangelog',
+  // graph
+  'addEdge',
+  'addEdges',
+  'removeEdge',
+  'extractEdges',
+  // the rendered tree, and reading it back in
+  'render',
+  'renderInBackground',
+  'sync',
+  'reverseSeed',
+  'reconcile',
+  'reverseSyncFromFiles',
+];
+
+/**
+ * A call to one of those on ANY receiver: an identifier, a dotted path, the result
+ * of a call, an element of an array.
+ *
+ * The temptation is to be clever here and require the receiver to look like a
+ * database — a name ending in `db`, say — so that `createHash('sha256').update(...)`
+ * is not read as a write. Every version of that idea rebuilds this blind spot
+ * somewhere harder to find, and the tree already proves it twice over. It writes
+ * through `target.upsert(...)`, `real.addColumn(...)` and `adapter.addColumn(...)`,
+ * so a name test misses three shapes on day one. And the handle is normally
+ * obtained by CALLING something — `ctx.active().db` — so a receiver test that
+ * insisted on a plain dotted path missed `ctx.active().db.delete(...)`, which is
+ * the most ordinary way to write a route in this codebase. That near-miss was
+ * caught while writing this list, which is the whole argument for not narrowing:
+ * each restriction looks obviously safe and each one silently drops real writes.
+ *
+ * So it matches wide, and the cost is named rather than engineered around: a hash
+ * being fed bytes reads as a write. That is one comment on one branch. The other
+ * error — a route that deletes rows and matches nothing — is a route nobody ever
+ * has to annotate, review, or notice. Those are not symmetric, and this leans all
+ * the way toward the one that fails loudly.
+ */
+const TYPED_WRITE_CALL = new RegExp(
+  `(?:(?<![\\w$])[A-Za-z_$][\\w$]*(?:\\s*\\.\\s*[A-Za-z_$][\\w$]*)*|[)\\]])` +
+    `\\s*\\.\\s*(?:${TYPED_API_WRITES.join('|')})\\s*[(<]`,
+);
+
+const NAMED_WRITE = new RegExp(`\\b(?:${[...WRITE_HELPERS, ...FS_WRITERS].join('|')})\\s*[(<]`);
+
+/** Does this text change anything — through a helper, the filesystem, or the store? */
+function writesSomething(text: string): boolean {
+  return NAMED_WRITE.test(text) || TYPED_WRITE_CALL.test(text);
+}
 
 /**
  * A line that continues the statement on the line below it. Used to walk from a
@@ -562,7 +680,7 @@ function sitesIn(file: string, text: string): Site[] {
     }
 
     const gate = openGate(i);
-    if (gate === null && !WRITES.test(stripped.slice(from, to + 1).join('\n'))) continue;
+    if (gate === null && !writesSomething(stripped.slice(from, to + 1).join('\n'))) continue;
     anchors.set(anchor, gate?.verbs ?? []);
   }
 
@@ -1194,5 +1312,107 @@ describe('the census scanner reads code and not prose', () => {
       (n) => typeof (nodeFs as unknown as Record<string, unknown>)[n] !== 'function',
     );
     expect(notInFs, `these are not functions on node:fs: ${notInFs.join(', ')}`).toEqual([]);
+
+    // The data layer's own API, checked against the LIVE prototype rather than the
+    // source text. A regex over `src/lattice.ts` would keep passing for a name that
+    // only survives in a comment or a doc block; the prototype cannot be fooled that
+    // way, and a method renamed out from under this list fails here instead of
+    // quietly making every route that calls it invisible.
+    const methods = new Set(Object.getOwnPropertyNames(Lattice.prototype));
+    const notOnStore = TYPED_API_WRITES.filter((n) => !methods.has(n));
+    expect(
+      notOnStore,
+      `These are not methods on the database handle: ${notOnStore.join(', ')}\n\n` +
+        `Rename them to whatever replaced them. A marker that names nothing is how a ` +
+        `route that writes through the store goes back to reading as a route that renders.`,
+    ).toEqual([]);
+  });
+
+  it('a path-only branch that writes through the store is censused', () => {
+    // THE BLIND SPOT THIS LIST EXISTS FOR, pinned as its own case.
+    //
+    // Every marker in WRITE_HELPERS is a wrapper this repo wrote, so a handler that
+    // reached past the wrappers and called the database directly wrote nothing the
+    // census recognised. Give it a branch selected by pathname alone — no method
+    // comparison, the shape a handler takes when the only client is a browser — and
+    // there was nothing left to see it by. It was not unannotated: it was not a site.
+    // A route that deletes every row in a table produced no failure at all.
+    const direct = [
+      'export async function handle(req, res, pathname, active) {',
+      "  if (pathname === '/api/computed/nuke') {",
+      "    await active.db.delete('widgets', 'everything');",
+      '    return true;',
+      '  }',
+      '}',
+    ].join('\n');
+    const found = sitesIn('direct.ts', direct);
+    expect(
+      found.map((f) => `${String(f.line)} ${f.key}`),
+      'the deleting branch is a site even though it never names a method',
+    ).toEqual(['2 - /api/computed/nuke']);
+  });
+
+  // Each write shape on its own. Bundled into one case, the first failure would
+  // hide the rest, and "the store is covered" would rest on whichever line
+  // happened to run first.
+  const viaStore = (call: string): string[] =>
+    sitesIn('v.ts', ["  if (pathname === '/api/x') {", `    await ${call}`, '  }'].join('\n')).map(
+      (s) => s.key,
+    );
+
+  for (const call of [
+    "db.insert('t', row);",
+    "ctx.db.update('t', id, row);",
+    "active.db.delete('t', id);",
+    // Not only through a receiver named like a database: this tree already writes
+    // through `target`, `real` and `adapter`, so a name test would miss every one
+    // and rebuild the same blind spot somewhere it is harder to see.
+    "target.upsert('t', row);",
+    'adapter.addColumn(table, col, type);',
+    'real.migrate(migrations);',
+    // The handle obtained by calling something, which is how these adapters
+    // normally get one. A receiver test that demanded a plain dotted path dropped
+    // this shape entirely — the most ordinary way to write a route here.
+    "ctx.active().db.delete('t', id);",
+    "deps.store().update('t', id, row);",
+  ]) {
+    it(`a path-only branch calling ${call.split('(')[0]!} is censused`, () => {
+      expect(viaStore(call)).toEqual(['- /api/x']);
+    });
+  }
+
+  it('a read that borrows a write method name over-matches, on purpose', () => {
+    // The price of matching wide, pinned so it stays a decision instead of drifting
+    // into a bug report. Hashing bytes borrows a name off the list and changes
+    // nothing, so this branch is a site that did not need to be one, and somebody
+    // will write one comment on it.
+    //
+    // It is pinned rather than fixed because every fix is a narrowing, and the
+    // narrowings are what hid real writes: a receiver test that excluded this also
+    // excluded `ctx.active().db.delete(...)`. One needless annotation against one
+    // invisible delete route is not a close call.
+    const reads = [
+      "  if (pathname === '/api/etag') {",
+      "    const etag = createHash('sha256').update(bytes).digest('hex');",
+      '    return send(etag);',
+      '  }',
+    ].join('\n');
+    expect(
+      sitesIn('etag.ts', reads).map((s) => s.key),
+      'the deliberate over-match: annotate it and move on',
+    ).toEqual(['- /api/etag']);
+  });
+
+  it('a branch that changes nothing is still not a site', () => {
+    // The other side of that trade, so "matches wide" does not quietly become
+    // "matches everything" — at which point every read would need annotating, the
+    // failures would be noise, and people would stop reading them.
+    const readOnly = [
+      "  if (pathname === '/api/report') {",
+      '    const rows = list.map((x) => x.id);',
+      '    return send(renderPage(rows));',
+      '  }',
+    ].join('\n');
+    expect(sitesIn('report.ts', readOnly)).toEqual([]);
   });
 });

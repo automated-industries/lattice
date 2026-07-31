@@ -188,6 +188,15 @@ export class RenderEngine {
     else console.warn(`[latticesql] ${message}`);
   }
 
+  /**
+   * Send a notice down the same channel the render uses. For things that happen
+   * AROUND a render and would otherwise have nowhere to be seen — a background
+   * reconciliation pass refusing to sweep, whose result no caller reads.
+   */
+  notice(message: string): void {
+    this._notice(message);
+  }
+
   constructor(
     schema: SchemaManager,
     adapter: StorageAdapter,
@@ -675,28 +684,13 @@ export class RenderEngine {
     options: CleanupOptions = {},
     newManifest?: LatticeManifest | null,
   ): Promise<CleanupResult> {
-    // A schema with NO tables at all cannot have dropped the contexts a previous
-    // render recorded — there is nothing here that could have dropped them. It
-    // means this process never learned the layout: a shared workspace whose
-    // layout has not arrived, a config that describes nothing. Against that, the
-    // previous manifest lists every rendered file as removable, and cleanup would
-    // take the whole tree. Deleting on that basis destroys work instead of
-    // reconciling it, so refuse — and say so, rather than reporting a quiet
-    // success over an emptied directory.
-    const priorContexts = prevManifest ? Object.keys(prevManifest.entityContexts).length : 0;
-    if (this._schema.getTables().size === 0 && priorContexts > 0) {
-      return {
-        directoriesRemoved: [],
-        filesRemoved: [],
-        directoriesSkipped: [],
-        warnings: [
-          `${outputDir}: cleanup skipped — this workspace declares no tables, yet ` +
-            `${String(priorContexts)} rendered context(s) exist here. That is a schema that never ` +
-            `loaded, not a layout that was emptied, so nothing was removed. Check the config (and, ` +
-            `for a shared workspace, that its layout is readable) and run this again.`,
-        ],
-      };
-    }
+    // The "did this process actually learn the layout" refusal is NOT here: it
+    // needs facts this engine cannot see (which tables the framework ships, and
+    // which belong to a connected external source), and the version that lived
+    // here keyed on "the schema declares no tables at all" — a condition that
+    // stopped being reachable the moment every opener began registering the
+    // framework's own tables. See `lifecycle/cleanup-backstop.ts`, applied by the
+    // one wrapper every cleanup path goes through.
     const entityContexts = this._schema.getEntityContexts();
     const currentSlugsByTable = new Map<string, Set<string>>();
     for (const [table, def] of entityContexts) {

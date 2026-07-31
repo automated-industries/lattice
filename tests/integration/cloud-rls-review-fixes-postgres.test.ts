@@ -20,12 +20,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import {
-  installCloudRls,
-  backfillOwnership,
-  enableRlsForTable,
-  enableChangelogRls,
-} from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable, enableChangelogRls } from '../../src/cloud/rls.js';
 import { setTableDefaultVisibility, setTableNeverShare } from '../../src/cloud/table-policy.js';
 import {
   setColumnAudience,
@@ -101,7 +96,6 @@ describe.skipIf(!PG_URL)('v3.1 cloud RLS — adversarial-review regressions', ()
     await owner.init();
     await installCloudRls(owner);
     const pk = owner.getPrimaryKey('notes');
-    await backfillOwnership(owner, 'notes', pk);
     await enableRlsForTable(owner, 'notes', pk);
     if (changelog) await enableChangelogRls(owner);
     return owner;

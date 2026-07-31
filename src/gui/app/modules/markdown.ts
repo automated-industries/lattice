@@ -183,19 +183,36 @@ export const markdownJs = `    // ───────────────�
         case 'schema.delete_computed': return 'Deleted computed table ' + t + ' <span class="muted">(restorable)</span>';
         case 'schema.refresh_computed': return 'Refreshed computed table ' + t;
         case 'schema.purge': return 'Permanently purged ' + t;
+        // An import writes its own sentence into the entry — what it made, that it
+        // cannot be undone in one step, and what to do instead. Rendered FROM the
+        // entry rather than restated here, so this card and the refusal a reversal
+        // attempt returns can never drift apart and start promising different things.
+        case 'schema.import': return escapeHtml(p.note || ('Imported data into ' + e.table_name));
         default: return 'Schema change on ' + t;
       }
     }
 
+    /**
+     * Why this schema entry carries no Revert button, or '' when it does. A purge is
+     * permanent, a computed-table refresh only fills AI cells, and an import creates
+     * tables and loads rows in bulk that no single reversal puts back — offering
+     * Revert on any of them would promise something the server refuses.
+     */
+    function notRevertibleReason(op) {
+      if (op === 'schema.purge') return 'permanent';
+      if (op === 'schema.refresh_computed') return 'not revertible';
+      if (op === 'schema.import') return 'not undoable in one step';
+      return '';
+    }
+
     function historyEntryHtml(e) {
-      // Schema/data-model entries get a one-line description (no row diff). A
-      // purge is permanent, and a computed-table refresh only fills AI cells
-      // (nothing to restore) — neither carries a Revert button.
+      // Schema/data-model entries get a one-line description (no row diff).
       if (isSchemaHistoryOp(e.operation)) {
+        var noRevert = notRevertibleReason(e.operation);
         var sActions = e.undone
           ? '<span class="hint-xs">undone</span>'
-          : (e.operation === 'schema.purge' || e.operation === 'schema.refresh_computed'
-              ? '<span class="hint-xs">' + (e.operation === 'schema.purge' ? 'permanent' : 'not revertible') + '</span>'
+          : (noRevert
+              ? '<span class="hint-xs">' + noRevert + '</span>'
               : '<button class="btn danger history-revert" data-id="' + escapeHtml(e.id) + '">Revert</button>');
         return '<div class="history-entry' + (e.undone ? ' is-undone' : '') + '">' +
           '<div class="history-meta">' +

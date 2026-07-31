@@ -20,12 +20,28 @@ import { join, resolve } from 'node:path';
  *       3. `./generated`
  *     and return the first whose manifest exists. If none exist, return
  *     the default so `lattice render` later creates one.
+ *
+ * @param baseDir what the relative candidates are relative TO. Defaults to the
+ *   process's working directory, which is right when the workspace being opened
+ *   is the one the shell is standing in. It is NOT right for a workspace named
+ *   by path from somewhere else — a probe rooted at the shell can then answer
+ *   with a DIFFERENT workspace's rendered tree, and a reconciliation pointed at
+ *   that tree renders one workspace into it and sweeps the other's contexts out
+ *   of it. A caller that knows where the workspace lives passes that.
  */
-export function discoverOutputDir(explicitOutput: string, explicit: boolean): string {
+export function discoverOutputDir(
+  explicitOutput: string,
+  explicit: boolean,
+  baseDir?: string,
+): string {
   if (explicit) return explicitOutput;
+  const base = baseDir ?? process.cwd();
   const candidates = ['./context', '.', './generated'];
   for (const dir of candidates) {
-    if (existsSync(join(resolve(dir), '.lattice', 'manifest.json'))) return dir;
+    const resolved = resolve(base, dir);
+    if (existsSync(join(resolved, '.lattice', 'manifest.json'))) {
+      return baseDir === undefined ? dir : resolved;
+    }
   }
-  return explicitOutput;
+  return baseDir === undefined ? explicitOutput : resolve(base, explicitOutput);
 }

@@ -19,7 +19,7 @@ import {
   type GuiTableSummary,
 } from './data.js';
 import { assertNotComputedSource } from './computed-ops.js';
-import { upsertColumnMeta, upsertTableMeta } from './column-descriptions.js';
+import { upsertTableMeta, writeColumnMetaRow } from './column-descriptions.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 import { PLAN_STATE_TABLE } from './planner/plan-state.js';
 import type { ShapeOp } from './planner/types.js';
@@ -39,8 +39,8 @@ import {
   setColumnAudience,
   tableNeedsAudienceView,
 } from '../cloud/audience.js';
-import { cloudRlsInstalled, isScopedCloudMember } from '../framework/cloud-connect.js';
-import { cloudError } from '../cloud/errors.js';
+import { cloudRlsInstalled } from '../framework/cloud-connect.js';
+import { assertCloudOwner } from '../cloud/owner-gate.js';
 
 /**
  * Runtime schema-mutation primitives — the shared core behind the GUI's
@@ -305,6 +305,10 @@ export async function createFileJunction(
   otherTable: string,
   sessionId: string,
 ): Promise<FileJunction | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a link table');
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(otherTable)) return null;
   if (otherTable === 'files' || isNativeEntity(otherTable)) return null;
   if (!active.validTables.has(otherTable) || active.junctionTables.has(otherTable)) return null;
@@ -373,6 +377,10 @@ export async function createUserJunction(
   tableB: string,
   sessionId: string,
 ): Promise<UserJunction | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a link table');
   const ok = (t: string): boolean =>
     /^[a-z][a-z0-9_]*$/.test(t) &&
     t !== 'files' &&
@@ -439,6 +447,10 @@ export async function createUserRelation(
   parentTable: string,
   sessionId: string,
 ): Promise<{ relationName: string } | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'relate tables');
   const ok = (t: string): boolean =>
     /^[a-z][a-z0-9_]*$/.test(t) &&
     t !== 'files' &&
@@ -542,24 +554,6 @@ export type AddLinkOutcome = { ok: true; column: string } | { ok: false; error: 
 export type RemoveLinkOutcome =
   | { ok: true; column: string; target: string; undoId: string }
   | { ok: false; error: string };
-
-/**
- * Refuse an owner-only schema change when the connection is a scoped cloud
- * member. Throws the tagged refusal; each adapter decides what that means on its
- * own transport (HTTP answers 403, a command prints the message and exits).
- *
- * This travels with the OPERATION, deliberately. A link writes the owner's
- * workspace file and adds a real column to a shared table, and neither is
- * protected by row security — the library detects a member and routes the ALTER
- * through an owner-side helper rather than failing it. So the authorization is
- * not a property of the request, and a version of it that only exists in a
- * request handler means the browser refuses what a terminal performs.
- */
-async function assertCloudOwner(db: ActiveDb['db'], verb: string): Promise<void> {
-  if (await isScopedCloudMember(db)) {
-    throw cloudError('cloud_owner_only', `Only a cloud owner can ${verb}`);
-  }
-}
 
 /**
  * Nest one table inside another: add the foreign-key column AND declare the
@@ -802,6 +796,13 @@ export async function setColumnMeta(
   column: string,
   patch: ColumnMetaPatch,
 ): Promise<ColumnMetaOutcome> {
+  // Authorization first: the mask this installs is a change to the shape of the
+  // shared database, and a refusal that arrives after it is not a refusal. See
+  // assertCloudOwner.
+  await assertCloudOwner(
+    active.db,
+    patch.secret !== undefined ? 'mark a column secret' : 'describe a column',
+  );
   if (!active.validTables.has(table)) return { ok: false, error: `Unknown table: ${table}` };
   const settingSecret = patch.secret !== undefined;
   const settingDescription = patch.description !== undefined;
@@ -822,8 +823,10 @@ export async function setColumnMeta(
     const pkCols = active.db.getPrimaryKey(table);
     await setColumnAudience(active.db, table, column, secret ? 'owner' : '', columnNames, pkCols);
   }
-  // Reaching here means the database mask (if any) already succeeded.
-  await upsertColumnMeta(active.db, table, column, {
+  // Reaching here means the database mask (if any) already succeeded, which is
+  // the whole reason this is the only path allowed to write the `secret` flag —
+  // the public definition writer refuses it outright.
+  await writeColumnMetaRow(active.db, table, column, {
     ...(settingSecret ? { secret } : {}),
     ...(settingDescription ? { description: patch.description ?? null } : {}),
   });
@@ -864,6 +867,10 @@ export async function createUserEntity(
   sessionId: string,
   opts?: { normalize?: boolean; rejectAnonymous?: boolean },
 ): Promise<string | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a table');
   // Normalize to snake_case so a natural name from the model ("People", "Sales
   // Leads") becomes a valid identifier ("people", "sales_leads") instead of a
   // silent rejection. The dispatcher returns this canonical name to the model,
@@ -987,6 +994,10 @@ export async function addUserColumn(
   column: string,
   sessionId: string,
 ): Promise<{ ok: true; column: string } | { ok: false; error: string }> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, "change a table's columns");
   if (!active.validTables.has(table)) return { ok: false, error: `Unknown table "${table}".` };
   if (active.computedTables.has(table)) {
     return {
@@ -1092,6 +1103,10 @@ export async function softDeleteUserEntity(
   sessionId: string,
   summary?: string,
 ): Promise<string> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete tables');
   // A computed table is not an entity — it is deleted through its own
   // definition path (deleteComputedTable), never soft-deleted like a table.
   if (active.computedTables.has(name)) {
@@ -1292,6 +1307,10 @@ export async function removeInboundLinks(
 ): Promise<
   { ok: true; cascadedLinkRows: number; droppedLinkTables: string[] } | { ok: false; error: string }
 > {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete tables');
   const ownedTables = [...new Set(inbound.filter((l) => l.owned).map((l) => l.table))].filter((t) =>
     active.validTables.has(t),
   );
@@ -1421,6 +1440,10 @@ export async function aiDeleteEntity(
   resolution: DeleteResolution | undefined,
   sessionId: string,
 ): Promise<DeleteEntityOutcome> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete or merge tables');
   if (!active.validTables.has(name)) return { ok: false, error: `Unknown table: ${name}` };
   if (isNativeEntity(name)) {
     return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
@@ -1820,6 +1843,13 @@ export async function setTableRole(
   source: RoleSource,
   grain: string | null,
 ): Promise<void> {
+  // Authorization first, for the same reason as every other writer in this
+  // module. This one writes the SAME row of the SAME store as
+  // {@link setTableDefinition} — what a table IS, which the data-model pass, the
+  // interface and the assistant all read — and it travelled without the rule
+  // while its neighbour carried it, so the browser refused a scoped member and
+  // the package entry point served them. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'apply data-model changes');
   if (!active.validTables.has(table)) throw new Error(`Unknown table: ${table}`);
   if (!isTableRole(role)) throw new Error(`"${String(role)}" is not a table role.`);
   await ensureRoleColumns(active.db);
@@ -1852,6 +1882,10 @@ export async function setTableDefinition(
   table: string,
   description: string,
 ): Promise<void> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'describe a table');
   if (!active.validTables.has(table)) throw new Error(`Unknown table: ${table}`);
   const text = description.trim();
   const doc = loadConfigDoc(active.configPath);
@@ -1969,6 +2003,10 @@ const CLOUD_NAME_KEYED_POLICY: readonly string[] = [
  * Throws on failure, so a half-purged table can never be reported as a success.
  */
 export async function purgeUserEntity(active: ActiveDb, table: string): Promise<void> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'purge tables');
   const q = table.replace(/"/g, '""');
   const onCloud = active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db));
   if (onCloud) await execSql(active.db, `DROP VIEW IF EXISTS "${q}_v"`);
@@ -2568,6 +2606,10 @@ export async function renameUserColumn(
   to: string,
   keepInStep: () => void | Promise<void>,
 ): Promise<TableNamePolicyMove> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'rename a column');
   const q = (s: string): string => s.replace(/"/g, '""');
   return renameColumnsCarryingPolicy(active.db, table, new Map([[from, to]]), async () => {
     await execSql(active.db, `ALTER TABLE "${q(table)}" RENAME COLUMN "${q(from)}" TO "${q(to)}"`);
@@ -2653,6 +2695,10 @@ export async function renameUserEntity(
   to: string,
   sessionId: string,
 ): Promise<RenameOutcome> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'rename a table');
   const fail = (error: string): RenameOutcome => ({ ok: false, error });
   if (!active.validTables.has(from)) return fail(`Unknown table: ${from}`);
   if (isNativeEntity(from)) return fail(`"${from}" is a built-in table and cannot be renamed.`);
@@ -2936,6 +2982,11 @@ export async function applyShapeOp(
   op: ShapeOp,
   sessionId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Authorization first, and stated HERE rather than left to the primitives each
+  // arm routes to: this is an exported entry point of its own, so a third arm
+  // added later would otherwise inherit whatever its primitive happened to carry.
+  // Same wording the browser uses for this door. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'apply data-model changes');
   switch (op.kind) {
     case 'assign_role': {
       const role = op.evidence.role;

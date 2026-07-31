@@ -40,11 +40,30 @@ Read-only health: per-table FTS + embedding coverage (soft-deleted rows excluded
 extension availability (FTS5, sqlite-vec, pgvector, pg_trgm), and severity-ranked
 issues. `lattice doctor [--json]` exits non-zero on any error (deploy gate).
 
+With no `--config`, this and the other retrieval commands (`search`, `reindex`,
+`index status`) act on a config in the current directory if there is one, and
+otherwise on the ACTIVE workspace — so a bare `lattice doctor` gates the workspace
+this machine is using, from wherever it is typed.
+
 Expectations come from each table's `fts` / `embeddings` config. When there are
 none, the doctor falls back to whatever the database itself has (tables with
-stored vectors) — and when even that is empty it reports a `nothing_to_diagnose`
-**error**, so the command exits non-zero. A report about nothing is not a clean
-bill of health, and a gate that passes on it is worse than no gate at all.
+stored vectors). When even that is empty, the answer turns on whether the caller
+had read the schema, because "I found no search" and "I was told nothing" are
+opposite findings that used to be reported identically:
+
+- **An opened workspace** (`db.diagnoseRetrieval()`, `lattice doctor`) has
+  enumerated every registered table, so an empty result is a fact about that
+  workspace: `no_retrieval_configured`, severity **info**, report **healthy**,
+  exit `0`. A workspace `lattice init` just made is this case, and its first
+  health check should not read as a broken install.
+- **A caller that described nothing** (`diagnoseRetrieval(adapter)`, or an
+  explicit `tables: []`) never walked the schema, so an empty result means
+  nothing was assessed: `nothing_to_diagnose`, severity **error**, non-zero exit.
+  A report about nothing is not a clean bill of health, and a gate that passes on
+  it is worse than no gate at all.
+
+A caller that has genuinely enumerated the schema itself can say so with
+`expectationsComplete: true`.
 
 ### `benchmarkRetrieval(opts?)` / `checkSlos(report, slos)`
 

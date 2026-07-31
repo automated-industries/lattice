@@ -349,6 +349,59 @@ describe.skipIf(!PG_URL)('lattice cloud, against a real cloud', () => {
     expect(text).toContain('lattice cloud secure');
   });
 
+  it('names a table the database holds that the workspace never declared', async () => {
+    // The blind spot: securing walks the tables the workspace REGISTERS, so a
+    // table nothing declares — restored from a dump, created by hand, left
+    // behind by a schema nobody opens any more — is never walked. It sits there
+    // with row security off, holding real rows every member can read in full,
+    // and the report used to say NOTHING about it: it asked the catalog only
+    // about the declared names, so the one table most likely to be unprotected
+    // was the one table it could not see.
+    //
+    // A keyless table arrives at the same place from the other direction:
+    // per-row ownership needs a key, so securing skips one it cannot key, and
+    // that skip is silent too.
+    const cloud = await freshCloud();
+    const conn = new pg.Pool({ connectionString: cloud.ownerUrl, max: 1 });
+    try {
+      await conn.query(`CREATE TABLE "ledger" (id TEXT PRIMARY KEY, amount TEXT)`);
+      await conn.query(`INSERT INTO "ledger" VALUES ('r1', '100')`);
+      await conn.query(`CREATE TABLE "unkeyed" (label TEXT)`);
+    } finally {
+      await conn.end();
+    }
+
+    const [json] = await cli(cloud.ownerUrl, cloud, { subcommand: 'status', json: true });
+    const status = JSON.parse(json ?? '') as CloudStatus;
+    for (const table of ['ledger', 'unkeyed']) {
+      expect(
+        status.warnings.find((w) => w.table === table)?.reason,
+        `${table} is named, with the repair`,
+      ).toMatch(/row security is not forced/);
+    }
+
+    // Those two and nothing else: the declared tables are still clean, so
+    // asking a wider question did not turn a healthy cloud noisy, and the
+    // bookkeeping tables are still out of the answer — they are the mechanism,
+    // the installer secures them rather than the per-table pass, and listing
+    // them would bury the tables somebody can actually act on.
+    expect(status.warnings.map((w) => w.table).sort()).toEqual(['ledger', 'unkeyed']);
+
+    // The human-readable form carries it too — the report is read far more
+    // often than it is parsed.
+    const text = (await cli(cloud.ownerUrl, cloud, { subcommand: 'status' })).join('\n');
+    expect(text).toContain('Warnings:   2');
+    expect(text).toContain('- ledger: row security is not forced');
+
+    // And running the repair does not make them go away, which is the reason
+    // reporting them matters: securing walks the registered tables, so neither
+    // of these is inside the pass at all. Saying so is the only thing that can
+    // get a person to act on them.
+    const secured = (await cli(cloud.ownerUrl, cloud, { subcommand: 'secure' })).join('\n');
+    expect(secured).toContain('2 table(s) need attention:');
+    expect(secured).toContain('- unkeyed: row security is not forced');
+  });
+
   // ── secure ───────────────────────────────────────────────────────────────
 
   it('securing headlessly covers the file index and the secret store', async () => {

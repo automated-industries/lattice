@@ -27,13 +27,32 @@ function makeEngine(
     result instanceof Error ? vi.fn().mockRejectedValue(result) : vi.fn().mockResolvedValue(result);
   const engine = { render } as unknown as MockEngine;
   engine.changeProbe = vi.fn(probe ?? (() => undefined));
+  // Present, and never meant to be reached: the loop is handed a cleanup runner
+  // and must use it. Calling the engine's own deletion instead is the bug these
+  // tests exist to keep out — it is the door with no checks behind it.
+  (engine as unknown as { cleanup: ReturnType<typeof vi.fn> }).cleanup = vi.fn();
   return engine;
+}
+
+/** The engine's own deletion — which the loop must never call. */
+function engineCleanup(engine: MockEngine): ReturnType<typeof vi.fn> {
+  return (engine as unknown as { cleanup: ReturnType<typeof vi.fn> }).cleanup;
+}
+
+/** A stand-in for the caller's cleanup runner, which is the loop's only door. */
+function makeRunner(): ReturnType<typeof vi.fn> {
+  return vi.fn().mockResolvedValue({
+    directoriesRemoved: [],
+    filesRemoved: [],
+    directoriesSkipped: [],
+    warnings: [],
+  });
 }
 
 describe('SyncLoop', () => {
   it('fires render after interval', async () => {
     const engine = makeEngine();
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 20 });
 
     await vi.waitFor(
@@ -47,7 +66,7 @@ describe('SyncLoop', () => {
 
   it('calls onRender with result', async () => {
     const engine = makeEngine();
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const results: RenderResult[] = [];
     const stop = loop.watch('/out', {
       interval: 20,
@@ -69,7 +88,7 @@ describe('SyncLoop', () => {
   it('calls onError when render throws', async () => {
     const err = new Error('render failed');
     const engine = makeEngine(err);
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const errors: Error[] = [];
     const stop = loop.watch('/out', {
       interval: 20,
@@ -92,7 +111,7 @@ describe('SyncLoop', () => {
     // A watch-loop render failure must never vanish silently just because the
     // consumer did not pass onError.
     const engine = makeEngine(new Error('render boom'));
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const stop = loop.watch('/out', { interval: 20 }); // no onError handler
     await vi.waitFor(
@@ -110,9 +129,8 @@ describe('SyncLoop', () => {
 
   it('passes the post-render manifest to cleanup as the 4th arg', async () => {
     const engine = makeEngine();
-    const cleanup = vi.fn().mockResolvedValue({});
-    (engine as unknown as { cleanup: typeof cleanup }).cleanup = cleanup;
-    const loop = new SyncLoop(engine);
+    const cleanup = makeRunner();
+    const loop = new SyncLoop(engine, cleanup);
     const stop = loop.watch('/out', { interval: 20, cleanup: {} });
     await vi.waitFor(
       () => {
@@ -124,11 +142,14 @@ describe('SyncLoop', () => {
     // cleanup now receives (outputDir, prevManifest, options, newManifest) — 4 args,
     // not the prior 3 that omitted the post-render manifest.
     expect(cleanup.mock.calls[0]?.length).toBe(4);
+    // ...and it went through the runner it was given, not the engine's own
+    // deletion, which is the whole reason the runner is injected.
+    expect(engineCleanup(engine)).not.toHaveBeenCalled();
   });
 
   it('stop() prevents further renders', async () => {
     const engine = makeEngine();
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 20 });
 
     await vi.waitFor(
@@ -153,7 +174,7 @@ describe('SyncLoop', () => {
     // No probe installed: the engine cannot prove the DB is unchanged, so the
     // loop falls through to a full render every tick — exactly today's default.
     const engine = makeEngine(); // no probe
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 15 });
 
     await vi.waitFor(
@@ -170,7 +191,7 @@ describe('SyncLoop', () => {
     // the gate must NEVER skip; every tick renders.
     let n = 0;
     const engine = makeEngine(mockResult, () => `tok-${String(n++)}`);
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 15 });
 
     await vi.waitFor(
@@ -186,7 +207,7 @@ describe('SyncLoop', () => {
     // A stable token means the DB provably has not changed since the last
     // render — every subsequent tick is gated (no render).
     const engine = makeEngine(mockResult, () => 'stable-token');
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 15 });
 
     // First tick (no prior token) always renders. Wait for it.
@@ -209,7 +230,7 @@ describe('SyncLoop', () => {
     // The very first tick has no prior token to compare against, so it must
     // render unconditionally — never gate the initial render.
     const engine = makeEngine(mockResult, () => 'stable-token');
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 15 });
 
     await vi.waitFor(
@@ -228,7 +249,7 @@ describe('SyncLoop', () => {
     const tokens = ['A', 'A', 'B', 'B', 'B'];
     let i = 0;
     const engine = makeEngine(mockResult, () => tokens[Math.min(i++, tokens.length - 1)] ?? 'B');
-    const loop = new SyncLoop(engine);
+    const loop = new SyncLoop(engine, makeRunner());
     const stop = loop.watch('/out', { interval: 15 });
 
     // Expect exactly two renders: the first tick (token A) and the change to B.
@@ -250,9 +271,8 @@ describe('SyncLoop', () => {
     const tokens = ['A', 'A', 'B'];
     let i = 0;
     const engine = makeEngine(mockResult, () => tokens[Math.min(i++, tokens.length - 1)] ?? 'B');
-    const cleanup = vi.fn().mockResolvedValue({});
-    (engine as unknown as { cleanup: typeof cleanup }).cleanup = cleanup;
-    const loop = new SyncLoop(engine);
+    const cleanup = makeRunner();
+    const loop = new SyncLoop(engine, cleanup);
     const stop = loop.watch('/out', { interval: 15, cleanup: {} });
 
     await vi.waitFor(
@@ -264,6 +284,7 @@ describe('SyncLoop', () => {
       { timeout: 400 },
     );
     expect(engine.render.mock.calls.length).toBe(2);
+    expect(engineCleanup(engine)).not.toHaveBeenCalled();
     stop();
   });
 });

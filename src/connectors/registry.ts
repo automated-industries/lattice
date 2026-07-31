@@ -9,11 +9,15 @@
  * credentials (e.g. a SaaS API token) live in the machine-local encrypted
  * credential store, keyed by the connection handle.
  *
- * On a cloud workspace the table is RLS-scoped private-to-owner (see the ACL
- * wiring), so each member sees and manages only their own connectors.
+ * On a cloud workspace this table is OWNER-ONLY bookkeeping: members hold no grant
+ * on it at all, and a caller serving one member scopes reads to that member with
+ * {@link listConnectors}'s `connectedBy` filter — an app-layer gate, since the
+ * owner's own connection is not row-filtered either way.
  *
  * The table is created on demand (idempotent `CREATE TABLE IF NOT EXISTS`), so a
- * library consumer that never touches connectors pays nothing.
+ * local workspace that never touches connectors pays nothing. Securing a cloud
+ * table ensures it up front instead, because the ownership stamp reads it to
+ * attribute connected rows.
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -182,6 +186,42 @@ export async function listConnectors(
         db.adapter,
         `SELECT * FROM "${CONNECTORS_TABLE}" ORDER BY "created_at" DESC`,
       )) as unknown as ConnectorRow[];
+  return rows.map(toRecord);
+}
+
+/**
+ * List connectors WITHOUT creating the registry table — an empty list when the
+ * table does not physically exist yet.
+ *
+ * {@link listConnectors} creates the table on demand, which is right for a
+ * caller that is about to write to it but wrong for the two read-only callers
+ * that run on every open and every reconciliation: a workspace that never
+ * connected anything should not pay a `CREATE TABLE` on each pass, and a scoped
+ * cloud member holds no privilege to issue one at all.
+ *
+ * "Does not exist" is answered by asking the database, so it is a fact rather
+ * than a swallowed error — anything else the read throws still propagates to the
+ * caller, which must decide loudly rather than treat a failed read as "no
+ * connectors".
+ */
+export async function listConnectorsIfPresent(db: Lattice): Promise<ConnectorRecord[]> {
+  if (db.getDialect() === 'postgres') {
+    const reg = (await getAsyncOrSync(
+      db.adapter,
+      `SELECT to_regclass('${CONNECTORS_TABLE}') AS reg`,
+    )) as { reg?: unknown } | undefined;
+    if (reg?.reg == null) return [];
+  } else {
+    const row = (await getAsyncOrSync(
+      db.adapter,
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='${CONNECTORS_TABLE}'`,
+    )) as { name?: string } | undefined;
+    if (!row) return [];
+  }
+  const rows = (await allAsyncOrSync(
+    db.adapter,
+    `SELECT * FROM "${CONNECTORS_TABLE}" ORDER BY "created_at" DESC`,
+  )) as unknown as ConnectorRow[];
   return rows.map(toRecord);
 }
 

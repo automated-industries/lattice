@@ -14,8 +14,11 @@
  * The fix stamps ownership on those rows two ways:
  *   PREVENT — claimOwnerlessConnectorRows (member-side SECURITY DEFINER) runs right
  *     after a member's sync writes, stamping the member (session_user) as owner.
- *   HEAL — backfillConnectorOwnership (owner-side) runs when the owner secures the
- *     table, stamping each still-ownerless row to its connector's connected_by role.
+ *   HEAL — securing the table stamps every row that still has no ownership record,
+ *     attributing each to its connector's connected_by role. It happens inside the
+ *     securing SQL, with the policies lifted for the length of that one transaction,
+ *     so it reaches rows that are already dark and works for an owner that does not
+ *     bypass row security.
  *
  * Postgres-gated (real per-test cloud DB + a real non-BYPASSRLS member login role).
  */
@@ -27,10 +30,7 @@ import { secureCloud } from '../../src/cloud/setup.js';
 import { enableRlsForTable } from '../../src/cloud/rls.js';
 import { setTableDefaultVisibility } from '../../src/cloud/table-policy.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
-import {
-  backfillConnectorOwnership,
-  claimOwnerlessConnectorRows,
-} from '../../src/connectors/acl.js';
+import { claimOwnerlessConnectorRows } from '../../src/connectors/acl.js';
 import { createConnector } from '../../src/connectors/registry.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -174,9 +174,18 @@ describe.skipIf(!PG_URL)('Bug 5: ownerless connector rows heal (claim + backfill
     expect((await member.get('conn_notes', 'k1'))?.body).toBe('resynced');
   });
 
-  it('HEAL: backfillConnectorOwnership stamps the connector member as owner', async () => {
+  it('HEAL: re-securing the table stamps the connector member as owner', async () => {
     const { owner, member, connectorId } = await setup();
-    await backfillConnectorOwnership(owner, 'conn_notes', 'id');
+    // The heal reaches an already-secured table through the per-table version key:
+    // a release that changes the securing SQL bumps the key, so the SQL runs again
+    // over a table that already has rows. Dropping the recorded key is exactly what
+    // a bump does to the gate, so this drives the real securing path rather than a
+    // stand-in for it.
+    await owner.adapter.runAsync!(
+      `DELETE FROM "__lattice_migrations" WHERE "version" LIKE 'internal:cloud-rls:table:conn_notes:%'`,
+      [],
+    );
+    await enableRlsForTable(owner, 'conn_notes', ['id']);
     // The row is now owned by the member (its connector's connected_by) → visible.
     expect((await member.get('conn_notes', 'k1'))?.body).toBe('synced');
     await member.upsert('conn_notes', {

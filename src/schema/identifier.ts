@@ -43,6 +43,29 @@ export function assertSafeIdentifier(
 }
 
 /**
+ * True when `name` carries the `_lattice_` / `__lattice_` prefix that is
+ * RESERVED for the framework's own bookkeeping.
+ *
+ * The prefix is the convention that says "this table is Lattice's, not the
+ * workspace's". It is why these tables are kept out of the entity listing, out
+ * of a cloud migration's object set, and out of the derived per-record layout —
+ * and why a name arriving from outside the trust boundary may not use it
+ * ({@link assertExternalIdentifier}).
+ *
+ * Exported as a predicate because "is this table the framework's own?" is asked
+ * in more places than the one that throws, and every caller that re-derived it
+ * with its own pair of `startsWith` calls is one that can drift. The reserved
+ * set is not a fixed list of names: which internal tables exist depends on how
+ * a workspace was opened (the browser registers bookkeeping a command does not),
+ * so anything that must tell framework tables from a workspace's own layout has
+ * to ask by prefix rather than by enumeration.
+ */
+export function isReservedInternalIdentifier(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.startsWith('__lattice_') || lower.startsWith('_lattice_');
+}
+
+/**
  * Throw unless `name` is a safe identifier AND does not use a reserved
  * `_lattice_` / `__lattice_` prefix. Use at trust boundaries where the name
  * is supplied by a remote party (Team object sharing), so a malicious peer
@@ -53,8 +76,7 @@ export function assertExternalIdentifier(
   kind: 'table' | 'column' | 'identifier' = 'identifier',
 ): string {
   const safe = assertSafeIdentifier(name, kind);
-  const lower = safe.toLowerCase();
-  if (lower.startsWith('__lattice_') || lower.startsWith('_lattice_')) {
+  if (isReservedInternalIdentifier(safe)) {
     throw new Error(
       `Reserved ${kind} name: ${JSON.stringify(name)} — the "_lattice_"/"__lattice_" prefix is reserved for internal use`,
     );

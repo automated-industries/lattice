@@ -734,8 +734,38 @@ import { appJs } from '../../src/gui/app/script.js';
 // on a table delete is kept (it prevents a half-applied delete). First run also
 // auto-creates a default local workspace instead of the Create-vs-Join wall (Join
 // via invite stays in the workspace menu). Length + hash recaptured.
-const ORIGINAL_LENGTH = 861417;
-const ORIGINAL_SHA256 = 'd098c96a66ab3a6655cb9c8387c4458fd5819ff5a43cf002b0273705ad21aa0a';
+// 5.7 a refused form is not a refused connection: the cloud-connect probe now reads
+// the response STATUS before its body. A blank host, label, database, user, or port
+// is rejected by the route at 400, before anything is dialled, and that is now
+// reported as the field error it is. It used to fall through the same branch as a
+// failed dial and print "Cloud unreachable", which asserts a network failure that
+// never happened and sends the reader to re-check four fields, three of which were
+// fine. Length + hash recaptured.
+// 5.7 an import is not offered a Revert control it cannot honour: the version-history
+// card for an import renders the entry's own sentence — what it made, that it cannot
+// be undone in one step, and what to delete instead — and shows "not undoable in one
+// step" where a Revert button used to be. Every schema change that really is
+// revertible keeps its button. Length + hash recaptured.
+// 5.7 the first screen stops demanding a name, and the Label field says what it
+// does with one. Onboarding fills the name field from a server-supplied
+// suggestion drawn from the machine account and no longer refuses to continue
+// when it is empty — it is a label on your own edits, changeable afterwards, and
+// on most machines already known. The cloud-connection form gains one sentence
+// under Label saying that spaces and punctuation become dashes, which is what
+// actually happens to it now rather than the rejection it used to produce.
+// Length + hash recaptured.
+// 5.7 a row whose lead column is empty is named rather than placeheld. The rows
+// table's first cell is the row's link text; when that one column was blank it
+// printed a fixed literal, so every such row read identically and none of them
+// could be searched for or told apart. It now falls through to the same row label
+// the record page, breadcrumb, delete toast and graph nodes already use — a
+// title-ish column, a snippet of a body field, the first meaningful cell, or a
+// short id. That shared label also stops accepting a whitespace-only title as a
+// name, which is what the server's row label has always done, so a blank-looking
+// title falls through instead of rendering as nothing on every surface that shows
+// it. Length + hash recaptured.
+const ORIGINAL_LENGTH = 865130;
+const ORIGINAL_SHA256 = 'aedf369fbfaea2e262f3135a832fe59d08b974c2f51a81e2f51fbc7a85905b8e';
 
 describe('appJs composition', () => {
   // Normalize line endings before pinning: a Windows checkout may materialize the

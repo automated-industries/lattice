@@ -164,38 +164,42 @@ export const CAPABILITIES: readonly Capability[] = [
   // ── Schema ──────────────────────────────────────────────────────────────
   {
     id: 'schema.create-table',
-    summary: 'Create a user table live — DDL, config, context, and a revertible audit op.',
+    summary:
+      'Create a user table live — DDL, config, context, and a revertible audit op. Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#createUserEntity',
     ai: 'create_entity',
   },
   {
     id: 'schema.create-junction',
-    summary: 'Create a many-to-many junction between two existing tables.',
+    summary:
+      'Create a many-to-many junction between two existing tables. Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#createUserJunction',
     ai: 'create_relationship',
   },
   {
     id: 'schema.delete-table',
     summary:
-      'Soft-delete a table so it can still be reverted (see removeInboundLinks for its links).',
+      'Soft-delete a table so it can still be reverted (see removeInboundLinks for its links). Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#softDeleteUserEntity',
     ai: 'delete_entity',
   },
   {
     id: 'schema.rename-table',
-    summary: 'Rename a table, carrying its column policy and cloud access rules with the name.',
+    summary:
+      'Rename a table, carrying its column policy and cloud access rules with the name. Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#renameUserEntity',
     ai: 'rename_entity',
   },
   {
     id: 'schema.add-column',
-    summary: 'Add a scalar column live — ALTER, config, cloud masking view, and audit.',
+    summary:
+      'Add a scalar column live — ALTER, config, cloud masking view, and audit. Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#addUserColumn',
     ai: 'add_column',
   },
   {
     id: 'schema.rename-column',
-    summary: 'Rename a column, carrying its policy across.',
+    summary: 'Rename a column, carrying its policy across. Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#renameUserColumn',
     ai: 'rename_column',
   },
@@ -236,7 +240,7 @@ export const CAPABILITIES: readonly Capability[] = [
     // only the metadata write would record "masked" while every member's
     // connection still read the value.
     summary:
-      "Write a column's definition, mark it secret, or both — masking it on a shared database before the flag is stored.",
+      "Write a column's definition, mark it secret, or both — masking it on a shared database before the flag is stored. Owner-only on a shared database.",
     library: 'gui/schema-ops.ts#setColumnMeta',
     cli: 'schema',
   },
@@ -247,48 +251,54 @@ export const CAPABILITIES: readonly Capability[] = [
     // a definition to the workspace CONFIGURATION as well — which is what the
     // data-model profiler consults — is `setTableDefinition`, a different and
     // larger write, and this entry does not claim it.
-    summary: "Set a table's icon and its browsable one-line description.",
+    summary:
+      "Set a table's icon and its browsable one-line description. Owner-only on a shared database — the row is what everybody on it sees.",
     library: 'gui/column-descriptions.ts#upsertTableMeta',
   },
   {
     id: 'schema.merge-tables',
-    summary: 'Move every row of one table into another and retire the emptied source, reversibly.',
+    summary:
+      'Move every row of one table into another and retire the emptied source, reversibly. Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#aiDeleteEntity',
     ai: 'delete_entity',
   },
   {
     id: 'schema.purge',
-    summary: 'Physically drop an already soft-deleted table (irreversible — reclaims space).',
+    summary:
+      'Physically drop an already soft-deleted table (irreversible — reclaims space). Owner-only on a shared database.',
     library: 'gui/schema-ops.ts#purgeUserEntity',
   },
 
   // ── Computed tables ─────────────────────────────────────────────────────
   {
     id: 'computed-table.create',
-    summary: 'Register a live read-only projection over existing tables.',
+    summary:
+      'Register a live read-only projection over existing tables. Owner-only on a shared database.',
     library: 'gui/computed-ops.ts#createComputedTable',
     ai: 'create_computed_table',
   },
   {
     id: 'computed-table.update',
-    summary: "Change a computed table's definition and recompile it.",
+    summary:
+      "Change a computed table's definition and recompile it. Owner-only on a shared database.",
     library: 'gui/computed-ops.ts#updateComputedTable',
     ai: 'update_computed_table',
   },
   {
     id: 'computed-table.delete',
-    summary: 'Unregister a computed table.',
+    summary: 'Unregister a computed table. Owner-only on a shared database.',
     library: 'gui/computed-ops.ts#deleteComputedTable',
   },
   {
     id: 'computed-table.preview',
-    summary: 'Run a proposed computed-table definition and return its rows without committing.',
+    summary:
+      'Run a proposed computed-table definition and return its rows without committing. Owner-only on a shared database.',
     library: 'gui/computed-ops.ts#previewComputedTable',
     ai: 'preview_computed_table',
   },
   {
     id: 'computed-table.refresh',
-    summary: "Recompute a computed table's model-filled fields.",
+    summary: "Recompute a computed table's model-filled fields. Owner-only on a shared database.",
     library: 'gui/computed-ops.ts#refreshComputedTable',
     ai: 'refresh_computed_table',
   },
@@ -296,12 +306,14 @@ export const CAPABILITIES: readonly Capability[] = [
   // ── Data-model planner ──────────────────────────────────────────────────
   {
     id: 'data-model.apply',
-    summary: 'Apply one planner proposal (rename, extract dimension, retype) reversibly.',
+    summary:
+      'Apply one planner proposal (rename, extract dimension, retype) reversibly — through primitives that are owner-only on a shared database.',
     library: 'gui/planner/apply.ts#applyPlanOp',
   },
   {
     id: 'data-model.dismiss',
-    summary: 'Durably dismiss a planner proposal so it is never re-surfaced.',
+    summary:
+      'Durably dismiss a planner proposal so it is never re-surfaced. Owner-only on a shared database.',
     library: 'gui/planner/plan-state.ts#recordDismissal',
   },
 
@@ -315,7 +327,8 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: 'cloud.secure',
-    summary: 'Install row-level security and the member role model on a cloud database.',
+    summary:
+      'Install row-level security and the member role model on a cloud database. Refused on a managed session, whose manager already provisioned and secured it.',
     library: 'cloud/setup.ts#secureCloud',
     cli: 'cloud',
   },

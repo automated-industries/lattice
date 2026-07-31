@@ -1,9 +1,25 @@
 # The AI assistant & Context Constructor (2.0+)
 
-`lattice gui` ships an optional assistant rail. It is **GUI-only** and inert
-until you configure a credential — the `latticesql` library API is unchanged.
+`lattice gui` ships an optional assistant rail, and **`lattice ask "<prompt>"`**
+asks the same assistant one question from a terminal, with no browser involved —
+same workspace, same tools, same reversible writes; see
+[`lattice ask`](cli.md#lattice-ask). Either way it is **inert until you configure
+a credential**, and the `latticesql` library API is unchanged.
 
 ## Connect Claude
+
+Every backend below can also be connected from a terminal with **`lattice model`**,
+which is the first thing a machine with no display needs: `lattice model status`
+says what is connected and what is blocking a turn, `lattice model connect` attaches
+an OpenAI-compatible endpoint (asked to answer before it is kept, so a machine is
+never left configured and broken), `lattice model subscription` + `lattice model
+code <code>` link a Claude subscription, `lattice model account` uses a signed-in
+Lattice Cloud account, and `use` / `test` / `key` / `disconnect` complete the set.
+Values are stored in the same machine-local encrypted store the app writes, so a
+machine configured here and one configured by clicking are indistinguishable
+afterwards. See [`lattice model`](cli.md#lattice-model). The one step no command can
+take is approving a consent screen — that page belongs to the provider, and it can
+be opened on any machine at all.
 
 Open **Settings → User → Assistant**. The primary action is **Connect with
 Claude** — an Authorization-Code + PKCE flow that links your Claude
@@ -36,8 +52,10 @@ gateway token) they can be supplied alongside the config.
 
 Once connected it becomes the active backend and **every** assistant feature —
 chat, auto-linking / ingestion, computed-table fills, as-of detection, HTML
-authoring — runs on it. Switching backends and disconnecting are available via
-the API (`PUT /api/assistant/provider`, `DELETE
+authoring — runs on it. Switching backends and disconnecting are available from the
+command line (`lattice model use <backend>`, `lattice model disconnect endpoint`),
+from the library (`selectModelProvider`, `connectModelEndpoint`), and over the API
+(`PUT /api/assistant/provider`, `DELETE
 /api/assistant/provider/openai-compat`); with nothing configured the assistant
 resolves a connected Claude subscription exactly as before. Image / PDF vision
 still uses a connected Claude subscription when one is available. Credentials are
@@ -47,7 +65,11 @@ by any endpoint.
 ### Connect a Lattice Cloud account (5.4+)
 
 The third option on the first-run connect screen is **Lattice Cloud account**.
-Sign in through your browser and Lattice runs on **pay-as-you-go included
+A machine with no browser on it signs in too: `lattice account signin` prints a link,
+you approve it in a browser **anywhere**, and `lattice account code <code>` finishes
+it — the two halves are separate runs on purpose, because the machine being signed in
+is usually not the machine the person is sitting at. Then `lattice model account`
+points the assistant at it. Either way Lattice runs on **pay-as-you-go included
 tokens** billed to your account balance — nothing to configure and no API key to
 paste or rotate. Under the hood, signing in mints a **short-lived, scoped model
 credential** that the assistant uses as the model key; it is re-minted
@@ -284,8 +306,12 @@ tables + rows + any detected computed views, shown as a live-progress card), and
 a recognized dataset lands as a snapshot — using a confidently detected date when
 there is one, and otherwise filing a **new** snapshot rather than overwriting the
 previous one. A multi-sheet workbook imports sheet by sheet, reporting honestly if
-some sheets could not be imported. Everything is reported in the activity feed and
-is undoable. Applied via `POST /api/import/apply`. The same inference +
+some sheets could not be imported. Every import writes one entry into the change
+log saying what it made — and, because an import creates tables and loads rows in
+bulk, that entry states plainly that it **cannot be undone in one step**, what an
+undo will not restore, and what to delete instead; asking to reverse it is refused
+in the same words. See [importing.md](importing.md) § _Taking an import back_.
+Applied via `POST /api/import/apply`. The same inference +
 materialization functions (`inferSchema`, `materializeImport`, `detectAsOf*`,
 `excelToRecords`, `dedupeAndDetectViews`, …) are exported from `latticesql` for
 library use. See [importing.md](importing.md) for the full walkthrough.

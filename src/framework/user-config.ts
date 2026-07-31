@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir, platform, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
@@ -438,6 +438,48 @@ export function readIdentity(): UserIdentity {
   } catch {
     return withEnvFallback({ ...EMPTY_IDENTITY });
   }
+}
+
+/** Account names that name the machine's role, not a person. */
+const IMPERSONAL_ACCOUNTS = new Set([
+  'root',
+  'admin',
+  'administrator',
+  'user',
+  'ubuntu',
+  'ec2-user',
+]);
+
+/**
+ * A display name to OFFER when none has been set — derived from the operating
+ * system account (`ada.lovelace` → `Ada Lovelace`).
+ *
+ * Deliberately NOT part of {@link readIdentity}: an empty `display_name` there
+ * means "not set", and several callers depend on that — the cloud member
+ * directory falls back on it, and folding a machine account name into the stored
+ * identity would publish a login name to a shared workspace as though the person
+ * had chosen it. This is a suggestion the interface can fill a field with, which
+ * only becomes the identity if the person leaves it there.
+ *
+ * Returns '' when the account name is impersonal or unavailable, so a caller
+ * gets nothing rather than a name like "Root".
+ */
+export function suggestedDisplayName(): string {
+  let raw = '';
+  try {
+    raw = userInfo().username;
+  } catch {
+    // No account information available (a locked-down container). Nothing to
+    // suggest, which is a fine answer — the field is simply left for the user.
+    raw = '';
+  }
+  raw = (raw || '').trim();
+  if (!raw || IMPERSONAL_ACCOUNTS.has(raw.toLowerCase())) return '';
+  return raw
+    .split(/[._\-\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 }
 
 /**

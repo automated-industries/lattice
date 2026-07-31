@@ -6,7 +6,99 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [5.7.0] — 2026-07-31
+
+The theme of this release: everything Lattice does can now be done without the
+interface. The browser app is one client, not the way in. A `lattice cloud` group runs
+a shared workspace end to end — `status`, `members`, `secure`, `invite`, `revoke`,
+`share`, `probe`, `join`, `migrate` — and `lattice ask` runs a full assistant turn from
+a terminal. So does saying which model this machine uses, signing it in to an account,
+attaching an external database or MCP server, bringing in files and web pages,
+importing spreadsheets, making and removing workspaces and the databases inside them,
+and changing the shape of the data. Every one of them is also a plain function call
+exported from the package, so an embedder reaches the same capability the command does
+without starting a server.
+
+The gap this closes is not a convenience. A server with no display, a container image
+being prepared, a nightly job, a fleet meant to be configured the same way twice — none
+of them could take the first step, which made every later one moot: the assistant was
+reachable from a script only on a machine somebody had already configured by clicking,
+and the only way to administer a shared workspace on a server was to publish the
+browser app on a network address that its own help text calls unauthenticated.
+
+Two other things are worth stating plainly. **Retrieval settings can finally be written
+in a workspace file** — `fts:` opts a table into the full-text index and `embeddings:`
+names the fields to embed and the endpoint that embeds them — so search and re-indexing
+actually work for anyone running Lattice from a config rather than from code; and
+`doctor` now fails honestly instead of reporting a clean bill of health on a workspace
+it never examined. **And several commands that reported success they had not earned now
+report the failure.** A routine reconcile could delete a workspace's whole rendered tree
+and exit zero; that is refused now, for every shape a workspace renders in and every
+command that sweeps. A member could change a shared workspace's schema through paths the
+browser refuses; the rule travels with the operation now, so every door meets it. A sync
+in which every source failed printed a count and exited zero; it names each one and exits
+non-zero.
+
+**What still needs a browser, stated plainly.** Applying a desktop update needs the
+desktop shell that restarts itself. An operating-system file picker needs a person at a
+screen — which is why every other door takes a path instead. And a provider's consent
+screen — a Claude subscription, an OAuth MCP server, an account sign-in — needs a person
+to approve it; but not on the machine being configured. Those flows are start here,
+approve in a browser anywhere, paste the code back, so the machine with no display is
+still the machine you configure.
+
+### Known limitations
+
+**On a shared workspace, an upsert of a row that does not exist yet is refused when
+row security applies to the connection.**
+
+A row on a shared workspace becomes visible once its ownership record exists, and that
+record is written immediately after the row itself. Postgres re-checks certain writes
+against the _read_ rule before that record is there — so a write that has to see the
+row it is creating is refused for a row that is not there yet. Two shapes have to:
+
+- an insert that names a conflict target — `INSERT ... ON CONFLICT (<columns>) ...`,
+  including the `DO NOTHING` form;
+- `INSERT ... RETURNING ...`.
+
+Both fail with `new row violates row-level security policy for table "<name>"`. An
+`INSERT ... ON CONFLICT DO NOTHING` that names **no** conflict target is unaffected, and
+so is an upsert whose row already exists and is visible to the caller.
+
+**Who it reaches.** A workspace owner whose Postgres role does not carry the privilege
+that bypasses row security, and every scoped member — a member's connection always has
+row security forced on it. A member may be refused the same upsert a step earlier still,
+by the column privileges that keep a masked column unreadable; either way the write does
+not land.
+
+**What is unaffected.** Reading, `insert`, `update`, `delete`, and `seed`. `seed`
+resolves each row with a `SELECT` first and then issues a plain insert or a plain
+update, so it never names a conflict target and never asks to read the row back.
+
+**What breaks.** `upsert` of a row that is not already there — and, most visibly,
+**syncing a connected external system, which writes nothing at all**. A sync upserts
+every incoming row, so a first sync into a table on such a workspace lands zero rows.
+
+**This is not new in 5.7.0.** The same writes are refused identically on the previous
+release; the behavior is inherited, and it is recorded here because it had never been
+written down.
+
+**The workaround, and what it does not cover.** For the owner case: grant the connecting
+role the privilege that bypasses row security (`ALTER ROLE <role> BYPASSRLS`, which
+itself requires a superuser — a `CREATEROLE` role is refused). That role then reads
+through every policy, which is the position an owner connecting as the cluster superuser
+is already in, and the refusal goes away. It does **nothing** for the member case, and it
+must never be given to a member: bypassing row security is precisely the privilege that
+keeps one member's rows out of another member's reach. There is no workaround for a
+member.
+
+**One thing did change in 5.7.0, and it cuts both ways.** A table created outside the
+browser — by a script, by a command, or by an embedder — is now secured at the moment it
+is registered. Previously it stayed unsecured until a workspace owner next opened the
+browser app, so a table made any other way was born readable by everyone and stayed that
+way until somebody happened to click. That is a real exposure and it is closed. It also
+means an upsert into such a table, which used to succeed precisely because the table had
+no row security on it, now meets the refusal described above.
 
 ### Added
 
@@ -188,6 +280,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   "nobody knows". Safe on a start-up path, a health check, or an inventory pass: it never
   installs anything.
 
+- **Windows installers are signed.** The desktop release signs the `.msi` with a trusted
+  certificate and an RFC-3161 timestamp as part of the build, so Windows no longer
+  presents a first-run install as coming from an unknown publisher. The macOS installer
+  was already signed and notarized; this is the other half.
+
+- **The default model ids can be set by environment variable.** `LATTICE_DEFAULT_MODEL`
+  and `LATTICE_CHEAPEST_MODEL` override the two ids the assistant and its background
+  passes run on, so a deployment can point them at a different model without editing
+  source. **Unset, the defaults are exactly what they were** — nothing changes for
+  anyone who does not set them. The two stay separate values rather than one aliasing
+  the other: the cheap id exists for high-volume background work, and an alias would
+  silently make every bulk pass expensive the day the default is upgraded to a larger
+  model.
+
 - **The whole product is now driven end to end by a test that never starts a server.**
   Every individual claim above is checkable on its own, and a tree can satisfy all of them
   while the pieces still fail to add up to a usable product — each operation reachable,
@@ -208,7 +314,153 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   screen, an operating-system file picker — is listed with the reason for each rather than
   quietly left out.
 
+### Security
+
+- **Protecting a shared database no longer makes the data in it disappear, and the list of
+  attached sources is no longer hidden from the person who owns it.** Rows in a shared
+  database belong to people, and who owns which row is recorded as the rows are protected.
+  That recording ran as a separate step AFTER protection was switched on — and protection
+  applies to the account that owns the database too, so at that moment that account could
+  no longer see the rows it was about to record. It recorded nothing, said so to nobody,
+  and every row already in the table went dark: not to some people, to everyone, permanently,
+  with nothing raised anywhere to notice. It only ever worked at all because the databases
+  it was tried on were owned by an account that reads past protection entirely — a
+  superuser. On any deployment that sensibly declined to hand one out, protecting a
+  populated table emptied it.
+
+  Recording ownership is now part of protecting the table rather than a step that follows it:
+  it happens with protection momentarily lifted, inside the one transaction that applies it,
+  so a failure cannot leave the table half-protected — the whole thing rolls back and runs
+  again from the start. One pass covers both an ordinary table and a mirror of an
+  attached source, and a mirror's rows are attributed to the person whose connection synced
+  them rather than to the owner — quietly transferring everyone's synced data to the owner
+  reads as "protected" and is data being misfiled. Tables that an earlier release already
+  darkened are repaired the next time that table is protected: for a mirror of an attached
+  source, when that source is next connected, reconnected, or refreshed; for an ordinary
+  table, when the workspace is secured again. Opening the workspace alone does not do it.
+
+  One thing changed along with it. The rows already in a table are now recorded at that
+  table's declared default for who may see them, instead of always as private. A table
+  nobody declared shared is unaffected — private is what "not declared" means, and that is
+  every table until someone says otherwise. But on a table whose owner DID declare its rows
+  visible to the team, every row written after protection is already recorded that way, so
+  recording the earlier ones as private split one table across two rules on a line nobody
+  can see — whether a row arrived before or after protection — and permanently, because
+  this recording only ever fills in what is missing and never revisits a row. A table
+  marked never-shareable is still forced private either way.
+
+  The list of attached sources was the other half. It is owner-only bookkeeping — members
+  hold nothing on it and never have — so per-row protection on it guarded nothing, while
+  making the list unreadable to that same owner. Looking up an attached source stopped
+  working, and so did the check that a member is claiming rows from their OWN connection,
+  which began reporting that a person's own source was not theirs. It is no longer protected
+  that way, and workspaces where it already was are repaired on the owner's next open: the
+  access protection had handed members on the list itself is taken back FIRST, because
+  removing the protection while leaving it standing would flip every member from reading
+  nothing to reading the whole list.
+
+  That repair also runs as part of protecting a table, not only on an open. Attributing a
+  mirror's rows is done by reading this very list, so on a workspace where it was still
+  hidden every one of those rows would be attributed to the owner instead of to the people
+  whose connections synced them — silently, and permanently, because attribution only ever
+  fills in what is missing and never revisits a row it has already recorded. Waiting for an
+  open would not do: a workspace administered from a script is never opened, and in the app
+  the open's repair runs in the background, so protection cannot depend on it having
+  finished. It is checked first and costs nothing on a workspace that was never affected.
+
+  The two functions that recorded ownership as a separate step are gone rather than fixed,
+  one of them a published export (`backfillOwnership`). There is no correct moment to call
+  them from outside the operation that protects the table, so keeping either would keep a
+  way to get this wrong whose only symptom is silence. Callers should use `enableRlsForTable`
+  (or `secureCloud`, which drives it), both of which now do the recording themselves.
+
+- **Marking a column secret cannot be done without installing the mask that enforces it.**
+  Secrecy is two writes: a stored flag, which hides the column from the assistant and the
+  interface, and a database mask, which stops a member's own connection from selecting it.
+  Only both together mean anything. The operation that people use has always done both, mask
+  first, failing the whole call if the mask fails — but the function that writes what a
+  column MEANS was published this release with the flag riding along in the same argument,
+  so one line reached the flag with no mask at all. That produces the worst state available:
+  the column reads as protected everywhere anybody looks, and every member goes on reading
+  the real value, with nothing to notice. The published function now writes definitions and
+  refuses the flag by name, pointing at the operation that installs the mask. Nothing is
+  lost — that operation is published too.
+
+- **Changing the shape of a shared database is owner-only from every door, not just the
+  browser.** Fifteen schema operations refused a scoped member in the request handler, and
+  only in the request handler. Every other way of reaching the same operation — a command,
+  the assistant, an embedder's own call — met no rule at all, and these operations are not
+  covered by anything else: they write the workspace configuration, which is a plain file
+  write, and they run schema statements, which row security does not govern. Worse, when a
+  member lacks the privilege to run a statement the library deliberately routes it through
+  an owner-side helper, so the change really landed. A member could ask the assistant to
+  add a field to a shared table and the column appeared on it — while the same request from
+  the app came back refused.
+
+  The rule now travels with each operation, raised as a tagged refusal each surface answers
+  in its own terms (the app still replies with a status; a command prints the sentence and
+  exits non-zero). It covers creating, deleting, renaming, merging and purging a table;
+  adding, renaming and retyping a column; nesting one table in another and taking a
+  relationship back out; describing a table; setting what a table IS — its role and what one
+  of its rows means — and applying a data-model shape proposal; creating, updating, deleting,
+  previewing and refreshing a computed table; and dismissing a data-model proposal — which
+  used to report success to a member for a write it had silently skipped. Owners and
+  ordinary local workspaces are unaffected.
+
+  The two role-writing operations are worth naming, because they were published without the
+  rule while the operation that writes the SAME row of the same store carried it: a member
+  could not describe a table from anywhere, and could rewrite every table's role and grain
+  from the package entry point — the semantics the data-model pass, the interface and the
+  assistant all read. An inventory test now fails when an operation is exported without
+  either the rule or a stated reason it needs none, so absence cannot go unnoticed again.
+
+- **Securing a database is refused on a deployment that manages workspaces for you.** Where
+  a manager provisions and secures the database for an account, doing it again locally is
+  not a harmless repeat: it re-stamps ownership of every row and re-privatizes rows that had
+  been shared. That refusal existed in the app and in the command wrapper — and the
+  operation is published, so the two doors that had it were the two an embedding deployment
+  never uses. It now lives in the operation itself, with the same explicit override the
+  invite and remove operations take, so a manager driving it deliberately can still say so.
+  Migrating a workspace onto a shared database refuses up front for the same reason, rather
+  than copying the data across and only then failing to protect it.
+
+- **Starting the app no longer searches your home folder for workspaces to open.** On
+  launch, Lattice picks up workspace files sitting beside its root, so a workspace joined by
+  an older build still appears in the switcher. For the ordinary root — which lives in your
+  home folder — "beside the root" IS the home folder, so every `.yml` and `.yaml` kept there
+  was read and taken up as a workspace. Seen on a real launch: started from an unrelated
+  directory, the app adopted a configuration file that merely happened to be lying in the
+  home folder, opened it as the workspace on screen, and rendered a tree into files it had
+  not created. Nothing named that file and nothing reported taking it. The sweep now skips
+  the home folder wherever a root is placed; a workspace file next to a project's own root
+  is still picked up, which is the case it exists for.
+
 ### Changed
+
+- **The first screen no longer stops to demand your name.** Creating a workspace began by
+  refusing to continue until a display name was typed. It is a label on your own edits,
+  changeable afterwards from the account menu, and on most machines the operating system
+  already knows a perfectly good answer — so the very first thing the product did was hand
+  you a form to satisfy. The field now arrives filled in with a name derived from the
+  machine account, and leaving it empty continues anyway. The suggestion is carried
+  separately from the stored identity, so an unset name still reads as unset everywhere
+  else that asks.
+
+- **An extraction the assistant is only partly sure about is now made, not queued.**
+  Reading a document produced records for everything it was confident about, and for the
+  rest it created nothing and left a card asking whether to add them. Answering the card
+  did not add them either — it recorded an opinion and stopped — so ingesting a folder
+  built a backlog of questions that changed nothing whichever way they were answered, and
+  discarded the records both ways. Adding a row is additive and one click of Undo away, so
+  those extractions are now made at the aggressiveness the workspace is configured for. The
+  noise floor is unchanged: below it, a guess is still dropped in silence.
+
+- **The Label on a cloud connection says what it does with what you type.** A name with a
+  space in it is accepted and hyphenated into the key the connection is stored under; the
+  field now carries one sentence saying so, instead of leaving a name to silently change
+  shape. Every route that takes connection details — probe, migrate, and connect —
+  reports a rejected field as that field, so a form problem is never dressed up as a
+  credentials or network failure.
 
 - **Deleting a workspace is ONE implementation behind both doors.** A workspace can be
   removed while it is open and while nothing is open at all, so the app has two routes for
@@ -477,6 +729,259 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 
+- **`lattice init` followed by `lattice doctor` is a clean run.** The first two commands
+  anybody types reported a broken install. `init` makes a workspace and nothing else — no
+  table of your own, and none of the framework's own tables opts into full-text or
+  semantic search — so `doctor` found nothing configured, called that an **error**, printed
+  `✗ errors present` and exited `1`. The health check was telling every new user their
+  brand-new workspace was unhealthy, on the one path all of them walk first.
+
+  The error it was firing is worth keeping; it was firing on the wrong situation. Two
+  things end with no tables to diagnose and they are opposites: nobody said what to expect
+  and the database volunteers nothing — genuinely nothing assessed, which a deploy gate
+  must fail on — versus the whole schema was read and none of it configures search, which
+  is an assessment whose answer is "no retrieval here". Opening a workspace is always the
+  second case, because the opener enumerates every registered table before asking; it just
+  had no way to say so, and handed over an empty list indistinguishable from having been
+  told nothing.
+
+  A caller can now state that its expectation list is the complete truth about the
+  database (`expectationsComplete`), which opening a workspace does. An empty list from
+  such a caller reports `no_retrieval_configured` at **info**, leaves the report healthy,
+  and exits `0` — while `diagnoseRetrieval(adapter)` with no expectations, and an explicit
+  `tables: []`, keep the `nothing_to_diagnose` **error** and the non-zero exit exactly as
+  before. The gate is unchanged for the case it was written for.
+
+- **An import is now in the change log, and says what taking it back will and will not
+  restore.** Importing a spreadsheet asks nothing — no confirmation card, no "what should I
+  bring in?" — and the whole justification for asking nothing was that a mistake could be
+  taken back. It could not. An import wrote _no entry at all_ into the change log: the
+  tables it created, the rows it loaded, the shared value sets and the junctions were
+  invisible there the moment the live activity bubble scrolled away, and the one-action undo
+  the documentation promised had nothing to act on. The claim was strictly stronger than the
+  behaviour, which is the worst way for a safety claim to be wrong.
+
+  An import genuinely cannot be reversed in one action, so it now says so instead of
+  implying otherwise. Every import — from the app, from `lattice import`, from a library
+  call, and from the assistant's own `import_spreadsheet` — writes **one** entry naming the
+  file, the tables it wrote, the tables it _created_, the row counts and the snapshot date,
+  and stating plainly that it cannot be undone in one step, what an undo will **not**
+  restore, and what to do instead. That advice follows what the import actually did: an
+  import that created the tables says to delete those tables; a recognised re-import that
+  only added a new snapshot to tables already there says to delete the rows it added — never
+  the table, which would take every earlier snapshot with it. The version-history card shows
+  that sentence and offers no Revert control, and asking to reverse the entry anyway is
+  refused in the same words rather than reported as a success that restored nothing. The
+  entry also carries `reversible: false` alongside the sentence, so a caller reading the log
+  does not have to parse the promise out of prose.
+
+- **`lattice watch --cleanup` no longer deletes the rendered trees a reconciliation refuses
+  to touch.** Cleanup works by difference, so a process that opened without part of a
+  workspace's layout reads every context it does not know as "removed". The one-shot verb
+  refuses that and says why; watching held the render engine and called its deletion
+  directly, so the identical workspace in the identical state lost its whole rendered tree
+  on the first tick and reported `Cleanup: removed 2 dirs, 2 files`. Watching is the worst
+  place for this: it sweeps on a timer, unattended. Every path that deletes a rendered tree
+  — reconcile, the open-time pass, the background pass after a write, and watching — now
+  goes through one door with the checks behind it.
+
+- **`lattice watch --cleanup` prints what a cleanup pass complained about.** It reported two
+  counts and dropped `warnings` on the floor, so a refusal, or a file left in place because
+  somebody had edited it, could happen every few seconds and never reach the operator. The
+  complaint is now printed, and a standing one is stated rather than repeated on every tick.
+
+- **A rendered tree is protected on the absence of its LAYOUT, not of its table.** The check
+  before a deletion asked whether the table was registered; cleanup deletes when the schema
+  stops producing a rendered CONTEXT for it. A connected source restored as a table without
+  its layout — the exact half-restored state a partial replay leaves behind — was therefore
+  invisible to the check, and its whole rendered tree was swept with no warning and a
+  success exit code.
+
+- **A workspace whose tables render one file each is protected too.** That shape — a table
+  with an `outputFile` and no per-record directory — is the simplest and most common one
+  there is, and it records no per-record layout at all. The check read that absence as
+  "nothing was rendered here, so nothing can be wrongly swept" and stood aside, while the
+  pass that follows deleted the rendered file of every table the process no longer knew:
+  `Cleanup: removed 0 directories, 1 files` and an exit code of 0 over the only file the
+  workspace had. So the shape with the least structure to lose had no protection at all.
+  What was previously rendered here now counts every rendered FILE, not only the directory
+  trees, and what this process renders counts the tables that render a file as well as the
+  per-record layouts — the second half matters as much as the first, or a healthy
+  single-file workspace would be refused instead of the emptied one. Each shape is still
+  compared against the thing that actually deletes it, so a table restored without its
+  per-record layout is refused exactly as before. A workspace that genuinely dropped a
+  single-file table still has it swept and still reports success, and `--layout-emptied`
+  still clears a tree that was emptied on purpose.
+
+- **A multi-output render is no longer mistaken for a table.** A multi's files are recorded
+  under the name it was declared with — an arbitrary label like `agent-context`, never a
+  table name — and the check held that name against the workspace's live TABLES, where it
+  could never match. So every live, unchanged multi read as output the workspace had
+  dropped, and on any workspace with a connected source that could not be reconstructed
+  locally, that refused every pass forever: nothing was ever swept again, the message named
+  a multi as a table "no longer declared", and `--layout-emptied` could not clear it because
+  it answers a different question. A multi is now compared against the live multis, which is
+  what actually retires its files.
+
+- **A refusal now survives a plain render.** The refusal is computed against the record of
+  what was last rendered, and the thing that rewrites that record is a render — so the
+  repair that keeps the record intact belonged to every render, not only the ones a sweep
+  follows. It was bound to the sweep, and one `lattice render` between two reconciliations
+  was enough to clear the protection: the first refused, the render wrote a record without
+  the tables it does not understand, and the second deleted the tree and reported success at
+  exit 0. That is the command you reach for next, precisely because the refusal makes
+  reconcile render nothing. The repair also covers all three shapes now — per-record trees,
+  a table's rollup, and a multi's outputs. It restored the first two and dropped the third,
+  so a workspace whose rendered baseline was a multi got a refusal that lasted exactly one
+  pass and then swept the tree without a word.
+
+- **Bookkeeping the browser writes no longer blocks a command.** Opening a workspace in the
+  browser registers internal tables a command never registers — per-entity and per-column
+  metadata, a machine identity row, an audit log, the native binding registry — and each one
+  renders a file. Read as part of the workspace's own layout, they were five outputs it
+  appeared to have dropped, so on any workspace with an unreconstructable connected source
+  `lattice reconcile` refused outright, rendered nothing and exited non-zero, permanently,
+  naming internal tables the operator cannot act on and with no flag that clears it. Tables
+  under the reserved internal prefix are framework bookkeeping, not layout, and are excluded
+  the same way the named native entities always were.
+
+- **A reconciliation that cannot delete anything reports instead of refusing.** `--dry-run`
+  removes nothing by definition, and `--no-orphan-dirs --no-orphan-files` turns every sweep
+  off — but the refusal was reached before the render and without reference to either, so
+  both came back with an empty render and a failure. A dry run is exactly what you run to
+  find out what a refusal is about, and it answered with nothing to act on. Those passes now
+  go the whole way: the dry run names the files a real sweep would take and still says why a
+  real sweep will not take them, and a pass with the sweeps off still writes the tree. What
+  is refused is still refused and nothing is removed. A dry run also says "would remove"
+  rather than "Removed", which it had been printing in the one mode that never removes
+  anything.
+
+- **Two plain connected servers no longer cost each other their rendered layout.** Servers
+  connected without a described schema of their own share one flat table. The
+  reconstruction skipped a repeat toolkit, which these are not — two per-connection
+  toolkits resolving to the same table — so the table arrived twice, registering its layout
+  the second time raised, and every model listed after it ended the open with a table and
+  no layout at all. The reconstruction now de-duplicates by table, registering a layout
+  twice is a no-op rather than an error, and a replay that ends with any connected table
+  missing its layout reports that source as unloaded instead of letting the next
+  reconciliation act on it.
+
+- **A workspace that deletes its last table is no longer stuck forever.** "This workspace
+  renders no layout of its own" is refused, because it is what a layout that failed to load
+  looks like — but it is also exactly what deleting your last table looks like, and no fact
+  available to the check tells the two apart. Left at that, the workspace stopped rendering
+  as well as sweeping, the stale tree could never be cleared, and every run exited non-zero
+  with no way forward. `lattice reconcile --layout-emptied` (`layoutEmptied: true` from a
+  library call) is how you say the emptiness is intended. It answers that one question only:
+  a rendered tree belonging to a connected source is still protected.
+
+- **A workspace named by `--config` decides which tree the command writes, not the shell.**
+  For a config that is not a registered workspace, the rendered-context directory was probed
+  relative to the process's working directory. Reconciling one workspace by path from inside
+  another therefore rendered the first into the second's tree and, in the same pass, swept
+  the second's own contexts out of it — the two workspaces being unrelated is precisely why
+  nothing objected. The probe now starts from the config's own directory.
+
+- **Writing what a table or column MEANS is owner-only on a shared database, from every
+  door.** The rule went on the schema operation that writes a table definition. The
+  assistant's `set_definition` tool does not call that operation — it calls the metadata
+  writers underneath it, and so do an answered question and both browser routes. A member
+  on a scoped role wrote rows everybody on the database sees, and was told `ok`. The rule
+  now travels with the writers themselves, so the assistant, a command, the browser and an
+  embedder all meet it. Marking a column secret is gated the same way, for the same reason.
+
+- **Moving a local workspace onto a shared database works again from a managed session.**
+  Migration installs security on its target, and securing is refused on a managed session —
+  so the refusal was read off the session and applied to the whole migration. But the target
+  is not the managed database: it is one the person just supplied, holding a copy of their
+  own local workspace, which a manager has never heard of. The refusal now applies to what
+  it is about.
+
+- **A rolled-back migration no longer erases workspaces it never touched.** The workspace
+  registry is one file listing every workspace on the machine, and any Lattice process
+  rewrites it whenever somebody registers one or switches between them. When the last step
+  of a migration failed, the rollback restored that whole file as it had looked when the
+  migration started — correctly undoing its own record and, in the same write, deleting
+  every record anybody else had added meanwhile. Those workspaces' files all survived on
+  disk; nothing listed them any more, so nothing opened them, and the only symptom was one
+  disappearing from the switcher. The rollback now re-reads the registry and puts back only
+  its own entry, leaving concurrent registrations alone and letting a newer switch stand.
+
+- **A failed migration says what it actually put back.** The same failure reported that the
+  workspace was "unchanged and still open on its local database". Neither half held: a
+  complete copy of the workspace was by then sitting in the target database, and the command
+  path hands its database handle over to be closed before the cutover even begins. It now
+  names the three things restored — the config's database line, the stored credential, and
+  this workspace's registry record — states that no other workspace was touched, and says
+  plainly that the copy is not undone and where it is.
+
+- **A rejected connection form is no longer reported as an unreachable cloud.** Leaving Host
+  blank in the migrate dialog produced "Cloud unreachable: A host is required. Double-check
+  host, port, user, and password." for a request that never opened a socket, sending the
+  reader to re-check four fields, three of which were fine. The server has answered these
+  with the offending field named since the previous release; the dialog was reading the body
+  without ever checking whether the response was an error, so every answer got the network
+  wrapper. It now reports a refused form as itself, and keeps "unreachable" for a cloud that
+  really is.
+
+- **Text scans can read every source file again.** One module carried a literal NUL byte —
+  typed inside a template literal as a separator between two key parts, invisible on screen
+  — and a single NUL is what makes text tools classify a whole file as binary and stop
+  reporting matches from it, silently and with a successful exit. Scans over the tree
+  therefore did not cover that module at all, and it happens to hold the audit, undo and
+  column-masking write paths. Written as a unicode escape the runtime string is identical
+  and the file is plain text; a check now fails the build if any tracked file grows one.
+
+- **`doctor`, `search`, `reindex`, `index status`, `render`, `reconcile`, `status` and
+  `watch` now work on the workspace you are actually using.** They resolved `--config`'s
+  default as a literal path against whatever directory you happened to be standing in, so a
+  bare command looked for `./lattice.config.yml` and, finding nothing, stopped — including
+  inside the workspace directory, whose file is called `workspace.yml`. In practice the
+  sequence in every guide (make a workspace, put something in it, check its health) failed
+  on the first command anybody typed unless they also typed a path. They now resolve the
+  workspace the same way every newer command does: a path you typed wins, a config in the
+  current directory is next, and otherwise the ACTIVE workspace — and a machine with
+  neither is told to run `lattice init` or pass `--config` rather than shown a missing file
+  it never asked for. The commands that write a tree follow the workspace's own rendered
+  directory too, so `render` no longer drops a context tree beside your shell; an explicit
+  `--output` still wins.
+
+- **`lattice connector sync` reports failure when the sync failed.** A pass in which every
+  connected source refused printed "Synced 0 sources; 3 failed." and exited 0 — so the
+  nightly job it was written for carried on as though the data had arrived. Worse, the
+  reason each source gave was collected and then discarded on the way to a count, and
+  `--json` emitted the two numbers alone: a caller could see that something was wrong and
+  never learn what. The pass now names each source that refused and what it said, both in
+  the printed report and in `--json` (a new `failures` array on `StaleRefreshResult`, also
+  carried by the refresh route), and exits non-zero when any source was lost. A pass with
+  nothing stale still exits 0, quietly.
+
+- **`lattice account sync --json` no longer reports a partial pass as a clean one.** The
+  command already refused to call a sync successful when memberships failed to arrive — but
+  only on the path a person reads. Asked for machine-readable output it returned before
+  reaching its own check, so the one caller that cannot read a printed report was exactly
+  the one told everything was fine. Both forms now run the same check and leave as a
+  failure carrying the whole report.
+
+- **`lattice reconcile` no longer deletes a rendered tree it merely failed to learn about.**
+  Reconciliation works by difference: whatever the last render recorded and the current
+  schema no longer produces is swept from disk. That is right only when the process holds
+  the whole truth about the workspace, and two situations meant it did not. A config that
+  had lost its layout (a shared workspace whose published layout has not arrived, a config
+  that describes nothing) made every rendered context look removed. And a workspace with a
+  connected external database or MCP server had those tables registered at connect time, in
+  that process only — so the app wrote their context tree and a terminal reconciliation, not
+  knowing them, removed it. Both ended the same way: `Cleanup: removed N directories, N
+files`, and an exit code of 0, over a directory that had just been emptied.
+
+  Connected sources are now replayed by opening itself, so every way of opening a workspace
+  — the app, the command line, a library caller — ends up with the same schema and the same
+  rendered layout, and their trees are reconciled rather than removed. Behind that, a
+  reconciliation that is about to delete a context it cannot account for refuses the pass,
+  says which tables and why, and reports failure; the background pass the app runs after
+  every write announces the same refusal rather than passing over it in silence. A workspace
+  that genuinely dropped a table still has its orphaned tree swept, unchanged.
+
 - **Opening a workspace and changing it on the next line.** A SQLite workspace holds one
   connection, and a transaction on it is a pair of statements — so the background work an
   open leaves running and a caller's very next schema change both issued `BEGIN`, and the
@@ -681,6 +1186,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   the name given is one of its relations, which sit right beside the fields and read like
   them.
 
+- **A row whose first column is empty is named, not placeheld.** In a list of rows the first
+  cell is the row's link, and when that one column happened to be blank the link read as a
+  fixed placeholder. Every such row then looked exactly like every other one, none of them
+  could be searched for by what it said, and clicking was the only way to find out which was
+  which — on a wide table the id is not among the columns shown, so there was nothing else
+  on the line to tell them apart. The link now says what the rest of the app already calls
+  that row: a title-ish column, a snippet of its text, its first meaningful value, or a short
+  id. That shared name also stops treating a title that is only spaces as a name, matching
+  what the activity feed has always done, so a blank-looking title falls through to the next
+  thing instead of rendering as nothing wherever a row is named.
+
 ---
 
 ## [5.6.0] — 2026-07-29
@@ -719,11 +1235,6 @@ back or that affects other people.
 
 ### Added
 
-- **Configurable default model IDs via environment variables.** The `DEFAULT_MODEL` and
-  `CHEAPEST_MODEL` constants can now be overridden via `LATTICE_DEFAULT_MODEL` and
-  `LATTICE_CHEAPEST_MODEL` environment variables, allowing downstream consumers to customize
-  AI model selection without editing source code. When unset, the hardcoded defaults remain
-  unchanged (`claude-haiku-4-5`).
 - **One-click undo for schema changes.** Deleting a table, deleting a link, or renaming an
   object now shows an Undo that restores it — and the misleading "this cannot be undone"
   warnings are gone, because these were always reversible.

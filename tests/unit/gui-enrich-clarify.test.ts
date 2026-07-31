@@ -6,16 +6,27 @@ import { Lattice } from '../../src/lattice.js';
 import { FeedBus, type FeedEvent } from '../../src/gui/feed.js';
 import type { MutationCtx } from '../../src/gui/mutations.js';
 import { enrichWithLlm } from '../../src/gui/ai/enrich.js';
-import { listPendingQuestions, parseQuestionContext } from '../../src/gui/questions.js';
+import { listPendingQuestions } from '../../src/gui/questions.js';
 import { parseObjects } from '../../src/ai/summarize.js';
 import type { TurnParams, TurnResult } from '../../src/gui/ai/chat.js';
 
 /**
- * The first background clarify producer: enrich's object-extraction step gates
- * each extracted object on the model's target-entity confidence. ≥ threshold
- * (default 0.6) → materialize exactly as before; in [threshold/2, threshold) →
- * create NOTHING and enqueue a question instead (max 2 per file); < floor →
- * drop silently. A missing confidence means 1.0 — today's behavior, untouched.
+ * What enrich does with an object it is only partly sure about.
+ *
+ * It used to create nothing and enqueue a card: "Is <file> meant to add records
+ * to <entity>?". The card could not do the thing it asked about — the stored
+ * action was a no-op, so answering "Yes, add them" added nothing. Ingesting a
+ * folder therefore produced a queue of questions that changed nothing whichever
+ * way they were answered, and the records the extractor had already found were
+ * discarded either way.
+ *
+ * Adding a row is additive and one click of Undo away, so the marginal band now
+ * does the additive thing at the aggressiveness the workspace is configured for.
+ * The noise floor is unchanged: below it, an object is still dropped in silence.
+ *
+ * These drive the exported `enrichWithLlm` the ingest routes call, against a real
+ * database, with the model scripted — the rows and the question queue are read
+ * back from that database afterwards.
  */
 
 // The fake LLM answers by PROMPT (summary / classify / extract), not call
@@ -49,7 +60,7 @@ function extractFence(objects: unknown[]): string {
   return '```json\n' + JSON.stringify(objects) + '\n```';
 }
 
-describe('enrich extraction clarify gate', () => {
+describe('enrich extraction confidence floor', () => {
   let tmpDir: string;
   let cfgDir: string;
   let db: Lattice;
@@ -62,7 +73,8 @@ describe('enrich extraction clarify gate', () => {
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'lattice-enrich-clarify-'));
     cfgDir = mkdtempSync(join(tmpdir(), 'lattice-enrich-clarify-cfg-'));
-    // Preferences (incl. clarify_threshold) read from an isolated dir → default 0.6.
+    // Preferences (incl. clarify_threshold) read from an isolated dir → default 0.6,
+    // so the noise floor is 0.3 and 0.45 sits in what used to be the asking band.
     process.env.LATTICE_CONFIG_DIR = cfgDir;
     db = new Lattice(join(tmpDir, 'test.db'));
     const t = (cols: Record<string, string>, out: string) => ({
@@ -143,7 +155,7 @@ describe('enrich extraction clarify gate', () => {
     return rows.filter((r) => !r.deleted_at).length;
   }
 
-  it('marginal confidence: no row/entity is created — a question is enqueued instead', async () => {
+  it('marginal confidence: the record is created, and nothing is queued to ask about it', async () => {
     scripted.extractJson = extractFence([
       {
         entity: 'suppliers',
@@ -151,34 +163,22 @@ describe('enrich extraction clarify gate', () => {
         columns: ['name'],
         values: { name: 'Acme Corp' },
         label: 'Acme Corp',
-        confidence: 0.45, // in [0.3, 0.6) — marginal
+        confidence: 0.45, // above the 0.3 floor, below the 0.6 clarify threshold
       },
     ]);
     await run();
-    expect(await supplierCount()).toBe(0);
-    expect(createdEntities).toEqual([]);
-    const pending = await listPendingQuestions(db);
-    expect(pending.length).toBe(1);
-    expect(pending[0]?.source).toBe('enrich');
-    expect(pending[0]?.question).toBe('Is "orders.txt" meant to add records to suppliers?');
-    expect(JSON.parse(pending[0]?.options_json ?? '[]')).toEqual([
-      'Yes, add them',
-      'No, keep it as just a file',
-    ]);
-    // v1: the answer records intent (action none); a free-form answer enriches
-    // the (existing) target entity's definition. Nothing re-runs automatically.
-    // The subject names the file the question is about, so the card can show
-    // and open it — during a batch ingest "this file" is otherwise ambiguous.
-    expect(parseQuestionContext(pending[0]?.context_json ?? null)).toEqual({
-      action: { kind: 'none' },
-      enrich: [{ target: 'table_definition', table: 'suppliers' }],
-      subject: { table: 'files', rowId: fileId, label: 'orders.txt' },
-    });
-    // Open GUIs learned live.
-    expect(feedEvents.some((e) => e.op === 'question' && e.source === 'ingest')).toBe(true);
+
+    expect(await supplierCount(), 'the extracted record landed').toBe(1);
+    const rows = (await db.query('suppliers', {})) as { name?: string }[];
+    expect(rows[0]?.name).toBe('Acme Corp');
+
+    // The card that used to stand here asked whether to do the thing it had just
+    // decided not to do, and could not do it if answered.
+    expect(await listPendingQuestions(db), 'no question is queued').toEqual([]);
+    expect(feedEvents.some((e) => e.op === 'question')).toBe(false);
   });
 
-  it('a marginal NEW-entity proposal asks too — without creating the entity or an enrich target', async () => {
+  it('a marginal NEW-entity proposal is acted on too, at the configured aggressiveness', async () => {
     scripted.extractJson = extractFence([
       {
         entity: 'ghosts',
@@ -190,14 +190,34 @@ describe('enrich extraction clarify gate', () => {
       },
     ]);
     await run();
-    expect(createdEntities).toEqual([]); // createEntity never called
-    const pending = await listPendingQuestions(db);
-    expect(pending.length).toBe(1);
-    // The entity does not exist yet, so there is nothing to hang a definition on.
-    expect(parseQuestionContext(pending[0]?.context_json ?? null).enrich).toEqual([]);
+
+    // Aggressiveness 0.6 allows new entities (≥ 0.5), so the marginal proposal
+    // reaches the entity creator instead of being parked in a question.
+    expect(createdEntities).toEqual(['ghosts']);
+    expect(await listPendingQuestions(db)).toEqual([]);
   });
 
-  it('high confidence: acts exactly as before (row created, no question)', async () => {
+  it('several marginal proposals in one file all land — there is no queue to cap', async () => {
+    scripted.extractJson = extractFence(
+      ['alpha_things', 'beta_things', 'gamma_things'].map((entity, i) => ({
+        entity,
+        isNew: true,
+        columns: ['name'],
+        values: { name: `Item ${String(i)}` },
+        label: `Item ${String(i)}`,
+        confidence: 0.5,
+      })),
+    );
+    await run();
+
+    // Previously the first two became questions and the third was silently
+    // dropped by a per-file cap — an ingest could lose findings to a limit on
+    // how much it was allowed to ask.
+    expect(createdEntities).toEqual(['alpha_things', 'beta_things', 'gamma_things']);
+    expect(await listPendingQuestions(db)).toEqual([]);
+  });
+
+  it('high confidence: unchanged', async () => {
     scripted.extractJson = extractFence([
       {
         entity: 'suppliers',
@@ -213,7 +233,7 @@ describe('enrich extraction clarify gate', () => {
     expect(await listPendingQuestions(db)).toEqual([]);
   });
 
-  it('missing confidence: treated as 1.0 — behavior unchanged from before the gate', async () => {
+  it('missing confidence: treated as 1.0 — behavior unchanged', async () => {
     scripted.extractJson = extractFence([
       {
         entity: 'suppliers',
@@ -229,7 +249,7 @@ describe('enrich extraction clarify gate', () => {
     expect(await listPendingQuestions(db)).toEqual([]);
   });
 
-  it('below the floor (< threshold/2): dropped silently — no row, no question', async () => {
+  it('below the floor (< threshold/2): still dropped silently — no row, no question', async () => {
     scripted.extractJson = extractFence([
       {
         entity: 'suppliers',
@@ -244,23 +264,6 @@ describe('enrich extraction clarify gate', () => {
     expect(await supplierCount()).toBe(0);
     expect(await listPendingQuestions(db)).toEqual([]);
     expect(feedEvents.some((e) => e.op === 'question')).toBe(false);
-  });
-
-  it('caps at 2 questions per ingested file', async () => {
-    scripted.extractJson = extractFence(
-      ['alpha_things', 'beta_things', 'gamma_things'].map((entity, i) => ({
-        entity,
-        isNew: true,
-        columns: ['name'],
-        values: { name: `Item ${String(i)}` },
-        label: `Item ${String(i)}`,
-        confidence: 0.5,
-      })),
-    );
-    await run();
-    const pending = await listPendingQuestions(db);
-    expect(pending.length).toBe(2);
-    expect(createdEntities).toEqual([]);
   });
 
   it('parseObjects clamps a wild confidence and drops a non-numeric one', () => {
