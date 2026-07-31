@@ -88,7 +88,11 @@ export async function dispatchQuestionRoute(
   }
 
   const answerMatch = ANSWER_RE.exec(pathname);
-  // @headless-debt answering a pending clarifying question is only reachable here.
+  // A queue only a browser can drain will eventually stop something that has no
+  // browser: one unanswered question blocks every step waiting behind it. The
+  // answer runs its deferred action and its enrichment writes from one call, so a
+  // script or a job resolves the same question the same way.
+  // @capability question.answer
   if (method === 'POST' && answerMatch) {
     const id = decodeURIComponent(answerMatch[1] ?? '');
     let body: Record<string, unknown>;
@@ -116,7 +120,9 @@ export async function dispatchQuestionRoute(
   }
 
   const dismissMatch = DISMISS_RE.exec(pathname);
-  // @headless-debt dismissing a pending clarifying question is only reachable here.
+  // The other half of draining the queue: a question that should never have been
+  // asked has to be droppable by whoever is running, browser or not.
+  // @capability question.dismiss
   if (method === 'POST' && dismissMatch) {
     const id = decodeURIComponent(dismissMatch[1] ?? '');
     try {

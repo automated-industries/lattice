@@ -210,6 +210,8 @@ lattice init                 # scaffold a root + default workspace, render the t
 lattice workspace list       # list workspaces (the active one is marked *)
 lattice workspace create <name>          # or: create --name "<display name>"
 lattice workspace use <name-or-id>       # the display name, or the stable UUID
+lattice workspace rename <name-or-id> --name "<new name>"
+lattice workspace delete <name-or-id> --yes   # remove it, and the files it owned
 lattice gui                  # opens the active workspace when a root is present
 ```
 
@@ -218,3 +220,35 @@ case-insensitively; a name shared by two workspaces is refused with both ids
 rather than resolved to one of them. Pass the UUID when you want a reference that
 survives a rename — that is the form to use in a script. Every one of these takes
 `--root <dir>` to work against a root other than the default.
+
+`rename` writes both places a workspace name lives — the `name:` key in its own
+configuration and the display name in the registry the switcher reads. Writing one
+without the other is the failure that looks like success, so it does both and says
+so when there was no registry record to update (a workspace opened on a plain
+configuration outside any root has none, which is fine).
+
+`delete` requires `--yes`. There is no prompt, on purpose: these commands exist so
+the work can run unattended, and a prompt in that setting is a hang rather than a
+safeguard. What it removes depends on the kind of workspace — a scaffolded one
+loses its folder, one whose files you only ever pointed at keeps all of them, and a
+shared one loses its local pointer AND the credentials this machine kept in order
+to reconnect. The shared database itself is never touched.
+
+## The databases inside a workspace
+
+A workspace holds a set of database configs in one directory and opens one at a
+time. `lattice database` manages that set; `lattice workspace` manages the
+workspaces themselves.
+
+```bash
+lattice database list                          # the set, active one marked *
+lattice database create <name>                 # or: create --name "<name>"
+lattice database delete <name-or-path> --yes   # its config, and its local store
+```
+
+Every verb takes `--config <path>` to name the workspace (the active one by
+default) and `--root <dir>` for the root holding it. `delete` accepts the label
+printed by `list` as well as a path, refuses anything outside this workspace's own
+set rather than unlinking it, and refuses to remove the LAST database — a workspace
+that opens into nothing is not a state worth reaching. Remove the workspace instead
+if that is what you meant.

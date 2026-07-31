@@ -642,8 +642,12 @@ export async function handleReadRoutes(
   //     view), and on Postgres it additionally runs inside a READ ONLY
   //     transaction so a data-modifying CTE cannot slip a write through;
   //  4. the result is wrapped + capped server-side (no unbounded egress).
-  // @headless-debt running an analytics query with the dashboard guardrails (protected
-  // tables, bounded reads) is only reachable through this route.
+  // All four guardrails live in the capability, not here — so a caller outside a
+  // browser gets the same shape gate, the same refused tables, the same read-only
+  // transaction, and the same cap, and cannot accidentally reach a wider surface
+  // by asking a different way. What stays here is the on-access freshness kick,
+  // which exists because a dashboard was rendered, not because a query was run.
+  // @capability analytics.query
   if (method === 'POST' && pathname === '/api/analytics/sql') {
     const body = (await readJson<unknown>(req)) as { sql?: unknown };
     const raw = typeof body.sql === 'string' ? body.sql : '';

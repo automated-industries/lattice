@@ -120,6 +120,13 @@ export interface ActiveDb {
    * NEVER rejects: a failure is surfaced into {@link convergeWarnings} + logged,
    * not thrown (it runs unawaited). Callers that need a fully-converged cloud
    * before asserting (tests) `await active.converged`; the GUI ignores it.
+   *
+   * Awaiting it is never REQUIRED for correctness. It used to be, silently, on
+   * SQLite: this work and a caller's next schema change met on one connection and
+   * the second transaction was refused, so a script that did the documented thing
+   * — open, then act — died on a line that looked right. Overlapping transactions
+   * now queue on the connection instead. This promise remains what it says it is:
+   * a way to wait for cloud convergence when you want to assert on it.
    */
   converged: Promise<void>;
   /** Original db: connection string from the YAML, used to spin up the broker. */

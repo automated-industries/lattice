@@ -157,6 +157,13 @@ export type {
 } from './session/index.js';
 export { autoUpdate } from './auto-update.js';
 export type { AutoUpdateResult } from './auto-update.js';
+// The read-only half of the same subject: whether a newer version is published,
+// and what this copy could do about it. Separate from the installer on purpose —
+// reporting has no consequence, so it is safe on a start-up path, a health check,
+// or an inventory pass, and a registry it could not reach is reported as such
+// rather than as "you are up to date".
+export { checkForNewerVersion } from './ops/update.js';
+export type { UpdateAvailability, UpdateCheckOptions } from './ops/update.js';
 
 // v1.6 additions — pluggable storage adapters
 export type { StorageAdapter, PreparedStatement } from './db/adapter.js';
@@ -345,6 +352,49 @@ export type {
   WorkspacePaths,
   AddWorkspaceOptions,
 } from './framework/workspace.js';
+// Taking a workspace away, and managing the SET of databases inside one. Both
+// existed only inside request handlers, which meant standing a machine up — or
+// tearing down what a test made — needed a browser and somebody clicking. The
+// delete is the whole removal, registry record and owned files together, because
+// doing one without the other leaves either a record that opens into nothing or a
+// database nobody lists; and for a shared workspace it takes the credentials this
+// machine kept in order to reconnect, so "disconnected" means disconnected. The
+// shared database itself is never touched. Deleting a database carries the two
+// rules that make it safe with it: nothing outside the workspace's own set, and
+// never the last one.
+export { deleteWorkspace, cleanupWorkspaceFiles } from './ops/workspace-lifecycle.js';
+export type {
+  DeleteWorkspaceInput,
+  WorkspaceRemoval,
+  WorkspaceFileCleanup,
+} from './ops/workspace-lifecycle.js';
+export { createDatabase, deleteDatabase } from './ops/databases.js';
+export type {
+  CreateDatabaseInput,
+  DatabaseCreation,
+  DeleteDatabaseInput,
+  DatabaseDeletion,
+  RemainingDatabases,
+} from './ops/databases.js';
+export { workspaceError, workspaceErrorCode } from './ops/workspace-errors.js';
+export type { WorkspaceError, WorkspaceErrorCode } from './ops/workspace-errors.js';
+// What a workspace's own configuration says: its name, and whether a database it
+// might point at is actually reachable. Renaming writes the configuration AND the
+// registry that lists it, because a name that only half-changes reads as a rename
+// that silently did not happen; the connection test answers rather than throws,
+// since an unreachable host is the thing the caller asked about.
+export {
+  renameWorkspace,
+  testDatabaseConnection,
+  MAX_WORKSPACE_NAME_CHARS,
+} from './ops/workspace-config.js';
+export type {
+  RenameWorkspaceInput,
+  WorkspaceRename,
+  DatabaseTarget,
+  DatabaseConnectionTest,
+  DatabaseConnectionResult,
+} from './ops/workspace-config.js';
 // A workspace is a config plus the store its `db:` line names, and moving it to
 // another store is two writes that have to agree. Doing one without the other
 // leaves a key nobody names or a name with nothing behind it — so the pair is one
@@ -706,6 +756,18 @@ export {
   CLOUD_SETTING_WORKSPACE_LOGO,
   CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from './cloud/settings.js';
+// Where a shared workspace keeps its file bytes. One call, because the owner
+// gate, the merge that stops a partial update erasing the stored secret, and
+// installing the in-database presigner are one operation: skip the last and every
+// member without credentials of their own can open nothing, with no sign of why.
+// The settings stay machine-local and encrypted; the reader never returns the
+// secret, only whether one is held.
+export { readCloudFileStorage, configureCloudFileStorage } from './ops/cloud-storage.js';
+export type {
+  CloudFileStorage,
+  CloudFileStorageInput,
+  CloudFileStorageResult,
+} from './ops/cloud-storage.js';
 // v3.1 — progress-bearing render API (background render + live per-table %)
 export { ProgressThrottle } from './render/progress.js';
 export type {
@@ -773,6 +835,17 @@ export type { StartGuiServerOptions, GuiServerHandle } from './gui/server.js';
 // config on disk (the same call the GUI makes); `disposeActive` tears it down.
 export { openConfig, disposeActive } from './gui/lifecycle.js';
 export type { ActiveDb, RenderStatusSnapshot } from './gui/active-db.js';
+
+// Reversing a recorded SCHEMA change — a table, a column, a link, a rename.
+//
+// Separate from `revertEntry` below, and it has to be: reversing a schema entry
+// rewrites the workspace file and can hand back a DIFFERENT live workspace,
+// which a function returning "what happened to the rows" has no way to give you.
+// So `revertEntry` refuses a schema entry unless its context carries a handler,
+// and this IS that handler. Without it exported, every row change was reversible
+// from a script and every schema change was reversible only from the browser —
+// which is not "history works headlessly", it is half of it.
+export { applySchemaConfig } from './gui/lifecycle.js';
 
 // The in-process activity feed every audited mutation publishes to. A caller
 // constructs one for its `MutationCtx`; subscribe to watch changes land.
@@ -849,6 +922,9 @@ export {
   createUserJunction,
   createFileJunction,
   materializeJunction,
+  addUserLink,
+  removeUserLink,
+  setColumnMeta,
   inboundLinksTo,
   describeInboundLinks,
   removeInboundLinks,
@@ -865,6 +941,10 @@ export {
 } from './gui/schema-ops.js';
 export type {
   UserJunction,
+  AddLinkOutcome,
+  RemoveLinkOutcome,
+  ColumnMetaPatch,
+  ColumnMetaOutcome,
   DeleteResolution,
   DeleteEntityOutcome,
   InboundLink,
@@ -875,6 +955,60 @@ export type {
   TableNamePolicyMove,
   ColumnRenames,
 } from './gui/schema-ops.js';
+
+// What a table or a column MEANS, and how it is presented: the icon on a table,
+// and the one-line definition shown to people and to the assistant. Presentation
+// data, but a real write — a workspace stood up by a script or an embedder gets
+// nothing described unless it can write these — and the resolvers are here too
+// so a caller reads a definition the same way the interface does (an authored
+// value wins, else the built-in default, else none).
+export {
+  upsertTableMeta,
+  upsertColumnMeta,
+  resolveTableDescription,
+  resolveColumnDescription,
+} from './gui/column-descriptions.js';
+
+// The clarification queue. When an automated step is confident enough not to drop
+// a guess but not confident enough to act on it, it asks instead — and a queue
+// only a browser could drain would let one unanswered question stop everything
+// behind it in a process nobody is watching. Answering runs the action the
+// question was holding and keeps what the reply says, through the same audited
+// paths any other write uses.
+export {
+  enqueueQuestion,
+  listPendingQuestions,
+  getQuestion,
+  answerQuestion,
+  dismissQuestion,
+  parseQuestionContext,
+  ensureQuestionsTable,
+  QUESTIONS_TABLE,
+} from './gui/questions.js';
+export type {
+  QuestionRow,
+  QuestionsCtx,
+  QuestionSource,
+  QuestionContext,
+  QuestionSubject,
+  DeferredAction,
+  EnrichTarget,
+  EnqueueQuestionInput,
+  AnswerOutcome,
+} from './gui/questions.js';
+
+// The analytical read surface, with its guardrails attached: one SELECT, no
+// credential / conversation / bookkeeping tables, a read-only transaction where
+// the dialect has one, and a server-side row cap. Exported as the guarded runner
+// rather than as a query helper, so reaching it from a script is the same narrow
+// surface the dashboards get and not a wider one that is merely easier to call.
+export {
+  runDashboardSql,
+  validateDashboardSql,
+  isSqlProtectedTable,
+  DASHBOARD_SQL_CAP,
+} from './gui/dashboard-sql.js';
+export type { DashboardSqlResult } from './gui/dashboard-sql.js';
 
 // Computed tables — live, read-only SQL projections. Create / update / delete
 // one, preview its output before committing, refresh its model-filled fields,

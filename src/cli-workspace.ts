@@ -10,25 +10,42 @@
 import { Lattice } from './lattice.js';
 import {
   addWorkspace,
+  effectiveConfigPath,
   getActiveWorkspace,
   listWorkspaces,
   setActiveWorkspace,
   type WorkspaceRecord,
 } from './framework/workspace.js';
+import { deleteWorkspace } from './ops/workspace-lifecycle.js';
+import { renameWorkspace } from './ops/workspace-config.js';
 
 /** Everything the workspace subcommand needs from the parsed argv. */
 export interface WorkspaceCommandArgs {
   /** The `.lattice` root to operate on — already resolved by the caller. */
   root: string;
-  /** `list` | `create` | `use`. Defaults to `list`. */
+  /** `list` | `create` | `use` | `rename` | `delete`. Defaults to `list`. */
   subcommand?: string | undefined;
   /**
    * The trailing positional: the new display name for `create`, the workspace
-   * to switch to for `use`.
+   * to switch to for `use`, the workspace to rename for `rename`, the workspace
+   * to remove for `delete`.
    */
   action?: string | undefined;
-  /** `--name <display>` — an explicit display name for `create`. */
+  /**
+   * `--name <display>` — an explicit display name for `create`, and the new name
+   * for `rename` (where it is required, since the positional names the target).
+   */
   displayName?: string | undefined;
+  /**
+   * `--yes` — the explicit confirmation `delete` requires.
+   *
+   * Deleting a workspace destroys a database and, for a shared one, the
+   * credentials this machine kept in order to reach it. A prompt is the usual
+   * answer and it is the wrong one here: this command exists so the operation can
+   * run with nobody watching, and a prompt in a script is a hang, not a
+   * safeguard. A flag is a confirmation somebody had to write down.
+   */
+  assumeYes?: boolean;
 }
 
 /**
@@ -111,7 +128,63 @@ export async function runWorkspaceCommand(args: WorkspaceCommandArgs): Promise<s
       setActiveWorkspace(root, ws.id);
       return [`Active workspace set to "${ws.displayName}" (${ws.id})`];
     }
+    case 'rename': {
+      if (!args.action) {
+        throw new Error('Usage: lattice workspace rename <name-or-id> --name "<new name>"');
+      }
+      const ws = resolveWorkspaceRef(root, args.action);
+      if (args.displayName === undefined) {
+        throw new Error(
+          `Nothing to rename "${ws.displayName}" to. Pass the new name: ` + '--name "<new name>".',
+        );
+      }
+      // The registry knows where this workspace's config actually is — scaffolded
+      // under its own folder, or adopted wherever the user already had it — so the
+      // name is written to the right file either way.
+      const renamed = renameWorkspace({
+        configPath: effectiveConfigPath(root, ws),
+        name: args.displayName,
+        root,
+      });
+      const lines = [`Renamed workspace "${ws.displayName}" to "${renamed.name}"`];
+      if (renamed.workspaceId === null) {
+        // Reported, not swallowed: the file says the new name and the switcher
+        // still says the old one, which is exactly the half-rename this reports.
+        lines.push('  the registry had no record for this config — only the file was renamed');
+      }
+      return lines;
+    }
+    case 'delete': {
+      if (!args.action) throw new Error('Usage: lattice workspace delete <name-or-id> --yes');
+      // Resolve BEFORE asking for confirmation, so a typo is reported as a typo
+      // rather than as a missing flag — and so the refusal can name what would
+      // have gone.
+      const ws = resolveWorkspaceRef(root, args.action);
+      if (args.assumeYes !== true) {
+        throw new Error(
+          `Refusing to delete workspace "${ws.displayName}" (${ws.id}) without --yes. ` +
+            `This permanently removes its database and, for a shared workspace, the ` +
+            `credentials this machine kept in order to reach it. The shared database itself ` +
+            `is never touched. Re-run with --yes if that is what you want.`,
+        );
+      }
+      const removal = deleteWorkspace({ root, id: ws.id });
+      const lines = [
+        `Deleted workspace "${removal.workspace.displayName}" (${removal.workspace.id})`,
+      ];
+      if (removal.removedDir) lines.push(`  removed ${removal.removedDir}`);
+      if (removal.removedConfig) lines.push(`  removed ${removal.removedConfig}`);
+      if (removal.purgedLabel) {
+        lines.push(`  purged the stored credentials for ${removal.purgedLabel}`);
+      }
+      if (!removal.removedDir && !removal.removedConfig) {
+        lines.push('  its files were left where they are — this workspace only pointed at them');
+      }
+      return lines;
+    }
     default:
-      throw new Error(`Unknown workspace subcommand: ${sub} (expected: list | create | use)`);
+      throw new Error(
+        `Unknown workspace subcommand: ${sub} (expected: list | create | use | rename | delete)`,
+      );
   }
 }

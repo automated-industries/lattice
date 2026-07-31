@@ -59,6 +59,7 @@ export type CapabilityArea =
   | 'data-model'
   | 'cloud'
   | 'workspace'
+  | 'database'
   | 'account'
   | 'user'
   | 'ingest'
@@ -67,6 +68,8 @@ export type CapabilityArea =
   | 'connector'
   | 'model'
   | 'voice'
+  | 'question'
+  | 'analytics'
   | 'app';
 
 export interface Capability {
@@ -135,9 +138,27 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: 'history.revert',
-    summary: 'Reverse one specific audit entry, whenever it happened.',
+    // Row entries. A SCHEMA entry is reversed by `history.revert-schema` below,
+    // and this function says so rather than pretending: handed one, it refuses
+    // unless its context carries the schema handler. Stated here because the
+    // one-line summary reads as "any entry", and the difference is not a detail
+    // — it is the difference between a script that can undo what it just did and
+    // one that can undo half of it.
+    summary: 'Reverse one specific row-level audit entry, whenever it happened.',
     library: 'gui/mutations.ts#revertEntry',
     ai: 'revert',
+  },
+  {
+    id: 'history.revert-schema',
+    // The counterpart, and a separate entry because it is a separate shape: it
+    // rewrites the workspace file, may run rename DDL, and hands back the
+    // workspace the change left behind — which can be a NEW live workspace, and
+    // is the reason it cannot simply live behind the row-level revert. Never a
+    // physical drop: deletes here are soft, so reverting one restores the object
+    // with its rows rather than an empty shell.
+    summary:
+      'Reverse — or re-apply — one recorded schema change, and hand back the workspace it left behind.',
+    library: 'gui/lifecycle.ts#applySchemaConfig',
   },
 
   // ── Schema ──────────────────────────────────────────────────────────────
@@ -177,6 +198,57 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Rename a column, carrying its policy across.',
     library: 'gui/schema-ops.ts#renameUserColumn',
     ai: 'rename_column',
+  },
+  {
+    id: 'schema.add-link',
+    // The WHOLE link, not the column and not the relation. A link is both: a
+    // foreign-key column plus the belongsTo declared over it, added together and
+    // recorded as one reversible op, so history undoes it in one step. Pointing
+    // this entry at either half alone would be the "reassemble it from three
+    // exports" claim the manifest's own bar rules out — and the halves fail in
+    // opposite, silent ways: a column nothing reads, or a relation pointing at a
+    // column that is not there.
+    //
+    // The OWNER-ONLY rule on a shared database travels with it too, and had to:
+    // this writes the owner's workspace file and adds a column every member then
+    // carries, neither of which row security covers, and the library routes a
+    // member's ALTER through an owner-side helper rather than refusing it. A gate
+    // that had stayed in the request handler would mean the browser refuses what
+    // this command performs. It is raised as a tagged failure, so each caller
+    // decides what it means on its own transport.
+    summary:
+      'Nest one table inside another: add the foreign-key column, declare the relation over it, and record the pair as one reversible change — owner-only on a shared database.',
+    library: 'gui/schema-ops.ts#addUserLink',
+    cli: 'schema',
+  },
+  {
+    id: 'schema.remove-link',
+    summary:
+      'Un-nest a table: hide the foreign-key field and its relation, keeping the column and its values so the change reverts — owner-only on a shared database.',
+    library: 'gui/schema-ops.ts#removeUserLink',
+    cli: 'schema',
+  },
+  {
+    id: 'schema.set-column-meta',
+    // Masking and defining are one entry because they are one operation: on a
+    // shared database the secret flag MASKS the column through the audience view,
+    // and the stored flag is what redacts it from the assistant. A caller handed
+    // only the metadata write would record "masked" while every member's
+    // connection still read the value.
+    summary:
+      "Write a column's definition, mark it secret, or both — masking it on a shared database before the flag is stored.",
+    library: 'gui/schema-ops.ts#setColumnMeta',
+    cli: 'schema',
+  },
+  {
+    id: 'schema.set-table-meta',
+    // Scoped to what the named function really does: the browsable presentation
+    // row (icon + description) that the interface and the assistant read. Writing
+    // a definition to the workspace CONFIGURATION as well — which is what the
+    // data-model profiler consults — is `setTableDefinition`, a different and
+    // larger write, and this entry does not claim it.
+    summary: "Set a table's icon and its browsable one-line description.",
+    library: 'gui/column-descriptions.ts#upsertTableMeta',
   },
   {
     id: 'schema.merge-tables',
@@ -335,6 +407,17 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Read or write a workspace-wide cloud setting (system prompt, logo, and the rest).',
     library: 'cloud/settings.ts#setCloudSetting',
   },
+  {
+    id: 'cloud.file-storage',
+    // The whole configuration, not the store write. A caller handed only the
+    // setter would have to re-derive the owner gate, re-derive the merge that
+    // stops a partial update erasing the stored secret, and remember to install
+    // the in-database presigner — and forgetting the last one leaves every
+    // keyless member unable to open a single file, with nothing saying why.
+    summary:
+      'Point a shared workspace at an object store for its file bytes, and open the in-database presigner so every member can read them.',
+    library: 'ops/cloud-storage.ts#configureCloudFileStorage',
+  },
 
   // ── Workspaces + user config ────────────────────────────────────────────
   {
@@ -361,6 +444,62 @@ export const CAPABILITIES: readonly Capability[] = [
       'Point the registry at a workspace, so every later open without an explicit id resolves to it.',
     library: 'framework/workspace.ts#setActiveWorkspace',
   },
+  {
+    id: 'workspace.delete',
+    // The WHOLE removal — the registry record AND the files that record owned, in
+    // the order that makes the second one correct. Pointing this entry at the
+    // registry call alone would be the "reassemble it from three exports" claim
+    // the manifest's own bar rules out, and would leave the machine holding a
+    // working credential for a shared database its operator was told it had been
+    // disconnected from. Which files go is decided per kind, so a workspace whose
+    // files were only ever pointed at keeps them.
+    summary:
+      'Remove a workspace: drop its registry record and take the files it owned — and, for a shared one, the credentials this machine kept in order to reconnect.',
+    library: 'ops/workspace-lifecycle.ts#deleteWorkspace',
+    cli: 'workspace',
+  },
+  {
+    id: 'workspace.rename',
+    // Both writes, because a name that lives in two places has to agree in both.
+    // Writing only the configuration leaves the switcher showing the old label
+    // forever, which reads as a rename that silently did not happen.
+    summary:
+      'Rename a workspace: write the name into its own configuration and into the registry record that lists it, reporting whether there was a record to update.',
+    library: 'ops/workspace-config.ts#renameWorkspace',
+    cli: 'workspace',
+  },
+
+  // ── The databases inside a workspace ────────────────────────────────────
+  //
+  // A workspace holds a SET of databases and opens one at a time. Adding and
+  // removing them existed only inside request handlers, so standing a workspace up
+  // the way a project expects — or tearing down the one a test made — needed a
+  // browser and somebody clicking. The two rules that make a delete safe lived
+  // there too, which meant no other caller could inherit them.
+  {
+    id: 'database.create',
+    summary: 'Scaffold a new, empty database beside the others in a workspace.',
+    library: 'ops/databases.ts#createDatabase',
+    cli: 'database',
+  },
+  {
+    id: 'database.delete',
+    // The whole delete, including the two refusals: a target outside the set is
+    // rejected rather than unlinked, and the last database in a workspace is kept.
+    // Pointing this entry at the unlink helper alone would hand a caller the
+    // destructive half with neither safeguard attached.
+    summary:
+      'Permanently remove one database from a workspace — its config and its local store — refusing anything outside the set, and the last one left.',
+    library: 'ops/databases.ts#deleteDatabase',
+    cli: 'database',
+  },
+  {
+    id: 'database.test-connection',
+    summary:
+      'Check whether a local path or a set of Postgres credentials reaches a usable database, reporting the driver’s own reason when it does not.',
+    library: 'ops/workspace-config.ts#testDatabaseConnection',
+  },
+
   // ── The account ─────────────────────────────────────────────────────────
   //
   // Signing in looks like the one thing that could never leave a browser, and
@@ -697,6 +836,44 @@ export const CAPABILITIES: readonly Capability[] = [
     library: 'ops/voice.ts#transcribeRecording',
   },
 
+  // ── The clarification queue ─────────────────────────────────────────────
+  //
+  // When an automated step is confident enough not to drop a guess but not
+  // confident enough to act on it, it stops and asks. Both verbs that drain the
+  // queue lived in request handlers, so anything running without a browser could
+  // be stopped indefinitely by one question nobody was able to reach — and every
+  // step waiting behind it stopped with it.
+  {
+    id: 'question.answer',
+    // The whole answer: run the action the question was deferring, persist a
+    // free-form reply onto whatever it was about, and only then mark it answered.
+    // The ordering is part of the operation — a caller that stamped the status
+    // itself would resolve questions whose effects never ran.
+    summary:
+      'Answer a pending clarifying question: run the action it was holding, keep what the reply says, and resolve it.',
+    library: 'gui/questions.ts#answerQuestion',
+    cli: 'questions',
+  },
+  {
+    id: 'question.dismiss',
+    summary: 'Drop a pending clarifying question without acting on it.',
+    library: 'gui/questions.ts#dismissQuestion',
+    cli: 'questions',
+  },
+
+  // ── Analytics ───────────────────────────────────────────────────────────
+  {
+    id: 'analytics.query',
+    // Deliberately the guarded runner and not a raw query. Every protection the
+    // browser surface has — single SELECT only, refused credential/conversation/
+    // bookkeeping tables, a read-only transaction on Postgres, a server-side row
+    // cap — is inside this function, so reaching it from a script is the same
+    // narrow surface rather than a wider one that happens to be easier to call.
+    summary:
+      'Run one read-only analytical query under the dashboard guardrails, capped and scoped to the connected role.',
+    library: 'gui/dashboard-sql.ts#runDashboardSql',
+  },
+
   // ── The app itself ──────────────────────────────────────────────────────
   {
     id: 'app.assistant-turn',
@@ -714,13 +891,27 @@ export const CAPABILITIES: readonly Capability[] = [
     cli: 'ask',
   },
   {
+    id: 'app.check-update',
+    // Reports; never installs. Both halves together, because either alone is
+    // useless: a version with no install context says a release exists but not
+    // whether this machine can move to it, and the context with no version says
+    // how it would upgrade but not whether there is anything to upgrade to. A
+    // registry that could not be answered is reported AS unanswered rather than
+    // collapsing into the same "nothing newer" a current copy produces.
+    summary:
+      'Report whether a newer version is published and what this copy could do about it, without installing anything.',
+    library: 'ops/update.ts#checkForNewerVersion',
+    cli: 'update',
+  },
+  {
     id: 'app.self-update',
     // Scoped deliberately to what the named function really does: it reads the
     // installed version out of the current project's node_modules and runs an
     // install of the newer one. A PACKAGED app cannot be updated this way — it
     // has no node_modules to install into and cannot overwrite its own running
-    // binary — so this entry does not cover that surface, and the routes that
-    // drive the packaged installer are recorded as gaps rather than pointed here.
+    // binary — so this entry does not cover that surface. Replacing a running
+    // packaged app is the shell's own business, and the route that drives its
+    // installer says so rather than pointing here.
     summary: 'Check npm for a newer latticesql and install it into the current install.',
     library: 'auto-update.ts#autoUpdate',
     cli: 'update',

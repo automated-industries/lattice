@@ -2,9 +2,8 @@ import type { DbConfigContext } from './shared.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import { sendJson, readJson, tryHandler } from '../http.js';
-import { getS3ConfigRaw, saveS3ConfigRaw } from '../../framework/user-config.js';
-import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../../framework/s3-config.js';
 import { cloudRlsInstalled, canManageRoles } from '../../framework/cloud-connect.js';
+import { readCloudFileStorage, configureCloudFileStorage } from '../../ops/cloud-storage.js';
 import {
   installCloudSettings,
   getCloudSetting,
@@ -216,80 +215,24 @@ export async function dispatchCloudSettings(
     // Reads this member's machine-local config only (no DB/network), so the
     // handler is synchronous; return a resolved promise for tryHandler's signature.
     await tryHandler(res, () => {
-      const label = activeWorkspaceLabel(ctx.configPath);
-      const raw = label ? getS3ConfigRaw(label) : null;
-      sendJson(res, {
-        enabled: raw?.enabled === true,
-        bucket: typeof raw?.bucket === 'string' ? raw.bucket : null,
-        region: typeof raw?.region === 'string' ? raw.region : null,
-        prefix: typeof raw?.prefix === 'string' ? raw.prefix : null,
-        endpoint: typeof raw?.endpoint === 'string' ? raw.endpoint : null,
-        // Never return the secret; just whether one is stored.
-        accessKeyId: typeof raw?.accessKeyId === 'string' ? raw.accessKeyId : null,
-        hasSecret: typeof raw?.secretAccessKey === 'string' && raw.secretAccessKey.length > 0,
-      });
+      // The reader redacts the secret and reports only that one is stored.
+      sendJson(res, readCloudFileStorage(ctx.configPath));
       return Promise.resolve();
     });
     return true;
   }
-  // @headless-debt configuring cloud file storage writes the machine-local store and installs
-  // the presigner; the store write is not on the library surface.
+  // The owner gate, the merge that keeps a partial update from erasing the stored
+  // secret, and installing the in-database presigner so keyless members can read
+  // the bytes are one operation — so they are one call, and a script setting a
+  // shared workspace up inherits all three.
+  // @capability cloud.file-storage
   if (pathname === '/api/cloud/s3-config' && method === 'POST') {
     await tryHandler(res, async () => {
-      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
-        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
-        return;
-      }
-      if (!(await canManageRoles(ctx.db))) {
-        sendJson(res, { error: 'Only a cloud owner can configure S3 file storage' }, 403);
-        return;
-      }
-      const label = activeWorkspaceLabel(ctx.configPath);
-      if (!label) {
-        sendJson(res, { error: 'The active workspace is not a labelled cloud connection' }, 400);
-        return;
-      }
       const body = await readJson(req);
-      // Merge over the existing stored config so a PARTIAL update (toggling
-      // `enabled`, changing `prefix`) doesn't silently drop the stored secret — the
-      // GET handler redacts secretAccessKey, so a UI round-trip never carries it
-      // back. (See mergeS3ConfigForSave.)
-      const toSave = mergeS3ConfigForSave(getS3ConfigRaw(label) ?? {}, body);
-      if (toSave.enabled && (!toSave.bucket || !toSave.region)) {
-        sendJson(res, { error: 'bucket and region are required to enable S3' }, 400);
-        return;
-      }
-      saveS3ConfigRaw(label, toSave);
-      // Auto-enable the in-database presigner so KEYLESS members (who have no
-      // local S3 config) can fetch/upload bytes for files they can see. One owner
-      // action turns it on cloud-wide. Best-effort: a failure (e.g. no privilege
-      // to CREATE EXTENSION pgcrypto) must not fail the owner's S3-config save.
-      const ak = typeof toSave.accessKeyId === 'string' ? toSave.accessKeyId : '';
-      const sk = typeof toSave.secretAccessKey === 'string' ? toSave.secretAccessKey : '';
-      if (
-        toSave.enabled &&
-        typeof toSave.bucket === 'string' &&
-        typeof toSave.region === 'string' &&
-        ak &&
-        sk
-      ) {
-        try {
-          await ctx.db.enableCloudFilePresigning({
-            bucket: toSave.bucket,
-            region: toSave.region,
-            accessKey: ak,
-            secretKey: sk,
-            ...(typeof toSave.prefix === 'string' ? { prefix: toSave.prefix } : {}),
-            ...(typeof toSave.endpoint === 'string' ? { endpoint: toSave.endpoint } : {}),
-          });
-        } catch (e) {
-          console.warn(
-            '[cloud s3-config] could not enable the in-database file presigner:',
-            (e as Error).message,
-          );
-        }
-      }
-      sendJson(res, { ok: true, enabled: toSave.enabled, bucket: toSave.bucket || null });
+      const result = await cloudCall(() =>
+        configureCloudFileStorage(ctx.db, { configPath: ctx.configPath, settings: body }),
+      );
+      sendJson(res, { ok: true, enabled: result.enabled, bucket: result.bucket });
     });
     return true;
   }

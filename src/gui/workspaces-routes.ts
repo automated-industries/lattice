@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { sendJson, readJson } from './http.js';
 import type { ActiveDb } from './active-db.js';
 import type { GuiRequestContext } from './request-context.js';
@@ -17,49 +17,18 @@ import {
   setActiveWorkspace,
   getWorkspace,
   addWorkspace,
-  removeWorkspace,
   resolveWorkspacePaths,
-  type WorkspaceRecord,
 } from '../framework/workspace.js';
-import { workspaceDir } from '../framework/lattice-root.js';
-import { purgeWorkspaceSecrets } from '../framework/user-config.js';
+import { deleteWorkspace } from '../ops/workspace-lifecycle.js';
+import { workspaceErrorCode } from '../ops/workspace-errors.js';
 
 /**
- * Remove a workspace's owned files from disk after its registry record has been
- * dropped. Loud on failure (the caller surfaces it as a 500). Scaffolded local
- * workspace → delete its whole folder; cloud → forget the LOCAL pointer (its
- * managed config) AND purge the material this machine kept in order to
- * reconnect, never touching the shared remote; adopted-in-place local → leave
- * the user's files alone (non-destructive). Shared by the active-DB delete
- * handler here and the virgin-state delete route in server.ts so the two can
- * never drift.
- *
- * Removing a cloud workspace has to take its stored credential, S3 keys and
- * token with it. Forgetting only the pointer leaves the machine able to
- * reconnect to a database its operator was told it had been disconnected from —
- * and a failure to remove them must reach the caller, because reporting a clean
- * delete over still-working credentials is the false assurance this prevents.
+ * Deciding which of a workspace's files to remove is product logic, not
+ * transport, and it now lives in the capability module beside the delete that
+ * uses it. Re-exported here because it was reachable at this path before the
+ * move and importers should not have to care where it went.
  */
-export function cleanupWorkspaceFiles(root: string, ws: WorkspaceRecord): void {
-  if (!ws.configPath && ws.kind === 'local') {
-    rmSync(workspaceDir(root, ws.dir), { recursive: true, force: true });
-  } else if (ws.kind === 'cloud') {
-    if (ws.configPath && existsSync(ws.configPath)) {
-      rmSync(ws.configPath, { force: true });
-    }
-    const labelMatch = /^\$\{LATTICE_DB:([A-Za-z0-9._-]+)\}$/.exec(ws.db.trim());
-    const label = labelMatch?.[1];
-    if (label) {
-      // Another registered workspace pointing at the same label still needs
-      // these — they are not exclusively this workspace's to remove.
-      const stillUsed = listWorkspaces(root).some((w) =>
-        w.db.includes('${LATTICE_DB:' + label + '}'),
-      );
-      if (!stillUsed) purgeWorkspaceSecrets(root, label);
-    }
-  }
-  // Adopted local workspaces: leave the user's files in place (non-destructive).
-}
+export { cleanupWorkspaceFiles } from '../ops/workspace-lifecycle.js';
 
 /**
  * Workspace (header switcher) routes — list / switch / create / delete — extracted
@@ -241,8 +210,12 @@ export async function handleWorkspacesRoutes(
     sendJson(res, { ok: true, id: created.id });
     return true;
   }
-  // @headless-debt removing a workspace unregisters it and deletes its files; the registry
-  // removal is not on the library surface and the file cleanup lives in this route.
+  // Unregister a workspace and remove the files it owned. The DURABLE half is one
+  // exported call, shared verbatim with the delete route that runs when nothing is
+  // open — two copies of a rule about which files to destroy is exactly what drifts.
+  // What stays here is the in-process handle swap: releasing the store this server
+  // has open, and either following a sibling or going to the zero-workspace state.
+  // @capability workspace.delete
   if (method === 'POST' && pathname === '/api/workspaces/delete') {
     if (!latticeRoot) {
       sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
@@ -298,10 +271,13 @@ export async function handleWorkspacesRoutes(
       }
     }
     // Drop the registry record, then clean up files (loud on failure).
-    removeWorkspace(latticeRoot, ws.id);
     try {
-      cleanupWorkspaceFiles(latticeRoot, ws);
+      deleteWorkspace({ root: latticeRoot, id: ws.id });
     } catch (e) {
+      if (workspaceErrorCode(e)) {
+        sendJson(res, { error: (e as Error).message }, 400);
+        return true;
+      }
       sendJson(
         res,
         { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },

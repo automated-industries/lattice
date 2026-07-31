@@ -6,13 +6,9 @@ import type { ActiveDb } from './active-db.js';
 import type { GuiRequestContext } from './request-context.js';
 import { openConfig, disposeActive } from './lifecycle.js';
 import { parseConfigFile } from '../config/parser.js';
-import {
-  resolveOutputDirForConfig,
-  friendlyConfigName,
-  listConfigs,
-  createBlankConfig,
-  deleteDatabaseFiles,
-} from './config-paths.js';
+import { resolveOutputDirForConfig, friendlyConfigName, listConfigs } from './config-paths.js';
+import { createDatabase, deleteDatabase, type DatabaseDeletion } from '../ops/databases.js';
+import { workspaceErrorCode } from '../ops/workspace-errors.js';
 
 /**
  * Database (sibling-config) routes — list / switch / create / delete — extracted
@@ -95,18 +91,28 @@ export async function handleDatabasesRoutes(
     sendJson(res, { ok: true, path: next.configPath });
     return true;
   }
-  // @headless-debt creating a sibling database scaffolds a blank config next to the current
-  // one; that scaffolding lives in this route rather than on the library surface.
+  // Scaffolding the new database is the capability; opening it and making it the
+  // one this process serves is session state a direct caller does not have.
+  // @capability database.create
   if (method === 'POST' && pathname === '/api/databases/create') {
     const body = (await readJson<unknown>(req)) as { name?: unknown };
-    if (typeof body.name !== 'string' || !body.name.trim()) {
+    if (typeof body.name !== 'string') {
       sendJson(res, { error: 'name must be a non-empty string' }, 400);
       return true;
     }
-    const newConfigPath = createBlankConfig(active.configPath, body.name.trim());
+    let created;
+    try {
+      created = createDatabase({ configPath: active.configPath, name: body.name });
+    } catch (e) {
+      if (workspaceErrorCode(e)) {
+        sendJson(res, { error: (e as Error).message }, 400);
+        return true;
+      }
+      throw e; // an unusable name or a collision — reported by the shared handler
+    }
     const next = await openConfig(
-      newConfigPath,
-      resolveOutputDirForConfig(newConfigPath),
+      created.path,
+      resolveOutputDirForConfig(created.path),
       deps.autoRender,
     );
     await disposeActive(active);
@@ -114,70 +120,50 @@ export async function handleDatabasesRoutes(
     sendJson(res, { ok: true, path: next.configPath });
     return true;
   }
-  // @headless-debt deleting a sibling database removes its config and data files; that
-  // cleanup lives in this route rather than on the library surface.
+  // Containment (only a database this workspace lists) and the rule that a
+  // workspace keeps one are the capability's, so a script inherits both. What is
+  // left here is the file handle: when the target is the database this process has
+  // OPEN, it has to be released before the store can be unlinked, and this is the
+  // only caller for which that is true.
+  // @capability database.delete
   if (method === 'POST' && pathname === '/api/databases/delete') {
     const body = (await readJson<unknown>(req)) as { path?: unknown };
-    if (typeof body.path !== 'string' || !body.path.trim()) {
+    if (typeof body.path !== 'string') {
       sendJson(res, { error: 'path must be a non-empty string' }, 400);
       return true;
     }
     const target = resolve(body.path);
-    // Only delete a config we actually list (same directory as the
-    // active config). This stops the endpoint from being coaxed into
-    // unlinking arbitrary files outside the database set.
-    const known = listConfigs(active.configPath);
-    const match = known.find((c) => resolve(c.path) === target);
-    if (!match) {
-      sendJson(res, { error: `Not a known database config: ${target}` }, 400);
-      return true;
-    }
-    // When deleting the active database we must switch away first so the
-    // SQLite file handle is released (and the server keeps an active DB).
     let switchedTo: string | null = null;
-    if (resolve(active.configPath) === target) {
-      const fallback = known.find((c) => resolve(c.path) !== target);
-      if (!fallback) {
-        sendJson(
-          res,
-          {
-            error:
-              'Cannot delete the only database. Create or add another database first, then delete this one.',
-          },
-          400,
-        );
-        return true;
-      }
-      let next: ActiveDb;
-      try {
-        next = await openConfig(
-          fallback.path,
-          resolveOutputDirForConfig(fallback.path),
-          deps.autoRender,
-        );
-      } catch (e) {
-        const err = e as Error & { code?: string };
-        const codePrefix = err.code ? `[${err.code}] ` : '';
-        sendJson(
-          res,
-          {
-            error: `Cannot delete: failed to switch to ${fallback.path} first: ${codePrefix}${err.message}`,
-          },
-          500,
-        );
-        return true;
-      }
-      await disposeActive(active);
-      ctx.swapActive(next); // render kicks off-path
-      switchedTo = next.configPath;
-    }
-    // Surface any filesystem failure loudly rather than
-    // half-deleting silently.
-    let deleted: { deletedConfig: string; deletedDbFile: string | null };
+    let deleted: DatabaseDeletion;
     try {
-      deleted = deleteDatabaseFiles(target);
+      deleted = await deleteDatabase({
+        configPath: active.configPath,
+        target,
+        releaseTarget: async (remaining) => {
+          if (resolve(active.configPath) !== target) return;
+          // Switching away releases the store's file handle AND keeps this server
+          // with a live database. Throwing here aborts the delete untouched.
+          const fallback = remaining[0];
+          let next: ActiveDb;
+          try {
+            next = await openConfig(fallback, resolveOutputDirForConfig(fallback), deps.autoRender);
+          } catch (e) {
+            const err = e as Error & { code?: string };
+            const codePrefix = err.code ? `[${err.code}] ` : '';
+            throw new Error(
+              `Cannot delete: failed to switch to ${fallback} first: ${codePrefix}${err.message}`,
+              { cause: e },
+            );
+          }
+          await disposeActive(active);
+          ctx.swapActive(next); // render kicks off-path
+          switchedTo = next.configPath;
+        },
+      });
     } catch (e) {
-      sendJson(res, { error: `Failed to delete database files: ${(e as Error).message}` }, 500);
+      // A refusal this layer chose is the caller's mistake; anything else — a
+      // failed switch, a failed unlink — is a fault and reads as one.
+      sendJson(res, { error: (e as Error).message }, workspaceErrorCode(e) ? 400 : 500);
       return true;
     }
     sendJson(res, {

@@ -14,6 +14,7 @@ import {
   VERSION,
   ensureRootForGui,
   checkManifestForUpdate,
+  DESKTOP_RELEASE_BASE_URL,
   chooseUpdateStrategy,
   resolveAppBundle,
   parseTeamIdentifier,
@@ -115,9 +116,10 @@ function resolveDocsDir(): string | undefined {
 //     quit (the user completes the OS installer).
 // Either way it is honest: a progress bar, an explicit apply, or a loud error —
 // never a silent no-op or an endless spinner.
-const UPDATE_BASE_URL =
-  Deno.env.get('LATTICE_DESKTOP_UPDATE_URL') ??
-  'https://github.com/automated-industries/lattice/releases/latest/download/';
+// The default lives in the shared entry, not here, so that anything asking
+// "is there a newer version?" on this surface's behalf resolves to the SAME
+// place this shell downloads from. Two copies of the address is two channels.
+const UPDATE_BASE_URL = Deno.env.get('LATTICE_DESKTOP_UPDATE_URL') ?? DESKTOP_RELEASE_BASE_URL;
 
 // Master switch (default on). LATTICE_NO_AUTO_UPDATE=1 pins the app to its
 // current version: no manifest probe, no download. Mirrors the CLI's

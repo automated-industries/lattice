@@ -76,7 +76,146 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   arriving as an `Error` carrying a `code` (`connectorErrorCode`) rather than a status,
   because the same call now serves a request, a command, and a library.
 
+- **Taking a workspace or a database away without a browser: `lattice workspace delete`
+  and the new `lattice database` group.** Making these was already scriptable; UNMAKING
+  them was not. A machine could stand a workspace up and then had no way to tear it down,
+  which is the wrong half to be missing: the caller most likely to need a delete is the one
+  that created the thing five minutes earlier — a test fixture, a scratch environment, a
+  container image being rebuilt.
+
+  `lattice database list | create <name> | delete <name-or-path> --yes` manages the
+  databases INSIDE one workspace; `lattice workspace delete <name-or-id> --yes` removes the
+  workspace itself. The confirmation is a flag rather than a prompt, deliberately: these
+  commands exist so the work can run with nobody watching, and a prompt in that setting is
+  a hang, not a safeguard. Both resolve the thing you named BEFORE asking about the flag,
+  so a typo reads as a typo instead of sending you back to re-run an irreversible command
+  with the safeguard removed.
+
+  **A delete now takes exactly what it should.** Which files go is decided per kind: a
+  workspace we scaffolded loses its folder, a workspace whose files we only ever pointed at
+  keeps every one of them, and a shared workspace loses its local pointer AND the
+  credentials this machine kept in order to reconnect — because forgetting only the pointer
+  leaves a machine able to reach a database its operator was told it had been disconnected
+  from. The shared database itself is never touched. Removing a database carries the two
+  rules that make it safe with it, so a script inherits both: nothing outside the
+  workspace's own set is ever unlinked, and the last database in a workspace is kept.
+
+  On the package surface as `deleteWorkspace`, `createDatabase`, and `deleteDatabase`, with
+  refusals arriving as an `Error` carrying a `code` (`workspaceErrorCode`) — `not_found`,
+  `last_database`, `invalid_request` — rather than a status.
+
+- **Shaping the model without a browser: `lattice schema`.** Nesting one table inside
+  another and saying what a column MEANS are the two edits a person makes constantly while
+  a workspace is being shaped, and both could only be made by clicking. That is backwards
+  for the case they matter most in — a workspace stood up by a script, an embedder
+  preparing the same shape twice, a migration that has to describe forty columns.
+
+  `lattice schema links [<table>]` shows what is nested inside what, and prints the exact
+  `<table>.<column>` reference the next command takes, because a link you cannot name is a
+  link you cannot remove. `lattice schema link <table> --to <parent>` adds one,
+  `lattice schema unlink <table>.<column>` removes it, and
+  `lattice schema describe <table>[.<column>] --text "…"` writes a definition (an empty
+  `--text ""` clears it; omitting it entirely is a usage error rather than an accidental
+  erase).
+
+  **A link is both halves, and they travel together.** `addUserLink` adds the foreign-key
+  column AND declares the relation over it as ONE reversible op, so history undoes it in
+  one step; `removeUserLink` takes both back, softly — the column and its values stay,
+  which is why the change reverts with the data intact, and why a _new_ link to the same
+  table gets its own empty column rather than silently adopting the removed one's foreign
+  keys. Either half alone fails silently, so neither is offered alone.
+
+  **Marking a column secret and defining it are one call** (`setColumnMeta`), because they
+  are one operation: on a shared database the flag MASKS the column through the audience
+  view, and the stored flag is what redacts it from the assistant. The mask is applied
+  first and a failure fails the whole call, so a column can never end up looking protected
+  to its owner while a member's connection still reads the value. `upsertTableMeta` and
+  `upsertColumnMeta` are on the surface too, with `resolveTableDescription` /
+  `resolveColumnDescription` for reading back the effective definition the way the
+  interface does.
+
+- **Answering the assistant's clarification questions without a browser:
+  `lattice questions`.** When something automated is confident enough not to drop a guess
+  but not confident enough to act on it, it stops and asks. That is the right behaviour and
+  it was also a trap: the queue could only be drained in the browser app, so anything
+  running without one — a scheduled import, an agent, a pipeline — could be stopped
+  indefinitely by a single question nobody was able to reach, with every later step waiting
+  behind it.
+
+  `lattice questions list [--json]` shows what is waiting and prints the id the next
+  command takes, `lattice questions answer <id> --text "…"` resolves one, and
+  `lattice questions dismiss <id>` drops one. Answering RUNS what the question was
+  deferring — through the same audited paths any other write uses — and a free-form reply
+  is additionally kept as knowledge about whatever the question was about; the status is
+  stamped only after that succeeds, so a failure leaves the question pending and
+  re-answerable rather than resolved with half its effects missing. On the package surface
+  as `answerQuestion` / `dismissQuestion`, with `enqueueQuestion`, `listPendingQuestions`,
+  and `getQuestion` for producing and reading the queue.
+
+- **Renaming a workspace, and testing a connection, from a library or a command.**
+  `lattice workspace rename <name-or-id> --name "…"` writes BOTH places a workspace name
+  lives — its own configuration and the registry record the switcher reads — because
+  writing one is the failure that looks like success, and the outcome now says when there
+  was no registry record to update instead of letting the caller assume there was.
+  `testDatabaseConnection` answers whether a local path or a set of Postgres credentials
+  reaches a usable database, returning the driver's own reason rather than throwing: an
+  unreachable host is the thing the caller asked about.
+
+- **Configuring where a shared workspace keeps its file bytes, as one call**
+  (`configureCloudFileStorage`). Owner-only and shared-database-only, with both refusals
+  tagged rather than written as status codes — and the three things that are easy to get
+  wrong separately now travel together: the owner gate, the merge that stops a partial
+  update erasing the stored secret (the read redacts it, so a round-trip never carries it
+  back), and installing the in-database presigner without which every member holding no
+  credentials of their own can open nothing. `readCloudFileStorage` reports the settings
+  with the secret reduced to "one is held".
+
+- **Running an analytical query under the dashboard guardrails, headless**
+  (`runDashboardSql`). Exported as the guarded runner rather than as a query helper, so
+  reaching it from a script is the same narrow surface the dashboards get: a single
+  SELECT/WITH statement, credential and conversation and bookkeeping tables refused by
+  name, a READ ONLY transaction on Postgres so a data-modifying CTE cannot slip a write
+  through, execution as the connected role, and a server-side row cap.
+  `validateDashboardSql` and `isSqlProtectedTable` are on the surface for callers that
+  want to check before they run.
+
+- **Asking whether a newer version exists, without installing one: `lattice update
+--check` and `checkForNewerVersion`.** Reports the published version AND what this copy
+  could do about it, because either alone is useless — a version with no install context
+  says a release exists but not whether the machine can move to it. A registry that could
+  not be reached is reported AS unreachable rather than collapsing into the same "nothing
+  newer" a current copy produces, which is the difference between "you are up to date" and
+  "nobody knows". Safe on a start-up path, a health check, or an inventory pass: it never
+  installs anything.
+
+- **The whole product is now driven end to end by a test that never starts a server.**
+  Every individual claim above is checkable on its own, and a tree can satisfy all of them
+  while the pieces still fail to add up to a usable product — each operation reachable,
+  nothing composing into a workspace somebody can actually run. So there is now one test
+  that tells the whole story instead of inspecting the parts: it makes a root and a
+  workspace, imports a spreadsheet and reads the rows back, adds a table and a link and
+  reverses the link again, moves the workspace onto a shared Postgres, secures it and
+  proves the file index and the secret store were really covered, invites somebody and
+  redeems that invite on a second machine with its own credential store, reads as that
+  member and confirms the rows nobody shared are unreachable, runs an assistant turn whose
+  write reverses as a single action, and finishes on a health report a deploy would accept.
+
+  It PROVES the absence rather than arranging it: `startGuiServer` and the browser-opener
+  are replaced for the whole run by recorders that count a call and throw, and the run ends
+  by asserting both the count is zero AND that the replacement was really in force — an
+  assertion on a spy nothing ever wired would pass for the wrong reason. What genuinely
+  cannot happen in a test process — applying a desktop update, an interactive consent
+  screen, an operating-system file picker — is listed with the reason for each rather than
+  quietly left out.
+
 ### Changed
+
+- **Deleting a workspace is ONE implementation behind both doors.** A workspace can be
+  removed while it is open and while nothing is open at all, so the app has two routes for
+  it. They used to share a helper that lived inside one of those routes, with a comment
+  saying the two could never drift — which is a hope, not a mechanism. The rule about which
+  files a delete destroys now lives in `deleteWorkspace`, both routes call it, and a test
+  fails if either grows its own copy back.
 
 - **The connectors refresh a page load used to trigger is one call, `refreshStaleSources`.**
   It was not only a sync: it also repaired connections made before the current per-source
@@ -337,6 +476,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   should use, because it survives a rename.
 
 ### Fixed
+
+- **Opening a workspace and changing it on the next line.** A SQLite workspace holds one
+  connection, and a transaction on it is a pair of statements — so the background work an
+  open leaves running and a caller's very next schema change both issued `BEGIN`, and the
+  second was refused with "cannot start a transaction within a transaction". Nothing in the
+  published surface asks a caller to wait for anything, so the ordinary script — open a
+  workspace, create a table — died on a line that was correct. Overlapping transactions now
+  queue on the connection instead of colliding. A caller already inside a transaction is
+  still refused, loudly, because waiting for one it is holding would never return.
+
+- **`lattice database delete <name>` finds what `lattice database create <name>` made.**
+  Creating a database slugged the name into a filename and then kept only the filename, so
+  the set listed `q3-ledger.config` for a database somebody had called "Q3 Ledger" and
+  deleting it by that name reported that no such database existed. The name is written into
+  the new database's own file, which is what every later reference reads.
+
+- **Deleting a database says where its rows actually were.** A local database whose store
+  had never been written removes no file — exactly like a shared one — and the command read
+  that as "its rows live in a shared database, which was not touched". That is a false
+  statement about somebody's data, on the one command where a false statement about data is
+  least recoverable. The four outcomes (file removed, shared and untouched, local with
+  nothing written yet, and a store that is not a file) are now told apart.
+
+- **A searchable table with a number in it opens on a shared database.** Declaring a table
+  searchable selects its columns by name, so an amount or a count is picked up as a matter
+  of course, and the index concatenates them as text. SQLite converts silently; Postgres
+  refused, so the same workspace file opened locally and then failed to open on a cloud —
+  the worst moment for a dialect gap. Indexed values are now cast to text on both.
+
+- **"Already up to date" is no longer what a failed update check says.** A registry that
+  answered with something other than an answer — a proxy's 403, a mirror's 404 for the
+  package name — resolved to the same value a current copy produces, so `lattice update`
+  and any inventory built on it recorded a machine as current having learned nothing. Those
+  answers now raise, and the check reports itself as unrun. Relatedly, the packaged desktop
+  application is asked about ITS OWN release channel rather than the package registry: the
+  two advance separately, and asking the wrong one can name a release that surface cannot
+  install.
+
+- **Nesting one table inside another on a shared database is owner-only everywhere.** A
+  link writes the owner's workspace file and adds a column every member then carries, and
+  neither is covered by row security — the library routes a member's `ALTER` through an
+  owner-side helper rather than failing it. The rule lived in the request handler, so the
+  app refused a member and the new `lattice schema link` / `unlink` performed the same
+  change for the same person. The refusal now travels with the operation and is raised as a
+  tagged failure that each caller renders its own way.
+
+- **Reversing a recorded schema change is on the package surface.** Row changes were
+  reversible from a script and schema changes were reversible only from the browser, because
+  the handler that replays a schema entry was never exported — `revertEntry` refuses a schema
+  entry without it. `applySchemaConfig` is now exported and named in the capability manifest,
+  so undoing a table, a column, or a link is a call like any other.
 
 - **`lattice model` works on a machine that has a workspace.** Every verb that can reach
   the workspace's secret store — `status`, `test`, `key` — failed there with a message

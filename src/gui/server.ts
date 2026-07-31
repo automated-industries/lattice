@@ -19,7 +19,6 @@ import {
   listWorkspaces,
   getActiveWorkspace,
   setActiveWorkspace,
-  getWorkspace,
   addWorkspace,
   removeWorkspace,
   resolveWorkspacePaths,
@@ -83,11 +82,9 @@ import {
   listComputedTables,
 } from './computed-ops.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
-import {
-  handleWorkspacesRoutes,
-  cleanupWorkspaceFiles,
-  type WorkspacesRoutesDeps,
-} from './workspaces-routes.js';
+import { handleWorkspacesRoutes, type WorkspacesRoutesDeps } from './workspaces-routes.js';
+import { deleteWorkspace } from '../ops/workspace-lifecycle.js';
+import { workspaceErrorCode } from '../ops/workspace-errors.js';
 import { handleDatabasesRoutes, type DatabasesRoutesDeps } from './databases-routes.js';
 import { readIdentity, writeIdentity } from '../framework/user-config.js';
 
@@ -611,17 +608,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       }
       return true;
     }
-    // @headless-debt removing a workspace with none open unregisters it and deletes its files;
-    // the registry removal is not on the library surface.
+    // @capability workspace.delete
     if (method === 'POST' && pathname === '/api/workspaces/delete') {
       // Deletion operates on the registry, not the open DB, so it must work with
       // no active workspace too. Otherwise a workspace whose database fails to
       // open strands the GUI in the virgin state while the welcome screen still
       // lists it — and it could never be removed (the active-DB delete route
       // 409'd "No active workspace"). With nothing active there is no DB to
-      // switch away from: just drop the record, then its files. Uses the same
-      // cleanupWorkspaceFiles helper as the active-DB delete so the two can
-      // never drift.
+      // switch away from, so this route is the capability call and nothing else:
+      // the SAME exported function the active-DB delete uses, which is what keeps
+      // the two from ever disagreeing about which files a delete takes with it.
       if (!latticeRoot) {
         sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
         return true;
@@ -631,15 +627,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         sendJson(res, { error: 'id must be a string' }, 400);
         return true;
       }
-      const ws = getWorkspace(latticeRoot, body.id);
-      if (!ws) {
-        sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
-        return true;
-      }
-      removeWorkspace(latticeRoot, ws.id);
       try {
-        cleanupWorkspaceFiles(latticeRoot, ws);
+        deleteWorkspace({ root: latticeRoot, id: body.id });
       } catch (e) {
+        if (workspaceErrorCode(e)) {
+          sendJson(res, { error: (e as Error).message }, 400);
+          return true;
+        }
         sendJson(
           res,
           { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },
@@ -835,9 +829,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           );
           return;
         }
-        // @headless-debt applying a downloaded update is the update service's apply(), and the
-        // service is not on the public surface. The npm-install helper that IS exported cannot
-        // stand in for it: a packaged app has no node_modules to install into.
+        // @gui-only desktop-shell: this makes the RUNNING app become the new version, which is
+        // a property of the shell rather than of the upgrade. On the packaged app it launches
+        // the staged operating-system installer and quits so that installer can replace the
+        // bundle currently executing; on a supervised install it exits for the supervisor to
+        // respawn onto the newly installed files. A caller with no running shell to replace has
+        // neither step to take: it installs the newer version outright with the self-update
+        // capability, and asks whether there is one with the update-check capability.
         if (method === 'POST' && pathname === '/api/update/apply') {
           // Manual trigger behind the "update available" pill. The right action
           // depends on the surface (reported as `status.action`):
@@ -874,9 +872,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           return;
         }
-        // @headless-debt asking "is there a newer version, and can this install take it?" is the
-        // update service's checkNow(), which is not exported. The npm-install helper installs
-        // rather than reports, so it cannot answer the question a caller is asking here.
+        // Asking whether a newer version exists, and what this copy could do about
+        // it, is one call for anyone. What is left here is the long-lived service:
+        // it broadcasts progress to connected browsers, drives the packaged app's
+        // background installer download, and holds the guard that stops a failed
+        // apply re-downloading forever — state a direct caller does not have.
+        //
+        // The service and the capability ask the same CHANNEL for the same install
+        // kind — the release manifest on the packaged app, the package registry on
+        // an npm install. They have to: two doors onto "is there a newer version?"
+        // that consult different publishers give one machine two answers, and the
+        // npm one can name a release the desktop channel cannot serve.
+        // @capability app.check-update
         if (method === 'POST' && pathname === '/api/update/check') {
           // On-demand "check for updates now": force an immediate check so a user who
           // knows a release exists doesn't have to wait for the next background poll (or
@@ -991,8 +998,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // ── GUI-only metadata (per-entity icon overrides) ──
           {
             handle: async (req, res) => {
-              // @headless-debt setting a table icon writes presentation metadata through a helper that is
-              // not on the library surface.
+              // The write itself is the capability; what stays here is reading the
+              // two fields off the request and refusing a table this workspace does
+              // not have.
+              // @capability schema.set-table-meta
               if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
               const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
               if (!isRegisteredTable(active, entityName)) {

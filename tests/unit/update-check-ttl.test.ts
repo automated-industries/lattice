@@ -67,6 +67,20 @@ describe('checkForUpdate ttl/force', () => {
     expect(await checkForUpdate(pkg, '1.0.0')).toBeNull();
   });
 
+  it('throws for a registry that answered with something other than an answer', async () => {
+    // A 403 from a corporate proxy, or a 404 from a mirror that does not carry
+    // the package, is not "you are on the newest version" — it is "nobody
+    // knows". Resolving both to null made the two indistinguishable to every
+    // caller, and the caller that reports to a person then reports the wrong one.
+    const pkg = freshPkg();
+    pkgs.push(pkg);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: false, status: 403 })),
+    );
+    await expect(checkForUpdate(pkg, '1.0.0')).rejects.toThrow(/403/);
+  });
+
   it('caches under ~/.lattice (the shared home), not a separate ~/.<pkg> dir', async () => {
     const pkg = freshPkg();
     pkgs.push(pkg);

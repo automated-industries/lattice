@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson, readJson } from './http.js';
 import type { GuiRequestContext } from './request-context.js';
 import { getGuiEntities, type GuiTableSummary } from './data.js';
-import { upsertColumnMeta } from './column-descriptions.js';
 import { recordSchemaAudit } from './mutations.js';
 import { loadConfigDoc, saveConfigDoc } from './config-io.js';
 import { reopenSameConfig } from './lifecycle.js';
@@ -24,14 +23,23 @@ import {
   renameUserColumn,
   dropColumnCarryingPolicy,
   RenameRefused,
+  addUserLink,
+  removeUserLink,
+  setColumnMeta,
+  columnRefTarget,
+  SCHEMA_SYSTEM_COLUMNS,
 } from './schema-ops.js';
 import { assertNotComputedSource } from './computed-ops.js';
 import { fieldToSqliteBaseType } from '../config/parser.js';
 import type { LatticeFieldDef } from '../config/types.js';
 import { isNativeEntity } from '../framework/native-entities.js';
-import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
+import {
+  cloudRlsInstalled,
+  canManageRoles,
+  isScopedCloudMember,
+} from '../framework/cloud-connect.js';
+import { cloudErrorCode } from '../cloud/errors.js';
 import { setTableDefaultVisibility, setTableNeverShare } from '../cloud/table-policy.js';
-import { setColumnAudience } from '../cloud/audience.js';
 
 /**
  * Schema create/alter/delete routes, extracted from server.ts as the fourth
@@ -64,38 +72,9 @@ export interface SchemaRoutesDeps {
   autoRender: boolean;
 }
 
-// Structural columns Lattice manages — never renamable, retypable, deletable,
-// or maskable from the GUI. `id` is the uuid primary key; the timestamps +
-// soft-delete column carry semantics undo/redo + freshness depend on.
-const SCHEMA_SYSTEM_COLUMNS = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
 // The only column types a user may CREATE. `uuid` is reserved for keys
 // (the id PK + foreign keys) and enforced by Lattice, not user-selectable.
 const ALLOWED_COLUMN_TYPES = new Set(['text', 'integer', 'real', 'boolean']);
-
-/** The entity a column references (a foreign-key "link"), or null. */
-function columnRefTarget(configPath: string, entity: string, col: string): string | null {
-  // A "link" is now an entity-level `relations:` belongsTo entry whose
-  // foreignKey is this column (the per-field `ref:` shorthand was removed in
-  // 4.0). Find the belongsTo pointing at `col` and return its target table.
-  const relsNode: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'relations']);
-  if (!relsNode || typeof relsNode !== 'object') return null;
-  const rels =
-    typeof (relsNode as { toJSON?: unknown }).toJSON === 'function'
-      ? (relsNode as { toJSON: () => Record<string, unknown> }).toJSON()
-      : (relsNode as Record<string, unknown>);
-  for (const rel of Object.values(rels)) {
-    if (
-      rel &&
-      typeof rel === 'object' &&
-      (rel as { type?: unknown }).type === 'belongsTo' &&
-      (rel as { foreignKey?: unknown }).foreignKey === col
-    ) {
-      const table = (rel as { table?: unknown }).table;
-      return typeof table === 'string' && table ? table : null;
-    }
-  }
-  return null;
-}
 
 /**
  * Ordered, first-match dispatcher for the schema create/alter/delete routes.
@@ -117,14 +96,27 @@ function columnRefTarget(configPath: string, entity: string, col: string): strin
  * corrupt the owner's config over HTTP even though RLS blocks the DB write.
  */
 export async function denyIfNotCloudOwner(
-  db: Parameters<typeof canManageRoles>[0],
+  db: Parameters<typeof isScopedCloudMember>[0],
   res: ServerResponse,
   verb: string,
 ): Promise<boolean> {
-  if (db.getDialect() !== 'postgres') return false;
-  if (!(await cloudRlsInstalled(db))) return false;
-  if (await canManageRoles(db)) return false;
+  if (!(await isScopedCloudMember(db))) return false;
   sendJson(res, { error: `Only a cloud owner can ${verb}` }, 403);
+  return true;
+}
+
+/**
+ * Turn the tagged owner-only refusal a capability throws into this transport's
+ * answer for it. Rethrows anything else — an unrecognised failure is a real
+ * fault and must read as one.
+ *
+ * The gate itself lives with the operation, not here, so a command and a library
+ * caller inherit it. What is left for the adapter is the part only the adapter
+ * knows: that "owner only" is 403 on HTTP.
+ */
+function denyOwnerOnly(e: unknown, res: ServerResponse): boolean {
+  if (cloudErrorCode(e) !== 'cloud_owner_only') return false;
+  sendJson(res, { error: (e as Error).message }, 403);
   return true;
 }
 
@@ -391,72 +383,29 @@ export async function handleSchemaRoutes(
     return true;
   }
 
-  // @headless-debt marking a column secret and writing its description is one call here;
-  // setColumnAudience is on the library surface but the column-metadata write is not.
+  // Masking a column and defining it are one call because they are one operation:
+  // the mask goes on the database first and the stored flag is what redacts the
+  // value from the assistant. What stays here is reading the two fields off the
+  // request and turning a refusal into a status.
+  // @capability schema.set-column-meta
   if (method === 'PUT' && /^\/api\/gui-meta\/columns\/[^/]+\/[^/]+$/.test(pathname)) {
     const parts = pathname.split('/');
     const tableName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[5] ?? '');
-    if (!active.validTables.has(tableName)) {
-      sendJson(res, { error: `Unknown table: ${tableName}` }, 400);
-      return true;
-    }
     const body = (await readJson<unknown>(req)) as {
       secret?: unknown;
       description?: unknown;
     };
-    const settingSecret = 'secret' in body;
-    const settingDescription = 'description' in body;
-    // Secret is meaningful only for scalar data columns. System columns
-    // (id/created_at/updated_at/deleted_at) and links (FK columns) can't
-    // be marked secret — enforce here so the data model stays clean. The
-    // guard applies only when `secret` is being set; a description-only
-    // write is fine on any column.
-    if (settingSecret) {
-      if (SCHEMA_SYSTEM_COLUMNS.has(colName)) {
-        sendJson(
-          res,
-          { error: `"${colName}" is a system column and cannot be marked secret` },
-          400,
-        );
-        return true;
-      }
-      if (columnRefTarget(active.configPath, tableName, colName)) {
-        sendJson(res, { error: 'Link (foreign-key) columns cannot be marked secret' }, 400);
-        return true;
-      }
-    }
-    const secret: 0 | 1 = body.secret === true ? 1 : 0;
-    // Apply the DATABASE mask FIRST, before persisting the local secret flag.
-    // On a cloud (Postgres) DB, setColumnAudience masks the column to non-owners
-    // via the audience view so a member's connection can't read it; it throws on
-    // failure (propagating to the outer catch). Doing it before the local
-    // `_lattice_gui_column_meta.secret` write means a failed mask never leaves a
-    // column shown-masked to the owner + redacted from the assistant while a
-    // member's connection can still SELECT the real value — fail loud, never a
-    // false "masked" state. SQLite is a no-op inside setColumnAudience.
-    if (settingSecret && active.db.getDialect() === 'postgres') {
-      const columnNames = Object.keys(active.db.getRegisteredColumns(tableName) ?? {});
-      const pkCols = active.db.getPrimaryKey(tableName);
-      await setColumnAudience(
-        active.db,
-        tableName,
-        colName,
-        secret ? 'owner' : '',
-        columnNames,
-        pkCols,
-      );
-    }
-    // Now persist the local model-context redaction (the assistant never sees a
-    // secret value) + description. Consolidated find-or-insert (shared with the
-    // set_definition AI tool and the auto-generators) — applies only the provided
-    // fields. Reaching here means the DB mask (if any) already succeeded.
-    await upsertColumnMeta(active.db, tableName, colName, {
-      ...(settingSecret ? { secret } : {}),
-      ...(settingDescription
+    const outcome = await setColumnMeta(active, tableName, colName, {
+      ...('secret' in body ? { secret: body.secret === true } : {}),
+      ...('description' in body
         ? { description: typeof body.description === 'string' ? body.description : null }
         : {}),
     });
+    if (!outcome.ok) {
+      sendJson(res, { error: outcome.error }, 400);
+      return true;
+    }
     sendJson(res, { ok: true });
     return true;
   }
@@ -814,121 +763,37 @@ export async function handleSchemaRoutes(
   // A "link" is a relationship, distinct from a scalar column: it adds a
   // uuid FK column referencing `target`. Links can't be edited once
   // created — only destroyed (below). Owner-gated.
-  // @headless-debt adding a link means adding the foreign-key column AND declaring the
-  // relation over it; only the second half (createUserRelation) is on the library surface.
+  //
+  // Both halves of a link — the foreign-key column and the belongsTo relation
+  // over it — and the rules that keep the model coherent belong to the
+  // capability, so a script inherits them. The owner-only rule is one of those
+  // rules and moved with them: the capability throws the tagged refusal and this
+  // adapter turns it into the status. What stays here is reading the target off
+  // the request and the reopen this server needs for its own next request.
+  // @capability schema.add-link
   if (method === 'POST' && /^\/api\/schema\/entities\/[^/]+\/links$/.test(pathname)) {
     const entityName = decodeURIComponent(pathname.split('/')[4] ?? '');
     if (!active.validTables.has(entityName)) {
       sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
       return true;
     }
-    if (await denyIfNotCloudOwner(active.db, res, 'add a link')) return true;
     const body = (await readJson<unknown>(req)) as { target?: unknown };
     const target = typeof body.target === 'string' ? body.target.trim() : '';
-    if (!active.validTables.has(target)) {
-      sendJson(res, { error: 'Target entity must exist' }, 400);
+    let outcome: Awaited<ReturnType<typeof addUserLink>>;
+    try {
+      outcome = await addUserLink(active, entityName, target, sessionId);
+    } catch (e) {
+      if (denyOwnerOnly(e, res)) return true;
+      throw e;
+    }
+    if (!outcome.ok) {
+      sendJson(res, { error: outcome.error }, 400);
       return true;
     }
-    if (active.junctionTables.has(target)) {
-      sendJson(res, { error: 'Cannot link to a junction table' }, 400);
-      return true;
-    }
-    // One link per target via this control: refuse if the entity already
-    // has a foreign key pointing at `target` (the UI also excludes it
-    // from the picker). Keeps the data model clean and avoids the
-    // accidental <target>_id / <target>_id_2 duplication.
-    const summary = getGuiEntities(active.configPath, active.outputDir).tables.find(
-      (t) => t.name === entityName,
-    );
-    const alreadyLinked =
-      summary !== undefined &&
-      Object.values(summary.relations).some((r) => r.type === 'belongsTo' && r.table === target);
-    if (alreadyLinked) {
-      sendJson(res, { error: `"${entityName}" already links to "${target}"` }, 400);
-      return true;
-    }
-    // EXCLUSIVITY (mutual nesting): the target must not already nest inside this
-    // entity — two tables can never contain each other.
-    const allForLink = getGuiEntities(active.configPath, active.outputDir).tables;
-    const targetSummary = allForLink.find((t) => t.name === target);
-    const reverseNested =
-      targetSummary !== undefined &&
-      Object.values(targetSummary.relations).some(
-        (r) => r.type === 'belongsTo' && r.table === entityName,
-      );
-    if (reverseNested) {
-      sendJson(
-        res,
-        {
-          error: `"${target}" is nested inside "${entityName}" — tables cannot be nested into each other`,
-        },
-        400,
-      );
-      return true;
-    }
-    // EXCLUSIVITY (m2m vs nesting): a many-to-many junction between the pair
-    // conflicts with a belongsTo nesting.
-    const junctionBetween = allForLink.find((j) => {
-      if (!active.junctionTables.has(j.name)) return false;
-      const bt = Object.values(j.relations).filter((r) => r.type === 'belongsTo');
-      const tables = new Set(bt.map((r) => r.table));
-      return bt.length === 2 && tables.has(entityName) && tables.has(target);
-    });
-    if (junctionBetween) {
-      sendJson(
-        res,
-        {
-          error: `"${entityName}" and "${target}" are connected by a relationship (${junctionBetween.name}) — remove it before nesting one inside the other`,
-        },
-        400,
-      );
-      return true;
-    }
-    // Name the FK <target>_id, de-duplicating against existing columns — the ones
-    // the config declares AND the ones the table really has. Those differ after a
-    // link is removed: the removal drops the field and the relation but leaves the
-    // column in place so it can be reverted with its values. addColumn() is
-    // idempotent, so reusing that name here would silently resurrect the removed
-    // link's foreign keys under a freshly declared relation. Skipping past it gives
-    // the new link its own empty column and leaves the old one revertible.
-    const existingCols = new Set([
-      ...Object.keys(active.db.getRegisteredColumns(entityName) ?? {}),
-      ...(await active.db.introspectColumns(entityName)),
-    ]);
-    let colName = `${target}_id`;
-    let n = 2;
-    while (existingCols.has(colName)) colName = `${target}_id_${String(n++)}`;
-    const linkType = fieldToSqliteBaseType('uuid');
-    // Same reasoning as the scalar column add above: the library owns the DDL.
-    await active.db.addColumn(entityName, colName, linkType);
-    // Write a plain FK field plus an explicit entity-level belongsTo relation
-    // (the per-field `ref:` shorthand was removed in 4.0). The relation name
-    // mirrors the old derivation: the column with a trailing `_id` stripped.
-    const linkFieldDef = { type: 'uuid' };
-    const relName = colName.endsWith('_id') ? colName.slice(0, -3) : colName;
-    const relation = { type: 'belongsTo', table: target, foreignKey: colName };
-    const doc = loadConfigDoc(active.configPath);
-    doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
-    doc.setIn(['entities', entityName, 'relations', relName], relation);
-    saveConfigDoc(active.configPath, doc);
+    // The reopen is this server's own business: the next request has to see the
+    // new column and the new relation. Nothing below reads `active` again.
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
-    active = ctx.active();
-    await recordSchemaOp(
-      active,
-      'schema.add_link',
-      entityName,
-      null,
-      {
-        entity: entityName,
-        column: colName,
-        fieldDef: linkFieldDef,
-        relationName: relName,
-        relation,
-      },
-      `Added link ${entityName} → ${target}`,
-      sessionId,
-    );
-    sendJson(res, { ok: true, column: colName });
+    sendJson(res, { ok: true, column: outcome.column });
     return true;
   }
 
@@ -984,78 +849,33 @@ export async function handleSchemaRoutes(
   // ── Destroy a link (drop the FK column) ──────────────────────────
   // Links are destroy-only and owner-gated. Each link is managed
   // individually — including the legs of a (pure) junction table — and
-  // dropping one only drops THAT foreign-key column (ALTER TABLE DROP
-  // COLUMN), never a table. To remove a whole table, use
-  // DELETE /api/schema/entities/:name.
-  // @headless-debt removing a link hides the field and its relation without dropping the
-  // column, so revert restores the values. No exported function does that pair.
+  // removing one hides only THAT foreign-key column, never a table. To remove
+  // a whole table, use DELETE /api/schema/entities/:name.
+  //
+  // The removal is soft — the column and its values stay, so the recorded op
+  // reverts with no snapshot — and that pairing belongs to the capability, as
+  // does the owner-only rule (thrown tagged, mapped to a status here). What
+  // stays here is the response and the reopen.
+  // @capability schema.remove-link
   if (method === 'DELETE' && /^\/api\/schema\/entities\/[^/]+\/links\/[^/]+$/.test(pathname)) {
-    if (await denyIfNotCloudOwner(active.db, res, 'remove a link')) return true;
     const parts = pathname.split('/');
     const entityName = decodeURIComponent(parts[4] ?? '');
     const colName = decodeURIComponent(parts[6] ?? '');
-    if (!active.validTables.has(entityName)) {
-      sendJson(res, { error: `Unknown entity: ${entityName}` }, 400);
+    let outcome: Awaited<ReturnType<typeof removeUserLink>>;
+    try {
+      outcome = await removeUserLink(active, entityName, colName, sessionId);
+    } catch (e) {
+      if (denyOwnerOnly(e, res)) return true;
+      throw e;
+    }
+    if (!outcome.ok) {
+      sendJson(res, { error: outcome.error }, 400);
       return true;
     }
-    const target = columnRefTarget(active.configPath, entityName, colName);
-    if (!target) {
-      sendJson(res, { error: `Not a link column: ${colName}` }, 400);
-      return true;
-    }
-    // SOFT delete: remove the FK field AND its belongsTo relation from the
-    // config (hiding the link) but DO NOT drop the SQL column — its values
-    // stay, so revert restores them with no snapshot. The relation is now a
-    // separate entity-level entry (the per-field `ref:` shorthand was removed
-    // in 4.0), so deleting the field alone would leave an orphaned relation
-    // pointing at a missing column — both must go, and both come back on
-    // revert. Capture the field def + relation (name + spec) first.
-    const doc = loadConfigDoc(active.configPath);
-    const entityJs = (
-      doc.toJS() as {
-        entities?: Record<
-          string,
-          { fields?: Record<string, unknown>; relations?: Record<string, unknown> }
-        >;
-      }
-    ).entities?.[entityName];
-    const deletedFieldDef = entityJs?.fields?.[colName];
-    const relationEntries = Object.entries(entityJs?.relations ?? {});
-    const deletedRelation = relationEntries.find(
-      ([, rel]) =>
-        rel != null &&
-        typeof rel === 'object' &&
-        (rel as { type?: unknown }).type === 'belongsTo' &&
-        (rel as { foreignKey?: unknown }).foreignKey === colName,
-    );
-    const deletedRelationName = deletedRelation?.[0];
-    const deletedRelationDef = deletedRelation?.[1];
-    doc.deleteIn(['entities', entityName, 'fields', colName]);
-    if (deletedRelationName !== undefined) {
-      doc.deleteIn(['entities', entityName, 'relations', deletedRelationName]);
-    }
-    saveConfigDoc(active.configPath, doc);
     ctx.swapActive(await reopenSameConfig(active, deps.autoRender));
-    active = ctx.active();
-    const undoId = await recordSchemaOp(
-      active,
-      'schema.delete_link',
-      entityName,
-      {
-        entity: entityName,
-        column: colName,
-        fieldDef: deletedFieldDef,
-        ...(deletedRelationName !== undefined
-          ? { relationName: deletedRelationName, relation: deletedRelationDef }
-          : {}),
-      },
-      null,
-      `Deleted link ${entityName} → ${target}`,
-      sessionId,
-    );
     // `undoId` is the delete_link audit id — the client offers a one-click undo
     // that re-adds the link field + relation from the recorded def.
-    sendJson(res, { ok: true, undoId });
+    sendJson(res, { ok: true, undoId: outcome.undoId });
     return true;
   }
 

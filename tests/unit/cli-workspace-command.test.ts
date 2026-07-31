@@ -14,7 +14,7 @@
  * time and cannot be imported.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorkspaceCommand, resolveWorkspaceRef } from '../../src/cli-workspace.js';
@@ -25,6 +25,7 @@ import {
   resolveWorkspacePaths,
 } from '../../src/framework/workspace.js';
 import { ensureRootAt } from '../../src/framework/lattice-root.js';
+import { Lattice } from '../../src/lattice.js';
 
 let scratch: string;
 const prev: Record<string, string | undefined> = {};
@@ -203,11 +204,121 @@ describe('workspace list', () => {
   });
 });
 
+describe('workspace delete', () => {
+  it('refuses without the explicit confirmation, and changes nothing', async () => {
+    // The safeguard has to be a FLAG rather than a prompt: this command exists so
+    // the operation can run unattended, and a prompt in a script is a hang.
+    const root = newRoot();
+    const ws = addWorkspace(root, { displayName: 'Scratch' });
+    addWorkspace(root, { displayName: 'Keep' });
+
+    await expect(
+      runWorkspaceCommand({ root, subcommand: 'delete', action: 'Scratch' }),
+    ).rejects.toThrow(/without --yes/);
+
+    expect(listWorkspaces(root).map((w) => w.id)).toContain(ws.id);
+    expect(existsSync(resolveWorkspacePaths(root, ws).configPath)).toBe(true);
+  });
+
+  it('removes the registry record and the folder it scaffolded', async () => {
+    const root = newRoot();
+    const ws = addWorkspace(root, { displayName: 'Scratch' });
+    const keep = addWorkspace(root, { displayName: 'Keep' });
+    const scratchDir = resolveWorkspacePaths(root, ws).dir;
+
+    const lines = await runWorkspaceCommand({
+      root,
+      subcommand: 'delete',
+      action: 'Scratch',
+      assumeYes: true,
+    });
+
+    expect(listWorkspaces(root).map((w) => w.id)).toEqual([keep.id]);
+    expect(existsSync(scratchDir)).toBe(false);
+    expect(lines.join('\n')).toContain('Scratch');
+    // The sibling is untouched — a delete that took the neighbour's files with it
+    // would still print exactly this.
+    expect(existsSync(resolveWorkspacePaths(root, keep).configPath)).toBe(true);
+  });
+
+  it('resolves the display name a person read out of `workspace list`', async () => {
+    const root = newRoot();
+    addWorkspace(root, { displayName: 'Keep' });
+    const ws = addWorkspace(root, { displayName: 'Second' });
+
+    await runWorkspaceCommand({ root, subcommand: 'delete', action: 'sEcOnD', assumeYes: true });
+
+    expect(listWorkspaces(root).map((w) => w.id)).not.toContain(ws.id);
+  });
+
+  it('refuses an unknown workspace before it asks about confirmation', async () => {
+    // Reporting "you need --yes" for a name that does not exist would send the
+    // reader off to re-run an irreversible command with the safeguard removed.
+    const root = newRoot();
+    addWorkspace(root, { displayName: 'Only' });
+
+    await expect(
+      runWorkspaceCommand({ root, subcommand: 'delete', action: 'Nope' }),
+    ).rejects.toThrow(/No workspace named "Nope"/);
+    expect(listWorkspaces(root)).toHaveLength(1);
+  });
+
+  it('refuses with a usage message when no workspace is named', async () => {
+    const root = newRoot();
+    await expect(runWorkspaceCommand({ root, subcommand: 'delete' })).rejects.toThrow(
+      /lattice workspace delete <name-or-id> --yes/,
+    );
+  });
+});
+
+describe('rename', () => {
+  it('renames the registry record a person reads out of `workspace list`', async () => {
+    const root = newRoot();
+    const ws = addWorkspace(root, { displayName: 'Before' });
+    // Scaffold the config the registry points at — rename writes the file too.
+    const db = await Lattice.openWorkspace({ root, workspaceId: ws.id });
+    db.close();
+
+    const lines = await runWorkspaceCommand({
+      root,
+      subcommand: 'rename',
+      action: 'Before',
+      displayName: 'After',
+    });
+
+    expect(listWorkspaces(root).map((w) => w.displayName)).toEqual(['After']);
+    expect(lines.join('\n')).toContain('After');
+    // Both writes, so the file agrees with the registry. A rename that only
+    // touched one would still print exactly the line above.
+    const configText = readFileSync(resolveWorkspacePaths(root, ws).configPath, 'utf8');
+    expect(configText).toContain('After');
+  });
+
+  it('refuses a rename with no new name rather than writing an empty one', async () => {
+    const root = newRoot();
+    addWorkspace(root, { displayName: 'Only' });
+
+    await expect(
+      runWorkspaceCommand({ root, subcommand: 'rename', action: 'Only' }),
+    ).rejects.toThrow(/--name/);
+    expect(listWorkspaces(root).map((w) => w.displayName)).toEqual(['Only']);
+  });
+
+  it('refuses an unknown workspace', async () => {
+    const root = newRoot();
+    addWorkspace(root, { displayName: 'Only' });
+
+    await expect(
+      runWorkspaceCommand({ root, subcommand: 'rename', action: 'Nope', displayName: 'x' }),
+    ).rejects.toThrow(/No workspace named "Nope"/);
+  });
+});
+
 describe('unknown subcommand', () => {
   it('lists the ones that exist', async () => {
     const root = newRoot();
-    await expect(runWorkspaceCommand({ root, subcommand: 'delete' })).rejects.toThrow(
-      /expected: list \| create \| use/,
+    await expect(runWorkspaceCommand({ root, subcommand: 'archive' })).rejects.toThrow(
+      /expected: list \| create \| use \| rename \| delete/,
     );
   });
 });

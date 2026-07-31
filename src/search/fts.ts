@@ -83,10 +83,26 @@ export function autoFtsColumns(cols: string[]): string[] {
   return cols.filter((c) => !SKIP_COLUMN.test(c));
 }
 
-/** `coalesce(<prefix>"c1",'') || ' ' || …` — the searchable text blob. */
+/**
+ * `coalesce(cast(<prefix>"c1" as text),'') || ' ' || …` — the searchable text blob.
+ *
+ * Every column is CAST to text before it is coalesced, because the indexed
+ * columns are not all text columns and never were: `fts: true` selects them by
+ * NAME, so an amount, a count, a date or a flag sitting in a table is picked up
+ * as a matter of course, and a hand-written `fts: { fields: [...] }` may name one
+ * outright.
+ *
+ * Without the cast the two dialects disagree about that, silently and in the
+ * worst direction. SQLite converts on concatenation, so an uncast expression over
+ * a numeric column builds a perfectly good index. Postgres refuses to coalesce a
+ * number with an empty string, so the SAME workspace file opens locally and then
+ * fails to build its index on a shared database — a declaration that looks tested
+ * because it was, on the dialect that forgives it. The cast makes both dialects
+ * index what the index is for: the value read as text.
+ */
 function concatExpr(cols: string[], alias: string): string {
   const p = alias ? `${alias}.` : '';
-  return cols.map((c) => `coalesce(${p}"${c}", '')`).join(" || ' ' || ");
+  return cols.map((c) => `coalesce(cast(${p}"${c}" as text), '')`).join(" || ' ' || ");
 }
 
 /**

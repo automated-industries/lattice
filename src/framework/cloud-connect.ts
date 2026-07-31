@@ -68,6 +68,29 @@ export async function canManageRoles(db: Lattice): Promise<boolean> {
 }
 
 /**
+ * Whether the connected role is a SCOPED MEMBER of a secured cloud — a shared
+ * Postgres with the row-security bookkeeping installed, reached by a role that
+ * cannot manage other roles.
+ *
+ * The one question every owner-only operation asks, in one place, because it has
+ * to be asked at every DOOR into such an operation and not just at the one that
+ * happens to be a request. A schema change writes the OWNER's workspace file and
+ * runs DDL on the shared database; row security protects neither, and the library
+ * routes a member's ALTER through an owner-side helper rather than refusing it —
+ * so a check that lives only in an HTTP handler is not a rule about the operation
+ * at all, it is a rule about clicking. Callers that can answer with a status turn
+ * this into 403; callers that cannot throw the tagged refusal.
+ *
+ * False for SQLite, for a plain unsecured Postgres, and for the owner — none of
+ * which is a member — so an ordinary local workspace is never gated.
+ */
+export async function isScopedCloudMember(db: Lattice): Promise<boolean> {
+  if (db.getDialect() !== 'postgres') return false;
+  if (!(await cloudRlsInstalled(db))) return false;
+  return !(await canManageRoles(db));
+}
+
+/**
  * Probe a candidate Lattice URL for reachability + cloud status.
  *
  * Never throws. Errors are returned in the result's `error` field with

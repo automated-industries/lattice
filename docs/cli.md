@@ -22,6 +22,8 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice connector`](#lattice-connector)
   - [`lattice ingest`](#lattice-ingest)
   - [`lattice import`](#lattice-import)
+  - [`lattice schema`](#lattice-schema)
+  - [`lattice questions`](#lattice-questions)
 - [Cloud](#cloud)
   - [`lattice cloud`](#lattice-cloud)
   - [From the library](#from-the-library)
@@ -786,6 +788,99 @@ inference, match-to-existing, per-sheet split, snapshot dating, computed opt-ins
 and the report of low-confidence links it deliberately left unconnected.
 `materializeImport` remains available for a caller that has already inferred a
 plan and wants only the write.
+
+---
+
+### `lattice schema`
+
+Relationships and definitions: nest one table inside another, un-nest it, and say
+what a table or a column means.
+
+```sh
+lattice schema links [<table>]                    # what is nested inside what
+lattice schema link <table> --to <parent>         # nest one table inside another
+lattice schema unlink <table>.<column>            # remove a link (values are kept)
+lattice schema describe <table>[.<column>] --text "<definition>"
+```
+
+| Option           | Description                                            |
+| ---------------- | ------------------------------------------------------ |
+| `--to <parent>`  | The table a new link points at                         |
+| `--text <text>`  | What `describe` writes. An empty `--text ""` clears it |
+| `--config`, `-c` | Workspace to act on (default: the active workspace)    |
+| `--root <dir>`   | The `.lattice` root holding that workspace             |
+
+**A link is both halves.** It adds a `<parent>_id` foreign-key column AND declares
+the `belongsTo` relation over it, recorded as one reversible change — so undoing
+it from history takes both, and you can never be left with a column nothing reads
+or a relation pointing at a column that is not there.
+
+**Unlinking is soft.** The declaration goes; the column and its values stay, which
+is why the change reverts with the data intact. A _new_ link to the same table
+therefore gets its own empty column (`customers_id_2`) rather than silently
+adopting the old one's foreign keys.
+
+```sh
+lattice schema link orders --to customers
+lattice schema links                       # orders.customers_id → customers
+lattice schema unlink orders.customers_id
+lattice schema describe orders.code --text "The order number printed on the invoice."
+```
+
+**From the library.** `addUserLink(active, table, parent, sessionId)` and
+`removeUserLink(active, table, column, sessionId)` perform the two halves and the
+audit; `setColumnMeta(active, table, column, { secret?, description? })` writes a
+column's definition and masks it on a shared database — the mask first, so a
+failed mask never leaves a column that only _looks_ protected. `upsertTableMeta`
+sets a table's icon and browsable description, and `setTableDefinition` writes a
+table definition to both places one is read from.
+
+---
+
+### `lattice questions`
+
+The clarification queue. When something automated is confident enough not to drop
+a guess but not confident enough to act on it, it stops and asks instead of
+guessing — an import that cannot tell whether two tables are related, an
+enrichment pass that cannot tell what a column means.
+
+```sh
+lattice questions list [--json]                   # what is waiting, with its id
+lattice questions answer <id> --text "<answer>"   # resolve one
+lattice questions dismiss <id>                    # drop one
+```
+
+| Option           | Description                                               |
+| ---------------- | --------------------------------------------------------- |
+| `--text <text>`  | The reply — one of the offered options, or your own words |
+| `--json`         | `list` emits one record per line for a machine reader     |
+| `--config`, `-c` | Workspace to act on (default: the active workspace)       |
+| `--root <dir>`   | The `.lattice` root holding that workspace                |
+
+**Answering runs what the question was holding.** A question can carry a deferred
+action — connect these two tables, record this definition — and answering executes
+it through the same audited paths any other write uses, so it appears in history
+and reverts like anything else. The status is stamped only after that succeeds: a
+failure leaves the question pending and re-answerable, never resolved with half
+its effects missing.
+
+**A reply in your own words is kept as knowledge.** Picking one of the offered
+options resolves the question and nothing more; typing something else additionally
+records it against whatever the question was about — a table's definition, a
+column's, a field on one row.
+
+```sh
+lattice questions list
+# 7f3c…  [import]  Are orders related to customers?
+#     options: Yes | No
+lattice questions answer 7f3c… --text "Yes"
+```
+
+**From the library.** `listPendingQuestions(db)` reads the queue,
+`answerQuestion(ctx, id, answer)` and `dismissQuestion(ctx, id)` drain it, and
+`enqueueQuestion(db, feed, input)` is how a producer asks. A question that is
+missing or already resolved raises an `Error` carrying a `code` (`not_found`,
+`not_pending`) rather than a status.
 
 ---
 

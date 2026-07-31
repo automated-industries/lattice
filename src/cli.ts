@@ -30,6 +30,10 @@ import { importLegacyUserConfig } from './framework/migrate-to-root.js';
 import { analyticsEnabled } from './framework/user-config.js';
 import { openConfiguredLattice } from './cli-open.js';
 import { runWorkspaceCommand } from './cli-workspace.js';
+import { runDatabaseCommand } from './cli-database.js';
+import { runSchemaCommand } from './cli-schema.js';
+import { runQuestionsCommand } from './cli-questions.js';
+import { checkForNewerVersion } from './ops/update.js';
 import { resolveCloudTarget, runCloudCommand } from './cli-cloud.js';
 import { runAskCommand, askFailureMessage } from './cli-ask.js';
 import { runModelCommand, resolveModelTarget } from './cli-model.js';
@@ -97,6 +101,12 @@ interface ParsedArgs {
   explain: boolean;
   /** --fix — let `doctor` rebuild stale native vector indexes it finds. */
   fix: boolean;
+  /**
+   * --check — report what `update` WOULD do and change nothing. The default is
+   * to install, which is the wrong thing to run on a machine you are only taking
+   * an inventory of.
+   */
+  check: boolean;
   /** --email <address> — the invitee for `cloud invite`, the redeemer for `cloud join`. */
   email?: string | undefined;
   /** --token <token> — the invite being redeemed by `cloud join`. */
@@ -140,6 +150,12 @@ interface ParsedArgs {
   privateMode: boolean;
   /** --title <name> — what a text ingest is filed under. */
   title?: string | undefined;
+  /**
+   * --text <definition> — what `schema describe` writes. Distinguished from
+   * "not given" so an empty string can CLEAR a definition rather than reading
+   * as a missing argument.
+   */
+  text?: string | undefined;
   /** --sheet <name> — one sheet of a multi-sheet workbook (`import`). */
   sheet?: string | undefined;
   /** --as-of <YYYY-MM-DD> — a file-level date for a whole import. */
@@ -182,6 +198,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let topK: number | undefined;
   let explain = false;
   let fix = false;
+  let check = false;
   let email: string | undefined;
   let token: string | undefined;
   let pk: string | undefined;
@@ -203,6 +220,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let stdin = false;
   let privateMode = false;
   let title: string | undefined;
+  let text: string | undefined;
   let sheet: string | undefined;
   let asOf: string | undefined;
   let asOfColumn: string | undefined;
@@ -218,6 +236,39 @@ function parseArgs(argv: string[]): ParsedArgs {
       i = 2;
       // `lattice workspace <subcommand> <action>` — third positional for
       // two-level subcommands like `workspace use <id>`.
+      if (argv[2] !== undefined && !argv[2].startsWith('-')) {
+        action = argv[2];
+        i = 3;
+      }
+    }
+    // `lattice database <subcommand> [<what>]` — the second positional is the
+    // verb, the third names the database it acts on (`database create <name>`,
+    // `database delete <name-or-path>`).
+    if (command === 'database' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      subcommand = argv[1];
+      i = 2;
+      if (argv[2] !== undefined && !argv[2].startsWith('-')) {
+        action = argv[2];
+        i = 3;
+      }
+    }
+    // `lattice schema <subcommand> [<what>]` — the second positional is the
+    // verb, the third names what it acts on: a table (`schema links people`,
+    // `schema link orders --to customers`) or a `<table>.<column>` reference
+    // (`schema unlink orders.customers_id`).
+    if (command === 'schema' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      subcommand = argv[1];
+      i = 2;
+      if (argv[2] !== undefined && !argv[2].startsWith('-')) {
+        action = argv[2];
+        i = 3;
+      }
+    }
+    // `lattice questions <subcommand> [<id>]` — the second positional is the
+    // verb, the third the question it acts on (`questions answer <id>`).
+    if (command === 'questions' && argv[1] !== undefined && !argv[1].startsWith('-')) {
+      subcommand = argv[1];
+      i = 2;
       if (argv[2] !== undefined && !argv[2].startsWith('-')) {
         action = argv[2];
         i = 3;
@@ -365,6 +416,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       explain = true;
     } else if (arg === '--fix') {
       fix = true;
+    } else if (arg === '--check') {
+      check = true;
     } else if (arg === '--table' && i + 1 < argv.length) {
       i++;
       table = argv[i];
@@ -423,6 +476,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--title' && i + 1 < argv.length) {
       i++;
       title = argv[i];
+    } else if (arg === '--text' && i + 1 < argv.length) {
+      i++;
+      text = argv[i];
     } else if (arg === '--sheet' && i + 1 < argv.length) {
       i++;
       sheet = argv[i];
@@ -477,6 +533,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     topK,
     explain,
     fix,
+    check,
     email,
     token,
     pk,
@@ -498,6 +555,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     stdin,
     privateMode,
     title,
+    text,
     sheet,
     asOf,
     asOfColumn,
@@ -519,7 +577,12 @@ function printHelp(): void {
       '',
       'Commands:',
       '  init        Create a .lattice root + a default workspace (auto-renders context)',
-      '  workspace   Manage workspaces (list | create <name> | use <name-or-id>)',
+      '  workspace   Manage workspaces (list | create <name> | use <name-or-id> |',
+      '              rename <name-or-id> --name "<new>" | delete <name-or-id> --yes)',
+      '  database    Manage the databases inside one workspace (list | create <name> |',
+      '              delete <name-or-path> --yes)',
+      '  schema      Relationships + definitions (links | link | unlink | describe)',
+      '  questions   Drain the clarification queue (list | answer <id> --text | dismiss <id>)',
       '  generate    Generate TypeScript types, SQL migration, and scaffold files',
       '  render      One-shot context generation (writes entity context directories)',
       '  reconcile   Render + cleanup orphaned entity directories and files',
@@ -541,7 +604,7 @@ function printHelp(): void {
       '  search      Hybrid search a table (--table <t> [--explain] [--topk N])',
       "  reindex     Rebuild a table's native vector index (reindex <table>)",
       '  index       Vector index status (index status [--json])',
-      '  update      Upgrade latticesql to the latest version',
+      '  update      Upgrade latticesql to the latest version (--check reports only)',
       '',
       'Options (generate):',
       '  --config, -c <path>    Path to config file (default: ./lattice.config.yml)',
@@ -747,6 +810,34 @@ function printHelp(): void {
       '                         never picked up by searching upward from the current dir',
       '  --name <display>       Workspace display name (init default workspace / workspace',
       '                         create — `workspace create <name>` does the same thing)',
+      '  --yes, -y              Confirm `workspace delete`. There is no prompt: this runs',
+      '                         unattended, and a prompt in a script is a hang',
+      '',
+      'Options (database):',
+      '  lattice database list | create <name> | delete <name-or-path> --yes',
+      '  --config, -c <path>    Workspace whose databases these are (default: the active',
+      '                         workspace)',
+      '  --root <dir>           The .lattice root holding that workspace',
+      '  --name <name>          Name for the new database (`create <name>` does the same)',
+      '  --yes, -y              Confirm `database delete` — it removes the config and, for a',
+      '                         local database, its data file',
+      '',
+      '  A database is ONE config inside a workspace; a workspace is the registry entry',
+      '  that holds a whole set of them. Deleting the last database in a workspace is',
+      '  refused — remove the workspace instead if that is what you meant.',
+      '',
+      'Options (schema):',
+      '  lattice schema links [<table>]                    what is nested inside what',
+      '  lattice schema link <table> --to <parent>         nest one table inside another',
+      '  lattice schema unlink <table>.<column>            remove a link (values are kept)',
+      '  lattice schema describe <table>[.<column>] --text "<definition>"',
+      '  --config, -c <path>    Workspace to act on (default: the active workspace)',
+      '  --root <dir>           The .lattice root holding that workspace',
+      '  --to <parent>          The table a new link points at',
+      '  --text <definition>    What `describe` writes. An empty --text "" clears it',
+      '',
+      '  `links` prints the `<table>.<column>` reference `unlink` takes. Unlinking is',
+      '  soft: the column and its values stay, so the change reverts from history.',
       '',
       'Options (global):',
       '  --help, -h             Show this help message',
@@ -799,11 +890,47 @@ function getGuiAssetsDir(): string {
   return new URL('../dist/gui-assets', import.meta.url).pathname;
 }
 
-async function runUpdate(): Promise<void> {
+async function runUpdate(args: ParsedArgs): Promise<void> {
   const currentVersion = getVersion();
+
+  // `--check` REPORTS and installs nothing — for a machine you are taking an
+  // inventory of rather than upgrading. It also distinguishes the two ways
+  // "nothing newer" can happen, which the install path cannot: a registry that
+  // could not be reached must never read as "you are on the latest version".
+  if (args.check) {
+    const found = await checkForNewerVersion({ currentVersion });
+    const lines = [`Current version: ${found.current}`, `Install: ${found.kind} — ${found.reason}`];
+    if (!found.checked) {
+      lines.push(`Could not check for updates: ${found.error ?? 'unknown reason'}`);
+      for (const line of lines) console.log(line);
+      process.exitCode = 1;
+      return;
+    }
+    if (!found.latest) lines.push('Already up to date.');
+    else if (found.installable) {
+      lines.push(`Update available: ${found.current} → ${found.latest}`);
+      lines.push('Run `lattice update` to install it.');
+    } else {
+      lines.push(`Update available: ${found.current} → ${found.latest}`);
+      lines.push('This copy cannot be upgraded in place — reinstall to move to it.');
+    }
+    for (const line of lines) console.log(line);
+    return;
+  }
+
   console.log(`Current version: ${currentVersion}`);
 
-  const latest = await checkForUpdate('latticesql', currentVersion);
+  // A check that could not run must not print "Already up to date." — that is the
+  // one sentence this command can say that is worse than an error, because it
+  // ends the conversation.
+  let latest: string | null;
+  try {
+    latest = await checkForUpdate('latticesql', currentVersion);
+  } catch (e) {
+    console.error(`Could not check for updates: ${(e as Error).message}`);
+    process.exitCode = 1;
+    return;
+  }
   if (!latest) {
     console.log('Already up to date.');
     return;
@@ -1445,6 +1572,91 @@ async function runWorkspace(args: ParsedArgs): Promise<void> {
       subcommand: args.subcommand,
       action: args.action,
       displayName: args.displayName,
+      assumeYes: args.assumeYes,
+    });
+    for (const line of lines) console.log(line);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `lattice database` — the databases inside ONE workspace, which is why this
+ * resolves a workspace target (`--config`, else a config here, else the active
+ * workspace) rather than a root: the set is that workspace's directory.
+ */
+async function runDatabase(args: ParsedArgs): Promise<void> {
+  if (args.root) process.env.LATTICE_ROOT = args.root;
+  try {
+    const target = resolveWorkspaceTarget({
+      config: args.config,
+      explicitConfig: args.config !== './lattice.config.yml',
+      ...(args.root !== undefined ? { root: args.root } : {}),
+    });
+    const lines = await runDatabaseCommand({
+      configPath: target.configPath,
+      subcommand: args.subcommand,
+      action: args.action,
+      displayName: args.displayName,
+      assumeYes: args.assumeYes,
+    });
+    for (const line of lines) console.log(line);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `lattice schema` — relationships and definitions in ONE workspace, so this
+ * resolves a workspace target the same way `database` does. The workspace is
+ * opened for the call, which is why this is the only one of the three that has
+ * to know where the rendered context lives.
+ */
+async function runSchema(args: ParsedArgs): Promise<void> {
+  if (args.root) process.env.LATTICE_ROOT = args.root;
+  try {
+    const target = resolveWorkspaceTarget({
+      config: args.config,
+      explicitConfig: args.config !== './lattice.config.yml',
+      ...(args.root !== undefined ? { root: args.root } : {}),
+    });
+    const lines = await runSchemaCommand({
+      configPath: target.configPath,
+      contextDir: target.contextDir,
+      subcommand: args.subcommand,
+      action: args.action,
+      to: args.to,
+      text: args.text,
+    });
+    for (const line of lines) console.log(line);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `lattice questions` — the clarification queue for ONE workspace, resolved the
+ * same way `schema` resolves it, and opened for the call because answering runs
+ * real writes against the workspace it belongs to.
+ */
+async function runQuestions(args: ParsedArgs): Promise<void> {
+  if (args.root) process.env.LATTICE_ROOT = args.root;
+  try {
+    const target = resolveWorkspaceTarget({
+      config: args.config,
+      explicitConfig: args.config !== './lattice.config.yml',
+      ...(args.root !== undefined ? { root: args.root } : {}),
+    });
+    const lines = await runQuestionsCommand({
+      configPath: target.configPath,
+      contextDir: target.contextDir,
+      subcommand: args.subcommand,
+      action: args.action,
+      text: args.text,
+      json: args.json,
     });
     for (const line of lines) console.log(line);
   } catch (e) {
@@ -1759,6 +1971,15 @@ function main(): void {
     case 'workspace':
       void runWorkspace(args);
       break;
+    case 'database':
+      void runDatabase(args);
+      break;
+    case 'schema':
+      void runSchema(args);
+      break;
+    case 'questions':
+      void runQuestions(args);
+      break;
     case 'account':
       void runAccount(args);
       break;
@@ -1775,7 +1996,7 @@ function main(): void {
       void runImport(args);
       break;
     case 'update':
-      void runUpdate();
+      void runUpdate(args);
       break;
     case 'doctor':
       void runDoctor(args);

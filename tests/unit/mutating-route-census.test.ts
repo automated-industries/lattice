@@ -95,12 +95,19 @@ const SRC = join(ROOT, 'src');
  * slack behind for the next regression to spend, which is how a budget becomes
  * a ceiling nobody is under.
  *
- * This is the release's progress metric. Driving it to zero is the work; the
+ * This is the release's progress metric. Driving it to zero was the work; the
  * number is only useful while it is honest, so it is the length of
  * {@link HEADLESS_DEBT} — the actual list of what is missing — and not a count
  * made comfortable by relabelling.
+ *
+ * It is now ZERO, which means something specific and narrow: every branch in
+ * every adapter that changes something either points at a capability a caller
+ * can reach without a server, or is one of the reviewed browser-only claims in
+ * {@link GUI_ONLY_SNAPSHOT}. It does NOT mean the work cannot regress — a single
+ * new handler that owns its logic puts a line back — and at zero the ratchet is
+ * at its most useful, because the very next line added is visible immediately.
  */
-const DEBT_BUDGET = 16;
+const DEBT_BUDGET = 0;
 
 /**
  * When a human last looked at the budget and agreed with it, and the release it
@@ -120,25 +127,14 @@ const BUDGET_REVIEWED = { date: '2026-07-29', version: '5.7.0' };
  * The inventory behind {@link DEBT_BUDGET}. Pinned as routes rather than counted
  * so that paying one down while adding another somewhere else cannot net out to
  * "no change": both show as diffs, one line removed and one added.
+ *
+ * EMPTY. Not grandfathered empty — every route that was on this list was moved
+ * into a capability module, added to the manifest, and re-pointed at it. Adding a
+ * line here is still the honest answer for a gap that has not been closed yet;
+ * what is no longer available is leaving one here quietly, because the budget it
+ * summarises is now zero and any entry fails until somebody raises it on purpose.
  */
-const HEADLESS_DEBT: string[] = [
-  'src/gui/databases-routes.ts — POST /api/databases/create',
-  'src/gui/databases-routes.ts — POST /api/databases/delete',
-  'src/gui/dbconfig/cloud-settings-routes.ts — POST /api/cloud/s3-config',
-  'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/rename',
-  'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/test',
-  'src/gui/question-routes.ts — POST answerMatch',
-  'src/gui/question-routes.ts — POST dismissMatch',
-  'src/gui/read-routes.ts — POST /api/analytics/sql',
-  'src/gui/schema-routes.ts — DELETE /api/schema/entities/[^/]+/links/[^/]+$',
-  'src/gui/schema-routes.ts — POST /api/schema/entities/[^/]+/links$',
-  'src/gui/schema-routes.ts — PUT /api/gui-meta/columns/[^/]+/[^/]+$',
-  'src/gui/server.ts — POST /api/update/apply',
-  'src/gui/server.ts — POST /api/update/check',
-  'src/gui/server.ts — POST /api/workspaces/delete',
-  'src/gui/server.ts — PUT /api/gui-meta/*',
-  'src/gui/workspaces-routes.ts — POST /api/workspaces/delete',
-];
+const HEADLESS_DEBT: string[] = [];
 
 /**
  * Branches that are not routes at all, as `<file> — <route>`, sorted.
@@ -171,6 +167,7 @@ const GUI_ONLY_SNAPSHOT: string[] = [
   'src/gui/dbconfig/connection-routes.ts — POST /api/dbconfig/connect — session-state',
   'src/gui/files-routes.ts — POST openMatch — desktop-shell',
   'src/gui/identity/routes.ts — GET /lattice/device-code — interactive-consent',
+  'src/gui/server.ts — POST /api/update/apply — desktop-shell',
   'src/gui/sources-routes.ts — POST /api/sources/pick — local-file-picker',
   'src/gui/workspaces-routes.ts — POST /api/workspaces/reload — session-state',
 ];
