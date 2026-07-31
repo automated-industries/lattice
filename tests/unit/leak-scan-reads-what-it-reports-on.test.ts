@@ -32,8 +32,30 @@ interface Run {
   out: string;
 }
 
+/**
+ * Rewrite a native `C:\dir\sub` path to the `/c/dir/sub` form bash takes.
+ *
+ * The scan targets come from `mkdtempSync`, which yields a native path. Handing
+ * bash a drive-letter path is handing it something it does not resolve — the
+ * guard then has no tree to look at. Converting here keeps these tests aimed at
+ * the scan itself rather than at path handling. A wrong conversion does not go
+ * unnoticed: the guard refuses a target it cannot read, and every case below
+ * asserts on what the guard *said*, so it cannot come out green either way.
+ *
+ * No-op off Windows.
+ */
+function toBashPath(p: string): string {
+  if (process.platform !== 'win32') return p;
+  return p
+    .replace(/\\/g, '/')
+    .replace(/^([A-Za-z]):/, (_m, drive: string) => `/${drive.toLowerCase()}`);
+}
+
 function runGuard(...targets: string[]): Run {
-  const r = spawnSync('bash', [script, ...targets], { encoding: 'utf8', cwd: repoRoot });
+  const r = spawnSync('bash', [script, ...targets.map(toBashPath)], {
+    encoding: 'utf8',
+    cwd: repoRoot,
+  });
   if (r.error) throw r.error;
   return { status: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
 }
@@ -101,7 +123,11 @@ describe('the term scan reads what it reports on', () => {
     const r = runGuard(dir);
 
     expect(r.status, 'encoding something is not itself the violation').toBe(0);
-    expect(r.out, 'and it says it decoded before clearing it').toContain('encoded payload');
+    // The count has to be non-zero. "scanned 0 encoded payload(s)" also contains
+    // the words, and a pass built on it would be a pass over an unread tree.
+    expect(r.out, 'and it says it decoded before clearing it').toMatch(
+      /scanned [1-9][0-9]* encoded payload\(s\) by decoding them first/,
+    );
   });
 
   it('a file the scan cannot read as text is named rather than skipped', () => {
@@ -118,12 +144,30 @@ describe('the term scan reads what it reports on', () => {
     expect(r.out).toContain('blob.bin');
   });
 
+  it('a target that is not there is refused, not called clean', () => {
+    const r = runGuard(join(tempTree(), 'no-such-dir'));
+
+    expect(r.status, 'nothing was read, so there is nothing to pass').toBe(1);
+    expect(r.out).toContain('does not exist');
+    expect(r.out).not.toContain('check:generic passed');
+  });
+
+  it('a target with a real path but no files in it is refused too', () => {
+    const r = runGuard(tempTree());
+
+    expect(r.status, 'zero files read is not a clean result').toBe(1);
+    expect(r.out).toContain('examined 0 files');
+    expect(r.out).not.toContain('check:generic passed');
+  });
+
   it("this repo's own tree is clean under the stronger scan", () => {
     const r = runGuard();
     expect(r.out, 'the payloads were decoded, not skipped').toMatch(
       /scanned [1-9][0-9]* encoded payload\(s\) by decoding them first/,
     );
     expect(r.status, r.out).toBe(0);
-    expect(r.out).toContain('check:generic passed');
+    expect(r.out, 'and it reports how much it read').toMatch(
+      /check:generic passed \([1-9][0-9]* file\(s\) read/,
+    );
   });
 });

@@ -4,7 +4,8 @@
 # `dist/` directory only — but anything that lands in the GitHub repo is
 # also publicly readable, so we lint the wider source tree too.
 #
-# Exit 1 on the first match. Add new banned terms as needed.
+# Exit 1 if anything is found, and also if the scan could not read what it was
+# asked to read. Add new banned terms as needed.
 
 set -euo pipefail
 
@@ -23,6 +24,24 @@ if [ "$#" -gt 0 ]; then
   TARGETS=("$@")
 else
   TARGETS=(src tests README.md CHANGELOG.md docs)
+fi
+
+# A target the scan cannot reach reads as clean: `grep -r` and `find` both send
+# "No such file or directory" to stderr, which is discarded below, and then
+# contribute no matches. Nothing further in this script can tell that apart from
+# a tree that was read and had nothing in it. So the targets are checked for
+# existence first, and a target that is not there is named and refused.
+unreadable=0
+for t in "${TARGETS[@]}"; do
+  if [ ! -e "$t" ]; then
+    echo "✗ scan target '$t' does not exist — nothing under it was read."
+    unreadable=$((unreadable + 1))
+  fi
+done
+if [ "$unreadable" -gt 0 ]; then
+  echo ""
+  echo "check:generic failed: $unreadable scan target(s) could not be read. A scan that read nothing is not a pass."
+  exit 1
 fi
 
 # Terms that should never appear in a public repo. Keep generic; do NOT
@@ -59,15 +78,26 @@ done
 # else. Silence from a scanner has to mean "I read it and it was clean".
 # ---------------------------------------------------------------------------
 
-# 1. Files inside the scanned tree that a text scan cannot read at all.
+# 1. Files inside the scanned tree that a text scan cannot read at all. The same
+#    pass counts the files, because the count is what separates "read it, it was
+#    clean" from "there was nothing to read" — an empty or vanished tree
+#    produces exactly the same silence as a clean one.
+files_scanned=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
+  files_scanned=$((files_scanned + 1))
   if ! grep -qI . "$f" 2>/dev/null; then
     echo "✗ '$f' is not readable as text — every term scan silently skips it."
     echo "    Keep binaries out of the scanned tree, or the scan is reporting on a file it never read."
     violations=$((violations + 1))
   fi
 done < <(find "${TARGETS[@]}" -type f 2>/dev/null)
+
+if [ "$files_scanned" -eq 0 ]; then
+  echo "✗ the scan examined 0 files under: ${TARGETS[*]}"
+  echo "    There is nothing here to have been clean. Refusing to report a pass."
+  exit 1
+fi
 
 # 2. Encoded payloads. A run this long in the base64 alphabet is not prose; it
 #    is an embedded artifact. Decode it and scan the plain text underneath.
@@ -124,4 +154,4 @@ if [ "$violations" -gt 0 ]; then
   exit 1
 fi
 
-echo "✓ check:generic passed (no banned terms or forbidden files found)."
+echo "✓ check:generic passed ($files_scanned file(s) read; no banned terms or forbidden files found)."
