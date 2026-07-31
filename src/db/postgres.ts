@@ -711,10 +711,63 @@ export const POSTGRES_POLYFILLS: readonly { warn: string; sql: string }[] = [
 ];
 
 /**
+ * Does this error mean the connection itself never came up, rather than that one
+ * statement was refused?
+ *
+ * The distinction decides whether continuing to the next statement can possibly
+ * help. A statement-level refusal (no CREATE on schema public) is specific to
+ * that statement and the next one may well succeed. A connection-level failure —
+ * nothing listening, host unknown, wrong password, no such database — will fail
+ * every remaining statement in exactly the same way, and each retry pays another
+ * connect timeout.
+ *
+ * Deliberately narrow: only failures that happen while ESTABLISHING the session
+ * count — the socket-level `code` Node sets when the TCP connection cannot be
+ * made, and the SQLSTATEs Postgres returns when it refuses the session outright
+ * (28P01 invalid_password, 28000 invalid_authorization_specification, 3D000
+ * invalid_catalog_name). Mid-session socket errors such as ECONNRESET are NOT
+ * included: those can come from a live server that the pool will reconnect to,
+ * where trying the next statement is the right move. Anything unrecognized is
+ * likewise treated as statement-level, so every statement still gets tried — a
+ * missed stop only costs time, whereas a wrong stop would skip a registration.
+ */
+function isConnectionLevelError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') {
+    if (
+      code === 'ECONNREFUSED' ||
+      code === 'ENOTFOUND' ||
+      code === 'EHOSTUNREACH' ||
+      code === 'ENETUNREACH' ||
+      code === 'ETIMEDOUT' ||
+      code === 'EAI_AGAIN' ||
+      code === '28P01' ||
+      code === '28000' ||
+      code === '3D000'
+    ) {
+      return true;
+    }
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    /timeout exceeded when trying to connect/i.test(msg) ||
+    /\b(ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN)\b/.test(msg)
+  );
+}
+
+/**
  * Run the polyfill DDL through `run`. Each statement is independent and
  * non-fatal: a permission-restricted role surfaces a warning rather than
  * throwing (a member who can't create them is fine as long as the owner already
  * did). Used by the adapter on connect AND by `secureCloud` (as the owner).
+ *
+ * Statement-level failures continue to the next statement; a connection-level
+ * failure stops the loop, because every remaining statement would re-attempt the
+ * same dead connection and wait out the same connect timeout. Against an
+ * unreachable host that turned one open into one connect attempt per polyfill —
+ * five sequential timeouts to learn the single fact that nothing is listening.
+ * Stopping early is not a silent recovery: the caller's next query fails on the
+ * same connection and reports it, and the reason is warned here once.
  */
 export async function registerPostgresPolyfills(
   run: (sql: string) => Promise<unknown>,
@@ -725,6 +778,15 @@ export async function registerPostgresPolyfills(
       await run(sql);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (isConnectionLevelError(err)) {
+        // Report the reason once, then stop: the connection is the problem, and
+        // the remaining statements can only rediscover it one timeout at a time.
+        console.warn(
+          '[PostgresAdapter] could not reach the database to register SQLite-compat polyfills:',
+          msg,
+        );
+        break;
+      }
       // A scoped cloud member has no CREATE on schema public, so it can neither
       // create these nor CREATE OR REPLACE the owner's — but the owner already
       // created them during secureCloud and members hold EXECUTE on them, so this
