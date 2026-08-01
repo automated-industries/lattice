@@ -97,6 +97,8 @@ export interface CloudCommandArgs {
   revoke?: boolean;
   /** `--url-stdin` — read the connection string from standard input. */
   urlStdin?: boolean;
+  /** `--token-stdin` — read the invite token from standard input. */
+  tokenStdin?: boolean;
   /**
    * Whether this process is a managed session. Defaults to reading the
    * environment; set it to drive the managed refusal explicitly.
@@ -112,10 +114,13 @@ export interface CloudCommandArgs {
   readStdin?: () => Promise<string>;
 }
 
-// ── Getting a connection string in without publishing it ────────────────────
+// ── Getting a credential in without publishing it ───────────────────────────
 
 /** The environment variable `migrate` and `probe` read a connection string from. */
 export const CLOUD_URL_ENV = 'LATTICE_CLOUD_URL';
+
+/** The environment variable `join` reads an invite token from. */
+export const INVITE_TOKEN_ENV = 'LATTICE_INVITE_TOKEN';
 
 /** Read standard input to the end and return its first non-empty line. */
 async function readStdinLine(): Promise<string> {
@@ -166,6 +171,47 @@ async function resolveCloudUrl(args: CloudCommandArgs, usage: string): Promise<s
     return positional;
   }
   const fromEnv = (process.env[CLOUD_URL_ENV] ?? '').trim();
+  if (fromEnv) return fromEnv;
+  throw new Error(usage);
+}
+
+/**
+ * The invite token a `join` operates on, taken from the safest source the caller
+ * offered.
+ *
+ * An invite token is not a handle that has to be looked up somewhere: it
+ * DECRYPTS, on this machine, to the host, port, database, user and password of
+ * the member role the owner minted, and `join` connects with exactly those (see
+ * {@link redeemCloudInvite}). So it is a credential in the same sense the
+ * connection string above is, and it gets the same three ways in. The address it
+ * was sent to is the other half of what decrypts it, and that address is
+ * `--email` on the same command line — so an argument-borne token is read out of
+ * the process list together with everything needed to spend it.
+ *
+ * `--token-stdin` (or `-` in place of the token) is the recommended form,
+ * {@link INVITE_TOKEN_ENV} is read when nothing was typed, and the plain
+ * argument still works but WARNS, because a credential that has been in a
+ * process list has to be treated as exposed.
+ *
+ * @throws when none of the three produced anything.
+ */
+async function resolveInviteToken(args: CloudCommandArgs, usage: string): Promise<string> {
+  const positional = args.token?.trim() ?? '';
+  if (args.tokenStdin === true || positional === '-') {
+    const piped = (await (args.readStdin ?? readStdinLine)()).trim();
+    if (!piped) throw new Error('Nothing arrived on standard input. ' + usage);
+    return piped;
+  }
+  if (positional) {
+    console.warn(
+      `[lattice] the invite token was passed as an argument, where other users of this ` +
+        `machine can read it from the process list and your shell records it in its history. ` +
+        `The token decrypts to this cloud's database login for you, so treat that login as ` +
+        `exposed. Pipe it in with --token-stdin, or set ${INVITE_TOKEN_ENV}.`,
+    );
+    return positional;
+  }
+  const fromEnv = (process.env[INVITE_TOKEN_ENV] ?? '').trim();
   if (fromEnv) return fromEnv;
   throw new Error(usage);
 }
@@ -455,8 +501,11 @@ async function runInvite(
     '',
     result.token,
     '',
-    'They redeem it by entering their email and this token in "Join a cloud", or',
-    'by calling redeemCloudInvite() from the package with the same two values.',
+    'They redeem it by entering their email and this token in "Join a cloud", by',
+    'calling redeemCloudInvite() from the package with the same two values, or from',
+    'a terminal — piping the token in, so it never reaches a process list:',
+    '',
+    `  lattice cloud join --token-stdin --email ${result.email} < token.txt`,
   ];
 }
 
@@ -471,16 +520,21 @@ async function runInvite(
  * it matches, which it usually does, and is refused rather than guessed at when
  * there is none.
  *
+ * The token itself comes in the way a credential should (see
+ * {@link resolveInviteToken}): piped, from the environment, or — accepted, and
+ * warned about — as an argument.
+ *
  * The invite is claimed BEFORE anything is created (see the join capability), so
  * a token that was already spent, revoked, or has expired is refused with no
  * workspace made and nothing to undo. What lands is a NEW workspace pointing at
  * the shared database — never a repoint of whatever was already open.
  */
 async function runJoin(args: CloudCommandArgs): Promise<string[]> {
-  const token = args.token?.trim() ?? '';
-  if (!token) {
-    throw new Error('Usage: lattice cloud join --token <token> [--email <address>] [--name <n>]');
-  }
+  const token = await resolveInviteToken(
+    args,
+    `Usage: lattice cloud join --token-stdin [--email <address>] [--name <n>]   (or set ` +
+      `${INVITE_TOKEN_ENV}, or pass the token as --token <token>)`,
+  );
   const email = (args.email?.trim() ?? '') || readIdentity().email.trim();
   if (!email) {
     throw new Error(

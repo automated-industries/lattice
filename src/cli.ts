@@ -128,6 +128,8 @@ interface ParsedArgs {
   revoke: boolean;
   /** --url-stdin — read a connection string from standard input instead of argv. */
   urlStdin: boolean;
+  /** --token-stdin — read a cloud invite token from standard input instead of argv. */
+  tokenStdin: boolean;
   /** --base-url <url> — the OpenAI-compatible endpoint for `model connect`. */
   baseUrl?: string | undefined;
   /** --model <id> — the model that endpoint should be asked for (`model connect`). */
@@ -223,6 +225,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let to: string | undefined;
   let revoke = false;
   let urlStdin = false;
+  let tokenStdin = false;
   let baseUrl: string | undefined;
   let modelId: string | undefined;
   let keyStdin = false;
@@ -446,6 +449,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === '--token' && i + 1 < argv.length) {
       i++;
       token = argv[i];
+    } else if (arg === '--token-stdin') {
+      tokenStdin = true;
     } else if (arg === '--pk' && i + 1 < argv.length) {
       i++;
       pk = argv[i];
@@ -561,6 +566,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     to,
     revoke,
     urlStdin,
+    tokenStdin,
     baseUrl,
     modelId,
     keyStdin,
@@ -702,7 +708,7 @@ function printHelp(): void {
       '  lattice cloud members                   Who is on this cloud',
       '  lattice cloud secure                    Turn this Postgres into a cloud (owner)',
       '  lattice cloud invite --email <address>  Mint one invite token, printed once',
-      '  lattice cloud join --token <token>      Redeem an invite into a NEW workspace',
+      '  lattice cloud join --token-stdin        Redeem an invite into a NEW workspace',
       '  lattice cloud revoke <member>           Remove somebody, by role, email, or name',
       '  lattice cloud share --table <t> --pk <id> --visibility <private|everyone>',
       '  lattice cloud share --table <t> --pk <id> --to <member> [--revoke]',
@@ -711,7 +717,13 @@ function printHelp(): void {
       '  --config, -c <path>    Workspace to operate on (default: the active workspace)',
       '  --root <dir>           The .lattice root holding that workspace',
       '  --json                 Machine-readable output (status, members, probe)',
-      '  --token <token>        The invite being redeemed (join)',
+      '  --token-stdin          Read the invite being redeemed (join) from standard input.',
+      '                         The token decrypts to a database login for this cloud, and',
+      '                         an argument is readable from the process list by anyone on',
+      '                         the machine and is kept in your shell history — so pipe it:',
+      '                           lattice cloud join --token-stdin < token.txt',
+      '                         LATTICE_INVITE_TOKEN is read when neither is given. Passing',
+      '                         the token as --token <token> still works, and warns.',
       '  --email <address>      The invitee (invite), or who the invite was sent to (join;',
       '                         defaults to this machine identity)',
       '  --name <label>         Name for the workspace (join, migrate)',
@@ -1913,6 +1925,7 @@ async function runCloud(args: ParsedArgs): Promise<void> {
       to: args.to,
       revoke: args.revoke,
       urlStdin: args.urlStdin,
+      tokenStdin: args.tokenStdin,
     });
     for (const line of lines) console.log(line);
   } catch (e) {

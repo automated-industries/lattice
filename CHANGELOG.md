@@ -47,6 +47,15 @@ to approve it; but not on the machine being configured. Those flows are start he
 approve in a browser anywhere, paste the code back, so the machine with no display is
 still the machine you configure.
 
+**There is a breaking change in this minor release.** One published name —
+`backfillOwnership` — is gone from the package entry. That is a breaking change however
+small it looks: a program that merely lists the name in an `import { … }` fails to load,
+before any of its own code runs. It is shipping in 5.7.0 rather than waiting for a major,
+so upgrading from 5.6.x is not guaranteed to be a no-op for a caller of that one function.
+Read _Breaking_ below before you upgrade — it says what to do instead, which is to delete
+the call. Nothing else in the public surface was removed or renamed, and everything else
+here only grows it.
+
 ### Known limitations
 
 **On a shared workspace, an upsert of a row that does not exist yet is refused when
@@ -316,6 +325,21 @@ no row security on it, now meets the refusal described above.
 
 ### Security
 
+- **Importing into a shared database you own no longer fails after the data has already
+  landed.** Lattice keeps an internal record of where imported data came from, and locks it
+  so nobody you share the database with can read it. That lock was applied in the form that
+  covers the account owning the database too — and that account is the only one allowed to
+  write those records at all. So on a shared database owned by an ordinary account rather
+  than an all-powerful one, an import created its table, loaded every row, and then stopped
+  on the final step with a permission error: a finished import reported as a failure, with
+  nothing said about the data already sitting there.
+
+  The lock now covers everyone the database is shared with and leaves out the one account it
+  was never meant to stop. Nothing is loosened — an account that does not own the database
+  still reads nothing from those records and still cannot write one, even when handed direct
+  permission on the table. Databases already protected by an earlier release are corrected
+  the next time their owner opens them, with no action needed.
+
 - **Protecting a shared database no longer makes the data in it disappear, and the list of
   attached sources is no longer hidden from the person who owns it.** Rows in a shared
   database belong to people, and who owns which row is recorded as the rows are protected.
@@ -372,7 +396,9 @@ no row security on it, now meets the refusal described above.
   one of them a published export (`backfillOwnership`). There is no correct moment to call
   them from outside the operation that protects the table, so keeping either would keep a
   way to get this wrong whose only symptom is silence. Callers should use `enableRlsForTable`
-  (or `secureCloud`, which drives it), both of which now do the recording themselves.
+  (or `secureCloud`, which drives it), both of which now do the recording themselves. Losing a
+  published name is a breaking change, and it is shipping in this minor release — see
+  _Breaking_.
 
 - **Marking a column secret cannot be done without installing the mask that enforces it.**
   Secrecy is two writes: a stored flag, which hides the column from the assistant and the
@@ -421,8 +447,10 @@ no row security on it, now meets the refusal described above.
   operation is published, so the two doors that had it were the two an embedding deployment
   never uses. It now lives in the operation itself, with the same explicit override the
   invite and remove operations take, so a manager driving it deliberately can still say so.
-  Migrating a workspace onto a shared database refuses up front for the same reason, rather
-  than copying the data across and only then failing to protect it.
+  A migration is deliberately outside it. The database a migration secures is not the one a
+  manager provisioned — it is one the person just supplied, holding a copy of their own local
+  workspace — so the migration states that about its own target rather than reading it off the
+  session, and moving onto a shared database completes in such a session as it always has.
 
 - **Starting the app no longer searches your home folder for workspaces to open.** On
   launch, Lattice picks up workspace files sitting beside its root, so a workspace joined by
@@ -434,6 +462,81 @@ no row security on it, now meets the refusal described above.
   not created. Nothing named that file and nothing reported taking it. The sweep now skips
   the home folder wherever a root is placed; a workspace file next to a project's own root
   is still picked up, which is the case it exists for.
+
+### Breaking
+
+**This is a breaking change, and it is shipping in a minor release.** 5.7.0 removes a
+published export. Upgrading from 5.6.x is therefore not guaranteed to be a no-op, which
+is not what a minor version normally promises. It affects exactly one name, and only a
+caller that names that one name; everything else in this release is additive.
+
+- **`backfillOwnership` is no longer exported.** It recorded ownership of the rows a
+  table already held, as a step callers ran themselves before protecting the table. It
+  has been published since 3.0.0 and is gone from the package entry in both module
+  formats. An ESM `import { backfillOwnership } from 'latticesql'` now fails to load the
+  module at all — before any of the importing program's own code runs — with
+
+  ```
+  SyntaxError: The requested module 'latticesql' does not provide an export named 'backfillOwnership'
+  ```
+
+  and a CommonJS `require('latticesql').backfillOwnership` is `undefined`, so a call
+  through it throws `TypeError: ... is not a function`.
+
+  **Delete the call.** Recording ownership is now part of `enableRlsForTable` (and of
+  `secureCloud`, which drives it), so protecting a table already does it; there is no
+  step left to run first. A caller that did
+
+  ```ts
+  await backfillOwnership(db, 'notes', ['id']);
+  await enableRlsForTable(db, 'notes', ['id']);
+  ```
+
+  should now do
+
+  ```ts
+  await enableRlsForTable(db, 'notes', ['id']);
+  ```
+
+  which records the rows the table already holds as part of protecting it. The remaining
+  call keeps the arguments it always took, and a table protected by the older two-step
+  sequence needs no repair.
+
+  **Why there is no compatibility shim.** There is only one case a separate call could
+  still be for — a table already protected whose rows have no ownership record — and on
+  that case the old statement reports success and records nothing. The rule it is trying
+  to repair is the same rule that hides the rows it needs to read, so it selects from what
+  looks to it like an empty table. Measured on a table holding two unrecorded rows, owned
+  by an ordinary Postgres role: it returned without error, recorded nothing, and left the
+  owner unable to read either row. Forwarding the name to `enableRlsForTable` records
+  nothing on that same case too, because protecting a table is recorded as done and does
+  not repeat. What does work is lifting the rule, recording, and putting it back inside a
+  single transaction — which is what protecting a table now is, and a second copy of it
+  under an older name is one more thing to keep right rather than compatibility. On a
+  table that is NOT yet protected there was never a question: protect it, and the rows it
+  already holds are recorded as part of that. So the name is gone rather than hollowed
+  out — a function that returns success having done nothing is the failure this release
+  exists to remove, and keeping the name only to do that would be shipping it again.
+
+  **How the surface is pinned now.** The published names are recorded in a plain file the
+  test suite compares against, in both directions. It used to be a snapshot, and a
+  snapshot has a tool that rewrites it: the removal above was caught, and then made green
+  by running that tool rather than by answering it. Nothing regenerates the file now.
+
+  The file lists every name this major has published — not the current surface — so a
+  name that is no longer exported stays on the list and is explained by a record beside
+  it, carrying the release it went out in and one line of why. `backfillOwnership` has
+  such a record; it is the only one. A removal is therefore recorded by adding a stated
+  exception, not by deleting a line, and the checks refuse both of the cheap ways around
+  that: regenerating the list from the live surface strands the records that name what is
+  missing, and deleting a name from the list outright drops it below a length pinned in
+  the test file rather than beside the list. Re-exporting a recorded name fails too, so a
+  name cannot be quietly brought back and then removed a second time under the first
+  removal's acknowledgement.
+
+  What it still cannot do is tell a good removal from a bad one: a stated one passes, and
+  stating one costs a hand edit. That is the intent — the point is that a removal is
+  answered rather than impossible, and that the answer is a paragraph a reviewer reads.
 
 ### Changed
 
@@ -636,7 +739,7 @@ no row security on it, now meets the refusal described above.
   its own help text calls unauthenticated — so the price of administering a shared
   workspace on a server was exposing an unauthenticated admin panel on it. There are now
   nine verbs: `cloud status`, `cloud members`, `cloud secure`, `cloud invite --email`,
-  `cloud join --token`, `cloud revoke <member>`, `cloud share`, `cloud migrate <url>`, and
+  `cloud join --token-stdin`, `cloud revoke <member>`, `cloud share`, `cloud migrate <url>`, and
   `cloud probe <url>`. `status` is the one that was most missing: diagnosing a broken
   shared workspace previously required the browser app, which is exactly the thing that
   stops working when something is wrong. It reads only — it will tell you which side of
@@ -646,18 +749,22 @@ no row security on it, now meets the refusal described above.
   **`migrate` and `join` complete the arc.** A server could not become a shared workspace
   and could not join one, so the two ends of the story were the two that still needed a
   browser. `cloud migrate` moves the workspace you are in onto a shared database;
-  `cloud join --token <token>` redeems an invite and lands in a NEW workspace, creating the
+  `cloud join --token-stdin` redeems an invite and lands in a NEW workspace, creating the
   root if the machine has none, and never repointing whatever was already open. A spent,
   revoked, or expired token is refused without leaving a workspace behind.
 
-  **The connection string never has to appear in the command.** A shared database's
-  connection string contains the owner password, and an argument is public on the machine
-  it runs on — any other user can read it out of the process list while the command runs,
-  and your shell keeps it in a history file afterwards. That is the same exposure these
-  verbs exist to remove, so `migrate` and `probe` read the URL from standard input
-  (`--url-stdin`, or `-` in place of the URL), or from `LATTICE_CLOUD_URL`. Passing it as
-  an argument still works and warns, because a password that has been in a process list
-  has to be treated as exposed.
+  **No credential has to appear in the command.** A shared database's connection string
+  contains the owner password, and an argument is public on the machine it runs on — any
+  other user can read it out of the process list while the command runs, and your shell
+  keeps it in a history file afterwards. That is the same exposure these verbs exist to
+  remove, so `migrate` and `probe` read the URL from standard input (`--url-stdin`, or `-`
+  in place of the URL), or from `LATTICE_CLOUD_URL`. An invite token is a credential in the
+  same sense — it decrypts, on the member's own machine, to the host, database, role and
+  password of the login the owner minted, and `--email` puts the other half of the
+  decryption key on the same command line — so `join` reads it the same three ways:
+  `--token-stdin` (or `-` in place of the token), or `LATTICE_INVITE_TOKEN`. Passing either
+  as an argument still works and warns, because a credential that has been in a process
+  list has to be treated as exposed.
 
   **No new authority comes with them, and no refusal is dropped.** Permission on a shared
   workspace is the database role you connect as, not a session a caller can assert, so a
@@ -728,6 +835,32 @@ no row security on it, now meets the refusal described above.
   should use, because it survives a rename.
 
 ### Fixed
+
+- **Importing a source that carries its own `id` column produces a table with a real
+  primary key.** Every imported table is created with a synthetic `id TEXT PRIMARY KEY`
+  and registered declaring `id` as its key. A source column literally named `id` — which
+  any export of already-keyed records carries — overwrote that column definition, so the
+  table was created with **no key at all** while the registration still claimed one.
+
+  Nothing failed at import time; the first upsert did, because an upsert names the
+  declared key in an `ON CONFLICT` clause and the relation had no such constraint.
+  Moving that workspace onto a shared database issues exactly that statement per row, so
+  the copy aborted part-way — after the target already held some of the workspace and
+  before row security was installed on it.
+
+  A table this import CREATES now carries the source's own identifier alongside the
+  synthetic key as `source_id` (`source_id_`, and so on, if the source already uses that
+  name) rather than replacing it, so no column is dropped. It cannot become the key
+  itself: a dated import appends the next snapshot of the same records under the same
+  identifiers, so those values are not unique within the table. Everything that reads
+  one of those columns back — the dedup key, an inferred link's two sides, and a
+  reconstructed view's filter — follows the same mapping.
+
+  A table that ALREADY EXISTS keeps the shape it has. Its rows hold their identifiers in
+  `id` itself and there is no column to move them to, so a re-import goes on writing them
+  where the earlier rows are, deduping against them as before, rather than splitting one
+  record set across two columns. Such a table keeps the missing key until it is rebuilt;
+  re-importing into a fresh workspace is what gets one.
 
 - **`lattice init` followed by `lattice doctor` is a clean run.** The first two commands
   anybody types reported a broken install. `init` makes a workspace and nothing else — no
@@ -889,13 +1022,6 @@ no row security on it, now meets the refusal described above.
   on a scoped role wrote rows everybody on the database sees, and was told `ok`. The rule
   now travels with the writers themselves, so the assistant, a command, the browser and an
   embedder all meet it. Marking a column secret is gated the same way, for the same reason.
-
-- **Moving a local workspace onto a shared database works again from a managed session.**
-  Migration installs security on its target, and securing is refused on a managed session —
-  so the refusal was read off the session and applied to the whole migration. But the target
-  is not the managed database: it is one the person just supplied, holding a copy of their
-  own local workspace, which a manager has never heard of. The refusal now applies to what
-  it is about.
 
 - **A rolled-back migration no longer erases workspaces it never touched.** The workspace
   registry is one file listing every workspace on the machine, and any Lattice process

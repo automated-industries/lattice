@@ -2340,8 +2340,9 @@ database / username / password — and those credentials **are** the invite; the
 confirming it is a Lattice cloud (RLS installed), and opening it in introspect-only
 mode. Or the owner can mint a **one-time invite token** bound to your email
 address (`lattice cloud invite --email <address>`, or `POST /api/cloud/invite`),
-which you redeem into a brand-new workspace with `lattice cloud join --token
-<token>` — or `POST /api/cloud/redeem-invite`, or `redeemCloudInvite()` from the
+which you redeem into a brand-new workspace with `lattice cloud join --token-stdin`
+(the token piped in, so it stays out of the process list) — or
+`POST /api/cloud/redeem-invite`, or `redeemCloudInvite()` from the
 package. A token expires in about seven days, is never stored, and is claimed
 before anything is created, so a spent or revoked one is refused having changed
 nothing.
@@ -2554,7 +2555,7 @@ local Lattice to a shared one is **migrate**.
 - **Join** — two ways in. Connect directly with the scoped credentials the owner
   gave you (host / port / database / username / password), which **are** the invite;
   or redeem a one-time invite token bound to your email address with
-  `lattice cloud join --token <token>`, which opens a brand-new workspace on the
+  `lattice cloud join --token-stdin`, which opens a brand-new workspace on the
   cloud. Either way there is no server to sign into — a token is claimed against
   the cloud database itself.
 - **Invite** — an owner (whose role holds `CREATEROLE`) provisions a scoped,

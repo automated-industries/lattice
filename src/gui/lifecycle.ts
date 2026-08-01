@@ -16,6 +16,7 @@ import {
   enableChangelogRls,
   enableChatPrivacyRls,
   enableGuiAuditRls,
+  enableLineageRls,
   ownPolyfillsByGroup,
 } from '../cloud/rls.js';
 import { publishSharedSchema, hydrateMemberConfigFromCloud } from '../cloud/shared-schema.js';
@@ -687,6 +688,7 @@ export async function convergeOwnerCloud(active: ActiveDb): Promise<void> {
         await enableChangelogRls(db); // v3 fail-closed changelog policy
         await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables
         await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log
+        await enableLineageRls(db); // policy-less lock on the lineage substrate
         if (cancelled()) return;
         const access = await reconcileCloudMemberAccess(db);
         for (const s of access.skipped) {

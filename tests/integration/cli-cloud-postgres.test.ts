@@ -192,6 +192,48 @@ describe.skipIf(!PG_URL)('lattice cloud, against a real cloud', () => {
     return new Map(rows.map((r) => [r.name, r.forced]));
   }
 
+  /** BOTH row-security flags for one table, exactly as the catalog holds them. */
+  async function rlsFlags(
+    db: Lattice,
+    table: string,
+  ): Promise<{ enabled: boolean; forced: boolean }> {
+    const rows = (await allAsyncOrSync(
+      db.adapter,
+      `SELECT c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema() AND c.relname = ?`,
+      [table],
+    )) as { enabled: boolean; forced: boolean }[];
+    return { enabled: rows[0]?.enabled === true, forced: rows[0]?.forced === true };
+  }
+
+  /**
+   * What a member connection can actually reach on `table`, connected as itself.
+   *
+   * The two probes are the ones securing is supposed to make impossible: reading
+   * the key of a row it does not own, and deleting that row. A member holds the
+   * key column by grant (it needs it to address its OWN rows) and INSERT/UPDATE/
+   * DELETE on the base table, so both come back empty only because row security
+   * is filtering them — which makes them a direct test of whether it is.
+   */
+  async function memberReach(
+    url: string,
+    table: string,
+    pk: string,
+  ): Promise<{ ids: string[]; deleted: number }> {
+    const conn = new pg.Pool({ connectionString: url, max: 1 });
+    try {
+      const seen = await conn.query(`SELECT id FROM "${table}"`);
+      const gone = await conn.query(`DELETE FROM "${table}" WHERE id = $1`, [pk]);
+      return {
+        ids: seen.rows.map((r: { id: unknown }) => String(r.id)),
+        deleted: gone.rowCount ?? 0,
+      };
+    } finally {
+      await conn.end();
+    }
+  }
+
   // ── members ──────────────────────────────────────────────────────────────
 
   it('the owner sees the whole roster; a member sees only itself', async () => {
@@ -377,7 +419,7 @@ describe.skipIf(!PG_URL)('lattice cloud, against a real cloud', () => {
       expect(
         status.warnings.find((w) => w.table === table)?.reason,
         `${table} is named, with the repair`,
-      ).toMatch(/row security is not forced/);
+      ).toMatch(/row security is not enabled on it/);
     }
 
     // Those two and nothing else: the declared tables are still clean, so
@@ -391,7 +433,7 @@ describe.skipIf(!PG_URL)('lattice cloud, against a real cloud', () => {
     // often than it is parsed.
     const text = (await cli(cloud.ownerUrl, cloud, { subcommand: 'status' })).join('\n');
     expect(text).toContain('Warnings:   2');
-    expect(text).toContain('- ledger: row security is not forced');
+    expect(text).toContain('- ledger: row security is not enabled');
 
     // And running the repair does not make them go away, which is the reason
     // reporting them matters: securing walks the registered tables, so neither
@@ -399,7 +441,86 @@ describe.skipIf(!PG_URL)('lattice cloud, against a real cloud', () => {
     // get a person to act on them.
     const secured = (await cli(cloud.ownerUrl, cloud, { subcommand: 'secure' })).join('\n');
     expect(secured).toContain('2 table(s) need attention:');
-    expect(secured).toContain('- unkeyed: row security is not forced');
+    expect(secured).toContain('- unkeyed: row security is not enabled');
+  });
+
+  it('names a table whose row security was switched off but still reads as forced', async () => {
+    // Postgres carries TWO independent flags. `relrowsecurity` decides whether
+    // any policy applies at all; `relforcerowsecurity` decides only whether the
+    // table's own owner is subject to them as well. `ALTER TABLE … DISABLE ROW
+    // LEVEL SECURITY` clears the first and leaves the second exactly as it was,
+    // so the table still reads as forced while enforcing nothing — and a report
+    // that asks only about forcing calls it protected.
+    //
+    // Not hypothetical: `pg_dump` emits the FORCE statement well before the
+    // ENABLE one, with the table data in between, so any restore interrupted
+    // between them lands in precisely this state.
+    const cloud = await freshCloud();
+    const member = await addMember(cloud, 'drift');
+    await cloud.owner.insert('notes', { id: 'owner-row', body: 'OWNER ONLY' });
+
+    // Healthy: both flags on, the member reaches nothing of the owner's row, and
+    // the report is clean. This is the control the drift is measured against.
+    expect(await rlsFlags(cloud.owner, 'notes')).toEqual({ enabled: true, forced: true });
+    expect(await memberReach(member.url, 'notes', 'owner-row')).toEqual({ ids: [], deleted: 0 });
+    const [cleanJson] = await cli(cloud.ownerUrl, cloud, { subcommand: 'status', json: true });
+    expect((JSON.parse(cleanJson ?? '') as CloudStatus).warnings).toEqual([]);
+
+    const alter = async (sql: string): Promise<void> => {
+      const conn = new pg.Pool({ connectionString: cloud.ownerUrl, max: 1 });
+      try {
+        await conn.query(sql);
+      } finally {
+        await conn.end();
+      }
+    };
+
+    // Dropping FORCE alone is drift worth reporting, but it does NOT expose a
+    // member: forcing decides only whether the table's OWN OWNER is subject to
+    // row security, and a member is never that. The report has to say the two
+    // states differently, or one of the two sentences is unearned.
+    await alter(`ALTER TABLE "notes" NO FORCE ROW LEVEL SECURITY`);
+    expect(await rlsFlags(cloud.owner, 'notes')).toEqual({ enabled: true, forced: false });
+    expect(await memberReach(member.url, 'notes', 'owner-row')).toEqual({ ids: [], deleted: 0 });
+    const [unforcedJson] = await cli(cloud.ownerUrl, cloud, { subcommand: 'status', json: true });
+    expect((JSON.parse(unforcedJson ?? '') as CloudStatus).warnings[0]?.reason).toContain(
+      'row security is enabled but not forced on it',
+    );
+
+    await alter(
+      `ALTER TABLE "notes" FORCE ROW LEVEL SECURITY;
+       ALTER TABLE "notes" DISABLE ROW LEVEL SECURITY`,
+    );
+
+    // The state the check has to catch, and the exposure that makes it matter:
+    // the member now reads the owner's row and DELETES it.
+    expect(await rlsFlags(cloud.owner, 'notes')).toEqual({ enabled: false, forced: true });
+    expect(await memberReach(member.url, 'notes', 'owner-row')).toEqual({
+      ids: ['owner-row'],
+      deleted: 1,
+    });
+
+    const [json] = await cli(cloud.ownerUrl, cloud, { subcommand: 'status', json: true });
+    const status = JSON.parse(json ?? '') as CloudStatus;
+    expect(status.warnings.map((w) => w.table)).toEqual(['notes']);
+    // And it names the flag that is actually off, not the one that happens to
+    // still be set — the report is what an operator acts on.
+    expect(status.warnings[0]?.reason).toContain('row security is not enabled on it');
+    expect(status.warnings[0]?.reason).toContain('flagged FORCE');
+
+    const text = (await cli(cloud.ownerUrl, cloud, { subcommand: 'status' })).join('\n');
+    expect(text).toContain('Warnings:   1');
+    expect(text).toContain('- notes: row security is not enabled on it');
+
+    // And securing does NOT put it back — which is why the warning names no
+    // repair. The per-table security step is recorded against a version key, so
+    // on a table it has already covered it does not run a second time. `notes` is
+    // one of the workspace's built-in tables, so securing refuses outright rather
+    // than reporting a success it has not earned; that refusal names the table.
+    await expect(cli(cloud.ownerUrl, cloud, { subcommand: 'secure' })).rejects.toThrow(
+      /did not cover this workspace's built-in tables[\s\S]*notes: row security is not enabled/,
+    );
+    expect(await rlsFlags(cloud.owner, 'notes')).toEqual({ enabled: false, forced: true });
   });
 
   // ── secure ───────────────────────────────────────────────────────────────
@@ -674,6 +795,11 @@ describe.skipIf(!PG_URL)('lattice cloud migrate + join, against a real database'
       });
     expect(token, 'the invite carried exactly one redeemable token').toBeTruthy();
 
+    // The guidance the owner forwards names the piped form. A token decrypts to
+    // the member's own database login, so the redemption we tell people to run
+    // must not be the one that publishes it to the process list.
+    expect(invite.join('\n')).toContain('lattice cloud join --token-stdin');
+
     // A different machine: its own credential store, its own registry, nothing
     // shared but the database.
     const otherConfig = join(scratch('machine2'), 'config');
@@ -686,7 +812,18 @@ describe.skipIf(!PG_URL)('lattice cloud migrate + join, against a real database'
     process.env.LATTICE_CONFIG_DIR = otherConfig;
     process.env.LATTICE_ROOT = otherRoot;
     try {
-      const joined = (await runCloudCommand({ subcommand: 'join', token, email })).join('\n');
+      // Redeemed the way the docs tell you to: the token piped in, never in an
+      // argument. This is the whole path — a real invite, a real member role, a
+      // real database — driven through the input channel that keeps the login
+      // out of the process list.
+      const joined = (
+        await runCloudCommand({
+          subcommand: 'join',
+          email,
+          tokenStdin: true,
+          readStdin: () => Promise.resolve(token + '\n'),
+        })
+      ).join('\n');
       expect(joined).toContain('Joined as joiner@example.test');
       expect(joined).toContain('scoped member');
 

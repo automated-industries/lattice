@@ -96,6 +96,39 @@ function coerce(v: unknown, type: InferredType): unknown {
   return v;
 }
 
+/**
+ * The table column a source column of the given name is materialized into.
+ *
+ * Every imported entity table is created with a synthetic `id TEXT PRIMARY KEY`
+ * and is registered declaring `id` as its key. A source column literally named
+ * `id` — which any export of already-keyed records carries — used to overwrite
+ * that column definition, so the table was created with no key at all while the
+ * registration still claimed one, and every later upsert named an `ON CONFLICT`
+ * constraint the relation did not have. The source's own identifier is carried
+ * ALONGSIDE the synthetic key instead of replacing it, under a name the source
+ * is not already using, so no column is dropped.
+ *
+ * It cannot simply become the key itself: a dated import appends the next
+ * snapshot of the same records under the same source identifiers, so those
+ * values are not unique within the table.
+ *
+ * `existing` is the table's already-registered columns, or null when this import
+ * is creating it. A table created before this mapping existed holds the source's
+ * identifiers in `id` itself and has no column to move them to; a re-import
+ * keeps writing them where its earlier rows already are rather than splitting
+ * one record set across two columns.
+ */
+function materializedColumn(
+  entity: Pick<InferredEntity, 'columns'>,
+  name: string,
+  existing: Record<string, string> | null,
+): string {
+  if (name !== 'id') return name;
+  let out = 'source_id';
+  while (entity.columns.some((c) => c.name === out)) out += '_';
+  return existing && !(out in existing) ? name : out;
+}
+
 /** Stable content hash of a source record — the dedup key for keyless entities. */
 function contentKey(record: Row): string {
   const parts = Object.keys(record)
@@ -335,10 +368,14 @@ async function runMaterializeImport(
     const columns: Record<string, string> = { id: 'TEXT PRIMARY KEY' };
     const fieldTypes: Record<string, string> = {};
     const cfgFields: Record<string, unknown> = { id: { type: 'uuid', primaryKey: true } };
+    // Read BEFORE defineLate, so it is the shape this import found rather than
+    // the one it is about to declare (see materializedColumn).
+    const already = db.getRegisteredColumns(entity.name);
+    const col = (n: string): string => materializedColumn(entity, n, already);
     for (const c of entity.columns) {
-      columns[c.name] = fieldToSqliteBaseType(c.type);
-      fieldTypes[c.name] = c.type;
-      cfgFields[c.name] = { type: c.type };
+      columns[col(c.name)] = fieldToSqliteBaseType(c.type);
+      fieldTypes[col(c.name)] = c.type;
+      cfgFields[col(c.name)] = { type: c.type };
     }
     // When dated, every entity dedups by content_key (which folds in `as_of`), so
     // a new snapshot appends instead of overwriting; otherwise only keyless
@@ -368,12 +405,12 @@ async function runMaterializeImport(
       const records = sourceRecords(data, entity);
       const rows: Row[] = records.map((r) => {
         const row: Row = {};
-        for (const c of entity.columns) row[c.name] = coerce(r[c.sourceKey], c.type);
+        for (const c of entity.columns) row[col(c.name)] = coerce(r[c.sourceKey], c.type);
         if (needsContentKey) row.content_key = recordKey(entity, r);
         if (dated) row.as_of = rowAsOf(entity, r);
         return row;
       });
-      const naturalKey = dated ? 'content_key' : (entity.naturalKey ?? 'content_key');
+      const naturalKey = dated ? 'content_key' : col(entity.naturalKey ?? 'content_key');
       // Index the dedup key BEFORE loading — turns each per-row existence check
       // from a full scan of the growing table (O(N²) over the load) into O(log N),
       // which is what makes a 10^5-row sheet import instead of pegging the CPU and
@@ -550,12 +587,23 @@ async function runMaterializeImport(
     // Links are contents (they connect rows), so they seed in `contents`/`both`.
     if (!doContents) continue;
 
-    const fromKeyCol = from.naturalKey ?? 'content_key';
+    // Both key columns are read back off the tables the entity pass just wrote,
+    // so they are the MATERIALIZED names — an entity keyed on a source column
+    // named `id` is keyed on the column that one became there.
+    const fromKeyCol = materializedColumn(
+      from,
+      from.naturalKey ?? 'content_key',
+      db.getRegisteredColumns(link.fromEntity),
+    );
     // `from` is always an entity (dated when the import is dated); `to` may be a
     // dated entity or a shared dimension — only the dated side folds in as_of.
-    const toIsEntity = byName.has(link.toEntity);
+    const to = byName.get(link.toEntity);
+    const toIsEntity = to !== undefined;
+    const toKeyCol = to
+      ? materializedColumn(to, link.toKey, db.getRegisteredColumns(link.toEntity))
+      : link.toKey;
     const fromMap = await idMap(link.fromEntity, fromKeyCol, dated);
-    const toMap = await idMap(link.toEntity, link.toKey, toIsEntity && dated);
+    const toMap = await idMap(link.toEntity, toKeyCol, toIsEntity && dated);
 
     const seen = new Set<string>();
     // Pre-load existing edges so re-applying an import never duplicates links.
@@ -615,10 +663,16 @@ async function runMaterializeImport(
   if (doSchema) {
     for (const v of usableViews) {
       const filt = v.filterValue.replace(/'/g, "''");
+      // The WHERE clause names a column on the master TABLE, so it is the
+      // materialized name — see materializedColumn.
+      const master = byName.get(v.master);
+      const filterCol = master
+        ? materializedColumn(master, v.filterColumn, db.getRegisteredColumns(v.master))
+        : v.filterColumn;
       await execSql(db, `DROP VIEW IF EXISTS "${v.name}"`);
       await execSql(
         db,
-        `CREATE VIEW "${v.name}" AS SELECT * FROM "${v.master}" WHERE "${v.filterColumn}" = '${filt}'`,
+        `CREATE VIEW "${v.name}" AS SELECT * FROM "${v.master}" WHERE "${filterCol}" = '${filt}'`,
       );
       // Register so it lists as an object + is queryable; introspect FIRST so the
       // def's columns match the view exactly (defineLate's CREATE TABLE IF NOT

@@ -1606,12 +1606,27 @@ CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH C
 /**
  * Defense-in-depth lock on the lineage substrate (`__lattice_lineage`). It records
  * source→object edges (source ids/detail a non-owner shouldn't be able to
- * enumerate). Today it is merely UNGRANTED to members; this ENABLEs + FORCEs RLS
- * with NO member policy/grant, so even a future accidental `GRANT` can't leak
- * cross-member lineage — RLS-with-no-policy denies every non-BYPASSRLS role while
- * the owner's BYPASSRLS connection (where the provenance builder runs) is
- * unaffected. Ensures the table exists first so the lock applies even before the
- * first import creates it. Idempotent; converges on every owner open. No-op off PG.
+ * enumerate). Members are already granted nothing on it; this ENABLEs row security
+ * with NO policy, so even a future accidental `GRANT` can't leak cross-member
+ * lineage — with no policy to match, nothing is visible and nothing can be
+ * written. Verified: a non-owner login role handed `GRANT SELECT, INSERT` on this
+ * table still reads zero rows and still has its insert refused.
+ *
+ * NOT forced, explicitly. `FORCE` extends the policies to the table's OWNER, and
+ * the owner is the only role that writes lineage — this table is in
+ * `OWNER_ONLY_BOOKKEEPING` (cloud/member-access.ts), so no member holds any
+ * privilege on it. A cloud owner is not necessarily BYPASSRLS — the owner gate
+ * reads `rolcreaterole`, so a `CREATEROLE NOSUPERUSER NOBYPASSRLS` role takes the
+ * full owner path — and forcing this table refused that owner's own
+ * `recordLineage` insert. Measured on such an owner: an import created its table,
+ * loaded every row, and THEN raised "new row violates row-level security policy",
+ * reporting a half-applied import as a failure. `NO FORCE` is issued rather than
+ * merely omitted so a cloud secured by an earlier release converges instead of
+ * staying locked. It costs the lock nothing: a member is never this table's owner.
+ *
+ * Ensures the table exists first so the lock applies even before the first import
+ * creates it. Idempotent, and re-run by the owner-open converge as well as by
+ * `secureCloud`, so an already-secured cloud converges. No-op off PG.
  */
 export async function enableLineageRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
@@ -1620,7 +1635,7 @@ export async function enableLineageRls(db: Lattice): Promise<void> {
     db,
     `
 ALTER TABLE "${LINEAGE_TABLE}" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "${LINEAGE_TABLE}" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "${LINEAGE_TABLE}" NO FORCE ROW LEVEL SECURITY;
 `,
   );
 }

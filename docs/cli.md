@@ -1141,7 +1141,8 @@ nothing, so a damaged cloud can be inspected without also being altered.
 | `--root <dir>`     | –     | `~/.lattice`         | The `.lattice` root holding it                              |
 | `--json`           | –     | off                  | Machine-readable output (`status`, `members`, `probe`)      |
 | `--email <addr>`   | –     | –                    | The invitee (`invite`); who the invite was sent to (`join`) |
-| `--token <token>`  | –     | –                    | The invite being redeemed, for `join`                       |
+| `--token-stdin`    | –     | off                  | Read the invite being redeemed from stdin (`join`)          |
+| `--token <token>`  | –     | –                    | The same invite inline — accepted, and warns                |
 | `--name <label>`   | –     | –                    | Name for the workspace, for `join` and `migrate`            |
 | `--table <name>`   | –     | –                    | The row's table, for `share`                                |
 | `--pk <value>`     | –     | –                    | The row's primary key, for `share`                          |
@@ -1161,19 +1162,28 @@ lattice cloud share --table notes --pk n-42 --to bob@example.com
 lattice cloud revoke bob@example.com
 
 # Bob, on a machine that has never seen this database:
-lattice cloud join --token <the-token> --email bob@example.com
+lattice cloud join --token-stdin --email bob@example.com < token.txt
 lattice cloud status
 ```
 
-**Never put the connection string in the command itself.** It contains the owner
-password — the role that can create members — and an argument is public on the
-machine it runs on: any other user can read it out of the process list while the
-command runs, and your shell writes it into its history file afterwards. That is
-the same class of exposure this whole command group exists to remove, so `migrate`
-and `probe` take the URL three ways: `--url-stdin` (or `-` in place of the URL)
-reads it from standard input, the `LATTICE_CLOUD_URL` environment variable is read
-when nothing was typed, and the plain argument still works but prints a warning,
-because a password that has been in a process list has to be treated as exposed.
+**Never put a credential in the command itself.** A connection string contains the
+owner password — the role that can create members — and an argument is public on
+the machine it runs on: any other user can read it out of the process list while
+the command runs, and your shell writes it into its history file afterwards. That
+is the same class of exposure this whole command group exists to remove, so
+`migrate` and `probe` take the URL three ways: `--url-stdin` (or `-` in place of
+the URL) reads it from standard input, the `LATTICE_CLOUD_URL` environment
+variable is read when nothing was typed, and the plain argument still works but
+prints a warning, because a password that has been in a process list has to be
+treated as exposed.
+
+**An invite token is a credential too, and `join` takes it the same three ways.**
+The token is not a handle that gets looked up somewhere: it decrypts, on the
+member's own machine, to the host, database, role and password of the login the
+owner minted — and `--email`, the other half of what decrypts it, is on the same
+command line. So `--token-stdin` (or `-` in place of the token) reads it from
+standard input, `LATTICE_INVITE_TOKEN` is read when nothing was typed, and
+`--token <token>` still works but prints the same warning.
 
 Two things about `invite`: the token IS the credential — it is bound to that
 email address, it expires in about a week, and it is never stored, so the single

@@ -367,7 +367,7 @@ lattice cloud status                    # owner or member, what is secured, what
 lattice cloud members                   # who is on it
 lattice cloud secure                    # turn this Postgres into a cloud (owner)
 lattice cloud invite --email <address>  # mint one token, printed once
-lattice cloud join --token <token>      # redeem one into a NEW workspace
+lattice cloud join --token-stdin        # redeem one into a NEW workspace
 lattice cloud revoke <member>           # by role, email, or display name
 lattice cloud share --table <t> --pk <id> --visibility <private|everyone>
 lattice cloud share --table <t> --pk <id> --to <member> [--revoke]
@@ -386,11 +386,13 @@ definitions) is owner-only through every door as well, including a command, the
 assistant, and a direct library call; a member meets the same refusal the app gives
 them, rather than one door quietly performing the change.
 
-**The connection string never has to appear in the command.** It carries the owner
+**No credential has to appear in the command.** A connection string carries the owner
 password, and an argument is readable from the process list by anyone on the machine
 and is kept in your shell history — so `migrate` and `probe` read it from standard
 input (`--url-stdin`, or `-` in place of the URL), or from `LATTICE_CLOUD_URL`.
-Passing it as an argument still works and warns.
+An invite token carries the member's own login, so `join` reads it the same three
+ways: `--token-stdin` (or `-` in place of the token), or `LATTICE_INVITE_TOKEN`.
+Passing either as an argument still works and warns.
 
 Full option tables and the matching library calls are in
 [`docs/cli.md`](cli.md#lattice-cloud).
@@ -486,9 +488,11 @@ archiveLocalSqlite('./data/app.db'); // renames to .db.local-bak
 ### 2. Join — redeem your email-bound invite token
 
 The owner sent you a single **invite token**, bound to your email. From a terminal:
-`lattice cloud join --token <token> --email you@example.com`, which lands you in a
-**new** workspace, creating the `.lattice` root if this machine has none and never
-repointing whatever was already open. From the GUI:
+`lattice cloud join --token-stdin --email you@example.com < token.txt`, which lands
+you in a **new** workspace, creating the `.lattice` root if this machine has none
+and never repointing whatever was already open. Pipe it rather than typing it: the
+token decrypts to your own database login, so an argument publishes that login to
+the process list and your shell history. From the GUI:
 **+ New workspace… → Join a cloud**, then enter your **email + the token**. The
 token decrypts **locally** — the email is required to derive the key — to the
 scoped connection details the owner minted, and the same connect path runs. The

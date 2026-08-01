@@ -28,7 +28,9 @@ import {
   formatCloudStatus,
   CLOUD_SUBCOMMANDS,
   CLOUD_URL_ENV,
+  INVITE_TOKEN_ENV,
 } from '../../src/cli-cloud.js';
+import { mintInviteToken } from '../../src/cloud/invite.js';
 import type { CloudMember } from '../../src/cloud/member-directory.js';
 import { cloudErrorCode } from '../../src/cloud/errors.js';
 import { NATIVE_ENTITY_NAMES } from '../../src/framework/native-entities.js';
@@ -421,6 +423,148 @@ describe('cloud join', () => {
     await expect(runCloudCommand({ subcommand: 'join', token: 'abc', json: true })).rejects.toThrow(
       /--json describes a result that can be read/,
     );
+  });
+});
+
+describe('cloud join — getting the token in without publishing it', () => {
+  /**
+   * An invite token is not a handle that gets looked up somewhere. It DECRYPTS,
+   * on this machine, to the host, port, database, user and password of the
+   * member role the owner minted, and `join` connects with exactly those — so it
+   * is a credential in the same sense a connection string is. The address it was
+   * sent to is the other half of what decrypts it, and that half is `--email` on
+   * the same command line, so a token in an argument is read out of the process
+   * list together with everything needed to spend it.
+   *
+   * It therefore gets the same three ways in the connection string gets, and the
+   * piped one is the documented one.
+   *
+   * Every case below is separated by ONE observable: a token that decrypted gets
+   * as far as the probe and fails to REACH the database, while a token that did
+   * not get through — or never arrived at all — fails earlier and differently.
+   * That is what makes "the piped bytes were used" a measurement rather than an
+   * assumption.
+   */
+  const EMAIL = 'ada@example.test';
+  const UNREACHED = /Cloud DB unreachable|ECONNREFUSED|connect/i;
+  const NEVER_DECRYPTED = /malformed or from an unsupported version/;
+
+  /** A real invite, minted for a member login on a port nothing answers on. */
+  function realToken(): string {
+    return mintInviteToken({
+      coords: { host: '127.0.0.1', port: 1, dbname: 'shared' },
+      user: 'lm_ada',
+      password: 'never-stored-anywhere',
+      role: 'lm_ada',
+      email: EMAIL,
+      expiresAt: new Date(Date.now() + 86_400_000),
+      workspaceName: 'Acme Cloud',
+    });
+  }
+
+  /** Run `join`, and hand back whatever it threw. */
+  async function joinAndCatch(args: Parameters<typeof runCloudCommand>[0]): Promise<string> {
+    try {
+      await runCloudCommand({ subcommand: 'join', email: EMAIL, ...args });
+    } catch (e) {
+      return (e as Error).message;
+    }
+    throw new Error('join resolved against an unreachable database, which it must not');
+  }
+
+  /** Run `join` with console.warn captured, and hand back what it warned. */
+  async function joinAndCollectWarnings(
+    args: Parameters<typeof runCloudCommand>[0],
+  ): Promise<string> {
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...parts: unknown[]): void => {
+      warnings.push(parts.map(String).join(' '));
+    };
+    try {
+      await joinAndCatch(args);
+    } finally {
+      console.warn = realWarn;
+    }
+    return warnings.join('\n');
+  }
+
+  afterEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete process.env[INVITE_TOKEN_ENV];
+  });
+
+  it('reads it from standard input, where nothing else can see it', async () => {
+    const token = realToken();
+    const message = await joinAndCatch({
+      tokenStdin: true,
+      readStdin: () => Promise.resolve(token + '\n'),
+    });
+    expect(message).not.toMatch(NEVER_DECRYPTED);
+    expect(message).toMatch(UNREACHED);
+  });
+
+  it('uses the piped token even when an argument carried a different one', async () => {
+    // The precedence, stated as an outcome: the argument here is garbage, so if
+    // it were the one spent the redeem would fail before ever reaching a socket.
+    const token = realToken();
+    const message = await joinAndCatch({
+      token: 'not-a-real-token',
+      tokenStdin: true,
+      readStdin: () => Promise.resolve(token),
+    });
+    expect(message).not.toMatch(NEVER_DECRYPTED);
+    expect(message).toMatch(UNREACHED);
+  });
+
+  it("treats a bare '-' the same way, the way every other tool spells it", async () => {
+    const token = realToken();
+    const message = await joinAndCatch({
+      token: '-',
+      readStdin: () => Promise.resolve(token),
+    });
+    expect(message).not.toMatch(NEVER_DECRYPTED);
+    expect(message).toMatch(UNREACHED);
+  });
+
+  it('reads it from the environment when nothing was typed', async () => {
+    process.env[INVITE_TOKEN_ENV] = realToken();
+    const message = await joinAndCatch({});
+    expect(message).not.toMatch(NEVER_DECRYPTED);
+    expect(message).toMatch(UNREACHED);
+  });
+
+  it('refuses when none of the three offered anything, and says all three', async () => {
+    const message = await joinAndCatch({});
+    expect(message).toContain('--token-stdin');
+    expect(message).toContain(INVITE_TOKEN_ENV);
+    expect(message).toContain('--token <token>');
+  });
+
+  it('refuses an empty pipe rather than falling through to a worse source', async () => {
+    process.env[INVITE_TOKEN_ENV] = realToken();
+    const message = await joinAndCatch({
+      tokenStdin: true,
+      readStdin: () => Promise.resolve('   \n'),
+    });
+    expect(message).toMatch(/Nothing arrived on standard input/);
+  });
+
+  it('still accepts the argument, and warns that the login must be treated as exposed', async () => {
+    const warned = await joinAndCollectWarnings({ token: realToken() });
+    expect(warned).toMatch(/process list/);
+    expect(warned).toMatch(/history/);
+    expect(warned).toMatch(/--token-stdin/);
+    expect(warned).toContain(INVITE_TOKEN_ENV);
+  });
+
+  it('says nothing when the token never went through the process list', async () => {
+    const token = realToken();
+    const warned = await joinAndCollectWarnings({
+      tokenStdin: true,
+      readStdin: () => Promise.resolve(token),
+    });
+    expect(warned).not.toMatch(/process list/);
   });
 });
 

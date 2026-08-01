@@ -21,7 +21,7 @@ import { currentDatabaseRole } from './member-directory.js';
  * (`reconcileCloudMemberAccess`) issues grants and alters tables; running it to
  * produce a report would mean you could not look at a damaged cloud without
  * also changing it. So the drift is read straight out of the system catalog
- * instead, and the report names the command that repairs what it found.
+ * instead, and the report names a repair wherever there is one to name.
  *
  * Authority is not re-invented: standing is read from the connected Postgres
  * role's own privileges, the same source every owner-gated operation uses.
@@ -66,6 +66,9 @@ interface CatalogRelation {
   name: string;
   owner: string;
   kind: string;
+  /** `relrowsecurity` — whether any row policy applies to this table at all. */
+  enabled: boolean;
+  /** `relforcerowsecurity` — whether they apply to the table's OWN OWNER as well. */
   forced: boolean;
 }
 
@@ -91,16 +94,18 @@ function quoteIdent(name: string): string {
  * Both halves are load-bearing. Declared-only cannot see a table nobody
  * declared, which is the one most likely to be unprotected — see
  * {@link driftWarnings}. Physical-only cannot see a declared table that is
- * missing. One query answers both, and it stays ONE query: the four columns
- * here are the four the warnings are built from, so nothing needs a per-table
- * follow-up round trip — which matters on a database billed for what it reads
- * out.
+ * missing. One query answers both, and it stays ONE query: the columns here are
+ * the ones the warnings are built from, so nothing needs a per-table follow-up
+ * round trip — which matters on a database billed for what it reads out.
  *
  * Bookkeeping is excluded by the leading underscore every internal table
  * carries: it is the mechanism, the installer secures it rather than the
  * per-table pass, and listing it would bury the real answer under rows nobody
  * can act on. A declared name matches whatever it looks like, so a workspace
  * that declares a view still gets the ownership check on it.
+ *
+ * BOTH row-security flags are read, and reading one of them is a bug rather than
+ * a shortcut — see {@link rowSecurityDrift}.
  */
 async function catalogRelations(
   db: Lattice,
@@ -111,6 +116,7 @@ async function catalogRelations(
     `SELECT c.relname AS name,
             pg_get_userbyid(c.relowner) AS owner,
             c.relkind AS kind,
+            c.relrowsecurity AS enabled,
             c.relforcerowsecurity AS forced
        FROM pg_class c
        JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -118,12 +124,70 @@ async function catalogRelations(
         AND (c.relname = ANY(?::text[])
              OR (c.relkind IN ('r','p','f') AND c.relname NOT LIKE '\\_%' ESCAPE '\\'))`,
     [[...tables]],
-  )) as { name: string; owner: string | null; kind: string | null; forced: boolean | null }[];
+  )) as {
+    name: string;
+    owner: string | null;
+    kind: string | null;
+    enabled: boolean | null;
+    forced: boolean | null;
+  }[];
   return new Map(
     rows.map((r) => [
       r.name,
-      { name: r.name, owner: r.owner ?? '', kind: r.kind ?? '', forced: r.forced === true },
+      {
+        name: r.name,
+        owner: r.owner ?? '',
+        kind: r.kind ?? '',
+        enabled: r.enabled === true,
+        forced: r.forced === true,
+      },
     ]),
+  );
+}
+
+/**
+ * What is wrong with a relation whose row security is not both enabled AND
+ * forced, in terms of the flag that is actually off.
+ *
+ * The two catalog flags are independent, and only `relrowsecurity` decides
+ * whether policies apply to anyone: `relforcerowsecurity` decides the narrower
+ * question of whether the table's own owner is subject to them too. `ALTER TABLE
+ * … DISABLE ROW LEVEL SECURITY` clears the first and leaves the second exactly as
+ * it stands, so a table that enforces nothing at all still reads as forced —
+ * which is why asking about forcing alone reports the worst state there is as a
+ * protected one. `pg_dump` emits the FORCE statement well before the ENABLE one,
+ * with the table data in between, so a restore interrupted anywhere between them
+ * lands in precisely that state.
+ *
+ * Each branch says only what that state actually costs. Row security switched
+ * off is the member-visible one: nothing filters anyone, so every member reads
+ * every row. Enabled-but-unforced is not — a member is never the table's owner,
+ * so policies still apply to them — and claiming otherwise would be the same
+ * unearned assertion in the opposite direction.
+ *
+ * Deliberately names NO repair, because there is no one repair that is right for
+ * every table that lands here. Re-issuing ENABLE + FORCE restores a table that
+ * securing has already covered, and applies a policy-less deny-all to a table it
+ * never reached — locking out an owner that does not bypass row security. These
+ * catalog columns cannot tell those two apart. Nor is securing the answer: it
+ * walks only the REGISTERED tables, and its per-table step is recorded against a
+ * version key, so on a table it has already covered it does not run again. Both
+ * halves of that are pinned by tests rather than asserted here.
+ */
+function rowSecurityDrift(rel: CatalogRelation): string {
+  if (!rel.enabled) {
+    return (
+      'row security is not enabled on it, so no policy applies to anyone — every member can ' +
+      'read every row of it.' +
+      (rel.forced
+        ? ' It is flagged FORCE, but forcing decides only whether the table owner is subject ' +
+          'to row security as well; on its own it enforces nothing.'
+        : '')
+    );
+  }
+  return (
+    'row security is enabled but not forced on it — securing a cloud sets both, so this ' +
+    'table has drifted from what securing installed.'
   );
 }
 
@@ -140,16 +204,18 @@ async function catalogRelations(
  *     or grant on a table it does not own, so that table silently stays outside
  *     the member model. Only reported to an owner, because it is neither
  *     surprising nor actionable for a member — a member never owns anything;
- *  3. row security not forced on a secured cloud, which means every member can
- *     read every row of that table. This one is reported to a member too: they
- *     cannot repair it, but they are entitled to know their rows are not private.
+ *  3. row security not both ENABLED and FORCED on a secured cloud. Switched off
+ *     is the case that means every member can read every row of that table; see
+ *     {@link rowSecurityDrift} for why the two flags have to be read together and
+ *     for what each state costs. Reported to a member too: they cannot repair it,
+ *     but they are entitled to know their rows are not private.
  *
  * The third is also what catches a table nobody declared. Securing walks the
  * REGISTERED tables, so a table restored from a dump, created by hand, or left
  * behind by a schema nobody opens any more is never walked — and a table
  * securing never reached is precisely a table with row security off. A keyless
  * one arrives at the same place from the other side, because per-row ownership
- * needs a key and securing skips what it cannot key. Both read `forced=false`
+ * needs a key and securing skips what it cannot key. Both read row security off
  * here, so both land in the third warning; neither needs one of its own.
  *
  * For an undeclared table that overstates things slightly on the day it is
@@ -192,13 +258,8 @@ async function driftWarnings(
           `Fix with: ALTER TABLE ${quoteIdent(table)} OWNER TO ${quoteIdent(opts.role)};`,
       });
     }
-    if (opts.secured && ownsRows(rel.kind) && !rel.forced) {
-      warnings.push({
-        table,
-        reason:
-          'row security is not forced — every member can read every row of it. ' +
-          'Run `lattice cloud secure` to converge it.',
-      });
+    if (opts.secured && ownsRows(rel.kind) && !(rel.enabled && rel.forced)) {
+      warnings.push({ table, reason: rowSecurityDrift(rel) });
     }
   }
   return warnings;

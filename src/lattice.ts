@@ -1151,11 +1151,26 @@ export class Lattice {
    * that would let a wrongly-narrow schema delete a connected source's rendered
    * tree. It comes back as one unnamed unresolved source, which makes the
    * backstop refuse and say so.
+   *
+   * NOT ASKED AT ALL on a scoped cloud member connection. The registry that
+   * answers it is owner-only bookkeeping a member holds no grant on, and securing
+   * a table creates that registry whether or not anything was ever connected — so
+   * the "does it exist?" check that spares a workspace which never connected
+   * anything can never be false here, and the read is refused every time the
+   * backstop is consulted, for the life of the session. Nothing is lost by not
+   * asking: a member never replays a connected source's schema
+   * ({@link _replayConnectedSources} sits past the introspect-only return in
+   * {@link init}), so no connected-source table is ever registered on this
+   * connection and this half of the answer is empty whatever the registry holds.
+   * Reporting the refusal as an unresolved source instead turned a permission
+   * error into a claim about the workspace, and told the operator to reconnect a
+   * source that need never have existed.
    */
   private async _connectedSourceTables(): Promise<{
     externalTables: Set<string>;
     unresolvedSources: string[];
   }> {
+    if (this._cloudMemberOpen) return { externalTables: new Set<string>(), unresolvedSources: [] };
     try {
       const { connectedSourceTables } = await import('./connectors/connected-schema.js');
       const { tables, unresolved } = await connectedSourceTables(this);
