@@ -18,8 +18,10 @@ import { buildImportPlan, documentsKeptAsFilesNotice } from '../import/front-doo
 import { checkSourceIsDuplicate } from '../import/duplicate-source.js';
 import { planSourceFor } from '../import/plan-source.js';
 import type { NameAssist } from './import-naming.js';
+import type { FeedBus } from './feed.js';
+import { recordImportActivity } from './mutations.js';
 import { NATIVE_ENTITY_NAMES } from '../framework/native-entities.js';
-import { getClarifyThreshold } from './assistant-routes.js';
+import { getClarifyThreshold } from '../ops/ai-config.js';
 import { isAnyProviderConfigured } from './ai/provider.js';
 import { detectImportAsOf } from './import-detect.js';
 import { detectAsOfColumns } from '../import/asof-columns.js';
@@ -54,6 +56,15 @@ export interface AutoImportResult {
   matchedCount: number;
   totalEntities: number;
   tables: string[];
+  /**
+   * The subset of `tables` this import CREATED (new to the workspace). Distinct
+   * from `tables`, which is everything it wrote: a recognized re-import writes
+   * tables that were already there and creates none. The distinction decides what
+   * the change-log entry can honestly tell somebody to delete to take the import
+   * back — "delete the tables it created" is ruinous advice about a table already
+   * holding earlier snapshots.
+   */
+  tablesCreated?: string[];
   rows: number;
   /**
    * Per-table row counts of what this import produced (or, for a proposal, what it
@@ -430,6 +441,7 @@ export async function autoImportStructured(
     matchedCount: schemaMatch.matchedCount,
     totalEntities: schemaMatch.totalEntities,
     tables: Object.keys(result.rowsByTable),
+    tablesCreated: result.tablesCreated,
     rows,
     rowsByTable: result.rowsByTable,
     ...(front.notices.length > 0 ? { notices: front.notices } : {}),
@@ -440,6 +452,8 @@ export async function autoImportStructured(
 export interface FaithfulImportResult {
   /** Tables created/updated by the import. */
   tables: string[];
+  /** The subset of `tables` that did not exist before this import ran. */
+  tablesCreated: string[];
   /** Total rows materialized across those tables. */
   rows: number;
   /** Per-table row counts, for reconciling against counts the source document states. */
@@ -453,6 +467,13 @@ export interface FaithfulImportOptions {
   sourceName?: string;
   /** Bounded name assist. This door commits once, so a model may name here. */
   nameAssist?: NameAssist | null;
+  /**
+   * The workspace's activity feed. Given one, this door writes the same change-log
+   * entry as every other import door — what landed, and the plain statement that
+   * it cannot be undone in one step. Without it the import still happens but
+   * leaves no record, which is what every door here used to do.
+   */
+  feed?: FeedBus;
 }
 
 /**
@@ -462,7 +483,14 @@ export interface FaithfulImportOptions {
  * Unlike {@link autoImportStructured} (whose new-dataset path only PROPOSES, never creating
  * tables from a passive drop), this is the executor for an EXPLICIT user request to import
  * a file they attached, so it commits. Returns null when the data has no inferable
- * entities (nothing to import). Every write is auditable + reversible like any other.
+ * entities (nothing to import).
+ *
+ * Given a `feed`, the import is written into the change log exactly as the other
+ * doors write it — and, like them, that entry says plainly that an import cannot
+ * be undone in one step and what to delete instead. (An earlier version of this
+ * comment claimed every write here was "auditable + reversible like any other".
+ * Neither half was true: this path wrote nothing to the audit log at all, and no
+ * recorded row inverse removes a table that did not exist before.)
  *
  * When the data DID contain tables but the shape contract refused all of them, this
  * throws rather than returning null: the user asked for an import, and "nothing
@@ -484,7 +512,11 @@ export async function importDataFaithfully(
   if (/\.xlsx?$/i.test(sourceName)) {
     const jobs = splitSheetJobs(data);
     if (jobs.length > MAX_IMPORT_TABLES) {
-      return importWorkbookPerSheet(db, configPath, jobs, opts);
+      return recordFaithfulImport(
+        db,
+        opts,
+        await importWorkbookPerSheet(db, configPath, jobs, opts),
+      );
     }
   }
   const front = await faithfulFront(db, data, opts);
@@ -503,7 +535,11 @@ export async function importDataFaithfully(
   if (front.overCap) {
     const jobs = splitSheetJobs(data);
     if (/\.xlsx?$/i.test(sourceName) && jobs.length > 1) {
-      return importWorkbookPerSheet(db, configPath, jobs, opts);
+      return recordFaithfulImport(
+        db,
+        opts,
+        await importWorkbookPerSheet(db, configPath, jobs, opts),
+      );
     }
     throw new Error(
       `This import would create ${String(front.tableCount)} tables, over the safe limit of ` +
@@ -513,12 +549,45 @@ export async function importDataFaithfully(
   const { plan, views } = front.matched;
   const result = await materializeImport({ db, configPath }, front.data, plan, views, {});
   const rows = Object.values(result.rowsByTable).reduce((a, b) => a + b, 0);
-  return {
+  return recordFaithfulImport(db, opts, {
     tables: Object.keys(result.rowsByTable),
+    tablesCreated: result.tablesCreated,
     rows,
     rowsByTable: result.rowsByTable,
     notices: front.notices,
-  };
+  });
+}
+
+/**
+ * Write this door's import into the change log, the same entry every other import
+ * door writes — what landed, and the plain statement that it cannot be undone in
+ * one step (see `recordImportActivity`). A caller that gave no feed gets the
+ * result unchanged; an import that made nothing has nothing to record.
+ */
+async function recordFaithfulImport(
+  db: Lattice,
+  opts: FaithfulImportOptions,
+  result: FaithfulImportResult | null,
+): Promise<FaithfulImportResult | null> {
+  if (!result || !opts.feed) return result;
+  if (result.tablesCreated.length === 0 && Object.keys(result.rowsByTable).length === 0) {
+    return result;
+  }
+  await recordImportActivity(
+    db,
+    opts.feed,
+    {
+      source: opts.sourceName ?? '',
+      tablesCreated: result.tablesCreated,
+      rowsByTable: result.rowsByTable,
+      // This door materializes undated (re-importing upserts in place by natural
+      // key), so there is no snapshot to name.
+      asOf: null,
+      asOfColumn: null,
+    },
+    'ai',
+  );
+  return result;
 }
 
 /**
@@ -562,6 +631,7 @@ async function importWorkbookPerSheet(
   opts: FaithfulImportOptions,
 ): Promise<FaithfulImportResult | null> {
   const tables: string[] = [];
+  const tablesCreated: string[] = [];
   const rowsByTable: Record<string, number> = {};
   const notices: string[] = [];
   let refused = false;
@@ -609,6 +679,9 @@ async function importWorkbookPerSheet(
         if (!tables.includes(t)) tables.push(t);
         rowsByTable[t] = n;
       }
+      for (const t of result.tablesCreated) {
+        if (!tablesCreated.includes(t)) tablesCreated.push(t);
+      }
       importedSheets++;
     } catch (e) {
       // One sheet's runtime failure must not sink the whole workbook: the sheets that
@@ -644,5 +717,5 @@ async function importWorkbookPerSheet(
         : ''),
   );
   const rows = Object.values(rowsByTable).reduce((a, b) => a + b, 0);
-  return { tables, rows, rowsByTable, notices };
+  return { tables, tablesCreated, rows, rowsByTable, notices };
 }

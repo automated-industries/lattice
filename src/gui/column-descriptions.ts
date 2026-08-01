@@ -22,6 +22,7 @@ import type { Lattice } from '../lattice.js';
 // imports this module for set_definition. The model const is inlined instead.
 import type { LlmClient } from './ai/chat.js';
 import { isNativeEntity } from '../framework/native-entities.js';
+import { assertCloudOwner } from '../cloud/owner-gate.js';
 
 /** Cheapest capable model for the throwaway definition-generation passes. */
 const GEN_MODEL = 'claude-haiku-4-5';
@@ -122,12 +123,20 @@ export function resolveTableDescription(
 // the GUI PUT endpoints, and the auto-generators all write the same way.
 
 /**
- * Find-or-insert `_lattice_gui_column_meta` for (table, column), applying only
- * the provided fields. A blank `description` clears it (stored NULL). Stamps
- * `updated_at`. No-op-safe: never throws on a missing meta table — the caller
- * decides whether absence matters.
+ * The row writer for `_lattice_gui_column_meta` — find-or-insert for
+ * (table, column), applying only the provided fields. A blank `description`
+ * clears it (stored NULL). Stamps `updated_at`.
+ *
+ * NOT part of the package surface, and that is the point. It can write the
+ * `secret` flag, and writing that flag is only half of marking a column secret:
+ * on a shared database the other half is the column mask, without which the flag
+ * redacts the column from the assistant while every member's connection goes on
+ * reading the real value. The one caller allowed to reach this with `secret` is
+ * {@link import('./schema-ops.js').setColumnMeta}, which installs the mask first
+ * and fails the whole call if it cannot. See {@link upsertColumnMeta} for what
+ * an embedder gets.
  */
-export async function upsertColumnMeta(
+export async function writeColumnMetaRow(
   db: Lattice,
   table: string,
   column: string,
@@ -161,14 +170,61 @@ export async function upsertColumnMeta(
 }
 
 /**
+ * Write what a column MEANS: its one-line definition. Find-or-insert; a blank
+ * description clears it.
+ *
+ * This is the definition writer, and only that. It deliberately cannot mark a
+ * column secret, because secrecy is not a note about a column — on a shared
+ * database it is a database-level mask that has to be installed before the flag
+ * is stored, and a flag stored without it produces the worst possible state: the
+ * column reads as protected, is hidden from the assistant and the interface, and
+ * every member's connection still returns the real value. Nothing about that
+ * state announces itself.
+ *
+ * A caller that passes `secret` here is therefore refused by name rather than
+ * quietly ignored, and pointed at `setColumnMeta`, which applies the mask first
+ * and fails the whole call if the mask fails.
+ *
+ * @throws when `patch` carries a `secret` flag.
+ */
+export async function upsertColumnMeta(
+  db: Lattice,
+  table: string,
+  column: string,
+  patch: { description?: string | null },
+): Promise<void> {
+  // Authorization first, and HERE rather than at each caller. This row is shared
+  // state on a shared database and it is not covered by row security, so every
+  // door that reaches this writer is a door that changes what everybody sees:
+  // the assistant's tool, an answered question, the browser, an embedder. Gating
+  // the one caller that happened to be a schema operation left the rest open.
+  await assertCloudOwner(db, 'describe a column');
+  if ((patch as { secret?: unknown }).secret !== undefined) {
+    throw new Error(
+      'upsertColumnMeta writes a column definition, not its secrecy. Marking a column secret ' +
+        'must go through setColumnMeta, which installs the database column mask first — ' +
+        'storing the flag on its own would hide the column from the assistant and the ' +
+        "interface while every member's connection kept reading the real value.",
+    );
+  }
+  await writeColumnMetaRow(db, table, column, patch);
+}
+
+/**
  * Find-or-insert `_lattice_gui_meta` for a table (PK = entity_name), applying
  * only the provided fields. Blank `description` clears it. Stamps `updated_at`.
+ *
+ * Owner-only on a shared database, checked here rather than at each caller —
+ * see {@link upsertColumnMeta} for why. The wording matches what the schema
+ * operation raises, so the browser, a command and the assistant cannot end up
+ * saying different things about the same refusal.
  */
 export async function upsertTableMeta(
   db: Lattice,
   table: string,
   patch: { description?: string | null; icon?: string | null },
 ): Promise<void> {
+  await assertCloudOwner(db, 'describe a table');
   const existing = (await db.get('_lattice_gui_meta', table)) as { entity_name: string } | null;
   const fields: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (patch.description !== undefined) {

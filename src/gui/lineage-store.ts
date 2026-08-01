@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { StorageAdapter } from '../db/adapter.js';
-import { runAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
+import { runAsyncOrSync, getAsyncOrSync, allAsyncOrSync } from '../db/adapter.js';
 
 /**
  * Internal table recording cross-tier DATA LINEAGE — the durable "object row X
@@ -56,6 +56,33 @@ export async function ensureLineageTable(adapter: StorageAdapter): Promise<void>
     adapter,
     `UPDATE "${LINEAGE_TABLE}" SET "tier" = 'derived' WHERE "source_kind" = 'import' AND "tier" = 'computed'`,
   );
+}
+
+/**
+ * Which tables were materialized FROM ingested data — a structured import or a
+ * file extraction. Callers stamp those tables as `derived` (as opposed to a
+ * table carrying a direct ingestion signal, which is a `source`).
+ *
+ * ONE bounded query over the small lineage table, and it tolerates two ordinary
+ * absences rather than failing its caller: a fresh workspace has no lineage
+ * table yet, and a scoped cloud member has no read grant on the `__lattice_*`
+ * bookkeeping tables. Either way the answer is "nothing known to be derived" and
+ * the tables simply stay unstamped. Any OTHER fault — a syntax error, a dropped
+ * connection — is rethrown, because that is a real failure and swallowing it
+ * would hide it.
+ */
+export async function listDerivedTables(adapter: StorageAdapter): Promise<Set<string>> {
+  try {
+    const rows = await allAsyncOrSync(
+      adapter,
+      `SELECT DISTINCT "object_table" FROM "${LINEAGE_TABLE}" WHERE "source_kind" IN ('import','file')`,
+    );
+    return new Set(rows.map((r) => String(r.object_table)));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/no such table|does not exist|permission denied/i.test(msg)) throw err;
+    return new Set<string>();
+  }
 }
 
 export interface LineageEdge {

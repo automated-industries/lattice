@@ -33,6 +33,14 @@ export function isNewer(latest: string, current: string): boolean {
  * (default 24h). Returns the latest version string if an update is available,
  * null otherwise.
  *
+ * THROWS when the registry could not be asked — unreachable, timed out, or an
+ * answer that is not a 2xx. A non-2xx used to resolve to `null`, which is the
+ * same value "you are already current" produces, so a proxy returning 403 or a
+ * mirror returning 404 for the package name told every caller they were up to
+ * date while nothing had been learned at all. A caller that genuinely wants
+ * silence catches; the ones that report to a person must not, and cannot if the
+ * two outcomes are the same value.
+ *
  * @param opts.ttlMs - Max age of a cached result to trust. The long-running GUI
  *   poll passes a shorter window so it isn't pinned to a stale 24h entry.
  * @param opts.force - Skip the cache read entirely and fetch fresh (the cache is
@@ -70,7 +78,11 @@ export async function checkForUpdate(
     signal: AbortSignal.timeout(5000),
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) {
+    throw new Error(
+      `the registry answered ${String(res.status)} for "${pkgName}" — nothing was learned about newer versions`,
+    );
+  }
 
   const data = (await res.json()) as { version: string };
   const latest = data.version;
@@ -87,40 +99,81 @@ export async function checkForUpdate(
 }
 
 /**
- * Desktop update probe. Reads the release manifest the bundled binary updater
- * pulls from (`<baseUrl>latest.json`, written by `gen-desktop-manifest.mjs` with
- * a `version` field) and returns that version when it's newer than `current`,
- * else null.
+ * Where the packaged desktop application's release manifest lives.
  *
- * Unlike the binary updater, this is a pure READ — it never downloads the
- * installer or relaunches — so a long-running desktop window can surface an
- * "update available" hint without disrupting the user; applying the update stays
- * an explicit, user-triggered action. Best-effort: any network/parse/validation
- * failure resolves to null (the hint simply doesn't appear; never a crash, never
- * a false "up to date"). No on-disk cache: the manifest is small and the caller
- * polls on a slow cadence.
+ * The desktop app is not installed from the npm registry and cannot be upgraded
+ * from it, so "is there a newer version?" is a different question on that surface
+ * with a different answer — the two channels can and do disagree, and pointing a
+ * desktop user at a version their channel cannot serve is worse than saying
+ * nothing. Overridable by environment so the desktop shell and anything asking on
+ * its behalf resolve to the same place.
+ */
+export const DESKTOP_RELEASE_BASE_URL =
+  'https://github.com/automated-industries/lattice/releases/latest/download/';
+
+export function desktopReleaseBaseUrl(): string {
+  return process.env.LATTICE_DESKTOP_UPDATE_URL ?? DESKTOP_RELEASE_BASE_URL;
+}
+
+/**
+ * Read the desktop release manifest (`<baseUrl>latest.json`, written at release
+ * time with a `version` field) and return that version when it is newer than
+ * `current`, else null.
+ *
+ * A pure READ — it never downloads the installer or relaunches.
+ *
+ * THROWS when the manifest could not be read or does not say what it must:
+ * unreachable, non-2xx, unparseable, or a version that is not a version. Every
+ * one of those means nothing was learned, which is not the same fact as "you are
+ * on the newest release" and must not arrive as the same value. The polling
+ * variant that wants silence is {@link checkManifestForUpdate}.
+ */
+export async function readManifestForUpdate(
+  baseUrl: string,
+  currentVersion: string,
+): Promise<string | null> {
+  const url = new URL('latest.json', baseUrl);
+  const res = await fetch(url, {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) {
+    throw new Error(`the release manifest at ${url.toString()} answered ${String(res.status)}`);
+  }
+  let version: string;
+  try {
+    const data = (await res.json()) as { version?: unknown };
+    version = typeof data.version === 'string' ? data.version : '';
+  } catch (e) {
+    throw new Error(`the release manifest at ${url.toString()} is not readable JSON`, { cause: e });
+  }
+  if (!isValidVersion(version)) {
+    throw new Error(
+      `the release manifest at ${url.toString()} names no usable version (${JSON.stringify(version)})`,
+    );
+  }
+  return isNewer(version, currentVersion) ? version : null;
+}
+
+/**
+ * The polling form of {@link readManifestForUpdate}: any failure resolves to
+ * null instead of throwing.
+ *
+ * This is for the long-running desktop window, whose only use of the answer is
+ * whether to show an "update available" hint. There, a failed probe means the
+ * hint does not appear this tick and the next tick tries again — nobody is told
+ * anything either way, so nothing can be told wrongly. Any caller that REPORTS
+ * the outcome to a person uses the throwing form, because for them null and a
+ * failure are two different sentences. No on-disk cache: the manifest is small
+ * and the caller polls on a slow cadence.
  */
 export async function checkManifestForUpdate(
   baseUrl: string,
   currentVersion: string,
 ): Promise<string | null> {
-  let res: Response;
   try {
-    res = await fetch(new URL('latest.json', baseUrl), {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(5000),
-    });
+    return await readManifestForUpdate(baseUrl, currentVersion);
   } catch {
-    return null; // offline / DNS / timeout — retried on the next poll tick
+    return null; // offline / non-2xx / malformed — retried on the next poll tick
   }
-  if (!res.ok) return null;
-  let version: string;
-  try {
-    const data = (await res.json()) as { version?: unknown };
-    version = typeof data.version === 'string' ? data.version : '';
-  } catch {
-    return null; // malformed manifest
-  }
-  if (!isValidVersion(version)) return null; // missing/non-string/garbage version
-  return isNewer(version, currentVersion) ? version : null;
 }

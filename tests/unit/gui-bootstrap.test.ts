@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,12 +24,19 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   delete process.env.LATTICE_ROOT;
+  vi.unstubAllEnvs();
 });
 
 function tmp(): string {
   const base = mkdtempSync(join(tmpdir(), 'lattice-boot-'));
   dirs.push(base);
   return base;
+}
+
+/** Point `homedir()` at a throwaway directory (POSIX reads HOME, Windows USERPROFILE). */
+function useHome(dir: string): void {
+  vi.stubEnv('HOME', dir);
+  vi.stubEnv('USERPROFILE', dir);
 }
 
 /** Create a root anchored at `base` (deterministic via LATTICE_ROOT). */
@@ -106,6 +113,55 @@ describe('gui-bootstrap: reconcileWorkspaceRegistry', () => {
     reconcileWorkspaceRegistry(root, [base]);
     reconcileWorkspaceRegistry(root, [base]);
     expect(listWorkspaces(root)).toHaveLength(1);
+  });
+});
+
+/**
+ * The registry scan looks "next to the root", and for the default root
+ * `<home>/.lattice` that parent is the home directory itself. Reported from a
+ * real launch: started in an unrelated directory, the app adopted a config that
+ * merely happened to be sitting in the home folder, opened it as the active
+ * workspace, and rendered into files it had not created.
+ *
+ * Every test here redirects `homedir()` to a throwaway directory first. The real
+ * home is never read or written — an assertion that a config "was not adopted"
+ * would prove nothing if the directory it was written to were the developer's own.
+ */
+describe('gui-bootstrap: the home directory is never scanned for stray configs', () => {
+  it('skips a config sitting in the home directory while still adopting a project one', () => {
+    const home = tmp();
+    useHome(home);
+    const project = tmp();
+    const root = rootAt(project);
+    const stray = writeConfig(home, 'left-lying-around.yml', './data/stray.db', 'Stray');
+    const wanted = writeConfig(project, 'lattice.config.yml', './data/app.db', 'My App');
+
+    reconcileWorkspaceRegistry(root, [project, home]);
+
+    // The project directory is exactly what this scan is for and must keep working.
+    expect(findWorkspaceByConfigPath(root, wanted)?.displayName).toBe('My App');
+    expect(findWorkspaceByConfigPath(root, stray)).toBeNull();
+    expect(listWorkspaces(root)).toHaveLength(1);
+  });
+
+  it('does not adopt a stray home config when launched from an unrelated directory', () => {
+    const home = tmp();
+    useHome(home);
+    const project = tmp();
+    // No named root, so the session uses `<home>/.lattice` and scans beside it —
+    // i.e. the home directory itself. This is the launch shape that adopted an
+    // unrelated config and opened it as the active workspace.
+    delete process.env.LATTICE_ROOT;
+    const stray = writeConfig(home, 'left-lying-around.yml', './data/stray.db', 'Stray');
+    const cfg = writeConfig(project, 'lattice.config.yml', './data/app.db', 'My App');
+
+    const boot = ensureRootForGui({ startDir: project, configPath: cfg, explicitConfig: false });
+
+    expect(boot.root).toBe(join(home, '.lattice'));
+    expect(findWorkspaceByConfigPath(boot.root, stray)).toBeNull();
+    expect(listWorkspaces(boot.root).map((w) => w.displayName)).toEqual(['My App']);
+    // The launch config, not something found next to the root, is what opens.
+    expect(boot.configPath).toBe(cfg);
   });
 });
 

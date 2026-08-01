@@ -32,8 +32,8 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
     }),
   };
 });
-vi.mock('../../src/gui/assistant-routes.js', async (orig) => {
-  const actual = await orig<typeof import('../../src/gui/assistant-routes.js')>();
+vi.mock('../../src/ops/ai-config.js', async (orig) => {
+  const actual = await orig<typeof import('../../src/ops/ai-config.js')>();
   return { ...actual, resolveClaudeAuth: () => Promise.resolve({ apiKey: 'test-key' }) };
 });
 import { enrichWithLlm } from '../../src/gui/ai/enrich.js';

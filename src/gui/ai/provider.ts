@@ -3,7 +3,7 @@ import type { LlmClient } from './chat.js';
 import type { ClaudeAuth } from '../../ai/llm-client.js';
 import { createAnthropicClient, DEFAULT_MODEL } from './chat.js';
 import { createOpenAiCompatibleClient } from './openai-client.js';
-import { resolveClaudeAuth, isClaudeConnected, isManagedModelAuth } from '../assistant-routes.js';
+import { resolveClaudeAuth, isClaudeConnected, isManagedModelAuth } from '../../ops/ai-config.js';
 import { htmlAuthorModelForAuth } from './html-author.js';
 import { noteClaudeError, type ClaudeLimitKind } from './limit-state.js';
 import {
@@ -195,7 +195,7 @@ export async function smokeTestProvider(
 export async function isAnyProviderConfigured(db: Lattice | null): Promise<boolean> {
   if (readOpenAiCompatConfig()) return true;
   // Reuse the same OAuth/managed presence logic Claude uses.
-  const { isClaudeConnected } = await import('../assistant-routes.js');
+  const { isClaudeConnected } = await import('../../ops/ai-config.js');
   return isClaudeConnected(db);
 }
 

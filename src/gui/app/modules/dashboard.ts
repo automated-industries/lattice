@@ -888,8 +888,11 @@ export const dashboardJs = `    // ───────────────
     // a short snippet of a body/description field; failing that a short id.
     function fsDisplayName(row) {
       if (!row) return '';
-      var primary = row.name || row.title || row.label || row.original_name || row.subject;
-      if (primary) return String(primary);
+      // Gate on the TRIMMED value, as the server's rowLabel does: a whitespace-only
+      // title-ish column is not a label, and returning it renders a blank heading /
+      // link / toast that names the row nothing. Fall through to the next candidate.
+      var primary = String(row.name || row.title || row.label || row.original_name || row.subject || '').trim();
+      if (primary) return primary;
       var secondary = row.summary || row.description || row.body || row.content || row.url;
       if (secondary) return truncate(String(secondary).replace(/\\s+/g, ' '), 60);
       // No conventional label column — fall back to the first meaningful cell
@@ -1092,7 +1095,15 @@ export const dashboardJs = `    // ───────────────
         var cells = cols.map(function (c, i) {
           var v = fsCellText(o.table, r, c);
           if (i === 0) {
-            v = '<a href="' + href + '">' + (String(r[c] == null ? '' : r[c]).trim() ? v : '(untitled)') + '</a>';
+            // The lead cell is the row's link text, so when that one column is empty a
+            // fixed placeholder would name nothing: every such row reads identically and
+            // none of them can be searched for. Fall through to the SAME row label the
+            // record page, breadcrumb, delete toast and graph nodes use, so one row reads
+            // the same everywhere. fsCellText has already escaped v; fsDisplayName hands
+            // back raw row text, so only that side needs escaping.
+            v = '<a href="' + href + '">' +
+              (String(r[c] == null ? '' : r[c]).trim() ? v : escapeHtml(fsDisplayName(r))) +
+              '</a>';
           }
           return '<td>' + v + '</td>';
         }).join('');

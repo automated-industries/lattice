@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { StorageAdapter, PreparedStatement, TxClient } from './adapter.js';
 import type { Row } from '../types.js';
 import { loadSqlite } from './load-sqlite.js';
+import { SingleConnectionTransactions } from './single-connection-tx.js';
 
 export class SQLiteAdapter implements StorageAdapter {
   readonly dialect = 'sqlite' as const;
@@ -9,6 +10,8 @@ export class SQLiteAdapter implements StorageAdapter {
   private readonly _path: string;
   private readonly _wal: boolean;
   private readonly _busyTimeout: number;
+  /** One transaction at a time on this connection; see {@link withClient}. */
+  private readonly _transactions = new SingleConnectionTransactions();
 
   constructor(path: string, options?: { wal?: boolean; busyTimeout?: number }) {
     this._path = path;
@@ -197,37 +200,48 @@ export class SQLiteAdapter implements StorageAdapter {
    * Postgres path needs to await DB I/O), so we issue BEGIN/COMMIT/ROLLBACK
    * manually around the awaited call. SQLite's busy_timeout pragma already
    * handles concurrent-writer waiting.
+   *
+   * Overlapping callers are SERIALIZED on this connection rather than refused.
+   * BEGIN/COMMIT are statements on one connection, so two pieces of work that
+   * interleave across an `await` would otherwise both issue BEGIN and the second
+   * would die on "cannot start a transaction within a transaction" — a nesting
+   * neither of them wrote. Postgres hands each caller its own pooled client and
+   * has never had the problem; queueing here gives the two dialects the same
+   * behaviour. See {@link SingleConnectionTransactions} for why a caller already
+   * inside a transaction is still refused, loudly, instead of queued.
    */
   async withClient<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
-    const dbRef = this.db;
-    const getSync = this.get.bind(this);
-    const allSync = this.all.bind(this);
-    const tx: TxClient = {
-      run: (sql: string, params?: unknown[]) => {
-        const info = dbRef.prepare(sql).run(...(params ?? []));
-        return Promise.resolve({ changes: info.changes });
-      },
-      get: (sql: string, params?: unknown[]) => {
-        return Promise.resolve(getSync(sql, params ?? []));
-      },
-      all: (sql: string, params?: unknown[]) => {
-        return Promise.resolve(allSync(sql, params ?? []));
-      },
-    };
+    return this._transactions.run(async () => {
+      const dbRef = this.db;
+      const getSync = this.get.bind(this);
+      const allSync = this.all.bind(this);
+      const tx: TxClient = {
+        run: (sql: string, params?: unknown[]) => {
+          const info = dbRef.prepare(sql).run(...(params ?? []));
+          return Promise.resolve({ changes: info.changes });
+        },
+        get: (sql: string, params?: unknown[]) => {
+          return Promise.resolve(getSync(sql, params ?? []));
+        },
+        all: (sql: string, params?: unknown[]) => {
+          return Promise.resolve(allSync(sql, params ?? []));
+        },
+      };
 
-    this.run('BEGIN');
-    try {
-      const result = await fn(tx);
-      this.run('COMMIT');
-      return result;
-    } catch (err) {
+      this.run('BEGIN');
       try {
-        this.run('ROLLBACK');
-      } catch {
-        // Rollback can fail if the connection is already in an aborted state;
-        // we surface the original error rather than the rollback failure.
+        const result = await fn(tx);
+        this.run('COMMIT');
+        return result;
+      } catch (err) {
+        try {
+          this.run('ROLLBACK');
+        } catch {
+          // Rollback can fail if the connection is already in an aborted state;
+          // we surface the original error rather than the rollback failure.
+        }
+        throw err;
       }
-      throw err;
-    }
+    });
   }
 }

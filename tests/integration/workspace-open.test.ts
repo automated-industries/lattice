@@ -34,10 +34,22 @@ function setupRoot(): string {
   return ensureLatticeRoot(base);
 }
 
+/**
+ * Point the machine-local config store at a throwaway dir. Opening a workspace
+ * resolves this machine's encryption key, and a test must never read (or create)
+ * the one belonging to the person running it. Restored by the afterEach above.
+ */
+function isolateConfigDir(): void {
+  const dir = mkdtempSync(join(tmpdir(), 'lattice-open-cfg-'));
+  dirs.push(dir);
+  process.env.LATTICE_CONFIG_DIR = dir;
+}
+
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('Lattice.openWorkspace', () => {
   it('renders a Context manifest immediately for an empty workspace', async () => {
+    isolateConfigDir();
     const root = setupRoot();
     addWorkspace(root, { displayName: 'Empty' });
     const db = await Lattice.openWorkspace({ root });
@@ -48,6 +60,7 @@ describe('Lattice.openWorkspace', () => {
   });
 
   it('renders the canonical, DB-aligned Context/ tree for related tables', async () => {
+    isolateConfigDir();
     const root = setupRoot();
     const ws = addWorkspace(root, { displayName: 'KB' });
     const p = resolveWorkspacePaths(root, ws);
@@ -91,6 +104,48 @@ describe('Lattice.openWorkspace', () => {
     expect(existsSync(join(p.contextDir, 'Projects', projSlug, 'PROJECT.md'))).toBe(true);
     expect(existsSync(join(p.contextDir, 'Projects', projSlug, 'FILES.md'))).toBe(true);
 
+    db.close();
+  });
+
+  it('registers the framework tables, so a headless open sees what the browser sees', async () => {
+    isolateConfigDir();
+    const root = setupRoot();
+    addWorkspace(root, { displayName: 'Native' });
+    const db = await Lattice.openWorkspace({ root, autoRender: false });
+    const registered = db.getRegisteredTableNames();
+    // The file index and the secret store are the two that matter: anything
+    // walking "every table in this workspace" (securing it, indexing it,
+    // listing it) skips them entirely when they were never registered.
+    expect(registered).toContain('files');
+    expect(registered).toContain('secrets');
+    db.close();
+  });
+
+  it('a workspace that declares its own version of a framework table keeps it', async () => {
+    isolateConfigDir();
+    const root = setupRoot();
+    const ws = addWorkspace(root, { displayName: 'OwnFiles' });
+    const p = resolveWorkspacePaths(root, ws);
+    writeFileSync(
+      p.configPath,
+      [
+        'name: "OwnFiles"',
+        'db: ./Data/database.db',
+        'entities:',
+        '  files:',
+        '    fields:',
+        '      id: { type: uuid, primaryKey: true }',
+        '      headline: { type: text }',
+        '',
+      ].join('\n'),
+    );
+    const db = await Lattice.openWorkspace({ root, autoRender: false });
+    // Registered once, with the workspace's own columns — never re-registered
+    // underneath the declaration or duplicated alongside it.
+    expect(db.getRegisteredTableNames().filter((t) => t === 'files')).toEqual(['files']);
+    expect(Object.keys(db.getRegisteredColumns('files') ?? {})).toContain('headline');
+    const id = await db.insert('files', { headline: 'declared shape wins' });
+    expect((await db.get('files', id))?.headline).toBe('declared shape wins');
     db.close();
   });
 

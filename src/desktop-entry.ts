@@ -13,7 +13,10 @@ export type { GuiBootstrap } from './framework/gui-bootstrap.js';
 // Release-manifest probe — the desktop shell feeds this into the GUI's update
 // service so a long-open window can surface "update available" (read-only; the
 // actual download + install/swap stays the desktop shell's job).
-export { checkManifestForUpdate } from './update-check.js';
+// `DESKTOP_RELEASE_BASE_URL` rides along so the shell and anything asking about
+// this surface's updates on its behalf resolve to the same release location — two
+// copies of that address would be two channels that can disagree.
+export { checkManifestForUpdate, DESKTOP_RELEASE_BASE_URL } from './update-check.js';
 // Frictionless-update pure helpers — the desktop shell (Deno) uses these to decide
 // swap-vs-installer and to drive the signature-safe bundle swap. Kept here (Node,
 // tested) rather than inline in desktop/main.ts (Deno, untestable).

@@ -9,15 +9,13 @@ import {
   clarifyFloor,
   getClarifyThreshold,
   DEFAULT_AGGRESSIVENESS,
-} from '../assistant-routes.js';
-import { enqueueQuestion } from '../questions.js';
+} from '../../ops/ai-config.js';
 import { resolveLlmClient } from './provider.js';
 import {
   summarizeText,
   classifyLinks,
   extractObjects,
   extractionTruncationNote,
-  rephraseClarifyQuestion,
   type CatalogEntity,
   type ClassifyMatch,
   type ExtractedObject,
@@ -35,9 +33,6 @@ import {
  */
 
 const LABEL_PREF = ['name', 'title', 'slug', 'label'];
-
-/** At most this many clarification questions may be enqueued per ingested file. */
-const MAX_QUESTIONS_PER_FILE = 2;
 
 /**
  * An object the extractor found that the engine could NOT write, and why.
@@ -446,66 +441,27 @@ export async function enrichWithLlm(
             .getRegisteredTableNames()
             .filter((t) => !isNativeEntity(t) && !isReadOnlyTarget(db, t)),
         );
-        // Ask-when-marginal gate: each extracted object carries the model's 0-1
-        // confidence in its target-entity decision. At or above the clarify
-        // threshold the object is materialized exactly as before; in
-        // [floor, threshold) nothing is created — a short question is enqueued
-        // instead (capped per file); below the floor the object is dropped
-        // silently, like the low-aggressiveness paths. A MISSING confidence is
-        // treated as 1.0, so a model that never emits the field (and every
-        // pre-existing flow) behaves identically to before.
-        const clarifyThreshold = getClarifyThreshold();
-        const floor = clarifyFloor(clarifyThreshold);
-        let questionsAsked = 0;
+        // Noise floor: each extracted object carries the model's 0-1 confidence in
+        // its target-entity decision. Below the floor the object is dropped
+        // silently, like the low-aggressiveness paths. Everything at or above it
+        // is materialized. A MISSING confidence is treated as 1.0, so a model that
+        // never emits the field (and every pre-existing flow) behaves identically.
+        //
+        // Objects between the floor and the clarify threshold used to create
+        // nothing and enqueue a card asking whether to add them. Answering it did
+        // not add them either — the stored action was a no-op, so the card could
+        // only ever record an opinion — which left a backlog of questions that
+        // changed nothing whichever way they were answered. Adding a row is
+        // additive and one click of Undo away, so the marginal band now does the
+        // additive thing at the aggressiveness the workspace is configured for.
+        const floor = clarifyFloor(getClarifyThreshold());
         // Every object actually created this pass (label → its entity + row id), so a
         // second pass can materialize the relationships the extractor stated between them.
         const createdObjects: { label: string; entity: string; rowId: string; links: string[] }[] =
           [];
         for (const obj of proposed) {
           const confidence = obj.confidence ?? 1;
-          if (confidence < clarifyThreshold) {
-            if (confidence >= floor && questionsAsked < MAX_QUESTIONS_PER_FILE) {
-              questionsAsked++;
-              // Rephrase the structural prompt into business-forward language the
-              // user actually thinks in ("Do you want to group all your driver's
-              // licenses together?" not "add records to <entity>"). Best-effort:
-              // on any failure `phrased` is null and the structural text stands, so
-              // the question is never blocked or dropped — only its wording upgraded.
-              // The stored context/action is unchanged: the options are recorded as
-              // the answer, the action stays `none`.
-              const phrased = await rephraseClarifyQuestion(
-                client,
-                name,
-                obj.entity,
-                temperature,
-                untrusted,
-              );
-              // v1 is deliberately conservative: the answer RECORDS the user's
-              // intent — no deferred action re-triggers the skipped extraction
-              // automatically — and only a free-form answer is persisted, as
-              // the (already existing) target entity's definition.
-              await enqueueQuestion(mctx.db, mctx.feed, {
-                source: 'enrich',
-                question: phrased
-                  ? phrased.question
-                  : `Is "${name}" meant to add records to ${obj.entity}?`,
-                options: phrased
-                  ? [phrased.yes, phrased.no]
-                  : ['Yes, add them', 'No, keep it as just a file'],
-                context: {
-                  action: { kind: 'none' },
-                  enrich: existing.has(obj.entity)
-                    ? [{ target: 'table_definition', table: obj.entity }]
-                    : [],
-                  // Name the file this question is about so the card displays
-                  // "Re: <filename>" and can navigate to the source file.
-                  subject: { table: 'files', rowId: fileId, label: name },
-                },
-                feedSource: mctx.source,
-              });
-            }
-            continue; // marginal or noise — never create/act on this decision
-          }
+          if (confidence < floor) continue; // noise — never create/act on this decision
           // Resolve the target entity: reuse an existing one, else create it.
           let entity: string | null = existing.has(obj.entity) ? obj.entity : null;
           if (!entity && allowNewEntity) {

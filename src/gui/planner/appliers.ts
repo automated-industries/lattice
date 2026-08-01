@@ -10,6 +10,7 @@ import { canonicalizeValue } from './introspect.js';
 import type { ActiveDb } from '../active-db.js';
 import { execSql, loadConfigDoc, saveConfigDoc } from '../config-io.js';
 import { assertNotComputedSource } from '../computed-ops.js';
+import { assertCloudOwner } from '../../cloud/owner-gate.js';
 import { createRow, updateRow, type MutationCtx } from '../mutations.js';
 import {
   normalizedEntityName,
@@ -779,6 +780,10 @@ export async function applyRetypeColumn(
   toType: string,
   sessionId: string,
 ): Promise<ApplyOutcome> {
+  // Authorization first: this rewrites stored values, runs the type change on the
+  // shared table, and edits the OWNER's workspace configuration — none of which
+  // row security covers. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'change a column type');
   const refusal = refuseUnreshapable(active, table);
   if (refusal) return fail(refusal);
   const target = toType.toLowerCase();

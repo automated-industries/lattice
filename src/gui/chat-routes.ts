@@ -5,39 +5,24 @@ import type { ChatCancelRegistry } from './chat-cancel.js';
 import type { ChatProgressBus } from './chat-progress.js';
 import type { ChatStreamEvent } from './ai/sse.js';
 import { FeedBus } from './feed.js';
-import {
-  getAggressiveness,
-  aggressivenessToTemperature,
-  maybeDisconnectExpiredClaude,
-} from './assistant-routes.js';
+import { maybeDisconnectExpiredClaude } from './assistant-routes.js';
 import { humanizeAssistantError } from './ai/error-humanize.js';
-import {
-  runChat,
-  buildSchemaContext,
-  type LlmClient,
-  type LlmMessage,
-  type ContentBlock,
-} from './ai/chat.js';
+import { type LlmMessage, type ContentBlock } from './ai/chat.js';
 import { resolveLlmProvider } from './ai/provider.js';
-import { normalizeUserUrl } from '../sources/url-safety.js';
 import { runIntent, type IntentResult } from './ai/intent.js';
-import { type MutationCtx } from './mutations.js';
-import type { FileJunction } from './data.js';
-import { generateHtmlFile } from './ai/html-author.js';
-import { generateMarkdown } from './ai/markdown-author.js';
-import { qaDashboard } from './ai/dashboard-qa.js';
 import { readIdentity } from '../framework/user-config.js';
-import { getCloudSetting, CLOUD_SETTING_SYSTEM_PROMPT } from '../cloud/settings.js';
-import { generateThreadTitle, triageReferenceMaterial } from './ai/summarize.js';
+import { generateThreadTitle } from './ai/summarize.js';
 import { getClaudeLimitState, clearClaudeLimit, CLAUDE_LIMIT_MESSAGE } from './ai/limit-state.js';
-import { columnDescriptionHook } from './meta-gen.js';
 import { sendJson, readJson } from './http.js';
 import {
   ASSISTANT_HIDDEN_TABLES,
   type AssistantJunction,
   type DispatchCtx,
 } from './ai/dispatch.js';
-import { FetchBudget } from '../ai/fetch-policy.js';
+// The turn itself — building the model's permissions, saving whatever reference
+// material the message carried, and running the tool loop — is a capability a
+// command line or a background job can call. This route is the HTTP adapter over it.
+import { streamAssistantTurn } from '../ops/assistant-turn.js';
 import {
   collectFromMarkdown,
   applyTraceLinks,
@@ -338,232 +323,16 @@ export async function buildAttachedFilesNote(db: Lattice, attachedFiles: unknown
   return (await resolveAttachedFiles(db, attachedFiles)).note;
 }
 
-/** Env off-switch for auto-ingesting reference material from chat messages
- *  (default ON). Mirrors LATTICE_CHAT_REHYDRATE. */
-function autoIngestEnabled(): boolean {
-  return process.env.LATTICE_CHAT_AUTOINGEST !== 'false';
-}
-
-/** Wiring for {@link ingestReferenceMaterial} — the same creators the chat dispatch
- *  holds, so auto-ingested content enriches with the workspace's real schema. */
-export interface ReferenceIngestDeps {
-  db: Lattice;
-  feed: FeedBus;
-  softDeletable: Set<string>;
-  aggressiveness?: number;
-  createEntity?: (name: string, columns: string[]) => Promise<string | null>;
-  createFileJunction?: (otherTable: string) => Promise<FileJunction | null>;
-  createObjectJunction?: (tableA: string, tableB: string) => Promise<AssistantJunction | null>;
-  privateMode?: boolean;
-}
-
-/** Prepended to the model's turn when reference material was auto-ingested, so it works
- *  with the saved item instead of re-creating it. Order-agnostic wording (the note may
- *  sit before or after the attached-files note). */
-const REFERENCE_INGEST_NOTE =
-  "[Note: reference material in the user's message has already been saved to their " +
-  'Files and automatically enriched by the ingestion engine — linked to the records it ' +
-  'refers to, with any structured objects it describes extracted and linked. Do NOT ' +
-  're-create, re-save, or re-link that content; just address the request and refer to ' +
-  'what was saved if useful.]\n\n';
-
-/** The note when links in the message were fetched + saved: the page CONTENT is on
- *  hand, so the model must act from it — never ask the user for details the page
- *  already provides. Failures are named so the model says so instead of guessing. */
-function linkIngestNote(saved: string[], failed: string[]): string {
-  const parts: string[] = [];
-  if (saved.length > 0) {
-    parts.push(
-      `The link${saved.length > 1 ? 's' : ''} in the user's message ` +
-        `(${saved.join(', ')}) ${saved.length > 1 ? 'have' : 'has'} already been fetched, ` +
-        'saved to their Files, and run through the ingestion engine — the page content is ' +
-        'readable with your file tools, and any structured objects it describes were ' +
-        'extracted and linked. Do NOT re-fetch, re-save, or re-create it, and do NOT ask ' +
-        'the user for details the page already provides — read the saved file and act.',
-    );
-  }
-  if (failed.length > 0) {
-    parts.push(
-      `${failed.length > 1 ? 'These links' : 'This link'} could not be fetched: ` +
-        `${failed.join(', ')} — tell the user plainly and work with what you have; ` +
-        'never present guessed page details as fetched.',
-    );
-  }
-  return parts.length > 0 ? `[Note: ${parts.join(' ')}]\n\n` : '';
-}
-
-/**
- * Every http(s) URL literally present in the user's message — normalized, deduped,
- * in appearance order. MECHANICAL, never delegated to a model: a shared link is
- * always detected, so it is always fetched (safety-gated). Trailing sentence /
- * bracket punctuation is trimmed; anything `normalizeUserUrl` refuses is skipped.
- */
-export function extractUserUrls(message: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const re = /https?:\/\/[^\s<>"']+/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(message)) !== null) {
-    const raw = m[0].replace(/[),.;!?\]}>'"]+$/, '');
-    const normalized = normalizeUserUrl(raw);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(raw);
-  }
-  return out;
-}
-
-/**
- * Everything the USER has typed in this conversation — the current message plus
- * every user turn's top-level TEXT blocks from the (rehydrated) history. Feeds
- * `ingest_url`'s "did the user write this?" gate, so a link shared earlier in
- * the thread stays fetchable. Deliberately excludes `tool_result` blocks (they
- * ride user-role messages in the wire format but carry file/row content — the
- * exact SSRF vector the gate exists to block), assistant turns, and anything
- * nested inside non-text blocks. Exported for regression testing.
- */
-export function userAuthoredCorpus(message: string, history: LlmMessage[]): string {
-  const texts: string[] = [message];
-  for (const h of history) {
-    if (h.role !== 'user') continue;
-    if (typeof h.content === 'string') {
-      texts.push(h.content);
-      continue;
-    }
-    for (const b of h.content) {
-      if (b.type === 'text') texts.push(b.text);
-    }
-  }
-  return texts.join('\n');
-}
-
-/**
- * Route any REFERENCE MATERIAL in the user's message through the SAME engine a dropped
- * file uses — decided by content TYPE (facts / notes / a pasted document / a link), not
- * size. A message may be mixed (reference material + a directive); only the reference
- * portion is ingested here, and the assistant still handles the directive. Deterministic
- * where it counts: the classifier ALWAYS runs (ingestion isn't left to the chat model
- * choosing a tool), and the finding-and-linking is the engine's, not prompt rules'.
- *
- * Runs BEFORE the chat turn and is fully awaited: row writes aren't serialized against
- * the chat's own tool writes (better-sqlite3 is one connection), so overlapping them
- * would race BEGIN — sequencing avoids that AND lets the model reference what was saved.
- *
- * Returns a note to prepend to the model's turn, or '' when there was nothing to save,
- * auto-ingest is disabled, or it failed. Best-effort: a triage/ingest failure is logged
- * and never blocks the chat. Exported for regression testing.
- */
-export async function ingestReferenceMaterial(
-  client: LlmClient,
-  message: string,
-  deps: ReferenceIngestDeps,
-  temperature: number,
-): Promise<string> {
-  if (!autoIngestEnabled()) return '';
-
-  // source:'ingest' (not 'ai') so the saved-and-linked activity surfaces on the
-  // persistent feed exactly like a dropped file, not as a chat-turn activity card.
-  const mctx: MutationCtx = {
-    db: deps.db,
-    feed: deps.feed,
-    softDeletable: deps.softDeletable,
-    source: 'ingest',
-    onColumnsAdded: columnDescriptionHook(deps.db),
-  };
-  const enrichDeps = {
-    fileJunctions: [] as FileJunction[],
-    entityDescriptions: {} as Record<string, string>,
-    ...(deps.aggressiveness !== undefined ? { aggressiveness: deps.aggressiveness } : {}),
-    ...(deps.createEntity ? { createEntity: deps.createEntity } : {}),
-    ...(deps.createFileJunction ? { createJunction: deps.createFileJunction } : {}),
-    ...(deps.createObjectJunction ? { createObjectJunction: deps.createObjectJunction } : {}),
-  };
-
-  // ── Links: detected MECHANICALLY from the raw message and ALWAYS fetched ──
-  // (assertSafeUrl SSRF guard + fetch budget inside ingestUrlAsFile). Detection
-  // is never delegated to the triage model — that is exactly where a shared link
-  // used to flake into a "what would you like me to do?" instead of being
-  // visited and parsed into an object. Failures are surfaced in the note, never
-  // silent, so the model tells the user rather than guessing or asking.
-  let urlNote = '';
-  const urls = extractUserUrls(message);
-  let remainder = message;
-  if (urls.length > 0) {
-    const { ingestUrlAsFile } = await import('./ingest-url.js');
-    const budget = new FetchBudget();
-    const saved: string[] = [];
-    const failed: string[] = [];
-    for (const url of urls) {
-      remainder = remainder.split(url).join(' ');
-      try {
-        await ingestUrlAsFile(
-          {
-            db: deps.db,
-            mctx,
-            ...(deps.privateMode ? { privateMode: true } : {}),
-            enrich: enrichDeps,
-          },
-          url,
-          { budget },
-        );
-        saved.push(url);
-      } catch (e) {
-        console.warn('[chat] link ingest failed:', url, (e as Error).message);
-        failed.push(url);
-        if (budget.remaining === 0) break; // budget exhausted — stop fetching, keep the note honest
-      }
-    }
-    urlNote = linkIngestNote(saved, failed);
-  }
-
-  // ── Text reference material: triaged as before, over the message MINUS the
-  // already-ingested links (so a bare link-share triages to nothing). ──
-  let textNote = '';
-  if (remainder.trim()) {
-    let reference = '';
-    try {
-      reference = (await triageReferenceMaterial(client, remainder, temperature)).reference;
-    } catch (e) {
-      console.warn('[chat] reference-material triage failed:', (e as Error).message);
-      return urlNote;
-    }
-    const ref = reference.trim();
-    if (ref) {
-      try {
-        const { ingestTextAsFile, looksLikeUrl } = await import('./ingest-routes.js');
-        // A triage-returned bare URL (one the extractor's normalizer refused but the
-        // ingest normalizer accepts) still crawls; anything else saves as text.
-        if (looksLikeUrl(ref)) {
-          const { ingestUrlAsFile } = await import('./ingest-url.js');
-          await ingestUrlAsFile(
-            {
-              db: deps.db,
-              mctx,
-              ...(deps.privateMode ? { privateMode: true } : {}),
-              enrich: enrichDeps,
-            },
-            ref,
-          );
-        } else {
-          await ingestTextAsFile(
-            {
-              db: deps.db,
-              mctx,
-              ...enrichDeps,
-              ...(deps.privateMode ? { privateMode: true } : {}),
-            },
-            ref,
-            'Pasted note',
-          );
-        }
-        textNote = REFERENCE_INGEST_NOTE;
-      } catch (e) {
-        console.warn('[chat] reference-material ingest failed:', (e as Error).message);
-      }
-    }
-  }
-  return urlNote + textNote;
-}
+// The auto-ingest pre-pass that runs over the user's own words before the turn —
+// saving and enriching any reference material the message carries — now lives in a
+// capability module so a command line or a background job can run the same turn.
+// Re-exported here so callers that predate the move keep working unchanged.
+export {
+  extractUserUrls,
+  userAuthoredCorpus,
+  ingestReferenceMaterial,
+} from '../ops/reference-ingest.js';
+export type { ReferenceIngestDeps } from '../ops/reference-ingest.js';
 
 /**
  * Validate the client's "what am I looking at" hint into `{ table, id }`, or null.
@@ -1081,6 +850,9 @@ export async function dispatchChatRoute(
   // response, so aborting the client's fetch would stop nothing; the abort has to be
   // delivered here, to the controller the job is watching.
   const stopMatch = /^\/api\/chat\/messages\/([^/]+)\/stop$/.exec(ctx.pathname);
+  // @gui-only session-state: aborts a turn that this server process is streaming right now.
+  // A direct caller owns the abort handle for the turn it started, so there is nothing for
+  // it to look up; the route exists only because the client runs in a different process.
   if (ctx.method === 'POST' && stopMatch) {
     const stopId = decodeURIComponent(stopMatch[1] ?? '');
     const entry = ctx.chatCancel.get(stopId);
@@ -1112,6 +884,11 @@ export async function dispatchChatRoute(
     return true;
   }
 
+  // @capability app.assistant-turn a full turn — permissions, the reference-material
+  // pre-pass, and the tool loop — runs from a command line or a script through
+  // runAssistantTurn. What stays here is transport: the acknowledgement, the socket
+  // the browser listens on, the per-workspace queue, the stop registry, and storing
+  // the conversation so a reload can replay it.
   if (!(ctx.method === 'POST' && ctx.pathname === '/api/chat')) return false;
 
   const provider = await resolveLlmProvider(ctx.db);
@@ -1360,110 +1137,6 @@ export async function dispatchChatRoute(
       ctx.chatCancel.release(assistantMsgId);
       return;
     }
-    // Strip credential-bearing native tables (secrets) so the assistant can
-    // neither query them nor be told they exist — it reads rows already decrypted.
-    const dispatch: DispatchCtx = {
-      db: ctx.db,
-      feed: ctx.feed,
-      // "Private mode" chat toggle: force rows the assistant creates this turn private
-      // regardless of the table default (a transient per-request choice).
-      privateMode: body.privateMode === true,
-      // Live-aware table set: the open-time snapshot PLUS anything registered
-      // since (a connector connected this session), minus internal + hidden. A
-      // defineLate connector table (mcp_items) is otherwise absent from the
-      // snapshot, so the assistant would reject it as "Unknown table".
-      validTables: new Set(
-        [...ctx.validTables, ...ctx.db.getRegisteredTableNames()].filter(
-          (t) =>
-            !ASSISTANT_HIDDEN_TABLES.has(t) &&
-            !t.startsWith('__lattice') &&
-            !t.startsWith('_lattice'),
-        ),
-      ),
-      junctionTables: new Set(
-        [...ctx.junctionTables].filter((t) => !ASSISTANT_HIDDEN_TABLES.has(t)),
-      ),
-      ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
-      softDeletable: ctx.softDeletable,
-      onColumnsAdded: columnDescriptionHook(ctx.db),
-      aggressiveness: getAggressiveness(),
-      // ingest_url's "did the user write this?" gate covers the WHOLE
-      // conversation, not just this turn: a link shared two messages ago is
-      // still the user's link — gating on the current message alone made the
-      // assistant refuse it and claim it "cannot scrape" a URL the user
-      // explicitly shared. Only user-AUTHORED text contributes (top-level text
-      // blocks of user turns; never tool_result blocks, model text, or file/row
-      // content), so the SSRF property is unchanged: the model still cannot
-      // fetch a URL it lifted out of anything but the user's own words.
-      userMessage: userAuthoredCorpus(message, history),
-      // One shared fetch budget for the whole turn (caps assistant-driven fetches).
-      urlFetchBudget: new FetchBudget(),
-      ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
-      ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
-      ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
-      ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
-      ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
-      ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
-      ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
-      ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
-      ...(ctx.importAttachment ? { importAttachment: ctx.importAttachment } : {}),
-      // Copied like validTables so in-turn additions (create_computed_table)
-      // stay visible to later tool calls without mutating the server's set —
-      // the audited op updates the workspace-level set itself.
-      ...(ctx.computedTables ? { computedTables: new Set(ctx.computedTables) } : {}),
-      ...(ctx.computedOps ? { computedOps: ctx.computedOps } : {}),
-    };
-
-    // Delegated HTML-file authoring: create_html_file / edit_html_file call this to
-    // author a full standalone HTML page. The closure builds its own client from the
-    // SAME resolved auth (api-key or OAuth) and the live schema, so SDK-missing /
-    // provider errors surface as a tool error (recoverable), never a crash. The model
-    // is the strongest the auth can actually run — sonnet for an API key (entitled to
-    // all models), the chat model for an OAuth subscription (whose entitlements vary;
-    // a non-entitled model 429s every call). If the user is viewing an html artifact,
-    // expose its id so edit_html_file targets the file on screen by default.
-    const authorModel = provider.authorModel;
-    const authorHtml = async (spec: string, currentHtml?: string): Promise<string> => {
-      const schema = await buildSchemaContext(dispatch);
-      return generateHtmlFile({
-        client: provider.client,
-        schema,
-        spec,
-        model: authorModel,
-        ...(currentHtml !== undefined ? { currentHtml } : {}),
-      });
-    };
-    dispatch.htmlAuthor = authorHtml;
-    // Markdown authoring for large artifacts (spec path in create_artifact).
-    // Uses the same author model as HTML dashboards for consistency.
-    const authorMarkdown = async (spec: string): Promise<string> => {
-      const schema = await buildSchemaContext(dispatch);
-      return generateMarkdown({
-        client: provider.client,
-        schema,
-        spec,
-        model: authorModel,
-      });
-    };
-    dispatch.markdownAuthor = authorMarkdown;
-    // Automatic QA for an authored dashboard: run its data queries + check them against the
-    // request, repair via the same author, and report residual issues (see dashboard-qa).
-    // On by default; LATTICE_DASHBOARD_QA=false disables it (skips the extra queries + judge
-    // call + any repair round per dashboard create/edit).
-    if (process.env.LATTICE_DASHBOARD_QA !== 'false') {
-      dispatch.qaDashboard = (html: string, intent: string) =>
-        qaDashboard(
-          { db: ctx.db, client: provider.client, model: authorModel, reAuthor: authorHtml },
-          html,
-          intent,
-        );
-    }
-    if (activeContext?.table === 'dashboards') {
-      // The user is looking at a dashboard — make it edit_dashboard's default
-      // target. No existence probe needed: the handler verifies the row itself.
-      dispatch.activeDashboardId = activeContext.id;
-    }
-
     // turnStartedAt + assistantMsgId are declared above (before the 202) — they identify
     // the pending row this job now fills in.
     let assistantText = '';
@@ -1476,13 +1149,6 @@ export async function dispatchChatRoute(
       tools: { id: string; name: string; isError: boolean }[];
       toolCalls: PersistedToolCall[];
     }[] = [];
-    // The cloud owner's workspace system prompt, bundled into every member's chat.
-    // Best-effort + read through the member's own RLS-scoped connection: a member
-    // never sees this text in the UI/API (owner-only there), it's only injected into
-    // the turn here. null on local / unset / un-upgraded cloud → no injection.
-    const cloudSystemPrompt =
-      (await getCloudSetting(ctx.db, CLOUD_SETTING_SYSTEM_PROMPT)) ?? undefined;
-
     // Incremental checkpointing: the assistant message is persisted under the stable
     // assistantMsgId declared above and UPDATEd as the turn streams, so a refresh mid-turn
     // (notably a long batch run) recovers the work so far instead of losing the whole turn.
@@ -1566,67 +1232,63 @@ export async function dispatchChatRoute(
     };
 
     try {
-      const client = provider.client;
-      const temperature = aggressivenessToTemperature(getAggressiveness());
-      // Deterministic, type-based ingestion: pull any reference material out of the
-      // user's message and route it through the SAME engine a dropped file uses, BEFORE
-      // the chat turn (sequential — the chat's own writes must not overlap these). The
-      // returned note tells the model what was saved so it neither re-creates nor guesses.
-      const ingestNote = await ingestReferenceMaterial(
-        client,
-        message,
+      for await (const ev of streamAssistantTurn(
         {
           db: ctx.db,
           feed: ctx.feed,
+          validTables: ctx.validTables,
+          junctionTables: ctx.junctionTables,
           softDeletable: ctx.softDeletable,
-          aggressiveness: getAggressiveness(),
+          ...(ctx.computedTables ? { computedTables: ctx.computedTables } : {}),
+          ...(ctx.computedOps ? { computedOps: ctx.computedOps } : {}),
           ...(ctx.createEntity ? { createEntity: ctx.createEntity } : {}),
+          ...(ctx.addColumn ? { addColumn: ctx.addColumn } : {}),
+          ...(ctx.createJunction ? { createJunction: ctx.createJunction } : {}),
           ...(ctx.createFileJunction ? { createFileJunction: ctx.createFileJunction } : {}),
-          ...(ctx.createJunction ? { createObjectJunction: ctx.createJunction } : {}),
+          ...(ctx.deleteEntity ? { deleteEntity: ctx.deleteEntity } : {}),
+          ...(ctx.importAttachment ? { importAttachment: ctx.importAttachment } : {}),
+          ...(ctx.connectedSources ? { connectedSources: ctx.connectedSources } : {}),
+          ...(ctx.configPath !== undefined ? { configPath: ctx.configPath } : {}),
+          ...(ctx.outputDir !== undefined ? { outputDir: ctx.outputDir } : {}),
+          ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}),
+          // "Private mode" chat toggle: force rows the assistant creates this turn
+          // private regardless of the table default (a transient per-request choice).
           ...(body.privateMode === true ? { privateMode: true } : {}),
+          // Already resolved above, so the turn does not re-resolve it and the
+          // request's own error mapping stays keyed to the same provider.
+          provider,
         },
-        temperature,
-      );
-      for await (const ev of runChat({
-        client,
-        dispatch,
-        history,
-        // The user's OWN words — nothing else. The active-view / attached-files /
-        // auto-ingest notes travel as SEPARATE content blocks ahead of it (see
-        // RunChatOptions.contextNotes), so no value interpolated into a note can end
-        // up inside what is later read as the user's message.
-        userMessage: message,
-        contextNotes: [
-          activeView.note,
-          attachedNote,
-          ingestNote,
-          ingestInProgressNote,
-          filesOnlyDirective,
-        ],
-        temperature,
-        // Give the assistant the operator's name so it addresses them and
-        // resolves "me"/"my" without asking for a name it already has.
-        operatorName: readIdentity().display_name,
-        // Ground the assistant in the real wall-clock (server-owned) + the viewer's
-        // timezone, so "today"/"recent"/"most recent" resolve to NOW, not its stale
-        // training cutoff. turnStartedAt is the instant this turn began.
-        nowIso: turnStartedAt,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        ...(cloudSystemPrompt ? { cloudSystemPrompt } : {}),
-        ...(activeContext ? { activeContext } : {}),
-        // Capture each executed tool call (capped) for cross-turn replay memory.
-        onToolRecord: (rec) => {
-          turns[turns.length - 1]?.toolCalls.push(rec);
+        {
+          // The user's OWN words — nothing else. The active-view / attached-files /
+          // auto-ingest notes travel as SEPARATE content blocks ahead of it, so no
+          // value interpolated into a note can end up inside what is later read as
+          // the user's message.
+          message,
+          history,
+          // Notes about the REQUEST go ahead of the auto-ingest note the turn adds;
+          // notes about the SESSION go after it, which is the order they have always
+          // been delivered in.
+          contextNotes: [activeView.note, attachedNote],
+          trailingContextNotes: [ingestInProgressNote, filesOnlyDirective],
+          ...(activeContext ? { activeContext } : {}),
+          // The user is looking at a dashboard — make it the edit tool's default target.
+          ...(activeContext?.table === 'dashboards' ? { activeDashboardId: activeContext.id } : {}),
+          // turnStartedAt is the instant this turn began.
+          nowIso: turnStartedAt,
+          // Capture each executed tool call (capped) for cross-turn replay memory.
+          onToolRecord: (rec) => {
+            turns[turns.length - 1]?.toolCalls.push(rec);
+          },
+          // What the tools actually did, in the user's terms. Streamed too; held here
+          // so a stopped turn can still carry it on the saved reply.
+          onOutcomeNotice: (notice) => {
+            outcomeNotice = notice;
+          },
+          // Stop: checked at each round boundary and handed to the model stream, so the
+          // turn stops for real instead of running on invisibly after the user gave up.
+          signal: abortSignal,
         },
-        // What the tools actually did, in the user's terms. Streamed too; held here
-        // so a stopped turn can still carry it on the saved reply.
-        onOutcomeNotice: (notice) => {
-          outcomeNotice = notice;
-        },
-        // Stop: checked at each round boundary and handed to the model stream, so the
-        // turn stops for real instead of running on invisibly after the user gave up.
-        signal: abortSignal,
-      })) {
+      )) {
         if (ev.type === 'assistant_message_start') {
           turns.push({ text: '', tools: [], toolCalls: [] });
         } else if (ev.type === 'text_delta') {

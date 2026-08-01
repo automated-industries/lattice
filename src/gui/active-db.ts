@@ -106,9 +106,11 @@ export interface ActiveDb {
    */
   eagerRenderWired?: boolean;
   /**
-   * Tables the open-time cloud converge could not manage (e.g. owned by a
-   * different Postgres role). Empty on a clean open. Surfaced via /api/dbconfig so
-   * the user gets a specific, actionable message instead of a partial converge.
+   * Degraded-but-not-fatal conditions this open hit: a table the cloud converge
+   * could not manage (e.g. owned by a different Postgres role), or a piece of
+   * open-time setup that did not land. Empty on a clean open. Surfaced via
+   * /api/dbconfig so the user gets a specific, actionable message instead of a
+   * partial open presented as a clean one.
    */
   convergeWarnings: { table: string; reason: string }[];
   /**
@@ -120,6 +122,13 @@ export interface ActiveDb {
    * NEVER rejects: a failure is surfaced into {@link convergeWarnings} + logged,
    * not thrown (it runs unawaited). Callers that need a fully-converged cloud
    * before asserting (tests) `await active.converged`; the GUI ignores it.
+   *
+   * Awaiting it is never REQUIRED for correctness. It used to be, silently, on
+   * SQLite: this work and a caller's next schema change met on one connection and
+   * the second transaction was refused, so a script that did the documented thing
+   * — open, then act — died on a line that looked right. Overlapping transactions
+   * now queue on the connection instead. This promise remains what it says it is:
+   * a way to wait for cloud convergence when you want to assert on it.
    */
   converged: Promise<void>;
   /** Original db: connection string from the YAML, used to spin up the broker. */

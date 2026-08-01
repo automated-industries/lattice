@@ -346,6 +346,70 @@ describe('parseArgs() — global flags', () => {
   });
 });
 
+/**
+ * `lattice --help` is the only reference a user has at the terminal, so a flag
+ * the parser accepts but the help never names is a capability nobody can find:
+ * `search --json` was parsed and honored for three commands while appearing in
+ * the help only as part of the `index status` one-liner. These tests read the
+ * real source rather than a replica, and check the two directions that matter —
+ * every long flag the parser accepts is named somewhere in the help, and the
+ * commands that take options have their own section listing them.
+ */
+describe('help text — every accepted flag is documented', () => {
+  const src = readFileSync(resolve(import.meta.dirname, '../../src/cli.ts'), 'utf-8');
+
+  /** The body of a top-level `function <name>` declaration, by brace matching. */
+  function functionBody(name: string): string {
+    const start = src.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThan(-1);
+    let depth = 0;
+    for (let i = src.indexOf('{', start); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+    }
+    throw new Error(`unbalanced braces in ${name}`);
+  }
+
+  const parser = functionBody('parseArgs');
+  const help = functionBody('printHelp');
+
+  // Long flags only: the one-letter aliases are always documented beside the
+  // long form they abbreviate, never on their own.
+  const accepted = [...new Set([...parser.matchAll(/arg === '(--[a-z0-9-]+)'/g)].map((m) => m[1]))];
+
+  it('finds the flags the parser accepts', () => {
+    // Guards the extraction itself — a parser rewrite that breaks the pattern
+    // would otherwise make the coverage check below vacuously pass.
+    expect(accepted.length).toBeGreaterThan(15);
+    expect(accepted).toContain('--json');
+  });
+
+  it.each(accepted)('documents %s', (flag) => {
+    expect(help).toContain(flag);
+  });
+
+  it('gives search its own options section, including --json', () => {
+    const section = help.slice(help.indexOf('Options (search)'));
+    expect(section).toContain('Options (search)');
+    for (const flag of ['--table', '--topk', '--explain', '--json', '--config']) {
+      expect(section.slice(0, section.indexOf('Options (', 1))).toContain(flag);
+    }
+  });
+
+  it('gives doctor its own options section, including --json', () => {
+    const section = help.slice(help.indexOf('Options (doctor)'));
+    expect(section).toContain('Options (doctor)');
+    for (const flag of ['--fix', '--json', '--config']) {
+      expect(section.slice(0, section.indexOf('Options (', 1))).toContain(flag);
+    }
+  });
+
+  it('documents both `workspace create` forms and the name-or-id for `use`', () => {
+    expect(help).toContain('create <name>');
+    expect(help).toContain('use <name-or-id>');
+  });
+});
+
 describe('help text', () => {
   it('includes render command', () => {
     const cliPath = resolve(import.meta.dirname, '../../src/cli.ts');

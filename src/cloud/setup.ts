@@ -7,7 +7,6 @@ import {
   enableLineageRls,
   ownPolyfillsByGroup,
   enableRlsForTable,
-  backfillOwnership,
   memberGroupFor,
 } from './rls.js';
 import { installCloudSettings } from './settings.js';
@@ -24,9 +23,10 @@ import {
   grantMemberExecuteSql,
 } from './member-access.js';
 import { NATIVE_INTERNAL_NAMES } from '../framework/native-entities.js';
-import { allAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync, getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { registerPostgresPolyfills } from '../db/postgres.js';
 import { hasFilePresigner, grantPresignerToMemberGroup } from './file-presign.js';
+import { assertNotManaged, MANAGED_REFUSAL } from './managed-guard.js';
 
 /**
  * Tables that are PRIVATE to their owner on a cloud and must never be bulk-shared:
@@ -39,7 +39,7 @@ const PRIVATE_ONLY_TABLES: readonly string[] = [...NATIVE_INTERNAL_NAMES, 'secre
  * Converge per-table member ACCESS on a cloud — ungated and with NO data-row
  * scans (so it is safe to run on every owner open, not just the one-time secure
  * cutover). It self-heals two drift classes the version-gated per-table securing
- * (`enableRlsForTable`, recorded as `internal:cloud-rls:table:<t>:v4`) cannot:
+ * (`enableRlsForTable`, recorded as `internal:cloud-rls:table:<t>:v5`) cannot:
  *
  *  1. PRIVACY — force `never_share` on {@link PRIVATE_ONLY_TABLES}. The assistant's
  *     `chat_threads`/`chat_messages` are per-author private; without this a bulk
@@ -403,25 +403,57 @@ export async function reconcileCloudMemberAccess(db: Lattice): Promise<CloudMemb
 /**
  * Turn a Postgres database into a secured Lattice cloud, in place: install the
  * RLS bootstrap + the observation substrate, then for every registered user
- * table stamp the current role as owner of the existing rows and force RLS (plus
- * a cell-masking view for any audience columns). Idempotent and additive — safe
- * to run on a fresh migration target OR on an already-populated Postgres that
- * isn't a cloud yet (the "secure this cloud" cutover). No-op on SQLite.
+ * table stamp ownership of the existing rows and force RLS (plus a cell-masking
+ * view for any audience columns). Idempotent and additive — safe to run on a
+ * fresh migration target OR on an already-populated Postgres that isn't a cloud
+ * yet (the "secure this cloud" cutover). No-op on SQLite.
  *
  * Must run as a role that owns the tables and can create roles (a cloud
- * owner / DBA). `backfillOwnership` runs BEFORE `enableRlsForTable` so a
- * non-superuser owner can still SELECT every row to stamp it before FORCE RLS
- * filters the table to rows it already owns.
+ * owner / DBA), which need not be a superuser: the ownership stamp runs with the
+ * policies lifted, inside the same transaction that applies them, so an owner
+ * without BYPASSRLS can still see every row it is stamping.
  */
 /**
- * Secure ONE user table on a cloud: stamp current-role ownership of existing
- * rows, FORCE per-row RLS, and (re)build the audience cell-masking view. Idempotent
+ * Does this relation hold rows OF ITS OWN — i.e. is it a table rather than a view?
+ *
+ * Per-row ownership only means something for a relation that stores its own rows.
+ * A view stores none: it reads them from the tables underneath, and those tables
+ * are secured in their own right, so the rows a view exposes are already governed.
+ * Postgres agrees — it rejects both `ALTER … ENABLE ROW LEVEL SECURITY` and a
+ * per-row trigger on a view (and on a materialized view), which is how this
+ * surfaced: reconstructing a view registers it through the same call every table
+ * goes through, and the securing step then failed the whole registration partway
+ * through an import that had already written its rows. Stamping ownership for a
+ * view is wrong on its own terms too — it writes owner records keyed to a relation
+ * that can never have an owner.
+ *
+ * An unknown relation (no row in the catalog) answers TRUE, so a genuinely missing
+ * table still fails loudly at the securing step rather than being skipped here.
+ */
+async function ownsItsRows(db: Lattice, table: string): Promise<boolean> {
+  const row = (await getAsyncOrSync(
+    db.adapter,
+    `SELECT c.relkind AS kind
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relname = ?`,
+    [table],
+  )) as { kind?: unknown } | undefined;
+  const kind = typeof row?.kind === 'string' ? row.kind : null;
+  // 'r' ordinary table, 'p' partitioned table, 'f' foreign table. Anything else
+  // ('v' view, 'm' materialized view, …) does not own rows.
+  return kind === null || kind === 'r' || kind === 'p' || kind === 'f';
+}
+
+/**
+ * Secure ONE user table on a cloud: stamp ownership of the existing rows, FORCE
+ * per-row RLS, and (re)build the audience cell-masking view. Idempotent
  * + additive. The per-table half of {@link secureCloud}, factored out so tables
  * created at RUNTIME (data-model panel / assistant / ingest) are secured the same
  * way — otherwise a runtime table on a secured cloud has RLS OFF (wide open).
- * `backfillOwnership` runs BEFORE `enableRlsForTable` so a non-superuser owner can
- * still SELECT every row to stamp it before FORCE RLS filters the table. No-op on
- * SQLite, on bookkeeping tables, or on an unkeyable table.
+ * Stamping the existing rows is part of {@link enableRlsForTable}'s own SQL, which
+ * is the only place it can be done correctly for an owner without BYPASSRLS. No-op
+ * on SQLite, on bookkeeping tables, on an unkeyable table, or on a relation that
+ * owns no rows of its own ({@link ownsItsRows}).
  */
 export async function secureNewCloudTable(
   db: Lattice,
@@ -431,7 +463,7 @@ export async function secureNewCloudTable(
   if (db.getDialect() !== 'postgres') return;
   if (table.startsWith('__lattice_') || table.startsWith('_lattice_')) return;
   if (pk.length === 0) return;
-  await backfillOwnership(db, table, pk);
+  if (!(await ownsItsRows(db, table))) return;
   await enableRlsForTable(db, table, pk);
   const cols = db.getRegisteredColumns(table);
   if (cols) {
@@ -460,7 +492,29 @@ async function convergeLegacyColumnAudience(db: Lattice): Promise<void> {
   );
 }
 
-export async function secureCloud(db: Lattice): Promise<void> {
+/** What a caller already knows about its own session, so it need not be inferred. */
+export interface SecureCloudOptions {
+  /**
+   * Whether this session's workspaces are owned by a deployment's manager.
+   * Omitted ⇒ read from the session. A MANAGER provisioning a tenant it owns
+   * passes `false` — it is the one party for whom this is the right move.
+   */
+  managed?: boolean;
+}
+
+/**
+ * Install row-level security and the member role model on a cloud database.
+ *
+ * REFUSED ON A MANAGED SESSION, and the refusal lives here rather than in the
+ * callers. Where a deployment's manager provisions and secures the tenant, doing
+ * it again locally is not an idempotent repeat: it re-stamps row ownership and
+ * re-privatizes rows that were shared, on a database that was already set up for
+ * the account. The check existed in the request handler and in the command
+ * wrapper — and this function is PUBLISHED, so the doors that had it were the two
+ * a manager's own runtime never uses. See the managed guard.
+ */
+export async function secureCloud(db: Lattice, opts: SecureCloudOptions = {}): Promise<void> {
+  assertNotManaged(opts.managed, MANAGED_REFUSAL.secure);
   if (db.getDialect() !== 'postgres') return;
   // Create the SQLite-compat polyfills (json_extract / strftime / pgcrypto) as
   // the OWNER, up front — installCloudRls revokes CREATE ON SCHEMA from PUBLIC,

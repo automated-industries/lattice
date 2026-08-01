@@ -258,6 +258,11 @@ export const dataModelJs = `    // ───────────────
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                // The move landed but this session could not reconnect to the
+                // shared database, so the server closed it rather than let
+                // anything keep writing to the file it just retired. A reload
+                // opens the moved workspace.
+                if (r.body.sessionRestartRequired) window.location.reload();
               });
           });
         }
@@ -1164,9 +1169,17 @@ export const dataModelJs = `    // ───────────────
       // (postgres.<ref>) are case-sensitive and silently failed
       // authentication when iOS Safari turned the leading "p" into "P".
       var attrs = ' autocapitalize="off" autocorrect="off" spellcheck="false"';
+      // The Label becomes the key this connection is stored and looked up under,
+      // and that key only allows letters, numbers, dot, dash and underscore.
+      // Anything else in the name is turned into a dash rather than refused — say
+      // so next to the field, so a name like "Strategy Team" does not look like a
+      // mistake when it comes back hyphenated. The one name that cannot work is
+      // one with no letter or number in it at all, which the server names as a
+      // Label problem. Keep this sentence true to normalizeLabel.
       return (
         '<div class="grid u-grid-2" style="gap:8px">' +
-          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" class="u-w-100"' + attrs + '></div>' +
+          '<div><label class="field-label">Label</label><input type="text" id="w-label" placeholder="atlas" value="' + escapeHtml(prefill.label || '') + '" class="u-w-100"' + attrs + '>' +
+            '<div class="hint" id="w-label-hint">A name for this connection. Spaces and punctuation become dashes.</div></div>' +
           '<div><label class="field-label">Host</label><input type="text" id="w-host" placeholder="db.example.com" value="' + escapeHtml(prefill.host || '') + '" class="u-w-100"' + attrs + '></div>' +
           '<div><label class="field-label">Port</label><input type="number" id="w-port" placeholder="5432" value="' + escapeHtml(String(prefill.port || 5432)) + '" class="u-w-100"></div>' +
           '<div><label class="field-label">Database name</label><input type="text" id="w-dbname" placeholder="app" value="' + escapeHtml(prefill.dbname || '') + '" class="u-w-100"' + attrs + '></div>' +
@@ -1257,8 +1270,20 @@ export const dataModelJs = `    // ───────────────
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
-        .then(function (r) { return r.json(); })
-        .then(function (probe) {
+        .then(function (r) {
+          return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+        })
+        .then(function (answer) {
+          // A refused FORM is not a refused connection. The route rejects a
+          // blank host (or label, database, user, port) before it dials
+          // anything, and answers 400 naming the field. Report that as itself:
+          // wrapping it in 'Cloud unreachable' asserts a network failure that
+          // never happened and sends the reader to re-check four fields, three
+          // of which were fine.
+          if (!answer.ok) {
+            throw new Error(answer.body.error || 'That connection form was rejected.');
+          }
+          var probe = answer.body;
           if (!probe.reachable) {
             throw new Error(
               'Cloud unreachable: ' + (probe.error || 'unknown error') +
@@ -1302,6 +1327,10 @@ export const dataModelJs = `    // ───────────────
               .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
               .then(function (r) {
                 if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+                // Same as the create-cloud path: a completed move whose session
+                // could not reconnect is served by a reload, not by re-rendering
+                // against a database this session no longer holds.
+                if (r.body.sessionRestartRequired) { window.location.reload(); return; }
                 // The active DB just swapped to the cloud server-side. Re-fetch +
                 // re-render EVERYTHING (entities, rows with per-row _access sharing,
                 // realtime) so the new state shows immediately — no manual refresh.

@@ -112,7 +112,7 @@ export const rowContextJs = `    // ──────────────�
     // server has switched into the new workspace, so a reload re-runs init() into
     // the normal layout.
     function showOnboardingWizard(mode) {
-      var st = { step: 'identity', name: '', email: '', wsName: '', kind: 'local' };
+      var st = { step: 'identity', name: '', email: '', wsName: '', kind: 'local', suggestedName: '' };
       var backdrop = document.createElement('div');
       backdrop.className = 'modal-backdrop';
       document.body.appendChild(backdrop);
@@ -121,8 +121,13 @@ export const rowContextJs = `    // ──────────────�
       // Prefill identity. The Claude connection is enforced globally by the boot
       // connect wall (before any workspace loads), so this wizard no longer has a
       // connect step — by the time the user is here, the assistant is connected.
+      // The name is offered, not demanded: a stored one wins, otherwise the
+      // server's suggestion from the machine account fills the field. Whatever
+      // ends up here is only a starting point — it is editable, and it is stored
+      // as the identity only because the user left it alone.
       fetchJson('/api/userconfig/identity').catch(function () { return null; }).then(function (id) {
-        st.name = (id && id.display_name) || '';
+        st.suggestedName = (id && id.suggested_display_name) || '';
+        st.name = (id && id.display_name) || st.suggestedName;
         st.email = (id && id.email) || '';
         if (!st.wsName && st.name) st.wsName = st.name + "'s Workspace";
         render();
@@ -198,7 +203,11 @@ export const rowContextJs = `    // ──────────────�
         if (st.step === 'identity') {
           st.name = (backdrop.querySelector('#ob-name').value || '').trim();
           st.email = (backdrop.querySelector('#ob-email').value || '').trim();
-          if (!st.name) { setMsg('Please enter your name.'); return; }
+          // An empty name does not stop anyone here. It is a label on edits that
+          // can be changed later from the account menu, and refusing to continue
+          // over it turns the first screen of the product into a form to satisfy.
+          // Fall back to the machine account, then to a neutral word, and move on.
+          if (!st.name) st.name = st.suggestedName || 'Me';
           if (!st.wsName) st.wsName = st.name + "'s Workspace";
           withBusy(okBtn, function () {
             return fetch('/api/userconfig/identity', {
@@ -253,6 +262,10 @@ export const rowContextJs = `    // ──────────────�
               }).then(function (r2) { return r2.json().then(function (b) { return { status: r2.status, body: b }; }); });
             }).then(function (r) {
               if (!r.body.ok) throw new Error(r.body.error || ('HTTP ' + r.status));
+              // A completed move whose session could not reconnect: the server
+              // closed the old handle so nothing writes to the retired file, and
+              // a reload picks the moved workspace up.
+              if (r.body.sessionRestartRequired) { window.location.reload(); return; }
               finishOnboarding();
             }).catch(function (e) { setMsg('Failed: ' + e.message); });
           });

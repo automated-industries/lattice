@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
-import { MAX_ROWS_PAGE } from './http.js';
+import { MAX_ROWS_PAGE } from '../ops/paging.js';
 
 /**
  * Change preview — the shared "what would change" computation.
@@ -10,10 +10,10 @@ import { MAX_ROWS_PAGE } from './http.js';
  * selection) and the read-only preview route, so a preview can never drift from
  * what execution then does: they are the same functions.
  *
- * Layering: this is a runtime leaf. It imports only types plus the pure HTTP
- * paging constants, so `mutations.ts` and the AI tool handlers can both import
- * from here without a cycle. Nothing here writes — the preview engine issues
- * bounded SELECTs only.
+ * Layering: this is a runtime leaf. It imports only types plus the pure paging
+ * limits, so `mutations.ts` and the AI tool handlers can both import from here
+ * without a cycle. Nothing here writes — the preview engine issues bounded
+ * SELECTs only.
  */
 
 /** Operators a bulk `filter` clause may use (the `db.query` filter set). */

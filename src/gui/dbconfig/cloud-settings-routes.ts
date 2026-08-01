@@ -2,9 +2,8 @@ import type { DbConfigContext } from './shared.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import { sendJson, readJson, tryHandler } from '../http.js';
-import { getS3ConfigRaw, saveS3ConfigRaw } from '../../framework/user-config.js';
-import { activeWorkspaceLabel, mergeS3ConfigForSave } from '../../framework/s3-config.js';
 import { cloudRlsInstalled, canManageRoles } from '../../framework/cloud-connect.js';
+import { readCloudFileStorage, configureCloudFileStorage } from '../../ops/cloud-storage.js';
 import {
   installCloudSettings,
   getCloudSetting,
@@ -14,10 +13,9 @@ import {
   CLOUD_SETTING_WORKSPACE_LOGO,
   CLOUD_SETTING_WORKSPACE_LOGO_ETAG,
 } from '../../cloud/settings.js';
-import { setRowVisibility, grantRow, revokeRow, batchRowGrants } from '../../cloud/members.js';
-import { cascadeDashboardDataShare } from '../dashboard-share-cascade.js';
-import { memberGroupFor } from '../../cloud/rls.js';
-import { getAsyncOrSync, allAsyncOrSync } from '../../db/adapter.js';
+import { shareRow, grantRowAccess, batchRowAccess } from '../../cloud/sharing.js';
+import { cloudCall } from './cloud-status.js';
+import { listCloudMembers } from '../../cloud/member-directory.js';
 
 /** Generous upper bound on the stored chat system prompt — well past any real
  *  house-style/domain preamble, but it stops an accidental multi-MB paste from
@@ -137,109 +135,25 @@ export async function dispatchCloudSettings(
   // (the panel then just shows the local single-user state).
   if (pathname === '/api/cloud/members' && method === 'GET') {
     await tryHandler(res, async () => {
-      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
-        sendJson(res, { members: [] });
-        return;
-      }
-      const me = (await getAsyncOrSync(ctx.db.adapter, `SELECT session_user AS u`)) as
-        | { u?: string }
-        | undefined;
-      const ownerRole = me?.u ?? '';
-      // The operator's own identity (mirrored into __lattice_user_identity on open)
-      // — so the owner row shows a real name/email, not the bare Postgres role.
-      const idRow = (await getAsyncOrSync(
-        ctx.db.adapter,
-        `SELECT display_name, email FROM "__lattice_user_identity" WHERE id = 'singleton'`,
-      ).catch(() => undefined)) as { display_name?: string; email?: string } | undefined;
-      // An EMPTY trimmed name must fall back to the role (not just a null one).
-      const trimmedOwnerName = idRow?.display_name?.trim() ?? '';
-      const ownerName = trimmedOwnerName.length > 0 ? trimmedOwnerName : ownerRole;
-      const ownerEmail = idRow?.email ?? '';
-
-      // Only an owner can enumerate roles; a scoped member just sees itself.
-      if (!(await canManageRoles(ctx.db))) {
-        sendJson(res, {
-          members: ownerRole
-            ? [
-                {
-                  role: ownerRole,
-                  name: ownerName,
-                  email: ownerEmail,
-                  status: 'member',
-                  isYou: true,
-                },
-              ]
-            : [],
-        });
-        return;
-      }
-      // Member-group roles — EXCLUDING the owner (it was double-counted: prepended
-      // AND listed again from the group). Scoped to THIS cloud's own member group.
-      const group = await memberGroupFor(ctx.db);
-      const rows = (await allAsyncOrSync(
-        ctx.db.adapter,
-        `SELECT m.rolname AS role
-           FROM pg_auth_members am
-           JOIN pg_roles g ON g.oid = am.roleid AND g.rolname = ?
-           JOIN pg_roles m ON m.oid = am.member
-          WHERE m.rolname <> ?
-          ORDER BY m.rolname`,
-        [group, ownerRole],
-      )) as { role: string }[];
-      // role → its latest non-revoked invite (email + whether it's been redeemed)
-      // for human-readable display + accurate status. An invite with redeemed_at
-      // NULL means the person was invited but hasn't joined yet → "Invited"; once
-      // they redeem (redeemed_at set) → "Member". A member-group role with no
-      // invite row (e.g. a DBA-created role) is treated as a redeemed member.
-      const invites = (await allAsyncOrSync(
-        ctx.db.adapter,
-        `SELECT DISTINCT ON ("role") "role", "email", "redeemed_at"
-           FROM "__lattice_member_invites"
-          WHERE "revoked_at" IS NULL
-          ORDER BY "role", "created_at" DESC`,
-      ).catch(() => [])) as { role: string; email?: string; redeemed_at?: string | null }[];
-      const inviteByRole = new Map(invites.map((r) => [r.role, r]));
-      const members = [
-        { role: ownerRole, name: ownerName, email: ownerEmail, status: 'owner', isYou: true },
-        ...rows.map((r) => {
-          const inv = inviteByRole.get(r.role);
-          const email = inv?.email ?? '';
-          const name = email ? (email.split('@')[0] ?? r.role) : r.role;
-          // Pending (un-redeemed) invite → Invited; redeemed or no invite → Member.
-          const status = inv && inv.redeemed_at == null ? 'invited' : 'member';
-          return { role: r.role, name, email, status, isYou: false };
-        }),
-      ];
-      sendJson(res, { members });
+      sendJson(res, { members: await listCloudMembers(ctx.db) });
     });
     return true;
   }
 
-  // POST /api/cloud/share — set a row's visibility (private | everyone) via the
-  // owner-only RLS function. Only the row's owner may change its sharing; the
-  // database raises for anyone else, which surfaces as a 403-ish error here.
+  // POST /api/cloud/share — set a row's visibility (private | everyone). Only the
+  // row's owner may change its sharing; the database raises for anyone else.
+  // @capability cloud.row-visibility
   if (pathname === '/api/cloud/share' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
-      const visibility = typeof body.visibility === 'string' ? body.visibility : '';
-      if (!table || !pk || !visibility) {
-        sendJson(res, { error: 'table, pk and visibility are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      await setRowVisibility(ctx.db, table, pk, visibility);
-      // Sharing a dashboard cascades to the data it reads so recipients don't get an
-      // empty page. One-way: only when it becomes visible to everyone — never on
-      // 'private' (unsharing a dashboard leaves its data shared).
-      if (table === 'dashboards' && visibility === 'everyone') {
-        await cascadeDashboardDataShare(ctx.db, pk, 'everyone');
-      }
-      sendJson(res, { ok: true, table, pk, visibility });
+      const result = await cloudCall(() =>
+        shareRow(ctx.db, {
+          table: typeof body.table === 'string' ? body.table : '',
+          pk: typeof body.pk === 'string' ? body.pk : '',
+          visibility: typeof body.visibility === 'string' ? body.visibility : '',
+        }),
+      );
+      sendJson(res, { ok: true, ...result });
     });
     return true;
   }
@@ -248,29 +162,19 @@ export async function dispatchCloudSettings(
   // grants (or revokes) one member access to one row (table + pk), flipping the
   // row to `custom` visibility. Owner-only — the SECURITY DEFINER function raises
   // for a non-owner (and for a never-share table), surfaced here as an error.
+  // @capability cloud.row-grant
   if (pathname === '/api/cloud/row-grant' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
-      const grantee = typeof body.grantee === 'string' ? body.grantee : '';
-      const revoke = body.revoke === true;
-      if (!table || !pk || !grantee) {
-        sendJson(res, { error: 'table, pk and grantee are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Per-row sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      if (revoke) await revokeRow(ctx.db, table, pk, grantee);
-      else await grantRow(ctx.db, table, pk, grantee);
-      // Cascade a dashboard grant to its data for the SAME person. One-way: only on
-      // grant, never on revoke (unsharing a dashboard leaves its data shared).
-      if (table === 'dashboards' && !revoke) {
-        await cascadeDashboardDataShare(ctx.db, pk, 'custom', [grantee]);
-      }
-      sendJson(res, { ok: true, table, pk, grantee, revoked: revoke });
+      const result = await cloudCall(() =>
+        grantRowAccess(ctx.db, {
+          table: typeof body.table === 'string' ? body.table : '',
+          pk: typeof body.pk === 'string' ? body.pk : '',
+          grantee: typeof body.grantee === 'string' ? body.grantee : '',
+          revoke: body.revoke === true,
+        }),
+      );
+      sendJson(res, { ok: true, ...result });
     });
     return true;
   }
@@ -283,30 +187,21 @@ export async function dispatchCloudSettings(
   // rejected by the database (surfaced here as an error). The first grant flips
   // the row to `custom` server-side. The single-grantee route above stays for
   // any other caller.
+  // @capability cloud.row-grant-batch
   if (pathname === '/api/cloud/row-grants' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const table = typeof body.table === 'string' ? body.table : '';
-      const pk = typeof body.pk === 'string' ? body.pk : '';
       const strList = (v: unknown): string[] =>
         Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
-      const grant = strList(body.grant);
-      const revoke = strList(body.revoke);
-      if (!table || !pk) {
-        sendJson(res, { error: 'table and pk are required' }, 400);
-        return;
-      }
-      if (ctx.db.getDialect() !== 'postgres') {
-        sendJson(res, { error: 'Per-row sharing requires a cloud (Postgres) database' }, 400);
-        return;
-      }
-      await batchRowGrants(ctx.db, table, pk, grant, revoke);
-      // Cascade a dashboard's newly-granted people to its data. One-way: only the
-      // `grant` list cascades — the `revoke` list never un-shares the data.
-      if (table === 'dashboards' && grant.length > 0) {
-        await cascadeDashboardDataShare(ctx.db, pk, 'custom', grant);
-      }
-      sendJson(res, { ok: true, table, pk, granted: grant, revoked: revoke });
+      const result = await cloudCall(() =>
+        batchRowAccess(ctx.db, {
+          table: typeof body.table === 'string' ? body.table : '',
+          pk: typeof body.pk === 'string' ? body.pk : '',
+          grant: strList(body.grant),
+          revoke: strList(body.revoke),
+        }),
+      );
+      sendJson(res, { ok: true, ...result });
     });
     return true;
   }
@@ -320,78 +215,24 @@ export async function dispatchCloudSettings(
     // Reads this member's machine-local config only (no DB/network), so the
     // handler is synchronous; return a resolved promise for tryHandler's signature.
     await tryHandler(res, () => {
-      const label = activeWorkspaceLabel(ctx.configPath);
-      const raw = label ? getS3ConfigRaw(label) : null;
-      sendJson(res, {
-        enabled: raw?.enabled === true,
-        bucket: typeof raw?.bucket === 'string' ? raw.bucket : null,
-        region: typeof raw?.region === 'string' ? raw.region : null,
-        prefix: typeof raw?.prefix === 'string' ? raw.prefix : null,
-        endpoint: typeof raw?.endpoint === 'string' ? raw.endpoint : null,
-        // Never return the secret; just whether one is stored.
-        accessKeyId: typeof raw?.accessKeyId === 'string' ? raw.accessKeyId : null,
-        hasSecret: typeof raw?.secretAccessKey === 'string' && raw.secretAccessKey.length > 0,
-      });
+      // The reader redacts the secret and reports only that one is stored.
+      sendJson(res, readCloudFileStorage(ctx.configPath));
       return Promise.resolve();
     });
     return true;
   }
+  // The owner gate, the merge that keeps a partial update from erasing the stored
+  // secret, and installing the in-database presigner so keyless members can read
+  // the bytes are one operation — so they are one call, and a script setting a
+  // shared workspace up inherits all three.
+  // @capability cloud.file-storage
   if (pathname === '/api/cloud/s3-config' && method === 'POST') {
     await tryHandler(res, async () => {
-      if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
-        sendJson(res, { error: 'The active database is not a Lattice cloud' }, 400);
-        return;
-      }
-      if (!(await canManageRoles(ctx.db))) {
-        sendJson(res, { error: 'Only a cloud owner can configure S3 file storage' }, 403);
-        return;
-      }
-      const label = activeWorkspaceLabel(ctx.configPath);
-      if (!label) {
-        sendJson(res, { error: 'The active workspace is not a labelled cloud connection' }, 400);
-        return;
-      }
       const body = await readJson(req);
-      // Merge over the existing stored config so a PARTIAL update (toggling
-      // `enabled`, changing `prefix`) doesn't silently drop the stored secret — the
-      // GET handler redacts secretAccessKey, so a UI round-trip never carries it
-      // back. (See mergeS3ConfigForSave.)
-      const toSave = mergeS3ConfigForSave(getS3ConfigRaw(label) ?? {}, body);
-      if (toSave.enabled && (!toSave.bucket || !toSave.region)) {
-        sendJson(res, { error: 'bucket and region are required to enable S3' }, 400);
-        return;
-      }
-      saveS3ConfigRaw(label, toSave);
-      // Auto-enable the in-database presigner so KEYLESS members (who have no
-      // local S3 config) can fetch/upload bytes for files they can see. One owner
-      // action turns it on cloud-wide. Best-effort: a failure (e.g. no privilege
-      // to CREATE EXTENSION pgcrypto) must not fail the owner's S3-config save.
-      const ak = typeof toSave.accessKeyId === 'string' ? toSave.accessKeyId : '';
-      const sk = typeof toSave.secretAccessKey === 'string' ? toSave.secretAccessKey : '';
-      if (
-        toSave.enabled &&
-        typeof toSave.bucket === 'string' &&
-        typeof toSave.region === 'string' &&
-        ak &&
-        sk
-      ) {
-        try {
-          await ctx.db.enableCloudFilePresigning({
-            bucket: toSave.bucket,
-            region: toSave.region,
-            accessKey: ak,
-            secretKey: sk,
-            ...(typeof toSave.prefix === 'string' ? { prefix: toSave.prefix } : {}),
-            ...(typeof toSave.endpoint === 'string' ? { endpoint: toSave.endpoint } : {}),
-          });
-        } catch (e) {
-          console.warn(
-            '[cloud s3-config] could not enable the in-database file presigner:',
-            (e as Error).message,
-          );
-        }
-      }
-      sendJson(res, { ok: true, enabled: toSave.enabled, bucket: toSave.bucket || null });
+      const result = await cloudCall(() =>
+        configureCloudFileStorage(ctx.db, { configPath: ctx.configPath, settings: body }),
+      );
+      sendJson(res, { ok: true, enabled: result.enabled, bucket: result.bucket });
     });
     return true;
   }
@@ -425,6 +266,7 @@ export async function dispatchCloudSettings(
     });
     return true;
   }
+  // @capability cloud.setting
   if (pathname === '/api/cloud/system-prompt' && method === 'POST') {
     await tryHandler(res, async () => {
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {
@@ -501,6 +343,7 @@ export async function dispatchCloudSettings(
   // POST /api/cloud/workspace-logo — owner-only. Empty body removes the logo
   // (clears both keys → readers report null → the default Lattice mark returns).
   // Otherwise validates a square PNG/JPEG data: URI and stores blob-then-etag.
+  // @capability cloud.setting
   if (pathname === '/api/cloud/workspace-logo' && method === 'POST') {
     await tryHandler(res, async () => {
       if (ctx.db.getDialect() !== 'postgres' || !(await cloudRlsInstalled(ctx.db))) {

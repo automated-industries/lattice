@@ -16,6 +16,15 @@ export interface CleanupOptions {
   dryRun?: boolean;
   /** Called for each orphan before removal (or instead of removal in dryRun mode). */
   onOrphan?: (path: string, kind: 'directory' | 'file') => void;
+  /**
+   * State that this workspace renders nothing now BY INTENT — its last table was
+   * deleted, rather than its layout having failed to load. The two are the same
+   * file on disk, so the check that guards against the second cannot tell them
+   * apart and refuses; this is how the caller who does know says which it is.
+   * See `lifecycle/cleanup-backstop.ts`. Never disables the protection of a
+   * connected source's rendered tree.
+   */
+  layoutEmptied?: boolean;
 }
 
 export interface CleanupResult {

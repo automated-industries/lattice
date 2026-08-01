@@ -1,6 +1,6 @@
 import type { Lattice } from '../lattice.js';
 import type { Row } from '../types.js';
-import { allAsyncOrSync } from '../db/adapter.js';
+import { allAsyncOrSync, getAsyncOrSync } from '../db/adapter.js';
 import { slugify } from '../render/markdown.js';
 
 /**
@@ -168,4 +168,38 @@ export async function htmlArtifactFileRow(
   };
   const row: Row = { ...(await requiredFileDefaults(db, name, id, draft)), ...draft };
   return { row, id };
+}
+
+/**
+ * The stored-location columns of a `files` row — everything a reader needs to
+ * find the bytes behind a file, and nothing else.
+ */
+export interface StoredFileLocation {
+  id: string;
+  original_name?: string | null;
+  mime?: string | null;
+  ref_kind?: string | null;
+  ref_uri?: string | null;
+  blob_path?: string | null;
+}
+
+/**
+ * Look up one live (not soft-deleted) `files` row by id, returning just its
+ * stored-location columns. Null when there is no such live row — a caller
+ * re-reading a file the user deleted is answering a client mistake, not hitting
+ * a fault, so it gets a plain absence to report rather than an exception.
+ *
+ * Bounded to a single row by primary key.
+ */
+export async function loadStoredFileLocation(
+  db: Lattice,
+  fileId: string,
+): Promise<StoredFileLocation | null> {
+  const row = (await getAsyncOrSync(
+    db.adapter,
+    `SELECT "id","original_name","mime","ref_kind","ref_uri","blob_path"
+       FROM "files" WHERE "id" = ? AND "deleted_at" IS NULL LIMIT 1`,
+    [fileId],
+  )) as StoredFileLocation | undefined;
+  return row ?? null;
 }

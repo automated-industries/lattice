@@ -156,6 +156,56 @@ The DBA may either let an owner provision member roles (the owner connection nee
 `CREATEROLE`), or pre-create the login roles by hand and skip provisioning entirely —
 Lattice only needs the roles to exist and to be members of `lattice_members`.
 
+### Known limitation: upserting a NEW row when row security applies to you
+
+A row here becomes visible once its ownership record exists, and that record is written
+immediately after the row itself (the per-table trigger stamps it). Postgres re-checks
+certain writes against the **read** rule before that record is there — so a write that
+has to see the row it is creating is refused for a row that is not there yet. Two shapes
+have to:
+
+- an insert that names a conflict target — `INSERT ... ON CONFLICT (<columns>) ...`,
+  including the `DO NOTHING` form;
+- `INSERT ... RETURNING ...`.
+
+Both fail with `new row violates row-level security policy for table "<name>"`. An
+`INSERT ... ON CONFLICT DO NOTHING` that names **no** conflict target is unaffected, and
+so is an upsert whose row already exists and is visible to you.
+
+**Who it reaches.** An **owner** whose Postgres role does not carry `BYPASSRLS`, and
+**every member** — a member's connection always has RLS forced on it. A member may be
+refused the same upsert a step earlier still, by the column-level `SELECT` grants that
+keep a masked column unreadable; either way the write does not land. An owner connecting
+as a superuser, or as a role that carries `BYPASSRLS`, never sees this at all.
+
+**Unaffected:** reading, `insert`, `update`, `delete`, and `seed`. `seed` resolves each
+row with a `SELECT` first and then issues a plain insert or a plain update, so it never
+names a conflict target and never asks to read the row back.
+
+**What breaks:** `upsert` of a row that is not already there — and, most visibly,
+**syncing a connected external source, which writes nothing at all**. A sync upserts
+every incoming row, so a first sync into a table on such a workspace lands zero rows.
+
+**Workaround, for the owner case only.** Give the connecting role the privilege that
+bypasses row security:
+
+```sql
+ALTER ROLE <owner_role> BYPASSRLS;   -- must be run by a superuser
+```
+
+That role then reads through every policy and the refusal goes away. It does **nothing**
+for the member case, and it must never be granted to a member: `BYPASSRLS` is precisely
+the privilege that keeps one member's rows out of another member's reach, and a member
+holding it would see the whole workspace. There is no workaround for a member.
+
+This behavior is inherited, not introduced by any recent release. What did change in
+5.7.0 is _which_ tables it can reach: a table created outside the browser — by a script,
+a command, or an embedder — is now secured at the moment it is registered, where it
+previously stayed unsecured until an owner next opened the browser app. That closes a
+real exposure (such a table was born readable by everyone), and it means an upsert into
+one of those tables, which used to succeed because the table had no row security on it,
+now meets the refusal above.
+
 ---
 
 ### Cloud sharing internals consolidated (v3.4)
@@ -186,6 +236,18 @@ SELECT lattice_grant_row('items', 'item-42', 'lm_bob_a91c');
 SELECT lattice_revoke_row('items', 'item-42', 'lm_bob_a91c');
 ```
 
+From a terminal, the same two operations are `lattice cloud share`:
+
+```sh
+lattice cloud share --table items --pk item-42 --visibility everyone
+lattice cloud share --table items --pk item-42 --to bob@example.com
+lattice cloud share --table items --pk item-42 --to bob@example.com --revoke
+```
+
+`--visibility` (who can see the row at all) and `--to` (one named person) are
+separate operations; passing both is refused rather than resolved, because silently
+picking one is how a row ends up shared with everybody.
+
 From the library, the same thing through `setRowVisibility` (validates `private` |
 `everyone` before calling the function):
 
@@ -199,6 +261,13 @@ await db.init();
 // TAB-joined). Only the row's owner may call this; Postgres raises otherwise.
 await setRowVisibility(db, 'items', 'item-42', 'everyone');
 ```
+
+`setRowVisibility` is the bare call and nothing more — it changes who may read
+that one row and stops there. Prefer `shareRow` / `grantRowAccess` /
+`batchRowAccess` unless you are handling the follow-on yourself: sharing a
+dashboard has to carry the data it reads along with it, and those are the versions
+that do. A dashboard shared with the bare call opens to an empty page for whoever
+receives it.
 
 Because sharing lives in `__lattice_owners` (out of band), opting a row in or out
 never touches your table's columns.
@@ -225,6 +294,25 @@ await setTableDefaultVisibility(db, 'tickets', 'everyone'); // team-shared by de
 await setTableNeverShare(db, 'secrets', true); // can never be shared, ever
 ```
 
+The default applies to rows written **from then on**. Rows already in the table keep
+the visibility they were stamped with, so setting it shares nothing that is already
+there. What covers those is a standing share of the table itself:
+
+```sql
+-- Every ticket you own, visible to the whole cloud — the ones already in the table
+-- and the ones you add later:
+SELECT lattice_share_table('tickets', 'everyone', ARRAY[]::text[]);
+
+-- Or to two named members instead:
+SELECT lattice_share_table('tickets', 'custom', ARRAY['lm_bob_a91c', 'lm_ann_7d2e']);
+```
+
+It shares only the rows **you** own, so it can never hand out another member's, and
+running it twice changes nothing. It only ever widens, though: nothing narrows a
+standing share again except flagging the table never-share, which drops it along
+with every row grant. This is the same share that sharing a dashboard makes on your
+behalf, so that the page its recipients open is not empty.
+
 **"Private mode"** in the GUI chat composer is a per-request override: when on, rows
 the assistant creates that turn are forced private regardless of the table default.
 The row is stamped private **atomically at insert** (`insertForcingVisibility` sets a
@@ -242,7 +330,17 @@ now lives canonically in the DB and the mask view regenerates from it on change.
 
 ## Opening the cloud & the converge
 
-When any member opens a cloud, Lattice runs a **converge** pass: it reads the current Postgres schema against the workspace's registered entities and reconciles them — granting table/column privileges to the member group, rebuilding masking views, installing any missing RLS machinery. Since v3.4, the converge is **per-table fault-isolated**: if the connecting role cannot `ALTER` or `GRANT` a table (most often because it was created by a different Postgres role), that one table is skipped with an actionable reason instead of failing the whole workspace and degrading all objects to "Failed to fetch". The skip is reported in `GET /api/dbconfig` as `convergeWarnings`, for example: `"owned by role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO Y`"`.
+When the **owner** opens a cloud in the GUI (a browser tab or the desktop app), Lattice runs a **converge** pass: it reads the current Postgres schema against the workspace's registered entities and reconciles them — granting table/column privileges to the member group, rebuilding masking views, installing any missing RLS machinery. It is what carries objects added in a later release onto an already-stamped cloud, so a member joining afterwards finds it fully secured and granted.
+
+It runs on the **owner's** open only, and only through the GUI:
+
+- A **member** open skips it. A scoped `lm_*` role holds no `ALTER` or `GRANT` rights, so there is nothing it could converge; it opens against whatever state the owner last converged to.
+- `Lattice.openWorkspace()` and the other CLI commands do **not** run it. They open the database; they do not reconcile its cloud objects. The headless equivalent is `lattice cloud secure`, or `secureCloud(db)` on an owner connection from a script or a scheduled job — the same idempotent bootstrap the GUI converge performs. It is a no-op on SQLite. Two refusals travel with the operation itself rather than with any one surface: a partially-opened workspace (one missing the built-in tables) is refused, because securing it would report success while leaving those tables readable by every member; and a deployment whose workspace manager provisions and secures the database for an account is refused, because doing it again locally re-stamps ownership of every row and re-privatizes rows that had been shared. A manager driving it deliberately passes the explicit override.
+- It runs in the **background**, off the open's critical path: the owner is `BYPASSRLS`, so nothing the owner does waits on it.
+
+The converge is **per-table fault-isolated**: if the connecting role cannot `ALTER` or `GRANT` a table (most often because it was created by a different Postgres role), that one table is skipped with an actionable reason instead of failing the whole workspace and degrading all objects to "Failed to fetch". The skip is reported in `GET /api/dbconfig` as `convergeWarnings`, for example: `"owned by role X, but this workspace connects as Y — fix with: `ALTER TABLE … OWNER TO Y`"`.
+
+A table created **after** the cloud was secured does not wait for a converge: every path that creates one — the GUI, an import, the planner, a script calling `defineLate` — secures it as it is created, so it is never briefly readable by every member. The converge remains the repair pass for anything created before that was true, or by a different role.
 
 `POST /api/workspaces/reload` re-reads the config and re-registers entities in place without restarting the GUI, so a table added out-of-band surfaces immediately.
 
@@ -256,10 +354,56 @@ On a cloud, the background render now reads every table **through the member's r
 
 Owners and local single-user workspaces render the full tree unchanged, as before.
 
+## Running one without a browser
+
+Everything in this document is reachable three ways — a command, a click in
+`lattice gui`, and a function call — and all three do the same thing. **You never
+need to start the browser app, and you never need to bind it to a network address,
+to administer a cloud.** That mattered most for the one case the browser is worst
+at: a cloud on a server, diagnosed while it is broken.
+
+```sh
+lattice cloud status                    # owner or member, what is secured, what is not
+lattice cloud members                   # who is on it
+lattice cloud secure                    # turn this Postgres into a cloud (owner)
+lattice cloud invite --email <address>  # mint one token, printed once
+lattice cloud join --token-stdin        # redeem one into a NEW workspace
+lattice cloud revoke <member>           # by role, email, or display name
+lattice cloud share --table <t> --pk <id> --visibility <private|everyone>
+lattice cloud share --table <t> --pk <id> --to <member> [--revoke]
+lattice cloud migrate --url-stdin       # move this workspace onto a shared database
+lattice cloud probe --url-stdin         # check a database before pointing at it
+```
+
+`status`, `members` and `probe` take `--json`. `status` and `probe` read only, so a
+damaged cloud can be inspected without also being altered.
+
+**No new authority comes with the commands.** Permission on a cloud is the Postgres
+role you connect as, not a session a caller can assert, so a member running
+`lattice cloud invite` is refused by the database itself — exactly as the browser
+app is. Changing the SHAPE of a shared workspace (tables, columns, links,
+definitions) is owner-only through every door as well, including a command, the
+assistant, and a direct library call; a member meets the same refusal the app gives
+them, rather than one door quietly performing the change.
+
+**No credential has to appear in the command.** A connection string carries the owner
+password, and an argument is readable from the process list by anyone on the machine
+and is kept in your shell history — so `migrate` and `probe` read it from standard
+input (`--url-stdin`, or `-` in place of the URL), or from `LATTICE_CLOUD_URL`.
+An invite token carries the member's own login, so `join` reads it the same three
+ways: `--token-stdin` (or `-` in place of the token), or `LATTICE_INVITE_TOKEN`.
+Passing either as an argument still works and warns.
+
+Full option tables and the matching library calls are in
+[`docs/cli.md`](cli.md#lattice-cloud).
+
+---
+
 ## The three user flows
 
 There are exactly three things you do with a cloud: **migrate** into one, **join**
-an existing one, or **invite** someone to yours.
+an existing one, or **invite** someone to yours. Each is a command, a click, or a
+call.
 
 ### 1. Migrate — turn a local Lattice into a cloud
 
@@ -267,26 +411,46 @@ You have a local SQLite (or single-user Postgres) Lattice and want to share it. 
 point it at a fresh, empty Postgres database; Lattice copies your data in, installs
 RLS, and stamps **you** as the owner of every migrated row.
 
-From the GUI: **Workspace Settings → Migrate to cloud**, which posts to
-`POST /api/dbconfig/migrate-to-cloud` with the target Postgres credentials. The
-handler:
+From a terminal: `lattice cloud migrate --url-stdin < db-url.txt`. From the GUI:
+**Workspace Settings → Migrate to cloud**, which posts to
+`POST /api/dbconfig/migrate-to-cloud` with the target Postgres credentials. From a
+library: `migrateWorkspaceToCloud`, which performs the whole move rather than only
+the row copy. All three do the same thing:
 
 1. **Probes** the target with `probeCloud(url)`. It refuses if the database is
    unreachable (`502`) or is _already_ a Lattice cloud (`409` — migrating into it
    would mix two owners' data; you should **join** it instead).
 2. Opens a target Lattice matching your schema and **copies every row** (your
    tables plus the native `files` / `secrets`). Encrypted columns round-trip.
-3. **Installs RLS** (`installCloudRls`) and, for each keyed table,
-   **backfills ownership** to your role _before_ forcing RLS (otherwise FORCE would
-   hide the not-yet-owned rows from your own backfill `SELECT`), then
-   `enableRlsForTable`.
-4. Archives the local SQLite file, saves the connection string encrypted, and
-   rewrites the config's `db:` line to reference it by label.
+3. **Installs RLS** (`installCloudRls`) and secures each keyed table
+   (`enableRlsForTable`). Stamping ownership of the rows already in a table is part
+   of that one call, not a step before it: it happens inside the same SQL, with the
+   policies briefly lifted, because `FORCE ROW LEVEL SECURITY` applies them to the
+   table's owner too — so a stamp issued after the table is forced reads through the
+   very policy it exists to populate and writes nothing at all.
+4. **Cuts the workspace over** — stores the connection string encrypted, rewrites
+   the config's `db:` line to reference it by label, updates the workspace registry,
+   and retires the local SQLite file by renaming it. Those four writes are **one
+   reversible sequence**: any failure unwinds every step already taken and reports
+   why, so the workspace is either fully moved or exactly as it was, with its rows
+   still readable. The rollback re-reads the registry and puts back only its own
+   entry, so a workspace somebody registered meanwhile is left alone. The local
+   database is retired by renaming rather than deleting, so the bytes remain
+   recoverable either way.
 
 After migration you're connected to the cloud as its owner, your rows are private by
 default, and you can invite members.
 
-The same flow from the library:
+A copy that fails part-way through says what is sitting in the target database and
+whether row security got installed on it: a copy interrupted before securing
+finishes is a full copy of the workspace with nothing protecting it, and the
+operator has to be told to drop it. A failure during the cutover names the three
+things it restored — the config's `db:` line, the stored credential, and this
+workspace's registry record — and states plainly that the copy is not undone and
+where it is.
+
+The whole move is one call (`migrateWorkspaceToCloud`). The steps below are what it
+does, for a caller assembling a variant of it:
 
 ```ts
 import {
@@ -294,7 +458,6 @@ import {
   openTargetLatticeForMigration,
   migrateLatticeData,
   installCloudRls,
-  backfillOwnership,
   enableRlsForTable,
   archiveLocalSqlite,
 } from 'latticesql';
@@ -308,13 +471,13 @@ await source.init();
 const target = await openTargetLatticeForMigration('./lattice.config.yml', cloudUrl, encryptionKey);
 await migrateLatticeData(source, target); // → { tablesCopied, rowsCopied }
 
-// Owner-side RLS install. Backfill ownership BEFORE forcing RLS on each table.
+// Owner-side RLS install. Securing a table also stamps ownership of the rows
+// already in it, in the same transaction that forces row security on it.
 await installCloudRls(target);
 for (const table of target.getRegisteredTableNames()) {
   if (table.startsWith('__lattice_')) continue;
   const pk = target.getPrimaryKey(table);
   if (pk.length === 0) continue; // unkeyable table — no per-row RLS
-  await backfillOwnership(target, table, pk);
   await enableRlsForTable(target, table, pk);
 }
 target.close();
@@ -324,7 +487,12 @@ archiveLocalSqlite('./data/app.db'); // renames to .db.local-bak
 
 ### 2. Join — redeem your email-bound invite token
 
-The owner sent you a single **invite token**, bound to your email. From the GUI:
+The owner sent you a single **invite token**, bound to your email. From a terminal:
+`lattice cloud join --token-stdin --email you@example.com < token.txt`, which lands
+you in a **new** workspace, creating the `.lattice` root if this machine has none
+and never repointing whatever was already open. Pipe it rather than typing it: the
+token decrypts to your own database login, so an argument publishes that login to
+the process list and your shell history. From the GUI:
 **+ New workspace… → Join a cloud**, then enter your **email + the token**. The
 token decrypts **locally** — the email is required to derive the key — to the
 scoped connection details the owner minted, and the same connect path runs. The
@@ -336,9 +504,21 @@ same logic as `connect-existing`), which:
    confirms the database is actually a Lattice cloud (RLS installed). It refuses if
    unreachable (`502`) or if the database isn't a cloud yet (`409` — the owner must
    migrate a local Lattice into it first).
-2. Saves the credential encrypted, rewrites the config, and opens the cloud. Your
-   role can't (and needn't) run DDL — the owner already created the role and RLS
-   confines it — so the cloud is opened in introspect-only mode.
+2. Creates a **new** workspace for the cloud — it never repoints the one you have
+   open — saves the credential encrypted, rewrites the config, and opens the cloud.
+   Your role can't (and needn't) run DDL — the owner already created the role and
+   RLS confines it — so the cloud is opened in introspect-only mode.
+
+**Where the single-use claim happens is the whole design.** An invite is spent once
+and the password it carries is written down nowhere else, so the claim is made
+_after_ the workspace exists and _before_ it is opened: a refused invite still
+unwinds everything, and a failure after the claim keeps the workspace and its
+connection, which is exactly what the invite bought. A claim that cannot be proven
+fails closed and says so rather than proceeding.
+
+A stored connection is keyed by name for the whole machine, so a name already
+holding a **different** database gets a numbered variant rather than overwriting the
+first one, and the name actually used is reported.
 
 From there you query the cloud directly and see exactly the rows RLS allows: your
 own, anything shared to `everyone`, and anything granted to you specifically.
@@ -364,8 +544,11 @@ You own a cloud and want to add someone. As the owner (your connection holds
 `CREATEROLE`), you provision a scoped member role and hand them a single
 email-bound token that carries its credential.
 
-From the GUI: **Workspace Settings → Database Connection → Invite a member**, and
-enter the invitee's **email**. It posts to `POST /api/cloud/invite`, which verifies
+From a terminal: `lattice cloud invite --email bob@example.com`, which prints the
+token exactly once — it is the credential and is never stored, so there is no second
+printing. From the GUI: **Workspace Settings → Database Connection → Invite a
+member**, and enter the invitee's **email**. It posts to `POST /api/cloud/invite`,
+which verifies
 the active database is a cloud and that your role can manage roles (`403`
 otherwise), provisions a fresh scoped role, **asserts it is non-privileged** (never
 a superuser / `CREATEROLE` / `BYPASSRLS` / the owner — refused otherwise), mints the
@@ -392,7 +575,13 @@ only what that member could already see, and the owner can revoke it.
 The same thing from the library:
 
 ```ts
-import { Lattice, memberRoleName, generateMemberPassword, provisionMemberRole } from 'latticesql';
+import {
+  Lattice,
+  memberRoleName,
+  generateMemberPassword,
+  provisionMemberRole,
+  assertScopedMemberRole,
+} from 'latticesql';
 
 // owner connection — must hold CREATEROLE
 const db = new Lattice('postgres://alice:secret@cloud.example.com:5432/app');
@@ -403,13 +592,25 @@ const password = generateMemberPassword(); // 48 hex chars
 await provisionMemberRole(db, role, password);
 // Member is created NOSUPERUSER NOCREATEDB NOCREATEROLE and added to lattice_members.
 
+// Same assertion the invite flow makes before it mints a token: refuse to hand out
+// a role that is superuser / CREATEROLE / BYPASSRLS, or the owner role itself.
+// Throws — never downgrades the role and continues.
+await assertScopedMemberRole(db, role);
+
 // Hand off:  host / port / dbname  +  user=role  +  password
 ```
 
-Removing a member is the inverse — `revokeMemberRole(db, role)` drops the role.
-(Rows the departed member owned stay in their tables but become unreachable until
-you deliberately reassign or purge them — revoking access is not the same as
-purging their data.)
+Run that assertion whether you provisioned the role here or adopted one created out
+of band (`grantMemberAccess`): what makes a member's credentials safe to send is the
+role being scoped and RLS-confined, and only the check proves it still is.
+
+Removing a member is the inverse — `lattice cloud revoke <member>` from a terminal,
+or `revokeMemberRole(db, role)` from the library, drops the role. The command names
+a member the way `lattice cloud members` prints them (role, email, or display name)
+and refuses a name two people share, listing both roles rather than resolving to
+whichever came first. (Rows the departed member owned stay in their tables but
+become unreachable until you deliberately reassign or purge them — revoking access
+is not the same as purging their data.)
 
 ```ts
 import { Lattice, revokeMemberRole } from 'latticesql';
@@ -430,11 +631,36 @@ runs as that role, so RLS scopes the member to their own rows plus whatever has 
 shared with them. Nothing about being a member requires elevated privileges or a
 side channel; the database does all the gatekeeping.
 
+### The shared layout
+
+A member's local config is generated when they join, and its `entities:` block is
+empty — the database has the rows, but nothing on the member's machine yet says how
+those rows are shaped or rendered. So the owner publishes that layout into the
+cloud (a members-readable singleton), and a member's next open reads it into their
+own config file, keeping their own `db:` line and comments. Both surfaces do it, so
+a member's `Context/` tree matches the owner's whether they opened from the browser
+or from a command.
+
+What travels is **shape**: the entity fields, and the render/context layout. What
+does not travel is anything that would act off the receiving machine on the
+publishing person's say-so — specifically `embeddings:`, which names an address to
+send row text to and an environment variable to send as the credential for it. That
+stays a local declaration, made by each person in their own config.
+
+Reading the layout can fail — a role without access to the shared table, a
+connection that is down — and that is **not** the same as a workspace that has no
+layout yet. A command stops rather than opening a workspace it does not know the
+shape of: an open with no entities reports nothing, and a `lattice reconcile` on one
+would treat every already-rendered context as removed. The browser reports it and
+falls back to describing the database from its own catalog, because it renders
+rather than reconciles.
+
 ---
 
 ## GUI cloud endpoints
 
-`lattice gui` drives all three flows from the browser. The relevant endpoints (all
+`lattice gui` drives all three flows from the browser — one client among three, not
+the way in (see _Running one without a browser_ above). The relevant endpoints (all
 localhost-only, same model as the rest of the GUI):
 
 | Method | Route                            | Does                                                                  |

@@ -75,8 +75,16 @@ describe('import_spreadsheet tool', () => {
     expect(res.ok).toBe(true);
     expect(res.result).toMatchObject({ rows: 53 });
     expect((res.result as { tables: string[] }).tables).toHaveLength(4);
-    // The workspace is told data changed so the new tables/rows appear live.
-    expect(events.some((e) => e.op === 'insert' && e.source === 'ai')).toBe(true);
+    // The announcement belongs to the import, not to this handler: the import
+    // writes one change-log entry saying what landed AND that it cannot be undone
+    // in one step, and that entry's feed event is a schema event, which refreshes
+    // the whole workspace view. A second bubble here would restate the same import
+    // in words that leave the reversal question open, right next to the entry that
+    // answers it — so the handler stays quiet. (`importAttachment` is stubbed here,
+    // which is why nothing is published at all in this test;
+    // tests/integration/import-activity-undo.test.ts drives the real importer and
+    // asserts the entry it writes.)
+    expect(events).toHaveLength(0);
   });
 
   it('fails cleanly (ok:false) when the file has no importable tabular data', async () => {

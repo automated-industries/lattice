@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir, platform, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { decrypt, deriveKey, encrypt } from '../security/encryption.js';
@@ -40,9 +40,17 @@ import { resolveSessionRoot, rootConfigDir } from './lattice-root.js';
 /**
  * Root directory for machine-local lattice config.
  *
+ * `root` names the `.lattice` root to resolve against. Pass it whenever the
+ * caller KNOWS which root it is working in — opening a workspace does, and
+ * without it the answer came from the surrounding environment instead, so
+ * opening one root by argument and the same root by environment could resolve
+ * two different key stores on one machine, and only whichever one wrote a
+ * workspace's encrypted values could read them back. Omit it for genuinely
+ * ambient use.
+ *
  * Resolution order:
  *   1. `LATTICE_CONFIG_DIR` — explicit override, always wins.
- *   2. `<session root>/.config` — the root this session was told to use
+ *   2. `<root>/.config` — the given root, else the one this session was told to use
  *      (`LATTICE_ROOT`, else `~/.lattice`). This is what consolidates config into
  *      the single per-install `.lattice` folder, BUT only when adopting the root
  *      won't orphan an existing key: use the root if it already holds a
@@ -59,10 +67,10 @@ import { resolveSessionRoot, rootConfigDir } from './lattice-root.js';
  * searching, so the desktop and the CLI resolved to DIFFERENT stores and every
  * credential read as missing. Anchoring on the session root fixes both.
  */
-export function configDir(): string {
+export function configDir(root?: string): string {
   if (process.env.LATTICE_CONFIG_DIR) return process.env.LATTICE_CONFIG_DIR;
   const legacy = join(homedir(), '.lattice');
-  const rootDir = rootConfigDir(resolveSessionRoot().root);
+  const rootDir = rootConfigDir(root ?? resolveSessionRoot().root);
   // The root is the encryption home once it holds a key. Before that, only
   // adopt it for a fresh install (no legacy key to orphan); otherwise keep
   // using `~/.lattice` so an existing install keeps decrypting its secrets.
@@ -71,9 +79,10 @@ export function configDir(): string {
   return legacy;
 }
 
-/** Ensure + return the machine-local config dir (exported for sibling credential stores). */
-export function ensureConfigDir(): string {
-  const dir = configDir();
+/** Ensure + return the machine-local config dir (exported for sibling credential stores).
+ *  `root` is passed through to {@link configDir}. */
+export function ensureConfigDir(root?: string): string {
+  const dir = configDir(root);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
     // Best-effort restrictive permissions on POSIX; no-op on Windows.
@@ -137,8 +146,8 @@ function readEnvMasterKey(): string | undefined {
 /** The on-disk `master.key`, or undefined when absent OR blank. An empty/whitespace
  *  file is NOT a usable key — treating it as '' would encrypt everything under a
  *  publicly-derivable blank key (mirrors readEnvMasterKey's blank guard). */
-function readFileMasterKey(): string | undefined {
-  const keyPath = join(ensureConfigDir(), MASTER_KEY_FILENAME);
+function readFileMasterKey(root?: string): string | undefined {
+  const keyPath = join(ensureConfigDir(root), MASTER_KEY_FILENAME);
   if (!existsSync(keyPath)) return undefined;
   const c = readFileSync(keyPath, 'utf8').trim();
   return c.length > 0 ? c : undefined;
@@ -162,11 +171,11 @@ function canDecryptWith(ciphertext: string, masterKey: string): boolean {
  * ones present (any subset), or `[]` when nothing is encrypted yet. Never throws —
  * an unreadable file is skipped, so a hot-path key resolution can't crash on it.
  */
-function readMachineLocalCiphertexts(): string[] {
+function readMachineLocalCiphertexts(root?: string): string[] {
   const out: string[] = [];
   let dir: string;
   try {
-    dir = ensureConfigDir();
+    dir = ensureConfigDir(root);
   } catch {
     return out;
   }
@@ -224,8 +233,8 @@ let _conflictCacheVal: string | null = null;
  * env key validates here and the workspace read then surfaces the actionable
  * mismatch error — it is not silently wrong.
  */
-function resolveKeyConflict(envKey: string, fileKey: string): string {
-  const samples = readMachineLocalCiphertexts();
+function resolveKeyConflict(envKey: string, fileKey: string, root?: string): string {
+  const samples = readMachineLocalCiphertexts(root);
   if (samples.length === 0) {
     // Nothing to validate against -> prefer the persistent file key. A stale
     // inherited env var is the documented failure, so we never fall through to it
@@ -238,7 +247,8 @@ function resolveKeyConflict(envKey: string, fileKey: string): string {
     logKeySource('file', fileKey);
     return fileKey;
   }
-  const cacheKey = configDir() + ' ' + envKey + ' ' + fileKey + ' ' + samplesFingerprint(samples);
+  const cacheKey =
+    configDir(root) + ' ' + envKey + ' ' + fileKey + ' ' + samplesFingerprint(samples);
   if (_conflictCacheKey === cacheKey && _conflictCacheVal !== null) return _conflictCacheVal;
 
   // Trust the env key ONLY if it decrypts real data (any witness); else the file.
@@ -273,13 +283,17 @@ function resolveKeyConflict(envKey: string, fileKey: string): string {
  *
  * A set-but-blank env var is treated as unset (with a warning) — it used to be
  * taken verbatim and break every decrypt.
+ *
+ * `root` names the `.lattice` root whose key is wanted (see {@link configDir}).
+ * Pass it when opening a specific root, so opening that root by argument and by
+ * environment resolve the SAME key rather than two different ones.
  */
-export function getOrCreateMasterKey(): string {
+export function getOrCreateMasterKey(root?: string): string {
   const envKey = readEnvMasterKey();
-  const fileKey = readFileMasterKey();
+  const fileKey = readFileMasterKey(root);
   warnBlankEnvKeyOnce();
 
-  if (envKey && fileKey && envKey !== fileKey) return resolveKeyConflict(envKey, fileKey);
+  if (envKey && fileKey && envKey !== fileKey) return resolveKeyConflict(envKey, fileKey, root);
   if (envKey) {
     logKeySource('env', envKey);
     return envKey;
@@ -292,7 +306,7 @@ export function getOrCreateMasterKey(): string {
   // processes must not write divergent keys, which would make each other's
   // encrypted credentials undecryptable. The first to acquire writes; the rest
   // re-read the key it created.
-  const keyPath = join(ensureConfigDir(), MASTER_KEY_FILENAME);
+  const keyPath = join(ensureConfigDir(root), MASTER_KEY_FILENAME);
   return withCredentialLock(() => {
     if (existsSync(keyPath)) {
       const key = readFileSync(keyPath, 'utf8').trim();
@@ -337,6 +351,45 @@ export function getOrCreateAnalyticsId(): string {
     const id = randomUUID();
     writeFileAtomic(idPath, id);
     return id;
+  });
+}
+
+const SESSION_SECRET_FILENAME = 'session.key';
+
+/**
+ * A machine-local RANDOM secret used to derive the session identity a
+ * command-line run's writes are attributed to.
+ *
+ * It has to be a secret rather than a name, because that session identity is the
+ * authorship gate on reversing a change: undo, redo, and group-revert only touch
+ * entries carrying the caller's own session. Deriving that from anything the
+ * caller merely ASSERTS — an email in a config file, a display name, an
+ * environment variable — means a second person on the same shared workspace can
+ * assert somebody else's and reverse their work. This is 32 random bytes,
+ * readable only by its owner, so the derived identity cannot be guessed or
+ * spoofed by anyone who is not already this user on this machine.
+ *
+ * Generated once and reused forever: STABLE is the other half of the
+ * requirement, since every command is a fresh process and one run has to be able
+ * to undo what the previous one did.
+ */
+export function getOrCreateSessionSecret(): string {
+  const dir = ensureConfigDir();
+  const keyPath = join(dir, SESSION_SECRET_FILENAME);
+  if (existsSync(keyPath)) {
+    const v = readFileSync(keyPath, 'utf8').trim();
+    if (v) return v;
+  }
+  // Created under the cross-process lock with a re-check, so two fresh processes
+  // don't write divergent secrets (mirrors getOrCreateMasterKey).
+  return withCredentialLock(() => {
+    if (existsSync(keyPath)) {
+      const v = readFileSync(keyPath, 'utf8').trim();
+      if (v) return v;
+    }
+    const secret = randomBytes(32).toString('base64');
+    writeFileAtomic(keyPath, secret);
+    return secret;
   });
 }
 
@@ -385,6 +438,48 @@ export function readIdentity(): UserIdentity {
   } catch {
     return withEnvFallback({ ...EMPTY_IDENTITY });
   }
+}
+
+/** Account names that name the machine's role, not a person. */
+const IMPERSONAL_ACCOUNTS = new Set([
+  'root',
+  'admin',
+  'administrator',
+  'user',
+  'ubuntu',
+  'ec2-user',
+]);
+
+/**
+ * A display name to OFFER when none has been set — derived from the operating
+ * system account (`ada.lovelace` → `Ada Lovelace`).
+ *
+ * Deliberately NOT part of {@link readIdentity}: an empty `display_name` there
+ * means "not set", and several callers depend on that — the cloud member
+ * directory falls back on it, and folding a machine account name into the stored
+ * identity would publish a login name to a shared workspace as though the person
+ * had chosen it. This is a suggestion the interface can fill a field with, which
+ * only becomes the identity if the person leaves it there.
+ *
+ * Returns '' when the account name is impersonal or unavailable, so a caller
+ * gets nothing rather than a name like "Root".
+ */
+export function suggestedDisplayName(): string {
+  let raw = '';
+  try {
+    raw = userInfo().username;
+  } catch {
+    // No account information available (a locked-down container). Nothing to
+    // suggest, which is a fine answer — the field is simply left for the user.
+    raw = '';
+  }
+  raw = (raw || '').trim();
+  if (!raw || IMPERSONAL_ACCOUNTS.has(raw.toLowerCase())) return '';
+  return raw
+    .split(/[._\-\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 }
 
 /**

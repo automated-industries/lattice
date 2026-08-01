@@ -12,7 +12,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable } from '../../src/cloud/rls.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 
 const PG_URL = process.env.LATTICE_TEST_PG_URL;
@@ -94,7 +94,6 @@ describe.skipIf(!PG_URL)('S3 file access is gated by the files-row RLS', () => {
     });
     await installCloudRls(owner);
     const pk = owner.getPrimaryKey('files');
-    await backfillOwnership(owner, 'files', pk);
     await enableRlsForTable(owner, 'files', pk);
     const bobPw = generateMemberPassword();
     await provisionMemberRole(owner, bob, bobPw);

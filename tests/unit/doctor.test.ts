@@ -172,3 +172,121 @@ describe('diagnoseRetrieval (SQLite)', () => {
     expect(after).toBe(before);
   });
 });
+
+/**
+ * What the doctor does when it has NO expectations to check.
+ *
+ * An empty expectation list is not the same as "everything is fine" — it means
+ * the doctor was handed nothing to diagnose. It must fall back to discovering
+ * what the database actually has, and when even that turns up nothing it must
+ * say so as an error, so a command or CI job gating on the result fails instead
+ * of passing on a database whose retrieval health was never assessed.
+ */
+describe('diagnoseRetrieval — with no expectations', () => {
+  let db: Lattice | undefined;
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+  });
+
+  const fakeEmbed = (text: string) => Promise.resolve([text.length % 7, (text.length * 3) % 5, 1]);
+
+  it('falls back to discovery when the expectation list is empty', async () => {
+    db = new Lattice(':memory:');
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', deleted_at: 'TEXT' },
+      embeddings: { fields: ['title'], embed: fakeEmbed },
+      render: () => '',
+      outputFile: 'n.md',
+    });
+    await db.init();
+    await db.insert('notes', { id: 'n1', title: 'budget' });
+
+    // An empty array must behave like "no expectations given", not like
+    // "diagnose nothing" — the stored embeddings are discoverable.
+    const report = await diagnoseRetrieval(db.adapter, { tables: [] });
+    expect(report.tables.map((t) => t.table)).toEqual(['notes']);
+    expect(report.tables[0]?.embeddingCount).toBe(1);
+    expect(report.issues.some((i) => i.kind === 'nothing_to_diagnose')).toBe(false);
+  });
+
+  it('reports an error when the caller described nothing and the database implies nothing', async () => {
+    db = new Lattice(':memory:');
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT' },
+      render: () => '',
+      outputFile: 'n.md',
+    });
+    await db.init();
+    await db.insert('notes', { id: 'n1', title: 'budget' });
+
+    // No expectations, and no promise that any were looked for: this caller
+    // never walked the schema, so an empty result means nothing was assessed.
+    const report = await diagnoseRetrieval(db.adapter, {});
+    expect(report.tables).toHaveLength(0);
+    const issue = report.issues.find((i) => i.kind === 'nothing_to_diagnose');
+    expect(issue?.severity).toBe('error');
+    // healthy:false is what makes the command exit non-zero instead of
+    // silently passing a database it never checked.
+    expect(report.healthy).toBe(false);
+    expect(formatHealthReport(report)).toMatch(/nothing to diagnose/i);
+  });
+
+  it('reports no-search-here, not an error, when the whole schema was read', async () => {
+    db = new Lattice(':memory:');
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT' },
+      render: () => '',
+      outputFile: 'n.md',
+    });
+    await db.init();
+    await db.insert('notes', { id: 'n1', title: 'budget' });
+
+    // Opening a workspace enumerates every registered table before asking, so
+    // an empty list is an answer about this workspace rather than a gap in what
+    // the caller knew. A brand-new workspace is exactly this state, and calling
+    // it unhealthy failed the health check on every first run.
+    const report = await db.diagnoseRetrieval();
+    expect(report.tables).toHaveLength(0);
+    expect(report.issues.some((i) => i.kind === 'nothing_to_diagnose')).toBe(false);
+    expect(report.issues.find((i) => i.kind === 'no_retrieval_configured')?.severity).toBe('info');
+    expect(report.healthy).toBe(true);
+    expect(formatHealthReport(report)).toMatch(/no search is configured here/i);
+  });
+
+  it('does not extend that to an empty list the caller supplied itself', async () => {
+    db = new Lattice(':memory:');
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT' },
+      render: () => '',
+      outputFile: 'n.md',
+    });
+    await db.init();
+
+    // An explicit `[]` is the caller's list, and it carries no promise that the
+    // schema was walked — the one way this could otherwise become a silent pass
+    // for somebody who simply built their expectations wrong.
+    const report = await db.diagnoseRetrieval({ tables: [] });
+    expect(report.issues.find((i) => i.kind === 'nothing_to_diagnose')?.severity).toBe('error');
+    expect(report.healthy).toBe(false);
+  });
+
+  it('extension advice still fires for discovered tables', async () => {
+    db = new Lattice(':memory:');
+    db.define('notes', {
+      columns: { id: 'TEXT PRIMARY KEY', title: 'TEXT', deleted_at: 'TEXT' },
+      embeddings: { fields: ['title'], embed: fakeEmbed },
+      render: () => '',
+      outputFile: 'n.md',
+    });
+    await db.init();
+    await db.insert('notes', { id: 'n1', title: 'budget' });
+
+    // Discovery established that this database uses embeddings, so the
+    // vector-extension note applies even though no caller declared it.
+    const report = await diagnoseRetrieval(db.adapter, { tables: [] });
+    if (report.extensions.sqliteVec === false) {
+      expect(report.issues.some((i) => i.kind === 'extension_missing')).toBe(true);
+    }
+  });
+});

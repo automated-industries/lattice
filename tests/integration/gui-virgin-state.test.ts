@@ -92,12 +92,18 @@ describe('GUI virgin (zero-workspace) state', () => {
     const cfg = (await cfgRes.json()) as { claudeAuthKind?: string | null };
     expect('claudeAuthKind' in cfg).toBe(true);
 
-    // oauth/start begins the PKCE flow: a 302 to the authorize URL + a verifier
-    // cookie — NOT a 409 "No active workspace".
+    // oauth/start begins the PKCE flow: a 302 to the authorize URL — NOT a 409
+    // "No active workspace". The attempt's verifier is kept in the machine-local
+    // store rather than a cookie, so the URL carries only its challenge and the
+    // exchange does not depend on this browser (or this process) coming back.
     const start = await fetch(`${s.url}/api/assistant/oauth/start`, { redirect: 'manual' });
     expect(start.status).toBe(302);
-    expect(start.headers.get('location') ?? '').toMatch(/^https?:\/\//);
-    expect(start.headers.get('set-cookie') ?? '').toContain('lat_oauth_verifier=');
+    const authorize = start.headers.get('location') ?? '';
+    expect(authorize).toMatch(/^https?:\/\//);
+    expect(authorize).toContain('code_challenge=');
+    expect(start.headers.get('set-cookie') ?? '', 'no browser session to bind to').not.toContain(
+      'lat_oauth',
+    );
   });
 
   it('a plain --config GUI (active DB, no .lattice registry) is NOT virgin', async () => {

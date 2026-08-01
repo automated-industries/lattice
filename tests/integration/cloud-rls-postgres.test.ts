@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { Lattice } from '../../src/lattice.js';
-import { installCloudRls, enableRlsForTable, backfillOwnership } from '../../src/cloud/rls.js';
+import { installCloudRls, enableRlsForTable } from '../../src/cloud/rls.js';
 import { secureCloud } from '../../src/cloud/setup.js';
 import { provisionMemberRole, generateMemberPassword } from '../../src/cloud/members.js';
 import { discoverCloudTables } from '../../src/cloud/discover.js';
@@ -239,10 +239,9 @@ describe.skipIf(!PG_URL)(
       await db.upsert('docs', { id: 'd2', body: 'two' });
 
       // Owner-side setup, in the exact order the migrate-to-cloud handler uses:
-      // install RLS bookkeeping, backfill ownership while the table is still
-      // unforced (so the owner can SELECT every row to stamp it), THEN force RLS.
+      // install the RLS bookkeeping, then secure the table (which stamps the rows
+      // already in it and forces RLS in one transaction).
       await installCloudRls(db);
-      await backfillOwnership(db, 'docs', db.getPrimaryKey('docs'));
       await enableRlsForTable(db, 'docs', db.getPrimaryKey('docs'));
       const carolPw = generateMemberPassword();
       await provisionMemberRole(db, carol, carolPw);
@@ -287,7 +286,6 @@ describe.skipIf(!PG_URL)(
       await owner.upsert('docs', { id: 'd1', body: 'shared one' });
       await owner.upsert('docs', { id: 'd2', body: 'secret two' });
       await installCloudRls(owner);
-      await backfillOwnership(owner, 'docs', owner.getPrimaryKey('docs'));
       await enableRlsForTable(owner, 'docs', owner.getPrimaryKey('docs'));
       const davePw = generateMemberPassword();
       await provisionMemberRole(owner, dave, davePw);

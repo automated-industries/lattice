@@ -8,6 +8,9 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
 
 - [Installation](#installation)
 - [Commands](#commands)
+  - [`lattice init`](#lattice-init)
+  - [`lattice workspace`](#lattice-workspace)
+  - [`lattice database`](#lattice-database)
   - [`lattice generate`](#lattice-generate)
   - [`lattice render`](#lattice-render)
   - [`lattice reconcile`](#lattice-reconcile)
@@ -16,7 +19,19 @@ The `lattice` command-line tool for generating TypeScript types, SQL migrations,
   - [`lattice gui`](#lattice-gui)
     - [Which root gets opened](#which-root-gets-opened)
     - [Serving on a network](#serving-on-a-network---host----allow-remote)
+  - [`lattice ask`](#lattice-ask)
+  - [`lattice model`](#lattice-model)
+  - [`lattice account`](#lattice-account)
+  - [`lattice connector`](#lattice-connector)
+  - [`lattice ingest`](#lattice-ingest)
+  - [`lattice import`](#lattice-import)
+  - [`lattice schema`](#lattice-schema)
+  - [`lattice questions`](#lattice-questions)
+  - [`lattice search` / `reindex` / `index status` / `doctor`](#lattice-search--reindex--index-status--doctor)
+  - [`lattice update`](#lattice-update)
 - [Cloud](#cloud)
+  - [`lattice cloud`](#lattice-cloud)
+  - [From the library](#from-the-library)
 - [Global options](#global-options)
 - [Generated files](#generated-files)
 - [Examples](#examples)
@@ -57,6 +72,98 @@ lattice --help
 ---
 
 ## Commands
+
+### `lattice init`
+
+Create a `.lattice` root and a default workspace inside it, then render its context
+tree. This is the first command on a new machine; everything below opens the
+workspace it makes.
+
+```sh
+lattice init [--root <dir>] [--name "<display name>"]
+```
+
+A **root** is never found by searching upward from the current directory — it is
+`--root` if you pass one, otherwise `LATTICE_ROOT`, otherwise `~/.lattice`. A
+project-local root is perfectly usable; it just has to be named. See
+[workspaces.md](workspaces.md#which-root-a-session-uses).
+
+---
+
+### `lattice workspace`
+
+Manage the workspaces registered under a root.
+
+```sh
+lattice workspace list                                # the active one is marked *
+lattice workspace create <name>                       # or: create --name "<display name>"
+lattice workspace use <name-or-id>                    # the display name, or the stable UUID
+lattice workspace rename <name-or-id> --name "<new>"
+lattice workspace delete <name-or-id> --yes
+```
+
+| Option          | Short | Default      | Description                                      |
+| --------------- | ----- | ------------ | ------------------------------------------------ |
+| `--root <dir>`  | –     | `~/.lattice` | The root these workspaces live under             |
+| `--name <name>` | –     | –            | Display name, for `create` and `rename`          |
+| `--yes`         | `-y`  | off          | Confirm `delete`. There is no prompt — see below |
+
+A name is matched however it is capitalised, and one shared by two workspaces is
+refused with both identifiers rather than resolved to whichever came first. The
+identifier is accepted everywhere a name is and is what a script should use, because
+it survives a rename.
+
+`rename` writes **both** places a workspace name lives — the `name:` key in its own
+configuration and the display name in the registry the switcher reads — and says when
+there was no registry record to update, rather than letting a caller assume there was.
+
+`delete` requires `--yes` rather than asking, deliberately: these commands exist so
+the work can run with nobody watching, and a prompt in that setting is a hang, not a
+safeguard. The workspace you named is resolved **before** the flag is checked, so a
+typo reads as a typo instead of sending you back to re-run an irreversible command
+with the safeguard removed. What it removes depends on the kind: a workspace we
+scaffolded loses its folder, one whose files you only ever pointed at keeps every one
+of them, and a shared workspace loses its local pointer **and** the credentials this
+machine kept in order to reconnect — because forgetting only the pointer leaves a
+machine able to reach a database its operator was told it had been disconnected from.
+The shared database itself is never touched.
+
+On the package surface as `deleteWorkspace`, with refusals arriving as an `Error`
+carrying a `code` (`workspaceErrorCode`).
+
+---
+
+### `lattice database`
+
+A workspace holds a set of database configs in one directory and opens one at a
+time. `lattice database` manages that set; `lattice workspace` manages the workspaces
+themselves.
+
+```sh
+lattice database list                          # the set, the active one marked *
+lattice database create <name>                 # or: create --name "<name>"
+lattice database delete <name-or-path> --yes
+```
+
+| Option            | Short | Default              | Description                     |
+| ----------------- | ----- | -------------------- | ------------------------------- |
+| `--config <path>` | `-c`  | the active workspace | Whose databases these are       |
+| `--root <dir>`    | –     | `~/.lattice`         | The root holding that workspace |
+| `--name <name>`   | –     | –                    | Name for the new database       |
+| `--yes`           | `-y`  | off                  | Confirm `delete`                |
+
+`create` writes the name you typed into the new database's own file, which is what
+every later reference reads — so `delete` finds what `create` made, by the name you
+gave it. `delete` accepts the label printed by `list` as well as a path, refuses
+anything outside this workspace's own set rather than unlinking it, and refuses to
+remove the **last** database in a workspace (remove the workspace instead if that is
+what you meant). It also says where the rows actually were: a file removed, a shared
+database untouched, a local database with nothing yet written, and a store that is not
+a file are four different outcomes and are reported as four.
+
+On the package surface as `createDatabase` / `deleteDatabase`.
+
+---
 
 ### `lattice generate`
 
@@ -99,12 +206,20 @@ One-shot context generation. Reads the config, connects to the database, and wri
 lattice render [options]
 ```
 
+**Which workspace, and where it writes.** With no `--config`, a `lattice.config.yml` in the
+current directory is used, and otherwise the ACTIVE workspace — the same resolution every
+other workspace command uses. With no `--output`, the tree is written to that workspace's own
+rendered-context directory rather than beside your shell. For a config that is not a
+registered workspace, that directory is looked for next to the CONFIG FILE — not next to
+the shell, which for a config named by path from elsewhere would be a different
+workspace's tree entirely.
+
 **Options:**
 
-| Option            | Short | Default                | Description                                        |
-| ----------------- | ----- | ---------------------- | -------------------------------------------------- |
-| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                       |
-| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files |
+| Option            | Short | Default                              | Description                                        |
+| ----------------- | ----- | ------------------------------------ | -------------------------------------------------- |
+| `--config <path>` | `-c`  | the active workspace                 | Which workspace to render                          |
+| `--output <dir>`  | –     | the workspace's rendered-context dir | Output directory for rendered entity context files |
 
 **Exit codes:**
 
@@ -136,16 +251,25 @@ Render + orphan cleanup. Writes entity context directories and then removes any 
 lattice reconcile [options]
 ```
 
+**When it refuses.** Cleanup works by difference, so a process that opened without part of
+the workspace's layout would read every context it does not know as "removed" and delete it.
+Two cases are refused instead, with nothing touched and a non-zero exit: the workspace renders
+no layout of its own at all, and a rendered tree that belongs to a connected external source
+this machine could not load. The first also happens when a workspace really did delete its
+last table — pass `--layout-emptied` to say that is what happened and let the leftover tree be
+swept. `lattice watch --cleanup` applies the same rules and prints the same refusals.
+
 **Options:**
 
-| Option              | Short | Default                | Description                                              |
-| ------------------- | ----- | ---------------------- | -------------------------------------------------------- |
-| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                             |
-| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files       |
-| `--dry-run`         | –     | off                    | Report orphans but do not delete anything                |
-| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories              |
-| `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity directories |
-| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames              |
+| Option              | Short | Default                              | Description                                              |
+| ------------------- | ----- | ------------------------------------ | -------------------------------------------------------- |
+| `--config <path>`   | `-c`  | the active workspace                 | Which workspace to reconcile                             |
+| `--output <dir>`    | –     | the workspace's rendered-context dir | Output directory for rendered entity context files       |
+| `--dry-run`         | –     | off                                  | Report orphans but do not delete anything                |
+| `--no-orphan-dirs`  | –     | off                                  | Skip removal of orphaned entity directories              |
+| `--no-orphan-files` | –     | off                                  | Skip removal of orphaned files inside entity directories |
+| `--layout-emptied`  | –     | off                                  | Confirm this workspace renders nothing now on purpose    |
+| `--protected <csv>` | –     | –                                    | Comma-separated list of protected filenames              |
 
 **Exit codes:**
 
@@ -179,10 +303,10 @@ lattice status [options]
 
 **Options:**
 
-| Option            | Short | Default                | Description                                        |
-| ----------------- | ----- | ---------------------- | -------------------------------------------------- |
-| `--config <path>` | `-c`  | `./lattice.config.yml` | Path to the YAML config file                       |
-| `--output <dir>`  | –     | `./context`            | Output directory for rendered entity context files |
+| Option            | Short | Default                              | Description                                        |
+| ----------------- | ----- | ------------------------------------ | -------------------------------------------------- |
+| `--config <path>` | `-c`  | the active workspace                 | Which workspace to report on                       |
+| `--output <dir>`  | –     | the workspace's rendered-context dir | Output directory for rendered entity context files |
 
 **Example:**
 
@@ -208,15 +332,16 @@ lattice watch [options]
 
 **Options:**
 
-| Option              | Short | Default                | Description                                                              |
-| ------------------- | ----- | ---------------------- | ------------------------------------------------------------------------ |
-| `--config <path>`   | `-c`  | `./lattice.config.yml` | Path to the YAML config file                                             |
-| `--output <dir>`    | –     | `./context`            | Output directory for rendered entity context files                       |
-| `--interval <ms>`   | –     | `5000`                 | Poll interval in milliseconds                                            |
-| `--cleanup`         | –     | off                    | Enable orphan cleanup after each render cycle                            |
-| `--no-orphan-dirs`  | –     | off                    | Skip removal of orphaned entity directories (requires `--cleanup`)       |
-| `--no-orphan-files` | –     | off                    | Skip removal of orphaned files inside entity dirs (requires `--cleanup`) |
-| `--protected <csv>` | –     | –                      | Comma-separated list of protected filenames (requires `--cleanup`)       |
+| Option              | Short | Default                              | Description                                                              |
+| ------------------- | ----- | ------------------------------------ | ------------------------------------------------------------------------ |
+| `--config <path>`   | `-c`  | the active workspace                 | Which workspace to watch                                                 |
+| `--output <dir>`    | –     | the workspace's rendered-context dir | Output directory for rendered entity context files                       |
+| `--interval <ms>`   | –     | `5000`                               | Poll interval in milliseconds                                            |
+| `--cleanup`         | –     | off                                  | Enable orphan cleanup after each render cycle                            |
+| `--no-orphan-dirs`  | –     | off                                  | Skip removal of orphaned entity directories (requires `--cleanup`)       |
+| `--no-orphan-files` | –     | off                                  | Skip removal of orphaned files inside entity dirs (requires `--cleanup`) |
+| `--layout-emptied`  | –     | off                                  | Confirm this workspace renders nothing now on purpose                    |
+| `--protected <csv>` | –     | –                                    | Comma-separated list of protected filenames (requires `--cleanup`)       |
 
 Sends `SIGINT` or `SIGTERM` to stop gracefully.
 
@@ -394,35 +519,768 @@ shows the data already in your database.
 
 ---
 
+### `lattice ask`
+
+Ask the assistant one question and print the answer. No browser, no server, no
+port.
+
+```sh
+lattice ask "<prompt>" [options]
+```
+
+| Option           | Default              | Description                                     |
+| ---------------- | -------------------- | ----------------------------------------------- |
+| `--config`, `-c` | the active workspace | The workspace to ask about                      |
+| `--root`         | `~/.lattice`         | The root holding that workspace                 |
+| `--json`         | `false`              | Emit the answer plus what the turn did, as JSON |
+
+This is the same assistant `lattice gui` runs, over the same tools and the same
+workspace. It answers, and it acts: a change it makes is recorded in the version
+history and reversible exactly like a change made by hand, and every write in one
+tool call shares an operation group, so the whole thing is undone as a single
+action. The refusal that stops a wide permanent removal applies here too — it
+belongs to the tools, not to the browser.
+
+**Output goes to two places on purpose.** The answer goes to standard output and
+nothing else does, so the command pipes. Which tools ran goes to standard error,
+so watching a turn work costs a pipeline nothing.
+
+```sh
+lattice ask "which invoices are unpaid?" > answer.txt   # the answer alone
+lattice ask "add a note about the Acme renewal"         # it acts, reversibly
+lattice ask "how many customers?" --json | jq .answer   # structured
+```
+
+**It exits non-zero unless it did the job.** That is stricter than "did it
+produce prose", deliberately: a script has one channel for this and normally
+reads it as `command || alert`, so every way a turn can end without having done
+what it was asked exits `1`:
+
+- the turn failed, or the machine has no model connected (that one names the
+  command that connects each kind);
+- it asked a clarifying question instead of acting. There is nobody to answer
+  one, so the question is printed — it is the useful part — and the job is not
+  done;
+- it ran out of tool rounds with work outstanding. This is what the app shows as
+  "the task may be incomplete"; it comes back in `warnings` and goes to standard
+  error;
+- something it was asked to do did not happen — a failed call, a change refused
+  by the guard on wide permanent removals, or work that was half-applied. The
+  turn's outcome notice says what, in plain terms;
+- there was no answer at all.
+
+The reason is always on standard error as well, so a person watching sees which
+of those it was. With `--json`, the same judgement comes back as `finished`, so a
+caller reading the result and a caller reading the exit code cannot disagree.
+
+**The model is whatever this machine already has.** A connected Claude
+subscription, an OpenAI-compatible endpoint, or a Lattice Cloud account — the
+same choice the app uses, stored on the machine. Nothing is asked interactively:
+a command that stopped to prompt would hang a scheduled job.
+
+**From the library.** The same turn is one call — `runAssistantTurn(workspace,
+{ message })` for the finished result, or `streamAssistantTurn` for its events as
+they happen.
+
+---
+
+### `lattice model`
+
+Say which model this machine uses. No browser, no settings screen.
+
+```sh
+lattice model <verb> [options]
+```
+
+| Verb                                           | What it does                                             |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `status`                                       | What is connected, and what is blocking a turn           |
+| `connect`                                      | Connect an OpenAI-compatible endpoint                    |
+| `subscription`                                 | Start connecting a Claude subscription                   |
+| `code <code>`                                  | Finish connecting one, with the code you were shown      |
+| `account`                                      | Use the signed-in Lattice Cloud account for model access |
+| `use <anthropic\|openai_compat>`               | Pick which configured backend answers                    |
+| `test`                                         | Ask the active backend to answer once                    |
+| `key <openai\|elevenlabs>`                     | Save a speech key (`--revoke` clears it)                 |
+| `disconnect <endpoint\|account\|subscription>` | Forget one backend                                       |
+
+| Option        | Description                                                   |
+| ------------- | ------------------------------------------------------------- |
+| `--base-url`  | The endpoint to connect (`connect`)                           |
+| `--model`     | The model id that endpoint should be asked for                |
+| `--key-stdin` | Read the API key — or the one-time code — from standard input |
+| `--token`     | The API key inline, when that exposure is acceptable          |
+| `--revoke`    | With `key`, clear the named credential instead of setting     |
+| `--json`      | Machine-readable output (`status`, `subscription`)            |
+
+**Which model answers is a property of the MACHINE**, stored encrypted, not of a
+workspace — so every verb works before any workspace exists, which is exactly
+when you need them. A machine configured here and one configured by clicking are
+indistinguishable afterwards.
+
+```sh
+lattice model connect --base-url https://api.example.com --model gpt-4o --key-stdin < key.txt
+lattice model status --json | jq .connected
+lattice model use anthropic
+```
+
+**A connect is always verified before it is kept.** The endpoint is asked to
+answer, and a `connect` that fails changes nothing and exits non-zero — a command
+that reported success on an endpoint that never answered would leave the machine
+configured and broken, and the next thing to notice would be a failing turn. The
+same is true of an edit: a bad one puts back the configuration it replaced.
+
+**Pipe secrets, do not type them.** `--key-stdin` reads the key from standard
+input, so it stays out of your shell history and out of the process list, where
+anyone else on the machine can read it. `--token` is there for the cases where
+that exposure is acceptable.
+
+**A Claude subscription connects in two commands.** Only one leg of that flow
+needs a person and a browser — approving the consent screen — and that page is
+the provider's, so it can be opened on any machine at all. Everything on either
+side of it is a command:
+
+```sh
+lattice model subscription        # prints a URL to approve
+# …approve it in any browser; the page shows a one-time code…
+lattice model code <code>         # this machine is connected
+```
+
+The two halves are separate runs on purpose: a server being prepared over ssh has
+no browser to hand the code back through, and the person approving may not even
+be at that machine. The unfinished attempt is kept, encrypted, for twenty minutes,
+and `status` reports one that was started and never finished. `--key-stdin` reads
+the code from standard input, and `disconnect subscription` forgets a connected
+one.
+
+**From the library.** Every verb is one call: `readModelStatus(db)`,
+`connectModelEndpoint(db, { baseUrl, model, apiKey, test })`,
+`selectModelProvider(kind)`, `setAssistantApiKey(db, name, key)`,
+`startSubscriptionSignIn()`, `completeSubscriptionSignIn(code)`,
+`disconnectClaudeSubscription()`. A refusal arrives as an `Error` carrying a
+`code` — read it with `modelErrorCode(e)` — rather than a status, because the same
+call serves a request, a command, and a library. Speech is the same shape:
+`transcribeRecording(db, { audio, mimeType })` takes bytes, so a folder of
+recordings reaches the credential this machine already has.
+
+---
+
+### `lattice account`
+
+Sign this machine in to an account — from a terminal, over ssh, on a machine with
+no browser at all.
+
+```sh
+lattice account <verb> [options]
+```
+
+| Verb                       | What it does                                            |
+| -------------------------- | ------------------------------------------------------- |
+| `status`                   | Signed in or not, as whom, and whether a service exists |
+| `signin`                   | Start a sign-in and print the link to approve           |
+| `code <code>`              | Finish it with the code the approval page showed        |
+| `signout`                  | Sign out and revoke this device at the service          |
+| `sync`                     | Pull down workspaces this account was invited to        |
+| `members`                  | Who is on this hosted workspace                         |
+| `invite --email <address>` | Invite somebody to it                                   |
+| `revoke <membership-id>`   | Remove somebody from it                                 |
+| `create-workspace --name`  | Create another hosted workspace                         |
+
+| Option         | Description                                                     |
+| -------------- | --------------------------------------------------------------- |
+| `--code-stdin` | Read the one-time code from standard input                      |
+| `--root`       | The root that `sync` registers arriving workspaces in           |
+| `--json`       | Machine-readable output (`status`, `signin`, `sync`, `members`) |
+
+**A sign-in needs a person, not a browser on this machine.** The approval happens
+on the account service's own page, which the person can open anywhere — their
+laptop, their phone — and everything on either side of it is an ordinary command:
+
+```sh
+lattice account signin            # prints a link to approve
+#  …approve it in any browser; the page shows a one-time code…
+lattice account code AB12-CD34    # this machine is now signed in
+lattice account sync              # its invited workspaces arrive
+```
+
+The two halves are separate runs on purpose: the machine being signed in is often
+not the machine the person is sitting at, and there may be minutes between them.
+The half-finished handshake is kept encrypted on the machine and expires by
+itself, so an abandoned attempt does not leave a usable secret lying around.
+
+**A `sync` that lost a membership exits non-zero, carrying the whole report** — with or
+without `--json`. Three of four workspaces arriving is not a clean pass, and a script that
+read it as one would carry on without the fourth.
+
+**Pipe the code, do not type it.** `--code-stdin` keeps it out of your shell
+history and out of the process list, the same reason the model and cloud verbs
+read a key or a connection string that way.
+
+**Signing out revokes, it does not just forget.** The account's model credential
+is spendable and was minted from this session, so signing out asks the service to
+kill it — a copy that already left the machine has to stop working too. If the
+service does not confirm that, the command says so and exits non-zero rather than
+reporting a revocation that did not happen.
+
+**The last four verbs are for a HOSTED workspace**, where a deployment's own
+workspace manager owns membership; they say plainly when a session has none. A
+self-hosted shared database uses [`lattice cloud`](#lattice-cloud) instead, where
+permission is the Postgres role you connect as.
+
+**From the library.** Every verb is one call: `readAccountStatus()`,
+`startAccountSignIn()`, `completeAccountSignIn(code)`, `signOutAccount()`,
+`syncAccountMemberships({ latticeRoot })`, `listManagedMembers()`,
+`inviteToManagedWorkspace(email)`, `revokeManagedMembership(id)`,
+`createManagedWorkspace(name)`. A refusal arrives as an `Error` carrying a `code`
+— read it with `accountErrorCode(e)` — rather than a status, because the same call
+serves a request, a command, and a library.
+
+---
+
+### `lattice connector`
+
+Attach and tend external sources — an imported Postgres database, an MCP server —
+from a terminal, a container build, or a scheduled job.
+
+```sh
+lattice connector <verb> [options]
+```
+
+| Verb                      | What it does                                              |
+| ------------------------- | --------------------------------------------------------- |
+| `list`                    | What is attached, and how each one is doing               |
+| `sync`                    | Bring every stale source up to date                       |
+| `sync <id>`               | Force one, stale or not — this is how you retry           |
+| `connect-database`        | Attach a Postgres database and import its tables          |
+| `reconnect-database <id>` | Fix a rotated password or a corrected address, and resync |
+| `disconnect <id>`         | Detach a source and tear down what it created             |
+
+| Option             | Description                                             |
+| ------------------ | ------------------------------------------------------- |
+| `--db-host`        | Database host (name only — not a connection string)     |
+| `--db-port`        | Database port (default `5432`)                          |
+| `--db-name`        | Database name                                           |
+| `--db-user`        | Database user — ideally a read-only one                 |
+| `--db-schema`      | Schema to import (default `public`)                     |
+| `--password-stdin` | Read the database password from standard input          |
+| `--config`, `-c`   | Workspace to operate on (default: the active workspace) |
+| `--root`           | The root holding that workspace                         |
+| `--json`           | Machine-readable output (`list`, `sync`)                |
+
+**Keeping a source fresh was always scriptable; attaching one is what this adds.**
+Before it, a machine could sync a database forever and could not add one — exactly
+backwards for an image being prepared or a fleet configured the same way twice.
+
+```sh
+lattice connector connect-database \
+  --db-host db.example.com --db-name shop --db-user reader --password-stdin < pw.txt
+lattice connector list
+lattice connector sync            # every stale source
+```
+
+**A refresh pass that lost a source exits non-zero, and says which one.** The report is
+printed either way — including with `--json`, on standard output — so a scheduled job can
+both notice the failure and report it:
+
+```sh
+lattice connector sync --json > sync.json || alert-somebody < sync.json
+```
+
+`--json` gives `{ synced, failed, failures: [{ connectorId, displayName, error }] }`. A pass
+with nothing stale to do exits `0`.
+
+**The credentials are entered as parts, not as a URL.** A pasted connection string
+invites reusing an owner account wholesale; a data source wants a read-only user
+chosen on purpose. **Pipe the password** — an argument is readable from the
+process list by anyone on the machine and is kept in your shell history.
+
+**Authorizing an MCP server that uses OAuth is not a verb here**, because it ends
+with a person approving a consent page and a code bound to that browser's session;
+there is nothing for a command to complete. The library call says so plainly
+rather than pretending otherwise (below).
+
+**From the library.** `connectSource(db, connector, toolkit, connectedBy, request)`
+performs the whole connect and returns either the finished connection or — for a
+server that needs approval — the URL to approve, which
+`completeMcpConnection(db, connector, input)` then finishes.
+`connectDatabaseSource(db, input)` and `reconnectDatabaseSource(db, input)` attach
+and re-point an external database; `refreshStaleSources(db, connectors, connectedBy)`
+runs the whole refresh pass. A refusal arrives as an `Error` carrying a `code` —
+read it with `connectorErrorCode(e)` — rather than a status. The two codes worth
+branching on are `setup_failed`, which means the connection was rolled back and
+nothing was kept, and `import_failed`, which means the connection **was** kept in
+an error state and carries its `connectorId` so you can retry or remove it.
+
+---
+
+### `lattice ingest`
+
+Bring a document into the workspace — from a path, a folder, a web address, or
+text on standard input.
+
+```sh
+lattice ingest <path|folder|url> [options]
+lattice ingest --stdin [--title <name>]
+```
+
+| Form                     | What it does                                              |
+| ------------------------ | --------------------------------------------------------- |
+| `ingest <file>`          | One document, read where it sits (no copy is made)        |
+| `ingest <folder>`        | Register the folder as a source of the workspace, walk it |
+| `ingest <folder> --once` | Walk it without registering it                            |
+| `ingest <url>`           | Read a web page and keep what it says                     |
+| `ingest --stdin`         | Keep text piped in as a document                          |
+| `ingest sources`         | The folders and files registered as sources here          |
+| `ingest forget <id>`     | Stop watching one — documents already in are kept         |
+
+| Option           | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `--once`         | Walk a folder without registering it as a standing source  |
+| `--private`      | Keep the document, and everything derived from it, private |
+| `--title <name>` | What a `--stdin` document is filed under                   |
+| `--config`, `-c` | Workspace to ingest into (default: the active workspace)   |
+| `--root`         | The root holding that workspace                            |
+| `--json`         | Machine-readable result instead of the summary line        |
+
+**This is the same pipeline a drop into the app runs** — read it, extract its
+text, describe it, import the data inside it, recognise a document already held,
+and link what it is about to the records it belongs with. Nothing here is a
+reduced version of the drop.
+
+```sh
+lattice ingest ./contracts              # register the folder, then walk it
+lattice ingest ./contracts              # again next month: picks up what changed
+lattice ingest https://example.com/spec
+pbpaste | lattice ingest --stdin --title "Kickoff notes"
+```
+
+**A folder becomes a standing source by default**, which is what adding a folder
+in the app does — so the app shows the folder a script added, and re-running the
+command brings in what has appeared since. `--once` is for a directory that is
+not a standing source.
+
+The walk is **bounded** in every direction: eight levels deep, 5000 files
+collected, 500 brought in per run, four at a time, skipping `.git`,
+`node_modules`, and the rest. When a run stops at a cap it says so — a folder
+that was only half read never reports as if it were finished.
+
+**From the library.** `ingestPath(ctx, mctx, path)` ingests one named file;
+`ingestBytes(ctx, mctx, input)` does the same from bytes you already hold, with no
+filesystem at all; `ingestText(ctx, mctx, text)` keeps a block of text, reading
+the page at the other end when the text is a web address. `addSourceRoot`,
+`ingestSourceFolder`, `listSourceRoots`, and `removeSourceRoot` are the registry.
+A refusal arrives as an `Error` carrying a `code` — read it with
+`ingestErrorCode(e)` — rather than a status: `not_found`, `too_large`,
+`outside_roots`, `source_unreachable`, `invalid_request`.
+
+---
+
+### `lattice import`
+
+Turn a spreadsheet, a CSV, a JSON export, or a document with tables in it into
+real tables, rows, and relationships.
+
+```sh
+lattice import <file> [options]
+```
+
+| Option               | Description                                                |
+| -------------------- | ---------------------------------------------------------- |
+| `--sheet <name>`     | One sheet of a multi-sheet workbook                        |
+| `--as-of <date>`     | File-level date (`YYYY-MM-DD`) for the whole import        |
+| `--as-of-column <c>` | The column the source dates each row by                    |
+| `--mode <m>`         | `schema`, `contents`, or `both` (default)                  |
+| `--dry-run`          | Report what it would create; write nothing                 |
+| `--yes`, `-y`        | Proceed past the safe table cap, having reviewed the scope |
+| `--config`, `-c`     | Workspace to import into (default: the active workspace)   |
+| `--json`             | Machine-readable result instead of the summary line        |
+
+**Re-importing never overwrites.** An import that carries no date of its own is
+filed under today's, which makes it a dated snapshot — so running the same
+command next month appends a snapshot beside the last one rather than clobbering
+it. A same-day re-run of identical data is idempotent. A source that dates itself
+(`--as-of`, or a per-row `--as-of-column`) keeps its own dating.
+
+```sh
+lattice import ./exports/2026-07.xlsx --dry-run   # what would this create?
+lattice import ./exports/2026-07.xlsx
+lattice import ./big-book.xlsx --sheet "Q3"
+```
+
+A **large multi-sheet workbook is not refused** — it is imported sheet by sheet,
+each its own unit under the table cap, and the result says how many sheets landed
+and names any that could not. A sheet that fails does not sink the ones that
+worked.
+
+**From the library.** `readImportSource(path, name, sheet?)` reads a file into
+records; `applyImport(deps, source, options, onProgress?)` runs the whole apply —
+inference, match-to-existing, per-sheet split, snapshot dating, computed opt-ins,
+and the report of low-confidence links it deliberately left unconnected.
+`materializeImport` remains available for a caller that has already inferred a
+plan and wants only the write.
+
+---
+
+### `lattice schema`
+
+Relationships and definitions: nest one table inside another, un-nest it, and say
+what a table or a column means.
+
+```sh
+lattice schema links [<table>]                    # what is nested inside what
+lattice schema link <table> --to <parent>         # nest one table inside another
+lattice schema unlink <table>.<column>            # remove a link (values are kept)
+lattice schema describe <table>[.<column>] --text "<definition>"
+```
+
+| Option           | Description                                            |
+| ---------------- | ------------------------------------------------------ |
+| `--to <parent>`  | The table a new link points at                         |
+| `--text <text>`  | What `describe` writes. An empty `--text ""` clears it |
+| `--config`, `-c` | Workspace to act on (default: the active workspace)    |
+| `--root <dir>`   | The `.lattice` root holding that workspace             |
+
+**A link is both halves.** It adds a `<parent>_id` foreign-key column AND declares
+the `belongsTo` relation over it, recorded as one reversible change — so undoing
+it from history takes both, and you can never be left with a column nothing reads
+or a relation pointing at a column that is not there.
+
+**Unlinking is soft.** The declaration goes; the column and its values stay, which
+is why the change reverts with the data intact. A _new_ link to the same table
+therefore gets its own empty column (`customers_id_2`) rather than silently
+adopting the old one's foreign keys.
+
+```sh
+lattice schema link orders --to customers
+lattice schema links                       # orders.customers_id → customers
+lattice schema unlink orders.customers_id
+lattice schema describe orders.code --text "The order number printed on the invoice."
+```
+
+**From the library.** `addUserLink(active, table, parent, sessionId)` and
+`removeUserLink(active, table, column, sessionId)` perform the two halves and the
+audit; `setColumnMeta(active, table, column, { secret?, description? })` writes a
+column's definition and masks it on a shared database — the mask first, so a
+failed mask never leaves a column that only _looks_ protected. `upsertTableMeta`
+sets a table's icon and browsable description, and `setTableDefinition` writes a
+table definition to both places one is read from.
+
+---
+
+### `lattice questions`
+
+The clarification queue. When something automated is confident enough not to drop
+a guess but not confident enough to act on it, it stops and asks instead of
+guessing — an import that cannot tell whether two tables are related, an
+enrichment pass that cannot tell what a column means.
+
+```sh
+lattice questions list [--json]                   # what is waiting, with its id
+lattice questions answer <id> --text "<answer>"   # resolve one
+lattice questions dismiss <id>                    # drop one
+```
+
+| Option           | Description                                               |
+| ---------------- | --------------------------------------------------------- |
+| `--text <text>`  | The reply — one of the offered options, or your own words |
+| `--json`         | `list` emits one record per line for a machine reader     |
+| `--config`, `-c` | Workspace to act on (default: the active workspace)       |
+| `--root <dir>`   | The `.lattice` root holding that workspace                |
+
+**Answering runs what the question was holding.** A question can carry a deferred
+action — connect these two tables, record this definition — and answering executes
+it through the same audited paths any other write uses, so it appears in history
+and reverts like anything else. The status is stamped only after that succeeds: a
+failure leaves the question pending and re-answerable, never resolved with half
+its effects missing.
+
+**A reply in your own words is kept as knowledge.** Picking one of the offered
+options resolves the question and nothing more; typing something else additionally
+records it against whatever the question was about — a table's definition, a
+column's, a field on one row.
+
+```sh
+lattice questions list
+# 7f3c…  [import]  Are orders related to customers?
+#     options: Yes | No
+lattice questions answer 7f3c… --text "Yes"
+```
+
+**From the library.** `listPendingQuestions(db)` reads the queue,
+`answerQuestion(ctx, id, answer)` and `dismissQuestion(ctx, id)` drain it, and
+`enqueueQuestion(db, feed, input)` is how a producer asks. A question that is
+missing or already resolved raises an `Error` carrying a `code` (`not_found`,
+`not_pending`) rather than a status.
+
+---
+
+### `lattice search` / `reindex` / `index status` / `doctor`
+
+Retrieval, its indexes, and a health report a deploy can gate on. All four resolve
+the workspace the same way every other command does — a `--config` you typed wins, a
+config in the current directory is next, and otherwise the **active** workspace — so
+a bare `lattice doctor` reports on the workspace this machine is using, from wherever
+it is typed.
+
+```sh
+lattice search "quarterly revenue" --table reports [--topk 10] [--explain] [--json]
+lattice reindex <table>                # rebuild that table's native vector index
+lattice index status [--json]          # what is indexed, and what is stale
+lattice doctor [--fix] [--json]        # coverage, extensions, ranked issues
+```
+
+| Option            | Short | Default              | Description                                           |
+| ----------------- | ----- | -------------------- | ----------------------------------------------------- |
+| `--config <path>` | `-c`  | the active workspace | Which workspace to act on                             |
+| `--table <name>`  | –     | –                    | The table to search (required for `search`)           |
+| `--topk <n>`      | –     | `10`                 | How many results                                      |
+| `--explain`       | –     | off                  | Per-result score breakdown (vector / fts / rrf)       |
+| `--fix`           | –     | off                  | `doctor` rebuilds every stale vector index, re-checks |
+| `--json`          | –     | off                  | Machine-readable output                               |
+
+**What search does depends on the workspace file.** Full-text and semantic search are
+per-table settings declared in the config — `fts:` opts a table into the full-text
+index, and `embeddings:` names the fields to embed plus the endpoint that embeds them.
+Without an `embeddings:` block there is no vector index to build, so `search` matches
+on keywords alone and `reindex` has nothing to rebuild. There is deliberately **no
+default endpoint** — embedding a field means sending its contents somewhere, so the
+destination is always written down, and the key is named by environment variable
+rather than written into a file you commit. See
+[configuration.md](configuration.md#semantic-search-embeddings).
+
+**`doctor` exits non-zero when the report is not healthy**, which is what makes it
+usable as a deploy gate — and it will not call a workspace healthy that it never
+examined. With nothing configured for search it falls back to what the database
+itself contains.
+
+When even that is empty, what it reports depends on whether it was in a position to
+know, because the two cases are opposites. A **workspace** it opened has had its whole
+schema read, so "nothing configures search" is an answer about that workspace: it says
+`no search is configured here` as an `INFO`, stays healthy, and exits `0`. A freshly
+made workspace is exactly this, and `lattice init` followed by `lattice doctor` is a
+clean run rather than a failing one. A **library caller** that hands
+`diagnoseRetrieval` no expectations never walked the schema, so an empty result means
+nothing was assessed — that remains a `nothing to diagnose` error and a non-zero exit,
+rather than returning a clean bill of health a build step would pass on. Passing
+`tables: []` explicitly is the caller's own list and keeps the error too.
+See [retrieval.md](retrieval.md).
+
+---
+
+### `lattice update`
+
+Upgrade this copy of `latticesql` in place, or — with `--check` — report what an
+upgrade would do and change nothing.
+
+```sh
+lattice update            # install the newer version, if there is one
+lattice update --check    # report only; installs nothing
+```
+
+| Option    | Default | Description                                                       |
+| --------- | ------- | ----------------------------------------------------------------- |
+| `--check` | off     | Report the published version and what this copy could do about it |
+
+`--check` reports **both** halves, because either alone is useless: a version with no
+install context says a release exists but not whether this machine can move to it.
+Safe on a start-up path, a health check, or an inventory pass — it never installs
+anything.
+
+**A check that could not run is reported as unrun**, and exits non-zero. A registry
+answering with something other than an answer — a proxy's 403, a mirror's 404 for the
+package name — used to resolve to the same value a current copy produces, so an
+inventory recorded a machine as current having learned nothing. "Already up to date"
+is now only ever said about a check that actually happened. The packaged desktop
+application asks **its own** release channel rather than the package registry: the two
+advance separately, and asking the wrong one can name a release that surface cannot
+install.
+
+From the library: `checkForNewerVersion({ currentVersion })`.
+
+---
+
 ## Cloud
 
-There are **no `lattice teams` (or `lattice serve`) subcommands**. A Lattice cloud
-is a shared Postgres database secured by Postgres Row-Level Security — there is no
-server process to run and nothing to bootstrap from the CLI. The three cloud flows
-(migrate a local Lattice in, join an existing cloud with the scoped credentials the
-owner gave you, invite a member) are driven from `lattice gui` or directly from the
-library API:
+A Lattice cloud is a shared Postgres database secured by Postgres Row-Level
+Security. There is **no server process to run** — no `lattice serve` — and
+nothing to bootstrap: members connect straight to the database as the scoped
+role the owner provisioned for them.
+
+Running one is a command, a click in `lattice gui`, or a function call, and all
+three do the same thing. **You never need to start the GUI, and you never need
+to bind it to a network address, to administer a cloud.**
+
+### `lattice cloud`
+
+```sh
+lattice cloud <verb> [options]
+```
+
+| Verb                       | What it does                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `status`                   | Owner or member, whether row security is installed, and anything unprotected |
+| `members`                  | Who is on this cloud — the owner, joined members, and pending invites        |
+| `secure`                   | Turn this Postgres into a cloud (owner only). Idempotent                     |
+| `invite --email <address>` | Provision a scoped role and print its invite token, once                     |
+| `join --token <token>`     | Redeem an invite and land in a NEW workspace                                 |
+| `revoke <member>`          | Remove somebody, named by role, email, or display name                       |
+| `share --table … --pk … …` | Change who can see one row                                                   |
+| `migrate --url-stdin`      | Move this local workspace onto a shared database                             |
+| `probe --url-stdin`        | Check a database before pointing a workspace at it                           |
+
+`status` is the one to reach for first, and the reason the group exists: the
+answer to "why is this workspace broken" used to live only in the browser app,
+which is the thing that stops working when the answer is bad. It changes
+nothing, so a damaged cloud can be inspected without also being altered.
+
+**Options:**
+
+| Option             | Short | Default              | Description                                                 |
+| ------------------ | ----- | -------------------- | ----------------------------------------------------------- |
+| `--config <path>`  | `-c`  | the active workspace | Which workspace to operate on                               |
+| `--root <dir>`     | –     | `~/.lattice`         | The `.lattice` root holding it                              |
+| `--json`           | –     | off                  | Machine-readable output (`status`, `members`, `probe`)      |
+| `--email <addr>`   | –     | –                    | The invitee (`invite`); who the invite was sent to (`join`) |
+| `--token-stdin`    | –     | off                  | Read the invite being redeemed from stdin (`join`)          |
+| `--token <token>`  | –     | –                    | The same invite inline — accepted, and warns                |
+| `--name <label>`   | –     | –                    | Name for the workspace, for `join` and `migrate`            |
+| `--table <name>`   | –     | –                    | The row's table, for `share`                                |
+| `--pk <value>`     | –     | –                    | The row's primary key, for `share`                          |
+| `--visibility <v>` | –     | –                    | `private` or `everyone`, for `share`                        |
+| `--to <member>`    | –     | –                    | Share with one person instead of setting a visibility       |
+| `--revoke`         | –     | off                  | With `--to`, take the access away instead of giving it      |
+| `--url-stdin`      | –     | off                  | Read the connection string from stdin (`migrate`, `probe`)  |
+
+**Example:**
+
+```sh
+# The owner, on the machine that has the workspace today:
+lattice cloud migrate --url-stdin < db-url.txt   # or: ... | lattice cloud migrate -
+lattice cloud invite --email bob@example.com     # prints the token once
+lattice cloud members
+lattice cloud share --table notes --pk n-42 --to bob@example.com
+lattice cloud revoke bob@example.com
+
+# Bob, on a machine that has never seen this database:
+lattice cloud join --token-stdin --email bob@example.com < token.txt
+lattice cloud status
+```
+
+**Never put a credential in the command itself.** A connection string contains the
+owner password — the role that can create members — and an argument is public on
+the machine it runs on: any other user can read it out of the process list while
+the command runs, and your shell writes it into its history file afterwards. That
+is the same class of exposure this whole command group exists to remove, so
+`migrate` and `probe` take the URL three ways: `--url-stdin` (or `-` in place of
+the URL) reads it from standard input, the `LATTICE_CLOUD_URL` environment
+variable is read when nothing was typed, and the plain argument still works but
+prints a warning, because a password that has been in a process list has to be
+treated as exposed.
+
+**An invite token is a credential too, and `join` takes it the same three ways.**
+The token is not a handle that gets looked up somewhere: it decrypts, on the
+member's own machine, to the host, database, role and password of the login the
+owner minted — and `--email`, the other half of what decrypts it, is on the same
+command line. So `--token-stdin` (or `-` in place of the token) reads it from
+standard input, `LATTICE_INVITE_TOKEN` is read when nothing was typed, and
+`--token <token>` still works but prints the same warning.
+
+Two things about `invite`: the token IS the credential — it is bound to that
+email address, it expires in about a week, and it is never stored, so the single
+printing is the only one there will be. And `share --visibility` (who can see the
+row at all) and `share --to` (one named person) are separate operations; passing
+both is refused rather than resolved, because silently picking one is how a row
+ends up shared with everybody.
+
+`join` needs no workspace to already exist — it makes one, creating the
+`.lattice` root if the machine has none. It never repoints the workspace you
+already have open, and `--email` defaults to this machine's identity, because
+the address is half of what decrypts the token rather than a lookup. A token
+that has already been spent, was revoked, or has expired is refused _before_ any
+workspace is created, so there is nothing half-made to clean up.
+
+`migrate` moves the workspace you are in: it copies every row into the target,
+builds its search indexes, installs row security, publishes the layout members
+render with, and only then repoints this workspace's config, updates the
+registry, and renames the local database file to `<db>.local-bak`. Those last
+three are one reversible sequence — if any of them fails, all of them are undone
+and you are left exactly where you started, with a loud error rather than a
+half-moved workspace. It refuses a target that is already somebody's cloud
+(join it instead), and it keeps the local file rather than deleting it. The
+connection is stored under the name you pass to `--name`, or the target database's
+own name when you do not — and if that name is already stored for a DIFFERENT
+database it is given a numbered variant instead, because reusing it would point
+whichever workspace already read that name at this database. The name actually
+used is printed.
+
+### From the library
+
+Every verb above is a plain function call:
 
 ```ts
 import {
   Lattice,
-  // migrate
+  // Where do I stand on this cloud? Is anything left unprotected? Read-only.
+  cloudStatus,
+  // Secure a Postgres database as a cloud — and keep it secured as it grows.
+  // secureNewCloudTable covers a table created after the fact; without it that
+  // table has row security off. publishSharedSchema hands members the layout
+  // their own workspace renders with.
+  secureCloud,
+  secureNewCloudTable,
+  reconcileCloudMemberAccess,
+  publishSharedSchema,
+  // Move a local workspace in. migrateWorkspaceToCloud is the whole move: copy
+  // the rows into the target and secure it — then repoint the config and update
+  // the registry and retire the local file as one reversible sequence. Any
+  // failure in that last part undoes all of it. cutOverWorkspaceToCloud is that
+  // last part on its own for data copied some other way.
+  probeCloud,
+  migrateWorkspaceToCloud,
+  cutOverWorkspaceToCloud,
   openTargetLatticeForMigration,
   migrateLatticeData,
-  installCloudRls,
-  backfillOwnership,
-  enableRlsForTable,
   archiveLocalSqlite,
-  // invite / membership
-  memberRoleName,
-  generateMemberPassword,
-  provisionMemberRole,
-  revokeMemberRole,
-  // sharing + probe
-  setRowVisibility,
-  probeCloud,
+  // Invite someone: provision a scoped role and mint the single email-bound
+  // token that carries its credential. Then see who is on the cloud — and take
+  // someone off it.
+  inviteMember,
+  listCloudMembers,
+  removeMember,
+  // Join. redeemCloudInvite takes an email and a token and leaves you with a
+  // working workspace; joinCloud is the same path for credentials handed over
+  // directly. Pass your own createCloudWorkspace to hook the new workspace into
+  // a session that already has a database open.
+  redeemCloudInvite,
+  joinCloud,
+  createCloudWorkspace,
+  // Decide who sees which rows. shareRow sets a row's audience; grantRowAccess
+  // gives (or takes back) one person's access to it; batchRowAccess settles a
+  // whole audience in one call. Use these — a shared dashboard has to drag the
+  // data it reads along with it, and these are the versions that do. The raw
+  // database calls underneath do not, so a dashboard shared with them opens to
+  // an empty page for the recipient.
+  shareRow,
+  grantRowAccess,
+  batchRowAccess,
 } from 'latticesql';
 ```
+
+The steps each of those is built from are exported too, for a caller assembling
+its own variant: `mintInviteToken` / `redeemInviteToken` / `claimMemberInvite`
+for the token itself, `memberRoleName` / `generateMemberPassword` /
+`provisionMemberRole` / `assertScopedMemberRole` / `revokeMemberRole` for the
+role behind it, and `setRowVisibility` / `grantRow` / `revokeRow` /
+`batchRowGrants` for the bare row-access calls. Those last four are single
+database calls and nothing more: they change who may read the named row and stop
+there. Reach for one only when you are handling the follow-on yourself.
+
+**None of this grants authority the GUI does not.** Permission is the Postgres
+role you connect as, not a session the caller can set: the owner checks read
+`rolcreaterole` for the live role, and every mutating step is a `SECURITY
+DEFINER` function that raises for a member. A member running `lattice cloud
+invite` — or calling `inviteMember` — is refused by the database, whether the
+call came from a browser, a script, or a command line.
 
 See [docs/cloud.md](./cloud.md) for the full architecture, the three flows, the
 RLS / role model, and how sharing works.

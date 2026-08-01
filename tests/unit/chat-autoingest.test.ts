@@ -20,8 +20,11 @@ const ingestUrlSpy = vi.hoisted(() =>
   vi.fn(() => Promise.resolve({ id: 'f-url', suggestedLinks: [] })),
 );
 
-vi.mock('../../src/gui/ingest-routes.js', async (orig) => {
-  const actual = await orig<typeof import('../../src/gui/ingest-routes.js')>();
+// The text-ingest engine is mocked where it LIVES. The ingest route file only
+// re-exports it, so mocking the route would no longer intercept the pre-pass —
+// which now calls the capability module directly, with no server in the way.
+vi.mock('../../src/ops/ingest-text.js', async (orig) => {
+  const actual = await orig<typeof import('../../src/ops/ingest-text.js')>();
   return { ...actual, ingestTextAsFile: ingestTextSpy };
 });
 vi.mock('../../src/gui/ingest-url.js', async (orig) => {

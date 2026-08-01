@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { parseConfigFile } from '../config/parser.js';
+import { parseConfigFile, fieldToSqliteBaseType } from '../config/parser.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { isNativeEntity } from '../framework/native-entities.js';
 import {
@@ -19,7 +19,7 @@ import {
   type GuiTableSummary,
 } from './data.js';
 import { assertNotComputedSource } from './computed-ops.js';
-import { upsertTableMeta } from './column-descriptions.js';
+import { upsertTableMeta, writeColumnMetaRow } from './column-descriptions.js';
 import { LINEAGE_TABLE } from './lineage-store.js';
 import { PLAN_STATE_TABLE } from './planner/plan-state.js';
 import type { ShapeOp } from './planner/types.js';
@@ -31,33 +31,16 @@ import {
 } from '../db/adapter.js';
 import type { Lattice } from '../lattice.js';
 import type { ActiveDb } from './active-db.js';
-import { secureNewCloudTable } from '../cloud/setup.js';
 import {
   isRowAudience,
   loadColumnPolicy,
   regenerateAudienceViewFromDb,
   regenerateMemberReadView,
+  setColumnAudience,
   tableNeedsAudienceView,
 } from '../cloud/audience.js';
-import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
-
-/**
- * Secure a table created at RUNTIME (data-model panel / assistant / ingest) the
- * same way `secureCloud` secures declared tables — otherwise a table made on a
- * secured cloud has RLS OFF (wide open), no ownership trigger, and no member
- * grant. No-op off a secured cloud / when the role can't manage it. internal guideline: a
- * failure surfaces (a silently-unsecured table is a data-exposure bug).
- */
-async function secureRuntimeTableIfCloud(
-  active: ActiveDb,
-  name: string,
-  pk: string[],
-): Promise<void> {
-  const db = active.db;
-  if (db.getDialect() !== 'postgres') return;
-  if (!((await cloudRlsInstalled(db)) && (await canManageRoles(db)))) return;
-  await secureNewCloudTable(db, name, pk);
-}
+import { cloudRlsInstalled } from '../framework/cloud-connect.js';
+import { assertCloudOwner } from '../cloud/owner-gate.js';
 
 /**
  * Runtime schema-mutation primitives — the shared core behind the GUI's
@@ -295,8 +278,8 @@ export async function materializeJunction(
   active.validTables.add(jName);
   active.junctionTables.add(jName);
   syncCanonicalContexts(active);
-  // Secure the just-created junction on a cloud (RLS + ownership + grant).
-  await secureRuntimeTableIfCloud(active, jName, ['id']);
+  // (The junction was secured on a shared workspace as part of registering it —
+  // see Lattice.defineLate. Nothing to do per-client.)
   await recordSchemaOp(
     active,
     'schema.create_junction',
@@ -322,6 +305,10 @@ export async function createFileJunction(
   otherTable: string,
   sessionId: string,
 ): Promise<FileJunction | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a link table');
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(otherTable)) return null;
   if (otherTable === 'files' || isNativeEntity(otherTable)) return null;
   if (!active.validTables.has(otherTable) || active.junctionTables.has(otherTable)) return null;
@@ -390,6 +377,10 @@ export async function createUserJunction(
   tableB: string,
   sessionId: string,
 ): Promise<UserJunction | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a link table');
   const ok = (t: string): boolean =>
     /^[a-z][a-z0-9_]*$/.test(t) &&
     t !== 'files' &&
@@ -456,6 +447,10 @@ export async function createUserRelation(
   parentTable: string,
   sessionId: string,
 ): Promise<{ relationName: string } | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'relate tables');
   const ok = (t: string): boolean =>
     /^[a-z][a-z0-9_]*$/.test(t) &&
     t !== 'files' &&
@@ -507,6 +502,337 @@ export async function createUserRelation(
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Links — the foreign key AND the relation over it, added and removed together
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Columns Lattice manages. Never renamable, retypable, deletable, or maskable:
+ * `id` is the uuid primary key, and the timestamps + soft-delete column carry
+ * semantics undo/redo and freshness depend on.
+ */
+export const SCHEMA_SYSTEM_COLUMNS: ReadonlySet<string> = new Set([
+  'id',
+  'created_at',
+  'updated_at',
+  'deleted_at',
+]);
+
+/**
+ * The entity a column references (a foreign-key "link"), or null when it is an
+ * ordinary column.
+ *
+ * A link is an entity-level `relations:` belongsTo entry whose `foreignKey` is
+ * this column (the per-field shorthand was removed in 4.0), so answering this
+ * means reading the configuration rather than the column itself.
+ */
+export function columnRefTarget(configPath: string, entity: string, col: string): string | null {
+  const relsNode: unknown = loadConfigDoc(configPath).getIn(['entities', entity, 'relations']);
+  if (!relsNode || typeof relsNode !== 'object') return null;
+  const rels =
+    typeof (relsNode as { toJSON?: unknown }).toJSON === 'function'
+      ? (relsNode as { toJSON: () => Record<string, unknown> }).toJSON()
+      : (relsNode as Record<string, unknown>);
+  for (const rel of Object.values(rels)) {
+    if (
+      rel &&
+      typeof rel === 'object' &&
+      (rel as { type?: unknown }).type === 'belongsTo' &&
+      (rel as { foreignKey?: unknown }).foreignKey === col
+    ) {
+      const table = (rel as { table?: unknown }).table;
+      return typeof table === 'string' && table ? table : null;
+    }
+  }
+  return null;
+}
+
+/** The column a link was created on, or the reason it could not be. */
+export type AddLinkOutcome = { ok: true; column: string } | { ok: false; error: string };
+
+/** What removing a link took out of the configuration, or why it did not. */
+export type RemoveLinkOutcome =
+  | { ok: true; column: string; target: string; undoId: string }
+  | { ok: false; error: string };
+
+/**
+ * Nest one table inside another: add the foreign-key column AND declare the
+ * belongsTo relation over it, as one reversible change.
+ *
+ * A link is BOTH halves. Adding only the column gives a table a uuid field
+ * nothing reads; declaring only the relation points it at a column that does not
+ * exist. So they are added together, recorded together in one `schema.add_link`
+ * op, and removed together by its inverse — which is what lets the history page
+ * undo a link in a single step.
+ *
+ * The exclusivity rules travel with the operation rather than sitting in the
+ * caller, because they are what keep the model coherent: one link per target, no
+ * mutual nesting, and no nesting between two tables a many-to-many already
+ * connects. A caller that had to re-derive those would get them subtly wrong.
+ * So does the OWNER-ONLY rule on a shared database: this writes the owner's
+ * workspace file and adds a column every member then has, so on a secured cloud
+ * a member is refused here with a tagged `cloud_owner_only` — from any door,
+ * not only the one that can answer with a status.
+ *
+ * NAMING THE COLUMN is deliberately not idempotent. The name is de-duplicated
+ * against the columns the configuration declares AND the ones the table really
+ * has, which differ after a link is removed: removal drops the declaration and
+ * leaves the column in place so the values survive a revert. `addColumn` skips
+ * the statement when the column is already there, so reusing that name would
+ * silently adopt the removed link's foreign keys under a freshly declared
+ * relation. Stepping past it gives the new link an empty column of its own and
+ * leaves the old one revertible.
+ *
+ * No reopen: the column is registered live and the configuration is re-read, so
+ * a caller mid-turn keeps its `db`, `feed` and captured tables.
+ */
+export async function addUserLink(
+  active: ActiveDb,
+  entityName: string,
+  target: string,
+  sessionId: string,
+): Promise<AddLinkOutcome> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, including which tables exist.
+  await assertCloudOwner(active.db, 'add a link');
+  if (!active.validTables.has(entityName)) {
+    return { ok: false, error: `Unknown entity: ${entityName}` };
+  }
+  if (!active.validTables.has(target)) return { ok: false, error: 'Target entity must exist' };
+  if (active.junctionTables.has(target)) {
+    return { ok: false, error: 'Cannot link to a junction table' };
+  }
+  // One link per target: refuse if the entity already has a foreign key pointing
+  // at `target`. Keeps the model clean and avoids the accidental
+  // <target>_id / <target>_id_2 duplication.
+  const summary = getGuiEntities(active.configPath, active.outputDir).tables.find(
+    (t) => t.name === entityName,
+  );
+  const alreadyLinked =
+    summary !== undefined &&
+    Object.values(summary.relations).some((r) => r.type === 'belongsTo' && r.table === target);
+  if (alreadyLinked) {
+    return { ok: false, error: `"${entityName}" already links to "${target}"` };
+  }
+  // EXCLUSIVITY (mutual nesting): the target must not already nest inside this
+  // entity — two tables can never contain each other.
+  const allForLink = getGuiEntities(active.configPath, active.outputDir).tables;
+  const targetSummary = allForLink.find((t) => t.name === target);
+  const reverseNested =
+    targetSummary !== undefined &&
+    Object.values(targetSummary.relations).some(
+      (r) => r.type === 'belongsTo' && r.table === entityName,
+    );
+  if (reverseNested) {
+    return {
+      ok: false,
+      error: `"${target}" is nested inside "${entityName}" — tables cannot be nested into each other`,
+    };
+  }
+  // EXCLUSIVITY (many-to-many vs nesting): a junction between the pair conflicts
+  // with a belongsTo nesting.
+  const junctionBetween = allForLink.find((j) => {
+    if (!active.junctionTables.has(j.name)) return false;
+    const bt = Object.values(j.relations).filter((r) => r.type === 'belongsTo');
+    const tables = new Set(bt.map((r) => r.table));
+    return bt.length === 2 && tables.has(entityName) && tables.has(target);
+  });
+  if (junctionBetween) {
+    return {
+      ok: false,
+      error: `"${entityName}" and "${target}" are connected by a relationship (${junctionBetween.name}) — remove it before nesting one inside the other`,
+    };
+  }
+  const existingCols = new Set([
+    ...Object.keys(active.db.getRegisteredColumns(entityName) ?? {}),
+    ...(await active.db.introspectColumns(entityName)),
+  ]);
+  let colName = `${target}_id`;
+  let n = 2;
+  while (existingCols.has(colName)) colName = `${target}_id_${String(n++)}`;
+  const linkType = fieldToSqliteBaseType('uuid');
+  // The library owns the statement: it asserts both identifiers, takes the schema
+  // lock so a concurrent add of the same column cannot race, refreshes the
+  // registered column set, and on a shared database where the caller has no ALTER
+  // privilege goes through the owner-side helper instead of failing.
+  await active.db.addColumn(entityName, colName, linkType);
+  // A plain foreign-key field plus an explicit entity-level belongsTo relation.
+  // The relation name mirrors the column with a trailing `_id` stripped.
+  const linkFieldDef = { type: 'uuid' };
+  const relName = colName.endsWith('_id') ? colName.slice(0, -3) : colName;
+  const relation = { type: 'belongsTo', table: target, foreignKey: colName };
+  const doc = loadConfigDoc(active.configPath);
+  doc.setIn(['entities', entityName, 'fields', colName], linkFieldDef);
+  doc.setIn(['entities', entityName, 'relations', relName], relation);
+  saveConfigDoc(active.configPath, doc);
+  // Re-derive the parent's rollup and the child's nesting without a reopen, the
+  // same way declaring a relation over an existing column does.
+  syncCanonicalContexts(active);
+  await recordSchemaOp(
+    active,
+    'schema.add_link',
+    entityName,
+    null,
+    {
+      entity: entityName,
+      column: colName,
+      fieldDef: linkFieldDef,
+      relationName: relName,
+      relation,
+    },
+    `Added link ${entityName} → ${target}`,
+    sessionId,
+  );
+  return { ok: true, column: colName };
+}
+
+/**
+ * Un-nest one table from another: hide the link by removing the foreign-key
+ * field and its belongsTo relation from the configuration.
+ *
+ * SOFT, like every other delete here. The SQL column is NOT dropped, so its
+ * values stay exactly where they are and reverting the recorded
+ * `schema.delete_link` op restores the link with its data and no snapshot. Both
+ * halves go together: deleting the field alone would leave a relation pointing at
+ * a column the table no longer declares, and both come back together on revert.
+ *
+ * Owner-only on a secured cloud, for the same reason adding one is: it rewrites
+ * the owner's workspace file and un-nests a table for every member.
+ *
+ * Returns the audit id of the recorded op, so a caller can offer a one-click undo
+ * of exactly this change. Physically reclaiming the column is a separate,
+ * irreversible purge.
+ */
+export async function removeUserLink(
+  active: ActiveDb,
+  entityName: string,
+  colName: string,
+  sessionId: string,
+): Promise<RemoveLinkOutcome> {
+  await assertCloudOwner(active.db, 'remove a link');
+  if (!active.validTables.has(entityName)) {
+    return { ok: false, error: `Unknown entity: ${entityName}` };
+  }
+  const target = columnRefTarget(active.configPath, entityName, colName);
+  if (!target) return { ok: false, error: `Not a link column: ${colName}` };
+  // Capture the field def + relation (name and spec) before removing them: they
+  // ARE the revert payload.
+  const doc = loadConfigDoc(active.configPath);
+  const entityJs = (
+    doc.toJS() as {
+      entities?: Record<
+        string,
+        { fields?: Record<string, unknown>; relations?: Record<string, unknown> }
+      >;
+    }
+  ).entities?.[entityName];
+  const deletedFieldDef = entityJs?.fields?.[colName];
+  const relationEntries = Object.entries(entityJs?.relations ?? {});
+  const deletedRelation = relationEntries.find(
+    ([, rel]) =>
+      rel != null &&
+      typeof rel === 'object' &&
+      (rel as { type?: unknown }).type === 'belongsTo' &&
+      (rel as { foreignKey?: unknown }).foreignKey === colName,
+  );
+  const deletedRelationName = deletedRelation?.[0];
+  const deletedRelationDef = deletedRelation?.[1];
+  doc.deleteIn(['entities', entityName, 'fields', colName]);
+  if (deletedRelationName !== undefined) {
+    doc.deleteIn(['entities', entityName, 'relations', deletedRelationName]);
+  }
+  saveConfigDoc(active.configPath, doc);
+  syncCanonicalContexts(active);
+  const undoId = await recordSchemaOp(
+    active,
+    'schema.delete_link',
+    entityName,
+    {
+      entity: entityName,
+      column: colName,
+      fieldDef: deletedFieldDef,
+      ...(deletedRelationName !== undefined
+        ? { relationName: deletedRelationName, relation: deletedRelationDef }
+        : {}),
+    },
+    null,
+    `Deleted link ${entityName} → ${target}`,
+    sessionId,
+  );
+  return { ok: true, column: colName, target, undoId };
+}
+
+/** What a column-metadata write is setting. An absent field is left alone. */
+export interface ColumnMetaPatch {
+  /**
+   * Mask the column, or stop masking it. On a shared database this changes who
+   * can READ the value; everywhere it decides whether the assistant sees it.
+   */
+  secret?: boolean;
+  /** The one-line definition shown to people and to the assistant. Blank clears it. */
+  description?: string | null;
+}
+
+/** Whether the metadata write went through, or why it was refused. */
+export type ColumnMetaOutcome = { ok: true } | { ok: false; error: string };
+
+/**
+ * Write a column's metadata: its definition, whether it is secret, or both.
+ *
+ * The two are one operation because marking a column secret is not a note about
+ * it — on a shared database it MASKS the column through the audience view, and
+ * the stored flag is what redacts it from the assistant. The mask is applied
+ * FIRST and throws on failure, so a column can never end up shown-masked to its
+ * owner and redacted from the assistant while a member's connection still reads
+ * the real value. A failed mask fails the whole call.
+ *
+ * Secrecy is refused on the columns where it would be meaningless or misleading:
+ * the system columns Lattice manages, and foreign keys, whose values are how rows
+ * find each other. A definition may be written on any column.
+ */
+export async function setColumnMeta(
+  active: ActiveDb,
+  table: string,
+  column: string,
+  patch: ColumnMetaPatch,
+): Promise<ColumnMetaOutcome> {
+  // Authorization first: the mask this installs is a change to the shape of the
+  // shared database, and a refusal that arrives after it is not a refusal. See
+  // assertCloudOwner.
+  await assertCloudOwner(
+    active.db,
+    patch.secret !== undefined ? 'mark a column secret' : 'describe a column',
+  );
+  if (!active.validTables.has(table)) return { ok: false, error: `Unknown table: ${table}` };
+  const settingSecret = patch.secret !== undefined;
+  const settingDescription = patch.description !== undefined;
+  if (!settingSecret && !settingDescription) {
+    return { ok: false, error: 'nothing to update (expected secret or description)' };
+  }
+  if (settingSecret) {
+    if (SCHEMA_SYSTEM_COLUMNS.has(column)) {
+      return { ok: false, error: `"${column}" is a system column and cannot be marked secret` };
+    }
+    if (columnRefTarget(active.configPath, table, column)) {
+      return { ok: false, error: 'Link (foreign-key) columns cannot be marked secret' };
+    }
+  }
+  const secret: 0 | 1 = patch.secret === true ? 1 : 0;
+  if (settingSecret && active.db.getDialect() === 'postgres') {
+    const columnNames = Object.keys(active.db.getRegisteredColumns(table) ?? {});
+    const pkCols = active.db.getPrimaryKey(table);
+    await setColumnAudience(active.db, table, column, secret ? 'owner' : '', columnNames, pkCols);
+  }
+  // Reaching here means the database mask (if any) already succeeded, which is
+  // the whole reason this is the only path allowed to write the `secret` flag —
+  // the public definition writer refuses it outright.
+  await writeColumnMetaRow(active.db, table, column, {
+    ...(settingSecret ? { secret } : {}),
+    ...(settingDescription ? { description: patch.description ?? null } : {}),
+  });
+  return { ok: true };
+}
+
 /**
  * The identifier a natural name becomes when it is created as an entity
  * ("People" → `people`, "Sales Leads" → `sales_leads`), or null when nothing
@@ -541,6 +867,10 @@ export async function createUserEntity(
   sessionId: string,
   opts?: { normalize?: boolean; rejectAnonymous?: boolean },
 ): Promise<string | null> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'create a table');
   // Normalize to snake_case so a natural name from the model ("People", "Sales
   // Leads") becomes a valid identifier ("people", "sales_leads") instead of a
   // silent rejection. The dispatcher returns this canonical name to the model,
@@ -558,8 +888,9 @@ export async function createUserEntity(
   // CREATE straddle awaits) and both run CREATE TABLE — the loser throwing "table
   // already exists". Inside the lock the check-then-act is atomic, so the second
   // caller sees the first's just-registered table and reuses it. Reentrant, so the
-  // nested addColumn inside secureRuntimeTableIfCloud (cloud) runs inline. Any throw
-  // propagates to the caller and releases the lock (withSchemaLock advances on settle).
+  // schema work that registering a table performs on a shared workspace runs inline.
+  // Any throw propagates to the caller and releases the lock (withSchemaLock advances
+  // on settle).
   // The closure returns whether THIS call created the table (vs reused a concurrent
   // creator's), so the background description hook below fires only on a fresh create.
   const outcome = await active.db.withSchemaLock(
@@ -624,9 +955,8 @@ export async function createUserEntity(
       // Same step as creation: register the canonical context so the new table
       // renders without a reopen (the subsequent row inserts' auto-render writes it).
       syncCanonicalContexts(active);
-      // Secure the just-created table on a cloud (RLS + ownership + mask view + grant)
-      // so a runtime-created table isn't left wide open.
-      await secureRuntimeTableIfCloud(active, entity, ['id']);
+      // (The table was secured on a shared workspace as part of registering it —
+      // see Lattice.defineLate. Nothing to do per-client.)
       await recordSchemaOp(
         active,
         'schema.create_entity',
@@ -664,6 +994,10 @@ export async function addUserColumn(
   column: string,
   sessionId: string,
 ): Promise<{ ok: true; column: string } | { ok: false; error: string }> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, "change a table's columns");
   if (!active.validTables.has(table)) return { ok: false, error: `Unknown table "${table}".` };
   if (active.computedTables.has(table)) {
     return {
@@ -702,7 +1036,7 @@ export async function addUserColumn(
   if (!/^[a-z][a-z0-9_]*$/.test(col)) {
     return { ok: false, error: `"${column}" is not a valid column name.` };
   }
-  if (new Set(['id', 'deleted_at', 'created_at', 'updated_at']).has(col)) {
+  if (SCHEMA_SYSTEM_COLUMNS.has(col)) {
     return { ok: false, error: `"${col}" is a reserved column.` };
   }
   const existing = active.db.getRegisteredColumns(table);
@@ -769,6 +1103,10 @@ export async function softDeleteUserEntity(
   sessionId: string,
   summary?: string,
 ): Promise<string> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete tables');
   // A computed table is not an entity — it is deleted through its own
   // definition path (deleteComputedTable), never soft-deleted like a table.
   if (active.computedTables.has(name)) {
@@ -969,6 +1307,10 @@ export async function removeInboundLinks(
 ): Promise<
   { ok: true; cascadedLinkRows: number; droppedLinkTables: string[] } | { ok: false; error: string }
 > {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete tables');
   const ownedTables = [...new Set(inbound.filter((l) => l.owned).map((l) => l.table))].filter((t) =>
     active.validTables.has(t),
   );
@@ -1098,6 +1440,10 @@ export async function aiDeleteEntity(
   resolution: DeleteResolution | undefined,
   sessionId: string,
 ): Promise<DeleteEntityOutcome> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'delete or merge tables');
   if (!active.validTables.has(name)) return { ok: false, error: `Unknown table: ${name}` };
   if (isNativeEntity(name)) {
     return { ok: false, error: `"${name}" is a built-in table and cannot be deleted.` };
@@ -1497,6 +1843,13 @@ export async function setTableRole(
   source: RoleSource,
   grain: string | null,
 ): Promise<void> {
+  // Authorization first, for the same reason as every other writer in this
+  // module. This one writes the SAME row of the SAME store as
+  // {@link setTableDefinition} — what a table IS, which the data-model pass, the
+  // interface and the assistant all read — and it travelled without the rule
+  // while its neighbour carried it, so the browser refused a scoped member and
+  // the package entry point served them. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'apply data-model changes');
   if (!active.validTables.has(table)) throw new Error(`Unknown table: ${table}`);
   if (!isTableRole(role)) throw new Error(`"${String(role)}" is not a table role.`);
   await ensureRoleColumns(active.db);
@@ -1529,6 +1882,10 @@ export async function setTableDefinition(
   table: string,
   description: string,
 ): Promise<void> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'describe a table');
   if (!active.validTables.has(table)) throw new Error(`Unknown table: ${table}`);
   const text = description.trim();
   const doc = loadConfigDoc(active.configPath);
@@ -1646,6 +2003,10 @@ const CLOUD_NAME_KEYED_POLICY: readonly string[] = [
  * Throws on failure, so a half-purged table can never be reported as a success.
  */
 export async function purgeUserEntity(active: ActiveDb, table: string): Promise<void> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'purge tables');
   const q = table.replace(/"/g, '""');
   const onCloud = active.db.getDialect() === 'postgres' && (await cloudRlsInstalled(active.db));
   if (onCloud) await execSql(active.db, `DROP VIEW IF EXISTS "${q}_v"`);
@@ -2245,6 +2606,10 @@ export async function renameUserColumn(
   to: string,
   keepInStep: () => void | Promise<void>,
 ): Promise<TableNamePolicyMove> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'rename a column');
   const q = (s: string): string => s.replace(/"/g, '""');
   return renameColumnsCarryingPolicy(active.db, table, new Map([[from, to]]), async () => {
     await execSql(active.db, `ALTER TABLE "${q(table)}" RENAME COLUMN "${q(from)}" TO "${q(to)}"`);
@@ -2330,6 +2695,10 @@ export async function renameUserEntity(
   to: string,
   sessionId: string,
 ): Promise<RenameOutcome> {
+  // Authorization first: what somebody may not do is not worth telling them
+  // anything about, and a refusal that arrives after the first write is not a
+  // refusal. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'rename a table');
   const fail = (error: string): RenameOutcome => ({ ok: false, error });
   if (!active.validTables.has(from)) return fail(`Unknown table: ${from}`);
   if (isNativeEntity(from)) return fail(`"${from}" is a built-in table and cannot be renamed.`);
@@ -2613,6 +2982,11 @@ export async function applyShapeOp(
   op: ShapeOp,
   sessionId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Authorization first, and stated HERE rather than left to the primitives each
+  // arm routes to: this is an exported entry point of its own, so a third arm
+  // added later would otherwise inherit whatever its primitive happened to carry.
+  // Same wording the browser uses for this door. See assertCloudOwner.
+  await assertCloudOwner(active.db, 'apply data-model changes');
   switch (op.kind) {
     case 'assign_role': {
       const role = op.evidence.role;

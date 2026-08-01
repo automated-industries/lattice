@@ -19,11 +19,12 @@ import {
   listWorkspaces,
   getActiveWorkspace,
   setActiveWorkspace,
-  getWorkspace,
   addWorkspace,
   removeWorkspace,
   resolveWorkspacePaths,
 } from '../framework/workspace.js';
+import { createCloudWorkspace as createCloudWorkspaceRecord } from '../framework/cloud-workspace.js';
+import type { CloudWorkspaceCreator } from '../cloud/join.js';
 import { fileJunctions, entityDescriptions } from './data.js';
 import { guiAppHtml } from './app.js';
 import { feedOpForChange } from './realtime.js';
@@ -69,7 +70,7 @@ import {
 import { freshnessConnectors } from '../connectors/catalog.js';
 import { handleReadRoutes, type ReadRoutesDeps } from './read-routes.js';
 import { handleTablesRoutes, type TablesRoutesDeps } from './tables-routes.js';
-import { handleSchemaRoutes, type SchemaRoutesDeps } from './schema-routes.js';
+import { handleSchemaRoutes, denyIfNotCloudOwner, type SchemaRoutesDeps } from './schema-routes.js';
 import { handleComputedRoutes, type ComputedRoutesDeps } from './computed-routes.js';
 import { handleDataModelRoutes, type DataModelRoutesDeps } from './data-model-routes.js';
 import {
@@ -81,18 +82,11 @@ import {
   listComputedTables,
 } from './computed-ops.js';
 import { handleHistoryRoutes, type HistoryRoutesDeps } from './history-routes.js';
-import {
-  handleWorkspacesRoutes,
-  cleanupWorkspaceFiles,
-  type WorkspacesRoutesDeps,
-} from './workspaces-routes.js';
+import { handleWorkspacesRoutes, type WorkspacesRoutesDeps } from './workspaces-routes.js';
+import { deleteWorkspace } from '../ops/workspace-lifecycle.js';
+import { workspaceErrorCode } from '../ops/workspace-errors.js';
 import { handleDatabasesRoutes, type DatabasesRoutesDeps } from './databases-routes.js';
-import {
-  readIdentity,
-  writeIdentity,
-  deleteDbCredential,
-  saveDbCredential,
-} from '../framework/user-config.js';
+import { readIdentity, suggestedDisplayName, writeIdentity } from '../framework/user-config.js';
 
 export interface StartGuiServerOptions {
   /**
@@ -492,40 +486,30 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
   };
 
   // Open + activate a cloud workspace joined/created via an invite or a migration.
-  // Tolerates the virgin state (no prior active to dispose). Atomic: on open
-  // failure it rolls back the half-created workspace + credential and rethrows.
-  // Shared by the dbconfig dispatcher (redeem/connect) and the virgin onboarding.
-  const createCloudWorkspace = async (
-    displayName: string,
-    key: string,
-    url: string,
-  ): Promise<string> => {
-    if (!latticeRoot) throw new Error('No .lattice root — cannot create a cloud workspace');
-    saveDbCredential(key, url);
-    let created;
-    try {
-      created = addWorkspace(latticeRoot, {
-        displayName,
-        db: '${LATTICE_DB:' + key + '}',
-        makeActive: false,
-      });
-    } catch (e) {
-      deleteDbCredential(key);
-      throw e;
-    }
-    const paths = resolveWorkspacePaths(latticeRoot, created);
-    let next: ActiveDb;
-    try {
-      next = await openConfig(paths.configPath, paths.contextDir, autoRender);
-    } catch (e) {
-      removeWorkspace(latticeRoot, created.id);
-      deleteDbCredential(key);
-      throw e;
-    }
-    setActiveWorkspace(latticeRoot, created.id);
+  // Tolerates the virgin state (no prior active to dispose). The registry work +
+  // rollback live in the framework so a headless caller can join a cloud too;
+  // what this adds is the part only a live session has — opening the database and
+  // making it the served one. Shared by the dbconfig dispatcher (redeem/connect)
+  // and the virgin onboarding.
+  const createCloudWorkspace: CloudWorkspaceCreator = (displayName, key, url, auth) =>
+    createCloudWorkspaceRecord<ActiveDb>(latticeRoot, displayName, key, url, {
+      ...auth,
+      open: (paths) => openConfig(paths.configPath, paths.contextDir, autoRender),
+      adopt: async (next, workspaceId) => {
+        await disposeActiveIfAny();
+        setActive(next, workspaceId);
+      },
+    });
+
+  // Give up the served workspace entirely: close it and enter the welcome state.
+  //
+  // Used when the store the session is holding open is no longer the store the
+  // workspace points at — a migration that completed while the reconnect failed.
+  // Keeping the old handle would mean every later write landed in a file nothing
+  // reads again, silently, so the honest move is to stop serving and say so.
+  const retireActive = async (): Promise<void> => {
     await disposeActiveIfAny();
-    setActive(next, created.id);
-    return created.id;
+    setActive(null, null);
   };
 
   // Reopen the currently-served config (after an in-place config edit). The
@@ -593,9 +577,14 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       return true;
     }
     if (method === 'GET' && pathname === '/api/userconfig/identity') {
-      sendJson(res, readIdentity());
+      // Same shape the workspace-side route answers with. This is the branch
+      // first-run onboarding actually hits — before any workspace exists — so the
+      // name to offer has to be here too, or the very screen that needs it is the
+      // one screen that never receives it.
+      sendJson(res, { ...readIdentity(), suggested_display_name: suggestedDisplayName() });
       return true;
     }
+    // @capability user.identity
     if (method === 'POST' && pathname === '/api/userconfig/identity') {
       const body = (await readJson<unknown>(req)) as { display_name?: unknown; email?: unknown };
       const next = {
@@ -607,6 +596,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       sendJson(res, next);
       return true;
     }
+    // @capability workspace.create
     if (method === 'POST' && pathname === '/api/workspaces/create') {
       const body = (await readJson<unknown>(req)) as { name?: unknown };
       const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -622,15 +612,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       }
       return true;
     }
+    // @capability workspace.delete
     if (method === 'POST' && pathname === '/api/workspaces/delete') {
       // Deletion operates on the registry, not the open DB, so it must work with
       // no active workspace too. Otherwise a workspace whose database fails to
       // open strands the GUI in the virgin state while the welcome screen still
       // lists it — and it could never be removed (the active-DB delete route
       // 409'd "No active workspace"). With nothing active there is no DB to
-      // switch away from: just drop the record, then its files. Uses the same
-      // cleanupWorkspaceFiles helper as the active-DB delete so the two can
-      // never drift.
+      // switch away from, so this route is the capability call and nothing else:
+      // the SAME exported function the active-DB delete uses, which is what keeps
+      // the two from ever disagreeing about which files a delete takes with it.
       if (!latticeRoot) {
         sendJson(res, { error: 'No .lattice root — workspaces unavailable' }, 400);
         return true;
@@ -640,15 +631,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         sendJson(res, { error: 'id must be a string' }, 400);
         return true;
       }
-      const ws = getWorkspace(latticeRoot, body.id);
-      if (!ws) {
-        sendJson(res, { error: `No workspace with id ${body.id}` }, 400);
-        return true;
-      }
-      removeWorkspace(latticeRoot, ws.id);
       try {
-        cleanupWorkspaceFiles(latticeRoot, ws);
+        deleteWorkspace({ root: latticeRoot, id: body.id });
       } catch (e) {
+        if (workspaceErrorCode(e)) {
+          sendJson(res, { error: (e as Error).message }, 400);
+          return true;
+        }
         sendJson(
           res,
           { error: `Workspace unregistered but file cleanup failed: ${(e as Error).message}` },
@@ -659,6 +648,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
       sendJson(res, { ok: true, switchedTo: null });
       return true;
     }
+    // @capability cloud.redeem-invite
     if (method === 'POST' && pathname === '/api/cloud/redeem-invite') {
       await redeemInvite(createCloudWorkspace, req, res);
       return true;
@@ -737,6 +727,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
         const method = req.method ?? 'GET';
 
         // Reject cross-site / rebound-Host state changes before any routing.
+        // @not-a-route the central predicate that classifies a request as state-changing, used by
+        // the cross-site check below. It selects no operation of its own.
         const mutating =
           method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
         if (mutating && !requestIsSameOrigin(req)) {
@@ -841,6 +833,13 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           );
           return;
         }
+        // @gui-only desktop-shell: this makes the RUNNING app become the new version, which is
+        // a property of the shell rather than of the upgrade. On the packaged app it launches
+        // the staged operating-system installer and quits so that installer can replace the
+        // bundle currently executing; on a supervised install it exits for the supervisor to
+        // respawn onto the newly installed files. A caller with no running shell to replace has
+        // neither step to take: it installs the newer version outright with the self-update
+        // capability, and asks whether there is one with the update-check capability.
         if (method === 'POST' && pathname === '/api/update/apply') {
           // Manual trigger behind the "update available" pill. The right action
           // depends on the surface (reported as `status.action`):
@@ -877,6 +876,18 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           }
           return;
         }
+        // Asking whether a newer version exists, and what this copy could do about
+        // it, is one call for anyone. What is left here is the long-lived service:
+        // it broadcasts progress to connected browsers, drives the packaged app's
+        // background installer download, and holds the guard that stops a failed
+        // apply re-downloading forever — state a direct caller does not have.
+        //
+        // The service and the capability ask the same CHANNEL for the same install
+        // kind — the release manifest on the packaged app, the package registry on
+        // an npm install. They have to: two doors onto "is there a newer version?"
+        // that consult different publishers give one machine two answers, and the
+        // npm one can name a release the desktop channel cannot serve.
+        // @capability app.check-update
         if (method === 'POST' && pathname === '/api/update/check') {
           // On-demand "check for updates now": force an immediate check so a user who
           // knows a release exists doesn't have to wait for the next background poll (or
@@ -991,7 +1002,16 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // ── GUI-only metadata (per-entity icon overrides) ──
           {
             handle: async (req, res) => {
+              // The write itself is the capability; what stays here is reading the
+              // two fields off the request and refusing a table this workspace does
+              // not have.
+              // @capability schema.set-table-meta
               if (!(method === 'PUT' && pathname.startsWith('/api/gui-meta/'))) return false;
+              // This row is what everybody on a shared database sees when they
+              // look at the table, so changing it is owner-only — the same rule
+              // the operation itself now carries, answered here as a status
+              // before a body is read that will not be used.
+              if (await denyIfNotCloudOwner(active.db, res, 'describe a table')) return true;
               const entityName = decodeURIComponent(pathname.slice('/api/gui-meta/'.length));
               if (!isRegisteredTable(active, entityName)) {
                 sendJson(res, { error: `Unknown table: ${entityName}` }, 400);
@@ -1060,6 +1080,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
           // so Connect itself can always run.
           {
             handle: async (req, res) => {
+              // @not-a-route part of the gate that decides whether a request needs a configured model
+              // provider. The routes it names are handled elsewhere; this selects no operation.
               const gated =
                 pathname.startsWith('/api/chat') ||
                 pathname.startsWith('/api/ingest/') ||
@@ -1187,6 +1209,10 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                     ({ data, name }) =>
                       importDataFaithfully(active.db, active.configPath, data, {
                         sourceName: name,
+                        // Give it the feed so the import lands in the change log with
+                        // the same honest entry every other import door writes —
+                        // including that it cannot be undone in one step.
+                        feed: active.feed,
                       }),
                   ),
                 // Computed tables: tagged read-only in the schema context, and
@@ -1265,6 +1291,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 method,
               });
               // After a data-changing ingest, keep the model a clean star schema.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (ingestHandled && method === 'POST') triggerDataModelPlan();
               return ingestHandled;
             },
@@ -1306,6 +1334,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 feed: active.feed,
               });
               // After a folder ingest, keep the model a clean star schema.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (sourcesHandled && method === 'POST') triggerDataModelPlan();
               return sourcesHandled;
             },
@@ -1331,6 +1361,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // After a data-changing import, tidy the model into a clean star schema —
               // server-side (like the ingest/sources routes) so it runs even if the client
               // disconnects before the apply stream's 'done'. Debounced + fail-soft.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (importHandled && method === 'POST') triggerDataModelPlan();
               return importHandled;
             },
@@ -1357,6 +1389,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               // the star schema (debounced + fail-soft; a no-op if nothing changed).
               // Skip the boot-time automatic sync-if-stale (fired on every GUI load,
               // usually syncs nothing) — only a real connect/refresh should design.
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (connectorsHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
                 triggerDataModelPlan();
               }
@@ -1380,6 +1414,8 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
               });
               // After connecting an external database, normalize its imported tables.
               // Skip the boot-time automatic sync-if-stale (see the connectors route).
+              // @not-a-route a post-dispatch trigger: the route already ran, and this only decides whether
+              // the data-model pass is worth running afterwards.
               if (dbSourcesHandled && method === 'POST' && !pathname.includes('sync-if-stale')) {
                 triggerDataModelPlan();
               }
@@ -1434,6 +1470,7 @@ export async function startGuiServer(options: StartGuiServerOptions): Promise<Gu
                 // reflected in `activeRef` for the next request (not just the local
                 // `active`), and so the same logic serves the virgin onboarding path.
                 swap: reopenActive,
+                retire: retireActive,
                 createCloudWorkspace,
               });
             },

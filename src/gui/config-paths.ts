@@ -100,15 +100,23 @@ export function listConfigs(activeConfigPath: string): ListedConfig[] {
  */
 export function createBlankConfig(activeConfigPath: string, dbName: string): string {
   const dir = dirname(activeConfigPath);
+  const name = dbName.trim();
   // Slug the user-provided name into a safe filename.
-  const slug = dbName
+  const slug = name
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
   if (!slug) throw new Error('Workspace name must contain at least one alphanumeric character');
   const configPath = join(dir, `${slug}.config.yml`);
   if (existsSync(configPath)) throw new Error(`Config already exists: ${slug}.config.yml`);
-  const yaml = `db: ./data/${slug}.db\n\nentities: {}\n`;
+  // Write the name the caller GAVE us, not just the slug we derived from it.
+  // The slug is a filename and it is lossy — "Q3 Ledger" becomes `q3-ledger` —
+  // so a config without a `name:` is listed under a label nobody typed, and the
+  // name that was used to create the database no longer names it. Every later
+  // reference (a listing, a rename, deleting it again by name) reads this key, so
+  // omitting it is what made creating and then deleting by the same name fail.
+  // Double-quoted so any punctuation in the name stays a plain scalar.
+  const yaml = `name: ${JSON.stringify(name)}\ndb: ./data/${slug}.db\n\nentities: {}\n`;
   writeFileSync(configPath, yaml, 'utf8');
   // Ensure the data dir exists so opening the new config doesn't fail.
   mkdirSync(join(dir, 'data'), { recursive: true });
@@ -116,19 +124,50 @@ export function createBlankConfig(activeConfigPath: string, dbName: string): str
 }
 
 /**
- * The on-disk db file behind a local SQLite config, or null when the config
- * points at a Postgres URL / `${LATTICE_DB:label}` / `:memory:` / `file:` (in
- * which case there is no local file for us to remove). Classifies from the raw
- * `db:` YAML line — deliberately NOT via parseConfigFile, so a cloud config
- * with a missing saved credential still classifies as cloud instead of throwing.
+ * Where a config's rows actually live.
+ *
+ * Three cases, and they are three because collapsing them is how a delete comes
+ * to say the wrong thing about somebody's data:
+ *
+ *   `local`  — a SQLite file this machine owns, at {@link ConfigStore.file}.
+ *              Deleting the config can delete it too.
+ *   `shared` — a Postgres database or a saved cloud credential. Other people are
+ *              on it; nothing here ever touches it.
+ *   `other`  — anything else the `db:` line can say (`:memory:`, a `file:` URI,
+ *              or nothing at all). Not a file to remove and not a shared
+ *              database either, so it is neither — and says so rather than
+ *              being reported as the nearer of the two.
  */
-export function sqliteFileForConfig(configPath: string): string | null {
+export type ConfigStore =
+  | { kind: 'local'; file: string }
+  | { kind: 'shared' }
+  | { kind: 'other'; declared: string };
+
+/**
+ * Classify a config's store from the raw `db:` YAML line — deliberately NOT via
+ * parseConfigFile, so a cloud config with a missing saved credential still
+ * classifies as cloud instead of throwing.
+ */
+export function configStore(configPath: string): ConfigStore {
   const dbVal = parseDocument(readFileSync(configPath, 'utf8')).get('db');
   const raw = (typeof dbVal === 'string' ? dbVal : '').trim();
-  if (!raw) return null;
-  if (isPostgresUrl(raw) || raw.startsWith('${LATTICE_DB:')) return null;
-  if (raw === ':memory:' || raw.startsWith('file:')) return null;
-  return resolve(dirname(configPath), raw);
+  if (!raw) return { kind: 'other', declared: '' };
+  if (isPostgresUrl(raw) || raw.startsWith('${LATTICE_DB:')) return { kind: 'shared' };
+  if (raw === ':memory:' || raw.startsWith('file:')) return { kind: 'other', declared: raw };
+  return { kind: 'local', file: resolve(dirname(configPath), raw) };
+}
+
+/**
+ * The on-disk db file behind a local SQLite config, or null when there is no
+ * local file for us to remove.
+ *
+ * Null answers two different questions with one value — "somebody else's
+ * database" and "no file either way" — so a caller that has to TELL anyone which
+ * one it was reads {@link configStore} instead.
+ */
+export function sqliteFileForConfig(configPath: string): string | null {
+  const store = configStore(configPath);
+  return store.kind === 'local' ? store.file : null;
 }
 
 /**
@@ -142,8 +181,13 @@ export function sqliteFileForConfig(configPath: string): string | null {
 export function deleteDatabaseFiles(targetConfigPath: string): {
   deletedConfig: string;
   deletedDbFile: string | null;
+  store: ConfigStore;
 } {
-  const sqliteFile = sqliteFileForConfig(targetConfigPath);
+  // Read the store BEFORE unlinking the config — afterwards there is nothing
+  // left to classify, and the answer is what the caller reports to whoever just
+  // destroyed a database.
+  const store = configStore(targetConfigPath);
+  const sqliteFile = store.kind === 'local' ? store.file : null;
   unlinkSync(targetConfigPath);
   let deletedDbFile: string | null = null;
   if (sqliteFile && existsSync(sqliteFile)) {
@@ -154,5 +198,5 @@ export function deleteDatabaseFiles(targetConfigPath: string): {
       if (existsSync(sidecar)) unlinkSync(sidecar);
     }
   }
-  return { deletedConfig: basename(targetConfigPath), deletedDbFile };
+  return { deletedConfig: basename(targetConfigPath), deletedDbFile, store };
 }

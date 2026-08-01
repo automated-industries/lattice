@@ -17,6 +17,8 @@ Complete reference for `lattice.config.yml` — the YAML schema config format in
 - [Multiple entities](#multiple-entities)
 - [Programmatic config API](#programmatic-config-api)
 - [Complete example](#complete-example)
+- [Full-text search (`fts`)](#full-text-search-fts)
+- [Semantic search (`embeddings`)](#semantic-search-embeddings)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -442,9 +444,14 @@ entities:
       id: { type: uuid, primaryKey: true }
       title: { type: text }
       body: { type: text }
-    fts: { fields: [title, body] } # or just `fts: {}` to auto-detect
+    fts: { fields: [title, body] } # or `fts: true` to auto-detect
     outputFile: articles.md
 ```
+
+`fts: true` (or `fts: {}`) indexes the auto-detected text columns; a `fields`
+list narrows it. Every name in that list must be a field of the entity — a name
+that isn't is rejected when the config is read, rather than skipped later,
+because a skipped name means an index that quietly covers less than it says.
 
 On `init`, Lattice builds and maintains an inverted index
 (`__lattice_fts_<table>`) — SQLite FTS5 / Postgres `tsvector` + GIN. Tables
@@ -452,6 +459,73 @@ without `fts` are still searchable via the LIKE fallback. Indexes are created
 **only** for opt-in tables, so a library consumer with no `fts` config incurs
 no index and no write-path overhead. See `docs/api-reference.md` →
 _Full-text search_ for the `fullTextSearch` API.
+
+## Semantic search (`embeddings`)
+
+Opt a table into vector search by naming the fields that carry its meaning and
+the endpoint that turns their text into vectors:
+
+```yaml
+entities:
+  articles:
+    fields:
+      id: { type: uuid, primaryKey: true }
+      title: { type: text }
+      body: { type: text }
+    embeddings:
+      fields: [title, body]
+      url: https://api.example.com/v1/embeddings
+      model: text-embedding-3-small
+      apiKeyEnv: EMBEDDINGS_API_KEY # name of the env var, never the key itself
+    outputFile: articles.md
+```
+
+Lattice does not ship an embedding model. In code you pass an `embed` function;
+a config file names an endpoint instead, and Lattice builds the function from it.
+The request is `POST { model, input }` and the reply may wrap the vector in any of
+the three usual shapes (`data[0].embedding`, `embedding`, `embeddings[0]`) — which
+is what OpenAI-compatible hosted APIs and local model servers (Ollama, LM Studio,
+vLLM, and friends) all speak.
+
+| Key             | Required | Meaning                                                                        |
+| --------------- | -------- | ------------------------------------------------------------------------------ |
+| `fields`        | yes      | Columns concatenated and embedded. Each must be a field of this entity.        |
+| `url`           | yes      | `http`/`https` address of the embeddings endpoint.                             |
+| `model`         | yes      | Model name sent with each request; also recorded with each stored vector.      |
+| `apiKeyEnv`     | no       | Name of the environment variable holding the key. Omit for a keyless endpoint. |
+| `timeoutMs`     | no       | Abort a request that takes longer than this. Default `30000`.                  |
+| `chunk`         | no       | `{ maxChars, overlap, minChars }` — embed long text as chunks, not one blur.   |
+| `maxScanChunks` | no       | Cap the no-index fallback scan; past it, search fails loudly.                  |
+| `index`         | no       | `{ m, efConstruction, quantization }` — native vector index build tuning.      |
+
+There is **no default endpoint**: embedding a field means sending its contents
+somewhere, so the destination is always written down. The key never is — only the
+name of the variable holding it, read at request time. A request that cannot be
+made (unset key variable, non-2xx reply, a reply with no usable vector) throws
+with the reason; nothing is stored empty.
+
+Embedding a written row happens after the write returns, so a failure there
+cannot be thrown at whoever wrote the row — it is **reported** instead, to any
+`db.on('error', …)` listener, and to stderr when there is none. A wrong endpoint
+therefore says so on the first write rather than leaving rows quietly unvectored
+and search quietly keyword-only.
+
+This block is a **local** declaration and stays local. In a shared workspace, the
+layout the owner publishes to everyone else describes shape — columns, render —
+and deliberately does not carry `embeddings`: it names an address to send row
+text to and an environment variable to send as the credential for it, and neither
+is one person's to choose on everyone else's machine. Each person who wants
+semantic search declares it in their own config.
+
+Once declared:
+
+- `search` and `hybridSearch` use the vector arm — without this block, hybrid
+  search is keyword-only.
+- new and updated rows are embedded automatically; `refreshEmbeddings` backfills
+  existing ones.
+- `lattice reindex <table>` can build the native vector index.
+- `lattice doctor` knows to expect embeddings on this table and reports coverage
+  gaps as errors.
 
 ## Troubleshooting
 

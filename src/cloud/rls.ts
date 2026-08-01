@@ -5,6 +5,7 @@ import { getAsyncOrSync, runAsyncOrSync } from '../db/adapter.js';
 import { LATTICE_MIGRATION_LOCK_ID } from '../db/lock-ids.js';
 import { pkSqlExpr } from '../db/pk.js';
 import { LINEAGE_TABLE, ensureLineageTable } from '../gui/lineage-store.js';
+import { ensureConnectorRegistry } from '../connectors/registry.js';
 // Re-exported so existing consumers (cloud/audience.ts) keep importing it from
 // here; the canonical definition now lives in the pure db/pk.ts leaf.
 export { pkSqlExpr } from '../db/pk.js';
@@ -1122,15 +1123,93 @@ BEGIN
   RETURN v_n;
 END $fn$;
 GRANT EXECUTE ON FUNCTION lattice_visible_embedding_count(text) TO ${group};
+
+${connectorRegistryReopenSql(group)}`;
+}
+
+/**
+ * Reopen the connector registry on a cloud that an earlier build row-secured.
+ *
+ * The registry is owner-only bookkeeping: members hold no grant on it and reach
+ * their own connectors through an app-layer filter. Routing it through the per-table
+ * user-table primitive therefore protected nothing, and since that primitive wrote
+ * no ownership records for the rows already there, it made the registry invisible to
+ * any owner without BYPASSRLS — which blinded connector lookups outright and, with
+ * them, the member-side helper that checks a connector belongs to its caller.
+ *
+ * Removing the line that did it only helps a NEW cloud; nothing would ever call that
+ * primitive on this table again, so an affected cloud would stay dark forever.
+ *
+ * This runs in TWO places, and both are load-bearing. It rides the owner-open
+ * bootstrap, which has no version key, so it reaches an affected cloud at all. And
+ * it is prepended to the per-table securing migration, because the ownership stamp
+ * in that migration attributes a connected row by JOINING this registry: a registry
+ * that reads as empty attributes every row to the securing session instead of to the
+ * member who synced it. That misfiling is silent and permanent — the stamp only ever
+ * writes records that are missing, so no later pass corrects it. Securing must
+ * therefore not depend on the bootstrap having run first: opening a workspace outside
+ * the app never runs it, and in the app it runs in the background. Putting the repair
+ * in the same transaction as the stamp is what removes the ordering requirement.
+ *
+ * TAKING THE BASE-TABLE GRANTS BACK IS THE LOAD-BEARING PART of the repair itself, and
+ * it is why the order below is what it is. Securing a table hands the member group
+ * column-level SELECT on the base table for every column its read view does not mask
+ * (which upsert needs), plus INSERT, UPDATE and DELETE on the base. Those column
+ * grants return nothing only because the table is forced: disabling row security with
+ * them still standing flips every member from reading zero rows of the registry to
+ * reading all of them, turning this repair into the leak it is repairing. With the
+ * grants taken back a member's base read is refused outright; with them left standing
+ * it returns every row. REVOKE ALL rather than a targeted revoke because members are
+ * meant to hold NOTHING on this table, so there is no grant here whose safety is worth
+ * working out.
+ *
+ * Dropping the <t>_v view is NOT what closes the leak. The view carries the same
+ * row-visibility predicate the policies do, so lifting row security does not widen
+ * what it returns — a member reads the same rows through it before and after. It is
+ * dropped because it is a member read path onto owner-only bookkeeping and has no
+ * business outliving the grants it was built alongside, not because leaving it would
+ * leak. CASCADE because it is a hard-fail path: without it, any relation built on that
+ * view makes the DROP raise and turns the repair into a failed open, and such a
+ * relation is itself another member-reachable projection of the same bookkeeping this
+ * block exists to take away.
+ *
+ * The guard is a catalog read, so on the clouds that were never affected — which is
+ * nearly all of them — this costs one lookup instead of nine DDL statements that would
+ * each take an exclusive lock on the registry, on every owner open and every table
+ * secured. It reads the lingering view as well as the row-security flag so that a
+ * registry left half-open by hand is still repaired.
+ */
+function connectorRegistryReopenSql(group: string): string {
+  return `
+DO $LATTICE_CONNREG$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = current_schema()
+                AND ((c.relname = '__lattice_connectors' AND c.relrowsecurity)
+                  OR c.relname = '__lattice_connectors_v')) THEN
+    EXECUTE 'DROP VIEW IF EXISTS "__lattice_connectors_v" CASCADE';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON "__lattice_connectors" FROM ${group}';
+    EXECUTE 'DROP TRIGGER IF EXISTS "lattice_track___lattice_connectors" ON "__lattice_connectors"';
+    EXECUTE 'DROP POLICY IF EXISTS "lattice_sel" ON "__lattice_connectors"';
+    EXECUTE 'DROP POLICY IF EXISTS "lattice_upd" ON "__lattice_connectors"';
+    EXECUTE 'DROP POLICY IF EXISTS "lattice_del" ON "__lattice_connectors"';
+    EXECUTE 'DROP POLICY IF EXISTS "lattice_ins" ON "__lattice_connectors"';
+    EXECUTE 'ALTER TABLE "__lattice_connectors" NO FORCE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE "__lattice_connectors" DISABLE ROW LEVEL SECURITY';
+  END IF;
+END $LATTICE_CONNREG$;
 `;
 }
 
 /**
  * Per-table RLS setup: a dedicated ownership trigger (pk baked in so it matches the
- * policy's pk exactly), `ENABLE` + `FORCE ROW LEVEL SECURITY`, and the SELECT /
- * UPDATE / DELETE / INSERT policies. Idempotent (`CREATE OR REPLACE`, `DROP … IF
- * EXISTS`). `pkCols` is the table's primary-key column list (`Lattice` resolves it
- * via its pk utilities); throws for an unkeyable table.
+ * policy's pk exactly), an ownership stamp for the rows that already exist, `ENABLE`
+ * + `FORCE ROW LEVEL SECURITY`, and the SELECT / UPDATE / DELETE / INSERT policies.
+ * Idempotent (`CREATE OR REPLACE`, `DROP … IF EXISTS`, and the stamp only ever
+ * writes records that are missing). `pkCols` is the table's primary-key column list
+ * (`Lattice` resolves it via its pk utilities); throws for an unkeyable table.
+ *
+ * The stamp is INSIDE this SQL, between a lifted and a re-applied FORCE, because it
+ * cannot be done correctly from outside it — see the comment on that block.
  */
 export function tableRlsSql(table: string, pkCols: readonly string[], group: string): string {
   const q = `"${table.replace(/"/g, '""')}"`;
@@ -1138,6 +1217,7 @@ export function tableRlsSql(table: string, pkCols: readonly string[], group: str
   const pkNew = pkSqlExpr(pkCols, 'NEW.');
   const pkOld = pkSqlExpr(pkCols, 'OLD.');
   const pkRow = pkSqlExpr(pkCols, '');
+  const pkT = pkSqlExpr(pkCols, 't.');
   // The trigger AND its (schema-global) function share this name. Postgres SILENTLY
   // truncates any identifier to 63 bytes, so a long connector table name would make
   // two distinct tables collapse to the same truncated `lattice_track_…` function
@@ -1199,6 +1279,65 @@ BEGIN
   RETURN NEW;
 END $fn$;
 
+-- Stamp ownership of the rows that are ALREADY here, with the policies LIFTED, in
+-- this same transaction.
+--
+-- FORCE applies the policies to the table's OWNER too, and lattice_row_visible
+-- answers from an ownership record — so a row that has none is visible to nobody,
+-- the owner included. A stamp that runs after the two ALTERs below therefore reads
+-- through the very policy it exists to populate: it selects zero rows and writes
+-- nothing, silently, and every row already in the table goes dark permanently. NO
+-- FORCE lifts the policies for the owner just long enough to see them.
+--
+-- This needs no privilege the securing did not already need: a caller that can run
+-- the two ALTERs below is by definition the table's owner, so it can run this one
+-- too. It is not a SECURITY DEFINER function either — a definer owned by the
+-- table's own owner is still subject to FORCE, so it would see the same zero rows.
+--
+-- It must stay ONE transaction with the ALTERs, or a failure between them commits
+-- the lifted FORCE with nothing left to put it back. Everything here goes through
+-- one migration string, and the runner applies that string and the version key
+-- recording it inside a single transaction — so a failure anywhere rolls back both,
+-- and the next attempt runs the whole thing again.
+--
+-- The visibility written here is the table's declared default — private when it has
+-- none, private outright on a never-share table — never a hardcoded 'private'. That
+-- is the same policy the insert trigger above reads for a new row, which is the
+-- point: on a table whose owner declared its rows shared, every row written after
+-- this moment is stamped 'everyone' by that trigger, so stamping the rows that
+-- predate it 'private' would split one table across two visibility regimes on an
+-- axis nobody can see — whether a row arrived before or after securing — and
+-- permanently, since the stamp only ever writes records that are missing.
+--
+-- One statement covers both an authored table and a connected one. \`to_jsonb(t) ->>
+-- '_source_connector_id'\` yields NULL — not an error — on a table that has no such
+-- column, so the COALESCE falls through to the securing session; on a connected
+-- table it attributes each row to the member whose connector synced it. Attributing
+-- a connected row to the owner instead would quietly transfer every member's synced
+-- data to the owner, which reads as "secured" and is data misfiling. A connector
+-- whose connecting role no longer exists falls back the same way, because stamping a
+-- role that does not exist owns the row to nobody — dark again.
+--
+-- The fallback is session_user, NOT current_user: an ownership record is only ever
+-- read back by comparing it to session_user (that is what the visibility function
+-- keys on, and what the insert trigger writes for every row added later). The two
+-- differ the moment anything issues SET ROLE, and stamping the one identity while
+-- reading the other would leave the rows owned by a role nobody queries as — the
+-- exact silent blindness this block exists to prevent.
+ALTER TABLE ${q} NO FORCE ROW LEVEL SECURITY;
+INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
+  SELECT ${lit}, ${pkT},
+         COALESCE((SELECT c."connected_by" FROM "__lattice_connectors" c
+                    WHERE c."id" = to_jsonb(t) ->> '_source_connector_id'
+                      AND EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = c."connected_by")),
+                  session_user),
+         COALESCE((SELECT CASE WHEN p."never_share" THEN 'private'
+                               ELSE p."default_row_visibility" END
+                     FROM "__lattice_table_policy" p WHERE p."table_name" = ${lit}), 'private')
+    FROM ${q} t
+   WHERE NOT EXISTS (SELECT 1 FROM "__lattice_owners" o
+                      WHERE o."table_name" = ${lit} AND o."pk" = ${pkT})
+  ON CONFLICT ("table_name","pk") DO NOTHING;
 ALTER TABLE ${q} ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ${q} FORCE ROW LEVEL SECURITY;
 -- Writes only. A member's READ goes through the "<t>_v" view, never the base
@@ -1467,12 +1606,27 @@ CREATE POLICY "lattice_changelog_ins" ON "__lattice_changelog" FOR INSERT WITH C
 /**
  * Defense-in-depth lock on the lineage substrate (`__lattice_lineage`). It records
  * source→object edges (source ids/detail a non-owner shouldn't be able to
- * enumerate). Today it is merely UNGRANTED to members; this ENABLEs + FORCEs RLS
- * with NO member policy/grant, so even a future accidental `GRANT` can't leak
- * cross-member lineage — RLS-with-no-policy denies every non-BYPASSRLS role while
- * the owner's BYPASSRLS connection (where the provenance builder runs) is
- * unaffected. Ensures the table exists first so the lock applies even before the
- * first import creates it. Idempotent; converges on every owner open. No-op off PG.
+ * enumerate). Members are already granted nothing on it; this ENABLEs row security
+ * with NO policy, so even a future accidental `GRANT` can't leak cross-member
+ * lineage — with no policy to match, nothing is visible and nothing can be
+ * written. Verified: a non-owner login role handed `GRANT SELECT, INSERT` on this
+ * table still reads zero rows and still has its insert refused.
+ *
+ * NOT forced, explicitly. `FORCE` extends the policies to the table's OWNER, and
+ * the owner is the only role that writes lineage — this table is in
+ * `OWNER_ONLY_BOOKKEEPING` (cloud/member-access.ts), so no member holds any
+ * privilege on it. A cloud owner is not necessarily BYPASSRLS — the owner gate
+ * reads `rolcreaterole`, so a `CREATEROLE NOSUPERUSER NOBYPASSRLS` role takes the
+ * full owner path — and forcing this table refused that owner's own
+ * `recordLineage` insert. Measured on such an owner: an import created its table,
+ * loaded every row, and THEN raised "new row violates row-level security policy",
+ * reporting a half-applied import as a failure. `NO FORCE` is issued rather than
+ * merely omitted so a cloud secured by an earlier release converges instead of
+ * staying locked. It costs the lock nothing: a member is never this table's owner.
+ *
+ * Ensures the table exists first so the lock applies even before the first import
+ * creates it. Idempotent, and re-run by the owner-open converge as well as by
+ * `secureCloud`, so an already-secured cloud converges. No-op off PG.
  */
 export async function enableLineageRls(db: Lattice): Promise<void> {
   if (!isPg(db)) return;
@@ -1481,7 +1635,7 @@ export async function enableLineageRls(db: Lattice): Promise<void> {
     db,
     `
 ALTER TABLE "${LINEAGE_TABLE}" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "${LINEAGE_TABLE}" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "${LINEAGE_TABLE}" NO FORCE ROW LEVEL SECURITY;
 `,
   );
 }
@@ -1536,6 +1690,12 @@ CREATE POLICY "lattice_chat_owner" ON ${q} AS RESTRICTIVE FOR SELECT
  * insert trigger (which now stamps the per-table `default_row_visibility` / forces
  * private under `never_share`) and pick up the `search_path` pin on the trigger
  * function — neither of which a v2-stamped clone would otherwise get.
+ *
+ * v5 bumps it again to carry the ownership stamp that now lives inside that SQL.
+ * The key is what keeps the stamp's one full pass over the table a ONE-TIME cost
+ * rather than a lock plus an anti-join on every table on every owner open — and it
+ * is also how the repair reaches a table an earlier build already left with rows
+ * that have no ownership record.
  */
 export async function enableRlsForTable(
   db: Lattice,
@@ -1545,9 +1705,26 @@ export async function enableRlsForTable(
   if (!isPg(db)) return;
   const schema = await cloudSchema(db);
   const group = await memberGroupFor(db);
+  // The stamp attributes a connected row by reading the connector registry, and a
+  // statement cannot name a relation that does not exist — a workspace that has
+  // never connected anything does not have one, since the registry is created on
+  // demand. Guaranteeing it HERE rather than at some earlier point in the open
+  // keeps the guarantee next to the statement that depends on it, so no ordering
+  // between securing and any other step has to hold for securing to work.
+  await ensureConnectorRegistry(db);
   const migration: Migration = {
-    version: `internal:cloud-rls:table:${table}:v4`,
-    sql: pinDefinerSearchPath(tableRlsSql(table, pkCols, group), schema),
+    version: `internal:cloud-rls:table:${table}:v5`,
+    // The registry must also be READABLE, not merely present: the stamp joins it, so
+    // on a cloud an earlier build left it row-secured on, every row would be
+    // attributed to the securing session rather than to the member who synced it.
+    // Same reasoning as the line above — attach the guarantee to the statement that
+    // needs it, in the SAME transaction, instead of requiring the owner-open
+    // bootstrap to have run first (a headless open never runs it, and the app runs
+    // it in the background). A catalog guard makes it free on an unaffected cloud.
+    sql: pinDefinerSearchPath(
+      connectorRegistryReopenSql(group) + tableRlsSql(table, pkCols, group),
+      schema,
+    ),
   };
   await db.migrate([migration]);
 
@@ -1566,28 +1743,4 @@ export async function enableRlsForTable(
   await regenerateMemberReadView(db, table, Object.keys(db.getRegisteredColumns(table) ?? {}), [
     ...pkCols,
   ]);
-}
-
-/**
- * Stamp the current role as owner of every row that already exists in a table —
- * for data migrated into a cloud BEFORE the ownership trigger existed (the
- * trigger only fires on new writes). Without this, migrated rows have no
- * ownership record and RLS would hide them from everyone. Idempotent; no-op on
- * SQLite or an unkeyable table.
- */
-export async function backfillOwnership(
-  db: Lattice,
-  table: string,
-  pkCols: readonly string[],
-): Promise<void> {
-  if (!isPg(db) || pkCols.length === 0) return;
-  const q = `"${table.replace(/"/g, '""')}"`;
-  const lit = `'${table.replace(/'/g, "''")}'`;
-  const pkRow = pkSqlExpr(pkCols, '');
-  await runAsyncOrSync(
-    db.adapter,
-    `INSERT INTO "__lattice_owners" ("table_name","pk","owner_role","visibility")
-       SELECT ${lit}, ${pkRow}, current_user, 'private' FROM ${q}
-       ON CONFLICT ("table_name","pk") DO NOTHING`,
-  );
 }

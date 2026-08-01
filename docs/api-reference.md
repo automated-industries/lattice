@@ -23,6 +23,8 @@ Complete reference for all public classes, methods, and types exported by `latti
 - [Functions](#functions)
   - [`parseConfigFile()`](#parseconfigfile)
   - [`parseConfigString()`](#parseconfigstring)
+  - [`applyWorkspaceSchema()`](#applyworkspaceschema)
+- [Editing a workspace from code](#editing-a-workspace-from-code)
 - [Types](#types)
   - [`Row`](#row)
   - [`LatticeOptions`](#latticeoptions)
@@ -798,6 +800,39 @@ const { dbPath, tables } = parseConfigString(yaml, process.cwd());
 
 ---
 
+### `applyWorkspaceSchema()`
+
+```ts
+function applyWorkspaceSchema(
+  db: Lattice,
+  tables: readonly { name: string; definition: TableDefinition }[],
+): void;
+```
+
+Give an opened workspace the schema every client must see: the canonical, database-aligned
+`Context/` layout for tables that do not declare one, plus the framework's own tables (the
+file index, the secret store, and the rest). Call it after constructing the `Lattice` and
+before `init()`.
+
+`Lattice.openWorkspace()` and the CLI already do this. You need it only when you construct
+a `Lattice` yourself against a workspace's `configPath` — and then you really do need it,
+because the `Context/` tree is reconciled against a manifest of what the last render wrote:
+a handle that knows about fewer tables does not just render less, it reads the difference
+as removed and deletes it.
+
+```ts
+import { Lattice, parseConfigFile, applyWorkspaceSchema } from 'latticesql';
+
+const db = new Lattice({ config: configPath }, { encryptionKey });
+applyWorkspaceSchema(db, parseConfigFile(configPath).tables);
+await db.init();
+```
+
+A table the config declares itself is never registered over — a workspace that defines its
+own `files` keeps exactly the shape it defined.
+
+---
+
 ### `readManifest(outputDir)`
 
 ```ts
@@ -837,6 +872,70 @@ function manifestPath(outputDir: string): string;
 ```
 
 Return the path where Lattice writes its manifest: `{outputDir}/.lattice/manifest.json`.
+
+---
+
+## Editing a workspace from code
+
+`db.insert()` / `db.update()` write straight to the database. The functions below are the
+richer editing layer the Lattice app itself is built on: every change they make is recorded
+in the workspace's version history and published to its activity feed, so a change made from
+a script shows up — and can be undone — exactly like one made by hand. None of them starts a
+server.
+
+Start by opening a workspace. `openConfig()` returns a live handle (`ActiveDb`) holding the
+database, its activity feed, and the registered table sets; `disposeActive()` closes it.
+
+```ts
+import { openConfig, disposeActive, createRow, updateRow, undoGroup } from 'latticesql';
+
+const ws = await openConfig('./lattice.config.yml', './context');
+
+// Shared by every edit. `opGroup` ties several writes together as one action;
+// `sessionId` records who made them.
+const ctx = {
+  db: ws.db,
+  feed: ws.feed,
+  softDeletable: ws.softDeletable,
+  source: 'cli' as const,
+  sessionId: 'nightly-import',
+  opGroup: 'nightly-import-2026-07-29',
+};
+
+const note = await createRow(ctx, 'note', { title: 'Budget', body: 'draft' });
+await updateRow(ctx, 'note', note.id, { body: 'final' });
+
+// Reverse both writes as a single action.
+await undoGroup(ctx, 'nightly-import-2026-07-29');
+
+await disposeActive(ws);
+```
+
+**Rows** — `createRow`, `updateRow`, `deleteRow`, `linkRows`, `unlinkRows`.
+
+**History** — `undoLast`, `redoLast`, `revertEntry` (reverse one recorded change by id), and
+`undoGroup` (reverse everything sharing an `opGroup`, all-or-nothing). `undoGroup` refuses
+rather than half-apply if any affected row changed since, and refuses a group another session
+authored.
+
+**Preview before writing** — `previewRowChanges` returns a bounded page of the rows a change
+would touch and the per-field before/after values, without writing anything. `bulkSelection`
+and `parseBulkFilters` resolve the same row set a bulk change would; `maskPreviewFields` hides
+fields the viewer is not allowed to read.
+
+**Schema** — `createUserEntity`, `renameUserEntity`, `softDeleteUserEntity`, `purgeUserEntity`,
+`addUserColumn`, `renameUserColumn`, `dropColumnCarryingPolicy`, plus `createUserRelation` /
+`createUserJunction` / `createFileJunction` for links and `describeInboundLinks` /
+`removeInboundLinks` for what points at a table. The rename helpers carry column permissions
+and shared-workspace access rules across with the name.
+
+**Computed tables** — `createComputedTable`, `updateComputedTable`, `deleteComputedTable`,
+`previewComputedTable`, `refreshComputedTable`, `listComputedTables`.
+
+**Data-model planner** — `ensurePlan` runs a plan for a workspace (applying the reversible
+automatic fixes, returning the rest as proposals), `previewPlan` reports what it would propose
+without touching anything, `applyPlanOp` applies one proposal, and `recordDismissal` hides a
+proposal for good. Deterministic: no model provider is involved.
 
 ---
 

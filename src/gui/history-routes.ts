@@ -52,6 +52,7 @@ export async function handleHistoryRoutes(
   let active = ctx.active();
   const sessionId = ctx.sessionId;
 
+  // @capability history.undo
   if (method === 'POST' && pathname === '/api/history/undo') {
     // Peek the latest LIVE entry to branch row vs schema. Schema reverts
     // need config + re-open (which dispose the db row helpers capture), so
@@ -99,6 +100,7 @@ export async function handleHistoryRoutes(
     sendJson(res, { ok: true, entry: auditEntryWithoutImages(entry) });
     return true;
   }
+  // @capability history.redo
   if (method === 'POST' && pathname === '/api/history/redo') {
     // Oldest undone entry only — redo replays in the order originally undone, so
     // ORDER BY ts ASC LIMIT 1 in SQL replaces loading every undone row to pick one.
@@ -142,6 +144,7 @@ export async function handleHistoryRoutes(
     sendJson(res, { ok: true, entry: auditEntryWithoutImages(entry) });
     return true;
   }
+  // @capability history.undo-group
   if (method === 'POST' && pathname.startsWith('/api/history/undo-group/')) {
     // Undo one whole operation group (every row a single bulk operation
     // touched) as ONE all-or-nothing action. Like the per-entry Revert below,
@@ -205,6 +208,7 @@ export async function handleHistoryRoutes(
     sendJson(res, { ok: true, undone: result.undone, tables: result.tables });
     return true;
   }
+  // @capability history.revert
   if (method === 'POST' && pathname.startsWith('/api/history/revert/')) {
     const id = decodeURIComponent(pathname.slice('/api/history/revert/'.length));
     const row = (await active.db.get('_lattice_gui_audit', id)) as Record<string, unknown> | null;

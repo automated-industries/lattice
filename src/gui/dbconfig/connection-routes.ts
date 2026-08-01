@@ -3,24 +3,20 @@ import {
   buildPostgresUrl,
   parsePostgresUrl,
   parseSaveBody,
-  rewriteDbLine,
-  resolveRelativeToConfig,
   rootForDbConfig,
 } from './shared.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { basename, relative, resolve, sep } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { parseDocument } from 'yaml';
-import { Lattice } from '../../lattice.js';
+import type { Lattice } from '../../lattice.js';
 import { sendJson, readJson, tryHandler } from '../http.js';
-import {
-  getDbCredential,
-  saveDbCredential,
-  listDbCredentials,
-} from '../../framework/user-config.js';
+import { pointConfigAtDatabase } from '../../framework/db-pointer.js';
+import { getDbCredential, listDbCredentials } from '../../framework/user-config.js';
 import { cloudRlsInstalled, canManageRoles } from '../../framework/cloud-connect.js';
 import { getCloudSetting, CLOUD_SETTING_WORKSPACE_LOGO_ETAG } from '../../cloud/settings.js';
-import { renameWorkspaceByConfigPath } from '../../framework/workspace.js';
+import { renameWorkspace, testDatabaseConnection } from '../../ops/workspace-config.js';
+import { workspaceErrorCode } from '../../ops/workspace-errors.js';
 
 // 1.16.3: the 'cloud-connected' state was removed when the "team" concept was
 // deprecated — every cloud Postgres DB is a cloud workspace with members
@@ -127,6 +123,7 @@ export async function dispatchConnection(
     return true;
   }
 
+  // @capability workspace.point-at-database
   if (pathname === '/api/dbconfig/save' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -136,33 +133,31 @@ export async function dispatchConnection(
         return;
       }
       if (parsed.type === 'postgres') {
-        const url = buildPostgresUrl({
-          host: parsed.host,
-          port: Number(parsed.port),
-          dbname: parsed.dbname,
-          user: parsed.user,
-          password: parsed.password,
+        pointConfigAtDatabase(ctx.configPath, {
+          type: 'postgres',
+          key: parsed.label,
+          url: buildPostgresUrl({
+            host: parsed.host,
+            port: Number(parsed.port),
+            dbname: parsed.dbname,
+            user: parsed.user,
+            password: parsed.password,
+          }),
         });
-        saveDbCredential(parsed.label, url);
-        rewriteDbLine(ctx.configPath, '${LATTICE_DB:' + parsed.label + '}');
         sendJson(res, { ok: true, type: 'postgres', label: parsed.label });
         return;
       }
-      // sqlite: write the path verbatim. Store relative form when the
-      // candidate sits under the config-file's directory so the YAML
-      // stays portable.
-      const abs = resolveRelativeToConfig(ctx.configPath, parsed.path);
-      const rel = relative(resolve(ctx.configPath, '..'), abs);
-      // Always write a POSIX-separated relative path so the YAML is portable
-      // and stable across platforms (path.relative yields backslashes on
-      // Windows, which would otherwise leak into the committed config).
-      const dbLine = rel.startsWith('..') ? abs : './' + rel.split(sep).join('/');
-      rewriteDbLine(ctx.configPath, dbLine);
+      const { dbLine } = pointConfigAtDatabase(ctx.configPath, {
+        type: 'sqlite',
+        path: parsed.path,
+      });
       sendJson(res, { ok: true, type: 'sqlite', path: dbLine });
     });
     return true;
   }
 
+  // @gui-only session-state: swaps the database this server process is serving from. A direct
+  // caller opens the connection it wants and holds the handle, so there is nothing to swap.
   if (pathname === '/api/dbconfig/connect' && method === 'POST') {
     await tryHandler(res, async () => {
       await ctx.swap();
@@ -171,6 +166,10 @@ export async function dispatchConnection(
     return true;
   }
 
+  // Whether a connection string reaches a database is a question about the string,
+  // not about this process — so the answer is the same for a browser, a command,
+  // and a job, and only the parsing of the request stays here.
+  // @capability database.test-connection
   if (pathname === '/api/dbconfig/test' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
@@ -179,26 +178,7 @@ export async function dispatchConnection(
         sendJson(res, { error: 'Invalid body — see /api/dbconfig/test docs' }, 400);
         return;
       }
-      let url: string;
-      if (parsed.type === 'postgres') {
-        url = buildPostgresUrl({
-          host: parsed.host,
-          port: Number(parsed.port),
-          dbname: parsed.dbname,
-          user: parsed.user,
-          password: parsed.password,
-        });
-      } else {
-        url = resolveRelativeToConfig(ctx.configPath, parsed.path);
-      }
-      try {
-        const probe = new Lattice(url);
-        await probe.init();
-        probe.close();
-        sendJson(res, { ok: true });
-      } catch (e) {
-        sendJson(res, { ok: false, error: (e as Error).message });
-      }
+      sendJson(res, await testDatabaseConnection({ configPath: ctx.configPath, target: parsed }));
     });
     return true;
   }
@@ -215,29 +195,26 @@ export async function dispatchConnection(
   //
   // The cloud has no shared name in v3 (no team-identity row); the name is the
   // operator's own workspace label. So rename always writes the local YAML
-  // `name:` key + the workspace registry, for both local and cloud configs.
+  // `name:` key + the workspace registry, for both local and cloud configs — and
+  // keeping those two in step is the capability's job, not this route's. What
+  // stays here is the request body and the local/cloud label the panel shows.
+  // @capability workspace.rename
   if (pathname === '/api/dbconfig/rename' && method === 'POST') {
     await tryHandler(res, async () => {
       const body = await readJson(req);
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      if (!name) {
-        sendJson(res, { error: 'name must be a non-empty string' }, 400);
+      const name = typeof body.name === 'string' ? body.name : '';
+      let renamed;
+      try {
+        renamed = renameWorkspace({ configPath: ctx.configPath, name, root: rootForDbConfig(ctx) });
+      } catch (e) {
+        // A name this layer refused is the caller's mistake; a config that cannot
+        // be written is a fault and reaches the shared handler as one.
+        if (!workspaceErrorCode(e)) throw e;
+        sendJson(res, { error: (e as Error).message }, 400);
         return;
       }
-      if (name.length > 200) {
-        sendJson(res, { error: 'name must be 200 characters or fewer' }, 400);
-        return;
-      }
-      // The cloud carries no shared name (no team-identity row); a workspace name
-      // is the operator's own label. Write the local YAML `name:` key + mirror it
-      // into the workspace registry (the header switcher's source) for every DB.
-      const doc = parseDocument(readFileSync(ctx.configPath, 'utf8'));
-      doc.set('name', name);
-      writeFileSync(ctx.configPath, doc.toString(), 'utf8');
-      const root = rootForDbConfig(ctx);
-      if (root) renameWorkspaceByConfigPath(root, ctx.configPath, name);
       const info = await describeCurrent(ctx.configPath, ctx.db);
-      sendJson(res, { ok: true, kind: info.isCloud ? 'cloud' : 'local', name });
+      sendJson(res, { ok: true, kind: info.isCloud ? 'cloud' : 'local', name: renamed.name });
     });
     return true;
   }

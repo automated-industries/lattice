@@ -60,8 +60,10 @@ vi.mock('../../src/gui/ai/chat.js', async (orig) => {
 });
 // Stub the ingestion engine so this test proves the WIRING (triage → ingest → note →
 // prepend), not the engine internals (covered by the enrich/ingest unit tests).
-vi.mock('../../src/gui/ingest-routes.js', async (orig) => {
-  const actual = await orig<typeof import('../../src/gui/ingest-routes.js')>();
+// Mocked where the engine LIVES. The ingest route file only re-exports it, and
+// the pre-pass now calls the capability module directly — with no server in the way.
+vi.mock('../../src/ops/ingest-text.js', async (orig) => {
+  const actual = await orig<typeof import('../../src/ops/ingest-text.js')>();
   return { ...actual, ingestTextAsFile: ingestTextSpy };
 });
 

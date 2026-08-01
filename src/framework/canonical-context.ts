@@ -256,6 +256,13 @@ export function renderFieldBullet(k: string, v: unknown): string {
  * per-record contexts config tables get at open. Pure over {name, definition};
  * idempotent (existing contexts are never overridden); the hard exclusions
  * inside deriveCanonicalContexts (secrets/chat/internal) apply by construction.
+ *
+ * Idempotent ACROSS THE LIST as well as against what is already registered. The
+ * map of existing contexts is a snapshot, so a list naming one table twice used
+ * to define it twice — and the second attempt raises, which abandons every model
+ * after it in the list with a registered table and no rendered layout. Two of
+ * anything sharing a table is a caller's ordinary mistake, not a reason to leave
+ * a schema half-built.
  */
 export function ensureRuntimeEntityContexts(
   db: {
@@ -268,8 +275,11 @@ export function ensureRuntimeEntityContexts(
   const derived = deriveCanonicalContexts(
     models.map((m) => ({ name: m.table, definition: m.definition })),
   );
+  const defined = new Set<string>();
   for (const { table, definition } of derived) {
-    if (!existing.has(table)) db.defineEntityContext(table, definition);
+    if (existing.has(table) || defined.has(table)) continue;
+    defined.add(table);
+    db.defineEntityContext(table, definition);
   }
 }
 

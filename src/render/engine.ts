@@ -188,6 +188,15 @@ export class RenderEngine {
     else console.warn(`[latticesql] ${message}`);
   }
 
+  /**
+   * Send a notice down the same channel the render uses. For things that happen
+   * AROUND a render and would otherwise have nowhere to be seen — a background
+   * reconciliation pass refusing to sweep, whose result no caller reads.
+   */
+  notice(message: string): void {
+    this._notice(message);
+  }
+
   constructor(
     schema: SchemaManager,
     adapter: StorageAdapter,
@@ -675,6 +684,13 @@ export class RenderEngine {
     options: CleanupOptions = {},
     newManifest?: LatticeManifest | null,
   ): Promise<CleanupResult> {
+    // The "did this process actually learn the layout" refusal is NOT here: it
+    // needs facts this engine cannot see (which tables the framework ships, and
+    // which belong to a connected external source), and the version that lived
+    // here keyed on "the schema declares no tables at all" — a condition that
+    // stopped being reachable the moment every opener began registering the
+    // framework's own tables. See `lifecycle/cleanup-backstop.ts`, applied by the
+    // one wrapper every cleanup path goes through.
     const entityContexts = this._schema.getEntityContexts();
     const currentSlugsByTable = new Map<string, Set<string>>();
     for (const [table, def] of entityContexts) {

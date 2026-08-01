@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { ensureRootAt, resolveSessionRoot, rootConfigDir } from './lattice-root.js';
 import { importLegacyUserConfig } from './migrate-to-root.js';
@@ -142,6 +142,16 @@ export function reconcileWorkspaceRegistry(root: string, scanDirs: readonly stri
   for (const dir of scanDirs) {
     const abs = resolve(dir);
     if (seen.has(abs) || !existsSync(abs)) continue;
+    // Never trawl the user's home directory. Callers scan "next to the root", and
+    // for the default root `<home>/.lattice` that parent IS home — a place people
+    // keep unrelated YAML, none of it a workspace anyone asked to open. Adopting one
+    // is not merely untidy: with nothing else active the registry opens its FIRST
+    // record (`getActiveWorkspace` in workspace.ts), so a config that only happened
+    // to be lying there becomes the live workspace and gets rendered into. A
+    // project-local root's parent is a real project directory, which is what this
+    // scan is for — hence the guard here in the loop, covering every caller, rather
+    // than at one call site.
+    if (abs === resolve(homedir())) continue;
     seen.add(abs);
     let entries: string[];
     try {

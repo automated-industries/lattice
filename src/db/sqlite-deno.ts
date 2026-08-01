@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import type { StorageAdapter, PreparedStatement, TxClient } from './adapter.js';
 import type { Row } from '../types.js';
+import { SingleConnectionTransactions } from './single-connection-tx.js';
 
 /**
  * SQLite adapter backed by the runtime's built-in `node:sqlite` `DatabaseSync`
@@ -77,6 +78,8 @@ export class DenoSqliteAdapter implements StorageAdapter {
   private readonly _path: string;
   private readonly _wal: boolean;
   private readonly _busyTimeout: number;
+  /** One transaction at a time on this connection; see {@link withClient}. */
+  private readonly _transactions = new SingleConnectionTransactions();
 
   /**
    * Prepared-statement cache, keyed by SQL text. This is load-bearing, not an
@@ -257,31 +260,38 @@ export class DenoSqliteAdapter implements StorageAdapter {
     this.addColumn(table, column, typeSpec);
   }
 
-  /** BEGIN/COMMIT around an awaited fn; ROLLBACK on throw. Mirror of SQLiteAdapter. */
+  /**
+   * BEGIN/COMMIT around an awaited fn; ROLLBACK on throw. Mirror of SQLiteAdapter,
+   * including its per-connection transaction queue: this binding has the same one
+   * connection, so overlapping callers queue instead of colliding on a BEGIN
+   * neither of them nested.
+   */
   async withClient<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
-    const getSync = this.get.bind(this);
-    const allSync = this.all.bind(this);
-    const tx: TxClient = {
-      run: (sql: string, params?: unknown[]) => {
-        const info = this._prepared(sql).run(...(params ?? []));
-        return Promise.resolve({ changes: Number(info.changes) });
-      },
-      get: (sql: string, params?: unknown[]) => Promise.resolve(getSync(sql, params ?? [])),
-      all: (sql: string, params?: unknown[]) => Promise.resolve(allSync(sql, params ?? [])),
-    };
+    return this._transactions.run(async () => {
+      const getSync = this.get.bind(this);
+      const allSync = this.all.bind(this);
+      const tx: TxClient = {
+        run: (sql: string, params?: unknown[]) => {
+          const info = this._prepared(sql).run(...(params ?? []));
+          return Promise.resolve({ changes: Number(info.changes) });
+        },
+        get: (sql: string, params?: unknown[]) => Promise.resolve(getSync(sql, params ?? [])),
+        all: (sql: string, params?: unknown[]) => Promise.resolve(allSync(sql, params ?? [])),
+      };
 
-    this.run('BEGIN');
-    try {
-      const result = await fn(tx);
-      this.run('COMMIT');
-      return result;
-    } catch (err) {
+      this.run('BEGIN');
       try {
-        this.run('ROLLBACK');
-      } catch {
-        // Surface the original error, not a rollback failure on an aborted txn.
+        const result = await fn(tx);
+        this.run('COMMIT');
+        return result;
+      } catch (err) {
+        try {
+          this.run('ROLLBACK');
+        } catch {
+          // Surface the original error, not a rollback failure on an aborted txn.
+        }
+        throw err;
       }
-      throw err;
-    }
+    });
   }
 }

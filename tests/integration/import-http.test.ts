@@ -10,7 +10,7 @@ import {
 } from '../../src/index.js';
 import { startGuiServer, type GuiServerHandle } from '../../src/gui/server.js';
 import { inferSchema } from '../../src/import/infer.js';
-import { MAX_INGEST_BYTES } from '../../src/gui/http.js';
+import { MAX_INGEST_BYTES } from '../../src/ops/paging.js';
 import { materializeImport } from '../../src/import/materialize.js';
 import { allAsyncOrSync } from '../../src/db/adapter.js';
 import { LINEAGE_TABLE } from '../../src/gui/lineage-store.js';

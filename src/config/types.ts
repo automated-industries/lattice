@@ -158,6 +158,87 @@ export interface LatticeEntityDef {
    * Accepts a single column name or an array for composite keys.
    */
   primaryKey?: string | string[];
+  /**
+   * Turn on indexed full-text search for this entity.
+   *
+   * `true` indexes the entity's text fields; an object narrows that to a
+   * specific list. Omitted (or `false`) means no index, no triggers, and no
+   * write-path cost.
+   *
+   * @example
+   * ```yaml
+   * fts: true
+   * fts: { fields: [title, body] }
+   * ```
+   */
+  fts?: boolean | LatticeEntityFtsSpec;
+  /**
+   * Turn on semantic (vector) search for this entity by naming the fields to
+   * embed and the endpoint that turns text into vectors.
+   *
+   * @example
+   * ```yaml
+   * embeddings:
+   *   fields: [title, body]
+   *   url: https://api.example.com/v1/embeddings
+   *   model: text-embedding-3-small
+   *   apiKeyEnv: EMBEDDINGS_API_KEY
+   * ```
+   */
+  embeddings?: LatticeEntityEmbeddingsSpec;
+}
+
+/** Field list for `fts:` when the auto-detected default is not what you want. */
+export interface LatticeEntityFtsSpec {
+  /** Columns to index. Omit to index the entity's text columns. */
+  fields?: string[];
+}
+
+/** Chunking for `embeddings:` — split long text so a match points at the part that matched. */
+export interface LatticeEntityChunkSpec {
+  /** Target maximum characters per chunk. Default 1000. */
+  maxChars?: number;
+  /** Characters of trailing context repeated at the start of the next chunk. Default 0. */
+  overlap?: number;
+  /** A trailing remainder smaller than this is merged into the previous chunk. Default 0. */
+  minChars?: number;
+}
+
+/** Native vector index build tuning for `embeddings:`. */
+export interface LatticeEntityVectorIndexSpec {
+  /** Graph degree. Higher means better recall for more memory and slower builds. */
+  m?: number;
+  /** Build candidate-list size. Higher means better recall and slower builds. */
+  efConstruction?: number;
+  /** Index storage precision — `halfvec` roughly halves index memory. */
+  quantization?: 'none' | 'halfvec';
+}
+
+/**
+ * Semantic search for one entity: which fields carry the meaning, and where to
+ * send their text to be turned into a vector.
+ *
+ * The endpoint is named explicitly — there is no default destination, because
+ * embedding a field means sending its contents somewhere, and that should never
+ * be implied. The key is named by environment variable, never written here.
+ */
+export interface LatticeEntityEmbeddingsSpec {
+  /** Columns whose values are concatenated and embedded. At least one. */
+  fields: string[];
+  /** Absolute `http`/`https` URL of the embeddings endpoint. */
+  url: string;
+  /** Model name sent with every request; also recorded with each stored vector. */
+  model: string;
+  /** Name of the environment variable holding the endpoint's key. Omit if it needs none. */
+  apiKeyEnv?: string;
+  /** Abort an embedding request that takes longer than this. Default 30000. */
+  timeoutMs?: number;
+  /** Split long text into chunks and embed each one separately. */
+  chunk?: LatticeEntityChunkSpec;
+  /** Cap the no-index fallback scan; beyond it, search fails loudly instead of reading everything. */
+  maxScanChunks?: number;
+  /** Native vector index build tuning. */
+  index?: LatticeEntityVectorIndexSpec;
 }
 
 // ---------------------------------------------------------------------------

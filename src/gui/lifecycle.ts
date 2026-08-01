@@ -8,8 +8,6 @@ import { upgradeLegacyData } from '../framework/data-upgrade.js';
 import { seedWelcomeDashboard } from './welcome-dashboard.js';
 import { readIdentity, getOrCreateMasterKey, healRawDbUrl } from '../framework/user-config.js';
 import { registerNativeEntities, adoptNativeEntities } from '../framework/native-entities.js';
-import { reregisterDbSourceTables } from '../connectors/db-source/reregister.js';
-import { reregisterMcpConnectorTables } from '../connectors/mcp/reregister.js';
 import { deriveCanonicalContexts } from '../framework/canonical-context.js';
 import { cloudRlsInstalled, canManageRoles } from '../framework/cloud-connect.js';
 import { discoverCloudTables } from '../cloud/discover.js';
@@ -18,6 +16,7 @@ import {
   enableChangelogRls,
   enableChatPrivacyRls,
   enableGuiAuditRls,
+  enableLineageRls,
   ownPolyfillsByGroup,
 } from '../cloud/rls.js';
 import { publishSharedSchema, hydrateMemberConfigFromCloud } from '../cloud/shared-schema.js';
@@ -47,8 +46,8 @@ import { buildComputedFillLlm } from './computed-llm.js';
 import { installComputedFieldFill } from './computed-field-fill.js';
 import { columnDescriptionHook, tableDescriptionHook } from './meta-gen.js';
 import { installDashboardRepair } from './dashboard-repair.js';
-import type { AuditEntry } from './mutations.js';
-import { retireLegacyPreferenceSecrets } from './assistant-routes.js';
+import { AUDIT_TABLE, AUDIT_TABLE_COLUMNS, IMPORT_AUDIT_OP, type AuditEntry } from './mutations.js';
+import { retireLegacyPreferenceSecrets } from '../ops/ai-config.js';
 import type { ActiveDb } from './active-db.js';
 import { isFeedHiddenTable } from './active-db.js';
 
@@ -122,7 +121,19 @@ export async function openConfig(
   // catalog synthesis below if nothing was published. (Needs the encryption key to open
   // a short-lived peek connection.)
   if (/^postgres(ql)?:\/\//i.test(parsed.dbPath)) {
-    await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
+    const hydration = await hydrateMemberConfigFromCloud(configPath, parsed.dbPath, encryptionKey);
+    if (hydration.outcome === 'unavailable') {
+      // Say so, once, in the server log. The browser open does NOT stop here: it
+      // still has the catalog synthesis below to fall back on, and it renders
+      // rather than reconciles, so an incomplete schema shows less — it does not
+      // remove anything. What must not happen is this passing unremarked, which
+      // is what made "the layout never arrived" indistinguishable from "this
+      // workspace has no layout".
+      console.warn(
+        `[lattice] could not read this shared workspace's published layout (${hydration.reason}) — ` +
+          `falling back to what the database itself describes.`,
+      );
+    }
   }
   const db = new Lattice({ config: configPath }, { encryptionKey });
   registerNativeEntities(db);
@@ -182,36 +193,11 @@ export async function openConfig(
   });
   // Linear audit log of all mutations the GUI performs. Powers undo/redo
   // and the version-history page. Per-DB (each lattice config has its own).
-  db.define('_lattice_gui_audit', {
-    columns: {
-      id: 'TEXT PRIMARY KEY',
-      ts: "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-      table_name: 'TEXT NOT NULL',
-      row_id: 'TEXT',
-      operation: 'TEXT NOT NULL',
-      before_json: 'TEXT',
-      after_json: 'TEXT',
-      undone: 'INTEGER NOT NULL DEFAULT 0',
-      // The GUI session (one per server process) that made the change. The
-      // header undo/redo stack is scoped to the current session — you undo
-      // YOUR OWN recent actions, not another cloud user's edit — while the
-      // version-history per-entry Revert can revert any entry regardless of
-      // session. Nullable + additive (back-compat with pre-1.16 rows); added
-      // idempotently to existing DBs by the schema reconcile.
-      session_id: 'TEXT',
-      // Who/what triggered the mutation (gui|command|ai|ingest|cli|system|
-      // file-edit). Nullable + additive — added idempotently by the schema
-      // reconcile. Persisted from MutationCtx.source (previously recorded only
-      // on the live feed event); powers the provenance "observation" tier
-      // (rows last touched by the `ai` actor).
-      source: 'TEXT',
-      // Operation-group id: one id shared by every entry a single logical
-      // operation wrote (e.g. one assistant tool execution updating N rows), so
-      // the whole change can be undone as one action and the history UI can
-      // collapse it into a single card. Nullable + additive — added
-      // idempotently by the schema reconcile; null for standalone edits.
-      op_group: 'TEXT',
-    },
+  // Its shape is declared beside the code that reads and writes it, so a writer
+  // reaching a workspace that was opened without this step can create the same
+  // table rather than restate its columns.
+  db.define(AUDIT_TABLE, {
+    columns: { ...AUDIT_TABLE_COLUMNS },
     render: () => '',
     outputFile: '.lattice-gui/audit.md',
   });
@@ -340,31 +326,12 @@ export async function openConfig(
   }
   await db.init(memberOpen ? { introspectOnly: true } : {});
 
-  // Replay the schema registration for connected external-database ("db-source")
-  // connections AND MCP connectors. defineLate at connect time is in-memory only,
-  // so on a fresh open the imported/synced tables + rows persist on disk but are
-  // absent from the live schema — without this they vanish from /api/entities, the
-  // graph, the Tables sidebar, and the assistant's table catalog after every
-  // restart (the boot sync-if-stale pass does NOT cover MCP: it no-ops when the
-  // connector synced recently). Must run BEFORE validTables is built (below) so
-  // the re-registered tables flow into it. Fault-isolated: a failure logs and the
-  // open continues; skipped for introspect-only member opens.
-  if (!memberOpen) {
-    for (const [label, fn] of [
-      ['db-source', reregisterDbSourceTables],
-      ['mcp-connector', reregisterMcpConnectorTables],
-    ] as const) {
-      try {
-        await fn(db);
-      } catch (e) {
-        console.warn(
-          `[openConfig] ${label} schema re-registration failed (open continues): ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
-      }
-    }
-  }
+  // The schema of connected external databases and MCP servers is replayed by
+  // init() itself (see Lattice's connected-source replay), so it is already live
+  // by this point and flows into validTables below. It used to be re-registered
+  // HERE, which is precisely why a terminal command — which opens the same
+  // workspace without this file — saw a smaller schema than the browser and
+  // deleted the rendered trees the browser had written for those tables.
 
   // Provenance lineage substrate — an unregistered __lattice_ bookkeeping table
   // (raw DDL, like __lattice_connectors) so the renderer never scans it.
@@ -417,6 +384,16 @@ export async function openConfig(
   // every open just upserts the single 'singleton' row.
   await syncUserIdentityRow(db);
 
+  // Degraded-but-not-fatal conditions this open hit — a table the owner-side
+  // converge couldn't manage (e.g. owned by a different Postgres role), a piece of
+  // setup that didn't land. Surfaced via /api/dbconfig, which is how the workspace
+  // reports a partial open instead of presenting one as a clean one. Also populated
+  // ASYNCHRONOUSLY by convergeOwnerCloud (kicked after the ActiveDb is built) and
+  // mutated IN PLACE, so the live ActiveDb reflects warnings as they land
+  // (eventually-consistent). Declared before the owner-side work below so that work
+  // can report into it.
+  const convergeWarnings: { table: string; reason: string }[] = [];
+
   // Inline owner-data migration — SKIP on a cloud MEMBER open (a scoped member has
   // no DDL/write grant; the bootstrap REVOKEs CREATE from PUBLIC). KEPT INLINE (not
   // backgrounded with the rest of the convergence) because the OWNER reads this data
@@ -434,20 +411,28 @@ export async function openConfig(
       try {
         await seedWelcomeDashboard(db);
       } catch (e) {
-        console.warn(
-          `[lattice] welcome-dashboard seed skipped (will retry next open): ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
+        // Non-fatal, but NOT invisible. Refusing to open over this would be worse —
+        // the workspace is entirely usable without a starter dashboard. A console
+        // line, however, is not a report: nothing in the app reads the server's
+        // stdout, so the dashboard just never appeared and the open looked clean.
+        // It goes in the same warnings array the cloud converge reports into, so a
+        // failed piece of setup reaches the operator through the one channel that
+        // already carries them. Same both ways — logged AND surfaced.
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[lattice] welcome-dashboard seed skipped (will retry next open): ${msg}`);
+        // First line only for the surfaced reason. A database error carries the
+        // failing statement after it, and the whole Welcome dashboard's markup is in
+        // that statement. The log line above keeps the full text.
+        const brief = msg.split('\n')[0] ?? msg;
+        convergeWarnings.push({
+          table: 'dashboards',
+          reason:
+            'The starter Welcome dashboard could not be created (the workspace is otherwise ' +
+            `fully usable, and this retries on the next open): ${brief}`,
+        });
       }
     }
   }
-
-  // Tables the owner-side converge couldn't manage (e.g. owned by a different
-  // Postgres role), surfaced via /api/dbconfig. Populated ASYNCHRONOUSLY by
-  // convergeOwnerCloud (kicked after the ActiveDb is built) and mutated IN PLACE,
-  // so the live ActiveDb reflects warnings as they land (eventually-consistent).
-  const convergeWarnings: { table: string; reason: string }[] = [];
 
   // Cloud MEMBER open with no entity layout: the owner hasn't published one yet
   // (hydrateMemberConfigFromCloud above found nothing, and the catalog synthesis
@@ -703,6 +688,7 @@ export async function convergeOwnerCloud(active: ActiveDb): Promise<void> {
         await enableChangelogRls(db); // v3 fail-closed changelog policy
         await enableChatPrivacyRls(db); // per-author RESTRICTIVE lock on chat tables
         await enableGuiAuditRls(db); // row-visibility lock on the GUI audit log
+        await enableLineageRls(db); // policy-less lock on the lineage substrate
         if (cancelled()) return;
         const access = await reconcileCloudMemberAccess(db);
         for (const s of access.skipped) {
@@ -1484,6 +1470,20 @@ export async function applySchemaConfig(
       if (inv) renameColumn(a.entity, a.column, oldC);
       else renameColumn(a.entity, oldC, a.column);
       break;
+    }
+    case IMPORT_AUDIT_OP: {
+      // An import is recorded, not replayable. It creates tables, declares them,
+      // and loads rows in bulk, and no single reversal puts that back — so the
+      // refusal repeats the entry's own words rather than reporting a success
+      // that restored nothing. The words come from the entry so the change log
+      // and this refusal can never drift apart.
+      const note = typeof after?.note === 'string' ? after.note : '';
+      const promise = note.slice(note.indexOf('This cannot be undone in one step'));
+      throw new Error(
+        promise ||
+          'This cannot be undone in one step: Undo will not remove the tables or rows an ' +
+            'import made. To take an import back, delete what it created.',
+      );
     }
     default:
       throw new Error(`Cannot revert unknown schema op: ${entry.operation}`);

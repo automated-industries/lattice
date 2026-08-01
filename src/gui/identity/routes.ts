@@ -1,17 +1,20 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { hostname } from 'node:os';
 import { readJson, sendJson } from '../http.js';
-import { readIdentity, writeIdentity } from '../../framework/user-config.js';
 import {
-  discoverIdentityService,
-  exchangeSignIn,
-  startSignIn,
-  type IdentityEndpoints,
-} from './service.js';
-import { readIdentitySession, writeIdentitySession } from './store.js';
-import { revokeDeviceAccess } from './model.js';
-import { syncMemberships, type MembershipSyncDeps } from './sync.js';
-import { isManagedWorkspaces, managerCall } from './managed.js';
+  completeAccountSignIn,
+  createManagedWorkspace,
+  inviteToManagedWorkspace,
+  listManagedMembers,
+  readAccountStatus,
+  revokeManagedMembership,
+  signOutAccount,
+  startAccountSignIn,
+  syncAccountMemberships,
+} from '../../ops/account.js';
+import { accountErrorCode, NO_WORKSPACE_MANAGER } from '../../ops/account-errors.js';
+import { clearPendingSignIn, readPendingSignIn } from './store.js';
+import { isManagedWorkspaces } from './managed.js';
+import type { MembershipSyncDeps } from './sync.js';
 import {
   humanizeIdentityError,
   humanizeIdentityUnavailable,
@@ -20,25 +23,24 @@ import {
 } from '../ai/error-humanize.js';
 
 /**
- * GUI-server routes for the identity client (user-menu sign-in, both launchers)
- * and the managed-workspace delegation. All state-changing routes are local-only
- * by nature of the GUI server; the loopback receiver additionally requires a
- * pending request id that only this process knows.
+ * GUI-server routes for the account client (user-menu sign-in, both launchers)
+ * and the hosted-workspace delegation.
+ *
+ * Every operation behind these routes is a call in `ops/account.ts`, reachable
+ * from a command or a library with no server running. What stays here is what a
+ * browser needs and a direct caller does not: reading the request, turning a
+ * refusal into a status, and phrasing a failure for a person who is looking at a
+ * screen rather than a stack trace.
+ *
+ * All state-changing routes are local-only by nature of the GUI server; the
+ * loopback receiver additionally requires a pending request id that only this
+ * machine holds.
  */
 
 export interface IdentityRoutesDeps extends MembershipSyncDeps {
   pathname: string;
   method: string;
 }
-
-interface PendingSignIn {
-  requestId: string;
-  requestSecret: string;
-  endpoints: IdentityEndpoints;
-  startedAt: number;
-}
-let pending: PendingSignIn | null = null;
-const PENDING_TTL_MS = 20 * 60 * 1000;
 
 /**
  * Answer a failed sign-in leg with a sentence a person can act on, plus the machine
@@ -70,33 +72,19 @@ function sendSignInFailure(
   );
 }
 
-/** Complete a sign-in: exchange the code, persist the session, link identity. */
-async function completeSignIn(code: string): Promise<{ email: string; name: string | null }> {
-  if (!pending || Date.now() - pending.startedAt > PENDING_TTL_MS) {
-    throw new Error('No sign-in in progress — start again from the user menu.');
-  }
-  const p = pending;
-  const session = await exchangeSignIn(p.endpoints, p.requestId, p.requestSecret, code.trim());
-  pending = null;
-  writeIdentitySession({
-    token: session.token,
-    email: session.email,
-    name: session.name,
-    serviceBase: p.endpoints.base,
-    linkedAt: new Date().toISOString(),
-    materialized: {},
-    revoked: [],
-  });
-  // The linked identity becomes the local identity where none was set — chat
-  // attribution, member identity, and the invite flows all see one email.
-  const local = readIdentity();
-  if (!local.email || !local.display_name) {
-    writeIdentity({
-      display_name: local.display_name || (session.name ?? ''),
-      email: local.email || session.email,
-    });
-  }
-  return { email: session.email, name: session.name };
+/**
+ * The status a hosted-workspace refusal reads as on this transport.
+ *
+ * Nothing to delegate to is a 404 (the route does not exist for this session), a
+ * request with nothing in it is a 400, and a manager that was reached and refused
+ * is a 502 carrying the manager's own words — "Member limit reached." rather than
+ * a sentence invented here. An untagged failure is a real fault and keeps the
+ * same 502 it has always had.
+ */
+function sendManagedFailure(res: ServerResponse, err: unknown): void {
+  const code = accountErrorCode(err);
+  const status = code === 'not_managed' ? 404 : code === 'invalid_request' ? 400 : 502;
+  sendJson(res, { error: (err as Error).message }, status);
 }
 
 export async function dispatchIdentityRoute(
@@ -109,22 +97,28 @@ export async function dispatchIdentityRoute(
   // ── Loopback receiver: the browser hands the one-time code back here. ──
   // CORS-open on purpose: the approve page fetches this from the service's
   // origin. The code is single-use, bound to the pending request's secret held
-  // only in this process, and worthless without it.
+  // only on this machine, and worthless without it.
+  //
+  // @gui-only interactive-consent: this is the redirect target the account service's
+  // approval page calls from a browser once a person has approved the request, so
+  // its only possible caller is that page. It is a convenience rather than a second
+  // mechanism — the same operation without a browser is the paste-a-code path,
+  // account.signin-complete, which is what this branch itself calls.
   if (pathname === '/lattice/device-code' && method === 'GET') {
     const url = new URL(req.url ?? '', 'http://127.0.0.1');
     const rid = url.searchParams.get('rid') ?? '';
     const code = url.searchParams.get('code') ?? '';
     res.setHeader('access-control-allow-origin', '*');
-    if (pending?.requestId !== rid || !code) {
+    if (readPendingSignIn()?.requestId !== rid || !code) {
       sendJson(res, { ok: false, error: 'no matching sign-in in progress' }, 400);
       return true;
     }
     try {
-      const who = await completeSignIn(code);
+      const who = await completeAccountSignIn(code);
       // Kick the first membership sync in the background — invited workspaces
       // appear without another click. Fire-and-forget; failures surface on the
       // next explicit sync/status call.
-      void syncMemberships(deps).catch(() => undefined);
+      void syncAccountMemberships(deps).catch(() => undefined);
       sendJson(res, { ok: true, email: who.email });
     } catch (e) {
       // The approve page in the browser renders this, so it gets the same treatment
@@ -146,62 +140,53 @@ export async function dispatchIdentityRoute(
     return false;
   }
 
-  // ── Status: linked identity + whether an identity service is reachable. ──
+  // ── Status: linked identity + whether an account service is reachable. ──
   if (pathname === '/api/identity/status' && method === 'GET') {
-    const session = readIdentitySession();
-    const endpoints = await discoverIdentityService();
-    sendJson(res, {
-      linked: !!session,
-      email: session?.email ?? null,
-      name: session?.name ?? null,
-      serviceAvailable: endpoints !== null,
-      accountUrl: endpoints?.account ?? null,
-      managedWorkspaces: isManagedWorkspaces(),
-    });
+    sendJson(res, await readAccountStatus());
     return true;
   }
 
+  // Starting a sign-in returns a URL for a person to approve. The browser is one
+  // way to reach that; a command is another, and both end at the same exchange.
+  // @capability account.signin-start
   if (pathname === '/api/identity/signin/start' && method === 'POST') {
     const body = await readJson(req);
-    const endpoints = await discoverIdentityService();
-    if (!endpoints) {
-      const suggestAlternatives = body.purpose === 'model';
-      console.warn('[lattice] identity step "discovery" failed: no service manifest resolved');
-      sendJson(
-        res,
-        {
-          error: humanizeIdentityUnavailable(suggestAlternatives),
-          step: 'discovery',
-          suggestAlternatives,
-        },
-        503,
-      );
-      return true;
-    }
-    // The GUI server's own port is the loopback hand-back target.
+    // This server's own port is the loopback hand-back target, so the approval
+    // page can return the code without anyone copying it. A caller with no server
+    // passes no port, and the page shows the code to be pasted instead.
     const host = req.headers.host ?? '';
     const portMatch = /:(\d+)$/.exec(host);
     const redirectPort = portMatch?.[1] ? parseInt(portMatch[1], 10) : null;
     try {
-      const started = await startSignIn(endpoints, `Lattice on ${hostname()}`, redirectPort);
-      pending = {
-        requestId: started.requestId,
-        requestSecret: started.requestSecret,
-        endpoints,
-        startedAt: Date.now(),
-      };
+      const started = await startAccountSignIn({ redirectPort });
       sendJson(res, { ok: true, verifyUrl: started.verifyUrl });
     } catch (e) {
+      // "No service at all" is its own answer: there is no failing leg to name and
+      // no remote error to classify, so it gets the discovery wording.
+      if (accountErrorCode(e) === 'service_unavailable') {
+        const suggestAlternatives = body.purpose === 'model';
+        sendJson(
+          res,
+          {
+            error: humanizeIdentityUnavailable(suggestAlternatives),
+            step: 'discovery',
+            suggestAlternatives,
+          },
+          503,
+        );
+        return true;
+      }
       sendSignInFailure(res, e, 'start', body.purpose, 502);
     }
     return true;
   }
 
+  // @capability account.signin-complete
   if (pathname === '/api/identity/signin/complete' && method === 'POST') {
     const body = await readJson(req);
     try {
-      const who = await completeSignIn(typeof body.code === 'string' ? body.code : '');
-      void syncMemberships(deps).catch(() => undefined);
+      const who = await completeAccountSignIn(typeof body.code === 'string' ? body.code : '');
+      void syncAccountMemberships(deps).catch(() => undefined);
       sendJson(res, { ok: true, email: who.email, name: who.name });
     } catch (e) {
       sendSignInFailure(res, e, 'exchange', body.purpose, 400);
@@ -216,9 +201,9 @@ export async function dispatchIdentityRoute(
   // says plainly whether the service confirmed the revoke: the device is signed
   // out either way, but an unconfirmed revocation must not be reported as a
   // completed one, because a live token would be left drawing on the balance.
+  // @capability account.signout
   if (pathname === '/api/identity/signout' && method === 'POST') {
-    pending = null;
-    const revocation = await revokeDeviceAccess();
+    const revocation = await signOutAccount();
     sendJson(res, {
       ok: true,
       modelAccess: revocation.revoked ? 'revoked' : 'not-confirmed',
@@ -227,58 +212,56 @@ export async function dispatchIdentityRoute(
     return true;
   }
 
+  // Invited workspaces are materialized with the SESSION's workspace creator, so a
+  // running app adopts the new workspace rather than merely registering it.
+  // @capability account.sync-memberships
   if (pathname === '/api/identity/sync' && method === 'POST') {
-    const result = await syncMemberships(deps);
-    sendJson(res, result);
+    sendJson(res, await syncAccountMemberships(deps));
     return true;
   }
 
-  // ── Managed-workspace delegation (hosted sessions only). ──
+  // ── Hosted-workspace delegation (hosted sessions only). ──
   // The GUI never holds a manager credential: it calls its own per-session
   // manager endpoint, which enforces identity, ownership, and caps.
   if (pathname.startsWith('/api/cloud/managed/')) {
     if (!isManagedWorkspaces()) {
-      sendJson(res, { error: 'No workspace manager is configured for this session.' }, 404);
+      sendJson(res, { error: NO_WORKSPACE_MANAGER }, 404);
       return true;
     }
     const op = pathname.slice('/api/cloud/managed/'.length);
     try {
       if (op === 'members' && method === 'GET') {
-        sendJson(res, await managerCall('members', 'GET'));
+        sendJson(res, await listManagedMembers());
         return true;
       }
+      // @capability account.invite-member
       if (op === 'invite' && method === 'POST') {
         const body = await readJson(req);
         sendJson(
           res,
-          await managerCall('invite', 'POST', {
-            email: typeof body.email === 'string' ? body.email : '',
-          }),
+          await inviteToManagedWorkspace(typeof body.email === 'string' ? body.email : ''),
         );
         return true;
       }
+      // @capability account.remove-member
       if (op === 'revoke' && method === 'POST') {
         const body = await readJson(req);
         sendJson(
           res,
-          await managerCall('revoke', 'POST', {
-            membershipId: typeof body.membershipId === 'string' ? body.membershipId : '',
-          }),
+          await revokeManagedMembership(
+            typeof body.membershipId === 'string' ? body.membershipId : '',
+          ),
         );
         return true;
       }
+      // @capability account.create-workspace
       if (op === 'create' && method === 'POST') {
         const body = await readJson(req);
-        sendJson(
-          res,
-          await managerCall('create', 'POST', {
-            name: typeof body.name === 'string' ? body.name : '',
-          }),
-        );
+        sendJson(res, await createManagedWorkspace(typeof body.name === 'string' ? body.name : ''));
         return true;
       }
     } catch (e) {
-      sendJson(res, { error: (e as Error).message }, 502);
+      sendManagedFailure(res, e);
       return true;
     }
     sendJson(res, { error: 'Unknown workspace-manager operation.' }, 404);
@@ -288,7 +271,13 @@ export async function dispatchIdentityRoute(
   return false;
 }
 
-/** Test seam: reset the module's pending sign-in state. */
+/**
+ * Test seam: forget any sign-in waiting for its code.
+ *
+ * Kept here under its original name so existing callers resolve, and delegating
+ * to the store, which is where a pending sign-in lives now that one command can
+ * start it and another can finish it.
+ */
 export function resetPendingSignIn(): void {
-  pending = null;
+  clearPendingSignIn();
 }

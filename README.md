@@ -125,6 +125,7 @@ opt-in per table/call; absent the opt-in, behavior is byte-identical to 4.0.
   - [lattice.config.yml reference](#latticeconfigyml-reference)
   - [Init from config](#init-from-config)
   - [Config API](#config-api-programmatic)
+- [CLI — the whole product, no browser](#cli--the-whole-product-no-browser)
 - [CLI — lattice generate](#cli--lattice-generate)
 - [CLI — lattice gui (v1.11+)](#cli--lattice-gui-v111)
 - [Schema migrations](#schema-migrations)
@@ -2110,6 +2111,36 @@ interface ParsedConfig {
 
 ---
 
+## CLI — the whole product, no browser
+
+The browser app is **one client, not a requirement**: everything Lattice does is a
+command and a library call as well. `lattice --help` lists them all; each one is
+documented in the [CLI reference](docs/cli.md).
+
+| Group                                                                                                         | What it covers                                                                               |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| [`init` / `workspace` / `database`](docs/cli.md#lattice-init)                                                 | Make a root and workspaces, switch, rename, and take them away again                         |
+| [`schema`](docs/cli.md#lattice-schema)                                                                        | Nest one table inside another, take a link back out, say what a table or column means        |
+| [`ingest`](docs/cli.md#lattice-ingest)                                                                        | Read a document, a folder, a web address, or text on stdin                                   |
+| [`import`](docs/cli.md#lattice-import)                                                                        | Turn a spreadsheet, CSV, JSON export, or a document with tables in it into tables and rows   |
+| [`connector`](docs/cli.md#lattice-connector)                                                                  | Attach an external database, keep every source fresh, detach one                             |
+| [`ask`](docs/cli.md#lattice-ask)                                                                              | One full assistant turn — same tools, same audited and reversible writes                     |
+| [`model`](docs/cli.md#lattice-model)                                                                          | Say which model this machine uses, before any workspace exists                               |
+| [`account`](docs/cli.md#lattice-account)                                                                      | Sign this machine in to an account, and run a hosted workspace                               |
+| [`cloud`](docs/cli.md#lattice-cloud)                                                                          | Run a shared workspace: status, members, secure, invite, join, revoke, share, migrate, probe |
+| [`questions`](docs/cli.md#lattice-questions)                                                                  | Drain the assistant's clarification queue                                                    |
+| [`render` / `reconcile` / `status` / `watch`](docs/cli.md#lattice-render)                                     | Write the rendered context tree and keep it in step with the database                        |
+| [`search` / `reindex` / `index status` / `doctor`](docs/cli.md#lattice-search--reindex--index-status--doctor) | Retrieval, its indexes, and a health report a deploy can gate on                             |
+| [`generate`](#cli--lattice-generate)                                                                          | Types + an initial migration from a YAML config                                              |
+| [`gui`](#cli--lattice-gui-v111) / [`update`](docs/cli.md#lattice-update)                                      | Start the browser app; upgrade in place                                                      |
+
+Each of those is also a plain function call, so an embedder reaches the same
+capability the command does without starting a server. Two things genuinely stay
+where they are: **applying a desktop update** needs the desktop shell that restarts
+itself, and an **operating-system file picker** or a **provider's consent screen**
+needs a person at a browser — though the consent page can be approved on any
+machine, and the code pasted back into the one being configured.
+
 ## CLI — `lattice generate`
 
 Generate TypeScript interfaces, an initial SQL migration file, and optional scaffold files from a YAML config.
@@ -2302,11 +2333,19 @@ The convergence means you don't need to duplicate entity-context definitions in 
 
 **Migrate vs. join.** The two ways onto a cloud are **Migrate to cloud** (push your
 local workspace's data into a fresh cloud Postgres; Lattice installs RLS and you
-become the owner of every migrated row) and **Join a cloud** (connect directly with
-the scoped credentials the owner handed you — host / port / database / username /
-password — which _are_ the invite; there is no token to redeem). The
-`connect-existing` endpoint backs the join: it probes the target as your role,
-confirms it is a Lattice cloud (RLS installed), and opens it in introspect-only mode.
+become the owner of every migrated row) and **Join a cloud**, which comes in two
+forms. An owner can hand over the scoped credentials directly — host / port /
+database / username / password — and those credentials **are** the invite; the
+`connect-existing` endpoint backs that join, probing the target as your role,
+confirming it is a Lattice cloud (RLS installed), and opening it in introspect-only
+mode. Or the owner can mint a **one-time invite token** bound to your email
+address (`lattice cloud invite --email <address>`, or `POST /api/cloud/invite`),
+which you redeem into a brand-new workspace with `lattice cloud join --token-stdin`
+(the token piped in, so it stays out of the process list) — or
+`POST /api/cloud/redeem-invite`, or `redeemCloudInvite()` from the
+package. A token expires in about seven days, is never stored, and is claimed
+before anything is created, so a spent or revoked one is refused having changed
+nothing.
 
 **A cloud is just a secured Postgres database.** Migrating to cloud installs the RLS
 machinery (`installCloudRls` + `enableRlsForTable` per table) and stamps you as owner
@@ -2434,8 +2473,11 @@ The browser's `EventSource` invalidates the entity cache on every `change` event
 
 `lattice gui` includes an optional **assistant rail**: a Claude-powered chat plus
 a **Context Constructor** that turns dropped files and pasted text into linked
-Lattice objects. It is **GUI-only and inert until you configure a credential** —
-the library API is unchanged and fully backwards-compatible.
+Lattice objects. The same assistant answers from a terminal — **`lattice ask
+"<prompt>"`** runs one question against the active workspace with no browser at
+all (see [`docs/cli.md`](docs/cli.md#lattice-ask)). It is **inert until you
+configure a credential** — the library API is unchanged and fully
+backwards-compatible.
 
 - **Connect the assistant.** The first-run wall offers **three** ways to power
   Lattice, all also reachable from **Settings → User → Assistant**: (1) a **Lattice
@@ -2510,11 +2552,16 @@ local Lattice to a shared one is **migrate**.
 
 - **Migrate** — point a local Lattice at a fresh Postgres; Lattice copies your data
   in, installs RLS, and makes you the owner of every migrated row.
-- **Join** — connect directly with the scoped credentials the owner gave you (host /
-  port / database / username / password). **Those credentials _are_ the invite** —
-  there is no token to redeem and no server to sign into.
+- **Join** — two ways in. Connect directly with the scoped credentials the owner
+  gave you (host / port / database / username / password), which **are** the invite;
+  or redeem a one-time invite token bound to your email address with
+  `lattice cloud join --token-stdin`, which opens a brand-new workspace on the
+  cloud. Either way there is no server to sign into — a token is claimed against
+  the cloud database itself.
 - **Invite** — an owner (whose role holds `CREATEROLE`) provisions a scoped,
-  `NOSUPERUSER` member role and hands the new member that connection blob.
+  `NOSUPERUSER` member role. They can hand over that connection blob directly, or
+  mint a token that carries it with `lattice cloud invite --email <address>` —
+  printed once, never stored, bound to that address, expiring in about seven days.
 
 **Sharing is private-by-default.** Every row is owned by whoever wrote it and starts
 `private`; the owner opts a row into `everyone` (or back to `private`) through the
@@ -2533,7 +2580,6 @@ import {
   openTargetLatticeForMigration,
   migrateLatticeData,
   installCloudRls,
-  backfillOwnership,
   enableRlsForTable,
   archiveLocalSqlite,
   // owner provisions / revokes scoped member roles
@@ -2563,6 +2609,7 @@ const visible = await db.query('items'); // RLS-filtered to what this role may s
 | POST   | `/api/dbconfig/migrate-to-cloud` | Migrate the active local Lattice into a fresh cloud (you = owner)  |
 | POST   | `/api/dbconfig/connect-existing` | Join a cloud directly with scoped credentials (the invite)         |
 | POST   | `/api/cloud/invite`              | Owner provisions a scoped member role; returns the connection blob |
+| POST   | `/api/cloud/redeem-invite`       | Redeem an invite token into a new workspace on that cloud          |
 | POST   | `/api/cloud/share`               | Owner sets a row's visibility (`private` \| `everyone`)            |
 | POST   | `/api/cloud/s3-config`           | Owner enables S3-backed file bytes for the cloud (secret redacted) |
 | POST   | `/api/cloud/system-prompt`       | Owner sets the chat system prompt (owner-only to view/edit)        |

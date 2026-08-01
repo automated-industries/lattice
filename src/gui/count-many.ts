@@ -116,3 +116,50 @@ export async function exactCountMany(
   });
   return out;
 }
+
+/**
+ * Column names that carry a "last touched" signal, in preference order. The
+ * first one a table actually has is the one its freshness is read from.
+ */
+export const FRESHNESS_COLS = ['updated_at', 'created_at', 'ts'];
+
+/**
+ * Per-table "last touched" timestamp — the MAX of the first present freshness
+ * column ({@link FRESHNESS_COLS}). Postgres runs ONE `UNION ALL` query to stay
+ * pool-safe (the same concern that drove {@link countManyPostgres}); SQLite runs
+ * in-process. Tables with none of those columns are omitted from the result —
+ * they have no freshness signal, which is different from "not fresh".
+ *
+ * Table and column names are asserted safe before interpolation (they come from
+ * the introspected schema, never from a caller's input) exactly as
+ * {@link exactCountMany} does.
+ */
+export async function tableFreshness(
+  adapter: StorageAdapter,
+  tables: { name: string; columns: string[] }[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const withCol = tables
+    .map((t) => ({ name: t.name, col: FRESHNESS_COLS.find((c) => t.columns.includes(c)) }))
+    .filter((t): t is { name: string; col: string } => t.col !== undefined);
+  if (withCol.length === 0) return out;
+  for (const t of withCol) {
+    assertSafeIdentifier(t.name, 'table');
+    assertSafeIdentifier(t.col, 'column');
+  }
+  if (adapter.dialect === 'postgres' && typeof adapter.allAsync === 'function') {
+    const sql = withCol
+      .map((t) => `SELECT '${t.name}' AS t, MAX("${t.col}")::text AS m FROM "${t.name}"`)
+      .join(' UNION ALL ');
+    const rows = (await adapter.allAsync(sql)) as { t: string; m: string | null }[];
+    for (const r of rows) out.set(r.t, r.m);
+  } else {
+    for (const t of withCol) {
+      const rows = adapter.all(`SELECT MAX("${t.col}") AS m FROM "${t.name}"`) as {
+        m: string | null;
+      }[];
+      out.set(t.name, rows[0]?.m ?? null);
+    }
+  }
+  return out;
+}
