@@ -74,12 +74,39 @@ async function ensureExtensions(url: string): Promise<void> {
 export default async function setup({
   provide,
 }: GlobalSetupContext): Promise<(() => Promise<void>) | undefined> {
+  /**
+   * One run-scoped root for the per-worker config dirs that `pg-env.ts` mints.
+   *
+   * That file is a `setupFiles` entry, so it runs once per TEST FILE — and since
+   * the pool TERMINATES workers instead of letting them exit, a worker cannot
+   * reliably clean up after itself (no `process.on('exit')`, no in-worker
+   * teardown). Left to the workers the suite leaked one directory per test file
+   * per run, which reached five figures on a developer machine.
+   *
+   * This teardown runs in the MAIN process, so it does fire. Nesting every
+   * worker's dir under one root means a single recursive remove collects them
+   * all, while each worker still gets its own isolated directory.
+   */
+  const cfgRoot = mkdtempSync(join(tmpdir(), 'lattice-test-cfg-'));
+  process.env.LATTICE_TEST_CFG_ROOT = cfgRoot; // forked workers inherit this at spawn
+  const removeCfgRoot = (): void => {
+    rmSync(cfgRoot, { recursive: true, force: true });
+  };
+
   if (process.env.LATTICE_TEST_PG_URL) {
     // (1) an explicit cluster wins — but still pin the shared extensions to public.
     await ensureExtensions(process.env.LATTICE_TEST_PG_URL);
-    return;
+    return () => {
+      removeCfgRoot();
+      return Promise.resolve();
+    };
   }
-  if (process.env.CI) return; // (2) CI without a URL → leave the suite skipped
+  // (2) CI without a URL → leave the suite skipped
+  if (process.env.CI)
+    return () => {
+      removeCfgRoot();
+      return Promise.resolve();
+    };
 
   // (3) Local run with no Postgres — provision a disposable one.
   let EmbeddedPostgres: typeof import('embedded-postgres').default;
@@ -90,7 +117,10 @@ export default async function setup({
       '\n[lattice tests] "embedded-postgres" is not installed — the Postgres integration ' +
         'suite will be SKIPPED. Run `npm install` (or set LATTICE_TEST_PG_URL) to include it.\n',
     );
-    return;
+    return () => {
+      removeCfgRoot();
+      return Promise.resolve();
+    };
   }
 
   const dataDir = mkdtempSync(join(tmpdir(), 'lattice-test-pg-'));
@@ -127,6 +157,7 @@ export default async function setup({
       '[lattice tests] failed to boot the disposable Postgres:\n' + errLog.slice(-25).join('\n'),
     );
     rmSync(dataDir, { recursive: true, force: true });
+    removeCfgRoot();
     throw e;
   }
 
@@ -146,6 +177,7 @@ export default async function setup({
       // best-effort — the data dir is removed regardless
     }
     rmSync(dataDir, { recursive: true, force: true });
+    removeCfgRoot();
   };
 }
 

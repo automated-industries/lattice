@@ -68,7 +68,28 @@ mutablePg.Pool = GuardedPool as unknown as PgCtor;
  * workers). Tests that need a specific dir still set their own in `beforeEach`.
  */
 if (!process.env.LATTICE_CONFIG_DIR) {
-  process.env.LATTICE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'lattice-test-cfg-'));
+  /**
+   * Nest the per-worker dir inside the RUN-SCOPED root the global setup makes,
+   * so the whole tree dies with one teardown `rm`.
+   *
+   * This file is a `setupFiles` entry, so it runs once per TEST FILE, and the
+   * default forked pool gives each file a fresh process — the guard above never
+   * suppresses a second creation, so anything created here and not removed leaks
+   * per file, not per run.
+   *
+   * Cleaning up from the worker itself does NOT work: the pool terminates
+   * workers rather than letting them exit, so neither `process.on('exit')` nor a
+   * teardown hook here is guaranteed to run. Only the global setup's teardown,
+   * which runs in the main process, reliably fires — so ownership of the
+   * lifetime belongs there, and this file only chooses where to put the dir.
+   *
+   * The fallback keeps this file standalone if it is ever used without the
+   * global setup (that path leaks, as it always did, but nothing breaks).
+   */
+  const cfgRoot = process.env.LATTICE_TEST_CFG_ROOT;
+  process.env.LATTICE_CONFIG_DIR = cfgRoot
+    ? mkdtempSync(join(cfgRoot, 'worker-'))
+    : mkdtempSync(join(tmpdir(), 'lattice-test-cfg-'));
 }
 
 /**
