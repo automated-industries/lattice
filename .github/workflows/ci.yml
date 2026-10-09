@@ -20,7 +20,10 @@ jobs:
       postgres:
         # pgvector image so the native indexed-vector path (CREATE EXTENSION vector
         # + HNSW) is actually exercised by the integration suite, not just skipped.
-        image: pgvector/pgvector:pg16
+        # Pulled through Google's public Docker Hub mirror: the same image (identical
+        # manifest digest), without Docker Hub's per-IP limit on anonymous pulls, which
+        # shared CI runners hit ("toomanyrequests") before any test runs.
+        image: mirror.gcr.io/pgvector/pgvector:pg16
         env:
           POSTGRES_USER: lattice
           POSTGRES_PASSWORD: lattice
