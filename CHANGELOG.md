@@ -6,17 +6,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
-
-### Fixed
-
-- The macOS desktop build writes its app bundle with `--output dist-desktop/Lattice` instead of
-  `--output dist-desktop/Lattice.app`. Recent `deno desktop` canaries append `.app` to an output
-  path that already ends in `.app`, which produced `Lattice.app.app` with a bundle named
-  `Lattice.app`, and the installer step then failed with "Lattice.app not found". Without the
-  extension, current canaries and stable Deno both produce `dist-desktop/Lattice.app` named
-  `Lattice`.
-
 ## [5.7.0] — 2026-07-31
 
 The theme of this release: everything Lattice does can now be done without the
