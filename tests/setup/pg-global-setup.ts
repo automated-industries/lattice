@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import type { GlobalSetupContext } from 'vitest/node';
+import { keepExitCode } from './keep-exit-code.mjs';
 
 /**
  * Vitest global setup for the Postgres integration suite.
@@ -85,6 +86,8 @@ export default async function setup({
   let EmbeddedPostgres: typeof import('embedded-postgres').default;
   try {
     EmbeddedPostgres = (await import('embedded-postgres')).default;
+    // Loading it registers an exit hook that would turn a failed run into exit 0.
+    keepExitCode();
   } catch {
     console.warn(
       '\n[lattice tests] "embedded-postgres" is not installed — the Postgres integration ' +
