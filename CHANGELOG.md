@@ -6,6 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [5.7.1] — 2026-10-10
+
+A maintenance release. The library and the app behave exactly as in 5.7.0; what changed is the
+release pipeline, so the desktop apps and the npm package can ship again.
+
+### Fixed
+
+- **macOS desktop build.** Current `deno desktop` canaries append `.app` to an `--output` path that
+  already ends in `.app`, which produced `Lattice.app.app` with an app named "Lattice.app" and
+  stopped the macOS packaging step. The build now passes the output path without the extension,
+  which gives `Lattice.app` named "Lattice" on current canaries and on stable Deno. (#213)
+- **npm publishing.** Releases now publish through npm trusted publishing: the release workflow
+  proves its identity to npm with a short-lived OIDC token instead of a long-lived access token.
+  The publish step runs on Node 22 with npm 11, and provenance is still attached. (#215)
+
+### Changed
+
+- **CI database image.** The test job pulls its Postgres image through Google's public Docker Hub
+  mirror, which serves the identical image, so Docker Hub's limit on anonymous pulls no longer
+  stops CI before any test runs. (#214)
+- **Changelog check.** The test that holds the release notes to what the product actually does now
+  reads every release section, not only the newest, so a short release note passes it and the
+  older notes stay covered.
+
 ## [5.7.0] — 2026-07-31
 
 The theme of this release: everything Lattice does can now be done without the

@@ -62,11 +62,15 @@ async function localWorkspace(): Promise<{ db: Lattice; configPath: string }> {
   return { db, configPath };
 }
 
-/** The release this note is about: the first version block in the file. */
-function currentReleaseSection(): string {
+/**
+ * Every version block in the file. The claim must not appear in any of them: a short
+ * patch-release note sits on top of the long one that once carried it, and reading only the
+ * newest block would stop checking the note people still find.
+ */
+function releaseSections(): string[] {
   const heads = [...CHANGELOG.matchAll(/^## \[/gm)];
   expect(heads.length, 'the changelog has version sections').toBeGreaterThan(1);
-  return CHANGELOG.slice(heads[0]!.index, heads[1]!.index);
+  return heads.map((h, i) => CHANGELOG.slice(h.index, heads[i + 1]?.index ?? CHANGELOG.length));
 }
 
 describe('a migration is not refused for the session, and the release note must not say it is', () => {
@@ -116,8 +120,8 @@ describe('a migration is not refused for the session, and the release note must 
     // scan of the whole section flags a migration refused for reasons that are
     // real (a target that is already somebody else's cloud). The bullet is the
     // unit that carries the situation.
-    const bullets = currentReleaseSection().split(/\n(?=- \*\*)/);
-    expect(bullets.length, 'the section parsed into bullets').toBeGreaterThan(10);
+    const bullets = releaseSections().flatMap((section) => section.split(/\n(?=- \*\*)/));
+    expect(bullets.length, 'the release notes parsed into bullets').toBeGreaterThan(10);
 
     const claims: string[] = [];
     for (const bullet of bullets) {
