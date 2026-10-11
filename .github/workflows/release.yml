@@ -103,16 +103,12 @@ jobs:
       # workflow on npmjs.com.
       - name: Publish
         run: npm publish --provenance --access public
-      - name: Verify the published version matches the tag
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          for i in $(seq 1 10); do
-            PUBLISHED="$(npm view latticesql version 2>/dev/null || echo '')"
-            if [ "$PUBLISHED" = "$TAG_VERSION" ]; then echo "npm latest = $PUBLISHED"; exit 0; fi
-            echo "  registry not yet showing $TAG_VERSION (saw '${PUBLISHED}') — retrying"; sleep 10
-          done
-          echo "::error::npm latest never reached ${TAG_VERSION} after publish"
-          exit 1
+      # A successful publish is not yet an installable version: the registry scans
+      # each new version first (typically about five minutes, longer at peak times
+      # or for larger packages). Wait for the registry's own answer for this exact
+      # version and for `latest` to name it, rather than a fixed number of seconds.
+      - name: Wait until the published version is installable
+        run: node scripts/await-npm-release.mjs "$(node -p "require('./package.json').name")" "${GITHUB_REF_NAME#v}"
 
   notify-failure:
     name: Alert on release failure
