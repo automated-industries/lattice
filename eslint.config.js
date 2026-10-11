@@ -114,6 +114,7 @@ export default tseslint.config(
       'docs-generated/**',
       'eslint.config.js',
       'scripts/**/*.mjs',
+      'tests/**/*.mjs',
     ],
   },
 );
